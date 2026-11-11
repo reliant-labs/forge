@@ -127,8 +127,11 @@ fix.
   workload to the kubectl context its `forge.OnCluster` target declares; `task test:e2e` runs the suite
   against the live multi-cluster stack. See the `forge/testing/e2e` skill.
 - **The pod is still up after a failure** — `forge env up` leaves the stack running, so
-  you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance, or
-  `forge debug start` to attach Delve. The hold-on-fail flag still earns its keep
+  you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance. `forge debug`
+  does not attach to a pod: it debugs host processes (`start`, `--attach <pid>`)
+  and dlv servers it can reach (`forge debug connect <addr>`). To use Delve on an
+  in-cluster workload, run it OnHost in a debugging env, or run dlv in the pod
+  and `kubectl port-forward` to it before `connect`. The hold-on-fail flag still earns its keep
   when the suite itself owns short-lived per-test pods it would otherwise reap.
 - **Capture the gotcha:** if a nested-cluster gotcha cost you real time, file
   it upstream so the generator can grow a guardrail (e.g. seeding the

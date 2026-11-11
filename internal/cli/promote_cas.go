@@ -66,6 +66,18 @@ type appendGuard struct {
 	// struct is already the bag of directives for HOW the write is
 	// performed, not only what it compares against.
 	ResolveVersionFromSource bool
+	// Target is the release being promoted, with its migration manifest:
+	// what a backend WITHOUT a server judges the env's rollback floors
+	// against (admitPromotion) and raises declared floors from. Nil skips
+	// the floor check — the shape every non-promote caller passes. The
+	// hosted backend never reads it: its server judges floors under the
+	// env row lock.
+	Target *release.Release
+	// RaiseFloorReason is `forge env deploy --floor "<why>"`: also set a
+	// roll-forward-only floor at the promoted release, in the same write
+	// (hosted: PromoteReleaseRequest.raise_floor_reason; machine ledger:
+	// the same lock hold as the append).
+	RaiseFloorReason string
 }
 
 // expects reports whether the guard asserts anything about the current
@@ -103,17 +115,24 @@ func guardFor(plan promotePlan, expectCurrent string, supersede bool) appendGuar
 }
 
 // admitPromotion is the write rule a backend WITHOUT a server applies: the
-// idempotent no-op first (release.Decide), then the compare-and-set against
-// the history it just read. It returns the existing entry for a no-op, nil
-// for a move the guard admits, or a *promoteRefusedError.
+// idempotent no-op first (release.Decide), then the env's rollback floors
+// (when the guard names the target release), then the compare-and-set
+// against the history it just read — the server's order. It returns the
+// existing entry for a no-op, nil for a move the guard admits, or a
+// *promoteRefusedError.
 //
 // The hosted backend does not call this — its server applies the same rule
 // inside the transaction holding the env row, and a client-side pre-check
 // there would be the read-then-write race the server's lock exists to close.
-func admitPromotion(history []release.Promotion, p release.Promotion, guard appendGuard) (*release.Promotion, error) {
+func admitPromotion(history []release.Promotion, floors []release.Floor, p release.Promotion, guard appendGuard) (*release.Promotion, error) {
 	existing, err := release.Decide(history, p)
 	if err != nil || existing != nil {
 		return existing, err
+	}
+	if guard.Target != nil {
+		if r := release.AdmitOverFloors(floors, *guard.Target); r != nil {
+			return nil, floorRefusal(p.Env, guard.Target.Version, r)
+		}
 	}
 	if !guard.expects() {
 		return nil, nil
@@ -177,6 +196,9 @@ type promoteRefusedError struct {
 	// than re-planning after the refusal — is what keeps the thing they
 	// look at and the thing that refused them the same plan.
 	CurrentPlan *release.Plan
+	// Floors are the env's active rollback floors the target fails, for
+	// below_rollback_floor.
+	Floors []release.Floor
 	// Unacknowledged are the stop-class finding codes the recomputed plan
 	// holds that the request did not name. Set for plan_unacknowledged, and
 	// derived from CurrentPlan so the list and the plan cannot disagree.
@@ -253,6 +275,8 @@ func refusalHint(reason string) string {
 		return "this deploy destroys something that cannot be recreated by re-running it. Acknowledge each finding by code (--acknowledge-destructive <code>); --yes does not cover a stop-class finding."
 	case reasonBundleMissing:
 		return "the bundle's blob is no longer in the registry, so there are no bytes to apply. Re-build and re-record the bundle (`forge env build <env>`)."
+	case reasonBelowRollbackFloor:
+		return "the env's rollback floor refuses this release (`forge env floor show <env>`). Roll forward; or, if the floor no longer applies, lower or lift it with a reason (`forge env floor lower|lift`, recorded)."
 	case reasonHealthGateRegressed:
 		return "this release regressed in an env this one follows (delivery_policy.health_gate). Fix forward in a new release; to override for an incident, re-run with --override-health-gate \"<why>\" (recorded)."
 	case reasonHealthGateUnproven:
@@ -317,6 +341,9 @@ func (s *hostedStore) refusalFromWire(env string, err error) *promoteRefusedErro
 		out.ActualPhase = w.ActualPhase
 		out.Detail = w.Detail
 		out.adoptCurrentPlan(w.CurrentPlan)
+		if len(w.Floors) > 0 {
+			out.Floors = floorsFromWire(env, w.Floors)
+		}
 		if w.ActualCurrent != nil {
 			// The actual promotion is DISPLAY data on a failure path. One
 			// the server sent that forge cannot validate must not turn a
@@ -376,6 +403,9 @@ type promoteRefusalJSON struct {
 	CurrentPlan *release.Plan `json:"current_plan,omitempty"`
 	// Unacknowledged are the stop-class codes still needing acknowledgement.
 	Unacknowledged []string `json:"unacknowledged,omitempty"`
+	// Floors are the rollback floors the target fails
+	// (below_rollback_floor).
+	Floors []release.Floor `json:"floors,omitempty"`
 }
 
 func (e *promoteRefusedError) toJSON() *promoteRefusalJSON {
@@ -387,6 +417,7 @@ func (e *promoteRefusedError) toJSON() *promoteRefusalJSON {
 		Detail:                     e.Detail,
 		CurrentPlan:                e.CurrentPlan,
 		Unacknowledged:             e.Unacknowledged,
+		Floors:                     e.Floors,
 	}
 	if e.ActualPhase != "" {
 		out.ActualPhase = rolloutPhaseName(e.ActualPhase)

@@ -260,7 +260,21 @@ func (b *offlineBindings) Append(_ context.Context, p release.Promotion, guard a
 	if b.snap.Bound {
 		history = []release.Promotion{b.current}
 	}
-	existing, err := admitPromotion(history, p, guard)
+	if guard.RaiseFloorReason != "" {
+		return release.Promotion{}, exitCodeError{code: exitWrong, msg: "--offline-ledger: --floor needs the control plane (a floor set offline would exist only here)"}
+	}
+	// The cached floors. The queued promotion replays through the control
+	// plane's Promote, which judges them again; this is the check for the
+	// local apply that happens before replay. A copy whose floors are unknown
+	// (it predates them, or the read failed at its refresh) cannot judge the
+	// local apply, so it refuses: unknown is never read as "no floors".
+	if !b.snap.FloorsRecorded {
+		return release.Promotion{}, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf(
+			"--offline-ledger: the offline copy of %s's ledger (refreshed %s) has not recorded its rollback floors (it predates them, or they could not be read at its last refresh), so this deploy cannot be judged against them and is not applied.\n"+
+				"Refresh the copy with `forge env status %s` while the control plane is up, then deploy again.",
+			p.Env, b.snap.RefreshedAt.Format(time.RFC3339), p.Env)}
+	}
+	existing, err := admitPromotion(history, release.ActiveFloors(b.snap.Floors), p, guard)
 	if err != nil {
 		return release.Promotion{}, err
 	}

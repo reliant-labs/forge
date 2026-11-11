@@ -99,7 +99,7 @@ var MigrationsFS embed.FS
 // migrationEmbedLayout is where the embedded migration set comes from, as a
 // function of database.migrations_dir.
 //
-// go:embed reads only files at or below the directory of the package that
+// A go:embed directive reads only files at or below the directory of the package that
 // declares it, so the directive has to live ABOVE the SQL. Two shapes cover
 // every directory inside the project:
 //

@@ -22,11 +22,9 @@ func TestE2EFrontendAuthPagesBuildAndTest(t *testing.T) {
 	requireTool(t, "node", "npm")
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmd(t, dir, forgeBin, "project", "new", "authfe", "--mod", "example.com/authfe", "--service", "widget")
-	projectDir := filepath.Join(dir, "authfe")
-	addCorpusForgePkgReplace(t, projectDir)
+	// `project new widgetapp --service widget`, shared with the other
+	// `scaffold frontend` tests (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, widgetServiceProjectE2E)
 	for _, fe := range []struct{ name, kind string }{{"web", "web"}, {"spa", "vite-spa"}} {
 		runCmdTimeout(t, projectDir, 10*time.Minute, forgeBin, "scaffold", "frontend", fe.name, "--kind", fe.kind,
 			// A project whose dev env declares no identity scaffolds a PUBLIC

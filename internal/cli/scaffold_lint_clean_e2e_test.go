@@ -55,15 +55,14 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 	requireTool(t, "golangci-lint")
 	forgeBin := buildforgeBinary(t)
 	contractlintDir := buildContractlintBinary(t)
-	dir := t.TempDir()
-
-	runCmd(t, dir, forgeBin, "project", "new", "lintapp", "--mod", "example.com/lintapp", "--service", "orders", "--frontend", "dashboard")
-	projectDir := filepath.Join(dir, "lintapp")
-	addCorpusForgePkgReplace(t, projectDir)
+	// The fresh scaffold: `project new dashapp --service catalog --frontend
+	// dashboard`, shared with the other tests that start there
+	// (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, dashboardCatalogProjectE2E)
 
 	// Author, in the service proto: a custom (non-CRUD) RPC AND a
 	// `// forge:entity` CRUD entity with an enum field and an optional field.
-	protoPath := filepath.Join(projectDir, "proto", "services", "orders", "v1", "orders.proto")
+	protoPath := filepath.Join(projectDir, "proto", "services", "catalog", "v1", "catalog.proto")
 	proto := readFileE2E(t, protoPath)
 	proto = strings.Replace(proto, "  // TODO: Add your RPC methods here.",
 		// Custom mutations declare their activity event (or none), as
@@ -101,7 +100,7 @@ message CreateApiKeyRequest {}
 message CreateApiKeyResponse {}
 `
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
-		t.Fatalf("author orders proto: %v", err)
+		t.Fatalf("author catalog proto: %v", err)
 	}
 
 	runCmd(t, projectDir, forgeBin, "scaffold")
@@ -349,11 +348,9 @@ func TestE2EFreshScaffoldFrontendLintClean(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "node", "npm")
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmd(t, dir, forgeBin, "project", "new", "felintapp", "--mod", "example.com/felintapp", "--service", "catalog", "--frontend", "dashboard")
-	projectDir := filepath.Join(dir, "felintapp")
-	addCorpusForgePkgReplace(t, projectDir)
+	// `project new dashapp --service catalog --frontend dashboard`, shared
+	// with the other tests that start there (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, dashboardCatalogProjectE2E)
 
 	// Author a `// forge:entity` carrying an enum (drives the dashboard's
 	// status filter), a *_cents field with a DOT-form gte 0, and a units

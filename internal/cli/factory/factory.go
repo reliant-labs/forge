@@ -21,6 +21,7 @@
 package factory
 
 import (
+	"context"
 	"io"
 	"os"
 
@@ -74,6 +75,9 @@ type Factory struct {
 	// neutral results (audittype.Category, []string, …). internal/cli
 	// registers the concrete implementation via SetAuditAPI from its init().
 	Audit AuditAPI
+
+	// Debug is the env-resolution surface the debug group launches with.
+	Debug DebugAPI
 }
 
 // AuditAPI is the exported surface the `forge project audit` command group depends
@@ -120,6 +124,27 @@ var auditAPI AuditAPI
 // SetAuditAPI registers the audit surface. internal/cli calls this from an
 // init() so it is set before any Factory is built.
 func SetAuditAPI(a AuditAPI) { auditAPI = a }
+
+// DebugAPI is what `forge debug start` needs from internal/cli: a local
+// workload's configuration, resolved exactly as `forge env exec` resolves it.
+type DebugAPI struct {
+	// WorkloadEnv returns base with the declared configuration of the local
+	// (OnHost / OnCompose) workload named workload in env layered on top —
+	// the environment `forge env exec <env> --workload <workload>` gives its
+	// child. It refuses a workload declared on any other runtime, and one
+	// whose declared secrets the store cannot supply.
+	WorkloadEnv func(ctx context.Context, projectDir, env, workload string, base []string) ([]string, error)
+
+	// WorkloadNames lists the workloads env declares, by name.
+	WorkloadNames func(ctx context.Context, projectDir, env string) ([]string, error)
+}
+
+// debugAPI is the DebugAPI internal/cli registers.
+var debugAPI DebugAPI
+
+// SetDebugAPI registers the debug surface. internal/cli calls this from an
+// init() so it is set before any Factory is built.
+func SetDebugAPI(a DebugAPI) { debugAPI = a }
 
 // GenAPI is the exported codegen + service-registry surface the `add`
 // command group depends on. Each field is a narrow, well-named entry into
@@ -243,6 +268,7 @@ func New() *Factory {
 		LoadProjectStore: projectStoreLoader,
 		Gen:              genAPI,
 		Audit:            auditAPI,
+		Debug:            debugAPI,
 	}
 }
 

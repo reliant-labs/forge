@@ -19,7 +19,7 @@
 //
 // `pretest` builds dist/ before vitest runs, so these assertions always read
 // a current build rather than whatever happened to be on disk.
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +76,10 @@ describe("the published surface", () => {
     // decision, so it is spelled out here rather than derived.
     expect(Object.keys(pkg.exports).sort()).toEqual([
       ".",
+      "./auth/auth0",
+      "./auth/clerk",
+      "./auth/firebase",
+      "./auth/supabase",
       "./interceptors",
       "./mock-transport",
       "./node",
@@ -110,11 +114,16 @@ describe("the published surface", () => {
     //   - vite is a dev-server plugin. It imports node:fs and node:http,
     //     which a browser bundle cannot resolve; it is loaded by
     //     vite.config.ts, in Node, and nowhere else.
+    //   - auth/<provider> are the auth-provider adapters. Each is one
+    //     provider's callbacks mapped onto identifyUser / trackAuthEvent; an
+    //     app imports only its own provider's, and none belongs in every
+    //     bundle.
     //   - otel-proxy is the dev servers' /_otel proxy (Vite mounts it
     //     through ./vite, Next.js's next.config.ts starts its relay). It
     //     imports node:http, node:https and node:fs.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
+      "./auth/",
       "./mock-transport",
       "./node",
       "./otel-proxy",
@@ -432,12 +441,19 @@ describe("the published surface", () => {
         continue; // "./package.json"
       }
       for (const target of [entry.types, entry.default]) {
-        expect(distFiles, `${target} is declared but not emitted`).toContain(
-          target.replace("./dist/", ""),
-        );
+        // A subpath may live in a dist/ subdirectory (./auth/<provider>).
+        expect(
+          existsSync(join(pkgDir, target)),
+          `${target} is declared but not emitted`,
+        ).toBe(true);
       }
     }
     // Nothing from a test file leaks into the artifact.
     expect(distFiles.filter((f) => f.includes(".test."))).toEqual([]);
+    expect(
+      readdirSync(join(pkgDir, "dist", "auth")).filter((f) =>
+        f.includes(".test."),
+      ),
+    ).toEqual([]);
   });
 });

@@ -288,6 +288,21 @@ under GPC or DNT they send no auth event and attach no id. Below the `full`
 tier the daily marker is kept in memory, never stored. The contract and the server-side
 emitters: `observability/product-events/auth-events`.
 
+**On Supabase, Clerk, Auth0 or Firebase**, one line does it: the provider's
+adapter subpath maps its callbacks onto `identifyUser` and the sign-out event,
+with the provider named on each event (structurally typed, no dependency):
+
+```ts
+import { createSupabaseAuthTelemetry } from "@reliantlabs/forge-web-runtime/auth/supabase";
+createSupabaseAuthTelemetry(supabase); // next to createClient
+// /auth/clerk: createClerkAuthTelemetry(clerk)    /auth/auth0: syncAuth0(client), reportAuth0SignOut(client)
+// /auth/firebase: createFirebaseAuthTelemetry((cb) => onIdTokenChanged(auth, cb)), reportFirebaseSignIn(user, info)
+```
+
+Anonymous sessions (Supabase `signInAnonymously`, Firebase anonymous auth) are
+never identified or counted. An app with its own `onAuthStateChange` passes
+`supabaseAuthTelemetryListener()` its `(event, session)` instead.
+
 ## Interactions: click to usable
 
 A fetch span times one RPC. To time what the user waits for — several RPCs,

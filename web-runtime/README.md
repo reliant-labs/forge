@@ -268,6 +268,26 @@ object, embed` are blocked, images are not inlined and fonts are not collected.
 fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
 fragment; request and response bodies and headers are not captured.
 
+## Auth-provider adapters (`/auth/<provider>`)
+
+An app on Supabase, Clerk, Auth0 or Firebase reports who is signed in with one
+line. Each subpath maps the provider's callbacks onto `identifyUser` (the id on
+every span and replay, and the daily `resumed` sign-in) and
+`trackAuthEvent("signed_out", …)`, naming the provider on each event. They are
+structurally typed and import nothing from the provider's SDK, so they add no
+dependency, and they inherit the auth events' GPC/DNT and tier rules.
+
+| Subpath          | Call                                                                                                                                                         | Notes                                                                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/auth/supabase` | `createSupabaseAuthTelemetry(supabase, { anonymous? })`, or `supabaseAuthTelemetryListener()` inside your own `onAuthStateChange`                            | `INITIAL_SESSION` / `SIGNED_IN` / `TOKEN_REFRESHED` / `USER_UPDATED` identify; `SIGNED_OUT` signs out. Anonymous sessions are skipped by default (`anonymous: "identify"` attaches them) and identified once `is_anonymous` flips. |
+| `/auth/clerk`    | `createClerkAuthTelemetry(clerk)`                                                                                                                            | Over `clerk.addListener`.                                                                                                                                                                                                          |
+| `/auth/auth0`    | `await syncAuth0(client)` on load and after `handleRedirectCallback`; `await reportAuth0SignOut(client)` before `logout()`                                   | auth0-spa-js has no listener.                                                                                                                                                                                                      |
+| `/auth/firebase` | `createFirebaseAuthTelemetry((cb) => onIdTokenChanged(auth, cb))`; `reportFirebaseSignIn(cred.user, getAdditionalUserInfo(cred))`; `reportFirebaseSignOut()` | `isNewUser` gives an exact `signed_up`. Anonymous users are never counted.                                                                                                                                                         |
+
+A browser `SIGNED_IN` is not a credential sign-in (supabase-js emits it on tab
+refocus), so the adapters never send one: exact sign-ups and credential
+sign-ins come from the provider itself, through `forge/pkg/authhooks`.
+
 ## Interactions: click to usable
 
 The SDK times each RPC. What the user waits for is usually several RPCs, a

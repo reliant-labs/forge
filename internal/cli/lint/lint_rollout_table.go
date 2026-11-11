@@ -28,6 +28,8 @@
 
 package lint
 
+import "github.com/reliant-labs/forge/internal/linter/testwait"
+
 // rolloutGroup is a set of rules that share a declaration.
 type rolloutGroup struct {
 	IntroducedIn string
@@ -223,6 +225,11 @@ var newRules = []rolloutGroup{
 	// (forge:secret, or a credential-shaped name with no forge:readable): the
 	// console never sees it, so the identity link is never drawn.
 	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
+	// forge lint --test-waits: a test that waits on the wall clock where it
+	// should wait on an event — the shapes that flake on a loaded machine.
+	{IntroducedIn: "v1.4.0", GatesFrom: "v1.4.1", Rules: []string{
+		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
+	}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

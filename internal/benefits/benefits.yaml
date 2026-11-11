@@ -2030,6 +2030,23 @@ benefits:
           `testkit.Slow` runs in the blocking `-short` tier, and a file its
           child process reads is invisible to Go's test cache, so a stale PASS
           replays after an edit
+      - id: forge-test-fixed-sleep
+        lane: --test-waits
+        bug_class: >-
+          A test that sleeps a fixed time and then asserts, guessing how long
+          the work takes: on a loaded machine the guess is short and the test
+          flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)
+      - id: forge-test-tight-deadline
+        lane: --test-waits
+        bug_class: >-
+          An event wait that fails the test after a deadline under 5s (a
+          select on `time.After`, testify `Eventually`, a poll bounded by
+          `time.Now().Add`), which a busy machine overruns
+      - id: forge-test-wall-clock-bound
+        lane: --test-waits
+        bug_class: >-
+          A test that fails when real elapsed time passes a bound under 5s,
+          measuring how busy the machine was rather than what the code did
       - id: forgeconv-handler-tests-use-tdd
         lane: --tests
         bug_class: >-

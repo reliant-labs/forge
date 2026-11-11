@@ -29,6 +29,7 @@ func raceProof(t *testing.T, h *harness, proof func()) int64 {
 	h.z.mu.Unlock()
 	stop := plantedSignIns(h)
 	proof()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — keeps the attacker signing in just past the proof, the window the race lives in; a correct fix passes however long this takes
 	time.Sleep(20 * time.Millisecond)
 	return stop()
 }
@@ -157,6 +158,15 @@ func TestTakeover_AConcurrentFailedProofNeverUnlocksTheRealOne(t *testing.T) {
 				attacker.z.mu.Lock()
 				attacker.z.refusedProofDelay = 150 * time.Millisecond
 				attacker.z.proofDelay = 150 * time.Millisecond
+				// The first proof to reach the issuer is the attacker's
+				// wrong code; it is then held for refusedProofDelay.
+				attackerAtIssuer := make(chan struct{})
+				var atIssuer sync.Once
+				attacker.z.beforeRequest = func(r *http.Request) {
+					if strings.HasSuffix(r.URL.Path, "/email/verify") {
+						atIssuer.Do(func() { close(attackerAtIssuer) })
+					}
+				}
 				attacker.z.mu.Unlock()
 
 				stop := plantedSignIns(attacker)
@@ -168,9 +178,16 @@ func TestTakeover_AConcurrentFailedProofNeverUnlocksTheRealOne(t *testing.T) {
 						t.Errorf("attacker's wrong code: %d, want 401", status)
 					}
 				}()
-				time.Sleep(60 * time.Millisecond)
+				// The owner proves while the attacker's failing proof is in
+				// flight at the issuer.
+				select {
+				case <-attackerAtIssuer:
+				case <-time.After(30 * time.Second):
+					t.Fatal("the attacker's wrong-code proof never reached the issuer")
+				}
 				prove(t, ownerSide, code)
 				wg.Wait()
+				// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — keeps the attacker signing in just past both proofs; a correct fix passes however long this takes
 				time.Sleep(20 * time.Millisecond)
 				if n := stop(); n != 0 {
 					t.Fatalf("TAKEOVER RACE: the planted password got tokens %d time(s) while a failed proof ran beside the real one", n)
@@ -744,6 +761,7 @@ func TestTakeover_AStaleProofsCleanupNeverRevokesTheOwnersNewCredential(t *testi
 		t.Fatal("A's proof never returned")
 	}
 	// Let anything A could still send arrive.
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a late cleanup from A the chance to land; a correct fix passes however long this takes
 	time.Sleep(50 * time.Millisecond)
 	if !signsIn(t, a, "victim@acme.com", ownerPassword) {
 		t.Fatal("PROOF RACE: a wrong-code proof's late cleanup revoked the password the owner set after proving the address")
@@ -794,7 +812,6 @@ func TestProof_AnAddressVerifiedSinceTheFirstReadIsLeftAlone(t *testing.T) {
 // Windows older than proofLockTTL are left over: a successful proof neither
 // waits for them nor keeps them; a live one is waited out.
 func TestAwaitPreProofWindows_WaitsOutLiveWindowsAndDropsStaleOnes(t *testing.T) {
-	shrinkProofWindow(t, 200*time.Millisecond, 50*time.Millisecond)
 	h := newHarness(t, policyWith(SignupOpen, allMethods))
 	u := preRegister(t, h)
 	c := h.z.client()
@@ -803,14 +820,17 @@ func TestAwaitPreProofWindows_WaitsOutLiveWindowsAndDropsStaleOnes(t *testing.T)
 	if err := c.SetMetadata(ctx, u.id, stale, strconv.FormatInt(time.Now().Add(-2*proofLockTTL).UnixMilli(), 10)); err != nil {
 		t.Fatal(err)
 	}
+	// At the real window (15s + 5s slack) a wait for the stale window would
+	// take 20s: far past this bound, which load cannot reach.
 	start := time.Now()
 	h.routes.awaitPreProofWindows(ctx, u.id)
-	if d := time.Since(start); d > 150*time.Millisecond {
+	if d := time.Since(start); d > 10*time.Second {
 		t.Fatalf("waited %v for a stale window", d)
 	}
 	if _, ok, _ := c.Metadata(ctx, u.id, stale); ok {
 		t.Fatal("a stale window was kept")
 	}
+	shrinkProofWindow(t, 200*time.Millisecond, 50*time.Millisecond)
 	live := MetaProofWindowPrefix + "live"
 	opened := time.Now()
 	if err := c.SetMetadata(ctx, u.id, live, strconv.FormatInt(opened.UnixMilli(), 10)); err != nil {

@@ -326,6 +326,7 @@ func TestJWKSSnapshot_SnapshotAgesOutWhileIssuerStaysDown(t *testing.T) {
 	if _, err := v.Validate(snapToken(t, key, "k1", nil)); err != nil {
 		t.Fatalf("fresh snapshot rejected: %v", err)
 	}
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past the snapshot's 400ms MaxAge; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(600 * time.Millisecond)
 	if _, err := v.Validate(snapToken(t, key, "k1", nil)); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("an aged-out snapshot must fail closed with a clear reason, got: %v", err)
@@ -431,8 +432,10 @@ func TestJWKSSnapshot_CloseStopsRetrying(t *testing.T) {
 	}
 	eventually(t, "background retries to hit the issuer", func() bool { return issuer.hits.Load() > 2 })
 	_ = v.Close()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: lets a request already in flight at Close land before the count is taken; a late one only makes the check more lenient
 	time.Sleep(100 * time.Millisecond)
 	before := issuer.hits.Load()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives retries that outlived Close the chance to hit the issuer; a correct Close passes however long this takes
 	time.Sleep(200 * time.Millisecond)
 	if after := issuer.hits.Load(); after != before {
 		t.Fatalf("retries continued after Close: %d -> %d", before, after)

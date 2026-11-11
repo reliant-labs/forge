@@ -744,6 +744,12 @@ func tier1Preamble(root, relPath string, cs *FileChecksums) (proceed, reAdopting
 		return false, false, nil
 	}
 
+	// scaffold.exclude: the project declared this area its own (exclude.go).
+	// Unlike a disowned path, deleting the file does not hand it back.
+	if skip, err := excludeTier1Decision(root, relPath); skip || err != nil {
+		return false, false, err
+	}
+
 	// Disowned: user-owned — never overwrite, even with force=true
 	// (--force discards current-run hand-edits to forge-owned files; it
 	// does not undo a recorded ownership transfer). Exception —

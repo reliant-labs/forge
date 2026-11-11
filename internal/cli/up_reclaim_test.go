@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -381,9 +382,14 @@ func TestForgeOwnership_RealProcess(t *testing.T) {
 		}
 	})
 
-	// Give the children a moment to exec into the test binary so their env
-	// is in place for inspection.
-	time.Sleep(300 * time.Millisecond)
+	// Wait for both children to exec into the test binary so their env is
+	// in place for inspection: the marked one shows its marker, the
+	// unmarked one its helper flag.
+	waitForMarker(t, marked.Process.Pid, env)
+	awaitCond(t, "the unmarked child to exec", func() bool {
+		environ, ok := newOSProcFacts().environ(unmarked.Process.Pid)
+		return ok && slices.Contains(environ, "FORGE_RECLAIM_HELPER=1")
+	})
 
 	facts := newOSProcFacts()
 

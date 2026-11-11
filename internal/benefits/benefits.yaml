@@ -185,6 +185,39 @@ benefits:
       - command: project rescaffold
       - command: project scaffolded
 
+  - id: scaffold-exclude
+    category: build
+    title: Areas forge never writes
+    claim: >-
+      `scaffold.exclude` in forge.yaml names the parts of an existing repo forge
+      must never write, and every generate, scaffold, upgrade and rescaffold
+      leaves them exactly as they are and says which writes it skipped.
+    availability: forge
+    use: >-
+      `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+    why: >-
+      A team adopting forge keeps its own frontend, workflows or docs without
+      disowning file by file. A locked run puts back anything written under an
+      excluded glob, and a glob over generated code other generated code
+      imports is refused with the dependent named.
+    evidence:
+      - skill: forge/migration/ownership
+      - path: internal/checksums/exclude.go
+      - path: internal/cli/generate_exclude.go
+
+  - id: prune-orphans
+    category: build
+    title: Clean up after a feature
+    claim: >-
+      When a feature is pinned off, `forge generate` lists the files it left
+      behind and `forge project prune --orphans` deletes the ones still exactly
+      as forge wrote them, never an edited one.
+    availability: forge
+    evidence:
+      - command: project prune
+      - skill: forge/migration/ownership
+      - path: internal/cli/generate_orphans.go
+
   - id: project-upgrade
     category: build
     title: Guided forge upgrades

@@ -327,7 +327,7 @@ func TestGoCachePartialPassIsNotAFailure(t *testing.T) {
 	r.OpenPaths = func(context.Context) (openfiles.Snapshot, error) { return openfiles.FromPaths(nil), nil }
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	time.Sleep(5 * time.Millisecond) // deadline already passed
+	<-ctx.Done() // deadline already passed
 	r.Ctx = ctx
 	// A cut-off is not a failure, but it is never silent either: the record
 	// names every step the deadline stopped, so a scheduler sees the trim did

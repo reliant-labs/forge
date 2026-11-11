@@ -39,6 +39,7 @@ schema Workload:
     nodeSelector?: {str:str}
     podAnnotations?: {str:str}
     ports?: [Port]
+    preStopSeconds?: int
     priorityClassName?: str
     probes?: Probes
     replicas: int = 1
@@ -79,6 +80,8 @@ schema Workload:
         nodeSelector == Undefined or len(nodeSelector) <= 32, "Workload.nodeSelector allows at most 32 entries"
         podAnnotations == Undefined or len(podAnnotations) <= 64, "Workload.podAnnotations allows at most 64 entries"
         ports == Undefined or len(ports) <= 16, "Workload.ports allows at most 16 entries"
+        preStopSeconds == Undefined or preStopSeconds >= 0, "Workload.preStopSeconds must be at least 0"
+        preStopSeconds == Undefined or preStopSeconds <= 120, "Workload.preStopSeconds must be at most 120"
         priorityClassName == Undefined or regex.match(priorityClassName, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"), "Workload.priorityClassName must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
         priorityClassName == Undefined or len(priorityClassName) <= 253, "Workload.priorityClassName must be at most 253 characters"
         replicas >= 1, "Workload.replicas must be at least 1"
@@ -119,6 +122,7 @@ workload_json = lambda v: Workload -> {str:} {
         "nodeSelector": v.nodeSelector
         "podAnnotations": v.podAnnotations
         "ports": [port_json(_i) for _i in v.ports] if v.ports else Undefined
+        "preStopSeconds": v.preStopSeconds
         "priorityClassName": v.priorityClassName
         "probes": probes_json(v.probes) if v.probes else Undefined
         "replicas": v.replicas

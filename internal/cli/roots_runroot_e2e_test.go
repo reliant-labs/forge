@@ -209,6 +209,7 @@ type Worker struct {
 	if code, _ := getE2E(workerBase + "/healthz"); code != http.StatusOK {
 		t.Errorf("the waiting worker's /healthz = %d, want 200: it is alive, only not ready", code)
 	}
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a worker that wrongly starts or migrates before the schema is current the chance to; a correct one passes however long this takes
 	time.Sleep(time.Second)
 	if strings.Contains(workerOut.String(), "worker started") || strings.Contains(workerOut.String(), "db migration completed") {
 		t.Fatalf("the worker started, or migrated, before the schema was current:\n%s", workerOut.String())

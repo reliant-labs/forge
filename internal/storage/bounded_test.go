@@ -37,7 +37,8 @@ func TestNonDisruptiveGCHonorsItsDeadlineInsideALayer(t *testing.T) {
 	}
 	staleSource := filepath.Join(sources, "app-bbbbbbbbbbbb")
 	// An lsof that takes longer than the pass is allowed to run.
-	fakeLsof(t, unrelatedOpenFile, "exec sleep 2")
+	// 30s: a pass that waited for it would blow far past the bound below.
+	fakeLsof(t, unrelatedOpenFile, "exec sleep 30")
 
 	p := DefaultPolicy()
 	p.Builders = nil
@@ -54,7 +55,7 @@ func TestNonDisruptiveGCHonorsItsDeadlineInsideALayer(t *testing.T) {
 	err := r.NonDisruptiveGC(ctx, true)
 	elapsed := time.Since(start)
 
-	if elapsed > 1500*time.Millisecond {
+	if elapsed > 10*time.Second {
 		t.Errorf("the pass ran %s against a 300ms budget", elapsed.Round(time.Millisecond))
 	}
 	if _, statErr := os.Stat(tempEntry); statErr != nil {

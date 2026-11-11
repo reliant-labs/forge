@@ -147,8 +147,18 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
 // below), which api-base.ts reads, so the rewrite and the transport are one
-// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
-// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+// decision.
+//
+// timeout:  DEV_API_PROXY_TIMEOUT_MS, Next's `experimental.proxyTimeout`. The
+//           proxy must never be the one to end a request: the API's Deadline
+//           slot bounds every RPC (30s by default, and an rpc's
+//           `(forge.v1.method).timeout` may raise its own or lift it), and
+//           ITS answer — a Connect `deadline_exceeded` with a traceresponse
+//           naming the trace — is what the browser should get. Next's default
+//           is also 30s, and the proxy's clock starts first, so it hung up
+//           first: a bare HTTP 500, "Failed to proxy … socket hang up" in this
+//           log, and no trace id anywhere. It times out an IDLE upstream
+//           socket, so a stream that keeps sending is never cut by it.
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
@@ -159,6 +169,7 @@ const devApiProxy =
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
 //
@@ -269,6 +280,7 @@ const nextConfig: NextConfig = {
               : []),
           ];
         },
+        experimental: { proxyTimeout: DEV_API_PROXY_TIMEOUT_MS },
       }
     : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
@@ -496,8 +508,18 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
 // below), which api-base.ts reads, so the rewrite and the transport are one
-// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
-// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+// decision.
+//
+// timeout:  DEV_API_PROXY_TIMEOUT_MS, Next's `experimental.proxyTimeout`. The
+//           proxy must never be the one to end a request: the API's Deadline
+//           slot bounds every RPC (30s by default, and an rpc's
+//           `(forge.v1.method).timeout` may raise its own or lift it), and
+//           ITS answer — a Connect `deadline_exceeded` with a traceresponse
+//           naming the trace — is what the browser should get. Next's default
+//           is also 30s, and the proxy's clock starts first, so it hung up
+//           first: a bare HTTP 500, "Failed to proxy … socket hang up" in this
+//           log, and no trace id anywhere. It times out an IDLE upstream
+//           socket, so a stream that keeps sending is never cut by it.
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
@@ -508,6 +530,7 @@ const devApiProxy =
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
 //
@@ -590,6 +613,7 @@ const nextConfig: NextConfig = {
               : []),
           ];
         },
+        experimental: { proxyTimeout: DEV_API_PROXY_TIMEOUT_MS },
       }
     : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run
@@ -817,8 +841,18 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // The answer reaches the bundle as process.env.FORGE_DEV_API_PROXY (`env`
 // below), which api-base.ts reads, so the rewrite and the transport are one
-// decision. Next's proxy ends a request after 30s (`experimental.proxyTimeout`);
-// a server-streaming RPC that must outlive that needs it raised, or the proxy off.
+// decision.
+//
+// timeout:  DEV_API_PROXY_TIMEOUT_MS, Next's `experimental.proxyTimeout`. The
+//           proxy must never be the one to end a request: the API's Deadline
+//           slot bounds every RPC (30s by default, and an rpc's
+//           `(forge.v1.method).timeout` may raise its own or lift it), and
+//           ITS answer — a Connect `deadline_exceeded` with a traceresponse
+//           naming the trace — is what the browser should get. Next's default
+//           is also 30s, and the proxy's clock starts first, so it hung up
+//           first: a bare HTTP 500, "Failed to proxy … socket hang up" in this
+//           log, and no trace id anywhere. It times out an IDLE upstream
+//           socket, so a stream that keeps sending is never cut by it.
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
@@ -829,6 +863,7 @@ const devApiProxy =
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
 //
@@ -975,6 +1010,7 @@ const nextConfig: NextConfig = {
               : []),
           ];
         },
+        experimental: { proxyTimeout: DEV_API_PROXY_TIMEOUT_MS },
       }
     : {}),
   // @reliantlabs/forge-web-runtime ships TypeScript sources, so Next has to run

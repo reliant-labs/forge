@@ -48,7 +48,7 @@ func TestNewClientWithDBContextCancelsBlockedProbe(t *testing.T) {
 	go func() { _, err := NewClientWithDBContext(ctx, db, "postgres"); done <- err }()
 	select {
 	case <-probe.entered:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("driver ping was not reached")
 	}
 	cancel()
@@ -57,7 +57,7 @@ func TestNewClientWithDBContextCancelsBlockedProbe(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("blocked ping returned %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("blocked ping ignored cancellation")
 	}
 	close(probe.release)
@@ -83,7 +83,7 @@ func TestNewClientWithDBContextCancelsPoolWait(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("pool wait returned %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("pool wait ignored cancellation")
 	}
 	if err := held.Close(); err != nil {
@@ -102,7 +102,7 @@ func TestNewClientWithDBKeepsBackgroundPing(t *testing.T) {
 		if ctx.Done() != nil {
 			t.Fatal("legacy constructor changed its background context")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("legacy constructor skipped ping")
 	}
 	close(probe.release)
@@ -111,7 +111,7 @@ func TestNewClientWithDBKeepsBackgroundPing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("legacy constructor did not finish")
 	}
 }

@@ -628,7 +628,16 @@ func TestWorktreeScanDoesNotTouchIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
+	// The rewrite must land in a later second than the checkout, so the
+	// index's stat cache (second resolution) goes stale: wait for the clock
+	// to pass that second rather than a fixed 1.1s.
+	checkedOut, err := os.Stat(readme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Unix() <= checkedOut.ModTime().Unix() {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := os.WriteFile(readme, content, 0o600); err != nil { // same content, new mtime
 		t.Fatal(err)
 	}

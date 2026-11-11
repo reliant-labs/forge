@@ -352,7 +352,7 @@ func ParseUnmatchedCRUDRPCs(projectDir string) ([]UnmatchedCRUDRPC, error) {
 	if err != nil || desc == nil {
 		return nil, err
 	}
-	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
+	tables, err := shadowdb.Tables(projectDir, config.MigrationsPathIn(projectDir))
 	if err != nil {
 		return nil, err
 	}

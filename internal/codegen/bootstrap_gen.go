@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -1327,7 +1328,7 @@ func filterWiredComponentPackages(projectDir string, pkgs []BootstrapPackageData
 //   - the scaffolded per-env `migrate` argv, which the env render turns
 //     into a migration initContainer
 func ProjectHasSQLMigrations(projectDir string) bool {
-	entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations"))
+	entries, err := os.ReadDir(config.MigrationsPathIn(projectDir))
 	if err != nil {
 		return false
 	}

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -64,6 +65,17 @@ func scaffoldAPI() v1alpha1.Workload {
 func scaffoldMigrate() v1alpha1.Workload {
 	return gw("migrate", v1alpha1.WorkloadSpec{
 		Kind: v1alpha1.KindJob, Command: []string{"/app/demo", "db", "migrate", "up"}, Before: []string{v1alpha1.BeforeAll},
+	})
+}
+
+// preStopProxy is a third-party server: a pinned image forge did not build,
+// which reads no PRE_STOP_DELAY.
+func preStopProxy() v1alpha1.Workload {
+	return gw("envoy", v1alpha1.WorkloadSpec{
+		Kind:           v1alpha1.KindService,
+		Image:          "docker.io/envoyproxy/envoy@sha256:" + strings.Repeat("a", 64),
+		Ports:          []v1alpha1.Port{{Name: "http", Port: 8080}},
+		PreStopSeconds: new(int32(15)),
 	})
 }
 
@@ -130,6 +142,10 @@ func goldenCases() []goldenCase {
 				return w
 			}(),
 		}},
+		// An image forge did not build pauses before SIGTERM; the grace grows
+		// by the pause. Restricted: the hosted platform renders it the same.
+		{name: "pre_stop", ws: []v1alpha1.Workload{preStopProxy()}},
+		{name: "pre_stop_restricted", profile: v1alpha1.ProfileRestricted, ws: []v1alpha1.Workload{preStopProxy()}},
 		{name: "mixed_env", ws: []v1alpha1.Workload{func() v1alpha1.Workload {
 			w := scaffoldAPI()
 			w.Spec.Env = []v1alpha1.EnvVar{

@@ -18,6 +18,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -85,14 +86,19 @@ Examples:
 				len(all), checksums.ScaffoldedDir+"/", len(absent), len(declined))
 			for _, p := range all {
 				status := "present "
+				glob, excluded := checksums.ExcludedBy(root, p)
 				switch {
+				case excluded:
+					status = "EXCLUDED"
 				case absentSet[p]:
 					status = "ABSENT  "
 				case declined[p] != "":
 					status = "DECLINED"
 				}
 				line := fmt.Sprintf("  %s  %s", status, p)
-				if why := declined[p]; why != "" {
+				if excluded {
+					line += "  — scaffold.exclude: " + glob
+				} else if why := declined[p]; why != "" {
 					line += "  — " + why
 				}
 				_, _ = fmt.Fprintln(out, line)
@@ -100,10 +106,24 @@ Examples:
 			if len(absent) > 0 || len(declined) > 0 {
 				_, _ = fmt.Fprintf(out, "\nRe-create an absent or declined one: %s\n", rescaffoldCmd("<path>"))
 			}
+			printExcludeGlobs(out, root)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&absentOnly, "absent", false, "List only the files that are absent (deleted on purpose)")
 	return cmd
+}
+
+// printExcludeGlobs names the areas forge.yaml's scaffold.exclude keeps forge
+// out of, which no ledger lists: forge never wrote there to record a birth.
+func printExcludeGlobs(out io.Writer, root string) {
+	globs := checksums.ExcludeGlobs(root)
+	if len(globs) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "\nforge never writes under these (forge.yaml scaffold.exclude):\n")
+	for _, g := range globs {
+		_, _ = fmt.Fprintf(out, "  %s\n", g)
+	}
 }

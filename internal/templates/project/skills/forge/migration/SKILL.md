@@ -208,5 +208,6 @@ Stop and report it, with a reproduction. Do not paper over it, and do not hand-e
 - `migration-service` — server-shaped projects (services, operators, workers, webhooks, packs, k8s)
 - `migration-cli` — CLI / library projects (`cmd/`, second binaries, when contract.go isn't worth it)
 - `migration-upgrade` — upgrading an *already-forge* project to a newer forge binary version
+- `migration/ownership` — keeping forge out of what the repo already owns: `scaffold.exclude` globs in forge.yaml, `forge project disown`, and `forge project prune --orphans` after pinning a feature off
 
 For contract design — applies during migrations and to greenfield code alike — see the top-level `contracts` skill.

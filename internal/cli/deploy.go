@@ -2177,24 +2177,25 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
-			MainK:        in.mainK,
-			ImageTag:     in.imageTag,
-			ImageDigests: in.imageDigests,
-			Namespace:    in.namespace,
-			Env:          in.envName,
-			Context:      in.deployContext,
-			EnvConfigKV:  in.envCfgKV,
-			DryRun:       in.dryRun,
-			DryRunFramed: true,
-			Prune:        in.prune,
-			Project:      projectNameOf(in.cfg),
-			PruneCRDs:    true,
-			Targets:      in.targets,
-			HelmCharts:   in.helmSpecs,
-			Rollout:      in.rollout,
-			SkipUnits:    in.skipUnits,
-			OnStream:     in.report.streamObserver(),
-			OnRollout:    in.report.rolloutObserver(),
+			MainK:         in.mainK,
+			ImageTag:      in.imageTag,
+			ImageDigests:  in.imageDigests,
+			Namespace:     in.namespace,
+			Env:           in.envName,
+			Context:       in.deployContext,
+			EnvConfigKV:   in.envCfgKV,
+			DryRun:        in.dryRun,
+			DryRunFramed:  true,
+			Prune:         in.prune,
+			Project:       projectNameOf(in.cfg),
+			PruneCRDs:     true,
+			Targets:       in.targets,
+			HelmCharts:    in.helmSpecs,
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(),
+			OnRollout:     in.report.rolloutObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -2204,9 +2205,10 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
-			Rollout:   in.rollout,
-			SkipUnits: in.skipUnits,
-			OnStream:  in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
@@ -5668,4 +5670,13 @@ func (f promoteCmdFlags) withHealthGateOverride() (promoteCmdFlags, error) {
 		f.note = "health gate overridden: " + reason
 	}
 	return f, nil
+}
+
+// declaredDeliveryUnits is the env's Bundle.delivery_units, nil-safe: the
+// order direct apply rolls the workloads out in (cluster.ApplyOpts.DeliveryUnits).
+func declaredDeliveryUnits(e *KCLEntities) []release.DeliveryUnit {
+	if e == nil {
+		return nil
+	}
+	return e.DeliveryUnits
 }

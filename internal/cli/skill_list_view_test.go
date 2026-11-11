@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -80,8 +81,8 @@ func TestSkillListDefaultCollapsesSubSkills(t *testing.T) {
 	}
 	// The collapse has to be VISIBLE, or the reader concludes db has no
 	// sub-skills and never looks.
-	if !strings.Contains(got, "+3") {
-		t.Errorf("default listing shows no sub-skill count marker (expected a `+3` beside db):\n%s", got)
+	if !regexp.MustCompile(`(?m)^  db +\+\d+ `).MatchString(body) {
+		t.Errorf("default listing shows no sub-skill count marker (expected `+N` beside db):\n%s", got)
 	}
 }
 

@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -1070,6 +1071,22 @@ type DockerBuild struct {
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
 	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
+
+	// ContextSource and DockerfileSource are the GitSource members of the
+	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
+	// code, or a Dockerfile, that lives in ANOTHER repository. At most one
+	// of Context / ContextSource is set, and likewise for the Dockerfile.
+	// DockerBuild's JSON methods (build_docker_source.go) carry the union,
+	// so every reader of the string fields keeps working unchanged.
+	ContextSource    *config.GitSource `json:"-"`
+	DockerfileSource *config.GitSource `json:"-"`
+	// Invocation-local, set by resolveDockerBuildSources; never serialized:
+	// ContextDir is the directory ContextSource resolved to, DockerfilePath
+	// the Dockerfile a pin resolved to, and Built the checkout the context
+	// was resolved to — the build state and release ledger record it.
+	ContextDir     string              `json:"-"`
+	DockerfilePath string              `json:"-"`
+	Built          *buildtarget.Source `json:"-"`
 }
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell

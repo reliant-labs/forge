@@ -151,6 +151,12 @@ const (
 	// not delete the env when it expires — `forge env gc` still does — so a
 	// shape carrying it is written only to one that names the feature.
 	BundleFeaturePreview = "shape-preview"
+	// BundleFeatureReleaseProbes is Shape.ReleaseProbes, and the release-probe
+	// finding codes (HealthProbeFailed, HealthProbeLatency) in
+	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
+	// nothing for the env, and its validation refuses a finding code it does
+	// not know, so it is sent neither.
+	BundleFeatureReleaseProbes = "shape-release-probes"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -158,7 +164,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeaturePreview}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeaturePreview}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -239,6 +245,19 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureUptimeChecks) {
 		s.UptimeChecks = nil
+	}
+	if !r.Supports(BundleFeatureReleaseProbes) {
+		// A probed env that keeps the default policy records none, and the
+		// default now fails on probe_failed. A reader of release health is
+		// sent that policy stated, without the probe codes, so what it judges
+		// by is the producer's policy rather than its own default. An env
+		// without probes is sent as before.
+		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
+			def := DefaultReleaseHealth()
+			s.ReleaseHealth = &def
+		}
+		s.ReleaseProbes = nil
+		s.ReleaseHealth = withoutProbeFindings(s.ReleaseHealth)
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil

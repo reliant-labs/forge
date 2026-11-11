@@ -156,19 +156,22 @@ func hasOperatorPackage(projectDir string) bool {
 	return false
 }
 
-// DeriveDatabase fills the database driver and migrations directory from the
-// tree: a project with db/migrations uses postgres and that directory;
-// anything else has no database. There is no setting to write —
-// the directory IS the declaration, the same way the schema is (the
-// migrations are the source of truth for it).
+// DeriveDatabase fills the database driver from the tree: a project whose
+// migrations directory exists (database.migrations_dir, default
+// db/migrations) uses postgres; anything else has no database. There is no
+// driver setting to write — the directory IS the declaration, the same way
+// the schema is (the migrations are the source of truth for it).
+//
+// The directory itself is not derived into the config: MigrationsDir keeps
+// exactly what forge.yaml declared (so a rewrite never writes the default
+// back), and MigrationsPath answers where the migrations are.
 func DeriveDatabase(c *ProjectConfig) {
-	if c.projectDir != "" && dirExists(filepath.Join(c.projectDir, DefaultMigrationsDir)) {
+	dir := c.Database.MigrationsPath()
+	if c.projectDir != "" && dirExists(filepath.Join(c.projectDir, filepath.FromSlash(dir))) {
 		c.Database.Driver = "postgres"
-		c.Database.MigrationsDir = DefaultMigrationsDir
 		return
 	}
 	c.Database.Driver = "none"
-	c.Database.MigrationsDir = ""
 }
 
 // DeriveFrontendWorkspaces reads the pnpm-workspaces layout off the tree: a

@@ -536,6 +536,14 @@ type Shape struct {
 	// whole shape, so it is a bundle-document feature
 	// ([BundleFeatureUptimeChecks]).
 	UptimeChecks []ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+	// ReleaseProbes are the targets the control plane sends steady synthetic
+	// traffic to in a hosted env (forge.Probe, and the default probe of every
+	// hosted static frontend), so a release can be judged when real traffic is
+	// too thin. Sorted by target. Omitted when the env has none, so every
+	// shape recorded before the field encodes and hashes exactly as it did; a
+	// control plane that predates it refuses the whole shape, so it is a
+	// bundle-document feature ([BundleFeatureReleaseProbes]).
+	ReleaseProbes []ShapeReleaseProbe `json:"release_probes,omitempty"`
 	// Identity is the env's managed identity as declared
 	// (forge.ManagedIdentity): the instance the control plane's identity
 	// reconciler converges, and which workloads consume it. Names and
@@ -1213,6 +1221,9 @@ func (s Shape) Validate() error {
 	if err := validateUptimeChecks(s.UptimeChecks); err != nil {
 		return err
 	}
+	if err := validateReleaseProbes(s.ReleaseProbes); err != nil {
+		return err
+	}
 	if err := validateShapeDatabases(s.Databases); err != nil {
 		return err
 	}
@@ -1402,6 +1413,7 @@ func (s Shape) Canonical() Shape {
 		}
 	}
 	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
+	out.ReleaseProbes = canonicalReleaseProbes(s.ReleaseProbes)
 	out.Databases = canonicalShapeDatabases(s.Databases)
 	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)
 	if s.Identity != nil {

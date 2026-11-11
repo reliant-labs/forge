@@ -99,3 +99,42 @@ func TestRunRefusesAnImportPinnedToAnotherForge(t *testing.T) {
 		t.Fatalf("want the skew refusal, got %v", err)
 	}
 }
+
+// TestRunImportsAGitPinnedForgeProject is the polyrepo half: a consumer with
+// no go.mod at all imports an infra repo's KCL by git pin. The local override
+// file stands in for the fetch (the fetch itself is covered in
+// internal/kclprojects), so the render proves the resolved package is
+// supplied exactly as a module import's is, `import forge` included.
+func TestRunImportsAGitPinnedForgeProject(t *testing.T) {
+	const pin = "v0.1.47-0.20261023173404-df09b730b6b6"
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	root := t.TempDir()
+	writeTree(t, filepath.Join(root, "infra"), map[string]string{
+		"forge.yaml":              "name: infra\nforge_version: " + pin + "\n",
+		"deploy/kcl/kcl.mod":      strings.Replace(importsKclMod, "%s", "infra-deploy", 1),
+		"deploy/kcl/config_gen.k": "image = \"infra-api\"\n",
+		"deploy/kcl/workloads.k":  "import forge\nimport config_gen\n\napi_image = config_gen.image\nhas_forge = forge.Bundle is not None\n",
+	})
+	consumer := filepath.Join(root, "app")
+	writeTree(t, consumer, map[string]string{
+		"forge.yaml": "name: app\nforge_version: " + pin + "\n",
+		"deploy/kcl/kcl.mod": strings.Replace(importsKclMod, "%s", "app-deploy", 1) +
+			"\n[forge_projects]\ninfra = { repo = \"github.com/acme/infra\", ref = \"v1.4.0\" }\n",
+		"deploy/kcl/config_gen.k": "image = \"app-api\"\n",
+		"deploy/kcl/prod/main.k": "import infra.workloads as iwl\nimport config_gen\n\n" +
+			"theirs = iwl.api_image\nmine = config_gen.image\nforge_ok = iwl.has_forge\n",
+		".forge/source-overrides.yaml": "sources:\n  github.com/acme/infra: ../infra\n",
+	})
+
+	out, err := kclrender.Run(consumer, filepath.Join(consumer, "deploy", "kcl", "prod"), nil)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode %s: %v", out, err)
+	}
+	if got["theirs"] != "infra-api" || got["mine"] != "app-api" || got["forge_ok"] != true {
+		t.Fatalf("each package's config_gen must be its own, and the import's forge must resolve; got %s", out)
+	}
+}

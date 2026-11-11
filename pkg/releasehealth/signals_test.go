@@ -134,3 +134,30 @@ func TestBrowserStatsConvertsFromObsquery(t *testing.T) {
 		t.Fatalf("BrowserStats(%+v) = %+v", f, got)
 	}
 }
+
+// Page views prove a frontend-only app good, but never stand in for a backend
+// that saw requests too few to judge: a busy frontend beside a quiet API is
+// low traffic, not a pass.
+func TestBrowserViewsDoNotMaskAnUnderThresholdBackend(t *testing.T) {
+	views := map[string]BrowserHealth{"web": {Before: BrowserStats{PageViews: 500}, After: BrowserStats{PageViews: 500}}}
+
+	alone := Evaluate(input(t, true, Combine(nil, nil, views)...))
+	if alone.Verdict != Pass {
+		t.Fatalf("a frontend alone with 500 views = %s, want PASS", alone.Verdict)
+	}
+
+	quietAPI := []ServiceHealth{svc("api", 5, 5, 0, 0, 20, 20)}
+	mixed := Evaluate(input(t, true, Combine(quietAPI, nil, views)...))
+	if mixed.Verdict != Inconclusive {
+		t.Fatalf("500 views beside an api with 5 requests = %s, want INCONCLUSIVE", mixed.Verdict)
+	}
+	quietSite := []ServiceHealth{svc("site", 5, 5, 0, 0, 20, 20)}
+	if r := Evaluate(input(t, true, Combine(nil, quietSite, views)...)); r.Verdict != Inconclusive {
+		t.Fatalf("500 views beside a site with 5 ingress requests = %s, want INCONCLUSIVE", r.Verdict)
+	}
+
+	busyAPI := []ServiceHealth{svc("api", 500, 500, 0, 0, 20, 20)}
+	if r := Evaluate(input(t, true, Combine(busyAPI, nil, views)...)); r.Verdict != Pass {
+		t.Fatalf("a judged api beside the frontend = %s, want PASS", r.Verdict)
+	}
+}

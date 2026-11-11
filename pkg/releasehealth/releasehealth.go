@@ -956,10 +956,21 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 	if !afterComplete || unproven {
 		return Inconclusive
 	}
+	// Requests prove a release good: any service with min_requests of them in
+	// the after window. Page views prove it only for an app nobody reached
+	// by request at all (a frontend alone, served with no ingress or span
+	// figures): a busy frontend never stands in for a backend that saw
+	// requests but too few to judge.
+	var browserJudged, requestsSeen bool
 	for _, s := range services {
-		if s.judged(minRequests) {
+		if s.After.Requests >= int64(minRequests) {
 			return Pass
 		}
+		requestsSeen = requestsSeen || s.After.Requests > 0
+		browserJudged = browserJudged || s.judged(minRequests)
+	}
+	if browserJudged && !requestsSeen {
+		return Pass
 	}
 	return Inconclusive
 }

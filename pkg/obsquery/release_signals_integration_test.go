@@ -20,6 +20,8 @@ import (
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
+const ingressSumDDL = `CREATE TABLE %s.otel_metrics_sum (ResourceAttributes Map(LowCardinality(String), String), ServiceName LowCardinality(String), MetricName LowCardinality(String), MetricUnit String, Attributes Map(LowCardinality(String), String), StartTimeUnix DateTime64(9), TimeUnix DateTime64(9), Value Float64, AggregationTemporality Int32, IsMonotonic Bool) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix)`
+
 const ingressHistogramDDL = `CREATE TABLE %s.otel_metrics_histogram (ResourceAttributes Map(LowCardinality(String), String), ServiceName LowCardinality(String), MetricName LowCardinality(String), MetricUnit String, Attributes Map(LowCardinality(String), String), StartTimeUnix DateTime64(9), TimeUnix DateTime64(9), Count UInt64, Sum Float64, BucketCounts Array(UInt64), ExplicitBounds Array(Float64), Min Float64, Max Float64, AggregationTemporality Int32) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix)`
 
 func TestReleaseSignalIngressRED(t *testing.T) {
@@ -29,6 +31,9 @@ func TestReleaseSignalIngressRED(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := c.Exec(ctx, strings.ReplaceAll(ingressHistogramDDL, "%s", "ig")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Exec(ctx, strings.ReplaceAll(ingressSumDDL, "%s", "ig")); err != nil {
 		t.Fatal(err)
 	}
 	bounds := []float64{0.01, 0.05, 0.1, 0.5}
@@ -62,6 +67,39 @@ func TestReleaseSignalIngressRED(t *testing.T) {
 	}
 	rumInsert(t, c, "ig", "otel_metrics_histogram", strings.Join(lines, "\n"))
 
+	// The request counter, which is what requests and errors are read from:
+	// it also counts what the histogram never times (protocol upgrades, 1xx
+	// answers, abandoned requests).
+	count := func(service, env, source, metric, class, at string, n float64) string {
+		b, _ := json.Marshal(map[string]any{
+			"ResourceAttributes": map[string]string{"service.name": service, "reliant.env.id": env, "reliant.source": source, "reliant.ingest.class": source},
+			"ServiceName":        service, "MetricName": metric, "MetricUnit": "{request}",
+			"Attributes":    map[string]string{obsquery.IngressStatusClass: class},
+			"StartTimeUnix": at, "TimeUnix": at, "Value": n, "AggregationTemporality": 1, "IsMonotonic": true,
+		})
+		return string(b)
+	}
+	const r = obsquery.IngressRequestsMetric
+	counts := []string{
+		// site: the 100 the histogram timed, plus 20 websocket upgrades and 5
+		// abandoned 5xx it never timed.
+		count("site", "env-prod", "ingress", r, "2xx", "2026-10-19 10:00:30", 90),
+		count("site", "env-prod", "ingress", r, "1xx", "2026-10-19 10:00:30", 20),
+		count("site", "env-prod", "ingress", r, "5xx", "2026-10-19 10:01:00", 15),
+		// api: exactly what the histogram timed.
+		count("api", "env-prod", "ingress", r, "2xx", "2026-10-19 10:00:30", 60),
+		// ws: only upgrades and failures, nothing timed, so no quantiles; it
+		// is still judged on its requests and errors.
+		count("ws", "env-prod", "ingress", r, "1xx", "2026-10-19 10:00:30", 40),
+		count("ws", "env-prod", "ingress", r, "5xx", "2026-10-19 10:00:30", 8),
+		// Out of the env, out of range, the wrong source, the wrong metric: none counts.
+		count("site", "env-dev", "ingress", r, "2xx", "2026-10-19 10:00:30", 1000),
+		count("site", "env-prod", "ingress", r, "2xx", "2026-10-21 10:00:30", 1000),
+		count("site", "env-prod", "env", r, "2xx", "2026-10-19 10:00:30", 1000),
+		count("site", "env-prod", "ingress", "other.metric", "2xx", "2026-10-19 10:00:30", 1000),
+	}
+	rumInsert(t, c, "ig", "otel_metrics_sum", strings.Join(counts, "\n"))
+
 	st, err := obsquery.Overview{Scope: rumScopeOf("ig", "env-prod")}.IngressRED()
 	if err != nil {
 		t.Fatal(err)
@@ -88,9 +126,12 @@ func TestReleaseSignalIngressRED(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	site, api := got["site"], got["api"]
-	if len(got) != 2 || site.reqs != 100 || site.errs != 10 || site.source != "ingress" || api.reqs != 60 || api.errs != 0 {
+	site, api, ws := got["site"], got["api"], got["ws"]
+	if len(got) != 3 || site.reqs != 125 || site.errs != 15 || site.source != "ingress" || api.reqs != 60 || api.errs != 0 {
 		t.Fatalf("ingress RED = %+v", got)
+	}
+	if ws.reqs != 48 || ws.errs != 8 || len(ws.q) != 0 {
+		t.Fatalf("a service the histogram never timed: %+v, want 48 requests, 8 errors, no quantiles", ws)
 	}
 	// 90 requests in (0, 10ms] at its 5ms midpoint, 10 in (100ms, 500ms] at 300ms:
 	// p50 5ms, p99 300ms. The overflow bucket sits at the last bound.

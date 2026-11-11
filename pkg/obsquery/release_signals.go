@@ -9,8 +9,9 @@ import "math"
 //   - Ingress RED: the hosting platform's ingress measures what it answers for
 //     each workload and writes it into the tenant (the control plane's
 //     workspace-proxy, internal/proxy/ingress_red.go) as delta metrics:
-//     IngressRequestsMetric{status_class} and the IngressDurationMetric
-//     histogram (seconds to the response headers), resource service.name = the
+//     IngressRequestsMetric{status_class} (a delta sum counting every
+//     request it answered for) and the IngressDurationMetric histogram
+//     (seconds to the response headers, of the requests it timed), resource service.name = the
 //     workload or static site, reliant.source = IngressSource. A static site,
 //     or an app without OpenTelemetry, still has these.
 //   - Browser RED: what a frontend's own pages report through forge's browser
@@ -25,12 +26,15 @@ const (
 
 // IngressRED builds the per-service request statement over the platform's
 // ingress metrics. Columns are RED's: ServiceName, requests, errors, q
-// (p50,p95,p99 in ms), source. Requests and errors are the duration
-// histogram's counts (every answered request but protocol upgrades and
-// abandoned ones), errors its 5xx; the quantiles are estimated from the
-// histogram's buckets, each bucket's requests placed at its midpoint (the last
-// bound for the overflow bucket). GroupBy is refused: ingress carries no
-// span attributes to split by.
+// (p50,p95,p99 in ms), source. Requests and errors are the request
+// COUNTER's (IngressRequestsMetric, errors its 5xx class): it counts every
+// request the ingress answered for, protocol upgrades, 1xx answers and
+// abandoned requests included, none of which the duration histogram times,
+// so a rate read from the histogram would understate them. The quantiles are
+// the histogram's, estimated from its buckets, each bucket's requests placed
+// at its midpoint (the last bound for the overflow bucket); a service whose
+// requests were never timed in the window has none ([]). GroupBy is refused:
+// ingress carries no span attributes to split by.
 func (q Overview) IngressRED() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -43,24 +47,37 @@ func (q Overview) IngressRED() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	conds := append([]string{
+	source := b.str(IngressSource)
+	counted := append([]string{
+		b.rangeCondSec("TimeUnix", q.Scope),
+		"MetricName = " + b.str(IngressRequestsMetric),
+		"ResourceAttributes['reliant.source'] = " + source,
+	}, sc...)
+	timed := append([]string{
 		b.rangeCondSec("TimeUnix", q.Scope),
 		"MetricName = " + b.str(IngressDurationMetric),
-		"ResourceAttributes['reliant.source'] = " + b.str(IngressSource),
+		"ResourceAttributes['reliant.source'] = " + source,
 		"length(ExplicitBounds) > 0",
 		"length(BucketCounts) = length(ExplicitBounds) + 1",
 	}, sc...)
 	mid := "arrayMap(i -> if(i > length(ExplicitBounds), ExplicitBounds[length(ExplicitBounds)], " +
 		"(if(i = 1, 0, ExplicitBounds[i - 1]) + ExplicitBounds[i]) / 2), arrayEnumerate(BucketCounts))"
-	return b.stmt("SELECT ServiceName, toUInt64(sum(tupleElement(bucket, 2))) AS requests, toUInt64(sumIf(tupleElement(bucket, 2), cls = '5xx')) AS errors,\n" +
-		"       quantilesExactWeighted(0.5, 0.95, 0.99)(tupleElement(bucket, 1) * 1000, tupleElement(bucket, 2)) AS q,\n" +
-		"       " + b.str(IngressSource) + " AS source\n" +
+	return b.stmt("SELECT c.ServiceName AS ServiceName, c.requests AS requests, c.errors AS errors, h.q AS q, " + source + " AS source\n" +
 		"FROM (\n" +
-		"  SELECT ServiceName, Attributes['" + IngressStatusClass + "'] AS cls, arrayZip(" + mid + ", BucketCounts) AS buckets\n" +
-		"  FROM " + b.table(q.Scope, "otel_metrics_histogram") + "\n  " + where(conds) + "\n" +
-		")\nARRAY JOIN buckets AS bucket\n" +
-		"WHERE tupleElement(bucket, 2) > 0\n" +
-		"GROUP BY ServiceName\n" +
+		"  SELECT ServiceName, toUInt64(sum(Value)) AS requests, toUInt64(sumIf(Value, Attributes['" + IngressStatusClass + "'] = '5xx')) AS errors\n" +
+		"  FROM " + b.table(q.Scope, "otel_metrics_sum") + "\n  " + where(counted) + "\n" +
+		"  GROUP BY ServiceName\n" +
+		") AS c\n" +
+		"LEFT JOIN (\n" +
+		"  SELECT ServiceName, quantilesExactWeighted(0.5, 0.95, 0.99)(tupleElement(bucket, 1) * 1000, tupleElement(bucket, 2)) AS q\n" +
+		"  FROM (\n" +
+		"    SELECT ServiceName, arrayZip(" + mid + ", BucketCounts) AS buckets\n" +
+		"    FROM " + b.table(q.Scope, "otel_metrics_histogram") + "\n    " + where(timed) + "\n" +
+		"  )\n  ARRAY JOIN buckets AS bucket\n" +
+		"  WHERE tupleElement(bucket, 2) > 0\n" +
+		"  GROUP BY ServiceName\n" +
+		") AS h ON h.ServiceName = c.ServiceName\n" +
+		"WHERE c.requests > 0\n" +
 		"ORDER BY requests DESC, ServiceName\nLIMIT 200"), nil
 }
 

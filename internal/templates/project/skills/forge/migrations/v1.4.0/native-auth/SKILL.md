@@ -197,8 +197,10 @@ config declares the field), then diff the two; if you never edited it, keep the
 new one. And in `internal/app/login_broker.go` add `LocalOnly:
 cfg.JwtUserinfoAllowLocalHttp,` to the `devidp.Client{...}` literal (`Base:
 cfg.IdpBase`). `forge env up --device-host` sets
-that variable for the identity's host workloads unless the workload declares it itself
-(a declared value, true or false, is left as declared); it is off everywhere else, and
+that variable for the identity's host workloads, over the default `false` that the
+generated config projects onto every workload (any other declared value, `true` or a
+reference, is left as declared; to refuse it in such a run, export
+`JWT_USERINFO_ALLOW_LOCAL_HTTP=false` with `FORGE_ENV_OVERRIDE=JWT_USERINFO_ALLOW_LOCAL_HTTP`); it is off everywhere else, and
 without these edits a device-host run signs in but `Claims.Email` stays empty and the
 broker's and the validator's IdP traffic is not confined to this machine. The device host must be
 this machine's LAN **IPv4** address (not a name or IPv6). An Android emulator without `--device-host` still needs

@@ -767,6 +767,11 @@ jobs:
     name: Windows
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
+    # A run takes 11-19 minutes. Without a bound a hung test held this job
+    # for GitHub's 6-hour default (2026-11-11, run 42972145234), and because
+    # main's CI concurrency group never cancels in progress, every later
+    # main CI run sat pending behind it and main-green could not be recorded.
+    timeout-minutes: 45
     defaults:
       run:
         # Git Bash ships on windows-latest. It is only the CI driver; forge

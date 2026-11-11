@@ -22,6 +22,8 @@ func terminalOutput(t *testing.T, f func()) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Closed before t.TempDir's cleanup: Windows will not remove an open file.
+	defer func() { _ = term.Close() }()
 	prevOut, prevErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = term, term
 	defer func() { os.Stdout, os.Stderr = prevOut, prevErr }()
@@ -205,6 +207,9 @@ func TestStepRunnerMoveLogKeepsAppending(t *testing.T) {
 	})
 	tmp := r.LogPath()
 	dst := filepath.Join(t.TempDir(), "shop", ".forge", "logs", "project-new.log")
+	// Cleanups run last-registered first: close the moved log before
+	// t.TempDir removes its directory (Windows will not remove an open file).
+	t.Cleanup(func() { _ = r.Close() })
 	if err := r.MoveLog(dst); err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +248,7 @@ func TestHoldOutputOffATerminalHoldsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = f.Close() }) // before t.TempDir's cleanup (Windows)
 	prev := os.Stdout
 	os.Stdout = f
 	defer func() { os.Stdout = prev }()

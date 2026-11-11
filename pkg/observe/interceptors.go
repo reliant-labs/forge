@@ -111,7 +111,7 @@ func (i *loggingInterceptor) log(ctx context.Context, procedure string, header i
 	elapsed time.Duration, err error, completedMsg, failedMsg string, slowApplies bool,
 ) {
 	class := i.policy.classOf(err)
-	level, msg := i.policy.failureLevel(err, class), failedMsg
+	level, msg := i.policy.failureLevel(ctx, err, class), failedMsg
 	expected := i.policy.isExpected(err)
 	var why slog.Attr
 	if err == nil || expected {
@@ -131,7 +131,7 @@ func (i *loggingInterceptor) log(ctx context.Context, procedure string, header i
 		attrs = append(attrs, slog.String("request_id", rid))
 	}
 	if err != nil {
-		attrs = append(attrs, errorAttrs(err, class)...)
+		attrs = append(attrs, errorAttrs(ctx, err, class)...)
 		if expected {
 			attrs = append(attrs, slog.Bool("expected", true))
 		}
@@ -171,9 +171,12 @@ func requestIDFromCtxOrHeader(ctx context.Context, header interface{ Get(string)
 //
 //   - ERROR: the server failed and someone should be paged. Internal (a
 //     bug or a dependency down), Unavailable (a dependency refused),
-//     DataLoss, Unknown, and any error nothing classified.
-//   - WARN: a server-side failure that says "retry", not "page" —
-//     DeadlineExceeded, Aborted, Unimplemented.
+//     DataLoss, Unknown, the server's own deadline (Deadline) expiring,
+//     and any error nothing classified.
+//   - WARN: a server-side failure that says "retry", not "page" — a
+//     caller's deadline expiring (or one whose origin is unknown), Aborted,
+//     Unimplemented, and the server's deadline under
+//     Deadline.RetryableExpiry.
 //   - DefaultUserErrorLevel (INFO): the request failed for a reason the
 //     server correctly detected, or the caller went away. NotFound,
 //     InvalidArgument, PermissionDenied, FailedPrecondition,
@@ -184,8 +187,20 @@ func requestIDFromCtxOrHeader(ctx context.Context, header interface{ Get(string)
 // classify identically — two log streams disagreeing about severity for
 // the same RPC is its own incident. A layer configured WithUserErrorLevel
 // uses its own level for the user half.
+//
+// A layer that runs INSIDE the chain's Deadline slot (an Extras
+// interceptor, the audit one) sees a DeadlineExceeded before the slot marks
+// whose deadline it was: it calls LevelForErrorContext with its own context.
 func LevelForError(err error) slog.Level {
-	return defaultPolicy.failureLevel(err, defaultPolicy.classOf(err))
+	return LevelForErrorContext(context.Background(), err)
+}
+
+// LevelForErrorContext is LevelForError for a failure logged under ctx, the
+// context the failed call ran with: it tells the server's own deadline
+// expiring (ERROR) from a caller's (WARN) even before the Deadline slot has
+// marked the error.
+func LevelForErrorContext(ctx context.Context, err error) slog.Level {
+	return defaultPolicy.failureLevel(ctx, err, defaultPolicy.classOf(err))
 }
 
 // defaultPolicy is the policy LevelForError answers for: no classifiers, the

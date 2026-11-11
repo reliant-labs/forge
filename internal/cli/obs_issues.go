@@ -131,8 +131,11 @@ func newObsIssuesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "issues [env]",
 		Short: "Grouped errors: what is failing, how often, since which release",
-		Long: `List the env's error issues: ERROR logs grouped by fingerprint (sfp1), with how
-often each fired, how many traces it touched and when. [env] defaults to dev.
+		Long: `List the env's error issues: server failures grouped by fingerprint (sfp1), with
+how often each fired, how many traces it touched and when. A server failure is
+an ERROR log, or a WARN log the error-class policy classed a server failure
+(error_class=server: a retryable Aborted, say) other than a caller's own
+deadline (deadline=caller). [env] defaults to dev.
 
 --source <name> lists the issues of an issue source instead: records of any
 level that carry issue.source=<name> (observe.IssueSource), such as the reports

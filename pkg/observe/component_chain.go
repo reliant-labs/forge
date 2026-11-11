@@ -271,11 +271,15 @@ func (m *logMiddleware) WrapComponent(ctx context.Context, method string, next C
 	expected := m.policy.isExpected(err)
 	if err != nil && !expected {
 		class := m.policy.classOf(err)
-		logger.LogAttrs(ctx, m.policy.failureLevel(err, class), method,
+		attrs := []slog.Attr{
 			slog.Duration("duration", elapsed),
 			slog.Any("error", err),
 			slog.String(ErrorClassKey, class.String()),
-		)
+		}
+		if origin := deadlineOf(ctx, err); origin != deadlineUnknown {
+			attrs = append(attrs, slog.String(DeadlineKey, origin.String()))
+		}
+		logger.LogAttrs(ctx, m.policy.failureLevel(ctx, err, class), method, attrs...)
 		return err
 	}
 	level, why, ok := m.policy.outcome(ctx, logger, method, elapsed, true, expected)

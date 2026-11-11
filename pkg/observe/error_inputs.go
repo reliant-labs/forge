@@ -4,9 +4,12 @@
 // A log record at ERROR or above is the unit of a server error. Grouping needs
 // three things the message alone does not give: WHERE it was logged, WHAT KIND
 // of failure it carries, and — for a panic — WHERE it panicked. This file adds
-// them to every ERROR record, as ordinary attributes, so they reach BOTH
-// shipping paths: the stdout JSON line the collector's file reader parses, and
-// the OTLP logs bridge. Below ERROR nothing is added and nothing is allocated.
+// them to every ERROR record, and to every WARN server failure (error_class=
+// server, not a caller's deadline: the records `forge obs issues` also groups),
+// as ordinary attributes, so they reach BOTH shipping paths: the stdout JSON
+// line the collector's file reader parses, and the OTLP logs bridge. Below
+// that nothing is added: a WARN costs one walk of its attributes, a lower
+// level nothing.
 //
 //	attribute                    source
 //	code.function.name,          the record's PC. A caller that builds its own
@@ -271,10 +274,28 @@ func (h errorInputsHandler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (h errorInputsHandler) Handle(ctx context.Context, r slog.Record) error {
-	if r.Level < slog.LevelError {
+	if r.Level < slog.LevelError && (r.Level < slog.LevelWarn || !warnServerFailure(r)) {
 		return h.next.Handle(ctx, r)
 	}
 	return h.next.Handle(ctx, addErrorInputs(r))
+}
+
+// warnServerFailure reports whether a WARN record is a server failure an
+// issue is built from (obsquery.ServerFailureFilterSQL): it carries
+// error_class=server and is not a caller's deadline. Such a record groups
+// like an ERROR one, so it gets the same inputs.
+func warnServerFailure(r slog.Record) bool {
+	var server, caller bool
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case ErrorClassKey:
+			server = a.Value.String() == svcerr.ClassServer.String()
+		case DeadlineKey:
+			caller = a.Value.String() == DeadlineCaller
+		}
+		return true
+	})
+	return server && !caller
 }
 
 func (h errorInputsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

@@ -97,7 +97,7 @@ func TestServerIssueIncidentsStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{ServerFingerprintSQL, ServerCauseSQL, ServerErrorFilterSQL, "HAVING cause != ''", "min(Timestamp) AS first_seen"} {
+	for _, want := range []string{ServerFingerprintSQL, ServerCauseSQL, ServerFailureFilterSQL, "HAVING cause != ''", "min(Timestamp) AS first_seen"} {
 		if !strings.Contains(st.SQL, want) {
 			t.Errorf("statement misses %q:\n%s", want[:min(len(want), 60)], st.SQL)
 		}

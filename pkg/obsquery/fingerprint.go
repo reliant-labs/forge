@@ -116,9 +116,32 @@ const (
 	LogKeyError = "error"
 )
 
+// Log attribute keys forge/pkg/observe's error-class policy writes on a failed
+// call's record (observe.ErrorClassKey, observe.DeadlineKey); the test pins
+// that they agree.
+const (
+	LogKeyErrorClass = "error_class"
+	LogKeyDeadline   = "deadline"
+)
+
 // ServerErrorFilterSQL selects server error events from otel_logs: ERROR or
-// above (SeverityNumber 17+), and not from a browser session.
+// above (SeverityNumber 17+), and not from a browser session. It is what
+// counts as an error — release health's new issues, error counts — and is
+// narrower than what an issue is built from (ServerFailureFilterSQL).
 const ServerErrorFilterSQL = `SeverityNumber >= 17 AND ResourceAttributes['rum.sessionId'] = ''`
+
+// sqlWarnServerFailure selects a WARN record the error-class policy classed a
+// server failure: a retryable one (Aborted, Unimplemented, a server deadline
+// logged under Deadline.RetryableExpiry), or a hand-written WARN carrying a
+// server-fault error. A caller's own deadline (deadline=caller) is the
+// caller's choice and is not one.
+const sqlWarnServerFailure = `(SeverityNumber >= 13 AND LogAttributes['` + LogKeyErrorClass + `'] = 'server' AND LogAttributes['` + LogKeyDeadline + `'] != 'caller')`
+
+// ServerFailureFilterSQL selects the server failures `forge obs issues` groups
+// into error issues: every server error (ServerErrorFilterSQL), and every WARN
+// server failure (sqlWarnServerFailure) — retryable is still worth triage, it
+// is just not a page. Not from a browser session.
+const ServerFailureFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + `)`
 
 // Issue sources. A record carrying issue.source (observe.IssueSource) is an
 // issue event of that source at ANY level: an agent's bug report, say, which
@@ -128,9 +151,9 @@ const ServerErrorFilterSQL = `SeverityNumber >= 17 AND ResourceAttributes['rum.s
 // grouping).
 const (
 	// IssueEventFilterSQL selects every record an issue is built from: server
-	// errors, and server records of any level that carry a source. The
-	// control plane's ingest view filters on it.
-	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR LogAttributes['issue.source'] != '')`
+	// failures (ServerFailureFilterSQL), and server records of any level that
+	// carry a source. The control plane's ingest view filters on it.
+	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + ` OR LogAttributes['issue.source'] != '')`
 	// IssueSourceSQL is a record's issue source, "" for an error.
 	IssueSourceSQL = `LogAttributes['issue.source']`
 )
@@ -210,7 +233,7 @@ var (
 	// ServerFingerprintSQL is the server fingerprint (sfp1, refined to sfp2 for
 	// the records RefinedByErrorClass selects) as a ClickHouse String expression
 	// over an otel_logs row (ServiceName, ScopeName, Body, LogAttributes).
-	// Evaluate it only on rows ServerErrorFilterSQL selects.
+	// Evaluate it only on rows IssueEventFilterSQL selects.
 	ServerFingerprintSQL = `lower(hex(substring(SHA256(concat(` +
 		`if(` + sqlRefined + `, 'sfp2', 'sfp1'), '\x1f', ServiceName, '\x1f', ` +
 		`if(LogAttributes['error.group'] != '', LogAttributes['error.group'], ` + sqlGroupKey + `), ` +

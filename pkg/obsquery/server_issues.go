@@ -14,9 +14,9 @@ import (
 // the queried range.
 //
 // The grouping key is ServerFingerprintSQL and the event filter is
-// ServerErrorFilterSQL (for errors) or the record's issue source (for the
-// issues of a source), so a local issue and a hosted one carry the same
-// fingerprint for the same record.
+// ServerFailureFilterSQL (for errors: ERROR records and WARN server failures)
+// or the record's issue source (for the issues of a source), so a local issue
+// and a hosted one carry the same fingerprint for the same record.
 
 // Issue list sort orders.
 const (
@@ -56,7 +56,7 @@ func (b *builder) issueConds(s Scope, service, fingerprint, source string) ([]st
 	case fingerprint != "":
 		conds = append(conds, IssueEventFilterSQL)
 	case source == "":
-		conds = append(conds, ServerErrorFilterSQL, IssueSourceSQL+" = ''")
+		conds = append(conds, ServerFailureFilterSQL, IssueSourceSQL+" = ''")
 	default:
 		conds = append(conds, "ResourceAttributes['rum.sessionId'] = ''", IssueSourceSQL+" = "+b.str(source))
 	}

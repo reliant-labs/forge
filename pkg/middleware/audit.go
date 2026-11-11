@@ -264,7 +264,9 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 		// Same severity policy as the operational log — a server fault is
 		// ERROR, a rejected request is a user error at INFO. Two streams
 		// disagreeing about how bad the same RPC was is its own incident.
-		a.logger.LogAttrs(ctx, observe.LevelForError(err), auditMessage, attrs...)
+		// With ctx: audit runs inside the Deadline slot, so the context is
+		// what tells the server's deadline (ERROR) from the caller's.
+		a.logger.LogAttrs(ctx, observe.LevelForErrorContext(ctx, err), auditMessage, attrs...)
 	} else {
 		attrs = append(attrs, slog.String("status", "ok"))
 		a.logger.LogAttrs(ctx, slog.LevelInfo, auditMessage, attrs...)

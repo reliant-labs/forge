@@ -16,13 +16,46 @@ func TestServerIssuesGroupsByTheSfp1FingerprintOverServerErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{ServerFingerprintSQL + " AS fingerprint", ServerErrorFilterSQL, ServerTitleSQL, ServerCulpritSQL,
+	for _, want := range []string{ServerFingerprintSQL + " AS fingerprint", ServerFailureFilterSQL, ServerTitleSQL, ServerCulpritSQL,
 		"GROUP BY fingerprint, service", "FROM default.otel_logs", "LIMIT 26", "ResourceAttributes['service.version']", "argMax(TraceId, Timestamp)"} {
 		if !strings.Contains(st.SQL, want) {
 			t.Errorf("statement lacks %q:\n%s", want, st.SQL)
 		}
 	}
 	assertParameterized(t, st, "x') OR 1=1 --", "'api'", "'dev'")
+}
+
+// An error issue is a server failure an agent triages: every ERROR, and a WARN
+// the error-class policy classed server (a retryable failure such as Aborted,
+// or a server deadline logged at WARN by Deadline.RetryableExpiry). A caller's
+// own deadline is the caller's choice and stays out. ServerErrorFilterSQL is
+// what counts as an error (release health, error counts) and does not widen.
+func TestServerIssuesIncludeWarnServerFailures(t *testing.T) {
+	if ServerErrorFilterSQL != `SeverityNumber >= 17 AND ResourceAttributes['rum.sessionId'] = ''` {
+		t.Errorf("ServerErrorFilterSQL changed: %s", ServerErrorFilterSQL)
+	}
+	warn := "SeverityNumber >= 13 AND LogAttributes['" + LogKeyErrorClass + "'] = 'server' AND LogAttributes['" + LogKeyDeadline + "'] != 'caller'"
+	for name, filter := range map[string]string{"ServerFailureFilterSQL": ServerFailureFilterSQL, "IssueEventFilterSQL": IssueEventFilterSQL} {
+		for _, want := range []string{"SeverityNumber >= 17", warn, "ResourceAttributes['rum.sessionId'] = ''"} {
+			if !strings.Contains(filter, want) {
+				t.Errorf("%s lacks %q: %s", name, want, filter)
+			}
+		}
+	}
+	errs, err := ServerIssues{Scope: issueScope(), Limit: 5}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errs.SQL, ServerFailureFilterSQL) {
+		t.Errorf("error issues must read server failures, WARN included:\n%s", errs.SQL)
+	}
+	inc, err := ServerIssueIncidents{Scope: issueScope()}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inc.SQL, ServerFailureFilterSQL) {
+		t.Errorf("incidents group the issues obs issues lists:\n%s", inc.SQL)
+	}
 }
 
 // Errors are the records without an issue source; a source's issues are its
@@ -32,7 +65,7 @@ func TestServerIssuesSelectErrorsOrOneSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(errs.SQL, ServerErrorFilterSQL) || !strings.Contains(errs.SQL, IssueSourceSQL+" = ''") {
+	if !strings.Contains(errs.SQL, ServerFailureFilterSQL) || !strings.Contains(errs.SQL, IssueSourceSQL+" = ''") {
 		t.Errorf("errors must exclude sourced records:\n%s", errs.SQL)
 	}
 	src, err := ServerIssues{Scope: issueScope(), Limit: 5, Source: "llm_bug_report"}.Compile()

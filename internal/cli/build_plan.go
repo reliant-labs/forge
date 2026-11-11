@@ -303,10 +303,7 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 				out = append(out, buildPlanStep{kind: "docker", name: svc.Name, what: "skipped: bound to forge.OnHost"})
 				continue
 			}
-			dockerfile := "Dockerfile"
-			if b.Docker != nil && b.Docker.Dockerfile != "" {
-				dockerfile = b.Docker.Dockerfile
-			}
+			dockerfile := serviceDockerfile(b.Docker)
 			imageName, imageTag := serviceDockerImage(svc, in.resolvedTag, in.opts)
 			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
 			step := buildPlanStep{

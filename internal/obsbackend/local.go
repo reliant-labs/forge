@@ -302,8 +302,8 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 		}()
 		res.SpanNames, res.SpanNamesTruncated, res.SpansInTrace, err = l.spanGroups(ctx, names)
 		<-done
-		if err = errors.Join(err, runsErr); err != nil {
-			return res, err
+		if joined := errors.Join(err, runsErr); joined != nil {
+			return res, joined
 		}
 	}
 	if logLimit > 0 {

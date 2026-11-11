@@ -248,7 +248,10 @@ func workloadBuildSources(projectDir string, e *KCLEntities) []buildSourceRef {
 			// the Dockerfile's plain COPYs read) and every named context.
 			// The primary one is read whatever the named ones are; empty is
 			// this project's root, whose inventory is already its own.
-			if b.Docker.Context != "" {
+			if b.Docker.ContextSource != nil {
+				s := toGitSource(b.Docker.ContextSource)
+				out = append(out, buildSourceRef{workload: w.Name, source: &s})
+			} else if b.Docker.Context != "" {
 				out = append(out, buildSourceRef{workload: w.Name, path: b.Docker.Context})
 			}
 			// The named contexts: the workload's own, else forge.yaml's,

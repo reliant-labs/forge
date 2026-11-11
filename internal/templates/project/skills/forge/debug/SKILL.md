@@ -2,6 +2,7 @@
 name: debug
 description: Debug methodology — triage running-system evidence, guarded data reads, parallel investigation, and synthesis.
 emit: both
+applies: any
 ---
 
 # Debug Methodology

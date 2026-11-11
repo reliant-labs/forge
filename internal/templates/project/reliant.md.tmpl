@@ -342,7 +342,7 @@ deploy/kcl/staging/main.k      ← … bound to Reliant hosting (forge.OnHosted 
 deploy/kcl/prod/main.k         ← … same
 ```
 
-The envs are the declaration: change a binding or an env value there, then check it with `{{.CLI}} env render <env>`. **Start with `{{.CLI}} skill load adopt`**: it is the path this project is on, in tiers (ship it, see it, harden it, move in), each with its steps and how to verify it. `deploy`, `deploy/hosting`, `secrets` and `debug` are the others an adopted app uses. Skills come from the binary and are never written to disk.
+The envs are the declaration: change a binding or an env value there, then check it with `{{.CLI}} env render <env>`. **Start with `{{.CLI}} skill load adopt/deploy`**: it is the path this project is on, in tiers (ship it, see it, harden it, move in), each with its steps and how to verify it. `deploy`, `deploy/hosting`, `secrets` and `debug` are the others an adopted app uses. Skills come from the binary and are never written to disk.
 
 ## Run it
 
@@ -366,7 +366,7 @@ A hosted deploy needs billing on the Reliant organization; until it is set up `e
 ## Config, secrets and the database
 
 - The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `{{.CLI}} secret set --env <env> KEY` (stdin). forge never sees a secret's value.
-- The managed database (if declared) reaches the app as `DATABASE_URL` through `forge.DatabaseRef`. Schema migrations are the app's own tool: run them as a `kind = "job"` workload from the same image with `before = [fw.BEFORE_ALL]` (`adopt` has the template).
+- The managed database (if declared) reaches the app as `DATABASE_URL` through `forge.DatabaseRef`. Schema migrations are the app's own tool: run them as a `kind = "job"` workload from the same image with `before = [fw.BEFORE_ALL]` (`adopt/deploy` has the template).
 
 ## Observability
 

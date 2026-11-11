@@ -54,7 +54,7 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | runtimes, the scaffolded envs and binders, `forge env new`, probes/grace/PDB/strategy forge writes, per-env config, cross-references, derived features | `deploy/model` |
 | pre-flight checks, `forge env build <env> --push` and `forge build <env>` with their flags, the project image, registry login, the config check, Docker build contexts | `deploy/build` |
 | the two deploy forms, the confirm gate, scoped deploys, the ledger, preflight, pre-rollout migrations, verify + recover | `deploy/release` |
-| an existing app in any language, deployed from its own Dockerfile (templates, then tiers) | `adopt` |
+| an existing app in any language, deployed from its own Dockerfile (templates, then tiers) | `adopt/deploy` |
 | the local loop: `forge env up` flags, host runners, `--target` | `dev` |
 | Reliant hosting: what it wires, refuses, bills; `--claimable` | `deploy/hosting`, `deploy/hosted-capacity`, `deploy/hosted-registry`, `deploy/lifecycle` |
 | a frontend's runtime (`OnHost`, `OnHosted`, `OnBucket`, `OnFirebase`), runtime config; a site alone | `deploy/frontends`, `deploy/static-site` |

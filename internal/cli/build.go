@@ -482,6 +482,10 @@ type buildResult struct {
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// source is the external checkout a DockerBuild's GitSource context
+	// resolved to; persisted into the build state, and from there into the
+	// release ledger's built_from. nil for a build of this project's tree.
+	source *buildtarget.Source
 	// repository is the full destination this result was tagged and pushed to
 	// (`ghcr.io/acme/internal-console`) — the workload's declared reference
 	// minus its tag. It is what the build state and the release ledger RECORD,
@@ -1681,6 +1685,7 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
 			Platforms: r.platforms,
+			Source:    r.source,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -3405,6 +3410,9 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 // ./`) needs this; one that COPYs repo-root paths wants the default. Keeping
 // the default "." is what makes every pre-existing DockerBuild byte-identical.
 func serviceDockerContext(d *DockerBuild) string {
+	if d != nil && d.ContextDir != "" {
+		return d.ContextDir // a GitSource context, resolved (build_docker_source.go)
+	}
 	if d != nil && strings.TrimSpace(d.Context) != "" {
 		return strings.TrimSpace(d.Context)
 	}
@@ -3420,6 +3428,15 @@ func serviceDockerContext(d *DockerBuild) string {
 // The DOCKERFILE is deliberately not checked against the context — docker
 // allows `-f` outside the context, and forge does not narrow that.
 func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error {
+	if d != nil && d.ContextSource != nil {
+		// A pinned context is another repository's tree, so the
+		// inside-the-project rule does not apply; resolution already proved
+		// it is a directory. Unresolved means a caller skipped the pass.
+		if d.ContextDir == "" {
+			return fmt.Errorf("service %q declares build context %s, which was not resolved", svcName, toGitSource(d.ContextSource))
+		}
+		return nil
+	}
 	if d == nil || strings.TrimSpace(d.Context) == "" {
 		return nil
 	}
@@ -3505,9 +3522,10 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 // overrides the env-wide arch.
 func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
-	dockerfile := "Dockerfile"
-	if d != nil && d.Dockerfile != "" {
-		dockerfile = d.Dockerfile
+	dockerfile := serviceDockerfile(d)
+	if d != nil && d.DockerfileSource != nil && d.DockerfilePath == "" {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+			err: fmt.Errorf("service %q declares Dockerfile %s, which was not resolved", svcName, toGitSource(d.DockerfileSource))}
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
@@ -3524,7 +3542,14 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
-	dockerArgs = appendSourceDateEpoch(dockerArgs, resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile))
+	epoch := ""
+	if d != nil && d.ContextDir != "" {
+		// Another repository's checkout: its own history dates it.
+		epoch = resolveSourceDateEpoch(ctx, d.ContextDir)
+	} else {
+		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
+	}
+	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
@@ -3566,5 +3591,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		// what it records is the repository. Keying it by the repository would
 		// put slashes in the filename.
 		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
+		// The other repository's checkout, when the context is a GitSource:
+		// the build state and the release ledger (built_from) record it.
+		source: d.sourceForRecord(),
 	}
 }

@@ -36,9 +36,29 @@
 //     the go.sum hash, so the bytes rendered are the bytes the pin names.
 //
 // A module the go.mod does not require is refused: there is no pin to
-// resolve. (A project whose Go code does not depend on the other project has
-// no Go pin to share, and declares a kpm git dependency in [dependencies]
-// instead — that IS its one pin.)
+// resolve.
+//
+// # Or a git pin, for a repo that is not a Go dependency
+//
+// A project whose Go code does not depend on the other project — a Python
+// service sharing an envs/infra repo, a deploy repo with no Go at all — has no
+// Go pin to share. It names the repository instead, pinned exactly as a
+// forge.GitSource is (internal/gitsource):
+//
+//	[forge_projects]
+//	infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>", subdir = "deploy/kcl" }
+//
+// That entry IS the one pin, so the second-pin argument above does not apply.
+// It resolves through the same machine-local source cache, keyed by repo and
+// ref, and honours the same gitignored `.forge/source-overrides.yaml` of the
+// importing project — a developer iterating on the shared repo points it at a
+// working copy, and the override is reported on every resolution because it
+// is not the pin. A cache hit does no network work, so a render offline needs
+// only an earlier fetch; a miss that cannot fetch fails naming the pin and
+// both ways out. `commit` is optional and is the lock: a ref that resolves to
+// any other commit (a moved tag, a branch that advanced before the first
+// fetch on this machine) is refused, so a branch or tag pin renders the same
+// bytes everywhere or not at all. `module` and `repo` are mutually exclusive.
 //
 // # Why a table of its own, and not an entry in [dependencies]
 //
@@ -81,6 +101,7 @@
 package kclprojects
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -94,6 +115,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/reliant-labs/forge/internal/forgecompat"
+	"github.com/reliant-labs/forge/internal/gitsource"
 )
 
 // TableName is the kcl.mod table that declares forge-project imports.
@@ -106,8 +128,15 @@ const DefaultSubdir = "deploy/kcl"
 type Import struct {
 	// Name is the KCL package name: `import <Name>.workloads`.
 	Name string `json:"name"`
-	// Module is the Go module path the project is published as.
+	// Module is the Go module path the project is published as. Empty for a
+	// git-pinned import (Repo).
 	Module string `json:"module"`
+	// Repo, Ref and Commit are a git-pinned import's pin — the forge.GitSource
+	// shape: the repository, the tag/branch/sha to check out, and optionally
+	// the full commit that ref must resolve to. Empty for a module import.
+	Repo   string `json:"repo,omitempty"`
+	Ref    string `json:"ref,omitempty"`
+	Commit string `json:"commit,omitempty"`
 	// Subdir is the KCL package root inside the module (slash-separated).
 	Subdir string `json:"subdir"`
 	// DeclaredIn is the kcl.mod that declares it.
@@ -131,6 +160,35 @@ type Resolved struct {
 	Dir string `json:"dir"`
 	// ForgePin is the imported project's forge.yaml forge_version.
 	ForgePin string `json:"forge_pin,omitempty"`
+	// ResolvedCommit is the commit a git-pinned import's ref resolved to (the
+	// cache records it at fetch). Empty for a module import and for a local
+	// override.
+	ResolvedCommit string `json:"resolved_commit,omitempty"`
+	// Overridden is true when `.forge/source-overrides.yaml` stood in for a
+	// git pin: the KCL read is a local working copy, NOT the pinned ref.
+	Overridden bool `json:"overridden,omitempty"`
+}
+
+// IsGit reports whether the import is pinned by a git repo + ref rather than
+// by a Go module.
+func (i Import) IsGit() bool { return i.Repo != "" }
+
+// Pin renders what the import is pinned by, the way an error names it:
+// the module path, or repo@ref (plus the commit lock when declared).
+func (i Import) Pin() string {
+	if !i.IsGit() {
+		return i.Module
+	}
+	out := i.Repo + "@" + i.Ref
+	if i.Commit != "" {
+		out += " (commit " + i.Commit + ")"
+	}
+	return out
+}
+
+// sameSource reports whether two imports of one name read the same package.
+func (i Import) sameSource(o Import) bool {
+	return i.Module == o.Module && i.Repo == o.Repo && i.Ref == o.Ref && i.Commit == o.Commit && i.Subdir == o.Subdir
 }
 
 // FindKCLRoot returns the directory of the kcl.mod that owns path (a .k file
@@ -162,6 +220,27 @@ func ExternalPkgArgs(rs []Resolved) []string {
 // kcl.mod, or a kcl.mod with no [forge_projects], resolves to nothing and
 // costs one file read — the common case for every project that imports none.
 func Resolve(kclRoot string) ([]Resolved, error) {
+	return ResolveWith(context.Background(), kclRoot, Options{})
+}
+
+// Options tune ResolveWith. The zero value is what Resolve uses.
+type Options struct {
+	// Sources resolves git-pinned imports. nil builds the production
+	// resolver rooted at the importing project (the machine-local source
+	// cache, and the project's .forge/source-overrides.yaml), and only when
+	// an import is git-pinned.
+	Sources gitsource.SourceResolver
+	// Refresh drops each git pin's cache entry before resolving it, so a
+	// moved branch or tag is fetched again. Module imports are unaffected.
+	Refresh bool
+	// Log receives one line per git pin that was fetched or overridden; a
+	// cache hit is silent. nil writes to stderr — never stdout, which
+	// carries a render's value.
+	Log func(string)
+}
+
+// ResolveWith is Resolve with options and a context for git fetches.
+func ResolveWith(ctx context.Context, kclRoot string, opts Options) ([]Resolved, error) {
 	if kclRoot == "" {
 		return nil, nil
 	}
@@ -171,29 +250,26 @@ func Resolve(kclRoot string) ([]Resolved, error) {
 		return nil, err
 	}
 
-	goModDir := findUp(kclRoot, "go.mod")
-	if goModDir == "" {
-		return nil, fmt.Errorf("%s imports forge projects (%s), but there is no go.mod at or above %s.\n"+
-			"  A [%s] import is read at the version go.mod pins the module to; without a go.mod there is no pin",
-			rootMod, importNames(root.imports), kclRoot, TableName)
-	}
-	g, err := loadGoModules(goModDir)
-	if err != nil {
-		return nil, err
-	}
 	importerPin := forgecompat.PinnedForgeVersion(kclRoot)
-
-	res := &resolver{g: g, kclRoot: kclRoot, rootDeps: root.kpmDeps, importerPin: importerPin, seen: map[string]Resolved{}}
+	projectDir := findUp(kclRoot, "forge.yaml")
+	if projectDir == "" {
+		projectDir = kclRoot
+	}
+	res := &resolver{ctx: ctx, kclRoot: kclRoot, rootMod: rootMod, projectDir: projectDir, rootDeps: root.kpmDeps,
+		importerPin: importerPin, seen: map[string]Resolved{}, sources: opts.Sources, refresh: opts.Refresh, log: opts.Log}
+	if res.log == nil {
+		res.log = func(line string) { fmt.Fprintln(os.Stderr, line) }
+	}
 	queue := append([]Import(nil), root.imports...)
 	var out []Resolved
 	for len(queue) > 0 {
 		imp := queue[0]
 		queue = queue[1:]
 		if prev, ok := res.seen[imp.Name]; ok {
-			if prev.Module != imp.Module || prev.Subdir != imp.Subdir {
+			if !prev.sameSource(imp) {
 				return nil, fmt.Errorf("two forge-project imports are named %q: %s (%s) in %s, and %s (%s) in %s.\n"+
 					"  A KCL package name is global to the evaluation; rename one of them",
-					imp.Name, prev.Module, prev.Subdir, prev.DeclaredIn, imp.Module, imp.Subdir, imp.DeclaredIn)
+					imp.Name, prev.Pin(), prev.Subdir, prev.DeclaredIn, imp.Pin(), imp.Subdir, imp.DeclaredIn)
 			}
 			continue
 		}
@@ -210,23 +286,75 @@ func Resolve(kclRoot string) ([]Resolved, error) {
 }
 
 type resolver struct {
-	g           *goModules
+	ctx         context.Context
 	kclRoot     string
+	rootMod     string
+	projectDir  string
 	rootDeps    []string
 	importerPin string
 	seen        map[string]Resolved
+	refresh     bool
+	log         func(string)
+
+	// g is the importing project's go.mod, loaded on the first module
+	// import: a project whose imports are all git-pinned needs no go.mod.
+	g    *goModules
+	gErr error
+	// sources resolves git pins; built on the first git import.
+	sources gitsource.SourceResolver
+}
+
+// goModules loads the root project's Go module configuration once.
+func (r *resolver) goModules(imp Import) (*goModules, error) {
+	if r.g != nil || r.gErr != nil {
+		return r.g, r.gErr
+	}
+	goModDir := findUp(r.kclRoot, "go.mod")
+	if goModDir == "" {
+		r.gErr = fmt.Errorf("%s imports forge project %q by Go module (%s), but there is no go.mod at or above %s.\n"+
+			"  A `module =` import is read at the version go.mod pins the module to; without a go.mod there is no pin.\n"+
+			"  For a repository that is not a Go dependency, pin it by git instead:\n"+
+			"    %s = { repo = \"<host/owner/name>\", ref = \"<tag, branch or sha>\" }",
+			imp.DeclaredIn, imp.Name, imp.Module, r.kclRoot, imp.Name)
+		return nil, r.gErr
+	}
+	r.g, r.gErr = loadGoModules(goModDir)
+	return r.g, r.gErr
 }
 
 func (r *resolver) resolve(imp Import) (Resolved, []Import, error) {
+	if !imp.IsGit() {
+		// Loaded first: checkName refuses the importing module itself.
+		if _, err := r.goModules(imp); err != nil {
+			return Resolved{}, nil, err
+		}
+	}
 	if err := r.checkName(imp); err != nil {
 		return Resolved{}, nil, err
 	}
-	loc, err := r.g.locate(imp)
-	if err != nil {
-		return Resolved{}, nil, err
+	var (
+		out       Resolved
+		forgeRoot string // where the imported project's forge.yaml must be
+	)
+	if imp.IsGit() {
+		var err error
+		if out, err = r.locateGit(imp); err != nil {
+			return Resolved{}, nil, err
+		}
+		forgeRoot = findUpWithin(out.Dir, out.ModuleDir, "forge.yaml")
+	} else {
+		g, err := r.goModules(imp)
+		if err != nil {
+			return Resolved{}, nil, err
+		}
+		loc, err := g.locate(imp)
+		if err != nil {
+			return Resolved{}, nil, err
+		}
+		out = Resolved{Import: imp, Version: loc.version, Via: loc.via, ModuleDir: loc.dir}
+		out.Dir = filepath.Join(loc.dir, filepath.FromSlash(imp.Subdir))
+		forgeRoot = loc.dir
 	}
-	out := Resolved{Import: imp, Version: loc.version, Via: loc.via, ModuleDir: loc.dir}
-	out.Dir = filepath.Join(loc.dir, filepath.FromSlash(imp.Subdir))
 	at := describeAt(out)
 
 	if _, err := os.Stat(filepath.Join(out.Dir, "kcl.mod")); err != nil {
@@ -234,14 +362,20 @@ func (r *resolver) resolve(imp Import) (Resolved, []Import, error) {
 			"  Set `subdir` in the [%s] entry to the directory holding that project's kcl.mod",
 			imp.DeclaredIn, imp.Name, at, imp.Subdir, filepath.Join(out.Dir, "kcl.mod"), TableName)
 	}
-	pin, isForge, err := readForgePin(loc.dir)
+	if forgeRoot == "" {
+		return Resolved{}, nil, fmt.Errorf("%s imports %q from %s, which is not a forge project (no forge.yaml from %s up to the repository root %s).\n"+
+			"  [%s] imports another forge project's KCL, and reads that project's forge.yaml forge_version to refuse version skew.\n"+
+			"  Add a forge.yaml declaring forge_version to that repository, or, for any other KCL package, declare a kpm dependency in [dependencies]",
+			imp.DeclaredIn, imp.Name, at, out.Dir, out.ModuleDir, TableName)
+	}
+	pin, isForge, err := readForgePin(forgeRoot)
 	if err != nil {
 		return Resolved{}, nil, err
 	}
 	if !isForge {
 		return Resolved{}, nil, fmt.Errorf("%s imports %q from %s, which is not a forge project (no forge.yaml at the module root %s).\n"+
 			"  [%s] imports another forge project's KCL; for any other KCL package, declare a kpm dependency in [dependencies]",
-			imp.DeclaredIn, imp.Name, at, loc.dir, TableName)
+			imp.DeclaredIn, imp.Name, at, forgeRoot, TableName)
 	}
 	out.ForgePin = pin
 	if err := r.checkForgeSkew(out, at); err != nil {
@@ -265,7 +399,7 @@ func (r *resolver) resolve(imp Import) (Resolved, []Import, error) {
 // checkName refuses a package name that would shadow something else the
 // evaluation can import.
 func (r *resolver) checkName(imp Import) error {
-	if imp.Module == r.g.module {
+	if !imp.IsGit() && r.g != nil && imp.Module == r.g.module {
 		return fmt.Errorf("%s imports forge project %q as %s — the importing project itself. Import its packages directly",
 			imp.DeclaredIn, imp.Name, imp.Module)
 	}
@@ -301,6 +435,18 @@ func (r *resolver) checkForgeSkew(res Resolved, at string) error {
 			res.Name, at, res.ForgePin, r.importerPin, forgecompat.SkewOverrideEnv)
 		return nil
 	}
+	if res.IsGit() {
+		return fmt.Errorf("refusing to import forge project %q: version skew.\n"+
+			"  %s pins forge %s (its forge.yaml forge_version)\n"+
+			"  this project pins forge     %s\n"+
+			"  The imported KCL's `import forge` resolves to THIS render's forge KCL module, so it would be evaluated against\n"+
+			"  a schema it was not written for, and a mismatch would surface as a KCL error on its own line numbers.\n"+
+			"  Make the pins agree, the imported repository FIRST — upgrading forge moves the dependency before its consumer:\n"+
+			"    1. in %s, pin forge %s (forge.yaml forge_version) and push a commit or tag;\n"+
+			"    2. here, move `ref` (and `commit`) of [%s] %s in %s to it, and render again.\n"+
+			"  Or keep %s as it is and pin this project's forge to %s. (%s=1 renders anyway.)",
+			res.Name, at, res.ForgePin, r.importerPin, res.Repo, r.importerPin, TableName, res.Name, res.DeclaredIn, res.Repo, res.ForgePin, forgecompat.SkewOverrideEnv)
+	}
 	return fmt.Errorf("refusing to import forge project %q: version skew.\n"+
 		"  %s pins forge %s (its forge.yaml forge_version)\n"+
 		"  this project pins forge     %s\n"+
@@ -314,6 +460,9 @@ func (r *resolver) checkForgeSkew(res Resolved, at string) error {
 }
 
 func describeAt(r Resolved) string {
+	if r.IsGit() {
+		return fmt.Sprintf("%s (%s)", r.Pin(), r.Via)
+	}
 	if r.Version != "" {
 		return fmt.Sprintf("%s@%s (%s)", r.Module, r.Version, r.Via)
 	}
@@ -390,7 +539,7 @@ func parseImport(modPath, name string, v any) (Import, error) {
 	}
 	t, ok := v.(map[string]any)
 	if !ok {
-		return bad(`expected a table, e.g. %s = { module = "github.com/acme/api" }`, name)
+		return bad(`expected a table, e.g. %s = { module = "github.com/acme/api" } or %s = { repo = "github.com/acme/infra", ref = "v1.2.0" }`, name, name)
 	}
 	imp := Import{Name: name, Subdir: DefaultSubdir, DeclaredIn: modPath}
 	keys := make([]string, 0, len(t))
@@ -400,28 +549,74 @@ func parseImport(modPath, name string, v any) (Import, error) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		s, isStr := t[k].(string)
+		s = strings.TrimSpace(s)
 		switch k {
 		case "module":
-			if !isStr || strings.TrimSpace(s) == "" {
+			if !isStr || s == "" {
 				return bad("module must be a non-empty string (the Go module path)")
 			}
-			imp.Module = strings.TrimSpace(s)
+			imp.Module = s
+		case "repo":
+			if !isStr || s == "" {
+				return bad("repo must be a non-empty string (host/owner/name, or an https://, ssh:// or git@host:owner/name URL)")
+			}
+			imp.Repo = s
+		case "ref":
+			if !isStr || s == "" {
+				return bad("ref must be a non-empty string (a tag, branch or commit sha)")
+			}
+			imp.Ref = s
+		case "commit":
+			if !isStr || !commitRE.MatchString(s) {
+				return bad("commit must be a commit sha (7 to 40 lowercase hex digits) — the commit `ref` must resolve to")
+			}
+			imp.Commit = s
 		case "subdir":
 			clean := pathClean(s)
 			if !isStr || clean == "" || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) || filepath.IsAbs(filepath.FromSlash(clean)) {
-				return bad("subdir must be a relative path inside the module, e.g. %q", DefaultSubdir)
+				return bad("subdir must be a relative path inside the module or repository, e.g. %q", DefaultSubdir)
 			}
 			imp.Subdir = clean
-		case "version", "ref", "commit", "tag", "branch":
+		case "version", "tag", "branch":
+			if imp.Repo != "" || t["repo"] != nil {
+				return bad("%q is not a key of a git pin: spell the tag, branch or sha as `ref`", k)
+			}
 			return bad("%q is not allowed: the version comes from go.mod's require of the module (and its replace, if any), so the KCL can never be read at a different version than the Go build uses. Change the version with `go get`", k)
 		default:
-			return bad("unknown key %q (known: module, subdir)", k)
+			return bad("unknown key %q (known: module, or repo + ref + commit; and subdir)", k)
 		}
 	}
-	if imp.Module == "" {
-		return bad("module is required (the Go module path, as go.mod requires it)")
+	switch {
+	case imp.Module != "" && imp.Repo != "":
+		return bad("module and repo are mutually exclusive: `module` reads the KCL at the version go.mod pins, `repo` + `ref` pins it by git — pick one")
+	case imp.Module != "" && (imp.Ref != "" || imp.Commit != ""):
+		return bad("%q is not allowed with module: the version comes from go.mod's require of the module (and its replace, if any), so the KCL can never be read at a different version than the Go build uses. Change the version with `go get`, or pin by git with `repo` instead of `module`", firstSet(map[string]string{"ref": imp.Ref, "commit": imp.Commit}))
+	case imp.Module == "" && imp.Repo == "":
+		return bad("module is required (the Go module path, as go.mod requires it) — or, for a repository that is not a Go dependency, repo + ref (a git pin)")
+	case imp.Repo != "":
+		if err := (gitsource.Source{Repo: imp.Repo, Ref: imp.Ref}).Validate(); err != nil {
+			return bad("%v", err)
+		}
 	}
 	return imp, nil
+}
+
+// commitRE is an abbreviated or full commit sha.
+var commitRE = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
+
+// firstSet is the alphabetically first key of m with a non-empty value.
+func firstSet(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if v != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return ""
+	}
+	return keys[0]
 }
 
 // pathClean is s as a cleaned slash path, "" for a blank one.
@@ -460,6 +655,25 @@ func readForgePin(dir string) (pin string, isForge bool, err error) {
 		return "", true, fmt.Errorf("parse %s: %w", file, err)
 	}
 	return strings.TrimSpace(meta.ForgeVersion), true, nil
+}
+
+// findUpWithin is findUp that stops at root (inclusive): a fetched checkout's
+// ancestors are the source cache, not the project.
+func findUpWithin(dir, root, name string) string {
+	root = filepath.Clean(root)
+	for cur := filepath.Clean(dir); ; {
+		if st, err := os.Stat(filepath.Join(cur, name)); err == nil && !st.IsDir() {
+			return cur
+		}
+		if cur == root {
+			return ""
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return ""
+		}
+		cur = parent
+	}
 }
 
 // findUp returns the nearest directory at or above dir holding name.

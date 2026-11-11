@@ -316,9 +316,9 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 
 	// --- X-Forwarded-For: the audit log names the client, not the proxy, and a
 	// header the client sent changes nothing ----------------------------------
-	audited := func() string {
+	auditedRemotes := func() []string {
 		out, _ := exec.Command("docker", "logs", baoName).CombinedOutput()
-		last := ""
+		var remotes []string
 		for _, l := range bytes.Split(out, []byte("\n")) {
 			var e struct {
 				Type    string `json:"type"`
@@ -329,16 +329,23 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 				} `json:"request"`
 			}
 			if json.Unmarshal(l, &e) == nil && e.Type == "request" && e.Request.Path == "auth/token/lookup-self" {
-				last = e.Request.Remote
+				remotes = append(remotes, e.Request.Remote)
 			}
 		}
-		return last
+		return remotes
+	}
+	audited := func() string {
+		if r := auditedRemotes(); len(r) > 0 {
+			return r[len(r)-1]
+		}
+		return ""
 	}
 	pub("GET", "/v1/auth/token/lookup-self", nil)
 	var honest string
 	wait("the audit entry", func() bool { honest = audited(); return honest != "" })
+	seen := len(auditedRemotes())
 	pub("GET", "/v1/auth/token/lookup-self", map[string]string{"X-Forwarded-For": "203.0.113.77, 198.51.100.9"})
-	time.Sleep(time.Second)
+	wait("the spoofed request's audit entry", func() bool { return len(auditedRemotes()) > seen })
 	spoofed := audited()
 	if honest == envoyIP {
 		t.Errorf("the audit log names the proxy (%s): X-Forwarded-For is not being used", honest)

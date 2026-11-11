@@ -461,9 +461,13 @@ func TestObserveGenerateLock_WaitsForTheWriterAndWritesNothing(t *testing.T) {
 			t.Fatal("observe still blocked 10s after the writer released")
 		}
 
-		// While observed, a writer waits.
+		// While observed, a writer waits: it says so once it is blocked on
+		// the lock, which is the event — not a guess at how long it takes
+		// to get there.
 		writer := startLockHelper(t, dir, "increment")
-		time.Sleep(300 * time.Millisecond)
+		if !waitForLockCondition(testWaitTimeout, func() bool { return strings.Contains(writer.output.String(), "waiting") || writer.exited() }) {
+			t.Fatalf("the writer printed no waiting notice; output:\n%s", writer.output.String())
+		}
 		if writer.exited() {
 			t.Fatalf("a writer ran while the lock was observed; output:\n%s", writer.output.String())
 		}
@@ -537,7 +541,9 @@ func TestRenderWriteScan_WaitsOutAConcurrentGenerate(t *testing.T) {
 	// A generate that starts during the render waits for the verdict.
 	writer := startLockHelper(t, dir, "increment")
 	writeTestFile(t, filepath.Join(dir, "deploy", "nats.conf"), "written by the render\n")
-	time.Sleep(300 * time.Millisecond)
+	if !waitForLockCondition(testWaitTimeout, func() bool { return strings.Contains(writer.output.String(), "waiting") || writer.exited() }) {
+		t.Fatalf("the generate printed no waiting notice; output:\n%s", writer.output.String())
+	}
 	if writer.exited() {
 		t.Fatalf("a generate ran inside the render's bracket; output:\n%s", writer.output.String())
 	}

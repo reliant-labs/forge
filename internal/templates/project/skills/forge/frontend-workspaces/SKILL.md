@@ -148,8 +148,8 @@ export function connectClient<S extends DescService>(service: S) {
 
 A client built eagerly from the registered transport (`createClient(service,
 _transport ?? throwIfNull())`) throws at import time, before the frontend's
-`connect.ts` has run; a project scaffolded before v1.4.0 may still have that form.
-`migrations/v1.4.0` (section 2, "Shared workspace transport") adapts it, and
+`connect.ts` has run; a project scaffolded before v1.5.0 may still have that form.
+`migrations/v1.5.0` (section 2, "Shared workspace transport") adapts it, and
 `frontend` / `ui-native-package` cover the native side.
 
 Each frontend builds its Transport (browser fetch in Next.js, custom

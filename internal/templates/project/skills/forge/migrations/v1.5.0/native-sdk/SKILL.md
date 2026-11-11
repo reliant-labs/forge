@@ -1,10 +1,10 @@
 ---
-name: migration-v1.4.0-native-sdk
+name: migration-v1.5.0-native-sdk
 description: Upgrade an existing Expo app from SDK 52 to 58 one SDK at a time — the exact per-step commands (npx expo install expo@~N.0.0 --fix), the pnpm allowBuilds entry SDK 58 needs first, the SDK 56 expo-doctor Hermes V1 regression that is fixed by continuing to 57, what each SDK changes for the forge starter, the owned files to adapt by hand (package.json, app.json, tsconfig, metro, pnpm-workspace, jest) and the checks that prove each step.
 relevance: migration
 ---
 
-# v1.4.0 — Expo SDK 52 to 58
+# v1.5.0 — Expo SDK 52 to 58
 
 **Use when** an Expo frontend's `package.json` declares `expo` below `~58`. New
 scaffolds are generated on SDK 58 (`expo ~58.0.24`, React and React DOM 19.3.0,
@@ -19,7 +19,7 @@ Expo recommends upgrading **one SDK at a time** so a breakage has one cause. Do 
 jump 52 to 58 blindly: the validated path is 53, 54, 55, 56, 57, 58, one at a time,
 each ending green (the executed run is recorded in
 `docs/proposals/mobile-conformance-evidence.md`). Do section 2 of
-`forge skill load migrations/v1.4.0` first: from SDK 53 on, `expo export` and the
+`forge skill load migrations/v1.5.0` first: from SDK 53 on, `expo export` and the
 Jest suites need its Metro `.js`→`.ts` resolver and `tests/setup/expo-fetch.ts`.
 For each SDK N, read that release's changelog (expo.dev/changelog/sdk-N), then:
 

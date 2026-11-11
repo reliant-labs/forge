@@ -133,7 +133,7 @@ iPhone 18 Pro, Expo 58.0.23 / RN 0.88.1, Debug build) passed:
 The 8081 path itself was substituted: a non-forge process held 8081, so the
 build pinned `RCT_METRO_PORT` to the fallback port. Stack frames from rejections
 are bundle URLs, not symbolicated source. Existing apps adopt the slice through
-the `migrations/v1.4.0/native-dev-loop` playbook, which has been executed (see
+the `migrations/v1.5.0/native-dev-loop` playbook, which has been executed (see
 "Executed upgrade of an existing v1.3.0 app").
 
 ## Native auth slice
@@ -186,7 +186,7 @@ env's identity provider. Research and design notes are in
     out with a visible `configError`.
   - `jest.config.cjs` no longer Babel-transforms `@connectrpc/connect`, which had
     turned every Connect error-path test into `Code.Unknown`.
-- **Existing apps** adopt it through `migrations/v1.4.0/native-auth`, which has
+- **Existing apps** adopt it through `migrations/v1.5.0/native-auth`, which has
   been executed on a real v1.3.0 app (see "Executed upgrade of an existing v1.3.0
   app"). That run did not include a simulator sign-in on the upgraded app.
 
@@ -269,7 +269,7 @@ LAN address, rather than only changing where the API is dialled.
 - **LAN notice.** The IdP's start line now says it listens on all interfaces and
   is reachable from the LAN over plain HTTP with the dev credentials.
 - **Owned files.** `auth.go`, `config.proto` and `login_broker.go` change; the
-  `migrations/v1.4.0/native-auth` playbook lists the edits (and, since the
+  `migrations/v1.5.0/native-auth` playbook lists the edits (and, since the
   executed upgrade run, the matching `LocalIssuerHTTPClient` edit that confines
   the JWKS and discovery fetch to this machine under the same opt-in).
 - **Review.** An independent review requested changes (one high, five medium,
@@ -520,16 +520,16 @@ below claims a signed build signed in through an https link.
 
 ### What is built, and the unit evidence
 
-| Part | Evidence |
-|---|---|
-| KCL `associated_domains` (kind native), `apple_team_id`, per-env `android_cert_fingerprints`, `associated_site`; the first https host must be in the domains | `kcl/tests/{positive,negative}_*associated_domain*`, `negative_frontend_{apple_team_id,android_fingerprint}_*`, `TestKCLModule_*` |
-| Shape and validation; one https-prepend helper (`release.PrependAppLinkRedirect`) | `pkg/release/applinks_test.go`; the field is part of `shape-identity-native-app`, which is not advertised, so no control plane is sent it |
-| Rendered `apple-app-site-association` and `assetlinks.json` (exact contents, sorted, byte-stable, `debug` via `keytool`) | `internal/applinks/applinks_test.go` |
-| Per-env resolution, site choice, refusals | `internal/cli/app_links_test.go` |
-| Serving: staging overlay, OnBucket upload as `application/json`, OnFirebase `headers`, hosted spec `wellKnown` | `internal/deploytarget/wellknown_test.go`, `pkg/deploy/v1alpha1/wellknown_test.go`, `internal/cli/frontend_custom_domains_test.go` |
-| Dev env: https first redirect, `EXPO_PUBLIC_FORGE_OIDC_FALLBACK_*` inside the one OIDC unit, plugin variables, developer mode for a local env only | `internal/cli/native_dev_oidc_test.go`, `internal/cli/app_links_env_test.go` |
-| Expo plugin (`ios.associatedDomains` with both services, `android.intentFilters` with `autoVerify`, inert without a domain) | `tests/with-forge-links.test.js` (Jest) |
-| Client: https on Android and iOS 17.4+, fallback below; one URI for authorize, match and token; `preferUniversalLinks`; logout pair | `tests/auth-redirect.test.ts`, `tests/auth-config.test.ts`, `tests/auth-provider.test.ts` (Jest, inside `TestE2EMobileConsumerConformance`) |
+| Part                                                                                                                                                         | Evidence                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| KCL `associated_domains` (kind native), `apple_team_id`, per-env `android_cert_fingerprints`, `associated_site`; the first https host must be in the domains | `kcl/tests/{positive,negative}_*associated_domain*`, `negative_frontend_{apple_team_id,android_fingerprint}_*`, `TestKCLModule_*`           |
+| Shape and validation; one https-prepend helper (`release.PrependAppLinkRedirect`)                                                                            | `pkg/release/applinks_test.go`; the field is part of `shape-identity-native-app`, which is not advertised, so no control plane is sent it   |
+| Rendered `apple-app-site-association` and `assetlinks.json` (exact contents, sorted, byte-stable, `debug` via `keytool`)                                     | `internal/applinks/applinks_test.go`                                                                                                        |
+| Per-env resolution, site choice, refusals                                                                                                                    | `internal/cli/app_links_test.go`                                                                                                            |
+| Serving: staging overlay, OnBucket upload as `application/json`, OnFirebase `headers`, hosted spec `wellKnown`                                               | `internal/deploytarget/wellknown_test.go`, `pkg/deploy/v1alpha1/wellknown_test.go`, `internal/cli/frontend_custom_domains_test.go`          |
+| Dev env: https first redirect, `EXPO_PUBLIC_FORGE_OIDC_FALLBACK_*` inside the one OIDC unit, plugin variables, developer mode for a local env only           | `internal/cli/native_dev_oidc_test.go`, `internal/cli/app_links_env_test.go`                                                                |
+| Expo plugin (`ios.associatedDomains` with both services, `android.intentFilters` with `autoVerify`, inert without a domain)                                  | `tests/with-forge-links.test.js` (Jest)                                                                                                     |
+| Client: https on Android and iOS 17.4+, fallback below; one URI for authorize, match and token; `preferUniversalLinks`; logout pair                          | `tests/auth-redirect.test.ts`, `tests/auth-config.test.ts`, `tests/auth-provider.test.ts` (Jest, inside `TestE2EMobileConsumerConformance`) |
 
 ### Control-plane requirement (separate work; forge does not touch the control plane)
 
@@ -592,16 +592,16 @@ not a test flake.
 Rows 1-8 of the design's test plan need a signed build and the public host and are a
 manual or Maestro lane, not CI:
 
-| # | Where | Pass |
-|---|---|---|
-| 1 | files | `curl -sI` both URLs: 200, `application/json`, no 3xx, valid JSON |
-| 2 | iOS Sim 17.4+ | session closes, tokens stored, host log shows no `/oauthredirect` GET. Run once with only `applinks:` to settle the `webcredentials` question |
-| 3 | iOS Sim 17.0 | client picks the private-use entry; sign-in succeeds |
-| 4 | iOS | `/signedout` closes the session |
-| 5 | Android emulator (API 34+, Chrome) | `pm get-app-links` is `verified` without manual approval |
-| 6 | Android | Custom Tab hands off, `Linking` reports `success`, tokens stored |
-| 7 | Android | unverified link: the fallback page appears and "Open in app" completes sign-in |
-| 8 | both | kill the app mid-login, then complete |
+| #   | Where                              | Pass                                                                                                                                          |
+| --- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | files                              | `curl -sI` both URLs: 200, `application/json`, no 3xx, valid JSON                                                                             |
+| 2   | iOS Sim 17.4+                      | session closes, tokens stored, host log shows no `/oauthredirect` GET. Run once with only `applinks:` to settle the `webcredentials` question |
+| 3   | iOS Sim 17.0                       | client picks the private-use entry; sign-in succeeds                                                                                          |
+| 4   | iOS                                | `/signedout` closes the session                                                                                                               |
+| 5   | Android emulator (API 34+, Chrome) | `pm get-app-links` is `verified` without manual approval                                                                                      |
+| 6   | Android                            | Custom Tab hands off, `Linking` reports `success`, tokens stored                                                                              |
+| 7   | Android                            | unverified link: the fallback page appears and "Open in app" completes sign-in                                                                |
+| 8   | both                               | kill the app mid-login, then complete                                                                                                         |
 
 **Known gap, not built:** the `/oauthredirect` and `/signedout` web fallback pages
 (row 7) are not scaffolded. Until they are, an unverified Android link loads the

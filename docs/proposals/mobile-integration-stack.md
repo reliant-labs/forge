@@ -16,12 +16,14 @@ development/review units and none ships to main on its own. This is a statement
 about where merges land, not about readiness: the integration PR is the one unit
 that goes to main, and only when its checklist is resolved.
 
-**Release train.** `rc/v1.4.0-rc.1` (`9caded4a3`) was cut before this PR's merge
-base, so the RC does not contain the mobile work (it does contain the session-replay
-changes `migrations/v1.4.0` section 1 describes). If v1.4.0 is finalized without
-this PR, the mobile sections of `migrations/v1.4.0/*` (sections 2 to 5 and the
-`native-dev-loop`, `native-auth` and `native-sdk` sub-skills) move to the next
-minor's playbook, and section 1 stays.
+**Release train.** Main released v1.4.0 without this mobile work. The unreleased
+mobile sections and `native-dev-loop`, `native-auth` and `native-sdk` sub-skills
+now live in `migrations/v1.5.0`. The shipped `migrations/v1.4.0/SKILL.md` stays
+exactly as on main, including its session-replay and Next.js proxy notes.
+
+**Owner boundary:** #1887 must NEVER be marked ready by this integration work.
+All integration here is local; slice reviews and control-plane pin coordination
+remain separate. HTTPS device acceptance has not been run.
 
 Initial checkpoint: `81cdce828` on `mobile-release`, containing the proposals,
 audits and first bounded foundation repairs. Preserve this checkpoint unchanged.
@@ -144,10 +146,10 @@ Not claimed by this milestone and not gates of it: iPhone hardware (an iPad was
 used), Release-mode sign-in, store publication, signed OTA and device crash and
 recovery evidence.
 
-Once acceptance is complete, mark the integration PR ready for review and let the
-normal reviewer/merge queue process handle it. Do not manually merge/admin-bypass
-or label it `merge:queue`. Store publication and OTA are later integration
-milestones, not hidden prerequisites or claims of this foundation milestone.
+#1887 remains draft by explicit owner instruction, even after local validation.
+Do not mark it ready, manually merge/admin-bypass or label it `merge:queue`.
+Store publication and OTA are later integration milestones, not hidden
+prerequisites or claims of this foundation milestone.
 
 ## Source plans
 

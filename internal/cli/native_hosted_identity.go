@@ -66,8 +66,16 @@ func resolveHostedNativeApp(a release.ShapeIdentityApplication, scheme string) (
 	a.LogoutURIs = slices.Clone(a.LogoutURIs)
 	if len(a.RedirectURIs) == 0 {
 		a.RedirectURIs = hostedNativeRedirects(scheme)
+		// Require the registered private-use scheme as a fallback, just as
+		// the dev identity does. Explicit redirects keep their exact order.
+		if len(a.RedirectURIs) > 0 {
+			a.RedirectURIs = release.PrependAppLinkRedirect(a.AssociatedDomains, a.RedirectURIs)
+		}
 	}
 	if len(a.RedirectURIs) == 0 {
+		return a, false
+	}
+	if err := release.ValidateAssociatedDomains(a.AssociatedDomains, a.RedirectURIs); err != nil {
 		return a, false
 	}
 	if len(a.LogoutURIs) == 0 {
@@ -82,10 +90,9 @@ func resolveHostedNativeApp(a release.ShapeIdentityApplication, scheme string) (
 // native application: the private-use scheme callback the app's app.json
 // registers with the OS. Empty when the app has no scheme.
 //
-// The first entry is the one the app signs in with. An https (universal or app
-// link) callback is prepended HERE, ahead of the private-use one, once forge
-// derives those: resolveHostedNativeApp pairs every entry with its signedout
-// URI, and the shape validation accepts https unchanged.
+// resolveHostedNativeApp prepends the first associated domain's HTTPS callback
+// to this fallback, then pairs every redirect with its signedout URI. Declared
+// redirect lists bypass derivation and keep their order.
 func hostedNativeRedirects(scheme string) []string {
 	if scheme == "" {
 		return nil

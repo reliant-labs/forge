@@ -116,7 +116,7 @@ client (`*_pb.ts` files import siblings as `./x_pb.js`, from buf's
 `import_extension=.js`) fails `expo export` with `Unable to resolve "…_pb.js"`
 because Metro does not map `.js` to `.ts`, and that happens on SDK 53 already.
 Add the `resolver.resolveRequest` block described in
-`forge skill load migrations/v1.4.0/native-dev-loop` (heading "Generated clients
+`forge skill load migrations/v1.5.0/native-dev-loop` (heading "Generated clients
 bundle in Metro") to `metro.config.js` first.
 
 ### Acceptance for existing apps
@@ -202,7 +202,7 @@ files. Upgrade one SDK at a time with `npx expo install expo@~N.0.0 --fix`, afte
 sections 2 (the foundation, which must be in place first) and before 4 and 5.
 The per-SDK table, the SDK 56 `expo-doctor` regression, the pnpm `allowBuilds`
 entry SDK 58 needs first and the owned files to adapt are in
-`forge skill load migrations/v1.4.0/native-sdk`.
+`forge skill load migrations/v1.5.0/native-sdk`.
 
 ## 4. Native dev loop
 
@@ -214,7 +214,7 @@ required by section 2), device-reachable API and Metro origins, the Metro port
 (delete the mobile `port` line from `deploy/kcl/dev/main.k`), native dev-log
 forwarding, the web receivers' `no-control-regex` lint line, focus/connectivity
 adapters and the mutation `networkMode` default. Load
-`forge skill load migrations/v1.4.0/native-dev-loop`.
+`forge skill load migrations/v1.5.0/native-dev-loop`.
 
 ## 5. Native auth
 
@@ -225,4 +225,4 @@ string; never change `bundleIdentifier` or `package`), `src/lib/auth/*`, the
 context, transport and layout edits, `tests/connect-transport.test.ts` and the
 Jest config, plus the API half (`internal/app/auth.go`, `login_broker.go`, the
 config proto). Existing apps keep working until `EXPO_PUBLIC_FORGE_OIDC_*` is
-set. Load `forge skill load migrations/v1.4.0/native-auth`.
+set. Load `forge skill load migrations/v1.5.0/native-auth`.

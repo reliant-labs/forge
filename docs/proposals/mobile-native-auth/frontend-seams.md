@@ -141,8 +141,8 @@ interface AuthProvider {
 Swapping IdPs = implementing this one interface; the context, transport and cache
 isolation never see the IdP.
 
-Layout (RN only unless noted; "owned" = written once, needs a v1.4.0 migration playbook
-under `internal/templates/project/skills/forge/migrations/v1.4.0/` for existing apps):
+Layout (RN only unless noted; "owned" = written once, needs a v1.5.0 migration playbook
+under `internal/templates/project/skills/forge/migrations/v1.5.0/` for existing apps):
 | File | Status | Role |
 |---|---|---|
 | `shared/src/lib/auth/provider.ts` | edit (owned) | optional members above |

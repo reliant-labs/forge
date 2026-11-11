@@ -338,7 +338,7 @@ func (a expoApp) noSchemeWarning(frontend string) string {
 	return fmt.Sprintf("frontend %s: NO native sign-in client was registered, so the app will run on its mock provider: its app.json %s. "+
 		"Set the reverse-DNS scheme in app.json: \"scheme\": %q (your bundleIdentifier/package can stay as they are). "+
 		"Or declare the callback yourself: redirect_uris = [\"%s:/oauthredirect\"] on a kind = \"native\" forge.IdentityApplication. "+
-		"Or opt out of the derived client with native_sign_in = False on this frontend. Background: the migrations/v1.4.0/native-auth playbook (`forge skill load migrations/v1.4.0/native-auth`)",
+		"Or opt out of the derived client with native_sign_in = False on this frontend. Background: the migrations/v1.5.0/native-auth playbook (`forge skill load migrations/v1.5.0/native-auth`)",
 		frontend, have, suggest, suggest)
 }
 

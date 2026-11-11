@@ -33,7 +33,7 @@ The host and path (`/oauthredirect`) are taken from the redirect URI. Otherwise 
 `callbackURLScheme: redirectUrl.scheme`. `preferEphemeralSession` is applied on both paths. Apple documents the
 callback types at
 [ASWebAuthenticationSession.Callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback)
-and [`https(host:path:)`](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:)).
+and [`https(host:path:)`](<https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:)>).
 The session intercepts the matching navigation itself, so the callback page never loads and no app-level URL
 routing is involved.
 
@@ -59,9 +59,14 @@ Apple's CDN (`app-site-association.cdn-apple.com`) fetches the file, not the dev
 
 ```json
 {
-  "applinks": { "details": [ {
-    "appIDs": ["23P64LQTZD.com.acme.mobile"],
-    "components": [ { "/": "/oauthredirect" }, { "/": "/signedout" } ] } ] },
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["23P64LQTZD.com.acme.mobile"],
+        "components": [{ "/": "/oauthredirect" }, { "/": "/signedout" }]
+      }
+    ]
+  },
   "webcredentials": { "apps": ["23P64LQTZD.com.acme.mobile"] }
 }
 ```
@@ -74,7 +79,7 @@ ids, for example dev, staging and prod variants.
 which can lag by hours.
 
 - **Simulator:** works with no extra setup.
-- **Device:** needs Developer Mode on, Settings → Developer → *Associated Domains Development* enabled, and a
+- **Device:** needs Developer Mode on, Settings → Developer → _Associated Domains Development_ enabled, and a
   development-signed build.
 
 The host still needs a publicly trusted certificate; developer mode removes only the CDN. Release builds ignore
@@ -82,8 +87,8 @@ the mode, but forge must not emit it outside dev. See "Entitlement format" on th
 
 **Below iOS 17.4.** On older iOS the module falls back to `callbackURLScheme: "https"`, which
 ASWebAuthenticationSession does not support as an interceptable scheme, so the session never completes. **The
-client must not send an https redirect on iOS < 17.4**, and uses the private-use entry instead (§3, *Client
-changes*). Expo SDK 58's iOS floor is below 17.4, so this path is real.
+client must not send an https redirect on iOS < 17.4**, and uses the private-use entry instead (§3, _Client
+changes_). Expo SDK 58's iOS floor is below 17.4, so this path is real.
 
 ## 2. Android
 
@@ -102,10 +107,10 @@ page ([Chrome: Android intents](https://developer.chrome.com/docs/android/intent
 [App Links](https://developer.android.com/training/app-links)).
 
 If the link is **not** verified, the tab loads `https://<host>/oauthredirect`. The race resolves `dismiss` when
-the user backs out, and sign-in fails. That page therefore needs a designed fallback (§3, *Serving*).
+the user backs out, and sign-in fails. That page therefore needs a designed fallback (§3, _Serving_).
 
 **Risk:** some non-Chrome default browsers do not hand a redirect-initiated App Link to the app. The mitigation
-is the private-use fallback page (§3, *Precedence*), plus an E2E check on Chrome, the emulator's default browser.
+is the private-use fallback page (§3, _Precedence_), plus an E2E check on Chrome, the emulator's default browser.
 
 **app.json** ([Expo: Android App Links](https://docs.expo.dev/linking/android-app-links/), `android.intentFilters`):
 
@@ -120,9 +125,16 @@ is the private-use fallback page (§3, *Precedence*), plus an E2E check on Chrom
 redirects ([Verify Android App Links](https://developer.android.com/training/app-links/verify-android-applinks)):
 
 ```json
-[ { "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": { "namespace": "android_app", "package_name": "com.acme.mobile",
-                "sha256_cert_fingerprints": ["AA:BB:…"] } } ]
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.acme.mobile",
+      "sha256_cert_fingerprints": ["AA:BB:…"]
+    }
+  }
+]
 ```
 
 `sha256_cert_fingerprints` must list **every** certificate that signs an installable build:
@@ -262,17 +274,17 @@ Zitadel accepts https redirect URIs for native apps
 - the IdP (local dev Zitadel) and the API;
 - Android verification via `pm set-app-links … 2`, in the logic lane only. It is never used in row 5.
 
-| # | Where | Steps | Pass |
-|---|---|---|---|
-| 1 | files | `curl -sI` both `.well-known` URLs; Google's [Statement List tester](https://developers.google.com/digital-asset-links/tools/generator) | 200, `application/json`, no 3xx, valid JSON |
-| 2 | iOS Sim (17.4+ runtime) | dev build with `?mode=developer`, sign in | session closes; tokens stored; host access log shows no `/oauthredirect` GET. Also run once with only `applinks:` to settle the `webcredentials` question |
-| 3 | iOS Sim (17.0 runtime) | same build | client picks the private-use entry; sign-in succeeds |
-| 4 | iOS | sign out | `/signedout` closes the session |
-| 5 | Android emulator (API 34+, Chrome) | install the debug build, `pm verify-app-links --re-verify`, `pm get-app-links` | `verified` without manual approval |
-| 6 | Android | sign in | Custom Tab hands off; `Linking` reports `success`; tokens stored |
-| 7 | Android | `pm set-app-links --package <pkg> 0 <host>`, sign in | the fallback page appears; "Open in app" completes sign-in over the scheme |
-| 8 | both | kill the app mid-login, then complete | `app/oauthredirect.tsx` completes, or reports a clean error |
-| 9 | unit | decision table (OS × version × scheme); KCL rule that the first https host is in the domains | Vitest + Go, `-short` |
+| #   | Where                              | Steps                                                                                                                                   | Pass                                                                                                                                                      |
+| --- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | files                              | `curl -sI` both `.well-known` URLs; Google's [Statement List tester](https://developers.google.com/digital-asset-links/tools/generator) | 200, `application/json`, no 3xx, valid JSON                                                                                                               |
+| 2   | iOS Sim (17.4+ runtime)            | dev build with `?mode=developer`, sign in                                                                                               | session closes; tokens stored; host access log shows no `/oauthredirect` GET. Also run once with only `applinks:` to settle the `webcredentials` question |
+| 3   | iOS Sim (17.0 runtime)             | same build                                                                                                                              | client picks the private-use entry; sign-in succeeds                                                                                                      |
+| 4   | iOS                                | sign out                                                                                                                                | `/signedout` closes the session                                                                                                                           |
+| 5   | Android emulator (API 34+, Chrome) | install the debug build, `pm verify-app-links --re-verify`, `pm get-app-links`                                                          | `verified` without manual approval                                                                                                                        |
+| 6   | Android                            | sign in                                                                                                                                 | Custom Tab hands off; `Linking` reports `success`; tokens stored                                                                                          |
+| 7   | Android                            | `pm set-app-links --package <pkg> 0 <host>`, sign in                                                                                    | the fallback page appears; "Open in app" completes sign-in over the scheme                                                                                |
+| 8   | both                               | kill the app mid-login, then complete                                                                                                   | `app/oauthredirect.tsx` completes, or reports a clean error                                                                                               |
+| 9   | unit                               | decision table (OS × version × scheme); KCL rule that the first https host is in the domains                                            | Vitest + Go, `-short`                                                                                                                                     |
 
 Rows 2–8 are a manual or Maestro lane, not CI: they need a signed build and the public host.
 

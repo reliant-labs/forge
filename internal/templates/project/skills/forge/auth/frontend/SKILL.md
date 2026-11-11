@@ -136,7 +136,7 @@ What RN ships instead is a **real OIDC provider**, not a mock. The app is an OAu
 
 Without the OIDC variables the app runs on `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts`, a **fixture** session with no credential (it sends no `Authorization` header, warns once, and `requiresSignIn` is false). That is the mock fallback and the opt-out (`native_sign_in = False`), not the default path. To use a vendor SDK instead, implement `AuthProvider` over it in `context.tsx`.
 
-The whole design (variables, scheme, device host, limits) is `deploy/managed-identity/mobile`; an existing app adopts it with `migrations/v1.4.0/native-auth`. `useAuth()`'s value is identical on every platform, so a component written against it moves between the mobile and browser trees unchanged.
+The whole design (variables, scheme, device host, limits) is `deploy/managed-identity/mobile`; an existing app adopts it with `migrations/v1.5.0/native-auth`. `useAuth()`'s value is identical on every platform, so a component written against it moves between the mobile and browser trees unchanged.
 
 ## Using a hosted IdP's own sign-in UI instead
 

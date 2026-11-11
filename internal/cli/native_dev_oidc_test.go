@@ -524,7 +524,7 @@ func TestNativeAppSchemes(t *testing.T) {
 		{"an acme-style single scheme", `{"expo":{"scheme":"com.acme.mobile","ios":{"bundleIdentifier":"com.acme.mobile"}}}`, "com.acme.mobile", nil},
 		{"the link scheme is not the callback", `{"expo":{"scheme":["mobile","com.acme.mobile"]}}`, "com.acme.mobile", nil},
 		{"bundle id only, no usable scheme", `{"expo":{"scheme":"mobile","ios":{"bundleIdentifier":"com.MyApp.mobile"},"android":{"package":"com.my_app.mobile"}}}`,
-			"", []string{"NO native sign-in client was registered", `"scheme": "com.myapp.mobile"`, "can stay as they are", "native_sign_in = False", "migrations/v1.4.0/native-auth"}},
+			"", []string{"NO native sign-in client was registered", `"scheme": "com.myapp.mobile"`, "can stay as they are", "native_sign_in = False", "migrations/v1.5.0/native-auth"}},
 		{"an invalid scheme is not accepted", `{"expo":{"scheme":["mobile","com.my_app.mobile","Com.Acme.App"]}}`,
 			"", []string{"has expo.scheme", "none of it is a valid private-use scheme", `"com.my-app.mobile"`}},
 		{"no scheme and no ids", `{"expo":{}}`, "", []string{"has no expo.scheme", "com.example.mobile"}},
@@ -778,25 +778,29 @@ func TestWithNativeOIDCEnv_FallbackBelongsToTheUnit(t *testing.T) {
 		RedirectURI: "https://app.acme.example/oauthredirect", PostLogoutRedirectURI: "https://app.acme.example/signedout",
 		FallbackRedirectURI: "com.acme.mobile:/oauthredirect", FallbackPostLogoutRedirectURI: "com.acme.mobile:/signedout",
 	}
-	env := nativeOriginEnvMap(withNativeOIDCEnv(nil, n))
+	injected, _ := withNativeOIDCEnvNote(nil, n)
+	env := nativeOriginEnvMap(injected)
 	for _, name := range append(oidcEnvNames(), oidcFallbackEnvNames()...) {
 		if env[name] == "" {
 			t.Errorf("%s not injected", name)
 		}
 	}
-	other := nativeOriginEnvMap(withNativeOIDCEnv([]string{oidcIssuerEnv + "=https://other.idp"}, n))
+	otherEnv, _ := withNativeOIDCEnvNote([]string{oidcIssuerEnv + "=https://other.idp"}, n)
+	other := nativeOriginEnvMap(otherEnv)
 	for _, name := range oidcFallbackEnvNames() {
 		if other[name] != "" {
 			t.Errorf("%s injected beside another provider's issuer", name)
 		}
 	}
 	// A developer-set redirect is kept; the fallback is still filled.
-	kept := nativeOriginEnvMap(withNativeOIDCEnv([]string{oidcRedirectURIEnv + "=custom:/cb"}, n))
+	keptEnv, _ := withNativeOIDCEnvNote([]string{oidcRedirectURIEnv + "=custom:/cb"}, n)
+	kept := nativeOriginEnvMap(keptEnv)
 	if kept[oidcRedirectURIEnv] != "custom:/cb" || kept[oidcFallbackRedirectURIEnv] == "" {
 		t.Errorf("per-variable precedence broken: %v", kept)
 	}
 	// A private-use-only client sets neither fallback variable.
-	plain := nativeOriginEnvMap(withNativeOIDCEnv(nil, &nativeOIDC{Issuer: "http://localhost:8098", ClientID: "c", RedirectURI: "com.acme.mobile:/oauthredirect"}))
+	plainEnv, _ := withNativeOIDCEnvNote(nil, &nativeOIDC{Issuer: "http://localhost:8098", ClientID: "c", RedirectURI: "com.acme.mobile:/oauthredirect"})
+	plain := nativeOriginEnvMap(plainEnv)
 	for _, name := range oidcFallbackEnvNames() {
 		if _, set := plain[name]; set {
 			t.Errorf("%s set for a private-use-only client", name)

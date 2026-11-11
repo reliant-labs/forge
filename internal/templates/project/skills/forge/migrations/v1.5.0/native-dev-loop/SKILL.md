@@ -1,14 +1,14 @@
 ---
-name: migration-v1.4.0-native-dev-loop
-description: Adopt the v1.4.0 native (Expo) dev loop in an existing app — declare babel-preset-expo, stream over expo/fetch with a Jest expo/fetch mapping, bundle generated *_pb clients via a Metro .js→.ts resolver fallback, import only the portable runtime entry, stop tsconfig churn, reach the API and Metro from a device (--device-host, Metro on 8081, EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN), forward device logs to .forge/logs with sanitized receivers, track AppState/network in React Query, and never pause-and-replay mutations.
+name: migration-v1.5.0-native-dev-loop
+description: Adopt the v1.5.0 native (Expo) dev loop in an existing app — declare babel-preset-expo, stream over expo/fetch with a Jest expo/fetch mapping, bundle generated *_pb clients via a Metro .js→.ts resolver fallback, import only the portable runtime entry, stop tsconfig churn, reach the API and Metro from a device (--device-host, Metro on 8081, EXPO_PUBLIC_FORGE_DEVLOG_ORIGIN), forward device logs to .forge/logs with sanitized receivers, track AppState/network in React Query, and never pause-and-replay mutations.
 relevance: migration
 ---
 
-# v1.4.0 — native dev loop
+# v1.5.0 — native dev loop
 
 **Use when** the project has an Expo frontend. New scaffolds include everything
 below; existing apps own these files, so forge never backfills them. Adapt by hand.
-Do section 2 of `forge skill load migrations/v1.4.0` first (it carries the Metro
+Do section 2 of `forge skill load migrations/v1.5.0` first (it carries the Metro
 resolver and `tests/setup/expo-fetch.ts` this page also touches).
 
 **Getting a scaffold file** (this page says "from the current scaffold" often): at
@@ -35,7 +35,7 @@ React Native's own fetch buffers whole responses, so server-streaming RPCs depen
 on that default; passing it explicitly removes the dependency. Optionally export
 `createTransport(fetchImpl = expoFetch)` so tests can inject a fake network.
 (`tests/connect-transport.test.ts` exercises the auth interceptors, so it belongs
-to `migrations/v1.4.0/native-auth`, not here.)
+to `migrations/v1.5.0/native-auth`, not here.)
 
 jest-expo stubs the native fetch module, so with an explicit `expo/fetch` import a
 test that stubs `globalThis.fetch` (or uses MSW) would never see the app's
@@ -132,7 +132,7 @@ with `RCT_METRO_PORT=<port>` (the build then looks for Metro at
 `<device host>:<port>`), and on the first launch allow "Local Network" on the device
 and relaunch (React Native shows `No script URL provided` until the prompt is
 accepted). A `port`
-declared in KCL still wins, and **an app scaffolded before v1.4.0 declares one**:
+declared in KCL still wins, and **an app scaffolded before v1.5.0 declares one**:
 its `deploy/kcl/dev/main.k` has `port = _<name>_frontend_port` on the native
 frontend and a `_<name>_frontend_port = plugin.resolve_port("<project>-dev-<name>",
 3000)` block above it (with its `# The <name> frontend's dev-server port…`

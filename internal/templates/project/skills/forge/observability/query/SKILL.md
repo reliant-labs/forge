@@ -62,6 +62,7 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs issue comment <id> <text> [env]` | Add a comment (cloud; needs `obs:triage`) |
 | `forge obs issue assign <id> <user-id\|me\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
 | `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
+| `forge obs users [env]` | Users over the range (`--since`, default 7d, up to 90d) and the one before: active, new, returning, per env, with `--series N` daily counts and `--seen-total`. Hosted envs only |
 | `forge obs session <id> [env]` | One session as a text timeline: pages, clicks on masked selectors, failed requests, errors with their issue, custom events, trace ids (`--limit`, `--page-token`). No replay bytes. Exit 1 not found, 2 could not look |
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |

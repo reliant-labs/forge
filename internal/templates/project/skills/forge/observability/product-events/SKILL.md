@@ -98,11 +98,18 @@ not after `disableTelemetry()`.
 ## Auth events: who signed up, signed in, signed out
 
 Three product event names are reserved for a fixed auth vocabulary, the same
-whatever the auth provider. The console counts users from them, over a range:
-**active** = distinct users with `auth_signed_in`; **new** = distinct users
-with `auth_signed_up`; **returning** = active users with no `auth_signed_up`
-in the range. Every count is distinct by `user.id`, so the same sign-in
-reported twice (server and browser, two replicas, a retry) counts once.
+whatever the auth provider. The console counts users over a range from them
+and the rest of the table: **active** = distinct users with any user-attributed
+event (`obsquery.ActiveEvidence`: every row with a `UserId` except
+`auth_signed_out` and the platform's `auth_accounts`; a sign-in or the auth
+middleware's daily heartbeat is enough); **new** = distinct users with
+`auth_signed_up` in the range, or, in an env that reported no sign-up in the
+90 days before the range's end, the users first seen in the range
+(`obsquery.NewUsersSource`); **returning** = active users who are not new.
+Every count is distinct by `user.id`, so the same sign-in reported twice
+(server and browser, two replicas, a retry) counts once. `forge obs users
+<env> [--series 30] [--json]` prints them; the console's Users card and the
+generated dashboards compile from the same two fragments.
 
 | event | when | props |
 |---|---|---|

@@ -113,7 +113,7 @@ func (c *spareConnector) count() int {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -122,9 +122,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-func shortCtx(t *testing.T) context.Context {
+// opCtx bounds a pool operation that must succeed. A request that wrongly
+// waits on a stuck dial blocks until this expires and fails; a correct one
+// returns at once, so the generous bound costs a passing test nothing.
+func opCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -136,7 +139,7 @@ func TestSpareConns_RequestNeverWaitsOnTheFiller(t *testing.T) {
 	g := newGateConnector()
 	g.hold(1) // the Ping's dial passes; the filler's first spare dial sticks
 	db, _ := openSpares(t, g, 3, 2)
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	<-g.blocked // the filler is mid-dial
@@ -144,15 +147,13 @@ func TestSpareConns_RequestNeverWaitsOnTheFiller(t *testing.T) {
 	if st := db.Stats(); st.InUse != 0 || st.Idle != 1 {
 		t.Fatalf("while the filler dials: in use %d, idle %d; want 0 and 1", st.InUse, st.Idle)
 	}
-	start := time.Now()
-	conn, err := db.Conn(shortCtx(t))
+	// The filler's dial never returns while the test holds the gate, so a
+	// request that waited on it fails here with opCtx's deadline.
+	conn, err := db.Conn(opCtx(t))
 	if err != nil {
 		t.Fatalf("a request waited on the filler's dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("the idle connection took %s to hand out", d)
-	}
 }
 
 // When the pool needs a new connection it gets a spare, not a dial: with
@@ -160,14 +161,14 @@ func TestSpareConns_RequestNeverWaitsOnTheFiller(t *testing.T) {
 func TestSpareConns_NewConnectionIsASpare(t *testing.T) {
 	g := newGateConnector()
 	db, spares := openSpares(t, g, 2, 0)
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "two spares", func() bool { return spares.count() == 2 })
 	g.hold(0)
 	dials := g.dials.Load()
 
-	ctx := shortCtx(t)
+	ctx := opCtx(t)
 	for i := range 3 { // the idle connection, then both spares
 		conn, err := db.Conn(ctx)
 		if err != nil {
@@ -187,7 +188,7 @@ func TestSpareConns_NewConnectionIsASpare(t *testing.T) {
 func TestSpareConns_StayUnderMaxOpenConns(t *testing.T) {
 	g := newGateConnector()
 	db, spares := openSpares(t, g, 2, 2)
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "one spare", func() bool { return spares.count() == 1 })
@@ -201,11 +202,11 @@ func TestSpareConns_StayUnderMaxOpenConns(t *testing.T) {
 func TestSpareConns_DropsDeadSpares(t *testing.T) {
 	g := newGateConnector()
 	db, spares := openSpares(t, g, 2, 0)
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "two spares", func() bool { return spares.count() == 2 })
-	idle, err := db.Conn(shortCtx(t)) // hold the pool's idle connection
+	idle, err := db.Conn(opCtx(t)) // hold the pool's idle connection
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestSpareConns_DropsDeadSpares(t *testing.T) {
 
 	g.bad.Store(true)
 	closes := g.closes.Load()
-	conn, err := spares.Connect(shortCtx(t))
+	conn, err := spares.Connect(opCtx(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +230,7 @@ func TestSpareConns_ExpireByAge(t *testing.T) {
 	c := newSpareConnector(g, 1, time.Millisecond)
 	conn, _ := g.Connect(context.Background())
 	c.put(conn)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the clock past maxAge (1ms); Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	if c.take() != nil {
 		t.Fatal("an expired spare was handed out")
@@ -246,7 +248,7 @@ func TestSpareConns_CloseStopsTheFiller(t *testing.T) {
 	db := sql.OpenDB(spares)
 	spares.db.Store(db)
 	g.hold(3) // the Ping and two spares; the third spare's dial sticks
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	<-g.blocked
@@ -277,7 +279,7 @@ func TestSpareConns_CloseDoesNotWaitOnAnUncancellableDial(t *testing.T) {
 	db := sql.OpenDB(spares)
 	spares.db.Store(db)
 	g.hold(1) // the Ping passes; the spare's dial hangs
-	if err := db.PingContext(shortCtx(t)); err != nil {
+	if err := db.PingContext(opCtx(t)); err != nil {
 		t.Fatal(err)
 	}
 	<-g.blocked

@@ -422,19 +422,17 @@ func TestRun_ContextWorkerPreferred(t *testing.T) {
 	cw := &ctxWorker{name: "ctx-aware", runReturnErr: context.Canceled}
 	legacy := &stubWorker{name: "legacy"}
 	srv := serverkit.Server{Handler: emptyHandler(), Workers: []serverkit.Worker{cw, legacy}}
-	errCh, _ := runInBackground(t, baseConfig(addr), srv)
+	// A budget long enough that a worker which ignores its ctx (and so holds
+	// Run until ShutdownTimeout) is unmistakable from a prompt exit.
+	cfg := baseConfig(addr)
+	cfg.ShutdownTimeout = 30 * time.Second
+	errCh, _ := runInBackground(t, cfg, srv)
 	waitReady(t, addr, 2*time.Second)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !cw.runCalled.Load() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !cw.runCalled.Load() {
-		t.Fatal("RunContext was never called for a ContextWorker")
-	}
+	eventually(t, "RunContext to be called for a ContextWorker", cw.runCalled.Load)
 
 	start := time.Now()
-	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+	if err := shutdownAndWait(t, errCh, 45*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
@@ -447,7 +445,7 @@ func TestRun_ContextWorkerPreferred(t *testing.T) {
 	if !cw.stopCalled.Load() {
 		t.Fatal("Stop was not called on the ctx-aware worker after RunContext returned")
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("shutdown took %s — ctx-aware worker did not exit promptly", elapsed)
 	}
 
@@ -471,13 +469,7 @@ func TestRun_CronShapedContextWorker(t *testing.T) {
 	errCh, _ := runInBackground(t, baseConfig(addr), srv)
 	waitReady(t, addr, 2*time.Second)
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !cw.tickStarted.Load() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !cw.tickStarted.Load() {
-		t.Fatal("cron-shaped worker never started a tick")
-	}
+	eventually(t, "the cron-shaped worker to start a tick", cw.tickStarted.Load)
 
 	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)

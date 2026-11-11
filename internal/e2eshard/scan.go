@@ -22,6 +22,21 @@ type testFunc struct {
 	// constraint names e2e un-negated (`e2e`, `e2e && linux`), so a plain
 	// `go test` never compiles it.
 	e2eFile bool
+	// fixtures names the shared project fixtures the test starts from: the
+	// spec identifier passed to one of sharedFixtureFuncs anywhere in its
+	// body, subtests included. Sorted, de-duplicated.
+	fixtures []string
+}
+
+// sharedFixtureFuncs are internal/cli's helpers that hand a test a copy of a
+// project built once per test process (shared_project_e2e_test.go), keyed
+// by the spec variable passed at specArg. Tests sharing a fixture must run in
+// one process for the fixture to be built once, so plan keeps them in one
+// shard. TestSharedFixturesAreFoundInTheRealSuite fails if these names stop
+// matching the helpers.
+var sharedFixtureFuncs = map[string]int{ // func name -> index of the spec argument
+	"newProjectFromSharedE2E": 2,
+	"sharedProjectE2E":        2,
 }
 
 // scanTests returns every test function `go test` would discover in dir's
@@ -53,10 +68,86 @@ func scanTests(dir string) ([]testFunc, error) {
 			if !ok || fd.Recv != nil || !isTestFunc(fd) {
 				continue
 			}
-			out = append(out, testFunc{name: fd.Name.Name, file: filepath.Base(path), e2eFile: e2e})
+			out = append(out, testFunc{name: fd.Name.Name, file: filepath.Base(path), e2eFile: e2e, fixtures: sharedFixtures(fd)})
 		}
 	}
 	return out, nil
+}
+
+// sharedFixtures returns the spec identifiers fd passes to a
+// sharedFixtureFuncs helper.
+func sharedFixtures(fd *ast.FuncDecl) []string {
+	seen := map[string]bool{}
+	var out []string
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fn, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		i, ok := sharedFixtureFuncs[fn.Name]
+		if !ok || i >= len(call.Args) {
+			return true
+		}
+		if spec, ok := call.Args[i].(*ast.Ident); ok && !seen[spec.Name] {
+			seen[spec.Name] = true
+			out = append(out, spec.Name)
+		}
+		return true
+	})
+	sort.Strings(out)
+	return out
+}
+
+// fixtureGroups maps each test that shares a fixture with another test to
+// the name of its group: tests are in one group when they share a fixture,
+// directly or through a chain of tests. A test sharing nothing is absent.
+func fixtureGroups(tests []testFunc) map[string]string {
+	parent := map[string]string{}
+	var find func(string) string
+	find = func(x string) string {
+		if p, ok := parent[x]; ok && p != x {
+			r := find(p)
+			parent[x] = r
+			return r
+		}
+		parent[x] = x
+		return x
+	}
+	union := func(a, b string) {
+		ra, rb := find(a), find(b)
+		if ra == rb {
+			return
+		}
+		if rb < ra { // the smaller name is the root: deterministic group names
+			ra, rb = rb, ra
+		}
+		parent[rb] = ra
+	}
+	users := map[string][]string{} // fixture -> tests
+	for _, t := range tests {
+		for _, f := range t.fixtures {
+			users[f] = append(users[f], t.name)
+		}
+	}
+	for f, names := range users {
+		if len(names) < 2 {
+			continue
+		}
+		for _, n := range names {
+			union("fixture:"+f, n)
+		}
+	}
+	groups := map[string]string{}
+	for _, t := range tests {
+		if _, ok := parent[t.name]; ok {
+			groups[t.name] = find(t.name)
+		}
+	}
+	return groups
 }
 
 // e2eTagged reports whether f's //go:build line names the e2e tag outside a

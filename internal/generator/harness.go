@@ -19,6 +19,10 @@ const (
 	HarnessCursor  Harness = "cursor"
 	HarnessCopilot Harness = "copilot"
 	HarnessCodex   Harness = "codex"
+	// HarnessNone writes nothing for an agent: no AGENTS.md, no pointer
+	// files, no .mcp.json. For a repository that keeps its own agent
+	// instructions (or none), adopting forge must not add any.
+	HarnessNone Harness = "none"
 )
 
 // ValidHarnesses lists all accepted --harness values. Returned as a
@@ -31,6 +35,7 @@ func ValidHarnesses() []Harness {
 		HarnessCursor,
 		HarnessCopilot,
 		HarnessCodex,
+		HarnessNone,
 	}
 }
 
@@ -49,9 +54,11 @@ func (h Harness) Normalized() Harness {
 // MemoryFilePath returns the project-root-relative path of the harness's own
 // top-level instruction file. For claude, cursor and copilot it is a thin
 // pointer to AGENTS.md (see agentFiles); codex reads AGENTS.md itself, and
-// reliant renders the guide in memory.
+// reliant renders the guide in memory. none has no file: "".
 func (h Harness) MemoryFilePath() string {
 	switch h {
+	case HarnessNone:
+		return ""
 	case HarnessClaude:
 		return "CLAUDE.md"
 	case HarnessCursor:
@@ -68,12 +75,12 @@ func (h Harness) MemoryFilePath() string {
 // ParseHarness validates and normalises a user-supplied string.
 func ParseHarness(s string) (Harness, error) {
 	switch Harness(s) {
-	case HarnessReliant, HarnessClaude, HarnessCursor, HarnessCopilot, HarnessCodex:
+	case HarnessReliant, HarnessClaude, HarnessCursor, HarnessCopilot, HarnessCodex, HarnessNone:
 		return Harness(s), nil
 	case "":
 		return HarnessReliant, nil
 	default:
-		return "", fmt.Errorf("unknown harness %q; valid harnesses: reliant, claude, cursor, copilot, codex", s)
+		return "", fmt.Errorf("unknown harness %q; valid harnesses: reliant, claude, cursor, copilot, codex, none", s)
 	}
 }
 

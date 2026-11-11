@@ -53,8 +53,10 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // between "verified" and "revoked" (once VerifyEmail succeeds, a password
 // planted before it would otherwise work until the revocation lands):
 //
-//	mark → lock → [end every session → revoke credentials] → proof
-//	→ re-lock → revoke credentials → end every session → unlock → clear the mark
+//	mark → lock → [announce a window → read again → end every session
+//	→ revoke credentials → take the window back] → proof → re-lock
+//	→ revoke credentials → end every session → [wait out other windows]
+//	→ unlock → clear the mark
 //
 // The bracketed steps run only under RequireVerifiedEmail (see below).
 //
@@ -104,6 +106,23 @@ var errRevokeFailed = errors.New("the proof succeeded but credentials set before
 // are its holder's working ones, so nothing is touched before a proof
 // succeeds; a late unlock there exposes nothing the account did not already
 // allow. Within one process the proofs lock also closes the window itself.
+//
+// THE PRE-PROOF CLEANUP IS FENCED IN TIME, because it is destructive and a
+// proof that will FAIL runs it too. Without a fence, a wrong-code proof that
+// read the account as unverified could stall right before its revocation
+// while another replica's proof verified the address and the owner set a
+// password or enrolled a passkey — and then take that credential away
+// (forge#1821 review, B1). So each proof announces its window
+// (MetaProofWindowPrefix) before it reads the account again, sends every
+// destructive call inside it or none at all, and takes the announcement back
+// once its calls have returned; a successful proof waits until every
+// announced window, plus proofFenceSlack, has passed before it hands the
+// account back (awaitPreProofWindows). A proof whose read comes after the
+// other's VerifyEmail finds the address verified and takes nothing; one whose
+// read came before had announced its window first, so the successful proof
+// sees it. What this leans on: the issuer answers a metadata read with the
+// writes before it (the proof lock leans on the same), and a request sent
+// before its deadline is served within proofFenceSlack.
 func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func() error) (revoked bool, err error) {
 	if before.EmailVerified {
 		return false, proof()
@@ -187,11 +206,53 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 	// late unlock either: the account's credentials sign in unverified.
 	pre := 0
 	if r.cfg.Flow.RequireVerifiedEmail {
+		// ANNOUNCE THE WINDOW FIRST. Every call below that takes something
+		// from the account is sent inside [start, start+preProofWindow) or
+		// not at all, and the announcement is written before the account is
+		// read again. So a proof that succeeds on another replica either
+		// finds this account verified by the read below — this proof then
+		// takes nothing — or finds the announcement, and waits the window
+		// out before it hands the account back (awaitPreProofWindows). A
+		// wrong-code proof therefore never revokes a password or passkey a
+		// successful proof just installed (forge#1821 review, B1).
+		start := time.Now()
+		window := MetaProofWindowPrefix + newProofNonce()
+		if err := c.SetMetadata(ctx, userID, window, strconv.FormatInt(start.UnixMilli(), 10)); err != nil {
+			releaseFailed("an unannounced pre-proof cleanup")
+			return false, fmt.Errorf("announce the account's pre-proof cleanup: %w", err)
+		}
+		pctx, pcancel := context.WithDeadline(context.WithoutCancel(ctx), start.Add(preProofWindow))
+		// dropWindow takes the announcement back once nothing this proof
+		// sent can still land; a window left behind only costs a later
+		// successful proof its wait.
+		dropWindow := func() {
+			dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+			defer dcancel()
+			if err := c.DeleteMetadata(dctx, userID, window); err != nil {
+				r.cfg.Logger.WarnContext(dctx, "could not take a proof's pre-proof window back", "user_id", userID, "error", err)
+			}
+		}
+		again, err := c.FindUserByID(pctx, userID)
+		if err != nil {
+			pcancel()
+			dropWindow()
+			releaseFailed("an account that could not be read again")
+			return false, fmt.Errorf("read the account again before its pre-proof cleanup: %w", err)
+		}
+		if again.EmailVerified {
+			// Another proof verified the address after this one first read
+			// it: what the account holds now is that proof's, not planted.
+			pcancel()
+			dropWindow()
+			releaseFailed("an address another proof verified")
+			return false, proof()
+		}
 		// End every session first. One created a moment before the lock
 		// already carries a passed password check; the verified-email gate
 		// would let it through the moment proof() marks the address
 		// verified, before the revocation below could end it.
-		if _, err := c.EndSessions(ctx, userID); err != nil {
+		if _, err := c.EndSessions(pctx, userID); err != nil {
+			pcancel()
 			releaseFailed("a failed session cleanup")
 			return false, fmt.Errorf("end the account's sessions before its proof: %w", err)
 		}
@@ -201,15 +262,23 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		// lift it between this proof's VerifyEmail and its re-lock (see WHO
 		// MAY UNLOCK). Detached: a client that hangs up must not leave a
 		// half-done revocation behind.
-		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
-		n, err := r.revoke(rctx, userID)
-		rcancel()
+		n, err := r.revoke(pctx, userID, true)
+		windowSpent := pctx.Err() != nil
+		pcancel()
 		if err != nil {
+			if windowSpent {
+				// Nothing proven here and nothing usable taken: give the
+				// account back. The announcement stays, because a call sent
+				// near the deadline may still land.
+				releaseFailed("a pre-proof cleanup that ran out of its window")
+				return false, fmt.Errorf("the account's pre-proof cleanup ran out of time: %w", err)
+			}
 			if !held {
 				r.clearProofMark(context.WithoutCancel(ctx), userID, "an account left locked")
 			}
 			return false, err
 		}
+		dropWindow()
 		pre = n
 	}
 	if err := proof(); err != nil {
@@ -229,7 +298,7 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 	} else if locked {
 		owned = true
 	}
-	n, err := r.revoke(ctx, userID)
+	n, err := r.revoke(ctx, userID, false)
 	if err != nil {
 		if !held {
 			r.clearProofMark(ctx, userID, "an account left locked")
@@ -237,6 +306,15 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		return false, err
 	}
 	n += pre
+	if r.cfg.Flow.RequireVerifiedEmail {
+		// A wrong-code proof on another replica may still be inside its
+		// pre-proof window; nothing may be installed on the account until
+		// it has closed. The account stays locked meanwhile.
+		r.awaitPreProofWindows(ctx, userID)
+		var ucancel context.CancelFunc
+		ctx, ucancel = context.WithTimeout(context.WithoutCancel(ctx), proofCleanupTimeout)
+		defer ucancel()
+	}
 	if !owned {
 		return n > 0, nil
 	}
@@ -248,6 +326,52 @@ func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func
 		r.clearProofMark(ctx, userID, "a proven account") // inert on an unlocked, verified account if it fails
 	}
 	return n > 0, nil
+}
+
+// The pre-proof window: every call a proof makes to take an unverified
+// account's credentials back before its proof is sent within preProofWindow
+// of its announcement, or not at all. A successful proof waits until every
+// announced window plus proofFenceSlack has passed — the slack covers a call
+// sent just before the deadline and still in flight, and clock skew between
+// replicas (the window's start is the announcing replica's clock). Package
+// variables so a test can shrink them.
+var (
+	preProofWindow  = 15 * time.Second
+	proofFenceSlack = 5 * time.Second
+)
+
+// awaitPreProofWindows blocks until every pre-proof window another proof
+// announced on the account has closed (plus proofFenceSlack). A window older
+// than proofLockTTL is left over from a proof that never took it back: it is
+// ignored and removed. If the windows cannot be read, it waits one whole
+// window from now — fail closed, since a window may have opened just now.
+func (r *SignInRoutes) awaitPreProofWindows(ctx context.Context, userID string) {
+	c := r.cfg.Client
+	now := time.Now()
+	until := now.Add(preProofWindow + proofFenceSlack)
+	windows, err := c.MetadataWithPrefix(ctx, userID, MetaProofWindowPrefix)
+	if err != nil {
+		r.cfg.Logger.WarnContext(ctx, "could not read the account's pre-proof windows; waiting a whole window", "user_id", userID, "error", err)
+	} else {
+		until = time.Time{}
+		for key, v := range windows {
+			ms, perr := strconv.ParseInt(v, 10, 64)
+			start := time.UnixMilli(ms)
+			if perr != nil || now.Sub(start) > proofLockTTL {
+				_ = c.DeleteMetadata(ctx, userID, key) // left over: inert either way
+				continue
+			}
+			if end := start.Add(preProofWindow + proofFenceSlack); end.After(until) {
+				until = end
+			}
+		}
+	}
+	if d := time.Until(until); d > 0 {
+		r.cfg.Logger.InfoContext(ctx, "waiting out another proof's pre-proof window before handing the account back", "user_id", userID, "wait", d)
+		t := time.NewTimer(d)
+		defer t.Stop()
+		<-t.C
+	}
 }
 
 const (
@@ -262,9 +386,14 @@ const (
 
 // newProofMark is a MetaProofLock value: "<unix seconds>.<nonce>".
 func newProofMark(at time.Time) string {
+	return strconv.FormatInt(at.Unix(), 10) + "." + newProofNonce()
+}
+
+// newProofNonce is 128 random bits, URL-safe.
+func newProofNonce() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	return strconv.FormatInt(at.Unix(), 10) + "." + base64.RawURLEncoding.EncodeToString(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // freshProofMark reports whether mark is a proof's mark written within
@@ -346,10 +475,15 @@ func (k *keyedMutex) drop(key string, s *keyedSlot) {
 // tries fail it makes one last attempt at the password alone (the credential
 // a planted sign-up most likely set) and raises an alert: the account stays
 // locked until someone resets it by hand.
-func (r *SignInRoutes) revoke(ctx context.Context, userID string) (int, error) {
+//
+// pre marks the cleanup BEFORE a proof, bounded by its window: when ctx's
+// deadline is what stopped it, the account is still unverified and nothing
+// on it is usable, so the error is returned as the deadline (no last
+// attempt, no alert) and the caller gives the account back.
+func (r *SignInRoutes) revoke(ctx context.Context, userID string, pre bool) (int, error) {
 	c := r.cfg.Client
 	n, err := c.RevokeCredentials(ctx, userID)
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		n, err = c.RevokeCredentials(ctx, userID)
 	}
 	if err == nil {
@@ -357,6 +491,9 @@ func (r *SignInRoutes) revoke(ctx context.Context, userID string) (int, error) {
 			r.cfg.Logger.InfoContext(ctx, "credentials set before the address was proven were revoked", "user_id", userID, "count", n)
 		}
 		return n, nil
+	}
+	if pre && ctx.Err() != nil {
+		return 0, fmt.Errorf("take back the account's unproven credentials: %w", ctx.Err())
 	}
 	pwErr := c.SetPassword(ctx, userID, unguessablePassword())
 	r.cfg.Logger.ErrorContext(ctx, "ALERT: unproven credentials could not be revoked; the account stays LOCKED until its credentials are reset by hand",

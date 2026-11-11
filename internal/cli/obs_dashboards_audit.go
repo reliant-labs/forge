@@ -377,7 +377,7 @@ plane (a local ClickStack has no dashboards to replay).
 	f.StringVar(&o.backend, "backend", "", "local | cloud (default: from the env's declaration)")
 	f.StringVar(&o.dashboard, "dashboard", "", "only this dashboard (its id)")
 	f.StringVar(&o.panel, "panel", "", "only this panel (its id)")
-	f.DurationVar(&o.since, "since", 0, "run every panel over this window, as a viewer who picked a range (default: each dashboard's own defaultRange, else 1h, as the console opens it)")
+	obsDurationVar(f, &o.since, "since", 0, "run every panel over this window, as a viewer who picked a range (default: each dashboard's own defaultRange, else 1h, as the console opens it)")
 	f.DurationVar(&o.probeSince, "probe-window", auditProbeWindow, "the wider window an empty panel is probed over (widened to 4x the panel's window when that is not wider)")
 	f.BoolVar(&o.noProbe, "no-probe", false, "do not probe empty panels")
 	f.BoolVar(&o.all, "all", false, "list the ok panels too (text output; --json always lists every panel)")

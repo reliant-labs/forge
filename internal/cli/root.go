@@ -305,6 +305,8 @@ from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
 	rootCmd.AddCommand(newSecretCmd())
+	// `forge auth`: the inbound auth-event hooks (pkg/authhooks).
+	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newLoginCmd())
 	rootCmd.AddCommand(newLogoutCmd())
 	rootCmd.AddCommand(newCloudCmd())

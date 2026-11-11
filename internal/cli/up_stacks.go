@@ -424,7 +424,7 @@ func stopStackScopedWithFacts(projectID, env string, scope []string, facts *osPr
 	if err := requireTeardownSnapshot(facts); err != nil {
 		return stackStop{}, err
 	}
-	return executeStackStop(projectID, env, scope, planTeardown(projectID, env, scope, facts), facts, killTreesAndWait)
+	return executeStackStop(projectID, env, scope, planTeardown(projectID, env, scope, facts), facts, stackTreeStop(projectID, env))
 }
 
 // replaceStack is the `forge env up` pre-flight's stop: the scoped stop
@@ -444,7 +444,29 @@ func replaceStack(projectID, env string, scope []string) (stackStop, error) {
 	if len(plan.skipped) > 0 {
 		return stackStop{}, errStackHostsThisCommand(env, plan.skipped)
 	}
-	return executeStackStop(projectID, env, scope, plan, facts, killTreesAndWait)
+	return executeStackStop(projectID, env, scope, plan, facts, stackTreeStop(projectID, env))
+}
+
+// stackTreeStop is how a teardown from outside the stack's own `forge env
+// up` (`forge env down`, the next up's pre-flight) stops its process trees:
+// SIGTERM, then SIGKILL after the stop grace the stack recorded at launch
+// (resolvedEnvState.StopGraceSeconds: a host workload's preStopSeconds plus
+// stopGraceMargin, capped at maxStopGrace), and never sooner than
+// treeStopGrace. The supervising up process honours the same declaration in
+// its own shutdown (procRegistry.requireStopGrace).
+func stackTreeStop(projectID, env string) func([]int) error {
+	grace := recordedStopGrace(loadResolvedEnv(projectID, env))
+	return func(pids []int) error { return killTreesAndWaitWithin(pids, grace) }
+}
+
+// recordedStopGrace is the wait before SIGKILL a stack's launch record asks
+// for, within [treeStopGrace, maxStopGrace]. No record, or a record from a
+// forge that wrote none, is treeStopGrace.
+func recordedStopGrace(st *resolvedEnvState) time.Duration {
+	if st == nil || st.StopGraceSeconds <= 0 {
+		return treeStopGrace
+	}
+	return min(max(time.Duration(st.StopGraceSeconds)*time.Second, treeStopGrace), maxStopGrace)
 }
 
 // errStackHostsThisCommand is replaceStack's refusal.

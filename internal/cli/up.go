@@ -4013,7 +4013,29 @@ type resolvedEnvState struct {
 	Env         string         `json:"env"`
 	DatabaseURL string         `json:"database_url,omitempty"`
 	Ports       map[string]int `json:"ports"` // service/frontend name → live listen port
-	UpdatedAt   string         `json:"updated_at"`
+	// StopGraceSeconds is how long a teardown from outside this run waits
+	// between SIGTERM and SIGKILL (stackTreeStop): the longest host
+	// workload's preStopSeconds plus stopGraceMargin, capped at
+	// maxStopGrace. 0: no workload asked for longer than the default.
+	StopGraceSeconds int    `json:"stop_grace_seconds,omitempty"`
+	UpdatedAt        string `json:"updated_at"`
+}
+
+// hostStopGrace is the stop grace the host workloads in entities declare
+// through preStopSeconds: the longest, plus stopGraceMargin, capped at
+// maxStopGrace. 0 when none declares one.
+func hostStopGrace(entities *KCLEntities) time.Duration {
+	if entities == nil {
+		return 0
+	}
+	var longest time.Duration
+	for _, w := range entities.WorkloadsOn(RuntimeHost) {
+		longest = max(longest, hostPreStop(w))
+	}
+	if longest == 0 {
+		return 0
+	}
+	return min(longest+stopGraceMargin, maxStopGrace)
 }
 
 // persistResolvedEnv writes the sibling <env>.env.json discovery cache from
@@ -4036,10 +4058,11 @@ func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *confi
 		}
 	}
 	st := resolvedEnvState{
-		Env:         env,
-		DatabaseURL: resolveSeedDSN(entities, cfg, env),
-		Ports:       ports,
-		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		Env:              env,
+		DatabaseURL:      resolveSeedDSN(entities, cfg, env),
+		Ports:            ports,
+		StopGraceSeconds: int(hostStopGrace(entities) / time.Second),
+		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {

@@ -139,6 +139,11 @@ older control plane (no holds) still refuses with the billing reason.
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
 | static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
+`preStopSeconds` is newer than the other fields: a control plane still on an
+older forge refuses it as an unknown field when you deploy (it decodes the
+spec strictly; nothing is dropped silently). Leave it unset there; it is
+honoured once the platform runs a forge that has it.
+
 ## The API is one workload
 
 A browser reaches the API at ONE origin: the frontend's Connect transport has

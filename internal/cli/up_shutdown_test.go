@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -282,5 +283,61 @@ func TestHostPreStopExtendsTheStopGrace(t *testing.T) {
 	captureStdout(t, func() { p.requireStopGrace(w.Name, hostPreStop(w), "preStopSeconds") })
 	if want := 20*time.Second + stopGraceMargin; p.stopGrace != want || !strings.Contains(p.graceFor, "preStopSeconds") {
 		t.Errorf("grace = %s for %q, want %s for preStopSeconds", p.stopGrace, p.graceFor, want)
+	}
+}
+
+// A teardown from outside the stack (`forge env down`, the next up's
+// pre-flight) honours preStopSeconds too: the launch records the host
+// workloads' stop grace, and stackTreeStop waits it out before SIGKILL.
+func TestEnvDownHonoursTheRecordedPreStopGrace(t *testing.T) {
+	n20, n60 := int32(20), int32(60)
+	host := func(name string, n *int32) WorkloadEntity {
+		w := WorkloadEntity{Name: name, Spec: deployv1alpha1.WorkloadSpec{PreStopSeconds: n}}
+		w.Runtime.Type = RuntimeHost
+		return w
+	}
+	if got := hostStopGrace(&KCLEntities{Workloads: []WorkloadEntity{host("api", nil)}}); got != 0 {
+		t.Errorf("no preStopSeconds: grace %s, want 0", got)
+	}
+	cluster := host("edge", &n60)
+	cluster.Runtime.Type = RuntimeCluster
+	ents := &KCLEntities{Workloads: []WorkloadEntity{host("api", nil), host("proxy", &n20), cluster}}
+	if got, want := hostStopGrace(ents), 20*time.Second+stopGraceMargin; got != want {
+		t.Errorf("host proxy at 20s (cluster edge ignored): grace %s, want %s", got, want)
+	}
+	if got := hostStopGrace(&KCLEntities{Workloads: []WorkloadEntity{host("slow", &n60)}}); got != maxStopGrace {
+		t.Errorf("60s: grace %s, want the %s cap", got, maxStopGrace)
+	}
+
+	for _, tc := range []struct {
+		st   *resolvedEnvState
+		want time.Duration
+	}{
+		{nil, treeStopGrace},
+		{&resolvedEnvState{}, treeStopGrace},
+		{&resolvedEnvState{StopGraceSeconds: 3}, treeStopGrace},
+		{&resolvedEnvState{StopGraceSeconds: 23}, 23 * time.Second},
+		{&resolvedEnvState{StopGraceSeconds: 90}, maxStopGrace},
+	} {
+		if got := recordedStopGrace(tc.st); got != tc.want {
+			t.Errorf("recordedStopGrace(%+v) = %s, want %s", tc.st, got, tc.want)
+		}
+	}
+
+	// The record round-trips through the env state file stackTreeStop reads.
+	t.Setenv("HOME", t.TempDir())
+	path, err := upEnvStatePath(testProj, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(resolvedEnvState{Env: "dev", StopGraceSeconds: 23})
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := recordedStopGrace(loadResolvedEnv(testProj, "dev")); got != 23*time.Second {
+		t.Fatalf("grace read back = %s, want 23s", got)
 	}
 }

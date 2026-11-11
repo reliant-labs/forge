@@ -38,6 +38,22 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./auth/auth0": {
+      "types": "./dist/auth/auth0.d.ts",
+      "default": "./dist/auth/auth0.js"
+    },
+    "./auth/clerk": {
+      "types": "./dist/auth/clerk.d.ts",
+      "default": "./dist/auth/clerk.js"
+    },
+    "./auth/firebase": {
+      "types": "./dist/auth/firebase.d.ts",
+      "default": "./dist/auth/firebase.js"
+    },
+    "./auth/supabase": {
+      "types": "./dist/auth/supabase.d.ts",
+      "default": "./dist/auth/supabase.js"
+    },
     "./interceptors": {
       "types": "./dist/interceptors.d.ts",
       "default": "./dist/interceptors.js"

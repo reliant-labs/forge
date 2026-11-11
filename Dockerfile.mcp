@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # `forge mcp` (stdio) as a container, for MCP catalogs that build from source
 # (docker/mcp-registry, Glama). Build from the repo root:
-#   docker build -f Dockerfile.mcp -t forge-mcp .
-#   docker run -i --rm -v "$PWD:/workspace" forge-mcp
+#   docker build -f Dockerfile.mcp -t forge:mcp .
+#   docker run -i --rm -v "$PWD:/workspace" forge:mcp
 # The Go version comes from go.mod (toolchain line); CGO is off like the release.
 
 FROM golang:1.27-alpine AS build

@@ -194,14 +194,14 @@ func TestBuildFrontendDevCmd_InjectsNativeOIDC(t *testing.T) {
 	t.Run("an accepted device host is not reported as refused", func(t *testing.T) {
 		local := lanAddrs("192.168.1.20")
 		_, e2 := nativeProject(t, nativeIdentityOutput())
-		applyDeviceHostToIdP(e2, nil, "192.168.1.20", local)
+		applyDeviceHostToIDP(e2, nil, "192.168.1.20", local)
 		st := deviceHostStateFor(e2, "192.168.1.20", local)
 		if st.Refused || st.Accepted != "192.168.1.20" {
 			t.Errorf("state = %+v, want accepted", st)
 		}
 		// A valid host that no native application needed is neither accepted nor refused.
 		_, e3 := nativeProject(t, nativeIdentityOutput())
-		applyDeviceHostToIdP(e3, []string{"web"}, "192.168.1.20", local)
+		applyDeviceHostToIDP(e3, []string{"web"}, "192.168.1.20", local)
 		if st := deviceHostStateFor(e3, "192.168.1.20", local); st.Refused || st.Accepted != "" {
 			t.Errorf("no native frontend targeted: state = %+v", st)
 		}
@@ -304,7 +304,7 @@ func TestEnableLocalUserInfo_DeclaredValues(t *testing.T) {
 	})
 }
 
-func TestApplyDeviceHostToIdP(t *testing.T) {
+func TestApplyDeviceHostToIDP(t *testing.T) {
 	local := lanAddrs("192.168.1.20", "fd00::20")
 	zitadelOf := func(e *KCLEntities) *HostInfraEntity {
 		z, err := hostZitadel(e, e.Identity)
@@ -325,7 +325,7 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 
 	t.Run("a native app on a host identity and a local IPv4 device host: the IdP serves it", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
-		notice := applyDeviceHostToIdP(e, nil, "192.168.1.20", local)
+		notice := applyDeviceHostToIDP(e, nil, "192.168.1.20", local)
 		if zitadelOf(e).DeviceHost != "192.168.1.20" {
 			t.Fatal("the zitadel entry carries no device host")
 		}
@@ -346,7 +346,7 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 	t.Run("the opt-in is off without a device host and for a hostname or IPv6 host", func(t *testing.T) {
 		for _, host := range []string{"", "my-mac.local", "fd00::20", "10.0.2.2"} {
 			_, e := nativeProject(t, nativeIdentityOutput())
-			applyDeviceHostToIdP(e, nil, host, local)
+			applyDeviceHostToIDP(e, nil, host, local)
 			if zitadelOf(e).DeviceHost != "" {
 				t.Errorf("%q: the device host was applied", host)
 			}
@@ -360,7 +360,7 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 	t.Run("a hostname or IPv6 device host keeps the localhost issuer and says to pass the LAN IPv4", func(t *testing.T) {
 		for _, host := range []string{"my-mac.local", "fd00::20"} {
 			_, e := nativeProject(t, nativeIdentityOutput())
-			n := applyDeviceHostToIdP(e, nil, host, local)
+			n := applyDeviceHostToIDP(e, nil, host, local)
 			for _, want := range []string{"not an IPv4 address of this machine", "keeps its localhost issuer", "LAN IPv4 address", "my-mac.local", "adb reverse"} {
 				if !strings.Contains(n, want) && want != "my-mac.local" {
 					t.Errorf("%s: notice missing %q:\n%s", host, want, n)
@@ -370,7 +370,7 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 	})
 	t.Run("an address of another machine keeps the localhost issuer and says why", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
-		n := applyDeviceHostToIdP(e, nil, "10.0.2.2", local)
+		n := applyDeviceHostToIDP(e, nil, "10.0.2.2", local)
 		if zitadelOf(e).DeviceHost != "" {
 			t.Error("a non-local address must not become the issuer: nothing on this machine could dial it")
 		}
@@ -382,20 +382,20 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 	})
 	t.Run("no device host: untouched, silent", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
-		if n := applyDeviceHostToIdP(e, nil, "", local); n != "" || zitadelOf(e).DeviceHost != "" {
+		if n := applyDeviceHostToIDP(e, nil, "", local); n != "" || zitadelOf(e).DeviceHost != "" {
 			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
 		}
 	})
 	t.Run("no native frontend targeted: the IdP is not put on the network", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
-		if n := applyDeviceHostToIdP(e, []string{"web"}, "192.168.1.20", local); n != "" || zitadelOf(e).DeviceHost != "" {
+		if n := applyDeviceHostToIDP(e, []string{"web"}, "192.168.1.20", local); n != "" || zitadelOf(e).DeviceHost != "" {
 			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
 		}
 	})
 	t.Run("a native frontend that opted out of sign-in has no application: nothing to serve", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
 		e.Identity.Applications = e.Identity.Applications[:len(e.Identity.Applications)-1]
-		if n := applyDeviceHostToIdP(e, nil, "192.168.1.20", local); n != "" || zitadelOf(e).DeviceHost != "" {
+		if n := applyDeviceHostToIDP(e, nil, "192.168.1.20", local); n != "" || zitadelOf(e).DeviceHost != "" {
 			t.Errorf("notice %q, device host %q", n, zitadelOf(e).DeviceHost)
 		}
 	})
@@ -403,7 +403,7 @@ func TestApplyDeviceHostToIdP(t *testing.T) {
 	t.Run("social IdPs declared: a warning that the callback moved", func(t *testing.T) {
 		_, e := nativeProject(t, nativeIdentityOutput())
 		e.Identity.Social = []release.ShapeIdentitySocial{{Type: "google"}}
-		n := applyDeviceHostToIdP(e, nil, "192.168.1.20", local)
+		n := applyDeviceHostToIDP(e, nil, "192.168.1.20", local)
 		for _, want := range []string{"warning", "social sign-in", "http://192.168.1.20:", "/idps/callback", "Google refuses"} {
 			if !strings.Contains(n, want) {
 				t.Errorf("social warning missing %q:\n%s", want, n)

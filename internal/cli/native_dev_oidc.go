@@ -28,17 +28,17 @@ import (
 // native_dev_origin.go): a value the developer exported, the KCL env_vars, or
 // the frontend's .env.<env> wins over what forge injects. For these five it is
 // per variable, except that naming the issuer or the client id takes the whole
-// set (see withNativeOIDCEnv).
+// set (see withNativeOIDCEnvNote).
 //
 // The issuer is the IdP's origin as published by the identity converge:
 // http://localhost:<idp port> by default (reaches the iOS simulator), and
 // http://<device host>:<idp port> under --device-host, where the IdP serves
 // that address as a second domain of the same instance and every service's
-// jwt_issuer follows (see deviceIdPHost for the design and its alternatives).
+// jwt_issuer follows (see deviceIDPHost for the design and its alternatives).
 // An Android emulator reaches the localhost form with
 // `adb reverse tcp:<idp port> tcp:<idp port>`. The device-host form needs this
 // machine's own LAN IPv4 address; an emulator's 10.0.2.2 alias is not one, so
-// it leaves the issuer on localhost (see applyDeviceHostToIdP).
+// it leaves the issuer on localhost (see applyDeviceHostToIDP).
 const (
 	oidcIssuerEnv        = "EXPO_PUBLIC_FORGE_OIDC_ISSUER"
 	oidcClientIDEnv      = "EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID"
@@ -155,20 +155,14 @@ func nativeOIDCFromOutput(out identity.Output, appName string) *nativeOIDC {
 	return n
 }
 
-// withNativeOIDCEnv injects the dev client's five OIDC variables as ONE unit.
+// withNativeOIDCEnvNote injects the dev client's five OIDC variables as ONE unit.
 // They only make sense together (a scope list and redirect URIs belong to the
 // client they were registered for), so when any layer (the developer's shell,
 // the KCL env_vars, the frontend's .env.<env>) names an ISSUER or a CLIENT_ID,
 // the app is pointed at another identity provider and forge injects none of
 // them and says so. Otherwise it fills each variable no layer has set, which
 // lets a developer still override the scopes or a redirect alone.
-func withNativeOIDCEnv(env []string, n *nativeOIDC) []string {
-	env, _ = withNativeOIDCEnvNote(env, n)
-	return env
-}
-
-// withNativeOIDCEnvNote is withNativeOIDCEnv plus the one line to print when
-// forge stood down, "" otherwise.
+// It returns the env and the one line to print when forge stood down, "" otherwise.
 func withNativeOIDCEnvNote(env []string, n *nativeOIDC) ([]string, string) {
 	if n == nil {
 		return env, ""
@@ -401,7 +395,7 @@ func dynamicAppConfig(dir string) string {
 	return ""
 }
 
-// deviceIdPHost is the device host the dev IdP should additionally serve, or
+// deviceIDPHost is the device host the dev IdP should additionally serve, or
 // "" when this run does not need it.
 //
 // # Design: one issuer per run, and why it moves
@@ -437,7 +431,7 @@ func dynamicAppConfig(dir string) string {
 // Only when a targeted native frontend actually has a native application
 // registered on the host-run identity: a run without native sign-in does not
 // need the IdP on the network, and forge does not put it there.
-func deviceIdPHost(e *KCLEntities, targets []string, deviceHost string) string {
+func deviceIDPHost(e *KCLEntities, targets []string, deviceHost string) string {
 	id := hostIdentity(e)
 	if id == nil || deviceHost == "" {
 		return ""
@@ -467,14 +461,14 @@ func deviceHostIsThisMachineIPv4(deviceHost string, local []net.Addr) bool {
 	return ip != nil && ip.To4() != nil && addrsContainIP(local, ip)
 }
 
-// applyDeviceHostToIdP records the device host on the env's zitadel infra
+// applyDeviceHostToIDP records the device host on the env's zitadel infra
 // entry, which is what prewarmInfra (the IdP's domains), the identity
 // converge (the issuer) and the launch announcement all read. It returns the
 // notice to print, "" when this run has nothing to say. The IdP's listener is
 // not changed: Zitadel binds every interface already (it has no listen
 // address setting), so what this run adds is the instance's domain.
-func applyDeviceHostToIdP(e *KCLEntities, targets []string, deviceHost string, local []net.Addr) string {
-	host := deviceIdPHost(e, targets, deviceHost)
+func applyDeviceHostToIDP(e *KCLEntities, targets []string, deviceHost string, local []net.Addr) string {
+	host := deviceIDPHost(e, targets, deviceHost)
 	if host == "" {
 		return ""
 	}
@@ -587,7 +581,7 @@ type deviceHostState struct {
 }
 
 // deviceHostStateFor derives that from the run's own decision
-// (applyDeviceHostToIdP records an accepted host on the zitadel entry; the
+// (applyDeviceHostToIDP records an accepted host on the zitadel entry; the
 // identity step clears it when the IdP could not serve it).
 func deviceHostStateFor(e *KCLEntities, requested string, local []net.Addr) deviceHostState {
 	st := deviceHostState{Requested: requested}

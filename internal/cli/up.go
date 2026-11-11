@@ -1093,9 +1093,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		return err
 	}
 	// Before any infra starts: the IdP's domains and the identity's issuer
-	// both follow the device host (see deviceIdPHost).
+	// both follow the device host (see deviceIDPHost).
 	localAddrs, _ := net.InterfaceAddrs()
-	if notice := applyDeviceHostToIdP(entities, opts.targets, deviceHost, localAddrs); notice != "" {
+	if notice := applyDeviceHostToIDP(entities, opts.targets, deviceHost, localAddrs); notice != "" {
 		fmt.Println(notice)
 	}
 

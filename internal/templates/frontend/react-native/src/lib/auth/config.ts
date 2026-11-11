@@ -201,10 +201,17 @@ function parseRedirect(name: string, value: string, allowInsecureLoopback: boole
 // The fallback exists for a platform that cannot complete an https redirect, so
 // it must be a private-use scheme (or a dev loopback); another https link would
 // fail the same way.
-function parseFallbackRedirect(name: string, value: string, allowInsecureLoopback: boolean): string {
+function parseFallbackRedirect(
+  name: string,
+  value: string,
+  allowInsecureLoopback: boolean,
+): string {
   const checked = parseRedirect(name, value, allowInsecureLoopback);
   if (parseUri(checked)?.scheme === "https") {
-    throw new OidcConfigError(name, "must be a private-use scheme such as com.example.app:/oauthredirect, not https: it is what an https redirect falls back to");
+    throw new OidcConfigError(
+      name,
+      "must be a private-use scheme such as com.example.app:/oauthredirect, not https: it is what an https redirect falls back to",
+    );
   }
   return checked;
 }

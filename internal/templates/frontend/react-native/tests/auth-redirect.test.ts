@@ -50,7 +50,8 @@ describe("iOS version", () => {
   });
 
   it("is not supported when the version is unknown or garbage", () => {
-    for (const v of [null, undefined, "", "beta", "v17.4"]) expect(iosSupportsHttpsCallback(v)).toBe(false);
+    for (const v of [null, undefined, "", "beta", "v17.4"])
+      expect(iosSupportsHttpsCallback(v)).toBe(false);
     expect(parseIosVersion("17.4.1")).toEqual([17, 4]);
     expect(parseIosVersion("17")).toEqual([17, 0]);
   });
@@ -71,17 +72,30 @@ describe("canUseHttpsRedirect — OS x version", () => {
 });
 
 describe("chooseRedirect — decision table (OS x version x scheme)", () => {
-  const cases: [string, typeof both, { os: string; version: string | number }, string, boolean][] = [
-    ["android + https", both, { os: "android", version: 34 }, HTTPS, true],
-    ["ios 17.4 + https", both, { os: "ios", version: "17.4" }, HTTPS, true],
-    ["ios 18 + https", both, { os: "ios", version: "18.1" }, HTTPS, true],
-    ["ios 17.3 + https -> the private-use fallback", both, { os: "ios", version: "17.3.1" }, SCHEME, false],
-    ["ios 16 + https -> the private-use fallback", both, { os: "ios", version: "16.7" }, SCHEME, false],
-    ["web + https -> the private-use fallback", both, { os: "web", version: "" }, SCHEME, false],
-    ["android + scheme only", schemeOnly, { os: "android", version: 34 }, SCHEME, false],
-    ["ios 17.4 + scheme only", schemeOnly, { os: "ios", version: "17.4" }, SCHEME, false],
-    ["ios 16 + scheme only", schemeOnly, { os: "ios", version: "16.0" }, SCHEME, false],
-  ];
+  const cases: [string, typeof both, { os: string; version: string | number }, string, boolean][] =
+    [
+      ["android + https", both, { os: "android", version: 34 }, HTTPS, true],
+      ["ios 17.4 + https", both, { os: "ios", version: "17.4" }, HTTPS, true],
+      ["ios 18 + https", both, { os: "ios", version: "18.1" }, HTTPS, true],
+      [
+        "ios 17.3 + https -> the private-use fallback",
+        both,
+        { os: "ios", version: "17.3.1" },
+        SCHEME,
+        false,
+      ],
+      [
+        "ios 16 + https -> the private-use fallback",
+        both,
+        { os: "ios", version: "16.7" },
+        SCHEME,
+        false,
+      ],
+      ["web + https -> the private-use fallback", both, { os: "web", version: "" }, SCHEME, false],
+      ["android + scheme only", schemeOnly, { os: "android", version: 34 }, SCHEME, false],
+      ["ios 17.4 + scheme only", schemeOnly, { os: "ios", version: "17.4" }, SCHEME, false],
+      ["ios 16 + scheme only", schemeOnly, { os: "ios", version: "16.0" }, SCHEME, false],
+    ];
   it.each(cases)("%s", (_name, config, platform, want, universal) => {
     const choice = chooseRedirect(config, platform);
     expect(choice.redirectUri).toBe(want);
@@ -89,8 +103,12 @@ describe("chooseRedirect — decision table (OS x version x scheme)", () => {
   });
 
   it("returns the matching post-logout URI with the chosen redirect", () => {
-    expect(chooseRedirect(both, { os: "android", version: 34 }).postLogoutRedirectUri).toBe(HTTPS_OUT);
-    expect(chooseRedirect(both, { os: "ios", version: "16.0" }).postLogoutRedirectUri).toBe(SCHEME_OUT);
+    expect(chooseRedirect(both, { os: "android", version: 34 }).postLogoutRedirectUri).toBe(
+      HTTPS_OUT,
+    );
+    expect(chooseRedirect(both, { os: "ios", version: "16.0" }).postLogoutRedirectUri).toBe(
+      SCHEME_OUT,
+    );
   });
 
   it("never invents a redirect: https with no fallback keeps https", () => {
@@ -102,7 +120,9 @@ describe("chooseRedirect — decision table (OS x version x scheme)", () => {
 
   it("keeps the configured post-logout when the fallback has none", () => {
     const noOut = { ...both, fallbackPostLogoutRedirectUri: null };
-    expect(chooseRedirect(noOut, { os: "ios", version: "16.0" }).postLogoutRedirectUri).toBe(HTTPS_OUT);
+    expect(chooseRedirect(noOut, { os: "ios", version: "16.0" }).postLogoutRedirectUri).toBe(
+      HTTPS_OUT,
+    );
   });
 });
 

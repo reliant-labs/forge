@@ -9,7 +9,7 @@ const withForgeLinks = require("../plugins/with-forge-links");
 const { applyAppLinks, resolveSettings, CONFIG_FILE } = withForgeLinks;
 
 const HOST = "app.acme.example";
-const settings = (over: Record<string, unknown> = {}) => ({ domains: [HOST], developer: false, ...over });
+const settings = (over = {}) => ({ domains: [HOST], developer: false, ...over });
 
 describe("with-forge-links: applyAppLinks", () => {
   it("does nothing without a domain, returning the config untouched", () => {
@@ -71,7 +71,7 @@ describe("with-forge-links: applyAppLinks", () => {
 });
 
 describe("with-forge-links: resolveSettings", () => {
-  let root: string;
+  let root;
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "forge-links-"));
   });
@@ -83,7 +83,13 @@ describe("with-forge-links: resolveSettings", () => {
 
   it("reads the comma-separated environment, trimming and de-duplicating", () => {
     expect(
-      resolveSettings({ FORGE_ASSOCIATED_DOMAINS: ` ${HOST}, acme.example,${HOST} `, FORGE_APP_LINK_MODE: "developer" }, root),
+      resolveSettings(
+        {
+          FORGE_ASSOCIATED_DOMAINS: ` ${HOST}, acme.example,${HOST} `,
+          FORGE_APP_LINK_MODE: "developer",
+        },
+        root,
+      ),
     ).toEqual({ domains: [HOST, "acme.example"], developer: true });
   });
 
@@ -93,15 +99,25 @@ describe("with-forge-links: resolveSettings", () => {
       JSON.stringify({ FORGE_ASSOCIATED_DOMAINS: HOST, FORGE_APP_LINK_MODE: "developer" }),
     );
     expect(resolveSettings({}, root)).toEqual({ domains: [HOST], developer: true });
-    expect(resolveSettings({ FORGE_ASSOCIATED_DOMAINS: "acme.example", FORGE_APP_LINK_MODE: "" }, root)).toEqual({
+    expect(
+      resolveSettings({ FORGE_ASSOCIATED_DOMAINS: "acme.example", FORGE_APP_LINK_MODE: "" }, root),
+    ).toEqual({
       domains: ["acme.example"],
       developer: false,
     });
   });
 
   it("refuses anything that is not a bare hostname", () => {
-    for (const bad of ["https://app.acme.example", "app.acme.example:8443", "*.acme.example", "app.acme.example/x", "localhost"]) {
-      expect(() => resolveSettings({ FORGE_ASSOCIATED_DOMAINS: bad }, root)).toThrow(/bare lowercase hostname/);
+    for (const bad of [
+      "https://app.acme.example",
+      "app.acme.example:8443",
+      "*.acme.example",
+      "app.acme.example/x",
+      "localhost",
+    ]) {
+      expect(() => resolveSettings({ FORGE_ASSOCIATED_DOMAINS: bad }, root)).toThrow(
+        /bare lowercase hostname/,
+      );
     }
   });
 

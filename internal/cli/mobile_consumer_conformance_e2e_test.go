@@ -376,6 +376,8 @@ func assertNativeAuthScaffold(t *testing.T, mobile string) {
 		ext := ".test.ts"
 		if suite == "auth-context" {
 			ext = ".test.tsx"
+		} else if suite == "with-forge-links" {
+			ext = ".test.js"
 		}
 		files = append(files, "tests/"+suite+ext)
 	}

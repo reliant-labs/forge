@@ -754,7 +754,10 @@ describe("https universal link redirect", () => {
   });
 
   it("ios 17.3: the private-use fallback for authorize AND token, no universal links", async () => {
-    const { provider, idp, browser } = setup({ platform: { os: "ios", version: "17.3.1" } }, linked);
+    const { provider, idp, browser } = setup(
+      { platform: { os: "ios", version: "17.3.1" } },
+      linked,
+    );
     await provider.signIn();
     const [opened] = browser.opened;
     expect(opened.redirectUri).toBe(FALLBACK);
@@ -790,11 +793,15 @@ describe("https universal link redirect", () => {
     const droid = setup({ platform: { os: "android", version: 34 } }, linked);
     await droid.provider.signIn();
     const a = await droid.provider.signOut();
-    expect(new URL(a.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe("https://app.acme.example/signedout");
+    expect(new URL(a.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe(
+      "https://app.acme.example/signedout",
+    );
 
     const old = setup({ platform: { os: "ios", version: "16.0" } }, linked);
     await old.provider.signIn();
     const b = await old.provider.signOut();
-    expect(new URL(b.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe("com.acme.app:/signedout");
+    expect(new URL(b.endSessionUrl ?? "").searchParams.get("post_logout_redirect_uri")).toBe(
+      "com.acme.app:/signedout",
+    );
   });
 });

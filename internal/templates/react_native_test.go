@@ -42,7 +42,7 @@ func TestReactNativeTemplatesList(t *testing.T) {
 		"src/lib/auth/redirect.ts",
 		"plugins/with-forge-links.js",
 		"tests/auth-redirect.test.ts",
-		"tests/with-forge-links.test.ts",
+		"tests/with-forge-links.test.js",
 		"src/lib/auth/transport.ts",
 		"src/lib/auth/sign-in-error.ts",
 		"app/sign-in.tsx",

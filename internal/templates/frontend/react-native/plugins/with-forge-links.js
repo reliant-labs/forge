@@ -64,7 +64,10 @@ function resolveSettings(env = process.env, root = process.cwd()) {
 
 function associatedDomains(domains, developer) {
   const suffix = developer ? "?mode=developer" : "";
-  return domains.flatMap((host) => [`applinks:${host}${suffix}`, `webcredentials:${host}${suffix}`]);
+  return domains.flatMap((host) => [
+    `applinks:${host}${suffix}`,
+    `webcredentials:${host}${suffix}`,
+  ]);
 }
 
 function intentFilter(domains) {
@@ -101,7 +104,10 @@ function applyAppLinks(config, settings) {
   const filter = intentFilter(settings.domains);
   const filters = (android.intentFilters ?? []).filter(
     (existing) =>
-      !(existing.autoVerify && existing.data?.every((d) => d.scheme === "https" && settings.domains.includes(d.host))),
+      !(
+        existing.autoVerify &&
+        existing.data?.every((d) => d.scheme === "https" && settings.domains.includes(d.host))
+      ),
   );
   if (!filters.some((existing) => sameFilter(existing, filter))) filters.push(filter);
 

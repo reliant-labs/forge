@@ -76,9 +76,9 @@ describe("parseOidcConfig", () => {
         fallbackRedirectUri: "https://other.example.com/oauthredirect",
       }),
     ).toThrow(/private-use scheme/);
-    expect(() =>
-      parseOidcConfig({ ...base, fallbackRedirectUri: "javascript:1" }),
-    ).toThrow(OidcConfigError);
+    expect(() => parseOidcConfig({ ...base, fallbackRedirectUri: "javascript:1" })).toThrow(
+      OidcConfigError,
+    );
   });
 
   it("allows http only to loopback and only in development", () => {
@@ -234,7 +234,8 @@ describe("readOidcConfig", () => {
     process.env.EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID = "cid";
     process.env.EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI = "https://app.example.com/oauthredirect";
     process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI = "com.acme.app:/oauthredirect";
-    process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI = "com.acme.app:/signedout";
+    process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI =
+      "com.acme.app:/signedout";
     const cfg = readOidcConfig();
     expect(cfg?.redirectUri).toBe("https://app.example.com/oauthredirect");
     expect(cfg?.fallbackRedirectUri).toBe("com.acme.app:/oauthredirect");

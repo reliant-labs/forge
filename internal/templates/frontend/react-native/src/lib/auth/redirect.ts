@@ -39,7 +39,9 @@ export interface PlatformInfo {
 export const MIN_IOS_FOR_HTTPS_CALLBACK: readonly [number, number] = [17, 4];
 
 /** The (major, minor) of an iOS version string, or null when it is not one. */
-export function parseIosVersion(version: string | number | null | undefined): [number, number] | null {
+export function parseIosVersion(
+  version: string | number | null | undefined,
+): [number, number] | null {
   if (version === null || version === undefined) return null;
   const m = /^(\d+)(?:\.(\d+))?/.exec(String(version).trim());
   if (!m) return null;

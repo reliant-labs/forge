@@ -3533,6 +3533,11 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 			continue
 		}
 		cmd := buildFrontendDevCmd(ctx, fl, fe, os.Environ())
+		if isNativeFrontend(fe.Type) {
+			if err := writeAppLinkConfig(frontendDirOf(fl.projectDir, fe), nativeAppLinkConfig(fl.entities, fe)); err != nil {
+				fmt.Printf("[up] frontend %s: cannot write its universal-link plugin config: %v\n", fe.Name, err)
+			}
+		}
 		announceNativeAPIOrigin(os.Stdout, fl, fe, cmd.Env)
 		localAddrs, _ := net.InterfaceAddrs()
 		announceNativeOIDC(os.Stdout, fe.Name, readNativeOIDC(fl.projectDir, fl.entities, fe), cmd.Env, deviceHostStateFor(fl.entities, fl.deviceHost, localAddrs))
@@ -3560,6 +3565,10 @@ func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEnti
 	if oidcNote != "" {
 		fmt.Printf("[up] frontend %s: %s\n", fe.Name, oidcNote)
 	}
+	// https universal links: the Expo config plugin's inputs (see
+	// app_links_env.go). Only a native frontend whose application declares
+	// associated domains gets any; every other launch env is unchanged.
+	cmd.Env = withAppLinkEnv(cmd.Env, nativeAppLinkConfig(fl.entities, fe))
 	// Declared secrets, scoped to this frontend's own secret_ref
 	// declarations, layered over the dev server's env. In memory:
 	// the value reaches the child process environment only.

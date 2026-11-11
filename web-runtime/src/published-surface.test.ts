@@ -265,6 +265,66 @@ describe("the published surface", () => {
     expect(trackJs).not.toMatch(/^\s*import\s/m);
   });
 
+  it("keeps trackAuthEvent and identifyUser IN the barrel, importing only track.js", () => {
+    // Same rule as track(): an app's auth context calls identifyUser whether
+    // or not @hyperdx/browser is installed, so auth-events.ts may reach
+    // nothing but the dependency-free track.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "trackAuthEvent",
+      "identifyUser",
+      "AUTH_SEEN_STORAGE_KEY",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const authJs = readFileSync(join(pkgDir, "dist", "auth-events.js"), "utf8");
+    const imports = [
+      ...authJs.matchAll(/^\s*import[^"']*["']([^"']+)["']/gm),
+    ].map((m) => m[1]);
+    expect(imports).toEqual(["./track.js"]);
+  });
+
+  it("keeps normalizeRoute, the analytics tiers and exposures IN the barrel, and off the SDK", () => {
+    // An app names its own events' routes the way the automatic page_viewed
+    // events do, sets its consent tier and records flag exposures, all from
+    // the barrel. page-views.ts, session-identity.ts and exposure.ts sit in
+    // the barrel's import closure, so none may reach the SDK: they import
+    // only the import-free track.ts and basepath.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "normalizeRoute",
+      "PAGE_VIEWED_EVENT",
+      "analyticsTier",
+      "grantAnalyticsConsent",
+      "revokeAnalyticsConsent",
+      "optOutOfAnalytics",
+      "trackExposure",
+      "forgeExposureHook",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    for (const name of [
+      "page-views.js",
+      "session-identity.js",
+      "exposure.js",
+    ]) {
+      const js = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const imports = [
+        ...js.matchAll(
+          /^\s*(?:import|export)\b[^;]*?from\s*["']([^"']+)["']/gm,
+        ),
+      ].map((m) => m[1]);
+      expect(
+        imports.filter((i) => i !== "./track.js" && i !== "./basepath.js"),
+        `dist/${name} imports more than track.js and basepath.js`,
+      ).toEqual([]);
+    }
+  });
+
   it("keeps the money helpers IN the barrel, free of imports", () => {
     // The frontend skill tells pages to import these from the barrel rather
     // than hand-roll them. money.ts imports nothing, which is what earns it a

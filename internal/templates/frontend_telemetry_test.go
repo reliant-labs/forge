@@ -294,6 +294,109 @@ func TestTelemetryConfigWiresTheFrontendKnobs(t *testing.T) {
 	}
 }
 
+// TestTelemetryPageViewsAndIdentity pins the product-analytics defaults:
+// page views are on unless the runtime config says PAGE_VIEWS = "false"; the
+// signed-in user is identified only for a frontend with native sign-in and
+// api-base.ts, from the /auth/session URL native-login.ts asks, resolved
+// through apiBase exactly as native-login.ts resolves it (never from the raw
+// configured URL, which misses the dev proxy), never in mock mode, and off
+// with IDENTIFY_USER = "false".
+// Neither is ever read from a build variable. (Assertions read the raw
+// render: stripTelemetryComments' block-comment pattern also eats code that
+// sits between a "/*" in prose and the next "*/".)
+func TestTelemetryPageViewsAndIdentity(t *testing.T) {
+	for name, tmpl := range map[string]string{
+		"nextjs":   "nextjs/src/lib/otel_gen.ts.tmpl",
+		"vite-spa": "vite-spa/src/lib/otel_gen.ts.tmpl",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bare := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
+			if !strings.Contains(bare, `text(cfg.PAGE_VIEWS) === "false" ? false : { basePath: `) {
+				t.Errorf("page views must be on unless PAGE_VIEWS is \"false\":\n%s", bare)
+			}
+			for _, absent := range []string{"identify: identify(cfg)", "function identify(", "cfg.IDENTIFY_USER", `from "./api-base"`, `from "./config_gen"`} {
+				if strings.Contains(bare, absent) {
+					t.Errorf("a frontend without native sign-in must not render %q:\n%s", absent, bare)
+				}
+			}
+
+			data := telemetryData("static")
+			data.IdentifySession = true
+			s := renderTelemetryTmpl(t, tmpl, data)
+			for _, want := range []string{
+				`import { apiBase } from "./api-base";`,
+				`identify: identify(cfg),`,
+				`if (text(cfg.IDENTIFY_USER) === "false") {`,
+				`if (mock === "true" || mock === "hybrid") {`,
+				"return { sessionUrl: `${apiBase(configured)}/auth/session` };",
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+			if strings.Contains(s, `from "./config_gen"`) {
+				t.Errorf("an untyped frontend must not import config_gen:\n%s", s)
+			}
+
+			// The session URL is never built from the configured URL directly:
+			// that skips the dev proxy apiBase answers, so the page could ask
+			// another origin than sign-in does and miss the session cookie.
+			if strings.Contains(s, "${configured") || strings.Contains(s, "configured.replace(") {
+				t.Errorf("the session URL must go through apiBase, never the raw configured URL:\n%s", s)
+			}
+
+			// Typed config: mock mode comes from config_gen, as session-provider.ts reads it.
+			data.HasTypedConfig, data.HasMockAPI = true, true
+			s = renderTelemetryTmpl(t, tmpl, data)
+			if !strings.Contains(s, `import { loadConfig } from "./config_gen";`) ||
+				!strings.Contains(s, `return String(loadConfig().MOCK_API || "");`) {
+				t.Errorf("a typed frontend's mock mode must come from loadConfig():\n%s", s)
+			}
+
+			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER"} {
+				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(s) {
+					t.Errorf("%s is read from a build variable; it must come from config.js", buildVar)
+				}
+			}
+		})
+	}
+}
+
+// TestTelemetryAnalyticsMode pins the analytics tier's ceiling: it comes from
+// the runtime config's ANALYTICS_MODE (so one build promotes across
+// environments), only its four values pass (off, aggregate, identified,
+// full: forge.Analytics.mode's contract), and anything else, the key absent
+// included, is left to the runtime's default, "identified". Never from a
+// build variable.
+func TestTelemetryAnalyticsMode(t *testing.T) {
+	for name, tmpl := range map[string]string{
+		"nextjs":   "nextjs/src/lib/otel_gen.ts.tmpl",
+		"vite-spa": "vite-spa/src/lib/otel_gen.ts.tmpl",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
+			for _, want := range []string{
+				"analytics: analyticsMode(cfg.ANALYTICS_MODE),",
+				`return mode === "off" || mode === "aggregate" || mode === "identified" || mode === "full"`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q:\n%s", want, s)
+				}
+			}
+			if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*ANALYTICS_MODE`).MatchString(s) {
+				t.Error("ANALYTICS_MODE is read from a build variable; it must come from config.js")
+			}
+			// The generated module never opts into a persistent id itself:
+			// that is the app's consent call, not a default.
+			for _, absent := range []string{`(?m)^\s*attribution:`, `(?m)^\s*(void\s+)?grantAnalyticsConsent\(`, `import\s*\{[^}]*grantAnalyticsConsent`} {
+				if regexp.MustCompile(absent).MatchString(s) {
+					t.Errorf("otel_gen.ts must not render code matching %q:\n%s", absent, s)
+				}
+			}
+		})
+	}
+}
+
 // TestTelemetryHeaderNamesTheHostedDefault keeps the explanation honest: a
 // hosted frontend gets /_otel from forge, and the comment says so.
 func TestTelemetryHeaderNamesTheHostedDefault(t *testing.T) {

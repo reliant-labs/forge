@@ -89,7 +89,9 @@ import { EventBusContext } from "../use-event";
 // token you store yourself. Nothing else in the app changes: the context
 // value under it is the same on every platform.
 import { createSessionAuthProvider } from "./session-provider";
-import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{{else}}import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
+import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{{else}}import { identifyUser } from "@reliantlabs/forge-web-runtime";
+
+import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
 import { createSessionAuthProvider, isMockMode } from "./session-provider";
 import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 
@@ -159,6 +161,18 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
     })();
   }, [refresh]);
 
+{{- if ne .Platform "react-native"}}
+  // Tell telemetry who is signed in: identifyUser attaches the opaque
+  // subject to every span and replay (the Sessions view, `forge obs sessions
+  // --user`) and sends one daily `auth_signed_in {kind: "resumed"}`. The
+  // server already counted the sign-in itself; this joins sessions to users.
+  // Not in mock mode, whose user is a fixture.
+  useEffect(() => {
+    if (mockSession || isLoading) return;
+    identifyUser(identity.authenticated ? (identity.subject ?? null) : null);
+  }, [mockSession, isLoading, identity.authenticated, identity.subject]);
+
+{{- end}}
   // A session can lapse mid-use: the cookie expires, or the server revokes it.
   // The transport emits `auth:expired` when an RPC fails Unauthenticated (HTTP
   // 401; see src/lib/connect.ts). Re-ask the server who is signed in rather

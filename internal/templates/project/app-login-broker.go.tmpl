@@ -60,6 +60,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/devidp"
+	"github.com/reliant-labs/forge/pkg/observe"
 
 	"{{.Module}}/pkg/config"
 {{- if .MiddlewareDeclaresSessionCookie}}
@@ -736,7 +737,16 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (b *loginBroker) handleLogout(w http.ResponseWriter, _ *http.Request) {
+func (b *loginBroker) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// auth_signed_out, the one auth event devidp cannot see: read whom the
+	// cookie was for before clearing it (presentation-only decode, as
+	// identityFrom). No count depends on it; product_events = False in the
+	// env switches it off with forge's other automatic events.
+	if c, err := r.Cookie(b.sessionCookie()); err == nil && observe.AutoProductEvents() {
+		if claims, ok := presentationClaimsFrom(c.Value); ok && claims.Sub != "" {
+			observe.TrackAuth(r.Context(), observe.AuthSignedOut, claims.Sub, observe.WithProvider(observe.AuthProviderForge))
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     b.sessionCookie(),
 		Value:    "",
@@ -1199,7 +1209,9 @@ func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
 	user, err := b.client.FindUserByID(ctx, userID)
 	if err == nil {
 		var tokens devidp.Tokens
-		tokens, err = b.client.SignIn(ctx, b.flow, devidp.Credentials{LoginName: user.LoginName, Password: req.Password})
+		// Recorded as a reset sign-in, not a password one (auth_signed_in).
+		tokens, err = b.client.SignIn(devidp.WithAuthMethod(ctx, observe.AuthMethodReset), b.flow,
+			devidp.Credentials{LoginName: user.LoginName, Password: req.Password})
 		if err == nil {
 			b.setSession(w, tokens)
 			writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))

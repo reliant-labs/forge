@@ -162,10 +162,57 @@ on the server, and calls made while the SDK chunk is still loading are held
   recall spans already batched, and the SDK's auto-instrumentation has no off
   switch once running: an app that must send nothing without consent should not
   call `initBrowserTelemetry` before it has it.
+- `identifyUser(id | null, { provider? })` — `setTelemetryUser(id)` plus one
+  `auth_signed_in {kind: "resumed"}` per user per UTC day per browser (deduped
+  in memory, and in localStorage under `forge.auth.seen` only in the `full`
+  tier). Call it wherever the app learns who
+  is signed in; it is what counts a user with a long-lived session as active.
+- `trackAuthEvent("signed_up" | "signed_in" | "signed_out", { userId, method?,
+provider?, socialProvider?, verified? })` — the standard auth events, for an
+  app whose auth never touches a forge server (forge's managed auth reports
+  them from the server). Both refuse an id that is empty, longer than 128
+  characters or contains `@` (the provider's opaque subject, never an email),
+  and under Global Privacy Control or Do Not Track send no auth event and
+  attach no id.
+
+- Analytics tiers (`analytics: "off" | "aggregate" | "identified" | "full"`,
+  ordered, default `identified`): the browser runs at the lowest of the mode,
+  the consent the app signalled and GPC / DNT (which cap it at `aggregate`).
+  Below `full` **nothing is stored on the device**: no cookie (the SDK's
+  `__rum_sid` session is answered from memory, `installRumSessionStore`), no
+  localStorage, no sessionStorage, no visitor id, no replay. `identified`
+  carries a signed-in user's opaque id; `aggregate` carries none.
+  `grantAnalyticsConsent()` (call it each page load once your consent manager
+  says yes) raises mode `full` to the `full` tier: the session moves to the
+  cookie, `visitor.id`, stored attribution, `user_identified` and (from the
+  next load) replay. `revokeAnalyticsConsent()` erases what `full` stored;
+  `optOutOfAnalytics()` turns product analytics off and remembers it in
+  `forge.analytics_opt_out`. `analyticsTier()` reports the tier. `track()`
+  warns once on the reserved prefixes `auth_`, `page_`, `flag_`, `web_`.
+- `trackExposure(flag, variant, { provider })` records one `flag_evaluated`
+  per person, flag and variant per UTC day; `forgeExposureHook` does it for
+  every OpenFeature evaluation (`OpenFeature.addHooks(forgeExposureHook)`).
+
+- Page views and the signed-in user, both off unless passed (forge's generated
+  `otel_gen.ts` passes them): `pageViews: true | { basePath, routeName }`
+  records one `page_viewed {route}` per route, the pathname with the query,
+  fragment and basePath cut and id-looking segments as `:id`
+  (`normalizeRoute` in the barrel); `identify: { sessionUrl }` asks that
+  endpoint (an `/auth/session` answering `{ authenticated, subject }`, with the
+  cookie) at start, on a move into or out of `/auth/*` and when the tab is
+  shown again, and passes `subject` (never an `@`-shaped one) to
+  `setTelemetryUser`. The first view of a page load carries `entry: "true"`
+  and its external `referrer_host` / `referrer_path` (`siteHosts` names hosts
+  that are this site); a URL's `utm_*`, `ref` and `click_id` (the ad
+  network's name, never the click id) ride along when present. `authenticated:
+false`, a 401 or 403, and any answer naming nobody (another non-2xx, a
+  foreign body, a network error) clear the user it set, once; before it has
+  set one they change nothing. Both stop on `disableTelemetry()`.
 
 - Attribution (`appClient`, `visitorIdStorageKey`, `withAttribution(url)`): init
   stamps `app.client` (`electron` inside Electron, else `web`; pass `"landing"`
-  from a marketing site) and `visitor.id` on every event, and reads `rid` and
+  from a marketing site) on every event and, in the `full` tier only,
+  `visitor.id`, and reads `rid` and
   `utm_source|medium|campaign|term|content` from the URL into localStorage. The
   first `setTelemetryUser(id)` per user also emits one `user_identified` event
   with `visitor_id` and the stored utm values. `withAttribution(url)` appends
@@ -174,15 +221,14 @@ on the server, and calls made while the SDK chunk is still loading are held
   replaces the stored ones (last touch); `attributionTouch: "first"` keeps the
   first for good, for a marketing site attributing acquisition.
 
-  A site whose visitor id needs a consent its error telemetry does not (error
-  telemetry for everyone, the visitor id only with analytics consent) starts
-  with `attribution: false`: no visitor id is created, read or stamped and
-  nothing is captured until it calls `enableAttribution({ search })` (from
-  `/telemetry`) on grant. `search` is the landing URL's query string kept from
-  page load, for when a client-side navigation has dropped it since. To erase
-  on withdrawal, remove `ATTRIBUTION_STORAGE_KEY`, `IDENTIFIED_USER_STORAGE_KEY`
-  and the visitor id key; `getAttribution()` is the captured record, for a site
-  that stamps campaign values on its own events.
+  `attribution` and `enableAttribution({ search })` (from `/telemetry`) are
+  deprecated spellings that keep working: passing `attribution` at all means
+  mode `full`, `true` also grants consent at start, and `enableAttribution()`
+  raises the default mode to `full` and grants. `search` is the landing URL's
+  query string kept from page load, for when a client-side navigation has
+  dropped it since. `revokeAnalyticsConsent()` erases the stored ids on
+  withdrawal; `getAttribution()` is the captured record, for a site that
+  stamps campaign values on its own events.
 
 - Client context: init puts the low-entropy client hints of
   `navigator.userAgentData` on the resource (`browser.brands` as
@@ -357,6 +403,12 @@ telemetry?.tracer.startActiveSpan("backend.start", (span) => {
   bodies are redacted and bounded, and object-valued attributes are dropped.
   `setUser(id)` stamps the opaque `userId` the browser entry stamps. Nothing
   else about the machine is sent: no host name, IP, argv or environment.
+- **Auth events:** `trackAuthEvent(kind, { userId, method?, provider? … })`
+  from `/node` writes the standard `auth_signed_up` / `auth_signed_in` /
+  `auth_signed_out` product event as the INFO log record forge/pkg/observe's
+  `TrackAuth` writes (`app.client` is `backend` unless `appClient` is set), for
+  a Next.js route handler or an Express backend completing an Auth0 or Clerk
+  callback. A no-op before init.
 - The global `@opentelemetry/api` tracer, AsyncLocalStorage context manager and
   W3C `traceparent` propagator are this runtime's unless `registerGlobal: false`.
   `reportException` from the barrel reports through it once it is running.

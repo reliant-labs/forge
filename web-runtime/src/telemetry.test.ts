@@ -1470,10 +1470,12 @@ describe("initBrowserTelemetry replay wiring", () => {
 
   it("starts the recorder only for a sampled session", async () => {
     stubDomWithStorage("0");
-    const { t } = await load();
+    const { t, k } = await load();
+    k.grantAnalyticsConsent();
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
+      analytics: "full",
       replay: true,
       replaySampleRate: 0.5,
     });
@@ -1484,15 +1486,42 @@ describe("initBrowserTelemetry replay wiring", () => {
     init.mockReset();
     stubDomWithStorage("1");
     const again = await load();
+    again.k.grantAnalyticsConsent();
     await again.t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
+      analytics: "full",
       replay: true,
       replaySampleRate: 0.5,
     });
     expect(
       (init.mock.calls[0]?.[0] as Record<string, unknown>).disableReplay,
     ).toBe(false);
+  });
+
+  it("records no replay below the full tier, and keeps no sampling decision", async () => {
+    // Replay records a person: the cookieless default never runs it, and
+    // full without consent is still aggregate.
+    for (const config of [
+      { replay: true, replaySampleRate: 0.5 },
+      { replay: true, analytics: "full" as const },
+    ]) {
+      init.mockReset();
+      stubDomWithStorage();
+      const store = (
+        window as unknown as { sessionStorage: { getItem(k: string): unknown } }
+      ).sessionStorage;
+      const { t } = await load();
+      await t.initBrowserTelemetry({
+        serviceName: "web",
+        endpoint: "/_otel",
+        ...config,
+      });
+      expect(
+        (init.mock.calls[0]?.[0] as Record<string, unknown>).disableReplay,
+      ).toBe(true);
+      expect(store.getItem("forge.replay.sampled")).toBeNull();
+    }
   });
 });
 
@@ -1508,16 +1537,13 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
 
     await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
 
-    expect(addAction).toHaveBeenCalledTimes(2);
+    // Below the full tier there is no visitor to identify: no
+    // user_identified, only the event.
+    expect(addAction).toHaveBeenCalledTimes(1);
     expect(addAction).toHaveBeenNthCalledWith(1, "signup_started", {
       plan: "pro",
     });
-    // The last user wins; the stale one is not replayed or identified.
-    expect(addAction).toHaveBeenNthCalledWith(
-      2,
-      "user_identified",
-      expect.objectContaining({ visitor_id: expect.any(String) }),
-    );
+    // The last user wins; the stale one is not replayed.
     expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "user-2" });
     expect(setGlobalAttributes).not.toHaveBeenCalledWith({ userId: "user-1" });
 
@@ -1588,6 +1614,103 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
   });
 });
 
+describe("page views and the signed-in user", () => {
+  function stubDomWithHistory(pathname: string) {
+    stubDom();
+    const location = (window as unknown as { location: Record<string, string> })
+      .location;
+    location.pathname = pathname;
+    const go = (_s: unknown, _u: string, url?: string | URL | null) => {
+      if (url) location.pathname = new URL(String(url), ORIGIN).pathname;
+    };
+    // The real methods, kept apart from window.history, which gets wrapped.
+    const history = { pushState: vi.fn(go), replaceState: vi.fn(go) };
+    (window as unknown as Record<string, unknown>).history = { ...history };
+    return history;
+  }
+
+  // No fixed waits: a route change is reported synchronously inside
+  // pushState, and the session watch calls fetch() synchronously when it
+  // asks, so a call that did not happen by the next line never will. Only
+  // the applied answer is awaited, by polling for it (vi.waitFor).
+  it("records neither by default, and asks no session endpoint", async () => {
+    const history = stubDomWithHistory("/");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const { t } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    window.history.pushState({}, "", "/orders/1");
+
+    expect(window.history.pushState).toBe(history.pushState);
+    expect(addAction).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("records page_viewed per route and stamps the session's subject", async () => {
+    stubDomWithHistory("/admin/auth/sign-in");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            authenticated: true,
+            subject: "u-42",
+            email: "e@x",
+          }),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      pageViews: { basePath: "/admin" },
+      identify: { sessionUrl: "http://api.test/auth/session" },
+    });
+    window.history.pushState({}, "", "/admin/orders/17?tab=items");
+    await vi.waitFor(() =>
+      expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "u-42" }),
+    );
+
+    expect(
+      addAction.mock.calls.filter(([name]) => name === "page_viewed"),
+    ).toEqual([
+      ["page_viewed", { route: "/auth/sign-in", entry: "true" }],
+      ["page_viewed", { route: "/orders/:id" }],
+    ]);
+    // Once at start, once on leaving the sign-in screen.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "u-42" });
+    expect(setGlobalAttributes).not.toHaveBeenCalledWith(
+      expect.objectContaining({ email: expect.anything() }),
+    );
+  });
+
+  it("disableTelemetry takes the history hooks and the session watch out", async () => {
+    const history = stubDomWithHistory("/");
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ authenticated: false })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      pageViews: true,
+      identify: { sessionUrl: "/auth/session" },
+    });
+    expect(window.history.pushState).not.toBe(history.pushState);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    k.disableTelemetry();
+    addAction.mockReset();
+    window.history.pushState({}, "", "/auth/sign-in");
+
+    expect(window.history.pushState).toBe(history.pushState);
+    expect(addAction).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("resolveIngestUrl", () => {
   it("resolves a path against the page origin", async () => {
     const { t } = await load();
@@ -1606,13 +1729,15 @@ describe("resolveIngestUrl", () => {
 });
 
 describe("app.client, visitor.id and user_identified", () => {
-  it("stamps app.client and visitor.id as global attributes at init", async () => {
+  it("stamps app.client and visitor.id as global attributes at init in the full tier", async () => {
     stubDom();
-    const { t } = await load();
+    const { t, k } = await load();
+    k.grantAnalyticsConsent();
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
       appClient: "landing",
+      analytics: "full",
     });
 
     expect(setGlobalAttributes).toHaveBeenCalledWith({
@@ -1631,14 +1756,20 @@ describe("app.client, visitor.id and user_identified", () => {
     );
   });
 
-  it("adopts rid and utm from the URL and reports them once per user", async () => {
+  it("adopts rid and utm from the URL and reports them once per user (legacy attribution: true)", async () => {
+    // attribution: true, from before the tiers, still means "full, with
+    // consent": an app that chose it keeps what it chose.
     const rid = "0b8f3c2e-6a1d-4f7e-9c55-2d1e8a7b4c90";
     stubDom();
     (
       window as unknown as { location: Record<string, string> }
     ).location.search = `?rid=${rid}&utm_source=news`;
     const { t, k } = await load();
-    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      attribution: true,
+    });
 
     expect(setGlobalAttributes).toHaveBeenCalledWith(
       expect.objectContaining({ "visitor.id": rid }),
@@ -1785,7 +1916,7 @@ describe("initBrowserTelemetry on an origin that drops cookies", () => {
     return { doc, store };
   }
 
-  it("keeps the SDK's session cookie in localStorage before the SDK starts", async () => {
+  it("keeps the SDK's session cookie in localStorage before the SDK starts, in the full tier", async () => {
     const { doc, store } = stubDomDroppingCookies();
     let seenAtInit = "";
     init.mockImplementation(() => {
@@ -1793,8 +1924,13 @@ describe("initBrowserTelemetry on an origin that drops cookies", () => {
       doc.cookie = "__rum_sid=abc; path=/;max-age=900;SameSite=Strict";
       seenAtInit = doc.cookie;
     });
-    const { t } = await load();
-    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    const { t, k } = await load();
+    k.grantAnalyticsConsent();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      analytics: "full",
+    });
     expect(init).toHaveBeenCalledTimes(1);
     expect(seenAtInit).toBe("__rum_sid=abc");
     expect(store.get(t.RUM_SESSION_STORAGE_KEY)).toContain('"v":"abc"');

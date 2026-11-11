@@ -2759,6 +2759,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        it is this frontend's choice in this env, which is
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   PAGE_VIEWS           "false" only; unset means page_viewed events
+#   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
     assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
@@ -2766,7 +2768,9 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
-        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
+        | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.

@@ -59,7 +59,7 @@ var envCommandGroups = []struct {
 	verbs     []string
 }{
 	{"lifecycle", "Lifecycle:", []string{"new", "up", "down", "start", "stop", "status", "ps", "exec", "list", "delete", "deploy", "smoke", "devstack"}},
-	{"build", "Build and release:", []string{"build", "releases"}},
+	{"build", "Build and release:", []string{"build", "releases", "floor"}},
 	{"config", "Configuration:", []string{"config", "options", "render", "diff", "shape", "kcl"}},
 	{"secrets", "Secrets:", []string{"secrets", "secret"}},
 }

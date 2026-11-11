@@ -122,8 +122,6 @@ release_health = forge.ReleaseHealth {
 }
 ```
 
-A thin before window is no baseline (`thin_baseline`): `observability/release-health`.
-
 | Exit | Verdict |
 |---|---|
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |

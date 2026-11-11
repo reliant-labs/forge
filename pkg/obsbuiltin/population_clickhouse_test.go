@@ -227,8 +227,8 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 	check("users", "auth-sources", false, "e1", rows("backend\t5\t2\t1\t1", "web\t1\t0\t0\t0"))
 	check("users", "auth-sources", false, "e2", "sign-ups not reported: new users are the users first seen\t0\t0\t0\t0")
 	check("users", "most-active-users", false, "e1", rows(
-		"u4\t6\t1\t6\t2026-03-16 09:25", "u2\t5\t3\t5\t2026-03-13 15:00", "u1\t3\t3\t3\t2026-03-16 10:00",
-		"u6\t3\t3\t3\t2026-03-13 09:00", "u3\t2\t2\t2\t2026-03-13 15:05", "u5\t2\t1\t1\t2026-03-16 11:33"))
+		"u4\t6\t1\t6\t2026-03-16 09:25:00", "u2\t5\t3\t5\t2026-03-13 15:00:00", "u1\t3\t3\t3\t2026-03-16 10:00:00",
+		"u6\t3\t3\t3\t2026-03-13 09:00:00", "u3\t2\t2\t2\t2026-03-13 15:05:00", "u5\t2\t1\t1\t2026-03-16 11:33:01"))
 
 	// Product. h1's visit lasted 900 s, h3's 180, h7's 120, h8's 300, h11's
 	// 40 across midnight, five bounces 0: 1540 s over 10 visits.
@@ -250,9 +250,9 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 	// h2's visitor-day; conversion is persons over 9 visitor-days.
 	check("product", "goals", false, "e1", rows("Checkout\t1\t1\t11.11", "pricing\t2\t2\t22.22"))
 	check("product", "events-by-name", false, "e1", rows(
-		"auth_signed_up\t6\t5\t2026-03-16 11:33", "order_created\t4\t4\t2026-03-16 09:20", "auth_signed_in\t3\t3\t2026-03-16 10:00",
-		"flag_evaluated\t2\t2\t2026-03-16 10:00", "order_updated\t2\t2\t2026-03-13 09:00", "add_to_cart\t1\t1\t2026-03-16 09:10",
-		"auth_signed_out\t1\t1\t2026-03-15 08:00", "purchase\t1\t1\t2026-03-16 09:25"))
+		"auth_signed_up\t6\t5\t2026-03-16 11:33:01", "order_created\t4\t4\t2026-03-16 09:20:00", "auth_signed_in\t3\t3\t2026-03-16 10:00:00",
+		"flag_evaluated\t2\t2\t2026-03-16 10:00:30", "order_updated\t2\t2\t2026-03-13 09:00:00", "add_to_cart\t1\t1\t2026-03-16 09:10:00",
+		"auth_signed_out\t1\t1\t2026-03-15 08:00:00", "purchase\t1\t1\t2026-03-16 09:25:00"))
 	check("product", "actions-per-entity", false, "e1", "order\t4\t2\t0")
 	check("product", "funnel-activation", false, "e1", rows("Visited\t9", "Signed up\t5", "Activated\t3"))
 	check("product", "signups-from-visit", false, "e1", "0.6")

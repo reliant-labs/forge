@@ -1287,6 +1287,21 @@ _Enforced · Forge, on any infrastructure_
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
 
+<a id="lint-lanes-off"></a>
+
+### Switch a lint lane off
+
+`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
+
+**Evidence:**
+
+- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
+
 <a id="lint-autofix"></a>
 
 ### Type-checked auto-fixes

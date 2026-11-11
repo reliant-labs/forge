@@ -1346,6 +1346,19 @@ benefits:
       - command: lint --allow-skip
       - command: lint --strict
 
+  - id: lint-lanes-off
+    category: guardrails
+    title: Switch a lint lane off
+    claim: >-
+      `lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend,
+      migration safety, db grants, ...) for a repo that checks them another way,
+      and the verdict still names every lane that is off.
+    availability: forge
+    use: "`lint: {lanes: {frontend: off, migration-safety: off}}`"
+    evidence:
+      - skill: ci/lint-rollout
+      - path: internal/cli/lint/lint_lanes.go
+
   - id: lint-autofix
     category: guardrails
     title: Type-checked auto-fixes

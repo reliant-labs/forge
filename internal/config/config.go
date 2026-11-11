@@ -1432,6 +1432,8 @@ type LintConfig struct {
 	// in the verdict, with its reason. It accepts only "could not run": a
 	// lane that ran and found problems still fails.
 	AllowSkip []LintSkipAllowance `yaml:"allow_skip,omitempty"`
+
+	Lanes map[string]string `yaml:"lanes,omitempty"` // lane → off|on; see lint_lanes.go
 }
 
 // LintSkipAllowance is one lint.allow_skip entry. Read by the lint

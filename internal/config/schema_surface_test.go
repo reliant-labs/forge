@@ -134,7 +134,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "rules", "tracing"},
+			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
+			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
 		},
 		{
 			name: "LintSkipAllowance",

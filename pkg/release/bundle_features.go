@@ -129,22 +129,22 @@ const (
 	// carries no key, so it needs nothing of the reader.
 	BundleFeatureExternalDatabases = "shape-external-databases"
 	// BundleFeatureIdentityNativeApp is ShapeIdentityApplication.Frontend and
-	// the application kind "native": a mobile app's own public OIDC client. A
-	// reader without the feature is sent the identity without its native
-	// applications, which is the fail-closed reading (no client is registered
-	// that nobody converged).
+	// the application kind "native": a mobile app's own public OIDC client,
+	// with its callbacks (redirect_uris, logout_uris) resolved by forge at
+	// bundle build. A control plane that names it REGISTERS such a client at
+	// its identity provider; one that does not is sent the identity without
+	// its native applications, which is the fail-closed reading (no client
+	// is registered that nobody converged) and what [BundleReader.LimitShape]
+	// does, with [BundleReader.WithheldNativeApplications] naming what it
+	// left out so the deploy can say so.
 	//
-	// NOT ADVERTISED. [BundleDocFeatures] lists what this version's decoder
-	// accepts, and a control plane built from it would otherwise claim this
-	// feature merely by decoding the field, then be sent native applications
-	// it cannot register. The feature means "can REGISTER", so it is withheld
-	// from the advertised list until a control plane implements hosted
-	// registration of native clients: that change adds the constant to
-	// BundleDocFeatures, lifts the hosted refusal in validateApplication and
-	// the KCL schema, and a control plane then names it in GetCapabilities
-	// only if it registers. Until then every real reader lacks it, so
-	// [BundleReader.LimitShape] withholds native applications from all of
-	// them (only a nil reader, the machine ledger, keeps them).
+	// It is advertised in [BundleDocFeatures] like every other feature, so a
+	// control plane built from a forge that has it names it by decoding the
+	// field. That claim is only true once the control plane also maps the kind
+	// to a registered client, so the control plane holds a guard test that
+	// fails when BundleDocFeatures gains a feature it has not implemented or
+	// withheld. A control plane built from an older forge does not name it,
+	// and is never sent a native application.
 	BundleFeatureIdentityNativeApp = "shape-identity-native-app"
 	// BundleFeatureExternalDatabaseTLS is authenticated external route TLS.
 	// Older readers receive no such route, never a route with trust stripped
@@ -166,14 +166,8 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureIdentityNativeApp}
 }
-
-// unadvertisedBundleFeatures are features this version defines and gates in
-// [BundleReader.LimitShape] but does not advertise (see
-// [BundleFeatureIdentityNativeApp]). They still own their document keys, so a
-// field they gate cannot reach a reader unannounced.
-var unadvertisedBundleFeatures = []string{BundleFeatureIdentityNativeApp}
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
 // optional document features it named. A nil *BundleReader is this forge's

@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3" // for TestApplyDBPoolTuning_AppliesNonZero
+	_ "github.com/jackc/pgx/v5/stdlib" // for TestApplyDBPoolTuning_AppliesNonZero
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
@@ -541,11 +541,11 @@ func TestApplyDBPoolTuning_NilDBNoop(t *testing.T) {
 
 func TestApplyDBPoolTuning_AppliesNonZero(t *testing.T) {
 	t.Parallel()
-	// Open an in-memory SQLite handle — we don't actually exercise it,
-	// just confirm pool tuning calls don't error.
-	db, err := sql.Open("sqlite3", ":memory:")
+	// sql.Open never dials, so this handle needs no server: the test only
+	// confirms the tuning lands on the pool.
+	db, err := sql.Open("pgx", "postgres://pool-tuning.invalid/db")
 	if err != nil {
-		t.Skipf("sqlite3 driver not available: %v", err)
+		t.Fatalf("open: %v", err)
 	}
 	defer db.Close()
 	serverkit.ApplyDBPoolTuning(db, serverkit.DBPoolTuning{

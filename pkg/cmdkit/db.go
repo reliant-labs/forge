@@ -12,7 +12,7 @@ import (
 // DBOptions configures OpenDB. Only DSN is required; the rest tune the
 // connection pool and the open-time ping.
 type DBOptions struct {
-	// Driver is the database/sql driver name (e.g. "pgx", "sqlite3").
+	// Driver is the database/sql driver name (e.g. "pgx", "postgres").
 	// The caller blank-imports the driver as usual; cmdkit never imports
 	// one. Zero value defaults to "pgx" — the forge default.
 	Driver string

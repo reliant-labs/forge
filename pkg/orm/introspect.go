@@ -128,12 +128,6 @@ func tableExists(ctx context.Context, db Context, dialect Dialect, tableName str
 			WHERE table_schema = 'public'
 			AND table_name = $1
 		)`
-	case "sqlite":
-		query = `SELECT EXISTS (
-			SELECT name FROM sqlite_master
-			WHERE type = 'table'
-			AND name = ?
-		)`
 	default:
 		return false, NewSchemaError(tableName, fmt.Sprintf("unsupported dialect: %s", dialectName), ErrInvalidDialect)
 	}
@@ -158,12 +152,6 @@ func getUserTables(ctx context.Context, db Context, dialect Dialect) ([]string, 
 			WHERE table_schema = 'public'
 			AND table_type = 'BASE TABLE'
 			ORDER BY table_name`
-	case "sqlite":
-		query = `SELECT name
-			FROM sqlite_master
-			WHERE type = 'table'
-			AND name NOT LIKE 'sqlite_%'
-			ORDER BY name`
 	default:
 		return nil, fmt.Errorf("unsupported dialect for introspection: %s", dialectName)
 	}
@@ -197,8 +185,6 @@ func introspectColumns(ctx context.Context, db Context, dialect Dialect, tableNa
 	switch dialectName {
 	case "postgres":
 		return introspectColumnsPostgres(ctx, db, dialect, tableName)
-	case "sqlite":
-		return introspectColumnsSQLite(ctx, db, dialect, tableName)
 	default:
 		return nil, fmt.Errorf("unsupported dialect for column introspection: %s", dialectName)
 	}
@@ -298,65 +284,6 @@ func introspectColumnsPostgres(ctx context.Context, db Context, dialect Dialect,
 	return columns, nil
 }
 
-// introspectColumnsSQLite retrieves column information for SQLite
-func introspectColumnsSQLite(ctx context.Context, db Context, dialect Dialect, tableName string) ([]IntrospectedColumn, error) {
-	query := fmt.Sprintf("PRAGMA table_info(%s)", tableName)
-
-	rows, err := db.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("column query failed: %w", err)
-	}
-	defer rows.Close()
-
-	columns := make([]IntrospectedColumn, 0)
-	for rows.Next() {
-		var cid int
-		var name, dataType string
-		var notNull, pk int
-		var dfltValue sql.NullString
-
-		err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan column data: %w", err)
-		}
-
-		// Map database type to FieldType
-		fieldType, err := mapDatabaseTypeToFieldType(dataType)
-		if err != nil {
-			return nil, fmt.Errorf("failed to map type for column %s: %w", name, err)
-		}
-
-		// In SQLite, primary key columns are implicitly NOT NULL even if the notnull flag is 0
-		// See: https://www.sqlite.org/lang_createtable.html#primkeyconst
-		isPrimaryKey := pk > 0
-		isNullable := notNull == 0 && !isPrimaryKey
-
-		col := IntrospectedColumn{
-			Name:         name,
-			Type:         fieldType,
-			Nullable:     isNullable,
-			IsPrimaryKey: isPrimaryKey,
-			IsUnique:     false, // SQLite PRAGMA doesn't provide unique info easily
-		}
-
-		if dfltValue.Valid {
-			col.DefaultValue = &dfltValue.String
-		}
-
-		columns = append(columns, col)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating columns: %w", err)
-	}
-
-	if len(columns) == 0 {
-		return nil, fmt.Errorf("no columns found for table %s", tableName)
-	}
-
-	return columns, nil
-}
-
 // introspectIndexes retrieves index information from the database
 func introspectIndexes(ctx context.Context, db Context, dialect Dialect, tableName string) ([]IntrospectedIndex, error) {
 	dialectName := dialect.Name()
@@ -364,8 +291,6 @@ func introspectIndexes(ctx context.Context, db Context, dialect Dialect, tableNa
 	switch dialectName {
 	case "postgres":
 		return introspectIndexesPostgres(ctx, db, dialect, tableName)
-	case "sqlite":
-		return introspectIndexesSQLite(ctx, db, dialect, tableName)
 	default:
 		return nil, fmt.Errorf("unsupported dialect for index introspection: %s", dialectName)
 	}
@@ -422,93 +347,6 @@ func introspectIndexesPostgres(ctx context.Context, db Context, dialect Dialect,
 	return indexes, nil
 }
 
-// introspectIndexesSQLite retrieves index information for SQLite
-func introspectIndexesSQLite(ctx context.Context, db Context, dialect Dialect, tableName string) ([]IntrospectedIndex, error) {
-	// First, get the list of indexes
-	query := fmt.Sprintf("PRAGMA index_list(%s)", tableName)
-
-	rows, err := db.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("index query failed: %w", err)
-	}
-
-	// Collect index metadata first
-	type indexInfo struct {
-		name   string
-		unique bool
-	}
-	var indexList []indexInfo
-
-	for rows.Next() {
-		var seq int
-		var name string
-		var unique int
-		var origin string
-		var partial int
-
-		err := rows.Scan(&seq, &name, &unique, &origin, &partial)
-		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("failed to scan index data: %w", err)
-		}
-
-		// Skip primary key indexes
-		if origin == "pk" {
-			continue
-		}
-
-		indexList = append(indexList, indexInfo{
-			name:   name,
-			unique: unique == 1,
-		})
-	}
-	rows.Close()
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating indexes: %w", err)
-	}
-
-	// Now get columns for each index
-	indexes := make([]IntrospectedIndex, 0, len(indexList))
-	for _, info := range indexList {
-		colQuery := fmt.Sprintf("PRAGMA index_info(%s)", info.name)
-		colRows, err := db.Query(ctx, colQuery)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query index columns for %s: %w", info.name, err)
-		}
-
-		columnNames := make([]string, 0)
-		for colRows.Next() {
-			var seqno, cid int
-			var colName sql.NullString
-
-			if err := colRows.Scan(&seqno, &cid, &colName); err != nil {
-				colRows.Close()
-				return nil, fmt.Errorf("failed to scan index column: %w", err)
-			}
-
-			if colName.Valid {
-				columnNames = append(columnNames, colName.String)
-			}
-		}
-		colRows.Close()
-
-		if err := colRows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating index columns: %w", err)
-		}
-
-		idx := IntrospectedIndex{
-			Name:     info.name,
-			Columns:  columnNames,
-			IsUnique: info.unique,
-		}
-
-		indexes = append(indexes, idx)
-	}
-
-	return indexes, nil
-}
-
 // columnToFieldSchema converts an IntrospectedColumn to a FieldSchema
 func columnToFieldSchema(col IntrospectedColumn) (FieldSchema, error) {
 	field := FieldSchema{
@@ -531,11 +369,6 @@ func columnToFieldSchema(col IntrospectedColumn) (FieldSchema, error) {
 func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 	dbType = strings.ToLower(strings.TrimSpace(dbType))
 
-	// In SQLite, columns without a type default to TEXT affinity
-	if dbType == "" {
-		return TypeText, nil
-	}
-
 	typeMap := map[string]FieldType{
 		// PostgreSQL types
 		"text":                     TypeText,
@@ -555,26 +388,22 @@ func mapDatabaseTypeToFieldType(dbType string) (FieldType, error) {
 		"jsonb":                    TypeJSONB,
 		"bytea":                    TypeBytea,
 		// Floating-point types — PostgreSQL has dedicated REAL (float32)
-		// and DOUBLE PRECISION (float64) columns; SQLite stores both as
-		// REAL (8-byte) but we still surface the proto distinction so
-		// DDL introspection / contract-sync sees the intended width.
+		// and DOUBLE PRECISION (float64) columns; surfacing the proto
+		// distinction lets DDL introspection / contract-sync see the
+		// intended width.
 		"real":             TypeReal,
 		"float4":           TypeReal,
 		"double precision": TypeDoublePrecision,
 		"float8":           TypeDoublePrecision,
 		"double":           TypeDoublePrecision,
-		// SQLite types
-		"datetime":  TypeTimestampTZ,
+		// Postgres types the ORM has no FieldType of their own for: each
+		// maps to its nearest. "timestamp" also prefix-matches
+		// information_schema's "timestamp without time zone", and "char"
+		// its "character" (char(n)).
 		"timestamp": TypeTimestampTZ,
-		"tinyint":   TypeInteger,
 		"smallint":  TypeInteger,
-		"mediumint": TypeInteger,
-		"blob":      TypeBytea,
-		"clob":      TypeText,
 		"char":      TypeText,
-		"float":     TypeReal,
 		"numeric":   TypeDoublePrecision,
-		"decimal":   TypeDoublePrecision,
 	}
 
 	if fieldType, exists := typeMap[dbType]; exists {

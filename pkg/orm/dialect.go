@@ -11,9 +11,9 @@ import (
 )
 
 // Dialect defines the interface for database-specific implementations.
-// Each supported database (PostgreSQL, SQLite, MySQL, etc.) should implement this interface.
+// PostgreSQL is the one dialect forge registers (PostgresDialect).
 type Dialect interface {
-	// Name returns the name of the dialect (e.g., "postgres", "sqlite")
+	// Name returns the name of the dialect (e.g., "postgres")
 	Name() string
 
 	// DriverName returns the name of the database driver to use with sql.Open
@@ -21,7 +21,6 @@ type Dialect interface {
 
 	// Placeholder returns the placeholder string for a given parameter index (0-based)
 	// PostgreSQL uses $1, $2, etc.
-	// SQLite and MySQL use ?
 	Placeholder(index int) string
 
 	// QuoteIdentifier quotes an identifier (table name, column name) for the dialect

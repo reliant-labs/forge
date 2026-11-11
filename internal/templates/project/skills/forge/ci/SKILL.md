@@ -142,8 +142,7 @@ with required reviewers; `release.yml` has that shape.
 The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
 read when the workflow is scaffolded; with several, the first auto-deploys
 after a green image build on main and the last is protected (health gate:
-`deploy/delivery-policy`). A lone env is never auto-deployed. Per-PR
-previews: `deploy/preview` has the workflow.
+`deploy/delivery-policy`). A lone env is never auto-deployed.
 
 Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
 context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`

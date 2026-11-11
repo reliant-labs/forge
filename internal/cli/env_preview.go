@@ -341,7 +341,7 @@ func stagePreviewCopy(srcDir, kclDir, name string) (string, error) {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, 0o644)
+		return atomicfile.WriteFile(dst, data, 0o644)
 	})
 	if err != nil {
 		_ = os.RemoveAll(stage)

@@ -289,10 +289,36 @@ describe("setTelemetryUser", () => {
     expect(s.setUser.mock.calls).toEqual([[""], [""], [""]]);
   });
 
-  it("holds only the last user while the SDK loads, in front of later events", () => {
+  it("replays each held event under the user it was recorded with, then the last user", () => {
+    track("before");
     setTelemetryUser("first");
     track("e");
     setTelemetryUser("second");
+    track("f");
+    setTelemetryUser(null);
+    const s = sink();
+    const order: string[] = [];
+    s.setUser.mockImplementation((id) => void order.push(`user:${id}`));
+    s.track.mockImplementation((name) => void order.push(name));
+
+    setTelemetrySink(s);
+
+    // "e" is first's, not re-attributed to second; "f" is second's; the
+    // sign-out that came last is what later events carry.
+    expect(order).toEqual([
+      "before",
+      "user:first",
+      "e",
+      "user:second",
+      "f",
+      "user:",
+    ]);
+  });
+
+  it("stamps the last user once when held events already carry it", () => {
+    setTelemetryUser("first");
+    setTelemetryUser("second");
+    track("e");
     const s = sink();
 
     setTelemetrySink(s);

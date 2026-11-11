@@ -95,6 +95,10 @@ type Pending =
       name: string;
       attributes: Record<string, TrackValue>;
       onSent?: () => void;
+      // The user setTelemetryUser had named when the event was recorded
+      // (undefined: none yet), stamped again on replay, so a later
+      // setTelemetryUser while the SDK loads cannot re-attribute it.
+      user?: string;
     }
   | { kind: "user"; id: string };
 
@@ -240,6 +244,17 @@ export function sanitizeProps(
   return out;
 }
 
+// The user the queue names at this point: its last held setTelemetryUser.
+function heldUser(): string | undefined {
+  for (let i = pending.length - 1; i >= 0; i--) {
+    const op = pending[i]!;
+    if (op.kind === "user") {
+      return op.id;
+    }
+  }
+  return undefined;
+}
+
 function enqueue(op: Pending): void {
   if (pending.length < MAX_QUEUED_EVENTS) {
     pending.push(op);
@@ -309,7 +324,13 @@ export function recordProductEvent(
         sent(onSent);
       }
     } else {
-      enqueue({ kind: "track", name: trimmed, attributes, onSent });
+      enqueue({
+        kind: "track",
+        name: trimmed,
+        attributes,
+        onSent,
+        user: heldUser(),
+      });
     }
   } catch {
     // Telemetry must never break the app.
@@ -324,7 +345,8 @@ export function recordProductEvent(
  *
  * The id is carried as the `userId` global attribute. The SDK has no way to
  * delete an attribute, so clearing writes an empty `userId`. Held until the
- * SDK has started; the last call wins.
+ * SDK has started: each held event is replayed under the user named when it
+ * was recorded, and the last call is what later events carry.
  *
  * The id reaches the SDK only in the `identified` and `full` analytics tiers:
  * under Global Privacy Control or Do Not Track, in modes "off" and
@@ -407,17 +429,36 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
   if (!next || disabled) {
     return;
   }
+  // Each held event is sent under the user it was recorded with, and the
+  // latest held user is stamped last, for whatever comes after.
+  const stamp = (id: string) => {
+    const value = stampable(id);
+    if (value !== lastStamped) {
+      lastStamped = value;
+      next.setUser(value);
+    }
+  };
+  let latest: string | undefined;
   for (const op of held) {
     try {
       if (op.kind === "track") {
         if (analyticsTier() !== "off") {
+          if (op.user !== undefined) {
+            stamp(op.user);
+          }
           next.track(op.name, op.attributes);
           sent(op.onSent);
         }
       } else {
-        lastStamped = stampable(op.id);
-        next.setUser(lastStamped);
+        latest = op.id;
       }
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+  if (latest !== undefined) {
+    try {
+      stamp(latest);
     } catch {
       // Telemetry must never break the app.
     }

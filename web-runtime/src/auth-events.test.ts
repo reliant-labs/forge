@@ -266,6 +266,36 @@ describe("identifyUser", () => {
     expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
   });
 
+  it("keeps each held heartbeat's own user when the user changes during startup", () => {
+    setAnalyticsMode("full");
+    grantAnalyticsConsent();
+    setTelemetrySink(null);
+    identifyUser("u1");
+    identifyUser("u2");
+    install();
+    expect(ops).toEqual([
+      ["user", "u1"],
+      ["track", "auth_signed_in", { kind: "resumed" }],
+      ["user", "u2"],
+      ["track", "auth_signed_in", { kind: "resumed" }],
+    ]);
+    // Each marker followed its own delivery; the last one is u2's.
+    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u2:2026-11-10");
+  });
+
+  it("sends a held sign-out under its user, then clears it", () => {
+    setTelemetrySink(null);
+    identifyUser("u1");
+    trackAuthEvent("signed_out", { userId: "u1" });
+    install();
+    expect(ops).toEqual([
+      ["user", "u1"],
+      ["track", "auth_signed_in", { kind: "resumed" }],
+      ["track", "auth_signed_out", {}],
+      ["user", ""],
+    ]);
+  });
+
   it("sends today's heartbeat once while yesterday's marker is still stored", () => {
     setAnalyticsMode("full");
     grantAnalyticsConsent();

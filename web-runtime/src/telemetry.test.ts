@@ -1543,9 +1543,19 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
     expect(addAction).toHaveBeenNthCalledWith(1, "signup_started", {
       plan: "pro",
     });
-    // The last user wins; the stale one is not replayed.
-    expect(setGlobalAttributes).toHaveBeenCalledWith({ userId: "user-2" });
-    expect(setGlobalAttributes).not.toHaveBeenCalledWith({ userId: "user-1" });
+    // The event replays under the user it was recorded with, and the last
+    // user is what later events carry.
+    const stamps = setGlobalAttributes.mock.calls
+      .map(([attrs]) => (attrs as { userId?: string }).userId)
+      .filter((id) => id !== undefined);
+    expect(stamps.slice(-2)).toEqual(["user-1", "user-2"]);
+    expect(
+      setGlobalAttributes.mock.invocationCallOrder[
+        setGlobalAttributes.mock.calls.findIndex(
+          ([attrs]) => (attrs as { userId?: string }).userId === "user-1",
+        )
+      ],
+    ).toBeLessThan(addAction.mock.invocationCallOrder[0]!);
 
     k.track("signup_completed");
     expect(addAction).toHaveBeenLastCalledWith("signup_completed", {});

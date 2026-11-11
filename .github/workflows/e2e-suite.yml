@@ -385,10 +385,15 @@ jobs:
       # dlv: TestE2EDebugEnvUpAttachAndStart drives `forge debug` against a
       # live env. Pinned to the delve module forge itself builds against
       # (go.mod), so the server speaks the API the client mirrors.
+      # ubuntu-latest ships kernel.yama.ptrace_scope=1, which lets dlv trace
+      # only its own descendants: `forge debug start --attach` to env up's
+      # api (not dlv's child) is refused, and the test failed on every main
+      # commit after #1990. 0 is what a developer box that attaches has.
       - name: Install delve
         run: |
           go install github.com/go-delve/delve/cmd/dlv@v1.27.2
           dlv version
+          sudo sysctl -w kernel.yama.ptrace_scope=0
 
       # What prepare built: the e2e test binary, forge and the codegen
       # plugins (bin/), and the shard plan (plan/).

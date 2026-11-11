@@ -54,7 +54,8 @@ func normalizeAddr(addr string) string {
 
 func runConnect(addr string, jsonOutput bool) error {
 	addr = normalizeAddr(addr)
-	if existing, _ := debugSvc().LoadSession("."); existing != nil && (!existing.Connected || existing.Addr != addr) {
+	existing, _ := debugSvc().LoadSession(".")
+	if existing != nil && (!existing.Connected || existing.Addr != addr) {
 		return fmt.Errorf("a debug session is already active (dlv at %s); run 'forge debug stop' first", existing.Addr)
 	}
 	d := dbgsvc.NewDelveDebugger()
@@ -86,6 +87,7 @@ func runConnect(addr string, jsonOutput bool) error {
 		Resumed: st == dbgsvc.TargetRunning,
 		Started: time.Now(),
 	}
+	session.BreakpointIDs = carriedBreakpoints(existing, pid)
 	if err := debugSvc().SaveSession(".", session); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
@@ -96,4 +98,17 @@ func runConnect(addr string, jsonOutput bool) error {
 	fmt.Printf("Connected to dlv at %s (target pid %d; forge owns neither — 'stop' clears breakpoints and leaves both running)\n", addr, pid)
 	printRunState(st == dbgsvc.TargetHalted, "as found")
 	return nil
+}
+
+// carriedBreakpoints is what a repeated connect to the same dlv server keeps
+// of the session it replaces: the breakpoints that session created are still
+// on the server, and stop must clear them and only them. existing is the
+// saved session (nil, or a connected one to this address: runConnect refuses
+// anything else). A server now serving a different target (it was restarted)
+// holds none of them, so they are dropped rather than cleared by a stale id.
+func carriedBreakpoints(existing *dbgsvc.SessionInfo, pid int) []int {
+	if existing == nil || existing.PID != pid {
+		return nil
+	}
+	return existing.BreakpointIDs
 }

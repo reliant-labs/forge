@@ -748,7 +748,11 @@ func (d *DelveDebugger) Release(ids []int) error {
 	if err := d.haltIfRunning(); err != nil {
 		return err
 	}
-	bps, err := d.client.ListBreakpoints(false)
+	// Every cleanup RPC is bounded like the state read and the halt: a server
+	// that answers State and then stalls must not hang stop. On a timeout the
+	// deferred Disconnect closes the connection and the error goes back to
+	// stop, which keeps the session so the release can be retried.
+	bps, err := d.client.listBreakpointsTimeout(rpcTimeout)
 	if err != nil {
 		return fmt.Errorf("listing breakpoints: %w", err)
 	}
@@ -756,7 +760,7 @@ func (d *DelveDebugger) Release(ids []int) error {
 		// Negative IDs are Delve's own (unrecovered panic, fatal throw). An
 		// id the user already cleared is simply not listed.
 		if bp.ID > 0 && slices.Contains(ids, bp.ID) {
-			if _, err := d.client.ClearBreakpoint(bp.ID); err != nil {
+			if err := d.client.clearBreakpointTimeout(bp.ID, rpcTimeout); err != nil {
 				return fmt.Errorf("clearing breakpoint %d: %w", bp.ID, err)
 			}
 		}

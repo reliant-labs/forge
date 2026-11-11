@@ -184,6 +184,22 @@ func (c *rpcClient) haltTimeout(d time.Duration) (*api.DebuggerState, error) {
 	return &out.State, err
 }
 
+// listBreakpointsTimeout is ListBreakpoints with a bound: release's cleanup
+// must not hang on a server that answered State and then stalled.
+func (c *rpcClient) listBreakpointsTimeout(d time.Duration) ([]*api.Breakpoint, error) {
+	var out listBreakpointsOut
+	if err := c.callTimeout("ListBreakpoints", listBreakpointsIn{false}, &out, d); err != nil {
+		// A timed-out call may still write out later: never read it.
+		return nil, err
+	}
+	return out.Breakpoints, nil
+}
+
+// clearBreakpointTimeout is ClearBreakpoint with a bound, for release.
+func (c *rpcClient) clearBreakpointTimeout(id int, d time.Duration) error {
+	return c.callTimeout("ClearBreakpoint", clearBreakpointIn{Id: id}, new(clearBreakpointOut), d)
+}
+
 // resume sends a Continue without waiting for its reply: the request is
 // written before Go returns, and a multi-client dlv keeps running the target
 // after this connection closes (dlv's own --continue does the same).

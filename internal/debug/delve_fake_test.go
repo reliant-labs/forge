@@ -19,6 +19,8 @@ type fakeDlv struct {
 	mu         sync.Mutex
 	state      api.DebuggerState // what State answers
 	stateHangs bool              // State never answers (a wedged dlv)
+	listHangs  bool              // ListBreakpoints never answers
+	clearHangs bool              // ClearBreakpoint never answers
 	bps        []*api.Breakpoint
 	commands   []string
 	cleared    []int
@@ -69,12 +71,24 @@ func (f *fakeDlv) Command(cmd api.DebuggerCommand, out *FakeCmdOut) error {
 
 func (f *fakeDlv) ListBreakpoints(_ FakeListIn, out *FakeListOut) error {
 	f.mu.Lock()
+	hangs := f.listHangs
+	f.mu.Unlock()
+	if hangs {
+		<-f.hang
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	out.Breakpoints = f.bps
 	return nil
 }
 
 func (f *fakeDlv) ClearBreakpoint(in FakeClearIn, out *FakeClearOut) error {
+	f.mu.Lock()
+	hangs := f.clearHangs
+	f.mu.Unlock()
+	if hangs {
+		<-f.hang
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.cleared = append(f.cleared, in.Id)
@@ -162,6 +176,36 @@ func TestStopAndDetachBoundedWhenStateNeverAnswers(t *testing.T) {
 				}
 			case <-time.After(10 * time.Second):
 				t.Fatalf("%s hung on a dlv that never answers State", name)
+			}
+		})
+	}
+}
+
+// TestReleaseBoundedWhenCleanupStalls: a dlv that answers State and then
+// stalls ListBreakpoints, or ClearBreakpoint, must not hang stop either.
+// Release returns an error (stop keeps the session for a retry) and sends no
+// Continue: a target forge could not clean up is not resumed into breakpoints
+// it still holds.
+func TestReleaseBoundedWhenCleanupStalls(t *testing.T) {
+	shrinkRPCTimeout(t, 200*time.Millisecond)
+	for name, f := range map[string]*fakeDlv{
+		"ListBreakpoints": {listHangs: true, bps: []*api.Breakpoint{{ID: 1}}},
+		"ClearBreakpoint": {clearHangs: true, bps: []*api.Breakpoint{{ID: 1}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := serveFake(t, f)
+			done := make(chan error, 1)
+			go func() { done <- d.Release([]int{1}) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("Release against a dlv whose %s never answers returned nil", name)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("Release hung on a dlv whose %s never answers", name)
+			}
+			if cmds, _ := f.recorded(); slices.Contains(cmds, api.Continue) {
+				t.Fatalf("Release resumed the target after a failed cleanup: %v", cmds)
 			}
 		})
 	}

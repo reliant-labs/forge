@@ -155,10 +155,15 @@ func TestConnectStopReleases(t *testing.T) {
 	if err := runContinue(10*time.Second, false, false); err != nil {
 		t.Fatalf("continue: %v", err)
 	}
+	// A repeated connect to the same server keeps the breakpoint this
+	// session created (review B1): stop must still clear it.
+	if err := runConnect(d.Addr(), false); err != nil {
+		t.Fatalf("repeated connect: %v", err)
+	}
 	// As `forge debug stop` does: the session as break left it, naming the
 	// breakpoint this session created.
 	if s, _ = debugSvc().LoadSession("."); s == nil || len(s.BreakpointIDs) != 1 {
-		t.Fatalf("session after break = %+v, want one recorded breakpoint", s)
+		t.Fatalf("session after break and a repeated connect = %+v, want one recorded breakpoint", s)
 	}
 	if err := runStop(context.Background(), s); err != nil {
 		t.Fatalf("stop: %v", err)

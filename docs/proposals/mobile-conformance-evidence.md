@@ -528,7 +528,7 @@ below claims a signed build signed in through an https link.
 | Per-env resolution, site choice, refusals | `internal/cli/app_links_test.go` |
 | Serving: staging overlay, OnBucket upload as `application/json`, OnFirebase `headers`, hosted spec `wellKnown` | `internal/deploytarget/wellknown_test.go`, `pkg/deploy/v1alpha1/wellknown_test.go`, `internal/cli/frontend_custom_domains_test.go` |
 | Dev env: https first redirect, `EXPO_PUBLIC_FORGE_OIDC_FALLBACK_*` inside the one OIDC unit, plugin variables, developer mode for a local env only | `internal/cli/native_dev_oidc_test.go`, `internal/cli/app_links_env_test.go` |
-| Expo plugin (`ios.associatedDomains` with both services, `android.intentFilters` with `autoVerify`, inert without a domain) | `tests/with-forge-links.test.ts` (Jest) |
+| Expo plugin (`ios.associatedDomains` with both services, `android.intentFilters` with `autoVerify`, inert without a domain) | `tests/with-forge-links.test.js` (Jest) |
 | Client: https on Android and iOS 17.4+, fallback below; one URI for authorize, match and token; `preferUniversalLinks`; logout pair | `tests/auth-redirect.test.ts`, `tests/auth-config.test.ts`, `tests/auth-provider.test.ts` (Jest, inside `TestE2EMobileConsumerConformance`) |
 
 ### Control-plane requirement (separate work; forge does not touch the control plane)
@@ -551,9 +551,39 @@ files the release lacks) the platform must serve:
   **no SPA fallback**; a missing file is a 404, never `index.html`;
 - over https with a certificate valid for the host, with no cookies.
 
-A control plane that does not know `wellKnown` ignores it and the files are not
-served, so a hosted `env deploy` is not proven until the files are fetched
-(acceptance row 1).
+A hosted control plane must advertise `GetCapabilities.resourceFeatures` containing
+`static-site-well-known` before forge publishes a nonempty `spec.wellKnown`.
+An absent field, an old RPC, or a missing feature fails closed with upgrade guidance;
+forge never silently drops required verification files. This check runs before hosted
+records enter a bundle, at snapshot sealing and promotion, and at the hosted provider
+boundary. The platform strict-decodes CR specs and older CRDs prune unknown fields,
+so decode/serve support must land together. Fetching the files still remains acceptance
+row 1.
+
+### Validation record (2026-11-11)
+
+- `go build ./...`, `go vet ./...`, changed Go files' `gofmt`, and `git diff --check`: passed.
+- Requested `TMPDIR=/private/tmp/forge-devloop-tmp task test:short -- ./pkg/... ./internal/cli/... ./internal/templates/... ./internal/deploytarget/... ./internal/applinks/... ./internal/devidentity/...`: passed.
+- Full-mode `go test -count=1 ./internal/templates/`: passed (99s).
+- `TestE2EMobileConsumerConformance`: all five cases passed (650s), including the
+  new Jest suites, Doctor 19/19, typecheck, zero-warning lint, native exports and
+  Metro. A final rerun after the app-owned intent-filter preservation regression
+  test is still pending.
+- `go run ./internal/apigate -base origin/main`: fails because main advanced
+  beyond this mobile branch (51 identifiers added on main are absent here, in
+  accesstoken, dashspec, obsquery, releasehealth and release). This is branch
+  drift, not this slice deleting APIs. Against the actual slice base
+  `00a561e04`, apigate passes with eight compatible additions.
+
+The SDK patch cohort moved during validation: Expo 58.0.24 was published on
+2026-11-11. Doctor reads current SDK metadata, while pnpm 12 prefers aged versions
+within a compatible tilde range. Fresh fixtures (no lockfile) therefore resolved
+58.0.23 while Doctor required 58.0.24. The scaffold floors now match the official
+`expo-58.0.24.tgz` bundledNativeModules.json and Babel dependency: Expo .24, asset
+.21, constants .16, crypto .8, linking .17, network .5, router .31, secure-store .3,
+status-bar .5, web-browser .8, babel-preset-expo .25. No Doctor assertion or
+supply-chain policy was bypassed. External SDK metadata is a moving gate input,
+not a test flake.
 
 ### Acceptance (pending)
 

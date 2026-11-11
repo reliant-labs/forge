@@ -70,8 +70,8 @@ one), so under `forge env up` on a host-run identity either keep the old
 
 ## Migrate
 
-1. **Dependencies.** Add `"expo-crypto": "~58.0.7"`, `"expo-secure-store":
-   "~58.0.2"`, `"expo-web-browser": "~58.0.7"` and devDependency
+1. **Dependencies.** Add `"expo-crypto": "~58.0.8"`, `"expo-secure-store":
+   "~58.0.3"`, `"expo-web-browser": "~58.0.8"` and devDependency
    `"test-renderer": "1.3.0"` (the context tests render with it); reinstall.
 2. **`app.json`.** Add the plugin `["expo-secure-store", { "faceIDPermission":
    false }]` to `expo.plugins`, and set `expo.scheme` to **one string**, a valid
@@ -185,7 +185,7 @@ server side and the files: `forge skill load deploy/managed-identity/mobile`.
    `preferUniversalLinks` in `BrowserLike.openAuthSession`, the matching
    post-logout URI) and `native.ts` (forwards `preferUniversalLinks`, passes
    `platform: { os: Platform.OS, version: Platform.Version }`), plus the tests
-   `tests/auth-redirect.test.ts` and `tests/with-forge-links.test.ts`, and the new
+   `tests/auth-redirect.test.ts` and `tests/with-forge-links.test.js`, and the new
    `fallbackRedirectUri: null, fallbackPostLogoutRedirectUri: null` fields in
    `tests/auth-fakes.ts`. An app that never passes `platform` behaves as before.
 5. **iOS below 17.4 keeps the private-use fallback.** `ASWebAuthenticationSession`

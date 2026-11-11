@@ -1119,10 +1119,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// chart applies in CRD-first order (forge-supplied CRDs → wait
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
-	// Controllers can reference PriorityClasses declared outside their chart.
-	// Send these before any controller wait, to each chart's actual context.
-	// The stream has already passed target, cluster and delivery-unit filters.
-	if err := applyChartSchedulingPrerequisites(ctx, opts.Context, renderedCharts, manifests, chartPrerequisites); err != nil {
+	// Controllers can reference cluster-scoped objects declared outside their
+	// chart (a PriorityClass, StorageClass, RuntimeClass, ...). Send these
+	// before any controller wait, to each chart's actual context. The stream
+	// has already passed target, cluster and delivery-unit filters.
+	if err := applyChartClusterPrerequisites(ctx, opts.Context, renderedCharts, manifests, chartPrerequisites); err != nil {
 		return nil, err
 	}
 	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
@@ -1252,11 +1253,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	return pending, nil
 }
 
-// applyChartSchedulingPrerequisites sends, once per chart context, the
-// PriorityClasses and other scheduling prerequisites the charts' controllers
-// reference: the scoped stream for the apply's own context, the
-// target-and-unit-filtered prerequisites for a secondary one.
-func applyChartSchedulingPrerequisites(ctx context.Context, primary string, renderedCharts []renderedChart, manifests, chartPrerequisites string) error {
+// applyChartClusterPrerequisites sends, once per chart context, the
+// cluster-scoped objects the charts may reference (ChartClusterPrerequisites):
+// the scoped stream for the apply's own context, the target-and-unit-filtered
+// prerequisites for a secondary one.
+func applyChartClusterPrerequisites(ctx context.Context, primary string, renderedCharts []renderedChart, manifests, chartPrerequisites string) error {
 	seen := map[string]bool{}
 	for _, rc := range renderedCharts {
 		kctx := chartContext(primary, rc.spec)
@@ -1268,10 +1269,10 @@ func applyChartSchedulingPrerequisites(ctx context.Context, primary string, rend
 		if kctx != primary {
 			preStream = chartPrerequisitesForSecondary(chartPrerequisites, kctx)
 		}
-		prereqs := ChartSchedulingPrerequisites(preStream)
+		prereqs := ChartClusterPrerequisites(preStream)
 		if strings.TrimSpace(prereqs) != "" {
-			if err := KubectlApply(ctx, kctx, prereqs); err != nil {
-				return fmt.Errorf("apply chart scheduling prerequisites to %q: %w", kctx, err)
+			if err := ApplyClusterPrerequisites(ctx, kctx, prereqs); err != nil {
+				return fmt.Errorf("apply chart cluster prerequisites to %q: %w", kctx, err)
 			}
 		}
 	}

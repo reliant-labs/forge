@@ -154,6 +154,7 @@ schema StaticSite:
     releaseRepository?: str
     retainedDigests?: [str]
     runtimeConfig?: {str:RuntimeConfigValue}
+    wellKnown?: {str:str}
 
     check:
         assetDir == Undefined or len(assetDir) <= 255, "StaticSite.assetDir must be at most 255 characters"
@@ -165,6 +166,7 @@ schema StaticSite:
         previousDigest == Undefined or regex.match(previousDigest, "^sha256:[a-f0-9]{64}$"), "StaticSite.previousDigest must match ^sha256:[a-f0-9]{64}$"
         releaseRepository == Undefined or len(releaseRepository) <= 512, "StaticSite.releaseRepository must be at most 512 characters"
         runtimeConfig == Undefined or len(runtimeConfig) <= 128, "StaticSite.runtimeConfig allows at most 128 entries"
+        wellKnown == Undefined or len(wellKnown) <= 8, "StaticSite.wellKnown allows at most 8 entries"
 
 static_site_json = lambda v: StaticSite -> {str:} {
     _d = {
@@ -180,6 +182,7 @@ static_site_json = lambda v: StaticSite -> {str:} {
         "releaseRepository": v.releaseRepository
         "retainedDigests": v.retainedDigests
         "runtimeConfig": {_k: runtime_config_value_json(_i) for _k, _i in v.runtimeConfig} if v.runtimeConfig else Undefined
+        "wellKnown": v.wellKnown
     }
     {k: _v for k, _v in _d if _v != Undefined and _v != None}
 }

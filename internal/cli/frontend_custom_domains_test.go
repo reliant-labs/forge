@@ -57,3 +57,27 @@ func TestHostedStaticSpec_CarriesAssetDir(t *testing.T) {
 		t.Errorf("the published spec does not validate: %v", err)
 	}
 }
+
+// A hosted site publishes its mobile app's association files as spec, and only
+// then: a site with none must publish the exact document it always did.
+func TestHostedStaticSpec_CarriesWellKnownOnlyWhenSet(t *testing.T) {
+	plain, err := json.Marshal(hostedStaticSpec(FrontendEntity{Name: "web"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "wellKnown") {
+		t.Errorf("a site with no app published wellKnown: %s", plain)
+	}
+	f := FrontendEntity{Name: "web", WellKnown: map[string]string{"apple-app-site-association": "{}\n"}}
+	spec := hostedStaticSpec(f)
+	if spec.WellKnown["apple-app-site-association"] != "{}\n" {
+		t.Fatalf("spec = %+v", spec)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Errorf("a spec with association files is refused: %v", err)
+	}
+	f.WellKnown["apple-app-site-association"] = "changed"
+	if spec.WellKnown["apple-app-site-association"] == "changed" {
+		t.Error("the spec aliases the entity's map")
+	}
+}

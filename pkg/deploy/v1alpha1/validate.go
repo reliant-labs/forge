@@ -326,6 +326,36 @@ func (s StaticSiteSpec) Validate() error {
 	if err := ValidateRuntimeConfig(s.RuntimeConfig); err != nil {
 		errs = append(errs, err)
 	}
+	if err := ValidateWellKnown(s.WellKnown); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// wellKnownNameRE is one path segment: no separator, no leading dot, so a
+// file name cannot traverse out of /.well-known/ or hide.
+var wellKnownNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// ValidateWellKnown checks a StaticSite's well-known files: legal file names
+// and bounded sizes.
+func ValidateWellKnown(files map[string]string) error {
+	var errs []error
+	if len(files) > MaxWellKnownFiles {
+		errs = append(errs, fmt.Errorf("wellKnown has %d files; at most %d are allowed", len(files), MaxWellKnownFiles))
+	}
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !wellKnownNameRE.MatchString(n) || strings.Contains(n, "..") {
+			errs = append(errs, fmt.Errorf("wellKnown file name %q must be one path segment (%s) with no \"..\"", n, wellKnownNameRE))
+		}
+		if len(files[n]) > MaxWellKnownFileBytes {
+			errs = append(errs, fmt.Errorf("wellKnown file %q is %d bytes; at most %d are allowed", n, len(files[n]), MaxWellKnownFileBytes))
+		}
+	}
 	return errors.Join(errs...)
 }
 

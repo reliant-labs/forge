@@ -116,6 +116,11 @@ type FirebaseFrontend struct {
 	// Sourcemaps* constants.
 	Sourcemaps string
 
+	// WellKnown are this ENVIRONMENT's files for the host root's
+	// /.well-known/ (a mobile app's association files), written into the
+	// assembled tree and served as application/json (firebase.json headers).
+	WellKnown map[string]string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document — the `window.__FORGE_CONFIG__ = {...}` script the browser
 	// loads before any bundle code runs, produced from the environment's
@@ -162,6 +167,11 @@ type FirebaseHostingSpec struct {
 	// Next.js export). Empty means the build declares none: no immutable
 	// cache rule and no asset retention.
 	AssetDir string
+
+	// wellKnown names the association files served at /.well-known/, which
+	// get a Content-Type header. Unexported: set from the frontend's
+	// WellKnown by withWellKnown, never declared.
+	wellKnown []string
 
 	// KeepAssetReleases is how many releases' hashed assets the live site
 	// serves, the new one included. Zero means the default (10); the floor
@@ -296,6 +306,7 @@ func (p FirebaseProvider) stageInput(fe FirebaseFrontend) StageInput {
 		BasePath:        fe.Spec.BasePath,
 		Bundle:          fe.Spec.Bundle,
 		RuntimeConfigJS: fe.RuntimeConfigJS,
+		WellKnown:       fe.WellKnown,
 		ProjectDir:      p.ProjectDir,
 		StagingRoot:     staging,
 		Project:         fe.Project,
@@ -312,7 +323,7 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 		return firebasePlan{}, fmt.Errorf("firebase %s: %w", fe.Name, err)
 	}
 
-	fbJSON, err := renderFirebaseJSON(stage.StagingDir, fe.Spec)
+	fbJSON, err := renderFirebaseJSON(stage.StagingDir, fe.Spec.withWellKnown(fe.WellKnown))
 	if err != nil {
 		return firebasePlan{}, fmt.Errorf("firebase %s: render firebase.json: %w", fe.Name, err)
 	}
@@ -555,7 +566,7 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 	if len(rewrites) > 0 {
 		hosting["rewrites"] = rewrites
 	}
-	hosting["headers"] = firebaseHeaders(spec.CacheControl, spec.assetRel())
+	hosting["headers"] = append(firebaseHeaders(spec.CacheControl, spec.assetRel()), firebaseWellKnownHeaders(spec.wellKnown)...)
 	doc := map[string]any{"hosting": hosting}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -612,4 +623,11 @@ func printFirebasePlan(w io.Writer, plan firebasePlan) {
 	}
 	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
 		plan.DeployWorkdir, strings.Join(plan.DeployCmd, " "))
+}
+
+// withWellKnown returns the spec with the names of the files the deploy writes
+// under /.well-known/, so firebase.json pins their Content-Type.
+func (s FirebaseHostingSpec) withWellKnown(files map[string]string) FirebaseHostingSpec {
+	s.wellKnown = sortedWellKnownNames(files)
+	return s
 }

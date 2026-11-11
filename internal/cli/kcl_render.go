@@ -1303,6 +1303,18 @@ type FrontendEntity struct {
 	// spec.runtimeConfig.
 	RuntimeConfigSpec map[string]deployv1alpha1.RuntimeConfigValue `json:"runtime_config_spec,omitempty"`
 
+	// AppleTeamID, AndroidCertFingerprints and AssociatedSite are a native
+	// frontend's https universal-link identities (kcl/schema.k Frontend). The
+	// association files are rendered from them at deploy (app_links.go).
+	AppleTeamID             string              `json:"apple_team_id,omitempty"`
+	AndroidCertFingerprints map[string][]string `json:"android_cert_fingerprints,omitempty"`
+	AssociatedSite          string              `json:"associated_site,omitempty"`
+	// WellKnown is the association files this env serves from THIS (site)
+	// frontend's host root, by file name under /.well-known/. Never rendered:
+	// attachAppLinkFiles fills it at deploy, because the Android debug
+	// fingerprint is read from this machine's keystore.
+	WellKnown map[string]string `json:"-"`
+
 	// The three fields below are what forge learns AFTER the render, on the
 	// way to a build, and are never rendered. frontendBuildIdentityEnv hands
 	// them to the build as FORGE_SOURCE_* / FORGE_RELEASE.
@@ -1825,6 +1837,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	// never reads would otherwise ship, render into config.js, and leave the
 	// field on its default without a word (checkFrontendRuntimeConfigKeys).
 	if err := checkFrontendRuntimeConfigKeys(projectDir, entities.Frontends); err != nil {
+		return nil, err
+	}
+	// Refused here for the same reason: an associated domain no signing
+	// identity or site backs would publish an association nothing serves.
+	if err := checkAppLinks(env, entities); err != nil {
 		return nil, err
 	}
 	entities.ControlPlane.bindOrgLookup(env)

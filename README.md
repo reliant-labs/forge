@@ -225,6 +225,8 @@ npx @reliantlabs/forge version
 go install github.com/reliant-labs/forge/cmd/forge@latest
 ```
 
+To install forge's agent skill with [skills.sh](https://skills.sh): `npx skills add reliant-labs/forge --skill forge`
+
 Pinning a version for CI, verifying a release's signature, and building from a
 clone: [docs/install.md](docs/install.md).
 

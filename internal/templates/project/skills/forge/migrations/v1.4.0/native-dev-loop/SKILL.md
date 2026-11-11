@@ -134,7 +134,10 @@ cannot find it. Delete the `port = …` line **and** the `_<name>_frontend_port`
 block (no other line of the frontend declaration changes; the `rn` frontend's
 `port` is optional) unless you want Metro pinned. New scaffolds declare no port for
 an `rn` frontend, and `forge scaffold frontend` stops adding one. Only the first
-targeted native frontend claims 8081.
+targeted native frontend claims 8081. An `rn` frontend without a declared `port` now
+has no port at all (Undefined in KCL, `null` in the rendered JSON), so KCL that
+interpolates or adds to `f.port` on such a frontend must handle it; `port = <n>`
+keeps the old behaviour.
 If another process takes 8081 between selection and launch, `forge env up` moves
 Metro to an ephemeral port and says so, instead of failing or touching the holder.
 
@@ -228,7 +231,7 @@ reconnect.
 
 ### Mutations never pause and replay (web and native)
 
-`shared/src/lib/query-client.ts` now sets `mutations.networkMode: "always"` beside
+`frontends/<name>/src/lib/query-client.ts` now sets `mutations.networkMode: "always"` beside
 `retry: 0`. An offline write runs and fails visibly instead of pausing and being
 silently replayed after reconnect, which could apply a stale or duplicate write.
 This changes newly scaffolded web clients too (React Query pauses offline mutations

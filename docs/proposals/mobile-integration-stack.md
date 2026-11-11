@@ -66,8 +66,8 @@ first.
 
 ## Integration acceptance checklist
 
-State at integration head `027bb4237` plus the uncommitted gates pass in this
-worktree (`feat/mobile-gates`). "Met" cites its evidence; every unmet or partial
+State at integration head `dc5976a19` (branch `feat/mobile-gates`, pushed as
+`feat/mobile-foundation-integration`); main was merged in at `3b69e5be7`. "Met" cites its evidence; every unmet or partial
 item says what remains. Nothing below is a waiver unless it says the owner made one.
 
 - [x] **Existing web behavior and v1 consumer contracts.** The `pkg/` API gate
@@ -107,16 +107,18 @@ item says what remains. Nothing below is a waiver unless it says the owner made 
       `@reliantlabs/forge-web-runtime/interceptors`, which published 0.13.1 and
       0.13.9 both export, and nothing imports `userMessage`. The runtime-source
       `userMessage` re-export is additive and unused.
-- [ ] **Relevant build/lint/test checks against refreshed main, and a full `task
-test`.** The merge base is `bce0a4738`; origin/main is 38 commits ahead of it
-      at the time of writing, so a refresh is still owed. The earlier full-suite
-      attempt failed on macOS shell and Git-fixture portability, and no full
-      `task test` has been run on the integrated head. **Pending owner decision:**
-      a Linux CI run of the full suite, or a scope statement for the known host
-      failures. No failed or unavailable gate is represented as passing.
-- [ ] **Independent integration review.** Reviews of the slices and of this
-      integration found no unresolved blockers at their heads; a review of the exact
-      final head is still owed after the owner decisions below.
+- [x] **Build, lint and test checks on this head, which includes refreshed main.**
+      On `dc5976a19`: `go build ./...` and `go vet` pass; the `pkg/` API gate reports
+      16 changes, all compatible; `task test:short ./pkg/... ./internal/...` passes;
+      the full-mode (non-`-short`) `internal/templates`, scaffold and `kclrender`
+      suites pass; the real-Zitadel tests pass; the five-case
+      `TestE2EMobileConsumerConformance` passes with Doctor 20/20 and `expo install
+--check` up to date (the fixture has since turned off Doctor's React Native
+      Directory check, so it now runs 19 checks; see the evidence doc). A whole-module `task test` (every package in full mode)
+      has not been run on this head; the lanes above are what was. No failed or
+      unavailable gate is represented as passing.
+- [x] **Independent integration review.** An integrated re-review of the exact head
+      `dc5976a19` approved it.
 
 **Remaining, each pending an owner decision** (none has been waived; "pending owner
 decision" is the status, not a claim that it is acceptable):
@@ -126,8 +128,8 @@ decision" is the status, not a claim that it is acceptable):
   issuer). JS export for Android passes; that is not Android evidence.
 - **Hosted (control-plane) registration of native clients.** The runs used the
   host-run dev IdP; a hosted identity refuses `kind = "native"` today.
-- **Full `task test`** on the integrated head (above): a Linux CI run, or a scope
-  statement.
+- **Whole-module `task test`** in full mode: the lanes listed above passed on this
+  head; the rest runs in CI on the merge queue.
 - **Universal links** (https callbacks). The callback path is identical and the
   validators accept https, so adding one is a redirect-URI change; it has not been
   exercised.

@@ -14,6 +14,16 @@ detection: grep -rqsE 'ObservabilitySignals *\{[^}]*replay *=|OTEL_REPLAY *=' --
 or a frontend's `runtime_config = {OTEL_REPLAY = …}`. Environments scaffolded
 with the `_session_replay` switch before v1.4.0 declare both.
 
+### Every project, replay or not: merge the frontend's `runtime_config`
+
+In each **hosted** env (`deploy/kcl/staging/main.k`, `prod/main.k`), change
+`_hosted_frontend`'s `runtime_config = _api_config` to
+`runtime_config = f.runtime_config | _api_config`. The old line replaces the
+frontend's whole `runtime_config` with the API URL, so any entry the frontend
+declares (an `OTEL_REPLAY` you kept, a feature flag) never reaches the hosted
+site. New scaffolds merge; this is a one-line owned-file edit with no effect on
+a frontend that declares none.
+
 ### What changed
 
 Replay is a choice about one frontend in one environment, so it is declared
@@ -52,13 +62,11 @@ In each env that uses `_session_replay` (or replay at all):
    `observability` (leave `observability = forge.Observability {}` if it was
    the only field). The frontend's switch now opts the env in.
 
-4. In each **hosted** env (`deploy/kcl/staging/main.k`, `prod/main.k`), change
-   `_hosted_frontend`'s `runtime_config = _api_config` to
-   `runtime_config = f.runtime_config | _api_config`. The old line replaces the
-   frontend's whole `runtime_config` with the API URL, so any entry the frontend
-   declares (a `OTEL_REPLAY` you kept, a feature flag) never reaches the hosted
-   site. New scaffolds merge; this is a one-line owned-file edit with no effect
-   on a frontend that declares none.
+**Adopting replay in an env that never had it** (a staging or prod scaffolded
+before `_session_replay`): add `_session_replay = True` (or `False`) above the
+frontend, `telemetry = forge.BrowserTelemetry {replay = _session_replay}` on the
+web frontend, and `observability = forge.Observability {}` to the env's
+`forge.Bundle` (a hosted frontend with replay on needs the env to declare it).
 
 Then `forge env render <env>` and check the frontend's `runtime_config` (or
 `runtime_config_spec` when hosted) carries `OTEL_REPLAY = "true"` exactly when
@@ -109,7 +117,8 @@ script to `node expo-dev.cjs`), reviewing any custom dev entrypoint. Preserve
 `start`, `ios`, `android` and `web` scripts. Do not overwrite custom package scripts.
 
 The native `build` script is an **Expo web static export** into `dist`, not an IPA
-or Android package. Add it only if that is the app's declared output; keep custom
+or Android package. Add it only if that is the app's declared output (`app.json`
+`expo.web.output: "static"`); keep custom
 builds and do not mistake a successful Metro/web export for native device evidence.
 For the advertised web output, declare `react-dom` directly when absent at the
 version your SDK pins (18.3.1 on SDK 52, 19.3.0 on SDK 58; expo lists it only as an
@@ -208,9 +217,9 @@ the section 5 scheme contract (one string equal to the bundle id), so an app tha
 has not done section 5 fails it: add the file now **without that case**, and
 section 5 adds it back. Adapt the file if moving to dynamic Expo config.
 
-If you stay on SDK 52, use React/React DOM 18.3.1, Jest/jest-expo 29/52,
-`@jest/globals` 29 and the tested ESLint 9 flat configuration dependency
-`eslint-config-expo` 9.2.0. Do not assume that package's major implies an Expo SDK
+This section runs before the SDK upgrade, so install these now (on SDK 52):
+React/React DOM 18.3.1, Jest/jest-expo 29/52, `@jest/globals` 29 and the tested
+ESLint 9 flat configuration dependency `eslint-config-expo` 9.2.0. Do not assume that package's major implies an Expo SDK
 upgrade. Reinstall with the declared package manager and verify `lint`, `typecheck`
 and at least one executed test. Native config bounds Jest workers and disables
 watching; CLI worker flags may override the defaults for local diagnosis.

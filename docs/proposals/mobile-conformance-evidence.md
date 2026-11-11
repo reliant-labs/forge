@@ -1,7 +1,7 @@
 # Mobile consumer conformance slice: evidence
 
 **Status:** evidence record for the mobile foundation milestone, updated at
-integration head `027bb4237` plus the gates pass in `feat/mobile-gates`. It is
+integration head `dc5976a19` (`feat/mobile-gates`). It is
 not a production-readiness claim; the acceptance checklist and the items awaiting
 an owner decision are in [mobile-integration-stack.md](mobile-integration-stack.md).
 **History:** the sections below are in the order the slices landed. The first
@@ -402,7 +402,12 @@ is unreachable (a host or network outage, classified from the command output and
 exit code, with one real failed check among network ones still a failure), the case
 runs its remaining checks and then skips, so a host outage costs only that verdict.
 On the final tree all five cases reported **20/20 checks passed** and
-**dependencies up to date**.
+**dependencies up to date**. The fixture now sets `EXPO_DOCTOR_ENABLE_DIRECTORY_CHECK=0`
+(expo-doctor 1.21.6's documented switch): that one check validates dependencies
+against live React Native Directory metadata, so a Directory change could redden the
+run with no change on our side. Doctor then runs 19 checks, and the
+`standalone/registry` case reported **19/19 checks passed** with it off; every other
+check still runs.
 
 ## Executed upgrade of an existing v1.3.0 app
 
@@ -428,12 +433,11 @@ to 57 for one case only, the `app-config` scheme assertion of section 5 (below).
 stack, Metro, the dev IdP and the native sign-in client, and printed the
 sign-in line with the injected issuer, client id and `com.taskapp.mobile` redirect.
 
-**What was skipped.** A simulator sign-in on the upgraded app was not run (nothing
-was launched in a simulator); sign-in is evidenced on the fresh scaffold only. The
-web frontend's `forge lint` lane failed once on the dev-log receiver's
-`no-control-regex` (a template defect, since fixed in the Next.js and Vite
-templates and added to the playbook as an edit); the upgraded app was not
-re-linted after that edit was applied to it.
+**What was skipped in that first run.** A simulator sign-in on the upgraded app was
+not run, and the web frontend's `forge lint` lane failed once on the dev-log
+receiver's `no-control-regex` (a template defect, since fixed in the Next.js and
+Vite templates and added to the playbook as an edit). Both are covered by the
+corrected-playbook run below.
 
 **Playbook defects the run found, fixed in this pass** (each was a step the playbook
 described that did not work as written):
@@ -477,6 +481,30 @@ described that did not work as written):
 Upgrade tooling findings from the same run were reported to engineering
 separately: the web lint failure, the KCL native `port` defeating 8081, and
 `forge project upgrade` with a `+dev` build.
+
+### Executed v1.3.0 → v1.4.0 upgrade with corrected playbooks
+
+A second agent upgraded a v1.3.0 app by following the corrected playbooks
+literally, from an installed binary and without help. It ended fully green:
+typecheck, lint, Jest 294 (equal to a fresh scaffold), `expo-doctor` 20/20,
+`expo install --check`, iOS and Android export with no dev-log code or fakes in the
+bundle, `forge lint` 28/28, Metro on 8081, and the native client derived from the
+first `expo.scheme` entry, with customizations (including a kept custom scheme)
+preserved. An iOS simulator run on the upgraded app then passed sign-in, an
+authenticated `ListTasks`, restore after relaunch, and logout followed by
+`prompt=login`. Verdict: an agent can do this upgrade unaided.
+
+The run found five playbook defects, fixed in this pass: the staging and prod
+`runtime_config = f.runtime_config | _api_config` edit sat behind section 1's
+replay-only "Use when" (it now applies to every project, and a note covers adopting
+replay in an env that never had it); the `tests/app-config.test.ts` assertions did
+not say how to adapt to each keep-a-scheme option; the `metro.config.js` bullet left
+a stale header comment and a misplaced `nodeModulesPaths` unless the top of the file
+was replaced with the template's; section 2 did not name `expo.web.output: "static"`
+as the declared output of the native `build` script, and its SDK 52 install advice
+read as optional although section 2 runs before the SDK upgrade; and the
+`expo-asset` and `expo-status-bar` plugins that `expo install --fix` adds are
+optional (a fresh scaffold has neither), not "keep".
 
 ## Explicit remaining gates
 

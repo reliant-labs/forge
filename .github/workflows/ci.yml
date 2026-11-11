@@ -419,6 +419,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # Node for the tests that execute TypeScript or Metro (they skip below
+      # Node 22.6/22.18); the same pin as `checks`.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       - uses: ./.github/actions/restore-go-caches
         with:
           scope: short
@@ -527,6 +532,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       # This job compiles far more than it looks: the suite scaffolds real
       # projects and runs real `go build` / `go mod tidy` inside them, and
       # it runs under -race, which is a separate set of build artifacts
@@ -608,6 +616,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       # `test`'s scope, restore only: it holds the -race artifacts of every
       # package internal/cli imports. A scope of its own (go-build-test-cli,
       # ~1 GB a push) is what pushed the pull-request tier's caches out of
@@ -673,6 +684,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       - uses: ./.github/actions/restore-go-caches
         id: go-caches
         with:

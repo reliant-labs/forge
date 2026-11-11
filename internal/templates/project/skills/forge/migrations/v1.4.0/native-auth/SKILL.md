@@ -103,8 +103,14 @@ one), so under `forge env up` on a host-run identity either keep the old
    step 4, so it belongs here, not in the dev-loop playbook).
    `tests/app-config.test.ts` asserts this step's contract (one string scheme;
    the scaffold's version also expects it to equal the bundle id, which is only
-   true of apps scaffolded at v1.4.0): replace it after the owned-files copy
-   (if you keep a bundle id that differs, drop that assertion). With the
+   true of apps scaffolded at v1.4.0): replace it after the owned-files copy,
+   then match it to the option you took in step 2. Option 1 (an array, the
+   bundle id first): replace the `typeof app.expo.scheme` / `toHaveLength(1)`
+   assertions with `expect(schemes[0]).toBe(app.expo.ios.bundleIdentifier)`.
+   Option 2 (your own scheme alone, callback declared in KCL): drop the
+   `toContain(app.expo.ios.bundleIdentifier)` and `toContain(app.expo.android.package)`
+   lines. If you keep a bundle id that differs from the package, drop the
+   equality assertion too. With the
    project at the pinned forge, `forge project rescaffold <path>...` writes any
    file that is absent (the old `tests/app-config.test.ts`: delete it first), and
    `forge project upgrade --force <path>` replaces one that exists, untouched or

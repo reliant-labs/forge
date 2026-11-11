@@ -3704,7 +3704,7 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// address, emulator alias, tunnel), so when the shell sets one forge skips
 	// its injection and the shell value is used (a value written in the
 	// frontend's own .env.<env> still wins). Web frontends are unchanged.
-	// Native precedence is therefore shell > KCL > .env.<env> > forge's own
+	// Native precedence is therefore KCL > .env.<env> > shell > forge's own
 	// value, the same as the OIDC and dev-log variables.
 	apiURLVar := frontendAPIURLEnvVar(fe.Type)
 	shellAPI, _ := envLookupLast(parentEnv, apiURLVar)

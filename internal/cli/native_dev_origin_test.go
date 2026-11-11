@@ -176,9 +176,9 @@ func TestBuildFrontendDevCmd_NativeAPIOriginPrecedence(t *testing.T) {
 	}
 }
 
-// A native frontend's API origin follows shell > KCL > .env.<env> > injected:
-// a value in the frontend's own .env.<env> beats forge's injection, and the
-// shell and KCL beat the file.
+// A native frontend's API origin follows KCL > .env.<env> > shell > injected:
+// a value in the frontend's own .env.<env> beats the shell and forge's
+// injection, and KCL beats the file.
 func TestBuildFrontendDevCmd_NativeAPIURLPrecedence(t *testing.T) {
 	const listener = "http://localhost:4000"
 	envFile := filepath.Join(t.TempDir(), ".env.dev")

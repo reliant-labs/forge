@@ -31,9 +31,9 @@ npx expo install --check             # "Dependencies are up to date"
 
 Use `expo install expo@~N.0.0 --fix` rather than `pnpm add expo@^N.0.0` followed by
 `expo install --fix`: it is one command, and it leaves expo on the tilde range the
-scaffold uses (`~58.0.23`). (`expo install --fix` also adds the config plugins an
-SDK needs to `app.json` itself: `expo-asset` at 53 and `expo-status-bar` at 56; keep
-them.) Then run `typecheck`, `lint`, `test` and an `expo export` for each platform. Delete
+scaffold uses (`~58.0.23`). (`expo install --fix` also adds the `expo-asset` (SDK 53) and `expo-status-bar`
+(SDK 56) plugins to `app.json`; a fresh scaffold has neither, so they are optional:
+keep both or remove both.) Then run `typecheck`, `lint`, `test` and an `expo export` for each platform. Delete
 generated `ios/` and `android/` directories (or run `npx pod-install` and apply the
 native upgrade helper if you keep them) and rebuild any development build.
 
@@ -83,8 +83,11 @@ What each step changes for the forge starter:
   SDK 58's, the explicit `moduleResolution`; keep `paths`.
 - `metro.config.js`: remove `unstable_enablePackageExports` and the workspace-root
   `nodeModulesPaths` / `watchFolders` additions only after a bundle passes without
-  them. Keep the local runtime bridge block (`watchFolders` for a symlinked
-  `@reliantlabs/forge-web-runtime`): it is a forge dev-build concern, not an SDK one.
+  them. Then replace the top of the file, through the runtime bridge block, with the
+  template's (`forge project upgrade --check frontends/<name>/metro.config.js`
+  prints it): otherwise a stale header comment and a misplaced top-level
+  `nodeModulesPaths` stay. The runtime bridge block (`watchFolders` for a symlinked
+  `@reliantlabs/forge-web-runtime`) is a forge dev-build concern, not an SDK one: keep it.
 - `pnpm-workspace.yaml`: `nodeLinker: hoisted` may be removed after SDK 54; in a
   workspace layout the project root file is shared with the web frontends, so
   validate the native bundle in that layout before changing it. Add

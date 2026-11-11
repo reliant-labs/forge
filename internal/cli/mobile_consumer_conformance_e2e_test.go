@@ -109,7 +109,12 @@ func newMobileConsumerRunner(t *testing.T) mobileConsumerRunner {
 		env = append(env, kv)
 	}
 	env = append(env, "npm_config_globalconfig="+config, "npm_config_userconfig="+userConfig, "pnpm_config_userconfig="+userConfig,
-		"npm_config_registry=https://registry.npmjs.org", "npm_config_lockfile_include_tarball_url=true", "pnpm_config_lockfile_include_tarball_url=true", "CI=1", "EXPO_NO_TELEMETRY=1")
+		"npm_config_registry=https://registry.npmjs.org", "npm_config_lockfile_include_tarball_url=true", "pnpm_config_lockfile_include_tarball_url=true", "CI=1", "EXPO_NO_TELEMETRY=1",
+		// expo-doctor 1.21.6 validates dependencies against live React Native
+		// Directory metadata, so a Directory change could redden the e2e with no
+		// change here (the unreachable classifier only covers an outage). Turn that
+		// one check off; the other checks still run and are counted.
+		"EXPO_DOCTOR_ENABLE_DIRECTORY_CHECK=0")
 	return mobileConsumerRunner{env: env}
 }
 

@@ -1,8 +1,8 @@
 """
-Negative test — plain http is a dev env's alone.
+Negative test — plain http is a dev env's alone: a hosted identity refuses it.
 """
 
-# expect: not yet supported on hosted identity
+# expect: accepted only by a host-run identity
 
 import forge
 import forge.workloads as fw

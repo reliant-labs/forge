@@ -506,15 +506,6 @@ func applicationsSpec(in Input, id *release.ShapeIdentity) (apps []identity.Appl
 	return apps, warnings, errs
 }
 
-// Callback paths of a native app. They are the same under every scheme, so a
-// private-use `<scheme>:/oauthredirect` today and an https universal link
-// `https://<domain>/oauthredirect` later are served by the app's one route.
-const (
-	nativeRedirectPath   = "oauthredirect"
-	nativeSignedOutPath  = "signedout"
-	nativeRedirectSuffix = ":/" + nativeRedirectPath
-)
-
 // nativeApplication derives a kind-native application's client.
 //
 // It is a public PKCE client at the identity provider's own hosted sign-in
@@ -542,11 +533,11 @@ func nativeApplication(in Input, a release.ShapeIdentityApplication) (identity.A
 		if scheme == "" {
 			return identity.Application{}, fmt.Sprintf("application %q was NOT registered: frontend %q has no callback scheme (a reverse-DNS entry such as \"com.acme.app\" in its app.json expo.scheme). Add one, or declare redirect_uris = [\"com.acme.app:/oauthredirect\"]", a.Name, a.Frontend)
 		}
-		app.RedirectURIs = []string{scheme + nativeRedirectSuffix}
+		app.RedirectURIs = []string{release.NativePrivateRedirectURI(scheme)}
 	}
 	if len(app.PostLogoutURIs) == 0 {
 		for _, r := range app.RedirectURIs {
-			app.PostLogoutURIs = append(app.PostLogoutURIs, signedOutBeside(r))
+			app.PostLogoutURIs = append(app.PostLogoutURIs, release.NativeSignedOutBeside(r))
 		}
 	}
 	for _, u := range append(slices.Clone(app.RedirectURIs), app.PostLogoutURIs...) {
@@ -558,16 +549,6 @@ func nativeApplication(in Input, a release.ShapeIdentityApplication) (identity.A
 		app.DevMode = app.DevMode || strings.HasPrefix(u, "http://")
 	}
 	return app, ""
-}
-
-// signedOutBeside is the post-logout URI paired with a redirect URI: the same
-// scheme, authority and directory, with the final path segment `signedout`.
-func signedOutBeside(redirect string) string {
-	i := strings.LastIndex(redirect, "/")
-	if i < 0 {
-		return redirect
-	}
-	return redirect[:i+1] + nativeSignedOutPath
 }
 
 // smtpSpec is the dev IdP's mail relay: the declaration's own smtp, else the

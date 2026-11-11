@@ -427,7 +427,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		DataAccess:          shapeDataAccessOf(entities),
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		UptimeChecks:        shapeUptimeChecksOf(entities),
-		Identity:            shapeIdentityOf(entities),
+		Identity:            hostedNativeIdentity(entities, shapeIdentityOf(entities), projectDir, envName, errOut),
 		Databases:           shapeDatabasesOf(entities),
 		ExternalDatabases:   shapeExternalDatabasesOf(entities),
 		Applier:             shapeApplierOf(entities),

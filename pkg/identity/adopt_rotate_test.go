@@ -625,3 +625,88 @@ func TestOutputsAreNotPublishedFromAFailedPass(t *testing.T) {
 		t.Fatalf("err=%v published=%d", err, n)
 	}
 }
+
+func adoptedSpecWithNative(optional bool) Spec {
+	s := adoptedInstanceSpec()
+	s.Applications = append(s.Applications, Application{
+		Name: "control-plane mobile", Kind: AppNative, Optional: optional,
+		RedirectURIs: []string{"com.acme.mobile:/oauthredirect"},
+	})
+	return s
+}
+
+// An Optional application missing from an adopted instance is created and
+// converged like a new one; the adopted web application and the output are
+// unaffected.
+func TestAdoptionCreatesAMissingOptionalApplication(t *testing.T) {
+	f := newFake(t)
+	proj, _ := adoptedInstance(f)
+	var published []Output
+	r, _ := newRec(t, f, func(o *Options) {
+		o.Adopt = true
+		o.Outputs = OutputsFunc(func(_ context.Context, out Output) error { published = append(published, out); return nil })
+	})
+
+	rep, err := r.Reconcile(context.Background(), adoptedSpecWithNative(true))
+	if err != nil {
+		t.Fatalf("a missing optional application failed the adopted pass: %v", err)
+	}
+	if len(rep.Skipped) != 0 {
+		t.Errorf("skipped = %+v, want none", rep.Skipped)
+	}
+	if len(proj.Apps) != 2 {
+		t.Errorf("project holds %d apps, want the adopted one plus the created native", len(proj.Apps))
+	}
+	if len(published) != 1 {
+		t.Fatalf("published %d outputs, want 1", len(published))
+	}
+	out := published[0]
+	if out.Apps["control-plane internal-console"].ClientID != "389458096906371366" {
+		t.Errorf("adopted app lost its client id: %+v", out.Apps)
+	}
+	if out.Apps["control-plane mobile"].ClientID == "" {
+		t.Errorf("the created native app is missing from the output: %+v", out.Apps)
+	}
+}
+
+// If the instance refuses the missing Optional application, it is skipped and
+// the adopted web application still publishes.
+func TestAdoptionSkipsAMissingOptionalApplicationTheInstanceRefuses(t *testing.T) {
+	f := newFake(t)
+	adoptedInstance(f)
+	f.rejectApp = func(cfg map[string]any) bool { return cfg["appType"] == "OIDC_APP_TYPE_NATIVE" }
+	var published []Output
+	r, _ := newRec(t, f, func(o *Options) {
+		o.Adopt = true
+		o.Outputs = OutputsFunc(func(_ context.Context, out Output) error { published = append(published, out); return nil })
+	})
+
+	rep, err := r.Reconcile(context.Background(), adoptedSpecWithNative(true))
+	if err != nil {
+		t.Fatalf("a refused optional application failed the adopted pass: %v", err)
+	}
+	if len(rep.Skipped) != 1 || rep.Skipped[0].Name != "control-plane mobile" {
+		t.Fatalf("skipped = %+v", rep.Skipped)
+	}
+	if len(published) != 1 || published[0].Apps["control-plane internal-console"].ClientID == "" {
+		t.Fatalf("the adopted app's output was not published: %+v", published)
+	}
+	if _, ok := published[0].Apps["control-plane mobile"]; ok {
+		t.Error("the refused application is in the output")
+	}
+}
+
+// The same missing application, Required, still fails the adopted pass before
+// the first write.
+func TestAdoptionStillRefusesAMissingRequiredApplication(t *testing.T) {
+	f := newFake(t)
+	adoptedInstance(f)
+	r, _ := newRec(t, f, func(o *Options) { o.Adopt = true })
+	_, err := r.Reconcile(context.Background(), adoptedSpecWithNative(false))
+	if err == nil || !strings.Contains(err.Error(), `application "control-plane mobile"`) || !strings.Contains(err.Error(), "Adopt") {
+		t.Fatalf("got %v", err)
+	}
+	if f.writeCount() != 0 {
+		t.Errorf("a refused adoption must not have written: %v", f.log)
+	}
+}

@@ -62,6 +62,23 @@ func (n nativeOIDC) vars() [][2]string {
 	}
 }
 
+// nativeOIDCFromStatus is the sign-in configuration of a hosted env's native
+// app as its control plane reports it (GetIdentityStatus), the hosted twin of
+// nativeOIDCFromOutput. Nil for an app that is not a registered native client
+// and for a control plane that does not report the native fields yet (an older
+// one leaves kind, redirects and scopes empty), so nothing is guessed: a
+// missing field is "not available", never a default.
+func nativeOIDCFromStatus(doc identityStatusDocument, app identityAppWire) *nativeOIDC {
+	if (app.Kind != "oidc_native" && app.Kind != release.IdentityAppNative) || app.ClientID == "" || doc.Issuer == "" || len(app.RedirectURIs) == 0 {
+		return nil
+	}
+	return nativeOIDCFromOutput(identity.Output{
+		Issuer: doc.Issuer,
+		Scopes: doc.Scopes,
+		Apps:   map[string]identity.AppOutput{app.Name: {ClientID: app.ClientID, RedirectURIs: app.RedirectURIs, PostLogoutURIs: app.PostLogoutURIs}},
+	}, app.Name)
+}
+
 // nativeApplicationFor is the kind-native application of a frontend.
 func nativeApplicationFor(id *release.ShapeIdentity, frontend string) (release.ShapeIdentityApplication, bool) {
 	if id == nil {

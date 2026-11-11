@@ -972,10 +972,6 @@ func IdentityIssuer(slug string) string {
 	return "https://" + slug + "." + IdentityDomain
 }
 
-// NativeAppNotOnHostedMessage is the refusal of a kind-native application on an
-// identity that is not host-run; the KCL schema says the same thing.
-const NativeAppNotOnHostedMessage = "kind native: native identity applications are not yet supported on hosted identity (only on forge.IdentityOnHost, the dev loop); see `forge skill load deploy/managed-identity/mobile`"
-
 // validateApplication checks what differs by kind: a broker or web app needs
 // the workload that serves its callbacks; a native app is a mobile client of
 // one frontend, with callback URIs a phone can own.
@@ -1001,24 +997,23 @@ func (i ShapeIdentity) validateApplication(a ShapeIdentityApplication) error {
 	if a.LoginURI != "" {
 		return bad("kind %s has no login_uri: it uses the identity provider's own sign-in pages", IdentityAppNative)
 	}
-	// Only a host-run instance converges a native client today: hosted
-	// registration is not built, and a shape that declared one would be
-	// recorded as if it were converged. What a hosted native app needs once it
-	// is (required redirect_uris, no http) is in ValidateNativeCallbackURI;
-	// lift this refusal, and the matching KCL check, in the change that lands
-	// it, and advertise BundleFeatureIdentityNativeApp with it.
-	if i.Runtime != IdentityRuntimeHost {
-		return bad("%s", NativeAppNotOnHostedMessage)
+	// A host-run instance is the dev loop: the callbacks are derived from the
+	// frontend's app.json when none is declared, and plain http (a loopback
+	// callback) is allowed. A hosted instance registers exactly what the
+	// shape says and derives nothing: forge resolved the callbacks at bundle
+	// build, so an empty list here is a refusal, never a default, and http is
+	// refused.
+	allowHTTP := i.Runtime == IdentityRuntimeHost
+	if !allowHTTP && (len(a.RedirectURIs) == 0 || len(a.LogoutURIs) == 0) {
+		return bad("kind %s on hosted identity needs both redirect_uris and logout_uris resolved (forge derives them from the frontend's app.json expo.scheme at build; declare them on the application if it has none)", IdentityAppNative)
 	}
-	// A host-run instance is the dev loop: the redirect is derived from the
-	// frontend's app.json when none is declared, and plain http is allowed.
 	for _, u := range a.RedirectURIs {
-		if err := ValidateNativeCallbackURI(u, true); err != nil {
+		if err := ValidateNativeCallbackURI(u, allowHTTP); err != nil {
 			return bad("redirect_uris: %v", err)
 		}
 	}
 	for _, u := range a.LogoutURIs {
-		if err := ValidateNativeCallbackURI(u, true); err != nil {
+		if err := ValidateNativeCallbackURI(u, allowHTTP); err != nil {
 			return bad("logout_uris: %v", err)
 		}
 	}
@@ -1076,6 +1071,32 @@ func ValidateNativeCallbackURI(raw string, allowHTTP bool) error {
 // nativeSchemeRE: a lowercase scheme with at least one dot, i.e. the reverse
 // of a domain name.
 var nativeSchemeRE = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`)
+
+// NativeRedirectPath and NativeSignedOutPath are the callback paths of a native
+// app. They are the same under every scheme, so a private-use
+// `<scheme>:/oauthredirect` and an https universal link
+// `https://<domain>/oauthredirect` are served by the app's one route.
+const (
+	NativeRedirectPath  = "oauthredirect"
+	NativeSignedOutPath = "signedout"
+)
+
+// NativePrivateRedirectURI is the redirect URI of a native app's private-use
+// scheme: `<scheme>:/oauthredirect` (RFC 8252 section 7.1).
+func NativePrivateRedirectURI(scheme string) string {
+	return scheme + ":/" + NativeRedirectPath
+}
+
+// NativeSignedOutBeside is the post-logout URI paired with a redirect URI: the
+// same scheme, authority and directory, with the final path segment
+// `signedout`.
+func NativeSignedOutBeside(redirect string) string {
+	i := strings.LastIndex(redirect, "/")
+	if i < 0 {
+		return redirect
+	}
+	return redirect[:i+1] + NativeSignedOutPath
+}
 
 // IsNativePrivateScheme reports whether scheme can name a native app's
 // callback: a lowercase reverse-DNS scheme (RFC 8252 section 7.1) with at

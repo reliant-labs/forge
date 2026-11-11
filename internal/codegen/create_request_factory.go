@@ -643,7 +643,9 @@ func renderOwnerAwareRequestBody(b *strings.Builder, s createRequestSpec, constN
 // FactoryOwner, so the file declares the option and its helpers.
 func createSpecsOwnerAware(specs []createRequestSpec) bool {
 	for _, s := range specs {
-		if s.failure == "" && s.ownerAware {
+		// Failed factories keep their owner-aware signature so callers still
+		// compile and see the schema diagnostic, not an undefined option type.
+		if s.ownerAware {
 			return true
 		}
 	}

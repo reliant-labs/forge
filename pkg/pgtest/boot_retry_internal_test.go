@@ -53,8 +53,8 @@ func TestEmbeddedBootRetriesOccupiedCandidate(t *testing.T) {
 	}, dirFor, func(got embeddedpostgres.Config) (*Embedded, error) {
 		starts++
 		p := port + uint32(starts-1)
-		if !reflect.DeepEqual(got, cfg.Port(p).RuntimePath(dirFor(p))) {
-			t.Fatal("boot changed configuration beyond port/runtime path")
+		if !reflect.DeepEqual(got, cfg.Port(p).RuntimePath(dirFor(p)).Logger(bootLog{path: bootLogPath(dirFor(p))})) {
+			t.Fatal("boot changed configuration beyond port/runtime path/boot log")
 		}
 		if starts == 1 {
 			return nil, collision
@@ -124,19 +124,62 @@ func TestEmbeddedBootCollisionExhaustion(t *testing.T) {
 	}
 }
 
+// unbindablePort is outside the TCP port range: net.Listen refuses it with an
+// error that is not EADDRINUSE.
+const unbindablePort = 70000
+
+// A collision that cleared before pgtest re-bound the port (the winning
+// listener already closed) is still a collision: upstream's precheck lost a
+// race, so the boot moves to a fresh candidate rather than failing
+// (forge #1932, #1942).
+func TestEmbeddedBootRetriesACollisionThatCleared(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Skipf("loopback listener unavailable: %v", err)
+	}
+	cleared := uint32(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	next, _ := occupiedBootPort(t) // any distinct candidate; start is faked
+	dirFor := bootDirs(t)
+	want := &Embedded{}
+	candidates := []uint32{cleared, next}
+	reserves, starts := 0, 0
+	ep, gotPort, claim, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
+		p := candidates[reserves]
+		reserves++
+		return p, nil
+	}, dirFor, func(embeddedpostgres.Config) (*Embedded, error) {
+		starts++
+		if starts == 1 {
+			return nil, fmt.Errorf("process already listening on port %d", cleared)
+		}
+		return want, nil
+	})
+	if err != nil || ep != want || gotPort != next || reserves != 2 || starts != 2 {
+		t.Fatalf("got ep=%p port=%d err=%v reserves=%d starts=%d, want a retry on %d", ep, gotPort, err, reserves, starts, next)
+	}
+	claim.release()
+	if bootClaimHeld(dirFor(cleared)) {
+		t.Fatal("the cleared candidate retained its boot lock")
+	}
+}
+
 func TestEmbeddedBootDoesNotRetryOtherFailures(t *testing.T) {
 	for _, cause := range []error{
 		&FetchError{URL: "https://example.invalid/postgres.txz", Status: 503, Attempts: 6},
 		os.ErrPermission,
 		errors.New("initdb: No space left on device"),
 		errors.New("could not start postgres using pg_ctl: initdb failed"),
-		fmt.Errorf("process already listening on port %d", 0), // wording without an actual collision
+		// The collision wording, but a re-bind fails with something other
+		// than EADDRINUSE (here: a port no socket can have), so it was no
+		// collision at all.
+		fmt.Errorf("process already listening on port %d", unbindablePort),
 	} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			starts, reserves := 0, 0
 			_, _, _, err := startEmbeddedOnFreshPort(embeddedpostgres.DefaultConfig(), func() (uint32, error) {
 				reserves++
-				return 0, nil
+				return unbindablePort, nil
 			}, bootDirs(t), func(embeddedpostgres.Config) (*Embedded, error) {
 				starts++
 				return nil, cause

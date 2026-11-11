@@ -21,6 +21,11 @@ func scaffoldedWorkloadsProject(t *testing.T, name string, hasFrontend bool) str
 	if err := generator.ScaffoldWorkloadsKCL(dir, "github.com/acme/"+name, name, nil, hasFrontend); err != nil {
 		t.Fatalf("ScaffoldWorkloadsKCL: %v", err)
 	}
+	// A Go project: the orphan direction judges only a project with Go code
+	// for its workloads to match.
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/acme/"+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
@@ -385,5 +390,41 @@ prune = fw.Workload {
 	}
 	if got := strings.Join(orphanNames(findings), ","); got != "prune" {
 		t.Errorf("orphans = %q, want only prune (demo-workers is the project's process, spend-snapshotter runs spend_snapshot)", got)
+	}
+}
+
+// TestComponentDrift_NoGoProjectHasNoOrphans: a project adopted in place with
+// no Go (an Express app: forge.yaml, deploy/kcl/, no go.mod, no module_path)
+// has no component for any workload to match, so none is drift (report
+// e623e539). The same workloads.k in a Go project still reports them.
+func TestComponentDrift_NoGoProjectHasNoOrphans(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, codegen.WorkloadsKCLRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`import forge
+import forge.workloads as fw
+
+api = fw.Workload {
+    name = "api"
+    kind = "service"
+    image = "realworld"
+    build = forge.DockerBuild {dockerfile = "Dockerfile"}
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.ProjectConfig{Name: "realworld"}
+	findings, err := collectComponentDrift(dir, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("a project with no Go reported drift: %+v", findings)
+	}
+	cfg.ModulePath = "github.com/acme/realworld"
+	if findings, _ := collectComponentDrift(dir, cfg); len(orphanNames(findings)) != 1 {
+		t.Errorf("a Go project's unmatched workload is still an orphan, got %+v", findings)
 	}
 }

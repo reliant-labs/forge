@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/suspect"
 	"github.com/reliant-labs/forge/pkg/obsquery"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -196,6 +197,7 @@ func TestObsIssueLocalTriageExits2(t *testing.T) {
 }
 
 func TestObsIssueRealSuspectsFromATempRepo(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
@@ -623,5 +625,51 @@ func TestObsIssueListsTheRestOfItsIncident(t *testing.T) {
 	}
 	if doc["issue"].(map[string]any)["related_count"] != float64(1) {
 		t.Errorf("issue = %v", doc["issue"])
+	}
+}
+
+// An issue of a bug-report source groups reports under a normalized title
+// (<n>, <str>); each report's body rides on its event as bug_report.*
+// attributes. `obs issue` shows every shown event's report, newest first and
+// once each, in the document and the text (forge_cli_report 4e578d68).
+func TestObsIssueShowsTheBugReportsItGroups(t *testing.T) {
+	withSuspects(t, func(context.Context, string, []string) ([]suspect.Commit, error) { return nil, nil })
+	report := func(id, at, actual string) string {
+		return `{"timestamp":"` + at + `","message":"[forge] obs check slides","attributes":{"issue.source":"forge_cli_report",` +
+			`"bug_report.id":"` + id + `","bug_report.product":"forge","bug_report.severity":"medium",` +
+			`"bug_report.title":"obs check --wait never terminates","bug_report.summary":"the end moves",` +
+			`"bug_report.expected":"it ends at P+15m","bug_report.actual":"` + actual + `","bug_report.evidence":"forge obs check prod --wait"}}`
+	}
+	newer, older := report("f3ae0fb1", "2026-10-22T11:00:00Z", "ends 18:07:40Z, then 18:07:55Z"), report("c0b7658d", "2026-10-22T10:00:00Z", "INCONCLUSIVE")
+	fc := &fakeCloudCaller{replies: map[string]string{
+		cloudIssue:    `{"issue":` + cloudIssueJSON + `,"latestEvent":` + newer + `}`,
+		cloudEvents:   `{"events":[` + newer + `,` + older + `]}`,
+		cloudTimeline: `{}`,
+	}}
+	out, _, err := obsRunCloud(t, fc, "issue", "ISS-7f3a", "prod", "--json", "--events", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reps, _ := decode(t, out)["bug_reports"].([]any)
+	if len(reps) != 2 {
+		t.Fatalf("bug_reports = %v, want the two reports once each", reps)
+	}
+	first := reps[0].(map[string]any)
+	if first["id"] != "f3ae0fb1" || first["actual"] != "ends 18:07:40Z, then 18:07:55Z" || first["expected"] != "it ends at P+15m" ||
+		first["evidence"] != "forge obs check prod --wait" || first["severity"] != "medium" {
+		t.Errorf("newest report = %v", first)
+	}
+	if reps[1].(map[string]any)["id"] != "c0b7658d" {
+		t.Errorf("second report = %v", reps[1])
+	}
+
+	text, _, err := obsRunCloud(t, fc, "issue", "ISS-7f3a", "prod", "--events", "2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bug report f3ae0fb1", "actual:   ends 18:07:40Z", "expected: it ends at P+15m", "evidence: forge obs check prod --wait", "bug report c0b7658d"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The pin bot's first live run on control-plane: `forge project upgrade` ran the
@@ -113,6 +115,7 @@ func TestConnectErrors_LeavesNoFormattingFindings(t *testing.T) {
 }
 
 func TestCompositionGraph_LeavesNoFormattingFindings(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	// control-plane's shape: the module shares the github.com/reliant-labs/
 	// prefix with the forge imports the generated compose.go carries.
 	const module = "github.com/reliant-labs/app"

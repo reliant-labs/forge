@@ -41,6 +41,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writePortStore records name->port in a project's .forge/ports-<env>.json,
@@ -130,6 +131,7 @@ func renderPortThroughCLI(t *testing.T, projectDir, env string) int {
 // Before the fix this returned the preferred port instead, because only the
 // two launch paths armed the store.
 func TestResolvePortHonorsStoreOnEveryRender(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	resetResolverForTest(t)
 	projectDir := t.TempDir()
 	const role, preferred = "proj-dev-postgres", 5432
@@ -154,6 +156,7 @@ func TestResolvePortHonorsStoreOnEveryRender(t *testing.T) {
 // Availability-checking is still correct for a port with NO record. This
 // pins that a RECORDED port is returned unconditionally.
 func TestResolvePortStableWhileItsOwnServiceIsRunning(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	resetResolverForTest(t)
 	projectDir := t.TempDir()
 	const role = "proj-dev-postgres"
@@ -186,6 +189,7 @@ func TestResolvePortStableWhileItsOwnServiceIsRunning(t *testing.T) {
 // Writing stays with the launch paths (`env up` / `env deploy`), which resolve
 // while the port is genuinely free.
 func TestReadOnlyRenderDoesNotCreatePortStore(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	resetResolverForTest(t)
 	projectDir := t.TempDir()
 	const role, preferred = "proj-dev-api", 8085
@@ -206,6 +210,7 @@ func TestReadOnlyRenderDoesNotCreatePortStore(t *testing.T) {
 // downgrade it. Without this, the fix for the read path could silently make
 // the write path stop recording — and nothing would ever be remembered.
 func TestLaunchPathStillWritesPortStore(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	resetResolverForTest(t)
 	projectDir := t.TempDir()
 	const role, preferred = "proj-dev-api", 8085

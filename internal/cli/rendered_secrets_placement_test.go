@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Bundle.rendered_secrets exists for the case neither secret provider can
@@ -123,6 +124,7 @@ func TestApplyDeclaredSecrets_RefusesNonLocalCluster(t *testing.T) {
 // declares (not a hardcoded secrets/<env>.yaml), and a literal is gated to
 // dev/e2e by the Go guard too.
 func TestApplyDeclaredSecrets_DryRunResolvesFileKeysFromTheFileSecretsStore(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: x\nmodule_path: example.com/x\n"), 0o644); err != nil {
@@ -267,6 +269,7 @@ output = forge.render(_bundle)
 //
 // Mutation that fails it: declare RenderedSecret.cluster/namespace as `?: str`.
 func TestBundleRenderedSecrets_RenderThroughForge(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	kclplugin.Register()
 	resetDevStackGlobals(t)
 	dir := t.TempDir()

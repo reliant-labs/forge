@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A probe that never ran cannot say whether covdata exists. That is
@@ -16,6 +18,7 @@ import (
 // same shape a cancellation, a malformed install or a permissions failure
 // produces in the field.
 func TestCheckCovdataUnknownWhenProbeCannotRun(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -31,6 +34,7 @@ func TestCheckCovdataUnknownWhenProbeCannotRun(t *testing.T) {
 // The healthy toolchain must still PASS: the undetermined branch is the
 // catch-all, and widening it must not swallow a real answer.
 func TestCheckCovdataPassesOnHealthyToolchain(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	res := CheckCovdata(context.Background(), &Environment{})
 	if res.Status != StatusPass {
 		t.Skipf("no usable covdata in this toolchain (status %s: %s) — nothing to assert",

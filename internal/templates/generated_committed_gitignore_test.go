@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The scaffold's commit policy, asserted against REAL git rather than a
@@ -48,6 +49,7 @@ var generatedPaths = []string{
 }
 
 func TestProjectGitignore_CommitsGeneratedCode(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	body, err := templates.ProjectTemplates().Get(".gitignore")
 	if err != nil {
 		t.Fatalf("read project .gitignore template: %v", err)
@@ -63,6 +65,7 @@ func TestProjectGitignore_CommitsGeneratedCode(t *testing.T) {
 // The proto descriptor is read only by forge, which derives it on demand
 // (commitpolicy.IsToolDerived), so it is never committed.
 func TestProjectGitignore_IgnoresToolDerivedDescriptor(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	body, err := templates.ProjectTemplates().Get(".gitignore")
 	if err != nil {
 		t.Fatalf("read project .gitignore template: %v", err)
@@ -77,6 +80,7 @@ func TestProjectGitignore_IgnoresToolDerivedDescriptor(t *testing.T) {
 }
 
 func TestProjectGitignore_IgnoresVendoredForgeKCL(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	body, err := templates.ProjectTemplates().Get(".gitignore")
 	if err != nil {
 		t.Fatalf("read project .gitignore template: %v", err)
@@ -91,6 +95,7 @@ func TestProjectGitignore_IgnoresVendoredForgeKCL(t *testing.T) {
 }
 
 func TestFrontendGitignore_CommitsGeneratedCodeAndIgnoresDevRuntimeConfig(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, kind := range []string{"nextjs", "vite-spa", "react-native"} {
 		t.Run(kind, func(t *testing.T) {
 			body, err := templates.FrontendTemplates().Get(filepath.Join(kind, ".gitignore"))

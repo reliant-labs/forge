@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kcltest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // perBinaryKCL renders the per-binary config module for the two-binary
@@ -83,6 +84,7 @@ func TestPerBinaryKCL_SecretIsScopedToItsBinary(t *testing.T) {
 // Deployment env is built from, so it is the honest statement of "each
 // binary carries only its own env vars".
 func TestPerBinaryKCL_EndToEndDisjointEnvMaps(t *testing.T) {
+	testkit.Slow(t, "execs kcl")
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping per-binary env-map e2e proof")
 	}
@@ -180,6 +182,7 @@ assert_shared_gateway = str(_gateway_env["LOG_LEVEL"]) == "info"
 // not a silently ignored line — the schema split is enforced by the type
 // system, not by convention.
 func TestPerBinaryKCL_CrossBinaryFieldIsATypeError(t *testing.T) {
+	testkit.Slow(t, "execs kcl")
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping cross-binary type-error proof")
 	}

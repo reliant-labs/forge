@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The generate lock (.forge/forge.lock) exists for one scenario: two forge
@@ -168,6 +169,7 @@ func waitForLockCondition(within time.Duration, cond func() bool) bool {
 // it with: rm .forge/forge.lock" — advice that, once followed, let two
 // pipelines interleave their writes and rollbacks.
 func TestGenerateLock_ConcurrentRunsSerialize(t *testing.T) {
+	testkit.Slow(t, "execs forge child processes that contend for the generate lock")
 	dir := t.TempDir()
 	const runs = 4
 	helpers := make([]*lockHelper, runs)
@@ -193,6 +195,7 @@ func TestGenerateLock_ConcurrentRunsSerialize(t *testing.T) {
 // stays alive (blocked, not failed), says so in one line naming the holder's
 // pid, and proceeds as soon as the holder releases.
 func TestGenerateLock_WaiterNamesHolderAndBlocks(t *testing.T) {
+	testkit.Slow(t, "execs forge child processes that contend for the generate lock")
 	dir := t.TempDir()
 	holder := startLockHelper(t, dir, "hold")
 	heldMarker := filepath.Join(dir, "held")
@@ -234,6 +237,7 @@ func TestGenerateLock_WaiterNamesHolderAndBlocks(t *testing.T) {
 // The OS drops the lock with the process, so the next run starts at once —
 // no staleness window, no `rm` by hand.
 func TestGenerateLock_KilledHolderReleasesLock(t *testing.T) {
+	testkit.Slow(t, "execs forge child processes that contend for the generate lock")
 	dir := t.TempDir()
 	holder := startLockHelper(t, dir, "hold")
 	if !waitForLockCondition(15*time.Second, func() bool { _, err := os.Stat(filepath.Join(dir, "held")); return err == nil }) {
@@ -412,6 +416,7 @@ func TestGenerateCmd_WaitsForConcurrentRun(t *testing.T) {
 // render wait out a concurrent writer, keep writers out while they read, and
 // write nothing — no .forge/, no lock file, no holder record.
 func TestObserveGenerateLock_WaitsForTheWriterAndWritesNothing(t *testing.T) {
+	testkit.Slow(t, "execs forge child processes that contend for the generate lock")
 	t.Run("no lock file: nothing to wait for, nothing created", func(t *testing.T) {
 		dir := t.TempDir()
 		release, err := observeGenerateLock(dir)
@@ -502,6 +507,7 @@ func TestObserveGenerateLock_WaitsForTheWriterAndWritesNothing(t *testing.T) {
 // with the generate lock as a reader: a generate already running finishes
 // first, and one that starts during the render waits for the verdict.
 func TestRenderWriteScan_WaitsOutAConcurrentGenerate(t *testing.T) {
+	testkit.Slow(t, "execs forge child processes that contend for the generate lock")
 	dir := t.TempDir()
 	holder := startLockHelper(t, dir, "hold")
 	if !waitForLockCondition(15*time.Second, func() bool { _, err := os.Stat(filepath.Join(dir, "held")); return err == nil }) {

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // pageAll walks a history to the end, the way a reader is told to: stop on an
@@ -45,6 +46,7 @@ func pageAll(t *testing.T, r bindingHistoryReader, env string, q historyQuery) [
 // Both backends page the SAME way: newest first, keyset cursor, empty cursor
 // on the last page. A reader written against one must work on the other.
 func TestHistoryPage_BothBackendsPageIdentically(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	// File: prod v1 → v2 → v3 → v1 → v4.
 	dir := t.TempDir()
 	file := testBindings(t, dir)
@@ -95,6 +97,7 @@ func equalPages(a, b [][]string) bool {
 // (exit 1 — the request, not the ledger), so a pipeline paging with a typo
 // does not loop over page one forever.
 func TestEnvHistory_BadRequestIsExit1(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})
 	store := testBindings(t, dir)
@@ -113,6 +116,7 @@ func TestEnvHistory_BadRequestIsExit1(t *testing.T) {
 // --json carries the ledger entries with both evidence halves counted, the
 // cursor, and the envelope. The capture recipe the CI template uses works.
 func TestEnvHistory_JSON(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})

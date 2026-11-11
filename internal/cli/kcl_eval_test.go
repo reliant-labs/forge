@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/kclvendor"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // evalProject writes a minimal project and returns its root.
@@ -66,6 +67,7 @@ func runEval(t *testing.T, dir string, args ...string) (string, string, error) {
 // render` shipped that bug — a `Note:` on stdout became the first YAML document
 // of a stream piped to kubectl — and here it would silently become part of V.
 func TestKCLEvalRawIsExactlyTheValue(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 
 	stdout, _, err := runEval(t, dir, "deploy/kcl/lib/pool.k", "-S", "sbd.image_family", "--format", "raw")
@@ -89,6 +91,7 @@ func TestKCLEvalRawIsExactlyTheValue(t *testing.T) {
 
 // TestKCLEvalRepeatedSelect: two -S flags yield an object keyed by selector.
 func TestKCLEvalRepeatedSelect(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	stdout, _, err := runEval(t, dir, "deploy/kcl/lib/pool.k",
 		"-S", "sbd.image_family", "-S", "sbd.disk_size_gb")
@@ -104,6 +107,7 @@ func TestKCLEvalRepeatedSelect(t *testing.T) {
 // TestKCLEvalRawRefusesAComposite: raw of a list fails rather than printing
 // JSON the caller would interpolate into a command line without noticing.
 func TestKCLEvalRawRefusesAComposite(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	stdout, _, err := runEval(t, dir, "deploy/kcl/lib/pool.k", "-S", "tiers", "--format", "raw")
 	if err == nil {
@@ -118,6 +122,7 @@ func TestKCLEvalRawRefusesAComposite(t *testing.T) {
 // command still finds the project. A Go test runs in its package directory and
 // a script runs from wherever it was invoked, so this is the common case.
 func TestKCLEvalWalksUpToTheProject(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	sub := filepath.Join(dir, "internal", "operators", "shared")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -136,6 +141,7 @@ func TestKCLEvalWalksUpToTheProject(t *testing.T) {
 // mistake, and cobra's usage block would bury the message naming the fields the
 // document actually has.
 func TestKCLEvalMissingFieldFailsWithoutAUsageDump(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	_, stderr, err := runEval(t, dir, "deploy/kcl/lib/pool.k", "-S", "sbd.image_familly")
 	if err == nil {
@@ -151,6 +157,7 @@ func TestKCLEvalMissingFieldFailsWithoutAUsageDump(t *testing.T) {
 
 // TestKCLEvalOptionReachesTheFile: -D binds a top-level option().
 func TestKCLEvalOptionReachesTheFile(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	p := filepath.Join(dir, "deploy", "kcl", "lib", "opt.k")
 	body := "import forge\n\ntier = option(\"tier\", type=\"str\", default=\"free\")\n_p = forge.Bundle is not None\n"
@@ -168,6 +175,7 @@ func TestKCLEvalOptionReachesTheFile(t *testing.T) {
 
 // TestKCLEvalClaimsNoPorts: a read-only command never claims a port block.
 func TestKCLEvalClaimsNoPorts(t *testing.T) {
+	testkit.Slow(t, "execs the forge binary to evaluate KCL")
 	dir := evalProject(t)
 	if _, _, err := runEval(t, dir, "deploy/kcl/lib/pool.k", "-S", "sbd.image_family"); err != nil {
 		t.Fatal(err)

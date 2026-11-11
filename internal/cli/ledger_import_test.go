@@ -23,6 +23,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // importFixture is a project whose committed history holds a retired ledger,
@@ -748,6 +749,7 @@ func TestLedgerImport_LeavesAnExistingEnvRecordAlone(t *testing.T) {
 // that never used the retired ledger (hounders, §11.2), and making the
 // absence an error would break the forge pin bump for every such project.
 func TestLedgerImport_EmptySourceIsNotAnError(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newImportProject(t, "no-ledger-project")
 
 	out, err := runImport(t, dir, "--from-git", "--rev", "HEAD")

@@ -29,6 +29,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/dbquery/kubedial"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestSelectQueryDatabase(t *testing.T) {
@@ -170,6 +171,7 @@ func TestDBQueryClusterThroughTheTunnel(t *testing.T) {
 // A database whose read-only Secret is missing is not queried: the command
 // says why and how to fix it, exit 2.
 func TestDBQueryClusterWithoutTheReadOnlyRole(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	prevClient := newDBQueryClient
 	newDBQueryClient = func(string) (*kubedial.Client, error) {
 		return kubedial.NewWithClientset(fake.NewClientset(), &fakeDBPods{}), nil

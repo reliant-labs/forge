@@ -13,6 +13,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A frontend binds a runtime exactly as a workload does (ADR 0002 §6). These
@@ -57,6 +58,7 @@ func renderFrontendEnv(t *testing.T, frontends, bundleExtra string) *KCLEntities
 // frontend — and nothing else. A bucket frontend's placement is the runtime's;
 // its public_dir / base_path / bundle / cache rules are the frontend's.
 func TestFrontendRuntime_DecodeEveryRuntime(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	e := renderFrontendEnv(t, `[
         forge.Frontend {name = "dev", path = "dev", port = 3100, runtime = forge.OnHost {}}
         forge.Frontend {name = "site", path = "site", type = "vite", public_dir = "dist", image = "ghcr.io/acme/site", runtime = forge.OnHosted {}}
@@ -231,6 +233,7 @@ func TestFrontendRuntime_DispatchTable(t *testing.T) {
 // with no bucket, and its spec was {basePath, keepReleases: 10,
 // runtimeConfig} — the literal below is that published JSON, byte for byte.
 func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	e := renderFrontendEnv(t, `[forge.Frontend {
         name = "web"
         image = "ghcr.io/acme/web"
@@ -276,6 +279,7 @@ func TestFrontendRuntime_HostedPublishesTheSameStaticSiteSpec(t *testing.T) {
 // Hosted is a runtime, not the absence of a bucket: a bucket frontend in an
 // env that ALSO has a control plane and hosted workloads stays the author's.
 func TestFrontendRuntime_BucketBesideHostedWorkloadsIsNotHosted(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	e := renderFrontendEnv(t, `[forge.Frontend {name = "web", path = "web", type = "vite", runtime = forge.OnBucket {bucket = "acme-web"}}]`,
 		`    control_plane = forge.ControlPlane {}
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api:v1", ports = [fw.Port {name = "http", port = 8080, expose = True}], runtime = forge.OnHosted {}}]`)

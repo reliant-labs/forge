@@ -16,6 +16,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // switchableCP is a fake control plane that can be taken down and brought back
@@ -109,6 +110,7 @@ func (f *offlineFixture) offline(t *testing.T) envLedger {
 
 // The cache is filled by a WRITE (the promote above) and by a READ.
 func TestHostedCache_PopulatedOnWriteAndRead(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	store := f.store(t)
 
@@ -154,6 +156,7 @@ func TestHostedCache_PopulatedOnWriteAndRead(t *testing.T) {
 
 // "Never promoted" is cached too, as exactly that.
 func TestHostedCache_RecordsNeverPromoted(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	cp := &switchableCP{fake: newFakeDeployService(map[string]string{"prod": "env-prod-uuid"})}
 	srv := httptest.NewServer(cp)
 	t.Cleanup(srv.Close)
@@ -179,6 +182,7 @@ func TestHostedCache_RecordsNeverPromoted(t *testing.T) {
 // The offline ledger answers from the cache and pins the CACHED digest, with
 // the control plane dead.
 func TestOfflineLedger_DeploysCachedDigest(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.srv.Close()
 
@@ -208,6 +212,7 @@ func TestOfflineLedger_DeploysCachedDigest(t *testing.T) {
 
 // With no cache there is nothing to deploy, and the error says how to get one.
 func TestOfflineLedger_NoCacheIsRefused(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "acme")
 	ents := prodShapedEntities()
 	_, err := offlineLedgerForEntities("prod", ents, dir)
@@ -218,6 +223,7 @@ func TestOfflineLedger_NoCacheIsRefused(t *testing.T) {
 
 // A cache is for the control plane that wrote it.
 func TestOfflineLedger_CacheIsPerEndpoint(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	other := prodShapedEntities()
 	other.ControlPlane.Endpoint = "https://other.example.com"
@@ -228,6 +234,7 @@ func TestOfflineLedger_CacheIsPerEndpoint(t *testing.T) {
 
 // An env the control plane converges is not something this machine can apply.
 func TestOfflineLedger_RefusesWhatTheControlPlaneApplies(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	withHosted := prodShapedEntities()
 	withHosted.ControlPlane.Endpoint = f.srv.URL
@@ -239,6 +246,7 @@ func TestOfflineLedger_RefusesWhatTheControlPlaneApplies(t *testing.T) {
 
 // FORGE_LEDGER=machine and --offline-ledger name two different ledgers.
 func TestOfflineLedger_ContradictsMachineOverride(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	t.Setenv(ledgerSelectionEnv, "machine")
 	if _, err := offlineLedgerForEntities("prod", f.entity, f.dir); err == nil || !strings.Contains(err.Error(), "contradict") {
@@ -249,6 +257,7 @@ func TestOfflineLedger_ContradictsMachineOverride(t *testing.T) {
 // Offline Append queues exactly one record (the cached release) and refuses
 // any move.
 func TestOfflineBindings_AppendQueuesAndRefusesAMove(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.srv.Close()
 	ctx := withOfflineLedger(context.Background())
@@ -276,6 +285,7 @@ func TestOfflineBindings_AppendQueuesAndRefusesAMove(t *testing.T) {
 // The replay: on the next successful contact the queue is sent, once, and
 // converges however many times it is attempted.
 func TestOfflineReplay_IsIdempotent(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.cp.down.Store(true)
 	ctx := withOfflineLedger(context.Background())
@@ -346,6 +356,7 @@ func TestOfflineReplay_IsIdempotent(t *testing.T) {
 // If the env moved while this machine was offline, the replay is REFUSED and
 // stays queued; it never overwrites what landed.
 func TestOfflineReplay_RefusedWhenTheEnvMoved(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	ctx := context.Background()
 	hs := f.ledger.Bindings.(*hostedStore)
@@ -387,6 +398,7 @@ func TestOfflineReplay_RefusedWhenTheEnvMoved(t *testing.T) {
 }
 
 func TestOfflineBanner_PrintsAgeAndReplay(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	l := f.offline(t)
 	l.Offline.now = func() time.Time { return l.Offline.snap.RefreshedAt.Add(9 * 24 * time.Hour) }
@@ -610,6 +622,7 @@ func cachedVersions(snap *ledgerfile.HostedSnapshot) []string {
 // The window keeps the last N promotions, newest first, each WITH the release
 // (its digests) — and trims older ones as the env moves on.
 func TestHostedCache_WindowTrimsToN(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Setenv(offlineWindowEnv, "3")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3", "v4", "v5")
@@ -642,6 +655,7 @@ func TestOfflineWindow_DefaultAndBounds(t *testing.T) {
 // A repeated read of the same promotion refreshes the timestamp only: it does
 // not re-fetch the history or the releases.
 func TestHostedCache_RefreshOfUnchangedPromotionCostsNoExtraReads(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2")
 	hs := f.ledger.Bindings.(*hostedStore)
@@ -666,6 +680,7 @@ func TestHostedCache_RefreshOfUnchangedPromotionCostsNoExtraReads(t *testing.T) 
 // The break-glass: v3 is the bad release that took the control plane down;
 // `--to previous` deploys v2 by ITS cached digests with the server dead.
 func TestOfflineRollback_ToPreviousUsesTheCachedDigest(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3")
 	f.srv.Close()
@@ -712,6 +727,7 @@ func TestOfflineRollback_ToPreviousUsesTheCachedDigest(t *testing.T) {
 // A release the copy has never held cannot be pinned to digests: refused with
 // the list of what can be deployed.
 func TestOfflineRollback_UncachedReleaseIsRefused(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	t.Setenv(offlineWindowEnv, "2")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3") // window 2 keeps v3, v2 — v1 fell out
@@ -738,6 +754,7 @@ func TestOfflineRollback_UncachedReleaseIsRefused(t *testing.T) {
 }
 
 func TestOfflineRollback_PreviousWithNothingBefore(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t) // only v1
 	l := f.offline(t)
 	if _, err := l.Offline.resolveTarget("prod", "previous"); err == nil || !strings.Contains(err.Error(), "no release before v1") {
@@ -748,6 +765,7 @@ func TestOfflineRollback_PreviousWithNothingBefore(t *testing.T) {
 // A cached release whose digests could not be read at refresh time is listed
 // but not deployable.
 func TestOfflineRollback_UndigestedReleaseIsNotDeployable(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2")
 	store := f.store(t)
@@ -766,6 +784,7 @@ func TestOfflineRollback_UndigestedReleaseIsNotDeployable(t *testing.T) {
 // a NEW promotion, compare-and-set against the promotion the copy named, with
 // the apply verdict riding on it — and a second replay changes nothing.
 func TestOfflineReplay_Rollback(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3")
 	badID := f.current.ID
@@ -819,6 +838,7 @@ func TestOfflineReplay_Rollback(t *testing.T) {
 // The moved-env refusal still applies to a rollback: if someone promoted v4
 // meanwhile, the rollback is refused and v4 stays.
 func TestOfflineReplay_RollbackRefusedWhenTheEnvMoved(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3")
 	badID := f.current.ID
@@ -854,6 +874,7 @@ func TestOfflineReplay_RollbackRefusedWhenTheEnvMoved(t *testing.T) {
 // Two rollbacks in one outage chain: the second is queued on top of the first
 // and replays only after it, against the promotion the first created.
 func TestOfflineReplay_ChainedRollbacks(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3")
 	f.cp.down.Store(true)
@@ -888,6 +909,7 @@ func TestOfflineReplay_ChainedRollbacks(t *testing.T) {
 
 // `forge env status` shows the break-glass options in advance.
 func TestOfflineCacheReport_ListsWhatIsDeployable(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	f := newOfflineFixture(t)
 	f.promoteChain(t, "v2", "v3")
 	rep := collectOfflineCache(f.ledger.Bindings, "prod")

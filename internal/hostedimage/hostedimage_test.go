@@ -55,6 +55,11 @@ func TestOffBase(t *testing.T) {
 			base:  "", want: []string{"api"},
 		},
 		{
+			name:  "an UNBUILT third-party image is mirrored, not refused",
+			items: []Item{{Owner: "whoami", Image: "docker.io/traefik/whoami:v1.10.3", Unbuilt: true}},
+			base:  base, want: nil,
+		},
+		{
 			name:  "with no base a bare image is still fine",
 			items: []Item{{Owner: "api", Image: "api"}},
 			base:  "", want: nil,
@@ -227,6 +232,101 @@ func TestPushBase(t *testing.T) {
 				t.Errorf("PushBase(%q, %q, %q) = %q, want %q", tc.host, tc.org, tc.project, got, tc.want)
 			}
 		})
+	}
+}
+
+// The mirror address keeps the source's whole path under the base, so two
+// sources sharing a last segment cannot collide in one repository, and there
+// is nothing to mirror for an image the platform can already pull.
+func TestMirrorRepository(t *testing.T) {
+	for _, tc := range []struct{ name, base, image, want string }{
+		{"a Docker Hub image keeps its path", base, "docker.io/traefik/whoami:v1.10.3", base + "/traefik/whoami"},
+		{"a library image keeps library/", base, "docker.io/library/nginx@sha256:abc", base + "/library/nginx"},
+		{"Docker Hub's implicit library/ is written out", base, "docker.io/nginx:1.27", base + "/library/nginx"},
+		{"index.docker.io is Docker Hub too", base, "index.docker.io/nginx", base + "/library/nginx"},
+		{"another registry's one-segment path is verbatim", base, "ghcr.io/nginx", base + "/nginx"},
+		{"another registry's path", base, "ghcr.io/acme/api", base + "/acme/api"},
+		{"a port-bearing host is dropped too", base, "localhost:5000/team/api:dev", base + "/team/api"},
+		{"a bare image resolves, it is not mirrored", base, "whoami", ""},
+		{"an image already under the base is not mirrored", base, base + "/api:v1", ""},
+		{"no base mirrors nothing", "", "docker.io/traefik/whoami", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MirrorRepository(tc.base, tc.image); got != tc.want {
+				t.Errorf("MirrorRepository(%q, %q) = %q, want %q", tc.base, tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
+// A destination the registry would refuse is caught before anything is copied:
+// a path component outside the distribution grammar, or a name too long.
+func TestValidateMirror(t *testing.T) {
+	for _, tc := range []struct {
+		name, dest, wantErr string
+	}{
+		{"a normal mirror", base + "/traefik/whoami", ""},
+		{"separators the grammar allows", base + "/a.b_c__d--e/f", ""},
+		{"an uppercase component", base + "/Acme/api", `"Acme"`},
+		{"a leading separator", base + "/-api", `"-api"`},
+		{"an empty component", base + "//api", `""`},
+		{"too long", base + "/" + strings.Repeat("a", 255), "over the 255"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMirror(tc.dest)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateMirror(%q) = %v, want nil", tc.dest, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateMirror(%q) = %v, want an error containing %s", tc.dest, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Every spelling of one Docker Hub repository is one source; another
+// registry's same path is not.
+func TestCanonicalSource(t *testing.T) {
+	for _, in := range []string{"docker.io/nginx:1", "index.docker.io/library/nginx", "registry-1.docker.io/nginx@sha256:abc"} {
+		if got := CanonicalSource(in); got != "docker.io/library/nginx" {
+			t.Errorf("CanonicalSource(%q) = %q, want docker.io/library/nginx", in, got)
+		}
+	}
+	if got := CanonicalSource("ghcr.io/nginx"); got != "ghcr.io/nginx" {
+		t.Errorf("CanonicalSource(ghcr.io/nginx) = %q", got)
+	}
+}
+
+// A workload literal that declares a build is BUILT; one that does not is a
+// third-party image, which the scan marks so OffBase does not report it.
+func TestScanTreeMarksUnbuiltWorkloads(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "prod/main.k", `
+import forge
+import forge.workloads as fw
+
+_bundle = forge.Bundle {
+    workloads = [fw.Workload {
+        name = "api"
+        image = "ghcr.io/acme/api"
+        build = forge.DockerBuild {dockerfile = "Dockerfile"}
+        runtime = forge.OnHosted {}
+    }, fw.Workload {
+        name = "whoami"
+        image = "docker.io/traefik/whoami:v1.10.3"
+        runtime = forge.OnHosted {}
+    }]
+}
+`)
+	got := ScanTree(dir)
+	if len(got) != 2 || got[0].Owner != "api" || got[0].Unbuilt || got[1].Owner != "whoami" || !got[1].Unbuilt {
+		t.Fatalf("ScanTree = %+v, want api built and whoami unbuilt", got)
+	}
+	if f := OffBase(got, ""); len(f) != 1 || f[0].Owner != "api" {
+		t.Errorf("OffBase = %+v, want only the BUILT api", f)
 	}
 }
 

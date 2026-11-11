@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The regression these tests pin: `forge scaffold worker nightly` scaffolds
@@ -284,6 +285,7 @@ func TestGenerateLifecycle_DisownedIsNeverTouched(t *testing.T) {
 // anyway and returning a MissingProvider error would break `forge generate`
 // for exactly the projects that took ownership to avoid it.
 func TestGenerateCompose_DisownedIsNotEvenResolved(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	// A worker whose collaborator has no producer and no Infra field: the
 	// shape that raises MissingProvider.

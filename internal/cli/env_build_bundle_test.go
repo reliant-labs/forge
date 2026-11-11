@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // bundleTestNow is the bundle's creation time. Stated, because bundle.Build
@@ -45,10 +46,16 @@ var bundleTestNow = time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 // the bytes where the ledger says, record what was written.
 func stubEnvShape(t *testing.T, project string) {
 	t.Helper()
+	stubEnvShapeOfKind(t, project, release.EnvSelfManaged)
+}
+
+// stubEnvShapeOfKind is stubEnvShape for an env of the given kind.
+func stubEnvShapeOfKind(t *testing.T, project string, kind release.EnvKind) {
+	t.Helper()
 	prev := projectEnvShapeFn
 	projectEnvShapeFn = func(_ context.Context, _ io.Writer, env string) (envShapeDoc, error) {
 		shape, err := bundle.ProjectShape(bundle.ShapeInput{
-			Kind:      release.EnvSelfManaged,
+			Kind:      kind,
 			Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx"}},
 			Clusters:  []string{"prod-ctx"},
 			Manifests: bundleTestStream,
@@ -94,6 +101,7 @@ spec:
 // blob must not be able to end up on different machines or in different
 // lifetimes, because a row pointing at blobs nobody has is F-4's shape.
 func TestEnvBuildBundle_FileLedgerEnvWritesLocallyAndRecords(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-build-project")
 	stubEnvShape(t, "bundle-build-project")
 
@@ -166,6 +174,7 @@ func TestEnvBuildBundle_FileLedgerEnvWritesLocallyAndRecords(t *testing.T) {
 // re-cut a record on every build would make "has this already been deployed"
 // always answer no.
 func TestEnvBuildBundle_IsIdempotentOnItsOwnBytes(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-retry-project")
 	stubEnvShape(t, "bundle-retry-project")
 	in := bundleBuildInputs{Release: "v1.4.0", Now: bundleTestNow, errOut: io.Discard}
@@ -245,6 +254,7 @@ func TestEnvBuildBundle_BundleEnvsWritesOnePerEnv(t *testing.T) {
 // before forge#850 — gets none of #850's fields, which its strict decoder
 // would refuse (`unknown field "commit_subject"`).
 func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for _, server := range []struct {
 		name    string
 		decodes bool
@@ -253,6 +263,52 @@ func TestEnvBuildBundle_HostedEnvPushesAndRecordsTheBytes(t *testing.T) {
 		{"a control plane that predates GetCapabilities", false},
 	} {
 		t.Run(server.name, func(t *testing.T) { hostedEnvPushesAndRecordsTheBytes(t, server.decodes) })
+	}
+}
+
+// TestEnvBuildBundle_LocalEnvOnAControlPlaneStaysOnThisMachine: a LOCAL env
+// that declares a control plane (dev_telemetry=auto) keeps its records there,
+// but its bundle goes to this machine's ledger and is never pushed or sent to
+// RecordBundle, which refuses a LOCAL env. Sending it failed every `forge env
+// up dev` of such an env at the end of its build (agents' bug reports
+// 7aea24fa, 17301bb0, 2026-11-08/09).
+func TestEnvBuildBundle_LocalEnvOnAControlPlaneStaysOnThisMachine(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	dir := newLedgerTestProject(t, "bundle-local-project")
+	stubEnvShapeOfKind(t, "bundle-local-project", release.EnvLocal)
+
+	prevLedger := bundleLedgerFor
+	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
+		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil
+	}
+	t.Cleanup(func() { bundleLedgerFor = prevLedger })
+	prevRecorder := bundleRecorderForEnv
+	bundleRecorderForEnv = func(ctx context.Context, projectDir, env string, ledger envLedger) (bundleRecorder, error) {
+		if ledger.Hosted {
+			t.Error("a LOCAL env's bundle must never reach the control plane's RecordBundle")
+		}
+		return prevRecorder(ctx, projectDir, env, ledger)
+	}
+	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
+	prevTarget := bundlePushTarget
+	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) {
+		t.Error("a LOCAL env's bundle is not shipped, so it is never pushed")
+		return memory.New(), nil
+	}
+	t.Cleanup(func() { bundlePushTarget = prevTarget })
+
+	written, err := writeEnvBundles(context.Background(), dir, []string{"dev"}, bundleBuildInputs{
+		Now: bundleTestNow, Pushed: true, errOut: io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("writeEnvBundles: %v", err)
+	}
+	got := written[0]
+	if got.Skipped || got.Pushed || !got.Recorded || !strings.HasPrefix(got.Reference, "oci-layout:") {
+		t.Errorf("want a bundle written and recorded in this machine's ledger, got %+v", got)
+	}
+	if bundles, err := testStore(t, dir).Bundles("dev"); err != nil || len(bundles) != 1 {
+		t.Errorf("the machine ledger holds %d bundles for dev (%v), want 1", len(bundles), err)
 	}
 }
 
@@ -383,6 +439,7 @@ func hostedEnvPushesAndRecordsTheBytes(t *testing.T, decodes bool) {
 //
 // Mutation: return the seam's error unclassified and the first two cases fail.
 func TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	noCred := fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w",
 		"prod", "http://127.0.0.1:9", cloud.ErrNoCredential)
 	refused := &cloud.Error{HTTPStatus: 401, Code: cloud.CodeUnauthenticated, Message: "token rejected"}
@@ -459,6 +516,7 @@ func TestEnvBuildBundle_AnUnreachableControlPlaneDoesNotFailTheBuild(t *testing.
 // that declares no organization will not acquire a base by being rebuilt, and
 // the note has to say what to declare instead of what to wait for.
 func TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-nobase-project")
 	stubEnvShape(t, "bundle-nobase-project")
 
@@ -507,6 +565,7 @@ func TestEnvBuildBundle_HostedEnvWithNoPushBaseFallsBackLocally(t *testing.T) {
 // reconcile with what was pushed. There is no repair forge can make here —
 // only a refusal that says the two disagree.
 func TestEnvBuildBundle_RefusesARecordThatNamesOtherBytes(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-mismatch-project")
 	stubEnvShape(t, "bundle-mismatch-project")
 
@@ -720,6 +779,7 @@ func TestEnvBuildSkipsTheBundleWithNoEnvOrUnderPlan(t *testing.T) {
 // its base. Two existing tests that push images to a stub and have no route to
 // the declared registry started failing the whole build.
 func TestEnvBuildBundle_AFailedPushFallsBackLocallyAndDoesNotFailTheBuild(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-pushfail-project")
 	stubEnvShape(t, "bundle-pushfail-project")
 	writeHostedPushBaseFixture(t, dir, "prod", "registry.unreachable.invalid/acme")
@@ -786,6 +846,7 @@ func mustLocalLayout(t *testing.T, dir string) *bundle.LocalLayout {
 // and a promoted bundle that was never the planned one. A released bundle's
 // creation time is the RELEASE's.
 func TestEnvBuildBundle_ReleasedBundleDoesNotDependOnTheWallClock(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-clock-project")
 	stubEnvShape(t, "bundle-clock-project")
 	cutAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)

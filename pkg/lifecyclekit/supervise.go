@@ -219,6 +219,10 @@ func Supervise(ctx context.Context, policy Policy, nodes ...Node) error {
 	return s.failure()
 }
 
+// ValidateNodes checks the node set before a caller transfers resource ownership
+// to Supervise. It starts and closes nothing. Supervise also checks this itself.
+func ValidateNodes(nodes []Node) error { return validateNodes(nodes) }
+
 func validateNodes(nodes []Node) error {
 	var errs []error
 	seen := map[string]bool{}

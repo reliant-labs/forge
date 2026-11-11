@@ -86,6 +86,7 @@ func TestFrontendStartupMarkedListenerRegression(t *testing.T) {
 // Exercise both production entry points against a real listening socket. No
 // registry means it cannot belong to this launch, regardless of OS PID probes.
 func TestFrontendStartupProductionRejectsUnregisteredListener(t *testing.T) {
+	testkit.Slow(t, "execs ps")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("local socket resource unavailable: %v", err)

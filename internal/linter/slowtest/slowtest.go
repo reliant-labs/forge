@@ -31,7 +31,12 @@
 //   - a dial to a real external host by a constant address: net.Dial,
 //     net.DialTimeout, http.Get / Head / Post / PostForm (and the
 //     *http.Client methods). Loopback and the reserved .test / .example /
-//     .invalid / .localhost names are not external.
+//     .invalid / .localhost names are not external, and a DialTimeout whose
+//     constant timeout is at most a millisecond fails before it dials.
+//
+// A command assigned to a variable that is only read or set through its
+// fields (cmd.Args, cmd.Dir = …) — never run, started, passed on or
+// returned — starts no process and is not slow.
 //
 // forge/pkg/pgtest is deliberately NOT on the list. It leases a database on
 // ONE shared server per test run (per-test databases are template clones),
@@ -45,7 +50,10 @@
 // literals, and every function it calls or references (a helper passed to
 // t.Run counts) that is itself test code — declared in a _test.go file, in a
 // file that imports "testing" (a helper file such as testkit's, or a
-// project's rendertest), or taking a *testing.T / B / F or testing.TB. Test
+// project's rendertest), or taking a *testing.T / B / F or testing.TB. (A
+// file whose only use of "testing" is testing.Testing() is production code
+// asking whether it runs under a test, usually to skip slow work there: it is
+// not read through.) Test
 // code in another package reaches it through analysis facts, so a shared
 // helper package that execs forge taints the tests that call it.
 //
@@ -91,6 +99,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/types/typeutil"
@@ -214,7 +223,7 @@ func run(pass *analysis.Pass) (any, error) {
 	}
 	var bodies []body
 	for _, file := range pass.Files {
-		testCode := isTestFile(pass, file) || importsTesting(file)
+		testCode := isTestFile(pass, file) || (importsTesting(file) && usesTestingAPI(pass, file))
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
@@ -284,6 +293,7 @@ func run(pass *analysis.Pass) (any, error) {
 func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.Node, retTemp map[types.Object]bool) {
 	seen := map[types.Object]bool{}
 	flow := newDirFlow(pass, n.obj, root, retTemp)
+	unstarted := unstartedCommands(pass, root)
 	ast.Inspect(root, func(x ast.Node) bool {
 		switch x := x.(type) {
 		case *ast.CallExpr:
@@ -300,6 +310,9 @@ func scan(pass *analysis.Pass, nodes map[types.Object]*node, n *node, root ast.N
 				if pass.ImportObjectFact(fn, &slow) && len(slow.Cond) > 0 {
 					applyCond(n, qualifiedName(fn), slow.Cond, flow.argClasses(sig, x))
 				}
+			}
+			if unstarted[x] {
+				return true // built and inspected, never started: no process
 			}
 			if bin, idx, ok := execBinary(pass, fn, x); ok && bin == "git" {
 				why := fmt.Sprintf("execs %#q at %s", bin, shortPos(pass, x.Pos()))
@@ -575,7 +588,12 @@ func slowOperation(pass *analysis.Pass, fn *types.Func, call *ast.CallExpr) stri
 	case pkg == "net":
 		idx := -1
 		switch {
-		case recv == "" && (fn.Name() == "Dial" || fn.Name() == "DialTimeout"):
+		case recv == "" && fn.Name() == "Dial":
+			idx = 1
+		case recv == "" && fn.Name() == "DialTimeout":
+			if d, ok := constDuration(pass, call, 2); ok && d <= expiredDial {
+				return "" // its deadline passes before the dial starts
+			}
 			idx = 1
 		case recv == "Dialer" && fn.Name() == "Dial":
 			idx = 1
@@ -706,6 +724,123 @@ func shortPos(pass *analysis.Pass, pos token.Pos) string {
 // isTestFile reports whether node sits in a _test.go file.
 func isTestFile(pass *analysis.Pass, node interface{ Pos() token.Pos }) bool {
 	return strings.HasSuffix(pass.Fset.File(node.Pos()).Name(), "_test.go")
+}
+
+// expiredDial is the longest constant DialTimeout read as a dial that never
+// leaves the machine: the deadline has passed by the time it would resolve
+// or connect, so it fails at once (a test of the timeout path).
+const expiredDial = time.Millisecond
+
+// constDuration is call's argument i as a constant duration.
+func constDuration(pass *analysis.Pass, call *ast.CallExpr, i int) (time.Duration, bool) {
+	if i >= len(call.Args) {
+		return 0, false
+	}
+	tv, ok := pass.TypesInfo.Types[call.Args[i]]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.Int {
+		return 0, false
+	}
+	n, exact := constant.Int64Val(tv.Value)
+	return time.Duration(n), exact
+}
+
+// usesTestingAPI reports whether file uses package testing for anything but
+// testing.Testing(). A production file imports "testing" only to ask whether
+// it runs under a test binary (to skip slow work there); that does not make
+// it a test helper, and reading through it reports work the guard skips.
+func usesTestingAPI(pass *analysis.Pass, file *ast.File) bool {
+	uses := false
+	ast.Inspect(file, func(x ast.Node) bool {
+		if uses {
+			return false
+		}
+		sel, ok := x.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		obj := pass.TypesInfo.Uses[sel.Sel]
+		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == "testing" && obj.Name() != "Testing" {
+			uses = true
+		}
+		return true
+	})
+	return uses
+}
+
+// unstartedCommands returns the os/exec.Command / CommandContext calls in
+// root whose *exec.Cmd is assigned to a local variable that is only ever
+// read or written through its fields (cmd.Path, cmd.Args, cmd.Dir = …): never
+// a method call (Run, Start, Output, CombinedOutput), never passed on,
+// returned or reassigned. Such a command builds an argv and starts nothing.
+// Any other use, or one the analyzer cannot see, keeps the call counted.
+func unstartedCommands(pass *analysis.Pass, root ast.Node) map[*ast.CallExpr]bool {
+	candidates := map[types.Object]*ast.CallExpr{}
+	ast.Inspect(root, func(x ast.Node) bool {
+		as, ok := x.(*ast.AssignStmt)
+		if !ok || as.Tok != token.DEFINE || len(as.Lhs) != len(as.Rhs) {
+			return true
+		}
+		for i, rhs := range as.Rhs {
+			call, ok := rhs.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			fn, _ := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
+			if fn == nil {
+				continue
+			}
+			if _, _, isExec := execBinary(pass, fn, call); !isExec {
+				continue
+			}
+			if id, ok := as.Lhs[i].(*ast.Ident); ok && id.Name != "_" {
+				if obj := pass.TypesInfo.Defs[id]; obj != nil {
+					candidates[obj] = call
+				}
+			}
+		}
+		return true
+	})
+	if len(candidates) == 0 {
+		return nil
+	}
+	escaped := map[types.Object]bool{}
+	var stack []ast.Node
+	ast.Inspect(root, func(x ast.Node) bool {
+		if x == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, x)
+		id, ok := x.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		obj := pass.TypesInfo.Uses[id]
+		if _, cand := candidates[obj]; !cand {
+			return true
+		}
+		// The use must be the base of a field selection.
+		if len(stack) < 2 {
+			escaped[obj] = true
+			return true
+		}
+		sel, ok := stack[len(stack)-2].(*ast.SelectorExpr)
+		if !ok || sel.X != id {
+			escaped[obj] = true
+			return true
+		}
+		if s := pass.TypesInfo.Selections[sel]; s == nil || s.Kind() != types.FieldVal {
+			escaped[obj] = true
+		}
+		return true
+	})
+	out := map[*ast.CallExpr]bool{}
+	for obj, call := range candidates {
+		if !escaped[obj] {
+			out[call] = true
+		}
+	}
+	return out
 }
 
 // importsTesting reports whether file imports "testing": a test helper file

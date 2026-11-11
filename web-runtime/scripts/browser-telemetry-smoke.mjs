@@ -106,6 +106,8 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
 <script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
+import { disableTelemetry } from '/runtime/track.js';
+window.withdrawConsent = disableTelemetry;
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
@@ -155,7 +157,7 @@ document.querySelector('#action').addEventListener('click', () => {
     await page.evaluate(async () => {
       // Both are the REAL SDK's providers, not a test substitute.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
-      HyperDX.stopSessionRecorder();
+      window.withdrawConsent();
     });
     // Let the real recorder deliver its batch, independently of trace export.
     const replayResponse = page.waitForResponse(response => response.url().endsWith('/_otel/v1/logs') && response.ok(), { timeout: 10000 });
@@ -186,6 +188,17 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.ok(replay.length > 0, "session replay still exports records");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
+    // Withdrawal goes through the public runtime API, not an SDK-only test
+    // substitute. Prior queued records may flush, but no post-withdrawal DOM
+    // mutation can become a new replay event.
+    await page.evaluate(() => {
+      const marker = document.createElement('div');
+      marker.id = 'after-consent-withdrawn';
+      document.body.append(marker);
+    });
+    await new Promise(resolve => setTimeout(resolve, 5500));
+    assert.equal(JSON.stringify(logs).includes('after-consent-withdrawn'), false,
+      'consent withdrawal stops the real recorder');
     const exported = JSON.stringify([...traces, ...logs]);
     for (const secret of ["PRIVATE_TEXT_SENTINEL", "PRIVATE_INPUT_SENTINEL", "PRIVATE_EDIT_SENTINEL"]) {
       assert.equal(exported.includes(secret), false, "private text never leaves the browser");

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -248,7 +249,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "scope", "group", "tags", "replaces", "filters", "annotations", "panels", "sections", "defaultRange")
+	v.known("", d, "version", "id", "title", "description", "scope", "group", "tags", "replaces", "filters", "annotations", "panels", "sections", "defaultRange", "defaultCompare")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -262,6 +263,7 @@ func (v *validator) dashboard(d map[string]any) {
 			v.add("defaultRange", "%v", err)
 		}
 	}
+	v.oneOf("", d, "defaultCompare", false, string(ComparePeriod), string(CompareRelease))
 	v.oneOf("", d, "scope", false, string(ScopeProject), string(ScopeOrg), string(ScopePlatform))
 	groups := make([]string, len(Groups))
 	for i, g := range Groups {
@@ -415,7 +417,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -443,8 +445,10 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	if raw, has := o["display"]; has && kind != "" {
 		v.display(path, o, PanelKind(kind), raw)
 	}
-	if _, has := o["minStep"]; has && kind != string(KindSQL) {
-		v.add(childPath(path, "minStep"), "only a sql panel takes \"minStep\"")
+	for _, only := range []string{"minStep", "trendSql"} {
+		if _, has := o[only]; has && kind != string(KindSQL) {
+			v.add(childPath(path, only), "only a sql panel takes %q", only)
+		}
 	}
 	v.oneOf(path, o, "unit", false, string(UnitCount), string(UnitMillis), string(UnitBytes), string(UnitPercent), string(UnitSeconds))
 	if w, ok := v.number(path, o, "width"); ok && (w < 0 || w > GridColumns || w != float64(int(w))) {
@@ -600,12 +604,38 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 			v.add(childPath(path, "minStep"), "%v", err)
 		}
 	}
+	if _, has := o["trendSql"]; has {
+		v.trendSQL(path, o)
+	}
+}
+
+// trendSQL validates a sql panel's sparkline statement: the same guard as its
+// sql, on a panel that draws figures (a funnel or a heatmap draws none).
+func (v *validator) trendSQL(path string, o map[string]any) {
+	tp := childPath(path, "trendSql")
+	s, ok := o["trendSql"].(string)
+	if !ok {
+		v.add(tp, "must be a string")
+		return
+	}
+	if strings.TrimSpace(s) == "" {
+		v.add(tp, "must not be empty: one read-only SELECT returning a time series")
+		return
+	}
+	if err := CheckSQL(s); err != nil {
+		v.add(tp, "%v", err)
+	}
+	if d, ok := o["display"].(map[string]any); ok {
+		if style, _ := d["style"].(string); style == string(StyleFunnel) || style == string(StyleHeatmap) {
+			v.add(tp, "a sparkline is drawn under a figure; a sql panel drawn as a %s has none", style)
+		}
+	}
 }
 
 // textPanel validates a KindText panel: Markdown is all it carries, besides
 // the common presentation fields.
 func (v *validator) textPanel(path string, o map[string]any) {
-	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "postgres", "minStep", "display", "browse")
+	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "trendSql", "postgres", "minStep", "display", "browse")
 	raw, present := o["markdown"]
 	if !present {
 		v.add(path, "a text panel needs \"markdown\"")
@@ -636,7 +666,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 	if !ok {
 		return
 	}
-	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN")
+	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors")
 	names := make([]string, len(styles))
 	for i, s := range styles {
 		names[i] = string(s)
@@ -662,6 +692,8 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		case style == "":
 		case kind == KindBar && style != StyleBar:
 			v.add(childPath(dp, "stack"), "a %s has no bars to stack; stack applies to style %q", style, StyleBar)
+		case style == StyleHeatmap || style == StyleFunnel:
+			v.add(childPath(dp, "stack"), "a %s has nothing to stack", style)
 		case (kind == KindLine || kind == KindSQL) && style != StyleArea && style != StyleBars:
 			v.add(childPath(dp, "stack"), "stacked lines hide each series' own value; stack a style %q or %q panel", StyleArea, StyleBars)
 		case kind == KindNumber:
@@ -699,7 +731,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		case n < 1 || n > MaxTopN || n != float64(int(n)):
 			v.add(childPath(dp, "topN"), "must be a whole number of series from 1 to %d", MaxTopN)
 		case style == "":
-		case style == StyleFunnel || kind == KindNumber || (kind == KindBar && style == StyleBar):
+		case style == StyleFunnel || style == StyleHeatmap || kind == KindNumber || (kind == KindBar && style == StyleBar):
 			v.add(childPath(dp, "topN"), "topN folds a line panel's series, or a pie's slices, into \"Other\"; a %s %s has none to fold (a bar panel keeps its top groups with \"limit\")", style, kind)
 		}
 	}
@@ -707,6 +739,48 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		if series, ok := o["series"].([]any); ok && len(series) != 1 {
 			v.add(childPath(path, "series"), "a %s draws one value per group: it takes exactly 1 series, has %d", style, len(series))
 		}
+	}
+	v.colors(dp, d, style)
+}
+
+// colors validates Display.Color and Display.Colors: palette keys, never raw
+// colours, and a per-series map only where series are drawn apart.
+func (v *validator) colors(dp string, d map[string]any, style DisplayStyle) {
+	keys := make([]string, len(ChartColors))
+	for i, c := range ChartColors {
+		keys[i] = string(c)
+	}
+	v.oneOf(dp, d, "color", false, keys...)
+	raw, has := d["colors"]
+	if !has {
+		return
+	}
+	cp := childPath(dp, "colors")
+	m, ok := raw.(map[string]any)
+	if !ok {
+		v.add(cp, "must be an object of series name to palette colour")
+		return
+	}
+	if style == StyleHeatmap || style == StyleFunnel {
+		v.add(cp, "a %s is drawn in one colour; set \"color\"", style)
+		return
+	}
+	if len(m) > MaxColors {
+		v.add(cp, "names %d series, over the %d allowed", len(m), MaxColors)
+	}
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		switch {
+		case strings.TrimSpace(name) == "":
+			v.add(cp, "a series name must not be empty")
+		case len(name) > maxColorKeyBytes:
+			v.add(cp, "series name %.40q… is longer than %d bytes", name, maxColorKeyBytes)
+		}
+		v.oneOf(cp, m, name, true, keys...)
 	}
 }
 

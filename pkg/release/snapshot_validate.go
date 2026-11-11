@@ -276,10 +276,14 @@ func (s Snapshot) Validate() error {
 			return e
 		}
 	}
+	// A snapshot's assets are exactly its layer's artifacts: the frozen
+	// frontend declarations, the observability files and the service
+	// catalog (an env deploy's evidence snapshot carries the catalog its
+	// legacy bundle would; see BundleServiceCatalogPath).
 	assetPaths := map[string]bool{}
 	assetBytes := 0
 	for _, a := range s.Assets {
-		if (a.Path != BundleFrontendDeclarationsPath && !strings.HasPrefix(a.Path, BundleObservabilityPrefix+"/")) || path.Clean(a.Path) != a.Path || strings.Contains(a.Path, "..") || assetPaths[a.Path] || SpecDigest(a.Data) != a.Digest {
+		if (a.Path != BundleFrontendDeclarationsPath && a.Path != BundleServiceCatalogPath && !strings.HasPrefix(a.Path, BundleObservabilityPrefix+"/")) || path.Clean(a.Path) != a.Path || strings.Contains(a.Path, "..") || assetPaths[a.Path] || SpecDigest(a.Data) != a.Digest {
 			return snapshotBad("invalid/duplicate snapshot asset")
 		}
 		assetPaths[a.Path] = true

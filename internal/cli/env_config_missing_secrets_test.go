@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // missingSecretFixture is an OnHost api that declares two secrets; the file
@@ -83,6 +85,7 @@ func TestEnvConfigReportsMissingSecretsAndExitsZero(t *testing.T) {
 
 // --strict keeps the fail-closed behaviour for a caller that wants it.
 func TestEnvConfigStrictFailsOnMissingSecrets(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withMissingSecretFixture(t)
 	_, _, err := runEnvConfigSplit(t, "dev", "--strict")
 	if err == nil || !strings.Contains(err.Error(), "SIGNING_CERT") || !strings.Contains(err.Error(), "secret set --env dev") {
@@ -92,6 +95,7 @@ func TestEnvConfigStrictFailsOnMissingSecrets(t *testing.T) {
 
 // A clean store reports nothing missing and prints no warning.
 func TestEnvConfigNoWarningWhenEverySecretResolves(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withMissingSecretFixture(t)
 	if err := os.WriteFile("secrets.yaml", []byte("TOKEN: t\nSIGNING_CERT: c\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -105,6 +109,7 @@ func TestEnvConfigNoWarningWhenEverySecretResolves(t *testing.T) {
 // Running a process without a secret it declares is the real error: env exec
 // stays strict, and refuses before the child starts.
 func TestEnvExecRefusesMissingSecrets(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	withMissingSecretFixture(t)
 	t.Setenv("FORGE_EXEC_HELPER", "1")
 	out, _, err := executeEnvFixture(t, []string{"dev"}, execHelperArgs(t))

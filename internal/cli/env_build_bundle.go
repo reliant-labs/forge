@@ -75,6 +75,9 @@ type bundleWriteOutcome struct {
 	// Objects is how many rendered objects the bundle's shape describes,
 	// for the one-line report.
 	Objects int
+	// Sealed reports that the recorded bundle seals an evidence snapshot of
+	// the environment (env_build_evidence.go).
+	Sealed bool
 	// Skipped reports that no bundle was written at all, because the env
 	// could not be projected. Distinct from "written but not recorded":
 	// there is nothing to record and nothing to fetch, and a reader must
@@ -177,9 +180,21 @@ type bundleBuildInputs struct {
 // is written, the same outcome as a projection failure, and `forge env deploy`
 // renders one on demand. A control plane that ANSWERS and refuses is a fact
 // about the env and still fails the build.
-func openBundleLedger(ctx context.Context, projectDir, env string, in bundleBuildInputs) (envLedger, bool, error) {
+//
+// A LOCAL ENV'S BUNDLE STAYS ON THIS MACHINE, as the header says, even when
+// the env declares a control plane and so keeps its other records there
+// (ledgerForEntities: declaration decides the store). The platform places
+// nothing of a LOCAL env and RecordBundle refuses one (FailedPrecondition:
+// "`forge env up` reports a session instead"), so sending it there failed
+// every `forge env up dev` of a dev env with dev_telemetry=auto, at the end of
+// its build. kind is the env's, from its projected shape.
+func openBundleLedger(ctx context.Context, projectDir, env string, kind release.EnvKind, in bundleBuildInputs) (envLedger, bool, error) {
 	ledger, err := bundleLedgerFor(ctx, projectDir, env)
 	if err == nil {
+		if ledger.Hosted && kind == release.EnvLocal {
+			ledger, err = machineLedger(projectDir)
+			return ledger, false, err
+		}
 		return ledger, false, nil
 	}
 	if !declarationUndeliverable(err) {
@@ -254,7 +269,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		return bundleWriteOutcome{}, err
 	}
 
-	ledger, skip, err := openBundleLedger(ctx, projectDir, env, in)
+	ledger, skip, err := openBundleLedger(ctx, projectDir, env, doc.Shape.Kind, in)
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
@@ -303,7 +318,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if in.declaredEnvs != nil && sealsDeclaredEnvs(in.Release, ledger, reader) {
 		declaredEnvs = in.declaredEnvs()
 	}
-	built, err := bundle.Build(ctx, bundle.BuildInput{
+	input := bundle.BuildInput{
 		DeclaredEnvs: declaredEnvs,
 		Placements:   placements,
 		Project:      doc.Project,
@@ -319,7 +334,8 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		// The units the hub converges, for an env that splits them.
 		ReconciledUnits: doc.reconciledUnits(),
 		Observability:   observability,
-	})
+	}
+	built, err := bundle.Build(ctx, input)
 	if err != nil {
 		return bundleWriteOutcome{}, err
 	}
@@ -354,15 +370,54 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 			// idempotent on (env, digest), and the server derives the
 			// record from what it verifies, so the record is the
 			// release's bundle whichever forge sends it.
-			return recordWrittenBundle(ctx, projectDir, env, ledger,
+			out, err := recordWrittenBundle(ctx, projectDir, env, ledger,
 				// Shape carries the env's kind, which the control plane
 				// needs to ensure the env; the rest of the record is the
 				// server's decode of the bytes.
 				release.BundleRecord{Env: env, Release: in.Release, Digest: prior.Digest, Reference: prior.Reference, Shape: doc.Shape},
 				prior.blobs, reused, in)
+			if err != nil && len(prior.blobs.ManifestsLayer) > 0 {
+				// The release's bundle seals an evidence snapshot this
+				// control plane no longer takes (its operator switched
+				// evidence seals off, or an older replica answered). The
+				// render's objects are the recorded bundle's, so record
+				// them without the snapshot rather than fail the deploy.
+				fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's recorded snapshot bundle was not re-recorded (%v); recording it without a snapshot instead.\n", env, err)
+				return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: built}, in)
+			}
+			return out, err
 		}
 	}
 
+	// AN EVIDENCE SNAPSHOT, when the env's control plane takes one (see
+	// env_build_evidence.go). It replaces the bytes written, never the rule
+	// above: the bundle-of-record check ran on the legacy render, so a
+	// release whose bundle is already recorded reuses it exactly as before.
+	// A seal that cannot be built, or that the control plane refuses, costs
+	// one line and the legacy bundle — never the deploy.
+	seal, why := sealEvidenceSnapshotFn(ctx, projectDir, env, ledger, doc, in, input)
+	if _, seen := evidenceSkipNoted.LoadOrStore(env+"\x00"+why, true); why != "" && !seen {
+		fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's bundle records no snapshot of the environment: %s. The deploy is unaffected.\n", env, why)
+	}
+	if seal != nil {
+		out, err := placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: seal.Bundle, seal: seal}, in)
+		if err == nil {
+			return out, nil
+		}
+		// Retried ONCE, without the snapshot: a control plane whose operator
+		// switched evidence seals off refuses them (snapshot_refused), and
+		// an older replica behind the same endpoint refuses them with a plain
+		// InvalidArgument. Either way the deploy proceeds on the legacy
+		// bundle, and any failure that is not about the seal recurs there.
+		fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's snapshot bundle was not recorded (%v); recording it without a snapshot instead.\n", env, err)
+	}
+	return placeAndRecordBundle(ctx, projectDir, env, ledger, doc, createdAt, bundleToPlace{built: built}, in)
+}
+
+// placeAndRecordBundle puts built where env's ledger says and records it: the
+// tail of writeEnvBundle, for the legacy bundle and an evidence bundle alike.
+func placeAndRecordBundle(ctx context.Context, projectDir, env string, ledger envLedger, doc envShapeDoc, createdAt time.Time, p bundleToPlace, in bundleBuildInputs) (bundleWriteOutcome, error) {
+	built, seal := p.built, p.seal
 	placed, err := placeBundleBytes(ctx, projectDir, env, built, ledger, in)
 	if err != nil {
 		return bundleWriteOutcome{}, err
@@ -397,11 +452,24 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 		Manifest:   built.Manifest,
 		Config:     built.ConfigBlob(),
 	}
+	if seal != nil {
+		record.Snapshot, record.SnapshotDigest = &seal.Snapshot, seal.Digest
+		blobs.ManifestsLayer = seal.Layer
+	}
 	out, err := recordWrittenBundle(ctx, projectDir, env, ledger, record, blobs, placed, in)
+	out.Sealed = err == nil && seal != nil && out.Recorded
 	if err == nil && in.Release != "" && out.Recorded && placed.repository != "" {
 		tagReleaseBundle(ctx, projectDir, env, placed.repository, built.Manifest, in.Release, in)
 	}
 	return out, err
+}
+
+// bundleToPlace is the bundle placeAndRecordBundle writes: the legacy bundle,
+// or an evidence bundle with its seal. seal is non-nil exactly when built is
+// seal.Bundle.
+type bundleToPlace struct {
+	built bundle.Bundle
+	seal  *evidenceSeal
 }
 
 // bundleCreatedAt is the creation time sealed into a bundle: the RELEASE's, so
@@ -840,6 +908,9 @@ func printBundleWrites(out io.Writer, written []bundleWriteOutcome) {
 			state = "NOT recorded"
 		case !b.Created:
 			state = "already recorded"
+		}
+		if b.Sealed {
+			state += " with a snapshot of the environment"
 		}
 		fmt.Fprintf(out, "[bundle] env %s: %s (%d object(s)), %s, %s\n",
 			b.Env, shortDigest(b.Digest), b.Objects, where, state)

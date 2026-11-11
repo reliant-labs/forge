@@ -36,6 +36,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestMachineLedgerCannotGoStale is why the freshness suite above was
@@ -48,6 +49,7 @@ import (
 // directory had its own .forge/promotions, which is exactly how a verify on
 // a feature branch could read a stale "what does prod run".
 func TestMachineLedgerCannotGoStale(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	home := t.TempDir()
 	useLedgerHome(t, home)
 
@@ -89,6 +91,7 @@ func TestMachineLedgerCannotGoStale(t *testing.T) {
 // behind — is no longer true, and would refuse to verify for a reason that
 // cannot occur.
 func TestNothingClaimsLedgerFreshness(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "freshness-project")
 
 	var machine bindingStore = testBindings(t, dir)

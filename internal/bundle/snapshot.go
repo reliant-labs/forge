@@ -65,24 +65,62 @@ func SnapshotInventory(ctx context.Context, in BuildInput, declaration release.S
 	}
 	declaration = isolated
 	in.Snapshot = nil
-	built, err := Build(ctx, in)
+	built, resources, err := snapshotResources(ctx, in, declaration.Consumers)
 	if err != nil {
 		return release.Snapshot{}, err
+	}
+	layer, _ := built.Layer(release.BundleManifestsLayer)
+	declaration.Resources = resources
+	shapeDeclaration := built.Doc.Shape.Canonical()
+	shapeDeclaration.Objects = nil
+	declaration.Declaration = &shapeDeclaration
+	declaration.StatefulWorkloads = append([]string(nil), in.Shape.StatefulWorkloads...)
+	declaration.DeliveryUnits = in.Units
+	declaration.SecretRefs = built.Doc.Secrets
+	declaration.Assets = nil
+	for _, f := range in.Observability {
+		declaration.Assets = append(declaration.Assets, release.SnapshotAsset{Path: f.Path, Data: f.Data, Digest: release.SpecDigest(f.Data)})
+	}
+	if err := declaration.Validate(); err != nil {
+		return release.Snapshot{}, err
+	}
+	if err := release.ValidateSnapshotLayer(declaration, layer); err != nil {
+		return release.Snapshot{}, err
+	}
+	return declaration, nil
+}
+
+// SnapshotResources is the resource half of [SnapshotInventory]: the bundle in
+// would carry, read back as snapshot resources, each owned by the consumers
+// declared on its destination under the same ownership rule. It is how a
+// caller that did not build an artifact (an env deploy sealing the state it
+// renders) reads which exact image every consumer's slot carries before it
+// binds one.
+func SnapshotResources(ctx context.Context, in BuildInput, consumers []release.Consumer) ([]release.SnapshotResource, error) {
+	in.Snapshot = nil
+	_, resources, err := snapshotResources(ctx, in, consumers)
+	return resources, err
+}
+
+func snapshotResources(ctx context.Context, in BuildInput, consumers []release.Consumer) (Bundle, []release.SnapshotResource, error) {
+	built, err := Build(ctx, in)
+	if err != nil {
+		return Bundle{}, nil, err
 	}
 	layer, ok := built.Layer(release.BundleManifestsLayer)
 	if !ok {
-		return release.Snapshot{}, fmt.Errorf("%w: missing manifest layer", release.ErrInvalid)
+		return Bundle{}, nil, fmt.Errorf("%w: missing manifest layer", release.ErrInvalid)
 	}
 	resources, err := release.ReadSnapshotResources(layer)
 	if err != nil {
-		return release.Snapshot{}, err
+		return Bundle{}, nil, err
 	}
 	clusters := map[string]string{}
 	owners := map[string][]release.ConsumerKey{}
-	for _, c := range declaration.Consumers {
+	for _, c := range consumers {
 		seg := strings.TrimPrefix(release.BundleClusterPath(c.Key.Cluster), release.BundleManifestsPrefix+"/")
 		if old, ok := clusters[seg]; ok && old != c.Key.Cluster {
-			return release.Snapshot{}, fmt.Errorf("%w: ambiguous destination path", release.ErrInvalid)
+			return Bundle{}, nil, fmt.Errorf("%w: ambiguous destination path", release.ErrInvalid)
 		}
 		clusters[seg] = c.Key.Cluster
 		owners[c.Key.Cluster] = append(owners[c.Key.Cluster], c.Key)
@@ -91,18 +129,18 @@ func SnapshotInventory(ctx context.Context, in BuildInput, declaration release.S
 		r := &resources[i]
 		cluster, exists := clusters[r.Key.Cluster]
 		if !exists {
-			return release.Snapshot{}, fmt.Errorf("%w: undeclared resource cluster", release.ErrInvalid)
+			return Bundle{}, nil, fmt.Errorf("%w: undeclared resource cluster", release.ErrInvalid)
 		}
 		r.Key.Cluster = cluster
 		var body map[string]any
 		if err := yaml.Unmarshal(r.Spec, &body); err != nil {
-			return release.Snapshot{}, err
+			return Bundle{}, nil, err
 		}
 		meta, _ := body["metadata"].(map[string]any)
 		ann, _ := meta["annotations"].(map[string]any)
 		own, err := releaseOwnershipOf(meta)
 		if err != nil {
-			return release.Snapshot{}, err
+			return Bundle{}, nil, err
 		}
 		if own.Owners != nil {
 			for _, name := range own.Owners {
@@ -122,28 +160,11 @@ func SnapshotInventory(ctx context.Context, in BuildInput, declaration release.S
 		}
 		if raw, _ := ann["forge.dev/release-depends-on"].(string); raw != "" {
 			if err := json.Unmarshal([]byte(raw), &r.DependsOn); err != nil {
-				return release.Snapshot{}, fmt.Errorf("release-depends-on: %w", err)
+				return Bundle{}, nil, fmt.Errorf("release-depends-on: %w", err)
 			}
 		}
 	}
-	declaration.Resources = resources
-	shapeDeclaration := built.Doc.Shape.Canonical()
-	shapeDeclaration.Objects = nil
-	declaration.Declaration = &shapeDeclaration
-	declaration.StatefulWorkloads = append([]string(nil), in.Shape.StatefulWorkloads...)
-	declaration.DeliveryUnits = in.Units
-	declaration.SecretRefs = built.Doc.Secrets
-	declaration.Assets = nil
-	for _, f := range in.Observability {
-		declaration.Assets = append(declaration.Assets, release.SnapshotAsset{Path: f.Path, Data: f.Data, Digest: release.SpecDigest(f.Data)})
-	}
-	if err := declaration.Validate(); err != nil {
-		return release.Snapshot{}, err
-	}
-	if err := release.ValidateSnapshotLayer(declaration, layer); err != nil {
-		return release.Snapshot{}, err
-	}
-	return declaration, nil
+	return built, resources, nil
 }
 
 // SnapshotStream reconstructs an annotated apply stream without changing a

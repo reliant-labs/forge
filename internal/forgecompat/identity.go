@@ -85,6 +85,16 @@ func VersionCommit(v string) string {
 	return tagCommit(v)
 }
 
+// DirtyVersion reports whether forge version v carries +dirty build metadata:
+// it names a build from a modified working tree, not a commit. Nothing can
+// fetch or rebuild such a forge — `go install …@v` drops the build metadata
+// and builds the clean commit, without the edits — and two binaries that
+// report the same dirty version need not hold the same code.
+func DirtyVersion(v string) bool {
+	v = strings.TrimSpace(v)
+	return v != "" && isDirty(v)
+}
+
 func isDirty(v string) bool {
 	return strings.Contains(semver.Build(ensureV(v)), "dirty")
 }

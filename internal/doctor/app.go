@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -11,7 +12,9 @@ import (
 	"time"
 )
 
-// CheckAppHealth verifies the application's healthz and readyz endpoints.
+// CheckAppHealth verifies the application answers its probes: the ones its
+// workload declares (RuntimeTarget.Probe — a TCP connect, or its own HTTP
+// paths), else forge's /healthz ("ok") and /readyz.
 //
 // The address is the one the CALLER resolved (RuntimeTarget.HTTP) — this
 // check never guesses a port. When nothing resolved one, the answer is
@@ -35,6 +38,34 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 		subject = env.Target.Service + " " + addr
 	}
 
+	probe := env.Target.Probe
+	if probe.TCP {
+		conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: not accepting connections (its declared tcp probe): %v", subject, err)}
+		}
+		_ = conn.Close()
+		return CheckResult{Status: StatusPass, Message: subject + ": accepts connections (its declared tcp probe)"}
+	}
+	if probe.ReadinessPath != "" || probe.LivenessPath != "" || probe.StartupPath != "" {
+		// The app's own endpoints: any 200 is up. Only forge's /healthz
+		// promises the "ok" body. A declared startup probe goes first: until
+		// it answers, the workload has not started, whatever the others say.
+		var paths []string
+		if probe.StartupPath != "" {
+			paths = append(paths, probe.StartupPath)
+		}
+		paths = append(paths, orPath(probe.LivenessPath, "/healthz"), orPath(probe.ReadinessPath, "/readyz"))
+		var answered []string
+		for _, path := range paths {
+			if _, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s%s", addr, path)); err != nil {
+				return CheckResult{Status: StatusFail, Message: fmt.Sprintf("%s: %s failed (its declared probe): %v", subject, path, err)}
+			}
+			answered = append(answered, path+"=200")
+		}
+		return CheckResult{Status: StatusPass, Message: subject + ": " + strings.Join(answered, " ")}
+	}
+
 	// Check /healthz
 	healthzBody, err := httpGetBody(ctx, client, fmt.Sprintf("http://%s/healthz", addr))
 	if err != nil {
@@ -56,6 +87,13 @@ func CheckAppHealth(ctx context.Context, env *Environment) CheckResult {
 	}
 
 	return CheckResult{Status: StatusPass, Message: subject + ": healthz=ok readyz=ok"}
+}
+
+func orPath(path, def string) string {
+	if path == "" {
+		return def
+	}
+	return path
 }
 
 // CheckPprof verifies the pprof debug endpoint is reachable and reports

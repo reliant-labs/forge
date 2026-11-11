@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gitRepo creates a git repository at dir with one commit holding files, and
@@ -46,6 +48,7 @@ func run(t *testing.T, dir string, args ...string) string {
 }
 
 func TestCaptureSource_NotACheckout(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	src, err := CaptureSource(context.Background(), t.TempDir(), t.TempDir())
 	if err != nil || src != nil {
 		t.Fatalf("a plain directory has no commit to record: got %+v, %v", src, err)
@@ -55,6 +58,7 @@ func TestCaptureSource_NotACheckout(t *testing.T) {
 // A sibling checkout: its own repository, origin canonicalized, the module
 // its nearest go.mod declares, and clean until something is left uncommitted.
 func TestCaptureSource_SiblingCheckout(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	project := filepath.Join(root, "acme")
 	gitRepo(t, project, map[string]string{"go.mod": "module github.com/example/acme\n"})
@@ -104,6 +108,7 @@ func TestCaptureSource_SiblingCheckout(t *testing.T) {
 // A ShellBuild in the project's own checkout is the project's commit, which
 // release provenance already owns — it is not an external source.
 func TestCaptureSource_ProjectCheckout(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	project := t.TempDir()
 	gitRepo(t, project, map[string]string{"go.mod": "module github.com/example/acme\n", "tools/x.txt": "x\n"})
 	src, err := CaptureSource(context.Background(), filepath.Join(project, "tools"), project)
@@ -116,6 +121,7 @@ func TestCaptureSource_ProjectCheckout(t *testing.T) {
 }
 
 func TestSourceResolveCommit(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	head := gitRepo(t, dir, map[string]string{"a": "a\n"})
 	run(t, dir, "tag", "v1.2.3")

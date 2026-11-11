@@ -2,6 +2,7 @@ package generator
 
 import (
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/pkg/testkit"
 
 	"os"
 	"path/filepath"
@@ -70,6 +71,7 @@ func TestScaffold_FrontendGetsAnnotatedConfigMessage(t *testing.T) {
 // NEXT_PUBLIC_* variable that appears in the shipped template tree and has a
 // runtime meaning.
 func TestScaffold_FrontendConfigDeclaresTheFieldsItsTemplatesRead(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldWithFrontend(t, "fieldapp", "web")
 	proto, path := readFrontendConfigProto(t, root, "web")
 
@@ -123,6 +125,7 @@ func TestScaffold_FrontendConfigDeclaresTheFieldsItsTemplatesRead(t *testing.T) 
 // move files on disk — declaring it as runtime config would produce a value
 // the app reads and cannot honor, which is worse than not having it.
 func TestScaffold_FrontendConfigOmitsBasePath(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldWithFrontend(t, "bpapp", "web")
 	proto, path := readFrontendConfigProto(t, root, "web")
 
@@ -148,6 +151,7 @@ func TestScaffold_FrontendConfigOmitsBasePath(t *testing.T) {
 // deleted, and internal/templates/frontend_auth_flow_test.go asserts it
 // stays deleted.
 func TestScaffold_FrontendReadsTypedModuleNotProcessEnv(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	root := scaffoldWithFrontend(t, "typedapp", "web")
 
 	rel := filepath.Join("frontends", "web", "src", "lib", "auth", "session-provider.ts")

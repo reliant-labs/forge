@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestBuildHostServiceCmd covers the `forge env up` host launch over each
@@ -1035,6 +1036,7 @@ func TestEvalHostReadiness(t *testing.T) {
 // Nil registry retains the legacy port-only contract; production env up always
 // supplies its registry and therefore requires evidence of a live runner.
 func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
+	testkit.Slow(t, "execs ps")
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		hostWL("noport"),
 		clusterWL("cluster-svc", "k3d-x", "ns", withPorts(9999)),
@@ -1058,6 +1060,7 @@ func TestWaitHostServicesReady_NoPortsIsInstantPass(t *testing.T) {
 }
 
 func TestWaitHostServicesReady_PortlessRequiresRegisteredRunner(t *testing.T) {
+	testkit.Slow(t, "execs ps")
 	e := &KCLEntities{Workloads: []WorkloadEntity{hostWL("noport")}}
 	done := make(chan struct{})
 	close(done)

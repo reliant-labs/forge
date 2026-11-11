@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kcltest"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestGenerateConfigProjectionKCL_ExactBlock pins the full emitted output
@@ -351,6 +352,7 @@ set_replicas = _set["REPLICAS"]
 }
 
 func TestGenerateConfigProjectionKCL_EndToEndEnvMap(t *testing.T) {
+	testkit.Slow(t, "execs kcl")
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping env-map e2e proof")
 	}

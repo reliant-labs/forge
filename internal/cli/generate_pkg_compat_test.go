@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestCheckPkgCompat_NoForgeDependency is a no-op (nil) when the project
@@ -280,6 +281,7 @@ func appendTo(t *testing.T, path, extra string) {
 // migrated by generate (ensureGenForgeRequire), not refused: refusing made the
 // user run `go mod edit` on a file they never wrote.
 func TestCheckPkgCompat_RetiredPkgInGenModuleIsNotRefused(t *testing.T) {
+	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "gen"), 0o755); err != nil {
 		t.Fatal(err)

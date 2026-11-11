@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // rollbackFixture lays down a small Go project, arms the journal and takes
@@ -80,6 +81,7 @@ func runRollback(t *testing.T, root string, preRun *workTreeSnapshot) string {
 // failed. No Go input changed, so no build runs, and the report says why it
 // makes no compile claim.
 func TestRollback_NoGoFileChangedSkipsCompileCheck(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root, preRun, checks := rollbackFixture(t)
 	journaledWrite(t, root, "forge.yaml", "name: app\nkind: service\n")
 	journaledWrite(t, root, "frontends/web/api.ts", "export const x = 1\n")
@@ -105,6 +107,7 @@ func TestRollback_NoGoFileChangedSkipsCompileCheck(t *testing.T) {
 // A Go file the run changed (and the revert put back) is what the check is
 // for: a kept file may depend on the reverted one.
 func TestRollback_GoFileChangedRunsCompileCheck(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	for name, rel := range map[string]string{
 		"go source": "internal/app/app.go",
 		"go.sum":    "go.sum",
@@ -130,6 +133,7 @@ func TestRollback_GoFileChangedRunsCompileCheck(t *testing.T) {
 // A Go file changed OUTSIDE the journal (an undeclared writer) is in the
 // residue, and still owes the check.
 func TestRollback_UnjournaledGoChangeRunsCompileCheck(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root, preRun, checks := rollbackFixture(t)
 	journaledWrite(t, root, "forge.yaml", "name: app\nkind: service\n")
 	writeRollbackFile(t, root, "internal/app/app.go", "package app // an undeclared writer\n")
@@ -144,6 +148,7 @@ func TestRollback_UnjournaledGoChangeRunsCompileCheck(t *testing.T) {
 // Without a pre-run fingerprint nothing proves the tree outside the journal
 // is untouched, so the check runs.
 func TestRollback_NoFingerprintRunsCompileCheck(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	root, _, checks := rollbackFixture(t)
 	journaledWrite(t, root, "forge.yaml", "name: app\nkind: service\n")
 

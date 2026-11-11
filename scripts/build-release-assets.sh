@@ -18,7 +18,7 @@
 # Windows ships a .tar.gz as well (not a .zip): one archive format means one
 # extractor in the npm shim, and tar.exe has shipped with Windows 10 since 1803.
 #
-# forge is cgo-free (README, "Install"), so every target cross-compiles from any
+# forge is cgo-free (docs/install.md), so every target cross-compiles from any
 # host with a plain Go toolchain.
 #
 # Environment:

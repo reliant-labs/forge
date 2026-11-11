@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gitInit makes dir a git repository with one commit, so the refusal reads
@@ -303,6 +304,7 @@ func TestRefusalCountsAReleaseItsPromotionsBindButTheLedgerLacks(t *testing.T) {
 // project that never used the in-checkout backend (every new project, and
 // forge's own e2e fixtures) must be unaffected.
 func TestNoRefusalWithoutARetiredLedger(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "clean-project")
 	gitInit(t, dir)
 
@@ -348,6 +350,7 @@ func TestRefusalReadsHeadNotTheWorkingTree(t *testing.T) {
 // whichever store was selected, which is why the check lives in selection
 // rather than in one backend.
 func TestRefusalAppliesToAHostedEnvToo(t *testing.T) {
+	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "hosted-project")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 	writeRetiredLedger(t, dir, "prod", []release.Promotion{

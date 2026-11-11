@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // These tests pin what `forge project new --in-place` may do to a directory
@@ -211,6 +212,7 @@ func assertHooksPathUnset(t *testing.T, repo, when string) {
 }
 
 func TestRunNewInPlace_FreshDirectoryStillInitsGit(t *testing.T) {
+	testkit.Slow(t, "execs git and go")
 	isolateGit(t)
 	dir := t.TempDir()
 

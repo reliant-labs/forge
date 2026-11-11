@@ -17,6 +17,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+
+	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // TestScaffoldedMinIOReconcilesAnonymousAccess brings up the GENERATED
@@ -37,7 +39,7 @@ func TestScaffoldedMinIOReconcilesAnonymousAccess(t *testing.T) {
 	probe, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if exec.CommandContext(probe, "docker", "info").Run() != nil || exec.Command("docker", "compose", "version").Run() != nil {
-		t.Skip("no docker daemon (or no compose plugin) to start MinIO on")
+		testdocker.Unavailable(t, "no docker daemon (or no compose plugin) to start MinIO on")
 	}
 
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "")

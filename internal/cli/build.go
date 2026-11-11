@@ -3260,6 +3260,15 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	for _, w := range workloads {
 		switch w.Build.Type {
 		case "docker":
+			// A workload bound forge.OnHost runs its command on the host, so
+			// nothing in this env runs its image: building it cost the first
+			// `forge env up dev` of a Node app two minutes for an image
+			// nobody used (report 6cd700c6), right under a summary line
+			// that said "Host (skip docker)".
+			if hostBoundUnit(w, aliases[w.Name]) {
+				fmt.Printf("[build] %s: skipping docker (bound to forge.OnHost: it runs on the host, not from an image)\n", w.Name)
+				continue
+			}
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
 			builder := buildServiceDocker
 			if opts.composition != nil {
@@ -3281,6 +3290,21 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 		}
 	}
 	return out
+}
+
+// hostBoundUnit reports whether a DockerBuild workload, and every workload
+// that shares its build in a composition, runs on the host — where no image
+// is pulled, so the build would produce nothing anything runs.
+func hostBoundUnit(w WorkloadEntity, aliases []WorkloadEntity) bool {
+	if w.Runtime.Type != RuntimeHost {
+		return false
+	}
+	for _, a := range aliases {
+		if a.Runtime.Type != RuntimeHost {
+			return false
+		}
+	}
+	return true
 }
 
 // buildServiceRemote handles a RemoteBuild, which forge cannot yet submit.
@@ -3449,9 +3473,11 @@ func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error
 // serviceDockerImage is the REPOSITORY a DockerBuild workload's image goes to
 // and the tag it carries. The repository is the workload's own declared image
 // minus any pin — registry host included, because that is where the build
-// pushes and where the deploy pulls. A workload that declares no image falls
+// pushes and where the deploy pulls. A BARE image on a forge.OnHosted
+// workload resolves under the env's platform push base (ADR-0003 F1), exactly
+// as the push plan resolves it. A workload that declares no image falls
 // back to its build's output_name / its own name, which names no host and so
-// is only ever tagged locally.
+// is only ever tagged locally (unless it is hosted, when it resolves too).
 func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions) (repository, tag string) {
 	repository = imageRepository(w.Image)
 	if repository == "" {
@@ -3459,6 +3485,13 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 		if d := w.Build.Docker; d != nil && d.OutputName != "" {
 			repository = d.OutputName
 		}
+	}
+	// A BARE image on a hosted workload goes under the platform's push base,
+	// by the same rule the push plan, the release ledger and the deploy apply
+	// (resolveHostedImageBase). Without it the header named the resolved
+	// address while `docker push realworld:latest` went to docker.io.
+	if w.Runtime.Type == RuntimeHosted {
+		repository = resolveHostedImageBase(opts.pushPlan.pushBase, repository)
 	}
 	pin, _ := w.PinnedBuildTag()
 	return repository, buildTagFor(opts, pin, resolvedTag)

@@ -141,6 +141,11 @@ const (
 	// bucket and no separate policy carries no key, so it needs nothing of
 	// the reader.
 	BundleFeatureStorage = "shape-storage"
+	// BundleFeatureFunnelPerson is a ShapeFunnel counted by "visitor" or
+	// "person" (forge.Funnel.by, the built-in product analytics). A reader
+	// that predates it refuses those values, so it is sent only the funnels
+	// counted by "session" or "user".
+	BundleFeatureFunnelPerson = "shape-funnel-person"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -148,7 +153,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -274,6 +279,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		}
 	}
 	if r.Supports(BundleFeatureFrontendTelemetry) {
+		if !r.Supports(BundleFeatureFunnelPerson) {
+			s.FrontendTelemetry = withoutProductFunnels(s.FrontendTelemetry)
+		}
 		return s
 	}
 	s.FrontendTelemetry = nil
@@ -317,6 +325,27 @@ func withoutLoginPolicyOutput(cs []ShapeIdentityConsumer) []ShapeIdentityConsume
 				omit = nil
 			}
 			out[i].Omit = omit
+		}
+	}
+	return out
+}
+
+// withoutProductFunnels returns ts without the funnels counted by "visitor"
+// or "person", dropping an entry left declaring nothing. A copy when anything
+// is removed: ts is not modified.
+func withoutProductFunnels(ts []ShapeFrontendTelemetry) []ShapeFrontendTelemetry {
+	product := func(f ShapeFunnel) bool { return f.By == FunnelByVisitor || f.By == FunnelByPerson }
+	if !slices.ContainsFunc(ts, func(t ShapeFrontendTelemetry) bool { return slices.ContainsFunc(t.Funnels, product) }) {
+		return ts
+	}
+	var out []ShapeFrontendTelemetry
+	for _, t := range ts {
+		t.Funnels = slices.DeleteFunc(slices.Clone(t.Funnels), product)
+		if len(t.Funnels) == 0 {
+			t.Funnels = nil
+		}
+		if !t.IsDefault() {
+			out = append(out, t)
 		}
 	}
 	return out

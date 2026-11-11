@@ -27,7 +27,8 @@ func (e *portBootError) Unwrap() error { return e.err }
 
 // startEmbeddedOnFreshPort retries only a confirmed bind collision. Dependencies
 // are per-call so deterministic tests never replace process-global functions.
-// Config is copied unchanged except for the port and its runtime directory.
+// Config is copied unchanged except for the port, its runtime directory, and
+// where the server's output goes (bootLog).
 //
 // On success the runtime directory's boot claim is returned STILL HELD: the
 // server has neither an owner lock nor a pool record yet, so the claim is all
@@ -59,7 +60,7 @@ func startEmbeddedOnFreshPort(cfg embeddedpostgres.Config, reserve func() (uint3
 			last = fmt.Errorf("runtime directory %s already claimed", dir)
 			continue
 		}
-		ep, err := start(cfg.Port(port).RuntimePath(dir))
+		ep, err := start(cfg.Port(port).RuntimePath(dir).Logger(bootLog{path: bootLogPath(dir)}))
 		if err == nil {
 			return ep, port, claim, nil
 		}
@@ -169,11 +170,19 @@ func embeddedBindCollision(err error, port uint32, dir string) bool {
 	}
 	if err.Error() == fmt.Sprintf("process already listening on port %d", port) {
 		// Upstream discards Listen's cause, so its wording alone also covers
-		// permission/socket exhaustion errors. Confirm EADDRINUSE, not merely
-		// the presence of an arbitrary startup error or an answering port.
+		// permission/socket exhaustion errors. Re-bind to tell them apart:
+		//   - EADDRINUSE: the collision is still there.
+		//   - success: the collision cleared before we looked (the listener
+		//     that won the race already closed; seen on busy CI runners,
+		//     forge #1932/#1942). The port proved free, so this was no
+		//     persistent permission or socket failure either.
+		//   - any other error: a real non-collision failure; never retried.
+		// Either retry is on a FRESH candidate and stays bounded by
+		// embeddedBootAttempts.
 		ln, listenErr := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
 		if listenErr == nil {
 			_ = ln.Close()
+			return true
 		}
 		return addrInUse(listenErr)
 	}

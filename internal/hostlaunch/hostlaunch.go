@@ -132,17 +132,7 @@ func (s RunnerSpec) IgnoresArgs() bool {
 // passes different args: the caller then says the declared args are not
 // passed, because nothing proves they are.
 func (s RunnerSpec) AirRunsArgs() bool {
-	cfg := s.AirConfig
-	if cfg == "" {
-		cfg = DefaultAirConfig
-	}
-	if !filepath.IsAbs(cfg) {
-		base := resolveWorkingDir(s.WorkingDir, s.ProjectDir)
-		if base == "" {
-			base = s.ProjectDir
-		}
-		cfg = filepath.Join(base, cfg)
-	}
+	cfg, _ := s.airPaths()
 	var doc struct {
 		Build struct {
 			Entrypoint []string `toml:"entrypoint"`
@@ -152,6 +142,136 @@ func (s RunnerSpec) AirRunsArgs() bool {
 		return false
 	}
 	return slices.Equal(doc.Build.Entrypoint[1:], s.Args)
+}
+
+// airPaths resolves the air config this spec launches with, and the
+// directory air runs in (the workload's working dir, else the project dir),
+// which is what air resolves a relative `root` against.
+func (s RunnerSpec) airPaths() (cfg, base string) {
+	base = resolveWorkingDir(s.WorkingDir, s.ProjectDir)
+	if base == "" {
+		base = s.ProjectDir
+	}
+	cfg = s.AirConfig
+	if cfg == "" {
+		cfg = DefaultAirConfig
+	}
+	if !filepath.IsAbs(cfg) {
+		cfg = filepath.Join(base, cfg)
+	}
+	return cfg, base
+}
+
+// AirDirs lists the directories the air config this spec launches with
+// writes into: its `tmp_dir` (air's default `tmp`), and the directory of the
+// binary it builds and runs — `[build] bin`, the first `entrypoint` element,
+// and the `-o` output of a `go build` in `[build] cmd`. Each is resolved the
+// way air resolves it, against the config's `root`.
+//
+// Only directories inside the directory air runs in are listed: a path
+// outside it is somewhere forge has no business creating. An unreadable or
+// unparsable config yields an error, and air reports the same config itself.
+func (s RunnerSpec) AirDirs() ([]string, error) {
+	cfgPath, base := s.airPaths()
+	var doc struct {
+		Root   string `toml:"root"`
+		TmpDir string `toml:"tmp_dir"`
+		Build  struct {
+			Cmd        string   `toml:"cmd"`
+			Bin        string   `toml:"bin"`
+			Entrypoint []string `toml:"entrypoint"`
+		} `toml:"build"`
+	}
+	if _, err := toml.DecodeFile(cfgPath, &doc); err != nil {
+		return nil, err
+	}
+	root := base
+	if r := strings.TrimSpace(doc.Root); r != "" && r != "." {
+		root = joinUnder(base, r)
+	}
+	tmp := strings.TrimSpace(doc.TmpDir)
+	if tmp == "" {
+		tmp = "tmp"
+	}
+	candidates := []string{joinUnder(root, tmp)}
+	for _, bin := range []string{doc.Build.Bin, firstOf(doc.Build.Entrypoint), goBuildOutput(doc.Build.Cmd)} {
+		bin = strings.TrimSpace(bin)
+		// A bare name (`entrypoint = ["app"]`) is resolved on PATH, not
+		// written anywhere; only a path names a directory.
+		if bin == "" || !strings.ContainsAny(bin, `/\`) {
+			continue
+		}
+		candidates = append(candidates, filepath.Dir(joinUnder(root, bin)))
+	}
+	var dirs []string
+	for _, d := range candidates {
+		rel, err := filepath.Rel(base, d)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if !slices.Contains(dirs, d) {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs, nil
+}
+
+// PrepareAirDirs creates every directory AirDirs lists. air before v1.63.7
+// creates its tmp_dir with a non-recursive mkdir, so in a fresh checkout,
+// where no tmp/ exists yet, a nested `tmp_dir = "tmp/api"` failed with
+// `mkdir tmp/api: no such file or directory` and the workload never started.
+// Creating the directories first makes every air release work in a fresh
+// checkout, and is a no-op where they exist.
+func (s RunnerSpec) PrepareAirDirs() error {
+	dirs, err := s.AirDirs()
+	if err != nil {
+		return err
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// joinUnder is air's joinPath: an absolute path stands, a relative one is
+// joined to root.
+func joinUnder(root, p string) string {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(root, p)
+}
+
+func firstOf(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[0]
+}
+
+// goBuildOutput returns the -o output of a `go build` command line, or ""
+// when the command is not a go build or names no output. Only go build is
+// parsed: `-o` means something else to every other tool.
+func goBuildOutput(cmd string) string {
+	f := strings.Fields(cmd)
+	i := slices.Index(f, "go")
+	if i < 0 || i+1 >= len(f) || f[i+1] != "build" {
+		return ""
+	}
+	for j := i + 2; j < len(f); j++ {
+		if f[j] == "&&" || f[j] == ";" || f[j] == "||" {
+			break
+		}
+		if f[j] == "-o" && j+1 < len(f) {
+			return f[j+1]
+		}
+		if v, ok := strings.CutPrefix(f[j], "-o="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // BuildCmd composes the *exec.Cmd for a host workload. The argv is DERIVED,

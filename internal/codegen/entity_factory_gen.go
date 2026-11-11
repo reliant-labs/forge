@@ -199,15 +199,20 @@ func bakeEntityFactory(byName map[string]schemadef.Table, root string, ent dbEnt
 	plan.SetBounds(bounds)
 	plan.ApplyVocab(vocab)
 
+	// The plan is in FK-topological order, so the root's parents are the
+	// statements before it. A table after it is in the closure only through
+	// an edge the planner broke at the root (a cycle through a nullable
+	// foreign key the root leaves NULL) — it references the root, not the
+	// other way round, so it is no parent and inserting it first would fail.
 	rootStmt := ""
 	var parentStmts []string
 	rootPrefix := "INSERT INTO " + seedplan.QualifiedTable(byName[root]) + " ("
 	for _, stmt := range plan.Statements() {
 		if strings.HasPrefix(stmt, rootPrefix) {
 			rootStmt = stmt
-		} else {
-			parentStmts = append(parentStmts, strings.TrimSpace(stmt))
+			break
 		}
+		parentStmts = append(parentStmts, strings.TrimSpace(stmt))
 	}
 	if rootStmt == "" {
 		return entityFactorySpec{}, false

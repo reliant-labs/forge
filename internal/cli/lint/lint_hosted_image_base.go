@@ -1,6 +1,8 @@
 // File: internal/cli/lint/lint_hosted_image_base.go
 //
-// hosted-image-base — reports a host-bearing image on a forge.OnHosted item.
+// hosted-image-base — reports a host-bearing image on a forge.OnHosted item
+// forge BUILDS. A workload forge does not build (a third-party image) is
+// mirrored into the platform registry at release time, so its host is fine.
 //
 // A hosted workload's registry is NOT the author's to choose (ADR-0003 F1):
 // the platform admits images from exactly one subtree,

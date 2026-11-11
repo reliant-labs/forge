@@ -170,6 +170,14 @@ func (p ShapeReleaseProbe) validate() error {
 			return bad("path %q has a fragment", path)
 		case strings.Contains(path, ".."):
 			return bad("path %q has '..'", path)
+		case strings.Contains(path, "//"):
+			return bad("path %q has an empty segment ('//')", path)
+		case slices.Contains(strings.Split(path, "/"), "."):
+			return bad("path %q has a '.' segment", path)
+		case strings.ContainsRune(path, '%'):
+			return bad("path %q is percent-encoded", path)
+		case strings.IndexFunc(path, notProbePathChar) >= 0:
+			return bad("path %q has a character outside A-Z a-z 0-9 and -._~!$&'()*+,;=:@/", path)
 		case len(path) > MaxReleaseProbePathLen:
 			return bad("path is longer than %d characters", MaxReleaseProbePathLen)
 		}
@@ -199,6 +207,19 @@ func (p ShapeReleaseProbe) validate() error {
 		return bad("source %q (expected %s or %s)", p.Source, ReleaseProbeSourceUser, ReleaseProbeSourceDefault)
 	}
 	return nil
+}
+
+// notProbePathChar reports a rune a release-probe path may not hold. A path
+// is a plain origin-relative URL path: RFC 3986 pchars and '/', with no
+// percent-encoding, so every HTTP client, proxy and URL parser reads it the
+// same way and the request stays on the target's host. A backslash, a
+// control character, a space or a non-ASCII rune is refused.
+func notProbePathChar(r rune) bool {
+	switch {
+	case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
+		return false
+	}
+	return !strings.ContainsRune("-._~!$&'()*+,;=:@/", r)
 }
 
 // validateReleaseProbes applies forge.Probe's rules to each probe, and

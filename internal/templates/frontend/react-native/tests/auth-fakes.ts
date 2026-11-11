@@ -22,6 +22,8 @@ export const config: OidcConfig = {
   scopes: ["openid", "profile", "email", "offline_access"],
   redirectUri: REDIRECT,
   postLogoutRedirectUri: POST_LOGOUT,
+  fallbackRedirectUri: null,
+  fallbackPostLogoutRedirectUri: null,
 };
 
 // A real SHA-256 (FIPS 180-4) in plain TypeScript, so the tests need no Node
@@ -238,7 +240,7 @@ export type BrowserScript = (authorizeUrl: URL) => BrowserResult | Promise<Brows
 
 /** A system browser that follows `script` and records what it was asked to open. */
 export class FakeBrowser implements BrowserLike {
-  opened: { url: URL; redirectUri: string; ephemeral: boolean }[] = [];
+  opened: { url: URL; redirectUri: string; ephemeral: boolean; universal: boolean }[] = [];
   constructor(
     private readonly idp: FakeIdp,
     public script: BrowserScript = successScript,
@@ -246,11 +248,16 @@ export class FakeBrowser implements BrowserLike {
   async openAuthSession(
     url: string,
     redirectUri: string,
-    options: { preferEphemeralSession: boolean },
+    options: { preferEphemeralSession: boolean; preferUniversalLinks: boolean },
   ) {
     const u = new URL(url);
     this.idp.lastNonce = u.searchParams.get("nonce") ?? "";
-    this.opened.push({ url: u, redirectUri, ephemeral: options.preferEphemeralSession });
+    this.opened.push({
+      url: u,
+      redirectUri,
+      ephemeral: options.preferEphemeralSession,
+      universal: options.preferUniversalLinks,
+    });
     return this.script(u);
   }
 }

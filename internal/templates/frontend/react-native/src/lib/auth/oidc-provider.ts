@@ -60,6 +60,7 @@ import {
   type FetchLike,
   type RequestOptions,
 } from "./oidc";
+import { chooseRedirect, type PlatformInfo } from "./redirect";
 import type { IdentitySession } from "./session";
 import type { StoredTokens, TokenStore } from "./token-store";
 
@@ -70,17 +71,18 @@ export interface BrowserLike {
   /**
    * Open `url`, resolve when the browser navigates to `redirectUri`.
    *
-   * The redirect URI is passed through UNCHANGED as the return URL. That is
-   * right for the private-use scheme forge ships today
-   * (`com.<project>.<app>:/oauthredirect`). For an https universal/app link on
-   * iOS 17.4+, expo-web-browser (SDK 58) additionally needs
-   * `preferUniversalLinks: true` and the Associated Domains entitlement —
-   * add it in native.ts when you move to https; nothing else changes.
+   * The redirect URI is passed through UNCHANGED as the return URL, whether it
+   * is the private-use scheme (`com.<project>.<app>:/oauthredirect`) or an https
+   * universal/app link. For the https link `preferUniversalLinks` is set: on
+   * iOS 17.4+ expo-web-browser (SDK 58) then builds the session with
+   * `.https(host:path:)`, which needs the Associated Domains entitlement for
+   * the redirect's host (plugins/with-forge-links.js). On Android it is ignored
+   * and a verified App Link is delivered to the app by the Custom Tab.
    */
   openAuthSession(
     url: string,
     redirectUri: string,
-    options: { preferEphemeralSession: boolean },
+    options: { preferEphemeralSession: boolean; preferUniversalLinks: boolean },
   ): Promise<BrowserResult>;
 }
 
@@ -96,6 +98,12 @@ export interface OidcProviderDeps {
   discoveryCache?: DiscoveryCache;
   /** http:// loopback IdP allowed (development). */
   allowInsecureLoopback?: boolean;
+  /**
+   * The device, for choosing between an https redirect and its private-use
+   * fallback (see redirect.ts). Absent: the private-use redirect is never
+   * dropped, an https one is used as configured.
+   */
+  platform?: PlatformInfo;
   /** Refresh this long before expiry. Default 60s. */
   skewMs?: number;
   /** Network timeout for token/discovery calls. Default 15s. */
@@ -165,6 +173,18 @@ export function createOidcAuthProvider(
   let signingIn: Promise<AuthUser | null> | null = null;
   let refreshing: Promise<void> | null = null;
   let signingOut: Promise<SignOutResult> | null = null;
+
+  // The redirect pair this device uses. With no platform injected the
+  // configured pair is used as is, so an app that never passes one behaves
+  // exactly as before.
+  const redirectFor = () =>
+    deps.platform
+      ? chooseRedirect(config, deps.platform)
+      : {
+          redirectUri: config.redirectUri,
+          postLogoutRedirectUri: config.postLogoutRedirectUri,
+          preferUniversalLinks: false,
+        };
 
   const requestOptions = (signal?: AbortSignal, timeoutMs?: number): RequestOptions => ({
     signal,
@@ -377,9 +397,13 @@ export function createOidcAuthProvider(
     const state = randomToken(deps.crypto, 32);
     const nonce = randomToken(deps.crypto, 32);
     const prompt = forceLogin || (await store.getForceLogin()) ? "login" : undefined;
+    // ONE redirect for the whole attempt: the authorize request, the callback
+    // match and the token exchange all use it (RFC 6749 §4.1.3).
+    const redirect = redirectFor();
+    const attempt = { ...config, redirectUri: redirect.redirectUri };
     const url = authorizeUrl({
       discovery,
-      config,
+      config: attempt,
       state,
       nonce,
       codeChallenge: pkce.challenge,
@@ -387,8 +411,9 @@ export function createOidcAuthProvider(
     });
 
     // iOS: ephemeral so the IdP's web cookies are not shared with Safari — "switch account" works and sign-out is real.
-    const result = await deps.browser.openAuthSession(url, config.redirectUri, {
+    const result = await deps.browser.openAuthSession(url, attempt.redirectUri, {
       preferEphemeralSession: true,
+      preferUniversalLinks: redirect.preferUniversalLinks,
     });
     if (result.type === "locked")
       throw new BrowserBusyError("another authentication session is already open");
@@ -396,7 +421,7 @@ export function createOidcAuthProvider(
     if (!session.isCurrent(epoch)) return null;
 
     const { code } = parseCallback(result.url, {
-      redirectUri: config.redirectUri,
+      redirectUri: attempt.redirectUri,
       state,
       issuer: config.issuer,
     });
@@ -404,7 +429,7 @@ export function createOidcAuthProvider(
     try {
       granted = await exchangeCode({
         discovery,
-        config,
+        config: attempt,
         code,
         codeVerifier: pkce.verifier,
         fetch: deps.fetch,
@@ -496,7 +521,11 @@ export function createOidcAuthProvider(
           // Offline or refused: the local session is already gone.
         }
         result = {
-          endSessionUrl: endSessionUrl({ discovery, config, idTokenHint: leaving.idToken }),
+          endSessionUrl: endSessionUrl({
+            discovery,
+            config: { ...config, postLogoutRedirectUri: redirectFor().postLogoutRedirectUri },
+            idTokenHint: leaving.idToken,
+          }),
         };
       } catch {
         // No discovery (offline): skip revocation and the end-session URL.

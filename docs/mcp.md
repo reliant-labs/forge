@@ -110,6 +110,32 @@ The official MCP registry listing is `npm/server.json` (name
 the Smithery config is `npm/smithery.yaml`; `scripts/release-forge.sh` keeps the
 listing's version equal to the npm package's.
 
+### With Docker
+
+`Dockerfile.mcp` builds the forge binary from source into a small image whose
+entrypoint is `forge mcp`. Mount the project at `/workspace`, where the server
+starts:
+
+```bash
+docker build -f Dockerfile.mcp -t forge-mcp https://github.com/reliant-labs/forge.git
+docker run -i --rm -v "$PWD:/workspace" forge-mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "forge": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "${PWD}:/workspace", "forge-mcp"]
+    }
+  }
+}
+```
+
+The image carries git and CA certificates only. `lint` and `generate` run the
+project's own toolchain (Go, buf, ...), so for those use the npx or installed
+forge; introspection, the skill catalog and `deploy_claimable` work as is.
+
 ### With forge installed
 
 Put `forge` on your `PATH` (`go install github.com/reliant-labs/forge/cmd/forge@<version>`),

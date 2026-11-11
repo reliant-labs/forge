@@ -4117,6 +4117,11 @@ schema Frontend:
     # funnels today. See BrowserTelemetry. Not for a `rn` frontend, which has
     # no browser SDK.
     telemetry?: BrowserTelemetry
+    # Steady synthetic traffic the control plane sends to this frontend in a
+    # hosted env, so its releases can be judged when real traffic is thin.
+    # Unset, a forge.OnHosted frontend is probed at `<base_path>/` (GET, 4 a
+    # minute); `forge.Probe {enabled = False}` turns that off. See Probe.
+    release_probe?: Probe
     # Which entities this frontend gets generated CRUD pages for: route
     # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
     # entity name ("llm-keys", "usage-events"). Empty (the default) means

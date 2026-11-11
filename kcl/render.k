@@ -2052,6 +2052,64 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
     [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
 }
 
+# ---------------------------------------------------------------------------
+# Release probes (workload.k Probe): the steady synthetic traffic the control
+# plane sends a hosted env's frontends and workloads, resolved to the release
+# shape's `release_probes` (pkg/release ShapeReleaseProbe).
+# ---------------------------------------------------------------------------
+
+# An env the control plane probes: hosted, and neither local nor ephemeral.
+# Anywhere else a declaration is ignored, so one base declaration serves every
+# env.
+_release_probe_env = lambda b: Bundle -> bool {
+    bool(b.control_plane) and b.lifecycle not in ["local", "ephemeral"]
+}
+
+# One shape entry, every default written out so the shape is the whole truth.
+# expect_status is left out when empty (2xx and 3xx), as uptime checks do.
+_release_probe_entry = lambda target: str, kind: str, p: Probe, source: str -> any {
+    {
+        "target": target
+        "kind": kind
+        "paths": p.paths
+        "method": p.method
+        "rate_per_min": p.rate_per_min
+        "timeout_seconds": _uptime_seconds(p.timeout)
+        if p.expect_status:
+            "expect_status": sorted(p.expect_status)
+        "source": source
+    }
+}
+
+# A hosted frontend's probe: its declaration, or with none the default probe
+# of its root (`<base_path>/`). Empty when it is turned off.
+_release_probe_frontend = lambda f: any -> [any] {
+    _p = f.release_probe
+    _root = (f.base_path.rstrip("/") if f.base_path else "") + "/"
+    ([_release_probe_entry(f.name, "frontend", Probe {paths = [_root]}, "default")] if not _p else \
+        [_release_probe_entry(f.name, "frontend", _p, "user")] if _p.enabled else [])
+}
+
+# A hosted workload's probe: only a declared, enabled one. The platform has a
+# hostname only for a workload that exposes a port, so a declaration on any
+# other hosted workload is refused rather than silently never probed.
+_release_probe_workload = lambda w: any -> [any] {
+    _p = w.release_probe
+    assert not _p or not _p.enabled or _uptime_exposes(w), \
+        "Workload '${w.name}': release_probe is declared, but the workload exposes no port (expose = True), so the platform has no hostname to probe: expose one, or set `enabled = False`"
+    [_release_probe_entry(w.name, "workload", _p, "user")] if _p and _p.enabled else []
+}
+
+# The env's release probes, sorted by target; empty outside a probed env.
+_render_release_probes = lambda b: Bundle -> [any] {
+    _all = [p for f in b.frontends if f.runtime and f.runtime.type == "hosted" for p in _release_probe_frontend(f)] \
+        + [p for w in b.workloads if w.runtime and w.runtime.type == "hosted" for p in _release_probe_workload(w)]
+    assert isunique([p.target for p in _all]), \
+        "release probes name a target twice (${[p.target for p in _all]}): a frontend and a workload share a name"
+    _by = {p.target = p for p in _all}
+    [_by[t] for t in sorted([t for t in _by])] if _release_probe_env(b) else []
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -2416,6 +2474,11 @@ render = lambda bundle: Bundle -> any {
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
             "uptime_checks": _render_uptime_checks(bundle)
+        # The env's release probes (forge.Probe), resolved: declared ones plus
+        # the default probe of every hosted static frontend. Go records them
+        # in the release shape.
+        if _render_release_probes(bundle):
+            "release_probes": _render_release_probes(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:

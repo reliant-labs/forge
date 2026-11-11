@@ -632,6 +632,29 @@ func NewDeclaredFloor(env string, target Release, decls []FloorDeclaration, by A
 	}
 }
 
+// PromoteRaises is every floor a promote of target to env raises (its ID left
+// for the backend to assign): a declared floor for the declarations target
+// carries that no active floor requires ([DeclarationsRaisedBy]), and, when
+// orderReason is set (`forge env deploy --floor "<why>"`), a
+// roll-forward-only order floor at target unless an active order floor is
+// already there. Every backend calls this with the append, under the lock
+// that serializes it, so a promotion is never visible without its floors.
+func PromoteRaises(active []Floor, env string, target Release, orderReason string, by Actor, at time.Time, promotionID string) []Floor {
+	var out []Floor
+	if decls := DeclarationsRaisedBy(active, target); len(decls) > 0 {
+		out = append(out, NewDeclaredFloor(env, target, decls, by, at, promotionID))
+	}
+	if strings.TrimSpace(orderReason) == "" {
+		return out
+	}
+	for _, f := range active {
+		if f.Active() && f.Kind == FloorOrder && f.Release == target.Version {
+			return out
+		}
+	}
+	return append(out, NewOrderFloor(env, target, FloorSourceRollForwardOnly, orderReason, by, at, promotionID))
+}
+
 // NewOrderFloor is an order floor at release r. source is manual or
 // roll_forward_only.
 func NewOrderFloor(env string, r Release, source FloorSource, reason string, by Actor, at time.Time, promotionID string) Floor {

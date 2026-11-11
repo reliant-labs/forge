@@ -181,7 +181,7 @@ func (c *obsCommon) register(cmd *cobra.Command, sinceDefault time.Duration, lim
 	f := cmd.Flags()
 	c.out.Register(f, limitDefault)
 	f.StringVar(&c.backend, "backend", "", "local | cloud (default: from the env's declaration)")
-	f.DurationVar(&c.since, "since", sinceDefault, "how far back to read (ignored with --from)")
+	obsDurationVar(f, &c.since, "since", sinceDefault, "how far back to read (ignored with --from)")
 	f.StringVar(&c.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&c.to, "to", "", "range end, RFC 3339 (default now)")
 	f.StringArrayVar(&c.services, "service", nil, "only this service.name (repeatable)")

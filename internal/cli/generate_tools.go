@@ -80,10 +80,10 @@ func devWorkspaceBridgesExternalModule(projectDir string) bool {
 // It used to run `go work sync` instead, and that was wrong in a way that
 // looked like forge helpfully tidying: sync writes the WORKSPACE's build list
 // back into every member go.mod, and the workspace includes the bridged
-// checkout — so forge's own requirements (gomega, protovalidate, go-sqlite3,
-// …) were copied into the project's go.mod as "upgrades" on every generate. A
-// project that pinned a forge version had its dependency graph silently moved
-// by a tool that was only supposed to regenerate code.
+// checkout — so forge's own requirements (gomega, protovalidate, …) were
+// copied into the project's go.mod as "upgrades" on every generate. A project
+// that pinned a forge version had its dependency graph silently moved by a
+// tool that was only supposed to regenerate code.
 //
 // The bridge decides what COMPILES; it must never decide what the project
 // DECLARES. So tidy runs with GOWORK=off — against the module's own

@@ -98,7 +98,6 @@ func TestOpenDB_RetriesThenSucceeds(t *testing.T) {
 	name, d := registerFake(t, 4)
 	buf := &syncBuf{}
 
-	start := time.Now()
 	db, err := serverkit.OpenDB(t.Context(), name, "ignored", serverkit.DBPoolTuning{}, fastPolicy(bufLogger(buf)))
 	if err != nil {
 		t.Fatalf("OpenDB: %v — a database that is up after 4 refusals must be reached", err)
@@ -107,9 +106,6 @@ func TestOpenDB_RetriesThenSucceeds(t *testing.T) {
 
 	if got := d.opens.Load(); got != 5 {
 		t.Errorf("dial attempts = %d, want 5 (4 failures then success)", got)
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Errorf("took %s — backoff is not capped", time.Since(start))
 	}
 
 	out := buf.String()
@@ -123,6 +119,25 @@ func TestOpenDB_RetriesThenSucceeds(t *testing.T) {
 	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "database connected") ||
 		!strings.Contains(out, "elapsed=") || !strings.Contains(out, "attempts=5") {
 		t.Errorf("success must log INFO with elapsed and attempts:\n%s", out)
+	}
+}
+
+// MaxBackoff caps the wait between attempts. Fourteen refusals from a 1ms
+// initial backoff: capped at 5ms they cost well under a second, but an
+// uncapped doubling waits at least 8s in all (jitter keeps half of each
+// delay), past the policy's 5s Timeout — so a missing cap fails OpenDB
+// itself, whatever this machine's load.
+func TestOpenDB_BackoffIsCapped(t *testing.T) {
+	t.Parallel()
+	const refusals = 14
+	name, d := registerFake(t, refusals)
+	db, err := serverkit.OpenDB(t.Context(), name, "ignored", serverkit.DBPoolTuning{}, fastPolicy(bufLogger(&syncBuf{})))
+	if err != nil {
+		t.Fatalf("OpenDB: %v — backoff is not capped at MaxBackoff", err)
+	}
+	defer func() { _ = db.Close() }()
+	if got := d.opens.Load(); got != refusals+1 {
+		t.Errorf("dial attempts = %d, want %d", got, refusals+1)
 	}
 }
 
@@ -200,13 +215,8 @@ func TestRetryConnect_StopsWhenContextIsCancelled(t *testing.T) {
 	}
 	cancel()
 
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Errorf("error = %v, want context.Canceled — SIGTERM during the wait must end it promptly", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("RetryConnect ignored cancellation")
+	if err := receive(t, "RetryConnect to return after cancellation", done); !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled — SIGTERM during the wait must end it promptly", err)
 	}
 }
 
@@ -342,7 +352,7 @@ func TestAwaitMigrationsContext_NamesTheSchemaWhileItWaits(t *testing.T) {
 	}()
 
 	var raw string
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(waitTimeout); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		if _, _, raw = getJSON(t, "http://"+addr+"/readyz"); strings.Contains(raw, `"name":"schema"`) {
 			break
 		}
@@ -408,7 +418,7 @@ func TestBootProbes_AliveButNotReadyWhileTheDatabaseIsDown(t *testing.T) {
 	// The pending wait is registered asynchronously; poll until it shows.
 	var raw string
 	var status int
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+	for deadline := time.Now().Add(waitTimeout); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
 		status, _, raw = getJSON(t, "http://"+addr+"/readyz")
 		if strings.Contains(raw, `"name":"database"`) {
 			break

@@ -47,6 +47,30 @@ func TestTerminationGracePeriodOverride(t *testing.T) {
 		"terminationGracePeriodSeconds is not allowed on a job with before")
 }
 
+// TestPreStopSeconds: allowed under every profile (it pauses only the
+// author's own pod, bounded), long-running kinds only, 0..MaxPreStopSeconds,
+// and an explicit grace period must leave time to drain after the pause.
+func TestPreStopSeconds(t *testing.T) {
+	ok := WorkloadSpec{Kind: KindService, Image: pinnedImage, PreStopSeconds: ptr(int32(15))}
+	mustPass(t, ok, ProfileFull)
+	mustPass(t, ok, ProfileRestricted)
+	mustPass(t, WorkloadSpec{Kind: KindWorker, Image: pinnedImage, PreStopSeconds: ptr(int32(0))}, ProfileFull)
+	mustPass(t, WorkloadSpec{Kind: KindOperator, Image: pinnedImage, Group: "example.com", Version: "v1", CRDs: []string{"Widget"}, PreStopSeconds: ptr(int32(MaxPreStopSeconds))}, ProfileFull)
+	for _, v := range []int32{-1, MaxPreStopSeconds + 1} {
+		mustFail(t, WorkloadSpec{Kind: KindService, Image: pinnedImage, PreStopSeconds: ptr(v)}.Validate(ProfileFull), "preStopSeconds must be 0-120")
+	}
+	for _, k := range []WorkloadKind{KindJob, KindCron, KindTool} {
+		spec := WorkloadSpec{Kind: k, Image: pinnedImage, Args: []string{"x"}, PreStopSeconds: ptr(int32(5))}
+		if k == KindCron {
+			spec.Schedule = "@daily"
+		}
+		mustFail(t, spec.Validate(ProfileFull), fmt.Sprintf("preStopSeconds is not supported for kind %q", k))
+	}
+	mustPass(t, WorkloadSpec{Kind: KindService, Image: pinnedImage, PreStopSeconds: ptr(int32(15)), TerminationGracePeriodSeconds: ptr(int32(20))}, ProfileFull)
+	mustFail(t, WorkloadSpec{Kind: KindService, Image: pinnedImage, PreStopSeconds: ptr(int32(15)), TerminationGracePeriodSeconds: ptr(int32(19))}.Validate(ProfileFull),
+		"terminationGracePeriodSeconds (19) must be at least preStopSeconds + 5 (20)")
+}
+
 // TestDeploymentStrategy: allowed under every profile (it trades only the
 // author's own availability), on the kinds that render a Deployment, and
 // never RollingUpdate alongside a ReadWriteOnce volume.

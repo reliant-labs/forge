@@ -39,11 +39,19 @@ func newCmd(f *factory.Factory) *cobra.Command {
 Session state is persisted to .forge/debug-session.json so subsequent
 commands (break, continue, eval, ...) reconnect to the same debugger.
 
+A session comes from 'start <service>' (forge builds and runs it), 'start
+--attach <pid>' (a running process), or 'connect <addr>' (a dlv server forge
+did not start). 'start' leaves the target halted (at entry, or where attach
+found it) unless you pass --run; 'continue --timeout' waits for the next
+breakpoint hit without trapping you. 'stop' kills only what 'start'
+launched: an attached process is detached with its breakpoints removed.
+
 Examples:
-  forge debug start api-gateway
-  forge debug break handler.go:42
-  forge debug continue
-  forge debug eval "req.UserID"
+  forge debug start api --run
+  forge debug break CreateTask
+  forge debug break internal/handlers/tasks/rpc_create_task.go:42
+  forge debug continue --timeout 60s
+  forge debug eval "req.Msg.Title"
   forge debug stop`,
 	}
 
@@ -61,6 +69,7 @@ Examples:
 	cmd.AddCommand(newStackCmd(f))
 	cmd.AddCommand(newGoroutinesCmd(f))
 	cmd.AddCommand(newStopCmd(f))
+	cmd.AddCommand(newConnectCmd(f))
 
 	return cmdutil.StrictGroup(cmd)
 }
@@ -74,18 +83,44 @@ func debugSvc() dbgsvc.Service { return dbgsvc.New(dbgsvc.Deps{}) }
 // ---------------------------------------------------------------------------
 
 func connectToSession() (*dbgsvc.DelveDebugger, error) {
+	d, _, err := connectWithSession()
+	return d, err
+}
+
+func connectWithSession() (*dbgsvc.DelveDebugger, *dbgsvc.SessionInfo, error) {
 	session, err := debugSvc().LoadSession(".")
 	if err != nil {
-		return nil, fmt.Errorf("loading debug session: %w", err)
+		return nil, nil, fmt.Errorf("loading debug session: %w", err)
 	}
 	if session == nil {
-		return nil, fmt.Errorf("no active debug session (run 'forge debug start' first)")
+		return nil, nil, fmt.Errorf("no active debug session (run 'forge debug start' or 'forge debug connect' first)")
 	}
 	d := dbgsvc.NewDelveDebugger()
 	if err := d.Connect(session.Addr); err != nil {
-		return nil, fmt.Errorf("connecting to debugger at %s: %w", session.Addr, err)
+		return nil, nil, fmt.Errorf("connecting to debugger at %s: %w", session.Addr, err)
 	}
-	return d, nil
+	return d, session, nil
+}
+
+// setResumed records whether the target was left running with its next
+// stop unobserved (SessionInfo.Resumed).
+func setResumed(session *dbgsvc.SessionInfo, resumed bool) {
+	if session == nil || session.Resumed == resumed {
+		return
+	}
+	session.Resumed = resumed
+	if err := debugSvc().SaveSession(".", session); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: saving session: %v\n", err)
+	}
+}
+
+// markObserved records that the user has seen the target's current stop —
+// an inspection or step halts a running target itself — so the next
+// `continue` resumes instead of reporting it.
+func markObserved() {
+	if session, err := debugSvc().LoadSession("."); err == nil {
+		setResumed(session, false)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -196,22 +231,42 @@ func isFileLineSpec(s string) bool {
 	return err == nil
 }
 
-// parseFileLine splits "file.go:42" into file and line.
-func parseFileLine(s string) (string, int, error) {
+// lineSpec is a file:line breakpoint spec resolved to the spellings a
+// binary may record the file under.
+type lineSpec struct {
+	// files are tried in order as exact file names: the absolute path (a
+	// binary built without -trimpath), then `<module>/<rel>` (built with
+	// -trimpath — air's and the Reliant image's GOFLAGS default).
+	files []string
+	// locExpr is the file as typed, for Delve's suffix-matching location
+	// parser: the last resort, which also resolves a bare `handler.go`
+	// that lives in a subdirectory.
+	locExpr string
+	line    int
+}
+
+// parseLineSpec splits "file.go:42" and resolves the file's candidate
+// spellings relative to projectDir, whose go.mod names modulePath.
+func parseLineSpec(s, projectDir, modulePath string) (lineSpec, error) {
 	idx := strings.LastIndex(s, ":")
 	if idx < 0 {
-		return "", 0, fmt.Errorf("expected file:line format (e.g. handler.go:42), got %q", s)
+		return lineSpec{}, fmt.Errorf("expected file:line format (e.g. handler.go:42), got %q", s)
 	}
 	file := s[:idx]
 	line, err := strconv.Atoi(s[idx+1:])
 	if err != nil {
-		return "", 0, fmt.Errorf("invalid line number in %q: %w", s, err)
+		return lineSpec{}, fmt.Errorf("invalid line number in %q: %w", s, err)
 	}
-	file, err = filepath.Abs(file)
-	if err != nil {
-		return "", 0, fmt.Errorf("resolving absolute path for %q: %w", s[:idx], err)
+	abs := file
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(projectDir, file)
 	}
-	return file, line, nil
+	abs = filepath.Clean(abs)
+	spec := lineSpec{files: []string{abs}, locExpr: filepath.ToSlash(file), line: line}
+	if rel, err := filepath.Rel(projectDir, abs); err == nil && modulePath != "" && rel != "." && !strings.HasPrefix(rel, "..") {
+		spec.files = append(spec.files, modulePath+"/"+filepath.ToSlash(rel))
+	}
+	return spec, nil
 }
 
 // readModulePath reads the module path from go.mod in the given directory.
@@ -249,7 +304,7 @@ func resolveShortFuncName(modulePath, shortName string) string {
 			}
 			if strings.Contains(string(content), "func (s *Service) "+shortName+"(") ||
 				strings.Contains(string(content), "func (s *service) "+shortName+"(") {
-				return modulePath + "/handlers/" + entry.Name() + ".(*Service)." + shortName
+				return modulePath + "/internal/handlers/" + entry.Name() + ".(*Service)." + shortName
 			}
 		}
 	}

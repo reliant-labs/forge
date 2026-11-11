@@ -100,9 +100,14 @@ type Input struct {
 	// HasDatabase adds the database panels: true once the project has a
 	// migration, since the panels read spans the ORM's query hook emits.
 	HasDatabase bool
-	// Funnels are the declared product funnels. Each becomes one panel on the
-	// frontend dashboard, so they only matter when Frontends is non-empty.
+	// Funnels are the declared product funnels. A session or user funnel
+	// becomes one panel on the frontend dashboard, so it only matters when
+	// Frontends is non-empty; a visitor or person funnel (IsProductFunnel)
+	// belongs to the built-in Product dashboard.
 	Funnels []FrontendFunnel
+	// Analytics is the project's declared product analytics (goals, the
+	// activation event, channel rules); nil when no frontend declares any.
+	Analytics *ProductAnalytics
 	// Deployed scopes the overview, together with Processes' own identities,
 	// when the per-process inventory is not being built: forge generate knows
 	// every environment's deployed service.names and workloads, but per-process
@@ -196,6 +201,7 @@ type Fragments struct {
 	FrontendServices []string `json:",omitempty"`
 	HasDatabase      bool
 	Funnels          []FrontendFunnel
+	Analytics        *ProductAnalytics `json:",omitempty"`
 }
 
 // ProcessPart holds one deployed executable/role's dashboard and saved searches.
@@ -271,7 +277,7 @@ func (p Process) runsWork() bool { return p.Kind == KindWorkerProc || p.Kind == 
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
-	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels}
+	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics}
 	project := ProjectPart{
 		Input:    &fragments,
 		Version:  PartsVersion,
@@ -431,13 +437,9 @@ func buildOverview(in Input) Dashboard {
 			nodePanels = append(nodePanels, p.ID)
 		}
 	}
-	for _, p := range BuildReleases(in.Project).Panels {
-		if p.ID == "request-rate-by-version" {
-			p.Where = scoped(identityScope(FieldService, services), p.Where...)
-			d.Panels = append(d.Panels, p)
-		}
-	}
-	d.Panels = append(d.Panels,
+	byVersion := requestsByVersionPanel()
+	byVersion.Where = scoped(identityScope(FieldService, services), byVersion.Where...)
+	d.Panels = append(d.Panels, byVersion,
 		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: scoped(identityScope(FieldService, services), errorLogs), Columns: logColumns, Width: 24, Height: 9},
 	)
 	splitServiceFilter(&d, nodePanels, services, workloads)
@@ -657,6 +659,11 @@ func buildFrontend(in Input) Dashboard {
 		{ID: "browser-console", Title: "Browser console and error events", Description: "The HyperDX SDK ships console output and uncaught errors as spans (console.*, onerror, unhandledrejection), not as OTLP logs.", Kind: KindSearch, Signal: Traces, Where: scoped(browserSpans, Predicate{Field: "span.name", Op: OpIn, Values: []string{"console.error", "console.warn", "onerror", "unhandledrejection"}}), Columns: []string{"timestamp", FieldService, "span.name", "span.attr.error.message"}, Width: 24, Height: 9},
 	}
 	for _, f := range in.Funnels {
+		if IsProductFunnel(f.By) {
+			// Counted over product_events, not browser spans: the Product
+			// dashboard's to draw.
+			continue
+		}
 		fn := f.Funnel
 		if fn.Window == "" {
 			fn.Window = DefaultFunnelWindow

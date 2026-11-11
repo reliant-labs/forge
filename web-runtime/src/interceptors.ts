@@ -3,8 +3,8 @@
 // This module is also the package's SECOND ENTRY POINT, published as
 // "@reliantlabs/forge-web-runtime/interceptors". It is the DOM-free, React-free
 // half of the runtime: the transport layer and nothing else. Importing it
-// pulls in exactly ./errors, ./trace, ./telemetry-gate and
-// ./interaction-context — no React, no @types/react, no
+// pulls in exactly ./errors, ./trace, ./telemetry-gate,
+// ./interaction-context and ./rpc-failure-log — no React, no @types/react, no
 // window/document. That matters for React Native, where Expo pins React 18
 // while the package's components are typed against React 19: a mobile app
 // importing the full barrel would typecheck the components it never renders
@@ -34,10 +34,12 @@
 // stack two retry layers AND retry non-idempotent mutations — the bug this
 // split fixed.
 import { MethodOptions_IdempotencyLevel } from "@bufbuild/protobuf/wkt";
+import { Code } from "@connectrpc/connect";
 import { context } from "@opentelemetry/api";
 
 import { ConnectClientError, normalizeError } from "./errors.js";
 import { stampCallEntry } from "./interaction-context.js";
+import { logRpcFailure } from "./rpc-failure-log.js";
 import { telemetryReady } from "./telemetry-gate.js";
 import { injectTraceContext, traceIdFrom } from "./trace.js";
 
@@ -154,10 +156,34 @@ export function errorNormalizeInterceptor(
         err,
         traceIdFrom(req.header.get("traceparent")),
       );
+      // Into the dev log, when one is installed (rpc-failure-log.ts). A
+      // cancelled call — navigation, unmount, a superseded query — broke
+      // nothing, and stays out of it as it stays out of telemetry's errors.
+      if (normalized.code !== Code.Canceled) {
+        logRpcFailure({
+          procedure: procedureOf(req),
+          codeName: normalized.codeName,
+          reason: normalized.reason,
+          message: normalized.message,
+          traceId: normalized.traceId,
+        });
+      }
       cfg.onError?.(normalized);
       throw normalized;
     }
   };
+}
+
+/** "/pkg.v1.Service/Method": the procedure as the server logs it. */
+function procedureOf(req: UnaryRequest | StreamRequest): string {
+  const service = (req as Partial<UnaryRequest>).service?.typeName;
+  const method = (req as Partial<UnaryRequest>).method?.name;
+  if (service && method) return `/${service}/${method}`;
+  try {
+    return new URL(req.url).pathname;
+  } catch {
+    return req.url || "unknown";
+  }
 }
 
 /**
@@ -247,6 +273,13 @@ export {
   normalizeError,
   userMessage,
 } from "./errors.js";
+
+export {
+  formatRpcFailure,
+  setRpcFailureSink,
+  type RpcFailure,
+  type RpcFailureSink,
+} from "./rpc-failure-log.js";
 
 export {
   freshTraceparent,

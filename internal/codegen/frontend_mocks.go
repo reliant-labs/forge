@@ -4,7 +4,6 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/jinzhu/inflection"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -424,7 +424,7 @@ type SeedProjection struct {
 // seeded timestamp that followed the caller's clock rewrote every fixture at
 // midnight UTC. See newSeedProjection.
 func BuildSeedProjection(projectDir string, cfg seedplan.Config) (*SeedProjection, error) {
-	migDir := filepath.Join(projectDir, "db", "migrations")
+	migDir := config.MigrationsPathIn(projectDir)
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		var fetchErr *pgtest.FetchError
@@ -499,7 +499,7 @@ func (p *SeedProjection) Value(table, column string, row int) (string, bool) {
 func SeedFingerprint(projectDir string, cfg seedplan.Config) (files, withConfig seedplan.Fingerprint) {
 	// An unreadable input degrades to the empty fingerprint, which every
 	// consumer treats as "cannot verify" rather than "verified fresh".
-	migDir := filepath.Join(projectDir, "db", "migrations")
+	migDir := config.MigrationsPathIn(projectDir)
 	files, _ = seedplan.FingerprintInputs(migDir)
 	withConfig, _ = seedplan.FingerprintWithConfig(migDir, cfg)
 	return files, withConfig

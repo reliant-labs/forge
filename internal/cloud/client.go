@@ -47,6 +47,10 @@ type Client struct {
 	// written to the credentials file.
 	elevated elevationCache
 
+	// scopes maps a procedure to the scope it is called with an elevated
+	// token for: declared by the caller, or learned from a refusal.
+	scopes scopeTable
+
 	// credMu guards Credential, which a refresh from the credential helper
 	// replaces.
 	credMu sync.Mutex
@@ -72,7 +76,21 @@ func NewClient(ep Endpoint, cred Credential) *Client {
 // the domain reason and the server's error details as DATA. Callers branch
 // on those fields — never on the message text, which is display copy the
 // server is free to improve.
+//
+// A procedure with a declared scope (DeclareScope), or one this client already
+// saw refused for want of one, is called with a credential elevated for that
+// scope from the start. Any other is called with the base credential, and a
+// refusal naming a missing scope is elevated for and retried once (elevate.go).
 func (c *Client) Call(ctx context.Context, procedure string, req, out any) error {
+	if scope, ok := c.upfrontScope(procedure); ok {
+		return c.callDeclared(ctx, procedure, req, out, scope)
+	}
+	return c.elevateAndRetry(ctx, procedure, req, out, c.callBase(ctx, procedure, req, out))
+}
+
+// callBase calls procedure with the base credential, refreshing it once when
+// the control plane refuses it outright.
+func (c *Client) callBase(ctx context.Context, procedure string, req, out any) error {
 	err := c.call(ctx, procedure, req, out, c.credential().Token)
 	if rejectedAsUnauthenticated(err) {
 		// The credential itself was refused (expired, revoked, ...), before any
@@ -82,15 +100,13 @@ func (c *Client) Call(ctx context.Context, procedure string, req, out any) error
 			err = c.call(ctx, procedure, req, out, fresh.Token)
 		}
 	}
-	scope, ok := c.elevationScope(err)
-	if !ok {
-		return err
-	}
-	token, elevErr := c.elevatedToken(ctx, scope)
-	if elevErr != nil {
-		return c.loginLacksScope(annotateElevation(err, scope, elevErr), scope)
-	}
-	err = c.call(ctx, procedure, req, out, token)
+	return err
+}
+
+// callElevated calls procedure with token, an elevated token for scope, and
+// trades for a new one once when the control plane refuses it outright.
+func (c *Client) callElevated(ctx context.Context, procedure string, req, out any, scope, token string) error {
+	err := c.call(ctx, procedure, req, out, token)
 	if rejectedAsUnauthenticated(err) {
 		// The elevated token we held was refused (revoked, or expired by a
 		// skewed clock). Trade for a new one, once.

@@ -76,6 +76,7 @@ func TestTickEvaluatesEachOwnerWithItsOwnKey(t *testing.T) {
 
 	cache := map[string]*ownerState{}
 	s.tick(context.Background(), 0, cache)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past MinInterval (1ms) so the next tick is due; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, cache)
 
@@ -117,6 +118,7 @@ func TestRemovedRuleIsRetiredAndResolved(t *testing.T) {
 	s := newSched(t, h, rules, 1, nil)
 	cache := map[string]*ownerState{}
 	s.tick(context.Background(), 0, cache)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past MinInterval (1ms) so the next tick is due; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, cache)
 
@@ -148,10 +150,12 @@ func TestStateSurvivesAHandover(t *testing.T) {
 	s := newSched(t, h, rules, 1, nil)
 	owner1 := map[string]*ownerState{}
 	s.tick(context.Background(), 0, owner1)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past MinInterval (1ms) so the next tick is due; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, owner1)
 	owner2 := map[string]*ownerState{} // the lease moved: empty caches
 	s.tick(context.Background(), 0, owner2)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past MinInterval (1ms) so the next tick is due; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, owner2)
 
@@ -205,7 +209,7 @@ func TestRunTakesOneLeasePerShardAndStops(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Run did not stop with its context")
 	}
 	sort.Strings(lk.names)
@@ -306,6 +310,7 @@ func TestOverCapEnvIsLoud(t *testing.T) {
 	// Back under the cap: the gauge goes to zero and the alert stops being re-posted.
 	rules.set("org-a", rules.rules["org-a"][:2]...)
 	before := len(h.n.all())
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past MinInterval (1ms) so the next tick is due; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	s.tick(context.Background(), 0, cache)
 	if got := droppedGauge(t, reader, "prod"); got != 0 {

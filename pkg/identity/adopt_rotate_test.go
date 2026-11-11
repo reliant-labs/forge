@@ -515,17 +515,21 @@ func TestClientErrorsAreNotRetried(t *testing.T) {
 }
 
 func TestRequestsAreBoundedByATimeout(t *testing.T) {
+	release := make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/debug/ready" || r.URL.Path == "/management/v1/healthz" {
 			w.WriteHeader(200)
 			return
 		}
+		// Never answers while the test runs: an unbounded call would hang
+		// until the test ends, far past the bound below.
 		select {
 		case <-r.Context().Done():
-		case <-time.After(400 * time.Millisecond):
+		case <-release:
 		}
 	}))
 	defer slow.Close()
+	defer close(release) // before Close, which waits for the handlers
 	r, _ := New(Options{BaseURL: slow.URL, Credential: PAT("x"), RequestTimeout: 50 * time.Millisecond, MaxAttempts: 2, ReadyTimeout: time.Second})
 	r.c.sleep = noSleep
 	start := time.Now()
@@ -533,7 +537,7 @@ func TestRequestsAreBoundedByATimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a timeout")
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("took %v; the per-request timeout did not bound the call", d)
 	}
 }

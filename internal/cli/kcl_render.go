@@ -42,6 +42,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
@@ -1070,6 +1071,22 @@ type DockerBuild struct {
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
 	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
+
+	// ContextSource and DockerfileSource are the GitSource members of the
+	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
+	// code, or a Dockerfile, that lives in ANOTHER repository. At most one
+	// of Context / ContextSource is set, and likewise for the Dockerfile.
+	// DockerBuild's JSON methods (build_docker_source.go) carry the union,
+	// so every reader of the string fields keeps working unchanged.
+	ContextSource    *config.GitSource `json:"-"`
+	DockerfileSource *config.GitSource `json:"-"`
+	// Invocation-local, set by resolveDockerBuildSources; never serialized:
+	// ContextDir is the directory ContextSource resolved to, DockerfilePath
+	// the Dockerfile a pin resolved to, and Built the checkout the context
+	// was resolved to — the build state and release ledger record it.
+	ContextDir     string              `json:"-"`
+	DockerfilePath string              `json:"-"`
+	Built          *buildtarget.Source `json:"-"`
 }
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell
@@ -1371,6 +1388,42 @@ type FrontendTelemetryEntity struct {
 		Ignore []string `json:"ignore,omitempty"`
 	} `json:"errors"`
 	Funnels []FunnelEntity `json:"funnels,omitempty"`
+	// Analytics is the frontend's declared product analytics
+	// (BrowserTelemetry.analytics); nil when it declares none.
+	Analytics *AnalyticsEntity `json:"analytics,omitempty"`
+}
+
+// AnalyticsEntity mirrors kcl/schema.k Analytics. Mode and Dashboards are
+// always set (the schema defaults them); Activation and ActivationWindow are
+// empty when the frontend left them to forge's defaults.
+type AnalyticsEntity struct {
+	// Mode is "off" | "aggregate" | "identified" (the default) | "full"; a
+	// non-default one reaches the browser as the runtime config's
+	// ANALYTICS_MODE.
+	Mode             string                   `json:"mode"`
+	Goals            []AnalyticsGoalEntity    `json:"goals,omitempty"`
+	Activation       string                   `json:"activation,omitempty"`
+	ActivationWindow string                   `json:"activation_window,omitempty"`
+	Channels         []AnalyticsChannelEntity `json:"channels,omitempty"`
+	Dashboards       bool                     `json:"dashboards"`
+}
+
+// AnalyticsGoalEntity mirrors kcl/schema.k Goal: exactly one of Event and
+// Route is set.
+type AnalyticsGoalEntity struct {
+	ID    string `json:"id"`
+	Title string `json:"title,omitempty"`
+	Event string `json:"event,omitempty"`
+	Route string `json:"route,omitempty"`
+}
+
+// AnalyticsChannelEntity mirrors kcl/schema.k Channel, conditions already
+// lowercased; at least one of Host, Source and Medium is set.
+type AnalyticsChannelEntity struct {
+	Host    string `json:"host,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Medium  string `json:"medium,omitempty"`
+	Channel string `json:"channel"`
 }
 
 // FunnelEntity mirrors kcl/schema.k Funnel, window and by already defaulted.

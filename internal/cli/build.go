@@ -482,6 +482,10 @@ type buildResult struct {
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// source is the external checkout a DockerBuild's GitSource context
+	// resolved to; persisted into the build state, and from there into the
+	// release ledger's built_from. nil for a build of this project's tree.
+	source *buildtarget.Source
 	// repository is the full destination this result was tagged and pushed to
 	// (`ghcr.io/acme/internal-console`) — the workload's declared reference
 	// minus its tag. It is what the build state and the release ledger RECORD,
@@ -1681,6 +1685,7 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
 			Platforms: r.platforms,
+			Source:    r.source,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -2183,6 +2188,10 @@ type goBuildTarget struct {
 	// function of the source and not of where it was compiled; the scaffolded
 	// Dockerfile builds with -trimpath for the same reason.
 	trimpath bool
+	// debug builds the target for a debugger (-gcflags=all=-N -l, symbols
+	// kept, no -trimpath) whatever the run's --debug: a host workload run
+	// under the delve runner needs DWARF and source paths dlv can resolve.
+	debug bool
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2200,6 +2209,48 @@ func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.Proje
 	return []goBuildTarget{projectGoBuildTarget(cfg)}
 }
 
+// goBuildArgs is the `go build` argv (after "go") for t. A debug build keeps
+// symbols and source paths and disables optimization; every other build is
+// stripped and version-stamped.
+func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo versionInfo) []string {
+	args := []string{"build", "-o", binaryPath}
+	if debug {
+		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
+		// workspace image makes it the toolchain default): a debugger sets
+		// breakpoints by absolute source path, and a trimmed binary records
+		// only module-relative ones, so every breakpoint would miss.
+		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
+	} else {
+		// Version stamp first; the KCL ldflags follow so a project that
+		// wants to override main.version (e.g. -X main.version=<tag>) wins
+		// on the same -X key. The stamp covers main AND the scaffold's
+		// cobra-tree package (versionStampPackages), so a server binary's
+		// `version` and its error-report release are the build's, not "dev".
+		ldflags := "-s -w " + versionStampLdflags(buildModulePath(), t.cmd, versionInfo)
+		if len(t.ldflags) > 0 {
+			ldflags += " " + strings.Join(t.ldflags, " ")
+		}
+		args = append(args, "-ldflags", ldflags)
+	}
+	if t.trimpath && !debug {
+		args = append(args, "-trimpath")
+	}
+	if len(t.tags) > 0 {
+		args = append(args, "-tags", strings.Join(t.tags, ","))
+	}
+	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
+	args = append(args, t.flags...)
+	args = append(args, t.cmd)
+	return args
+}
+
+// runsUnderDelve reports whether w is a host workload launched by the
+// delve runner, whose binary must therefore be a debug build: the default
+// build strips symbols (-s -w) and dlv could resolve no breakpoint in it.
+func runsUnderDelve(w WorkloadEntity) bool {
+	return w.OnRuntime(RuntimeHost) && w.Runtime.Host != nil && strings.TrimSpace(w.Runtime.Host.Runner) == "delve"
+}
+
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the env's workloads — of every runtime, since a host go-run still needs
 // its module to build. Only a declared GoBuild contributes (docker / shell
@@ -2212,7 +2263,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 	if entities == nil {
 		return nil
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
@@ -2224,11 +2275,15 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			outName = w.Name
 		}
 		key := g.Cmd + "\x00" + outName
-		if seen[key] {
+		debug := runsUnderDelve(w)
+		if i, ok := seen[key]; ok {
+			// A binary shared with a delve-run workload is built for it.
+			out[i].debug = out[i].debug || debug
 			continue
 		}
-		seen[key] = true
+		seen[key] = len(out)
 		out = append(out, goBuildTarget{
+			debug:      debug,
 			cmd:        g.Cmd,
 			outputName: outName,
 			goos:       g.GOOS,
@@ -2256,6 +2311,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 // ldflags for delve gcflags.
 func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug bool, crossArch string, versionInfo versionInfo, memCaps buildMemoryCaps) buildResult {
 	start := time.Now()
+	debug = debug || t.debug
 	// An explicit GoBuild.goarch wins over the build-context arch.
 	arch := crossArch
 	if t.goarch != "" {
@@ -2285,34 +2341,7 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
-	args := []string{"build", "-o", binaryPath}
-	if debug {
-		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
-		// workspace image makes it the toolchain default): a debugger sets
-		// breakpoints by absolute source path, and a trimmed binary records
-		// only module-relative ones, so every breakpoint would miss.
-		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
-	} else {
-		// Version stamp first; the KCL ldflags follow so a project that
-		// wants to override main.version (e.g. -X main.version=<tag>) wins
-		// on the same -X key. The stamp covers main AND the scaffold's
-		// cobra-tree package (versionStampPackages), so a server binary's
-		// `version` and its error-report release are the build's, not "dev".
-		ldflags := "-s -w " + versionStampLdflags(buildModulePath(), t.cmd, versionInfo)
-		if len(t.ldflags) > 0 {
-			ldflags += " " + strings.Join(t.ldflags, " ")
-		}
-		args = append(args, "-ldflags", ldflags)
-	}
-	if t.trimpath && !debug {
-		args = append(args, "-trimpath")
-	}
-	if len(t.tags) > 0 {
-		args = append(args, "-tags", strings.Join(t.tags, ","))
-	}
-	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
-	args = append(args, t.flags...)
-	args = append(args, t.cmd)
+	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
 		return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
@@ -3381,6 +3410,9 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 // ./`) needs this; one that COPYs repo-root paths wants the default. Keeping
 // the default "." is what makes every pre-existing DockerBuild byte-identical.
 func serviceDockerContext(d *DockerBuild) string {
+	if d != nil && d.ContextDir != "" {
+		return d.ContextDir // a GitSource context, resolved (build_docker_source.go)
+	}
 	if d != nil && strings.TrimSpace(d.Context) != "" {
 		return strings.TrimSpace(d.Context)
 	}
@@ -3396,6 +3428,15 @@ func serviceDockerContext(d *DockerBuild) string {
 // The DOCKERFILE is deliberately not checked against the context — docker
 // allows `-f` outside the context, and forge does not narrow that.
 func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error {
+	if d != nil && d.ContextSource != nil {
+		// A pinned context is another repository's tree, so the
+		// inside-the-project rule does not apply; resolution already proved
+		// it is a directory. Unresolved means a caller skipped the pass.
+		if d.ContextDir == "" {
+			return fmt.Errorf("service %q declares build context %s, which was not resolved", svcName, toGitSource(d.ContextSource))
+		}
+		return nil
+	}
 	if d == nil || strings.TrimSpace(d.Context) == "" {
 		return nil
 	}
@@ -3481,12 +3522,19 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 // overrides the env-wide arch.
 func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
-	dockerfile := "Dockerfile"
-	if d != nil && d.Dockerfile != "" {
-		dockerfile = d.Dockerfile
+	dockerfile := serviceDockerfile(d)
+	if d != nil && d.DockerfileSource != nil && d.DockerfilePath == "" {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+			err: fmt.Errorf("service %q declares Dockerfile %s, which was not resolved", svcName, toGitSource(d.DockerfileSource))}
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+		// A pinned build never skips: its Dockerfile was named in another
+		// repository, so a missing one is an error, not an optional image.
+		if d != nil && d.HasGitSource() {
+			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+				err: fmt.Errorf("service %q: Dockerfile %s does not exist in its pinned source", svcName, dockerfile)}
+		}
 		// No image was built, so the result carries no image: nothing is
 		// recorded for a build that did not happen.
 		fmt.Printf("[build] %s: skipping docker (no %s)\n", svcName, dockerfile)
@@ -3500,7 +3548,14 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
-	dockerArgs = appendSourceDateEpoch(dockerArgs, resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile))
+	epoch := ""
+	if d != nil && d.ContextDir != "" {
+		// Another repository's checkout: its own history dates it.
+		epoch = resolveSourceDateEpoch(ctx, d.ContextDir)
+	} else {
+		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
+	}
+	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
@@ -3542,5 +3597,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		// what it records is the repository. Keying it by the repository would
 		// put slashes in the filename.
 		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
+		// The other repository's checkout, when the context is a GitSource:
+		// the build state and the release ledger (built_from) record it.
+		source: d.sourceForRecord(),
 	}
 }

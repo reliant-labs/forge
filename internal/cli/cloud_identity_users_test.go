@@ -243,10 +243,10 @@ func TestCloudIdentityUserVerbParsing(t *testing.T) {
 	}
 }
 
-// A Reliant session's credential carries neither identity scope. The control
-// plane's refusal names the one a verb needs, and forge trades the session for
-// exactly that scope and retries: identity:read for a read, identity:manage
-// for a change, each requested only when a call proves it is needed.
+// A Reliant session's credential carries neither identity scope. Each verb
+// declares the one it needs, and forge trades the session for exactly that
+// scope before calling: identity:read for a read, identity:manage for a
+// change, and no call is refused first.
 func TestCloudIdentityElevatesSessionCredentialPerVerb(t *testing.T) {
 	var (
 		mu        sync.Mutex
@@ -316,8 +316,11 @@ func TestCloudIdentityElevatesSessionCredentialPerVerb(t *testing.T) {
 	if want := []string{"identity:read", "identity:manage"}; !reflect.DeepEqual(exchanges, want) {
 		t.Errorf("exchanged for %v, want %v: a read must not ask for manage, nor a change for more than manage", exchanges, want)
 	}
-	if got := bearers[procIdentityLockUser]; !reflect.DeepEqual(got, []string{"reliant-session", "elevated-identity:manage"}) {
-		t.Errorf("lock presented %v: the session first, then the elevated token once", got)
+	if got := bearers[procIdentityLockUser]; !reflect.DeepEqual(got, []string{"elevated-identity:manage"}) {
+		t.Errorf("lock presented %v: the elevated token alone, never the session first", got)
+	}
+	if got := bearers[procIdentityStatus]; !reflect.DeepEqual(got, []string{"elevated-identity:read"}) {
+		t.Errorf("status presented %v: the elevated token alone, never the session first", got)
 	}
 }
 

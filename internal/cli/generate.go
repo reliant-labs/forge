@@ -693,6 +693,9 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		}
 		checksumsSaved = true
 	}
+	// scaffold.exclude: put back whatever a writer outside the chokepoints
+	// changed under an excluded glob before the summary counts the tree.
+	excludeUnrestored := settleActiveExcludeGuard()
 	// Read the write ledger BEFORE dropping the journal — it is the record
 	// of what forge's writers did — and check it against the pre-run
 	// fingerprint, which sees every write, journaled or not.
@@ -704,6 +707,14 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	fmt.Println()
 	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
 	printLeftAlone(os.Stdout, checksums.LeftAloneThisRun())
+	printExcludedSkips(os.Stdout, checksums.TakeExcludedSkips(), generateVerbose)
+	printUnrestoredExcluded(os.Stdout, excludeUnrestored)
+	printKeptExcluded(os.Stdout, takeActiveExcludeKept())
+	// Orphans of a feature pinned off: only a full run's writes say which
+	// files no step produces any more (generate_orphans.go).
+	if flags.Steps == "" && !flags.TemplatesOnly && len(ctx.SoftFailures) == 0 {
+		recordOrphans(os.Stdout, ctx)
+	}
 	// Last, after the journal is committed and the outcome printed: a run
 	// that changed nothing has proven this tree is generate's own output —
 	// unless a step failed soft, in which case its outputs were not
@@ -743,9 +754,18 @@ func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep
 		stepStart := time.Now()
 		// A step that outlives the 15s heartbeat interval says which one it is, on
 		// stderr, so a caller with a no-output cut-off sees the run is alive.
-		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
-		err = step.Run(ctx)
-		stopBeat()
+		// On a terminal that is one status line redrawn in place, so the
+		// step's own lines are held until it ends and the line is erased —
+		// printed meanwhile, they would be glued onto it.
+		err = func() error {
+			// The beat takes the terminal before the hold, and stops
+			// (erasing its line) before the held lines are printed.
+			stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
+			release := cliutil.HoldOutputOnTerminal()
+			defer release()
+			defer stopBeat()
+			return step.Run(ctx)
+		}()
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}

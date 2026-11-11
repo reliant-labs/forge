@@ -1605,6 +1605,9 @@ func stepEnsureGenModule(ctx *pipelineContext) error {
 // protoc-gen-connect-go). Failure aborts: every downstream step
 // depends on the *.pb.go shapes.
 func stepBufGenerateGo(ctx *pipelineContext) error {
+	if err := refuseExcludedGoStubs(ctx.ProjectDir); err != nil {
+		return err
+	}
 	if err := runBufGenerateGo(ctx.ProjectDir); err != nil {
 		return fmt.Errorf("buf generate (Go) failed: %w", err)
 	}
@@ -2649,6 +2652,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 			return err
 		}
 		in.Funnels = funnels
+		if in.Analytics, err = declaredAnalytics(ctx.renderedFrontends()); err != nil {
+			return err
+		}
 		// The frontends the environments serve, when any declares one: a
 		// frontends/ directory that is only run as a container (an operator
 		// console) is not a served frontend and reports no browser telemetry.

@@ -1534,6 +1534,7 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         strategy = w.strategy
         securityContext = w.securityContext
         terminationGracePeriodSeconds = w.terminationGracePeriodSeconds
+        preStopSeconds = w.preStopSeconds
         activeDeadlineSeconds = w.activeDeadlineSeconds
         successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
         failedJobsHistoryLimit = w.failedJobsHistoryLimit
@@ -1715,6 +1716,7 @@ _LOCAL_REFUSED: {str:str} = {
 }
 
 _COMPOSE_REFUSED: {str:str} = _LOCAL_REFUSED | {
+    "preStopSeconds": "the compose file owns how its service stops; set stop_grace_period there"
     "build": "compose builds its own image from the compose file; drop `build`, or bind a runtime forge builds for"
     "ports": "the compose file owns the published ports; declare them there"
     "probes": "the compose file owns the healthcheck; declare it there"
@@ -2715,14 +2717,15 @@ _frontend_violations = lambda f: Frontend -> [str] {
 }
 
 # A frontend's runtime_config as declared, with the browser opt-out applied:
-# when browser telemetry is off the SDK's ingest path is forced to "off", and
-# any OTEL_REPLAY to "false", over anything the author set, because the
-# opt-out is the author's explicit word.
+# when browser telemetry is off the SDK's ingest path is forced to "off", any
+# OTEL_REPLAY to "false" and any ANALYTICS_MODE to "off", over anything the
+# author set, because the opt-out is the author's explicit word.
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
     _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
-    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {})) \
+    (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {}) \
+        | ({ANALYTICS_MODE = "off"} if "ANALYTICS_MODE" in _merged else {})) \
         if _obs_browser_off(bundle) else _merged
 }
 
@@ -2800,6 +2803,9 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        it is this frontend's choice in this env, which is
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
+#                        default "identified" and browser telemetry is not
+#                        off; unset means identified
 _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     _t = f.telemetry
     assert not _frontend_replay_on(f) or not _frontend_hosted(f) or bundle.observability, \
@@ -2807,7 +2813,8 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
     ({OTEL_ENDPOINT = _HOSTED_OTEL_PATH} if _frontend_hosted(f) and not _otel_endpoint_declared(f) and not _obs_browser_off(bundle) else {}) \
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
-        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {})
+        | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 
 # The framework's build/dev variable for the browser ingest path.
@@ -2969,10 +2976,12 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
-        "dockerfile": b.dockerfile
-        # The MAIN build context (a project-root-relative dir). None is the
-        # project root, which is how every build behaved before this existed.
-        "context": b.context if b.context else None
+        # A path string, or a GitSource pin projected in its stable dict form.
+        "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
+        # The MAIN build context (a project-root-relative dir, or a GitSource
+        # pin). None is the project root, which is how every build behaved
+        # before this existed.
+        "context": _render_git_source_member(b.context) if typeof(b.context) == "GitSource" else (b.context if b.context else None)
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
@@ -3087,6 +3096,34 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
             "window": f.window
             "by": f.by
         } for f in t.funnels]
+    } | ({"analytics": _render_analytics(t.analytics)} if t.analytics else {})
+}
+
+# Render an Analytics to its stable dict form. `activation` and
+# `activation_window` render null when unset, so forge generate, which merges
+# every frontend's declaration into the project's dashboards, can tell a
+# declaration from a default (the defaults are the dashboards'). An unset
+# `analytics` is omitted from the telemetry (above), so a frontend that
+# declares none renders exactly as it did before the field. Channel
+# conditions are lowercased: they are matched case-insensitively.
+_render_analytics = lambda a: Analytics -> any {
+    {
+        "mode": a.mode
+        "goals": [{
+            "id": g.id
+            "title": g.title if g.title else None
+            "event": g.event if g.event else None
+            "route": g.route if g.route else None
+        } for g in a.goals]
+        "activation": a.activation if a.activation else None
+        "activation_window": a.activation_window if a.activation_window else None
+        "channels": [{
+            "host": c.host.lower() if c.host else None
+            "source": c.source.lower() if c.source else None
+            "medium": c.medium.lower() if c.medium else None
+            "channel": c.channel
+        } for c in a.channels]
+        "dashboards": a.dashboards
     }
 }
 
@@ -3101,6 +3138,17 @@ _render_git_source = lambda s: GitSource -> any {
     }
 }
 
+
+# _render_git_source for the GitSource member of a `str | GitSource` union
+# (DockerBuild.context / dockerfile): untyped, because KCL types the union
+# value as the union even after the typeof() guard selects the member.
+_render_git_source_member = lambda s -> any {
+    {
+        "repo": s.repo
+        "ref": s.ref
+        "subdir": s.subdir if s.subdir else None
+    }
+}
 
 _render_gateway_listener = lambda l: GatewayListener -> any {
     {

@@ -114,8 +114,10 @@ type ProjectConfig struct {
 	// every later `forge generate` has to guess. It selects the harness
 	// pointer files (CLAUDE.md, .cursorrules, ...) written beside AGENTS.md,
 	// which every harness gets. Forge never writes skill bodies for any
-	// harness. Empty means reliant.
+	// harness. Empty means reliant; `none` writes no agent file at all.
 	Harness string `yaml:"harness,omitempty"`
+
+	Scaffold ScaffoldConfig `yaml:"scaffold,omitempty"` // paths forge never writes; see scaffold.go
 	// NOTE: there is intentionally NO project-level `hot_reload:` field.
 	// The single hot-reload switch is `features.hot_reload`, which the dev
 	// loop and the air-config codegen actually read; a second top-level key
@@ -751,16 +753,20 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 
 // DatabaseConfig holds database-related settings.
 //
-// Only migration_safety is forge.yaml surface. The driver and migrations
-// directory are DERIVED: a service project whose tree has db/migrations uses
-// postgres and that directory, and one without it has no database (driver
-// "none"). The dev seed has no config at all — rows, auto-seed and table
-// scoping are fixed defaults (see internal/cli/db_seed.go).
+// The driver is DERIVED: a project whose tree has its migrations directory
+// (database.migrations_dir, default db/migrations) uses postgres, and one
+// without it has no database (driver "none"). The dev seed has no config at
+// all — rows, auto-seed and table scoping are fixed defaults (see
+// internal/cli/db_seed.go).
 type DatabaseConfig struct {
 	// Driver is "postgres" or "none" — derived, see DeriveDatabase.
 	Driver string `yaml:"-"`
-	// MigrationsDir is always db/migrations when there is a database.
-	MigrationsDir   string                `yaml:"-"`
+	// MigrationsDir is the project-relative directory that holds the
+	// migrations: `database.migrations_dir`, absent meaning
+	// DefaultMigrationsDir. Read it through MigrationsPath (or
+	// MigrationsDirIn when all you have is a project directory) so the
+	// default is applied in one place.
+	MigrationsDir   string                `yaml:"migrations_dir,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.
 	ORM ORMConfig `yaml:"orm,omitempty"`
@@ -902,6 +908,8 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+
+	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }
 
 // CIGateConfig is what a project adds to the checks forge owns in
@@ -1428,6 +1436,8 @@ type LintConfig struct {
 	// in the verdict, with its reason. It accepts only "could not run": a
 	// lane that ran and found problems still fails.
 	AllowSkip []LintSkipAllowance `yaml:"allow_skip,omitempty"`
+
+	Lanes map[string]string `yaml:"lanes,omitempty"` // lane → off|on; see lint_lanes.go
 }
 
 // LintSkipAllowance is one lint.allow_skip entry. Read by the lint
@@ -1636,14 +1646,17 @@ func (c ContractsConfig) InterfaceTypeSet() map[string]bool {
 // pinned off follows it off (ingress with deploy, orm with codegen); a
 // pinned feature whose requirement is off is a load error.
 //
-// The ORM is the one feature with no key: its switch is `//forge:no-orm` in
-// internal/db's doc comment, beside the code it affects, and a second
-// spelling here would be a second source of truth.
+// The ORM has two switches that say the same thing: `//forge:no-orm` in the
+// ORM package's doc comment, beside the code it affects, and `orm: false`
+// here, beside every other feature — the one a repository adopting forge
+// reaches for first. Either turns it off; `orm: true` beside the marker is a
+// contradiction, and a load error (ormPinIssues).
 //
 // A FeaturesConfig not produced by the config loader (the zero value, or one
 // hand-built in a test) resolves every feature to "enabled" except the
 // default-off ones; With overrides a single feature on such a value.
 type FeaturesConfig struct {
+	ORM           *bool `yaml:"orm,omitempty"` // or //forge:no-orm in the ORM package; see ormPinIssues
 	Codegen       *bool `yaml:"codegen,omitempty"`
 	Migrations    *bool `yaml:"migrations,omitempty"`
 	CI            *bool `yaml:"ci,omitempty"`
@@ -1666,6 +1679,8 @@ type FeaturesConfig struct {
 func (f FeaturesConfig) pinned(name FeatureName) (on, ok bool) {
 	var p *bool
 	switch name {
+	case FeatureORM:
+		p = f.ORM
 	case FeatureCodegen:
 		p = f.Codegen
 	case FeatureMigrations:
@@ -1696,11 +1711,13 @@ func (f FeaturesConfig) pinned(name FeatureName) (on, ok bool) {
 }
 
 // Pin returns a copy with name pinned on or off, as a `features:` entry in
-// forge.yaml would. ok is false for a feature with no key (orm, whose switch
-// is //forge:no-orm) or an unknown name; the copy is then unchanged.
+// forge.yaml would. ok is false for an unknown name; the copy is then
+// unchanged.
 func (f FeaturesConfig) Pin(name FeatureName, on bool) (_ FeaturesConfig, ok bool) {
 	v := on
 	switch name {
+	case FeatureORM:
+		f.ORM = &v
 	case FeatureCodegen:
 		f.Codegen = &v
 	case FeatureMigrations:

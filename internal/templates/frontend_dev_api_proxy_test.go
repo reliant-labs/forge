@@ -6,10 +6,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // The dev-loop API proxy contract: in the dev loop a web frontend's browser
@@ -61,6 +65,46 @@ func TestDevAPIProxy_NextConfig(t *testing.T) {
 			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)\s*\{\s*(?:const otel = await devOtelUpstream\(\);\s*)?return \[\s*\.\.\.\(otel \? \[\{ source: "/_otel/:path\*"[^\n]*\n\s*\.\.\.\(devApiProxy\s*\?\s*\[\{ source: ` + "`" + `\$\{devApiProxy\}/:path\*` + "`")
 			if !gated.MatchString(s) {
 				t.Errorf("next.config.ts (%s): the /_api rewrite must live in the dev-gated rewrites() beside /_otel", output)
+			}
+		})
+	}
+}
+
+// TestDevAPIProxy_NextOutlivesServerDeadline pins that the Next dev proxy is
+// never the one to end an RPC. Next's own proxy timeout is 30s, the same as
+// the server's default unary deadline (observe.DefaultUnaryDeadline), and the
+// proxy's clock starts first, so on a deadline the proxy hung up first: the
+// browser got a bare HTTP 500 ("Failed to proxy … socket hang up") instead of
+// the server's `deadline_exceeded` and its traceresponse (forge bug 6a41ed68).
+// The scaffold must set a timeout well past any server deadline, inside the
+// dev-gated block the rewrite lives in.
+func TestDevAPIProxy_NextOutlivesServerDeadline(t *testing.T) {
+	constRE := regexp.MustCompile(`(?m)^const DEV_API_PROXY_TIMEOUT_MS = ([0-9_]+);`)
+	for _, output := range []string{"static", "standalone", "server"} {
+		t.Run(output, func(t *testing.T) {
+			s := renderTelemetryTmpl(t, "nextjs/next.config.ts.tmpl", telemetryData(output))
+
+			m := constRE.FindStringSubmatch(s)
+			if m == nil {
+				t.Fatalf("next.config.ts (%s): no `const DEV_API_PROXY_TIMEOUT_MS = <ms>;` — Next's 30s default proxy timeout ties the server's 30s deadline and wins", output)
+			}
+			ms, err := strconv.ParseInt(strings.ReplaceAll(m[1], "_", ""), 10, 64)
+			if err != nil {
+				t.Fatalf("parse %q: %v", m[1], err)
+			}
+			// An rpc's `(forge.v1.method).timeout` may raise its deadline past
+			// the default, so "longer than 30s" is not enough: an hour is the
+			// floor this pins, and Node caps a timer at 2^31-1 ms.
+			if got := time.Duration(ms) * time.Millisecond; got < time.Hour || got < 2*observe.DefaultUnaryDeadline {
+				t.Errorf("next.config.ts (%s): dev proxy timeout %v must far outlive the server's deadline (default %v)", output, got, observe.DefaultUnaryDeadline)
+			}
+			if ms > 1<<31-1 {
+				t.Errorf("next.config.ts (%s): dev proxy timeout %d ms overflows Node's timer, which then fires after 1ms", output, ms)
+			}
+
+			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)[\s\S]*?\},\s*experimental: \{ proxyTimeout: DEV_API_PROXY_TIMEOUT_MS \},\s*\}\s*:\s*\{\}\)`)
+			if !gated.MatchString(s) {
+				t.Errorf("next.config.ts (%s): `experimental: { proxyTimeout: DEV_API_PROXY_TIMEOUT_MS }` must sit in the dev-gated block beside rewrites()", output)
 			}
 		})
 	}

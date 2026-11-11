@@ -112,7 +112,7 @@ func hasDatabaseDriver(c *ProjectConfig) bool {
 // accessors resolve against the effective (defaulted) shape — derivation
 // and explicit overrides are both folded in by the time we get here.
 func validateFeatureGraph(cfg *ProjectConfig) []validationIssue {
-	var out []validationIssue
+	out := ormPinIssues(cfg)
 	f := cfg.Features
 	enabled := f.EffectiveFeatures()
 

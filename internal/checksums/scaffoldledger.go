@@ -872,6 +872,9 @@ func ScaffoldOnceDecision(root, relPath string) (write bool) {
 //
 // The caller has already established the file is absent; this does not stat.
 func ScaffoldMayBeBorn(root, relPath string) bool {
+	if SkipExcluded(root, relPath) {
+		return false
+	}
 	if ScaffoldRecorded(root, relPath) {
 		return false
 	}
@@ -928,6 +931,11 @@ func RecordScaffoldWithHash(root, relPath string, content []byte) {
 // rewriting a file the user may have spent an afternoon on is the failure
 // worth avoiding.
 func ScaffoldIsPristine(root, relPath string) bool {
+	// An excluded path is the project's, however it got there: never a
+	// pristine scaffold forge may refresh.
+	if _, excluded := ExcludedBy(root, relPath); excluded {
+		return false
+	}
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
 	rel := filepath.ToSlash(relPath)

@@ -11,6 +11,8 @@ package cli
 // groups here. The registry indirection in the factory package is what keeps
 // that from being an import cycle.
 import (
+	"context"
+
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/generator"
 
@@ -81,6 +83,20 @@ func init() {
 			return out
 		},
 		LoadProjectStoreFrom: loadProjectStoreFrom,
+	})
+	factory.SetDebugAPI(factory.DebugAPI{
+		WorkloadEnv: localWorkloadChildEnv,
+		WorkloadNames: func(ctx context.Context, projectDir, env string) ([]string, error) {
+			e, err := readEnvConfigEntities(ctx, projectDir, env)
+			if err != nil {
+				return nil, err
+			}
+			names := make([]string, 0, len(e.Workloads))
+			for _, w := range e.Workloads {
+				names = append(names, w.Name)
+			}
+			return names, nil
+		},
 	})
 }
 

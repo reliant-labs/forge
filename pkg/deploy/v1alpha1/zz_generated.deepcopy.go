@@ -1131,6 +1131,11 @@ func (in *WorkloadSpec) DeepCopyInto(out *WorkloadSpec) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.PreStopSeconds != nil {
+		in, out := &in.PreStopSeconds, &out.PreStopSeconds
+		*out = new(int32)
+		**out = **in
+	}
 	if in.ActiveDeadlineSeconds != nil {
 		in, out := &in.ActiveDeadlineSeconds, &out.ActiveDeadlineSeconds
 		*out = new(int64)

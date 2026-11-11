@@ -92,7 +92,7 @@ func spawnMarked(t *testing.T, projectID, env, service string) *blockedProc {
 // the env marker — the fact every ownership decision reads.
 func waitForMarker(t *testing.T, pid int, env string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testWaitTimeout)
 	for time.Now().Before(deadline) {
 		if environ, ok := newOSProcFacts().environ(pid); ok && markerEnvName(environ) == env {
 			return

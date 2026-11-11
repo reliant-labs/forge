@@ -112,6 +112,7 @@ func TestOnlyOneReplicaLeadsAndStandbyTakesOverOnCancel(t *testing.T) {
 	eventually(t, "a to lead", a.leading.Load)
 
 	b := start(t, dsn, "sweeper", nil)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives b the chance to take a lease a holds; a correct lease passes however long this takes
 	time.Sleep(300 * time.Millisecond)
 	if b.leading.Load() {
 		t.Fatal("b led while a held the lease")
@@ -414,6 +415,7 @@ func TestManyLeasesOnOneLockerSurviveConcurrentPollingAndHeartbeats(t *testing.T
 	// The standby now polls 20 held leases every 5ms on one session, while
 	// both sessions heartbeat every 20ms.
 	run(standby, ctx, &wg, &sStarts, &sLeading)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a soak — the contention runs this long, and a dropped lease shows up as a restart; a correct lease passes however long it runs
 	time.Sleep(1500 * time.Millisecond)
 
 	if got := lLeading.Load(); got != n {

@@ -4131,11 +4131,21 @@ benefits:
     title: Agent memory file generated
     claim: >-
       `forge project memory` renders the framework guide every agent session
-      loads, kept current with the pinned forge.
+      loads, kept current with the pinned forge, and describes the project as
+      it is: an adopted app gets the forge pieces it uses and its own test
+      commands, never forge's greenfield layout.
     availability: forge
+    why: >-
+      Read off the tree and forge.yaml: a forge Go service gets the full Go
+      guide; an adopted app keeps its language and layout, with sections only
+      for what it opted into (deploy envs, monitoring, its migration tool,
+      frontends) and the gate taken from its Taskfile, package.json scripts
+      or Makefile; a static site gets the frontend guide.
     evidence:
       - command: project memory
       - path: internal/templates/project/reliant.md.tmpl
+      - path: internal/cli/memory_surface.go
+      - path: internal/cli/testdata/memory
 
   - id: harness-pointers
     category: agents

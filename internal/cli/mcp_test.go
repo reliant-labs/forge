@@ -312,8 +312,8 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 14 {
-		t.Fatalf("tools/list response = %s (err %v), want 14 tools", got[2], err)
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 15 {
+		t.Fatalf("tools/list response = %s (err %v), want 15 tools", got[2], err)
 	}
 }
 

@@ -79,7 +79,13 @@ point, for bringing forge into an existing app without a rewrite.`,
 					fmt.Sprintf("no benefit category %q", category), "",
 					"use one of: "+categoryIDs(reg))
 			}
-			root, _ := cmdutil.FindProjectRoot()
+			// A lookup that fails (an unreadable working directory) is an
+			// error, never "not a forge project": that would offer the
+			// any-repo catalog for a directory forge could not even read.
+			root, err := cmdutil.FindProjectRoot()
+			if err != nil {
+				return fmt.Errorf("finding the project root: %w", err)
+			}
 			rep := buildBenefitsReport(reg, root != "", all, category)
 			if jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())

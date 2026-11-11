@@ -3950,8 +3950,9 @@ schema Frontend:
     # funnels today. See BrowserTelemetry. Not for a `rn` frontend, which has
     # no browser SDK.
     telemetry?: BrowserTelemetry
-    # Whether a `rn` frontend on a host-run managed identity gets its OIDC
-    # client derived and its EXPO_PUBLIC_FORGE_OIDC_* env injected. True by
+    # Whether a `rn` frontend on a managed identity (hosted or host-run) gets
+    # its OIDC client derived and, in the dev loop, its
+    # EXPO_PUBLIC_FORGE_OIDC_* env injected. True by
     # default: a mobile app of an env with managed identity needs a client
     # the way a browser frontend needs its callback, so deriving it is the
     # working default. Set False for an app that signs in some other way (its
@@ -6973,9 +6974,12 @@ schema IdentityApplication:
     ORDERED list for it: the first is the one the app signs in with, and a
     claimed https URL (a universal or app link) may be added, or put first,
     beside the private-use `<scheme>:/oauthredirect` without any other change.
-    You rarely declare one: an env whose identity runs on the host IdP
-    (forge.IdentityOnHost) derives `<env>:<frontend>` for every `rn`
-    frontend, with the callbacks read from that app's app.json."""
+    You rarely declare one: an env with a managed identity (hosted or
+    forge.IdentityOnHost) derives `<env>:<frontend>` for every `rn`
+    frontend, with the callbacks read from that app's app.json. On a hosted
+    identity the control plane registers it only when it advertises the
+    `shape-identity-native-app` feature; otherwise forge leaves it out of what
+    it sends and says so."""
     name: str
     # The broker: the workload that runs the sign-in endpoint. Not for
     # kind "native".
@@ -8064,14 +8068,14 @@ schema Bundle:
             "Bundle.identity.applications name workloads that are not service workloads of this env: ${_idn_bad_apps(workloads, identity, env, project)}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"
         len(_idn_bad_native_apps(frontends, identity, env, project)) == 0, \
             "Bundle.identity.applications of kind 'native' name frontends that are not `rn` frontends of this env: ${_idn_bad_native_apps(frontends, identity, env, project)}. A native application belongs to a mobile frontend. Declared `rn` frontends: ${[f.name for f in frontends if f.type == 'rn']}"
-        # Only a host-run identity converges a native client today. Hosted
-        # registration is not built, so a declared native application on a
-        # hosted identity would be recorded as if it were converged. Lift this
-        # (and release.ShapeIdentity.validateApplication) together with the
-        # change that lands it, which also lets redirect_uris be required and
-        # http refused here again.
-        not identity or _idn_rt(identity) == "host" or len([a.name for a in _idn_native_apps(frontends, identity, env, project)]) == 0, \
-            "Bundle.identity.applications of kind 'native' (${[a.name for a in _idn_native_apps(frontends, identity, env, project)] if identity else []}): native identity applications are not yet supported on hosted identity (only on forge.IdentityOnHost, the dev loop); see `forge skill load deploy/managed-identity/mobile`"
+        # Plain http (a loopback callback) is the dev loop's: the host-run
+        # IdP accepts it, a hosted instance never does. A hosted native
+        # application's callbacks are otherwise resolved by forge at build
+        # (the frontend's app.json expo.scheme), so they may be left empty
+        # here; pkg/release.ShapeIdentity.validateApplication requires them
+        # resolved in the shape.
+        not identity or _idn_rt(identity) == "host" or len([u for a in _idn_native_apps(frontends, identity, env, project) for u in (a.redirect_uris + a.logout_uris) if regex.match(u, _NATIVE_HTTP_URI_RE)]) == 0, \
+            "Bundle.identity.applications of kind 'native' on a hosted identity: http callbacks ${[u for a in _idn_native_apps(frontends, identity, env, project) for u in (a.redirect_uris + a.logout_uris) if regex.match(u, _NATIVE_HTTP_URI_RE)] if identity else []} are accepted only by a host-run identity (forge.IdentityOnHost, the dev loop). Use an https URL (a universal or app link) or a private-use reverse-DNS scheme such as com.acme.app:/oauthredirect"
         len(_idn_bad_consumers(workloads, identity, env, project)) == 0, \
             "Bundle.identity.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(identity) if identity else []}): ${_idn_bad_consumers(workloads, identity, env, project)}"
         not identity or len(_idn_apps(workloads, identity, env, project)) > 0 or len(_idn_consumers(workloads, identity, env, project)) == 0, \

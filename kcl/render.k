@@ -967,7 +967,8 @@ _idn_apps = lambda workloads: [any], id: any, env: str, project: str -> [Identit
 }
 
 # The NATIVE applications: the declared ones, plus one `<env>:<frontend>` for
-# every `rn` frontend that has none, on an identity that runs on the host IdP.
+# every `rn` frontend that has none, on any managed identity (hosted or
+# host-run: the derivation does not look at where the instance runs).
 #
 # WHY DERIVED, NOT DECLARED. A mobile frontend that has managed identity
 # needs a client at the IdP the way a browser frontend needs its callback:
@@ -975,15 +976,16 @@ _idn_apps = lambda workloads: [any], id: any, env: str, project: str -> [Identit
 # login, a callback named by the app's own scheme), so asking the author to
 # declare it would be ceremony that can only be forgotten. Declaring one
 # stays possible for the 20% (a literal or https/universal-link callback, a
-# second app), and `Frontend.native_sign_in = False` opts one frontend out. The derived application carries NO redirect: the callbacks
-# come from the frontend's app.json (the reverse-DNS entry of expo.scheme),
-# which `forge env up` reads, so the scheme the app registers with the OS and
-# the scheme the IdP trusts are one fact.
-#
-# Only the host-run IdP converges a native client today. A hosted identity
-# gets the application only when it is declared (with explicit callbacks), so
-# nothing here changes what a hosted env renders until the control plane
-# converges the kind.
+# second app), and `Frontend.native_sign_in = False` opts one frontend out.
+# The derived application carries NO redirect here: the callbacks come from
+# the frontend's app.json (the reverse-DNS entry of expo.scheme), which KCL
+# cannot read. `forge env up` reads it for the host-run IdP; `forge env
+# shape`/`build`/`deploy` read it for a hosted one and send the control plane
+# the resolved callbacks (an app with no usable scheme is left out with a
+# notice, never sent with empty callbacks), so the scheme the app registers
+# with the OS and the scheme the IdP trusts are one fact. Whether a control
+# plane registers the application is its own capability (the
+# shape-identity-native-app bundle feature); one without it is not sent it.
 _idn_native_apps = lambda frontends: [any], id: any, env: str, project: str -> [IdentityApplication] {
     _declared = [a for a in id.applications if a.kind == "native"] if id.applications else []
     _covered = [a.frontend for a in _declared]
@@ -991,7 +993,7 @@ _idn_native_apps = lambda frontends: [any], id: any, env: str, project: str -> [
         name = "${env or project}:${f.name}"
         kind = "native"
         frontend = f.name
-    } for f in frontends if f.type == "rn" and f.native_sign_in and f.name not in _covered] if _idn_rt(id) == "host" else []
+    } for f in frontends if f.type == "rn" and f.native_sign_in and f.name not in _covered]
     _declared + _derived
 }
 

@@ -76,7 +76,10 @@
 #      enumeration `go test` itself uses. Nobody types a test name.
 #   2. The plan (longest recorded duration first, onto the least-loaded
 #      shard) assigns every listed test to exactly one shard and leaves none
-#      empty; internal/e2eshard's tests prove it for the real suite.
+#      empty; internal/e2eshard's tests prove it for the real suite. Tests
+#      that start from one shared project fixture
+#      (internal/cli/shared_project_e2e_test.go) are planned as one job, so
+#      one shard builds that fixture once instead of every shard building it.
 #   3. Each shard PRINTS the tests it owns and asserts that the number of
 #      top-level tests the run actually reported equals the number it was
 #      assigned; the ledger then asserts the union of the shards equals the

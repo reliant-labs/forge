@@ -28,7 +28,7 @@ the directory the server was started in (or `-C`).
 | `lint` (`scope`)                                              | `forge lint --quiet [--scope PATH]...`                        | caches only; never `--fix`                                                                   |
 | `generate` (`dry_run`, `check`)                               | `forge generate [--dry-run \| --check]`                       | yes: generated files                                                                         |
 | `report_bug` (`severity`, `title`, `summary`, ...)            | `forge report-bug`                                            | sends one report ([docs/report-bug.md](report-bug.md))                                       |
-| `deploy_claimable` (`env`, `name`, `no_wait`)                 | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
+| `deploy_claimable` (`env`, `name`, `no_wait`)                 | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app, or an app with its own Dockerfile, with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
 | `deploy_status` (`env`)                                       | `forge env status <env> --claimable --json`                   | no                                                                                           |
 | `explain_error` (`exit_code`, `error_reason`, `error`, `env`) | none: maps forge's exit codes and reasons to the next command | no                                                                                           |
 
@@ -53,10 +53,14 @@ and the reinstall hint instead.
 Reliant account and may never have heard of forge:
 
 1. In a directory with no `forge.yaml` that holds a Vite or Next.js app at its
-   root, it first runs `forge project new --in-place --kind site --name <dir>`,
-   which adds `forge.yaml` and `deploy/kcl/{dev,staging,prod}` and never changes
-   the app's own files. A Go module, or a directory with no app, is refused with
-   the command to run instead.
+   root, it first runs `forge project new --in-place --kind site --name <dir>`;
+   in one that holds an app in any other language with its own Dockerfile (or a
+   compose service it builds), `forge project new --in-place --kind app
+   --claimable --name <dir>`, which sizes prod to the claimable plan. Both add
+   `forge.yaml` and `deploy/kcl/` and never change the app's own files. A Go
+   module with no Dockerfile, or a directory with no app, is refused with the
+   command to run instead. An unclaimed service has no outbound internet (DNS
+   and its own Postgres only) and takes no secret values.
 2. It runs `forge env deploy <env> --claimable --json` (env `prod` by default):
    the availability check, the proof of work, `StartClaimableDeploy`, then the
    ordinary hosted publish as the anonymous account.

@@ -150,13 +150,17 @@ _Enforced · Forge, on any infrastructure_
 
 ### Adopt an existing app
 
-An app that already exists, in any language, keeps its code: your agent declares its Dockerfile in `forge.yaml` and `deploy/kcl/` from the `adopt` skill's templates, then works in tiers you can stop after (ship it, see it with OpenTelemetry, harden it with gated promotion and CI, and move pieces onto forge's Go stack only when that pays). `forge project new --in-place` and `forge project migrate import` bring an existing repository onto forge without a rewrite, with migration skills for service, CLI and library projects.
+An app that already exists, in any language, keeps its code: one command, `forge project new --in-place --kind app`, reads its Dockerfile(s) and compose file (ports, Postgres, migration command, credentials) and writes only `forge.yaml` and `deploy/kcl/` (dev, staging and prod envs with a managed Postgres and a pre-rollout migration job), printing what it detected and what it assumed (`--dry-run` prints the files instead). `--claimable` sizes prod for a deploy with no account. Then work in tiers you can stop after (ship it, see it with OpenTelemetry, harden it with gated promotion and CI, and move pieces onto forge's Go stack only when that pays). `forge project new --in-place` and `forge project migrate import` bring an existing Go repository onto forge without a rewrite, with migration skills for service, CLI and library projects.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
 - command `forge project new`
+- source [`internal/cli/new_app.go`](../internal/cli/new_app.go)
+- source [`internal/cli/new_app_detect.go`](../internal/cli/new_app_detect.go)
+- source [`internal/generator/app.go`](../internal/generator/app.go)
+- source [`internal/cli/new_app_test.go`](../internal/cli/new_app_test.go)
 - command `forge project migrate import`
 - skill `adopt` (`forge skill load adopt`)
 - skill `migration` (`forge skill load migration`)

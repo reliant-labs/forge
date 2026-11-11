@@ -8,9 +8,10 @@ package cli
 // tool, with three things the CLI cannot do for a tool call:
 //
 //   - ADOPT IN PLACE. A directory with no forge.yaml that holds a Vite or
-//     Next.js app at its root is adopted first (`forge project new --in-place
-//     --kind site`, which only adds files), so the agent need not know forge
-//     projects exist.
+//     Next.js app at its root, or an app in any language with its own
+//     Dockerfile, is adopted first (`forge project new --in-place --kind
+//     site`, or `--kind app --claimable`; both only add files), so the agent
+//     need not know forge projects exist.
 //   - STREAM. The deploy takes minutes. Every line it prints to stderr is a
 //     notifications/progress message on the call's progress token, and the
 //     call's context is the deploy's, so a client's cancel stops it.
@@ -139,8 +140,9 @@ func addDeployTools(srv *mcp.Server, r *mcpRunner) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "deploy_claimable",
 		Description: "Put this app live on Reliant with no account: returns a public URL and a claim link for your user. " +
-			"Works on a forge project, or on an existing Vite or Next.js app with no forge.yaml, which it adopts in place " +
-			"first (adds forge.yaml and deploy/kcl/; never changes the app's files). The deploy builds and publishes, " +
+			"Works on a forge project, or on an existing app with no forge.yaml — a Vite or Next.js site, or an app in any " +
+			"language with its own Dockerfile (and compose file) — which it adopts in place first (adds forge.yaml and " +
+			"deploy/kcl/; never changes the app's files). The deploy builds and publishes, " +
 			"streams progress, and can be cancelled. Unclaimed: live 72h, then deleted after 7 more days; one static site, " +
 			"or one service plus one Postgres database; a service has no outbound internet until claimed. Give the claim " +
 			"link to your user: opening it signs them up free and makes the deploy theirs.",
@@ -272,39 +274,48 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 	return res, nil
 }
 
-// adoptForClaimable makes dir a forge project when it is a static app with
-// none. adopted reports that it did; refusal is set when dir is neither a
-// forge project nor an app forge can adopt, and renders the result saying
-// what to run instead.
+// adoptForClaimable makes dir a forge project when it is an app forge can
+// adopt with none: a static Vite or Next.js app (`--kind site`), or an app in
+// any language with its own Dockerfile (`--kind app --claimable`, which sizes
+// prod to the claimable plan). adopted reports that it did; refusal is set
+// when dir is neither a forge project nor an app forge can adopt, and
+// renders the result saying what to run instead.
 func (r *mcpRunner) adoptForClaimable(ctx context.Context, dir, name string, progress *progressSink) (adopted bool, refusal func(*claimableDeployResult) *claimableDeployResult, err error) {
 	if _, err := os.Stat(filepath.Join(dir, config.ProjectConfigFile)); err == nil {
 		return false, nil, nil
 	}
 	name = adoptionName(dir, name)
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-		next := fmt.Sprintf("%s project new %s --service api --claimable", Name(), name)
-		return false, func(res *claimableDeployResult) *claimableDeployResult {
-			return failedResult(res, exitWrong, fmt.Sprintf("%s is a Go module with no forge.yaml. deploy_claimable adopts a static "+
-				"Vite or Next.js app in place; a backend deploys as a forge project sized for the claimable plan. "+
-				"Scaffold one in a new directory, move the code into its service, then deploy it: %s", dir, next), "", []string{next})
-		}, nil
-	}
-	if _, ok := siteFrontendAt(dir); !ok {
+	kindArgs := []string{"--kind", "site"}
+	_, site := siteFrontendAt(dir)
+	switch {
+	case site:
+	case hasAppToAdopt(dir):
+		kindArgs = []string{"--kind", "app", "--claimable"}
+	default:
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			next := fmt.Sprintf("%s project new %s --service api --claimable", Name(), name)
+			return false, func(res *claimableDeployResult) *claimableDeployResult {
+				return failedResult(res, exitWrong, fmt.Sprintf("%s is a Go module with no forge.yaml and no Dockerfile. deploy_claimable adopts a static "+
+					"Vite or Next.js app, or an app with its own Dockerfile, in place. Add a Dockerfile that builds it, or scaffold a "+
+					"forge project sized for the claimable plan in a new directory, move the code into its service, then deploy it: %s", dir, next), "", []string{next})
+			}, nil
+		}
 		next := fmt.Sprintf("%s project new %s --kind site", Name(), name)
 		return false, func(res *claimableDeployResult) *claimableDeployResult {
-			return failedResult(res, exitWrong, fmt.Sprintf("%s has no forge.yaml and no Vite or Next.js app at its root "+
-				"(a package.json that depends on vite or next), so there is nothing to adopt. Start a site, or run "+
+			return failedResult(res, exitWrong, fmt.Sprintf("%s has no forge.yaml, no Vite or Next.js app at its root "+
+				"(a package.json that depends on vite or next) and no Dockerfile, so there is nothing to adopt. Start a site, or run "+
 				"deploy_claimable in the app's own directory: %s", dir, next), "", []string{next})
 		}, nil
 	}
 	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (adds forge.yaml and deploy/kcl/; your files are kept)", dir, name))
-	out, err := r.execStreamsCombined(ctx, dir, progress.line, "project", "new", "--in-place", "--kind", "site", "--name", name)
+	args := append(append([]string{"project", "new", "--in-place"}, kindArgs...), "--name", name)
+	out, err := r.execStreamsCombined(ctx, dir, progress.line, args...)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, nil, ctx.Err()
 		}
 		msg := strings.TrimSpace(out + "\n" + err.Error())
-		next := fmt.Sprintf("%s project new --in-place --kind site --name %s", Name(), name)
+		next := fmt.Sprintf("%s %s", Name(), strings.Join(args, " "))
 		return false, func(res *claimableDeployResult) *claimableDeployResult {
 			return failedResult(res, exitCodeForError(err), "adopting the app failed: "+msg, "", []string{next})
 		}, nil
@@ -657,7 +668,7 @@ func explainForgeError(exitCode int, reason, text, env string) forgeErrorExplana
 	}
 	switch t := strings.ToLower(text); {
 	case strings.Contains(t, "forge.yaml not found"), strings.Contains(t, "no forge.yaml"):
-		return forgeErrorExplanation{"This directory is not a forge project. deploy_claimable adopts a Vite or Next.js app in place; otherwise start a site.", []string{fmt.Sprintf("%s project new --in-place --kind site", Name()), fmt.Sprintf("%s project new <name> --kind site", Name())}, "no"}
+		return forgeErrorExplanation{"This directory is not a forge project. deploy_claimable adopts a Vite or Next.js app, or an app with its own Dockerfile, in place; otherwise start a site.", []string{fmt.Sprintf("%s project new --in-place --kind site", Name()), fmt.Sprintf("%s project new --in-place --kind app", Name()), fmt.Sprintf("%s project new <name> --kind site", Name())}, "no"}
 	case strings.Contains(t, "declares no hosted control plane"):
 		return forgeErrorExplanation{"The env does not deploy to Reliant hosting: its KCL Bundle has no control_plane. Add `control_plane = forge.ControlPlane {}` to deploy/kcl/" + env + "/main.k, then deploy.", []string{deploy}, "no"}
 	case strings.Contains(t, "executable file not found"), strings.Contains(t, "command not found"):

@@ -140,7 +140,9 @@ case " $* " in
         rm -f "$in"; exit 1
       fi
     fi
-    awk '/^kind:/{k=tolower($2)} /^  name:/{if(k!=""&&n==""){n=$2}} /^---$/{if(k!=""&&n!="")print k"/"n" serverside-applied"; k=""; n=""} END{if(k!=""&&n!="")print k"/"n" serverside-applied"}' "$in"
+    # FAKE_APPLY_OMIT names one object the apply output leaves out, as a
+    # silently partial apply does (unit_waves_test.go).
+    awk '/^kind:/{k=tolower($2)} /^  name:/{if(k!=""&&n==""){n=$2}} /^---$/{if(k!=""&&n!="")print k"/"n" serverside-applied"; k=""; n=""} END{if(k!=""&&n!="")print k"/"n" serverside-applied"}' "$in" | grep -v "/${FAKE_APPLY_OMIT:-^} serverside-applied$"
     rm -f "$in"; exit 0 ;;
   *' wait '*)
     rm -f "$in"

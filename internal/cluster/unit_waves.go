@@ -25,8 +25,8 @@ package cluster
 // apply-time prunes run, and the ordinary rollout wait (and its owned-object
 // prune) finishes as it always has.
 //
-// A WAVE THAT DOES NOT ROLL OUT STOPS THE DEPLOY, in every rollout mode, like
-// the pre-rollout gate: the later units are never applied, and NOTHING is
+// A WAVE THAT DOES NOT FULLY APPLY OR ROLL OUT STOPS THE DEPLOY, in every
+// rollout mode, like the pre-rollout gate: the later units are never applied, and NOTHING is
 // pruned. `--rollout=warn` / `--no-wait` say how to grade the release's own
 // convergence; they never meant "roll a consumer before what it depends on".
 //
@@ -235,6 +235,11 @@ func convergeUnitWaves(ctx context.Context, pending []*PendingRollout) error {
 		}
 		return what + " (" + p.where() + ")"
 	}
+	// THE BARRIER IS GLOBAL. Each iteration first applies wave i on every
+	// cluster that has workloads in it, then waits for ALL of wave i's
+	// workloads on every cluster, and only then moves to wave i+1. A cluster
+	// with nothing in wave i sends nothing in it, but it cannot get ahead:
+	// its wave i+1 is applied by the next iteration, after the wait.
 	for i := 0; i < waves; i++ {
 		var units []string
 		for _, p := range staged {
@@ -251,7 +256,10 @@ func convergeUnitWaves(ctx context.Context, pending []*PendingRollout) error {
 			if !p.opts.Quiet {
 				fmt.Printf("Applying delivery unit(s) %s%s...\n", strings.Join(units, ", "), where(p, ""))
 			}
-			if err := p.policy.classifyApplyResult(KubectlApply(ctx, p.opts.Context, p.units.waves[i].stream)); err != nil {
+			// Not classifyApplyResult: warn mode tolerates an incomplete
+			// apply of the release, but a wave that did not fully land is
+			// not a unit that rolled out, and the order holds in every mode.
+			if err := KubectlApply(ctx, p.opts.Context, p.units.waves[i].stream); err != nil {
 				return fmt.Errorf("kubectl apply failed (delivery unit(s) %s on %s; the units after it (%s) were not applied and nothing was pruned): %w",
 					strings.Join(units, ", "), p.where(), strings.Join(held, ", "), err)
 			}

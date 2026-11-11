@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for delivery units under direct apply (unit_waves.go): a unit's
@@ -91,9 +92,7 @@ func prunes(c kubectlCall) bool {
 // Mutation that fails it: drop the `unitOrder != nil` branch in
 // applyRenderedNoWait — the Deployment rides the StatefulSet's apply.
 func TestApply_DeliveryUnitRollsOutBeforeTheUnitsAfterIt(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through many shell subprocesses")
 	calls := fakeGateKubectl(t, jobCompletes, "daemon-gateway")
 
 	if err := applyRendered(context.Background(), unitOpts(natsBrokerUnits), brokerStream); err != nil {
@@ -133,9 +132,7 @@ func TestApply_DeliveryUnitRollsOutBeforeTheUnitsAfterIt(t *testing.T) {
 // Mutation that fails it: in convergeUnitWaves, keep going after a failed wave
 // (or run the deferred prune before the waves).
 func TestApply_DeliveryUnitThatFailsHoldsTheRest(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through many shell subprocesses")
 	calls := fakeGateKubectl(t, jobCompletes, "broker", "daemon-gateway")
 	t.Setenv("FAKE_ROLLOUT_FAIL", "broker")
 	stream := strings.Replace(brokerStream, "kind: StatefulSet\nmetadata:\n  name: nats-cluster", "kind: Deployment\nmetadata:\n  name: broker", 1)
@@ -168,9 +165,7 @@ func TestApply_DeliveryUnitThatFailsHoldsTheRest(t *testing.T) {
 // Mutation that fails it: stage whenever units are declared (drop the
 // "carrying < 2" rule in planUnitWaves).
 func TestApply_NoDeliveryUnitsIsUnchanged(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through many shell subprocesses")
 	oneUnit := strings.ReplaceAll(brokerStream, "forge.dev/delivery-unit: nats-broker", "forge.dev/delivery-unit: base")
 	run := func(units []release.DeliveryUnit, stream string) []string {
 		calls := fakeGateKubectl(t, jobCompletes, "daemon-gateway")
@@ -206,9 +201,7 @@ func TestApply_NoDeliveryUnitsIsUnchanged(t *testing.T) {
 // Mutation that fails it: make planUnitWaves read the per-cluster scoped stream
 // (the consumer's cluster then stages nothing and applies at once).
 func TestWaitRollouts_DeliveryUnitsOrderAcrossClusters(t *testing.T) {
-	if testing.Short() {
-		t.Skip("drives a fake kubectl through many shell subprocesses; runs in task test")
-	}
+	testkit.Slow(t, "drives a fake kubectl through many shell subprocesses")
 	calls := fakeGateKubectl(t, jobCompletes, "daemon-gateway")
 	scoped := func(kctx, own, other string) ApplyOpts {
 		o := unitOpts(natsBrokerUnits)
@@ -240,6 +233,31 @@ func TestWaitRollouts_DeliveryUnitsOrderAcrossClusters(t *testing.T) {
 	})
 	if ready < 0 || consumer < 0 || consumer < ready {
 		t.Errorf("want the broker ready on k3d-broker (call %d) before the consumer is applied on k3d-hub (call %d)\ncalls:\n%s", ready, consumer, describeCalls(got))
+	}
+}
+
+// TestApply_DeliveryUnitThatDoesNotFullyApplyHoldsTheRestUnderWarn: warn mode
+// tolerates an incomplete apply of the release, never of a unit wave — an
+// earlier unit that did not land is not one that rolled out.
+//
+// Mutation that fails it: run the wave apply through classifyApplyResult.
+func TestApply_DeliveryUnitThatDoesNotFullyApplyHoldsTheRestUnderWarn(t *testing.T) {
+	testkit.Slow(t, "drives a fake kubectl through many shell subprocesses")
+	calls := fakeGateKubectl(t, jobCompletes, "daemon-gateway")
+	t.Setenv("FAKE_APPLY_OMIT", "nats-cluster")
+	opts := unitOpts(natsBrokerUnits)
+	opts.Rollout.Mode = RolloutWarn
+
+	err := applyRendered(context.Background(), opts, brokerStream)
+	if err == nil || !strings.Contains(err.Error(), "delivery unit(s) nats-broker") {
+		t.Fatalf("an incomplete wave apply must stop the deploy naming the unit, got %v", err)
+	}
+	got := calls()
+	if at := firstIndex(got, appliesNamed("Deployment", "daemon-gateway")); at >= 0 {
+		t.Errorf("the base unit was applied (call %d) although nats-broker did not fully apply\ncalls:\n%s", at, describeCalls(got))
+	}
+	if at := firstIndex(got, prunes); at >= 0 {
+		t.Errorf("something was pruned (call %d) although the deploy stopped between units", at)
 	}
 }
 

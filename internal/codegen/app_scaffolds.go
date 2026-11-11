@@ -47,8 +47,21 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs
 	// AutoMigrate until the user removes it.
 	removeRetiredForgeFile(targetDir, filepath.Join("pkg", "app", "migrate.go"), cs)
 
-	layout := migrationEmbedLayoutOf(config.MigrationsDirIn(targetDir))
-	if layout.pkgDir != "" {
+	db := config.DatabaseIn(targetDir)
+	layout := migrationEmbedLayoutOf(db.MigrationsPath())
+	if db.UsesMigrationHook() {
+		// The project's own tool applies its migrations (database.migrations
+		// .tool). Embedding them for forge's migrator would let the binary's
+		// `db migrate up` — or AUTO_MIGRATE at boot — apply another tool's
+		// files with golang-migrate, so the binary embeds nothing and says
+		// why. A package forge embedded the directory with before the switch
+		// is retired.
+		layout.hookTool = db.MigrationTool()
+		if layout.pkgDir != "" {
+			removeRetiredForgeFile(targetDir, filepath.Join(filepath.FromSlash(layout.pkgDir), "embed_gen.go"), cs)
+		}
+		hasMigrations = false
+	} else if layout.pkgDir != "" {
 		// Refuse a directory the go tool cannot build in now, not only once
 		// its first migration lands.
 		if err := checkEmbeddableMigrationsDir(modulePath, layout.dir); err != nil {
@@ -140,6 +153,10 @@ type migrationEmbedLayout struct {
 	// pkgDir is the directory of the generated embed package (second shape
 	// only): dir itself.
 	pkgDir string
+	// hookTool is the migration tool that applies the migrations instead of
+	// forge's migrator (database.migrations.tool); empty for forge. With one,
+	// nothing is embedded.
+	hookTool string
 }
 
 func migrationEmbedLayoutOf(dir string) migrationEmbedLayout {
@@ -331,6 +348,18 @@ func writeMigrationSource(targetDir string, layout migrationEmbedLayout, hasMigr
 		"// returns a concrete embed.FS value that is never nil, so that comparison\n" +
 		"// is dead code (staticcheck SA4023).\n" +
 		"func Source() fs.FS { return nil }\n"
+	if layout.hookTool != "" {
+		body = "// HasMigrations is false: " + dir + "/ is applied by " + layout.hookTool + "\n" +
+			"// (forge.yaml database.migrations.tool), not by forge's migrator, so\n" +
+			"// nothing is embedded for it to apply.\n" +
+			"const HasMigrations = false\n" +
+			"\n" +
+			"// Source returns nil, because the binary carries no migrations: run\n" +
+			"// `forge db migrate up` (which runs " + layout.hookTool + ") or the tool itself. The\n" +
+			"// binary's `db migrate up` refuses a nil source with an error naming the\n" +
+			"// missing embed, and AUTO_MIGRATE at boot skips it.\n" +
+			"func Source() fs.FS { return nil }\n"
+	}
 	if hasMigrations {
 		body = "// HasMigrations is true: " + dir + "/ holds at least one .sql file, so\n" +
 			"// embed_gen.go exists and the embedded set can be named.\n" +

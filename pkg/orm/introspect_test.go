@@ -2,11 +2,10 @@ package orm
 
 import "testing"
 
-// Real-postgres introspection coverage lives in differ_integration_test.go
-// (pgtest / embedded postgres). The former in-memory SQLite shadow
-// introspection suite was retired with the postgres pin + Bun engine swap
-// (the ORM client rejects non-postgres dialects). What remains here is the
-// dialect-independent type-mapping unit.
+// Real-postgres introspection coverage lives in differ_pg_test.go (pgtest /
+// embedded postgres). The former in-memory SQLite shadow introspection suite
+// was retired with the postgres pin + Bun engine swap (the ORM client rejects
+// non-postgres dialects). What remains here is the type-mapping unit.
 
 func TestMapDatabaseTypeToFieldType(t *testing.T) {
 	tests := []struct {
@@ -32,8 +31,15 @@ func TestMapDatabaseTypeToFieldType(t *testing.T) {
 		{"serial", TypeSerial, false},
 		{"bigserial", TypeBigSerial, false},
 		{"varchar(255)", TypeVarchar, false}, // Test with type modifier
-		{"", TypeText, false},                // Empty type defaults to TEXT
-		{"unknown_type", "", true},           // Unknown type should error
+		// information_schema.columns.data_type spellings with no FieldType
+		// of their own.
+		{"timestamp without time zone", TypeTimestampTZ, false},
+		{"character", TypeText, false},
+		{"smallint", TypeInteger, false},
+		{"numeric", TypeDoublePrecision, false},
+		{"", "", true},             // postgres always reports a type
+		{"datetime", "", true},     // not a postgres type
+		{"unknown_type", "", true}, // Unknown type should error
 	}
 
 	for _, tt := range tests {

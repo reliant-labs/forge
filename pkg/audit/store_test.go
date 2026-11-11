@@ -1,9 +1,3 @@
-//go:build cgo
-
-// These tests drive DBAuditStore through mattn/go-sqlite3, which is cgo-only
-// (a CGO_ENABLED=0 build gets a stub that fails every call). Tagged so they
-// run wherever cgo is on rather than failing the cgo-free Windows job.
-
 package audit
 
 import (
@@ -13,35 +7,21 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
-// sqliteAuditSchema mirrors the audit_log table the read-side recipe creates,
-// in SQLite-compatible DDL. The store's Log/Query SQL is dialect-neutral
-// (positional $N params, standard clauses), so driving it through a real
-// database/sql driver pins the INSERT/SELECT/scan contract without a live
-// Postgres. gen_random_uuid()/CURRENT_TIMESTAMP become their SQLite analogues
-// so the DB still owns id + created_at.
-const sqliteAuditSchema = `
-CREATE TABLE audit_log (
-    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-    timestamp DATETIME NOT NULL,
-    user_id TEXT,
-    email TEXT,
-    procedure TEXT NOT NULL,
-    peer_address TEXT,
-    duration_ms INTEGER,
-    status TEXT NOT NULL,
-    error_code TEXT,
-    error_message TEXT,
-    metadata TEXT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);`
+// These tests drive DBAuditStore through the production driver (pgx) against
+// a real postgres, on the audit_log table as the audit-log recipe's migration
+// creates it (pgAuditSchema), so the INSERT/SELECT/scan contract is pinned
+// against what the database actually does — including the defaults that fill
+// id and created_at.
 
 func newTestStore(t *testing.T) *DBAuditStore {
 	t.Helper()
 	db := openTestDB(t)
-	if _, err := db.Exec(sqliteAuditSchema); err != nil {
+	if _, err := db.Exec(pgAuditSchema); err != nil {
 		t.Fatalf("create schema: %v", err)
 	}
 	return NewDBAuditStore(db)
@@ -49,31 +29,33 @@ func newTestStore(t *testing.T) *DBAuditStore {
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite3", ":memory:")
+	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
+		t.Fatalf("test postgres: %v", err)
 	}
-	// :memory: gives each *connection* its own database; pin the pool to a
-	// single connection so DDL and every subsequent op share one DB.
-	db.SetMaxOpenConns(1)
+	t.Cleanup(cleanup)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
 // TestDBAuditStore_WithSchema pins that WithSchema makes every statement name
-// the table in that schema. An ATTACHed SQLite database stands in for a
-// Postgres schema, and a decoy audit_log in `main` is what a bare name
-// resolves to — so a store that ignored the option would write the decoy and
-// read it back, and only the per-schema row counts tell the two apart.
+// the table in that schema. A decoy audit_log in `public` is what a bare name
+// resolves to on the default search_path — so a store that ignored the option
+// would write the decoy and read it back, and only the per-schema row counts
+// tell the two apart.
 func TestDBAuditStore_WithSchema(t *testing.T) {
 	db := openTestDB(t)
-	if _, err := db.Exec(`ATTACH DATABASE ':memory:' AS controlplane`); err != nil {
-		t.Fatalf("attach: %v", err)
+	if _, err := db.Exec(pgAuditSchema); err != nil {
+		t.Fatalf("create decoy public.audit_log: %v", err)
 	}
-	if _, err := db.Exec(sqliteAuditSchema); err != nil {
-		t.Fatalf("create decoy main.audit_log: %v", err)
+	if _, err := db.Exec(`CREATE SCHEMA controlplane`); err != nil {
+		t.Fatalf("create schema: %v", err)
 	}
-	qualified := strings.Replace(sqliteAuditSchema, "CREATE TABLE audit_log", "CREATE TABLE controlplane.audit_log", 1)
+	qualified := strings.Replace(pgAuditSchema, "CREATE TABLE public.audit_log", "CREATE TABLE controlplane.audit_log", 1)
 	if _, err := db.Exec(qualified); err != nil {
 		t.Fatalf("create controlplane.audit_log: %v", err)
 	}
@@ -102,8 +84,8 @@ func TestDBAuditStore_WithSchema(t *testing.T) {
 	if n := count("controlplane.audit_log"); n != 1 {
 		t.Errorf("controlplane.audit_log has %d rows, want 1", n)
 	}
-	if n := count("main.audit_log"); n != 0 {
-		t.Errorf("main.audit_log (what a bare audit_log resolves to) has %d rows, want 0", n)
+	if n := count("public.audit_log"); n != 0 {
+		t.Errorf("public.audit_log (what a bare audit_log resolves to) has %d rows, want 0", n)
 	}
 }
 

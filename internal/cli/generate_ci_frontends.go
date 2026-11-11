@@ -83,7 +83,7 @@ var (
 func discoverCIFrontendsUncached(projectDir string, cfg *config.ProjectConfig) []config.FrontendConfig {
 	found := map[string]config.FrontendConfig{}
 
-	envs, _ := ListEnvs(projectDir)
+	envs, _ := ListCommittedEnvs(projectDir)
 	// Pure render: this walks EVERY env to collect the frontend set, so a
 	// file.write anywhere in any env's module would otherwise fire — and
 	// dirty a tracked file — purely because generate enumerated them.

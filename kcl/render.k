@@ -2255,7 +2255,7 @@ _namespaces = lambda b: Bundle, entities: [any] -> [any] {
         + [[e.runtime.cluster, e.runtime.namespace] for e in entities if e.runtime.type == "cluster"] \
         + ([[_openbao(b).cluster, _openbao(b).namespace]] if b.openbao else [])
     _uniq = {"${p[0]}/${p[1]}": p for p in _pairs}
-    [_render_namespace(p[1], p[0], _pt) for _, p in _uniq]
+    [_with_preview_meta(_render_namespace(p[1], p[0], _pt), b) for _, p in _uniq]
 }
 
 _render_namespace = lambda namespace: str, context: str, primary: any -> any {
@@ -2272,6 +2272,22 @@ _render_namespace = lambda namespace: str, context: str, primary: any -> any {
             } | ({"forge.dev/cluster" = context} if context else {})
         }
     }
+}
+
+# A PREVIEW INSTANCE's namespaces say so (Bundle.preview), so `forge env gc`
+# finds an expired preview on a cluster you operate from the cluster alone —
+# the CI runner that created it is long gone. The labels are the selector; the
+# expiry is an annotation, because a label value cannot hold a timestamp.
+_with_preview_meta = lambda ns: any, b: Bundle -> any {
+    {
+        apiVersion = ns.apiVersion
+        kind = ns.kind
+        metadata = {
+            name = ns.metadata.name
+            labels = ns.metadata.labels | {"forge.dev/preview-of" = b.preview.of, "forge.dev/preview" = b.env if b.env else "true"}
+            annotations = {"forge.dev/expires-at" = b.preview.expires_at}
+        }
+    } if b.preview else ns
 }
 
 # ---------------------------------------------------------------------------
@@ -2356,6 +2372,10 @@ render = lambda bundle: Bundle -> any {
         # a stable key, and null is the meaningful default rather than a
         # missing one.
         "lifecycle": bundle.lifecycle if bundle.lifecycle else None
+        # A preview instance (Bundle.preview): which env it copies and when it
+        # expires. Absent for every other env.
+        if bundle.preview:
+            "preview": {"of": bundle.preview.of, "expires_at": bundle.preview.expires_at, "source": bundle.preview.source if bundle.preview.source else None}
         # WHO APPLIES, declared: "forge" for a real env forge applies (the
         # platform's own env), "flux" for one an in-cluster Flux forge installs
         # reconciles, else null. See Bundle.applier.

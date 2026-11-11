@@ -104,6 +104,8 @@ type ShapeInput struct {
 	// Buckets are every bucket the env declares, in shape vocabulary, or nil
 	// when it declares none.
 	Buckets []release.ShapeBucket
+	// Preview marks the env a preview instance (forge.Preview).
+	Preview *release.ShapePreview
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -162,6 +164,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,
 		Buckets:             in.Buckets,
+		Preview:             in.Preview,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

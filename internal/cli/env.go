@@ -42,6 +42,8 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newEnvFloorCmd())
 	cmd.AddCommand(newEnvShapeCmd())
 	cmd.AddCommand(newEnvNewCmd())
+	cmd.AddCommand(newEnvPreviewCmd())
+	cmd.AddCommand(newEnvGCCmd())
 	cmd.AddCommand(newDeployCmd())
 	cmd.AddCommand(newSmokeCmd())
 	cmd.AddCommand(newSecretsCmd())
@@ -58,7 +60,7 @@ var envCommandGroups = []struct {
 	id, title string
 	verbs     []string
 }{
-	{"lifecycle", "Lifecycle:", []string{"new", "up", "down", "start", "stop", "status", "ps", "exec", "list", "delete", "deploy", "smoke", "devstack"}},
+	{"lifecycle", "Lifecycle:", []string{"new", "up", "down", "start", "stop", "status", "ps", "exec", "list", "delete", "deploy", "smoke", "devstack", "preview", "gc"}},
 	{"build", "Build and release:", []string{"build", "releases", "floor"}},
 	{"config", "Configuration:", []string{"config", "options", "render", "diff", "shape", "kcl"}},
 	{"secrets", "Secrets:", []string{"secrets", "secret"}},

@@ -106,6 +106,7 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "media", RuntimeKind: release.BucketRuntimeS3, Bucket: "acme-prod-media", Endpoint: "https://acct.r2.cloudflarestorage.com"},
 			{Name: "uploads", RuntimeKind: release.BucketRuntimeHosted, PublicRead: true},
 		},
+		Preview: &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
 	}
 }
 

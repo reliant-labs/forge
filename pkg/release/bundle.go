@@ -597,6 +597,12 @@ type Shape struct {
 	// control plane that predates it refuses the whole shape, so it is a
 	// bundle-document feature ([BundleFeatureStorage]).
 	Buckets []ShapeBucket `json:"buckets,omitempty"`
+	// Preview marks the env a preview instance (forge.Preview): which env it
+	// was made from and when it expires. It is how a control plane learns to
+	// delete the env once it has. Omitted for every other env, so every shape
+	// recorded before the field encodes and hashes exactly as it did; a
+	// bundle-document feature ([BundleFeaturePreview]).
+	Preview *ShapePreview `json:"preview,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1067,6 +1073,11 @@ func (o ShapeObject) Key() ObjectKey {
 // Validate checks a shape: a known kind (or none), well-formed object identities, no
 // duplicate objects, canonical hashes, and nothing that could carry a value.
 func (s Shape) Validate() error {
+	if s.Preview != nil {
+		if err := s.Preview.validate(); err != nil {
+			return err
+		}
+	}
 	// An ABSENT kind is valid: the kind is being retired (placement is per
 	// workload, docs/design/per-workload-placement.md), and a shape from a
 	// forge that no longer projects it must still validate. A PRESENT one

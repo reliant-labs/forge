@@ -7575,6 +7575,32 @@ schema FluxDelivery:
         apply_identities or delivery_scope == "namespace", \
             "FluxDelivery.delivery_scope = \"cluster\" scopes the derived apply identity, and apply_identities = False renders none (kustomize-controller applies as cluster-admin). Drop one of the two"
 
+_PREVIEW_ENV_RE = r"^[a-z][a-z0-9-]*$"
+_RFC3339_UTC_RE = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+
+schema Preview:
+    """This env is a preview instance of the env `of`: a per-PR or per-branch
+    copy that is deleted once `expires_at` has passed.
+
+        preview = forge.Preview {of = "preview", expires_at = "2026-11-15T12:00:00Z", source = "pr-123"}
+
+    `forge env preview create --pr 123` writes it (and the whole instance env
+    under deploy/kcl/<name>/) from the committed template env; re-running it
+    for the same PR refreshes the expiry. It is recorded in the release shape
+    (`preview`), so a control plane that advertises `shape-preview` deletes a
+    hosted instance once it expires, data included; `forge env gc` deletes the
+    expired ones of a cluster you operate (each instance's namespace carries
+    `forge.dev/preview-of` and `forge.dev/expires-at`). Load `deploy/preview`.
+    """
+    of: str
+    expires_at: str
+    source?: str
+
+    check:
+        regex.match(of, _PREVIEW_ENV_RE), "Preview.of ${of} is not an env name: name the template env under deploy/kcl/"
+        regex.match(expires_at, _RFC3339_UTC_RE), "Preview.expires_at ${expires_at} must be an RFC 3339 UTC time (2026-11-15T12:00:00Z)"
+        not source or len(source) <= 200, "Preview.source is longer than 200 characters"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -7810,6 +7836,16 @@ schema Bundle:
     # declaring one of the three now is what makes that change a flag flip
     # rather than a migration.
     lifecycle?: "local" | "ephemeral"
+    # This env is a PREVIEW INSTANCE of another env (a per-PR or per-branch
+    # copy) and expires. Never written by hand: `forge env preview create`
+    # marks the instance's directory, and forge binds the marker on every
+    # render of it (`-D forge_preview_*`), so the instance's main.k is a
+    # verbatim copy of the template's. See Preview.
+    preview?: Preview = Preview {
+        of = option("forge_preview_of")
+        expires_at = option("forge_preview_expires_at")
+        source = option("forge_preview_source")
+    } if option("forge_preview_of") else None
     # A REAL environment that FORGE applies, for now: every one of its
     # delivery units is applied by `forge env deploy`, and the hub converges
     # none of them. It is a TRANSITIONAL state, not a destination: every real

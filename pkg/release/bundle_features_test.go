@@ -32,6 +32,7 @@ var bundleFeatureKeys = map[string][]string{
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
 	},
 	BundleFeatureStorage: {"shape.buckets", "shape.data_access.storage"},
+	BundleFeaturePreview: {"shape.preview"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -153,6 +154,7 @@ func fullBundleDoc() BundleDoc {
 			DeliveryPolicy:           healthGatedPolicy(),
 			Identity:                 signInIdentity(),
 			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
+			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		DeclaredEnvs: []DeclaredEnv{
@@ -231,6 +233,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Workloads = []ShapeWorkload{full.Shape.Workloads[0]}
 	wantShape.Workloads[0].Unit = ""
 	wantShape.Buckets = nil
+	wantShape.Preview = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate = nil
 	wantShape.DeliveryPolicy = &gateless

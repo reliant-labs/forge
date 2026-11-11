@@ -146,6 +146,11 @@ const (
 	// that predates it refuses those values, so it is sent only the funnels
 	// counted by "session" or "user".
 	BundleFeatureFunnelPerson = "shape-funnel-person"
+	// BundleFeaturePreview is Shape.Preview: the env is a preview instance
+	// with an expiry (forge.Preview). A control plane that predates it does
+	// not delete the env when it expires — `forge env gc` still does — so a
+	// shape carrying it is written only to one that names the feature.
+	BundleFeaturePreview = "shape-preview"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -153,7 +158,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeaturePreview}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -269,6 +274,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		pol := *s.DeliveryPolicy
 		pol.HealthGate = nil
 		s.DeliveryPolicy = &pol
+	}
+	if !r.Supports(BundleFeaturePreview) {
+		s.Preview = nil
 	}
 	if !r.Supports(BundleFeatureStorage) {
 		s.Buckets = nil

@@ -109,6 +109,10 @@ type KCLEntities struct {
 	// no-cluster case stays in one place.
 	Lifecycle string `json:"lifecycle,omitempty"`
 
+	// Preview is Bundle.preview: the env is a preview instance of another
+	// env, and when it expires (forge env preview). Nil for every other env.
+	Preview *release.ShapePreview `json:"preview,omitempty"`
+
 	// Applier is "forge" when the env DECLARES that forge applies it
 	// (Bundle.applier): a real environment, not a scratch one, none of whose
 	// delivery units has moved onto the hub yet. Transitional. "flux" when an
@@ -1576,6 +1580,7 @@ type kclRenderRaw struct {
 	Env                      string                                    `json:"env,omitempty"`
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
 	Lifecycle                string                                    `json:"lifecycle,omitempty"`
+	Preview                  *release.ShapePreview                     `json:"preview,omitempty"`
 	Applier                  string                                    `json:"applier,omitempty"`
 	FluxDelivery             *FluxDeliveryEntity                       `json:"flux_delivery,omitempty"`
 	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
@@ -1956,6 +1961,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Env:                      raw.Env,
 		ImageTag:                 raw.ImageTag,
 		Lifecycle:                raw.Lifecycle,
+		Preview:                  raw.Preview,
 		Applier:                  raw.Applier,
 		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),

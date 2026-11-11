@@ -4096,7 +4096,11 @@ schema Frontend:
     # bytes on every machine. See GitSource.
     source?: GitSource
     dev_runner: str = "npm"
-    port: int = 3000
+    # The dev server's port. A browser frontend that declares none gets 3000. A
+    # native ('rn') frontend that declares none gets NO port, so `forge env up`
+    # prefers Expo's 8081, which is where a native Debug build looks for Metro,
+    # and falls back to a free one; declare a port only to pin Metro elsewhere.
+    port?: int = 3000 if type != "rn" else Undefined
     env_file?: str
     # KCL-declared per-env vars, layered on top of env_file at dev launch
     # (same EnvVar shape services use). Values may be composed
@@ -4117,6 +4121,19 @@ schema Frontend:
     # funnels today. See BrowserTelemetry. Not for a `rn` frontend, which has
     # no browser SDK.
     telemetry?: BrowserTelemetry
+    # Whether a `rn` frontend on a host-run managed identity gets its OIDC
+    # client derived and its EXPO_PUBLIC_FORGE_OIDC_* env injected. True by
+    # default: a mobile app of an env with managed identity needs a client
+    # the way a browser frontend needs its callback, so deriving it is the
+    # working default. Set False for an app that signs in some other way (its
+    # own provider, no sign-in yet) and wants forge to register and inject
+    # nothing. It lives on the FRONTEND, not the identity, because the client
+    # is derived per frontend and one identity serves a web app that wants
+    # sign-in beside a mobile app that does not. It only suppresses the
+    # DERIVED client: a kind = "native" IdentityApplication you declare is a
+    # decision, and is honoured. Refused on a frontend that is not `rn`,
+    # where it would mean nothing.
+    native_sign_in: bool = True
     # Which entities this frontend gets generated CRUD pages for: route
     # SLUGS as they appear on disk and in the URL — the plural, kebab-cased
     # entity name ("llm-keys", "usage-events"). Empty (the default) means
@@ -4233,9 +4250,11 @@ schema Frontend:
             "Frontend.type must be 'nextjs' | 'vite' | 'rn'"
         dev_runner in ["npm", "pnpm", "yarn"], \
             "Frontend.dev_runner must be 'npm' | 'pnpm' | 'yarn'"
-        port > 0 and port < 65536, "Frontend.port must be 1..65535"
+        port == Undefined or (port > 0 and port < 65536), "Frontend.port must be 1..65535"
         telemetry == Undefined or type != "rn", \
             "Frontend '${name}'.telemetry is for a browser frontend; a 'rn' frontend runs no browser SDK"
+        native_sign_in or type == "rn", \
+            "Frontend '${name}'.native_sign_in applies only to a 'rn' frontend (it turns off the derived mobile OIDC client); remove it"
         telemetry == Undefined or not telemetry.service_name or source, \
             "Frontend '${name}'.telemetry.service_name is for a frontend built from another repository (`source`): an in-repo frontend reports <project>-<name> and declares nothing"
         "none" not in routes or len(routes) == 1, \
@@ -7101,16 +7120,45 @@ schema IdentityLogin:
     converges it yet."""
     mode: "native" | "hosted" = "native"
 
+# A native (mobile) app's callback URIs, RFC 8252 section 7: a private-use
+# scheme named by the reverse of a domain you control and written with ONE
+# slash (7.1, `com.acme.app:/oauthredirect`), or a claimed https URL (7.2, a
+# universal or app link). Plain http is the dev loop's alone; the Bundle
+# check below refuses it on any other identity. No wildcard, query or
+# fragment: the identity provider compares a native callback literally.
+_NATIVE_PRIVATE_URI_RE = r"^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+:/[^/*?#\s][^*?#\s]*$"
+_NATIVE_HTTPS_URI_RE = r"^https://[^/@*?#\s]+(/[^*?#\s]*)?$"
+_NATIVE_HTTP_URI_RE = r"^http://[^/@*?#\s]+(/[^*?#\s]*)?$"
+_native_uri_ok = lambda u: str -> bool {
+    regex.match(u, _NATIVE_PRIVATE_URI_RE) or regex.match(u, _NATIVE_HTTPS_URI_RE) or regex.match(u, _NATIVE_HTTP_URI_RE)
+}
+
 schema IdentityApplication:
     """One OIDC application registered in the instance. Omit
     `ManagedIdentity.applications` and one is derived: a `native_broker`
     named `<env>:api` for the workload named `api`, else one per service
     workload. Redirect, logout and login URIs are DERIVED from the env's
-    origins unless a literal is given here."""
+    origins unless a literal is given here.
+
+    `kind = "native"` is a MOBILE app's own client: a public PKCE client
+    (no secret, no broker) that signs in at the identity provider's own
+    hosted pages and exchanges and refreshes its tokens directly at the
+    issuer. It belongs to a native frontend (`frontend`), not to a workload,
+    and its tokens are accepted unchanged by the env's services (same
+    project, same issuer and audience). `redirect_uris` / `logout_uris` are an
+    ORDERED list for it: the first is the one the app signs in with, and a
+    claimed https URL (a universal or app link) may be added, or put first,
+    beside the private-use `<scheme>:/oauthredirect` without any other change.
+    You rarely declare one: an env whose identity runs on the host IdP
+    (forge.IdentityOnHost) derives `<env>:<frontend>` for every `rn`
+    frontend, with the callbacks read from that app's app.json."""
     name: str
-    # The broker: the workload that runs the sign-in endpoint.
-    workload: str
-    kind: "native_broker" | "oidc_web" = "native_broker"
+    # The broker: the workload that runs the sign-in endpoint. Not for
+    # kind "native".
+    workload: str = ""
+    kind: "native_broker" | "oidc_web" | "native" = "native_broker"
+    # The `rn` frontend a kind "native" application belongs to.
+    frontend: str = ""
     redirect_uris: [str] = []
     logout_uris: [str] = []
     login_uri: str = ""
@@ -7118,9 +7166,17 @@ schema IdentityApplication:
     check:
         regex.match(name, r"^[A-Za-z0-9][A-Za-z0-9:._-]*$") and len(name) <= 80, \
             "IdentityApplication.name '${name}' must match ^[A-Za-z0-9][A-Za-z0-9:._-]*$ (at most 80 characters)"
-        workload, "IdentityApplication '${name}' needs a workload"
+        kind == "native" or workload, "IdentityApplication '${name}' needs a workload"
+        kind == "native" or not frontend, \
+            "IdentityApplication '${name}': frontend names the mobile app a kind 'native' application belongs to, so it applies only to kind 'native'"
+        kind != "native" or frontend, \
+            "IdentityApplication '${name}': kind 'native' needs `frontend`, the name of the `rn` frontend it signs in"
+        kind != "native" or not workload, \
+            "IdentityApplication '${name}': kind 'native' has no broker workload (it signs in at the identity provider's own pages): drop `workload`, and name the app with `frontend`"
         kind == "native_broker" or not login_uri, \
             "IdentityApplication '${name}': login_uri is the native sign-in route, so it applies only to kind 'native_broker'"
+        kind != "native" or len([u for u in (redirect_uris + logout_uris) if not _native_uri_ok(u)]) == 0, \
+            "IdentityApplication '${name}': a native callback must be a private-use reverse-DNS scheme written with one slash (com.acme.app:/oauthredirect, RFC 8252 section 7.1) or an https URL (a universal or app link), with no wildcard, query or fragment. Got ${[u for u in (redirect_uris + logout_uris) if not _native_uri_ok(u)]}"
 
 schema IdentityFields:
     """Which typed-config field each identity OUTPUT fills, when it is not the
@@ -8182,6 +8238,16 @@ schema Bundle:
             "Bundle.identity.share_with '${identity.share_with if identity else ''}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"
         len(_idn_bad_apps(workloads, identity, env, project)) == 0, \
             "Bundle.identity.applications name workloads that are not service workloads of this env: ${_idn_bad_apps(workloads, identity, env, project)}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"
+        len(_idn_bad_native_apps(frontends, identity, env, project)) == 0, \
+            "Bundle.identity.applications of kind 'native' name frontends that are not `rn` frontends of this env: ${_idn_bad_native_apps(frontends, identity, env, project)}. A native application belongs to a mobile frontend. Declared `rn` frontends: ${[f.name for f in frontends if f.type == 'rn']}"
+        # Only a host-run identity converges a native client today. Hosted
+        # registration is not built, so a declared native application on a
+        # hosted identity would be recorded as if it were converged. Lift this
+        # (and release.ShapeIdentity.validateApplication) together with the
+        # change that lands it, which also lets redirect_uris be required and
+        # http refused here again.
+        not identity or _idn_rt(identity) == "host" or len([a.name for a in _idn_native_apps(frontends, identity, env, project)]) == 0, \
+            "Bundle.identity.applications of kind 'native' (${[a.name for a in _idn_native_apps(frontends, identity, env, project)] if identity else []}): native identity applications are not yet supported on hosted identity (only on forge.IdentityOnHost, the dev loop); see `forge skill load deploy/managed-identity/mobile`"
         len(_idn_bad_consumers(workloads, identity, env, project)) == 0, \
             "Bundle.identity.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(identity) if identity else []}): ${_idn_bad_consumers(workloads, identity, env, project)}"
         not identity or len(_idn_apps(workloads, identity, env, project)) > 0 or len(_idn_consumers(workloads, identity, env, project)) == 0, \

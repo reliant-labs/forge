@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/netguard"
 )
 
 // UserInfo fills [Claims.Email] from the issuer's OIDC userinfo endpoint
@@ -39,7 +41,9 @@ import (
 // The bearer token is sent only over HTTPS. A plain-HTTP userinfo URL is
 // refused before any request is made unless its host is loopback (a local
 // development issuer), and a redirect to an insecure URL is refused the same
-// way, whatever client was supplied.
+// way, whatever client was supplied. One dev-only opt-in widens that to the
+// machine's own LAN address: see [UserInfo.AllowLocalPlainHTTP]. Without it
+// nothing but loopback is ever sent a token over plain HTTP.
 //
 // The answer is cached per subject for [UserInfoTTL], so a signed-in user
 // costs one userinfo request per TTL, not one per request. A failed or
@@ -52,6 +56,12 @@ type UserInfo struct {
 	endpoint func(ctx context.Context) (string, error)
 	client   *http.Client
 	now      func() time.Time
+
+	// localHTTP is set by AllowLocalPlainHTTP: the issuer is plain HTTP at
+	// this machine's own address, and every request is confined to the
+	// machine at connect time.
+	localHTTP  bool
+	interfaces func() ([]net.Addr, error) // tests; nil is the real interface list
 
 	mu         sync.Mutex
 	resolved   string
@@ -88,8 +98,9 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 	}
 	secured := *client
 	next := client.CheckRedirect
+	u := &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
 	secured.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if err := secureEndpoint(req.URL); err != nil {
+		if err := u.secure(req.URL); err != nil {
 			return fmt.Errorf("userinfo: refusing redirect: %w", err)
 		}
 		if next != nil {
@@ -100,11 +111,82 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 		}
 		return nil
 	}
-	return &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
+	return u
 }
 
+// AllowLocalPlainHTTP is a DEVELOPMENT opt-in for an issuer served over plain
+// HTTP at this machine's own non-loopback IPv4 address, which is what
+// `forge env up --device-host <LAN address>` makes the issuer so that a
+// physical device and the API agree on one origin. It returns u.
+//
+// Off by default: without it, behaviour is exactly as before and only
+// loopback is ever sent a token over plain HTTP. Call it only for a dev
+// issuer, never from a deployed configuration.
+//
+// With it, and only when the issuer itself is plain HTTP at an IPv4 literal,
+// the userinfo URL must have the SAME ORIGIN as the issuer, and the client's
+// transport is replaced by one that ignores proxy variables and refuses, at
+// connect time and against the interfaces as they are at that moment, any
+// remote address that is not loopback or this machine's. A network change
+// therefore stops tokens going to whoever now holds the address. A client
+// passed to [NewUserInfo] is not used for these requests (its transport is
+// the thing being replaced); its timeout and redirect policy are kept. If the
+// issuer is anything else (HTTPS, loopback, a name), this does nothing.
+func (u *UserInfo) AllowLocalPlainHTTP() *UserInfo {
+	if !isLocalPlainHTTPIssuer(u.issuer) {
+		return u
+	}
+	u.localHTTP = true
+	guard := netguard.LocalOnly{Interfaces: u.interfaces}
+	u.client.Transport = guard.Transport()
+	return u
+}
+
+// isLocalPlainHTTPIssuer reports whether issuer is plain HTTP at a
+// non-loopback IPv4 literal: the one shape a --device-host dev issuer has.
+func isLocalPlainHTTPIssuer(issuer string) bool {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "http" {
+		return false
+	}
+	ip := net.ParseIP(parsed.Hostname())
+	return ip != nil && ip.To4() != nil && !ip.IsLoopback()
+}
+
+// LocalIssuerHTTPClient is the client to reach a DEVELOPMENT issuer that is
+// plain HTTP at this machine's own LAN IPv4 address: for [JWTConfig.HTTPClient]
+// (the JWKS fetch) and for the OIDC discovery request that finds the JWKS URL,
+// the same two hops [UserInfo.AllowLocalPlainHTTP] confines for userinfo.
+// Without it those requests go through [http.DefaultTransport], which honours
+// HTTP_PROXY and would send the fetch to a proxy, or to whoever holds the
+// address after a network change, and so accept keys that sign forged tokens.
+//
+// The client's transport ignores proxy variables and refuses, at connect time
+// and against the interfaces as they are then, any address that is not
+// loopback or this machine's (see [netguard.LocalOnly]); a redirect or a
+// document naming another host is refused the same way.
+//
+// It returns nil, which every consumer reads as "the default client", when
+// issuer is anything else (HTTPS, loopback, a name), so callers can gate it on
+// their dev opt-in and pass the result unconditionally. Call it only for a dev
+// issuer, never from a deployed configuration.
+func LocalIssuerHTTPClient(issuer string) *http.Client {
+	return localIssuerHTTPClient(issuer, nil)
+}
+
+func localIssuerHTTPClient(issuer string, interfaces func() ([]net.Addr, error)) *http.Client {
+	if !isLocalPlainHTTPIssuer(issuer) {
+		return nil
+	}
+	guard := netguard.LocalOnly{Interfaces: interfaces}
+	return &http.Client{Transport: guard.Transport(), Timeout: localIssuerTimeout}
+}
+
+// localIssuerTimeout bounds one request to a local dev issuer.
+const localIssuerTimeout = 10 * time.Second
+
 // secureEndpoint reports whether a bearer token may be sent to u: HTTPS, or
-// plain HTTP to a loopback host only.
+// plain HTTP to loopback.
 func secureEndpoint(u *url.URL) error {
 	switch u.Scheme {
 	case "https":
@@ -120,6 +202,20 @@ func secureEndpoint(u *url.URL) error {
 		return fmt.Errorf("userinfo URL %q is plain HTTP to a non-loopback host", u.Redacted())
 	}
 	return fmt.Errorf("userinfo URL %q is not HTTPS", u.Redacted())
+}
+
+// secure is secureEndpoint for this UserInfo: the same rule, plus, under
+// [UserInfo.AllowLocalPlainHTTP], plain HTTP to the issuer's own origin.
+func (u *UserInfo) secure(target *url.URL) error {
+	err := secureEndpoint(target)
+	if err == nil || !u.localHTTP || target.Scheme != "http" {
+		return err
+	}
+	issuer, perr := url.Parse(u.issuer)
+	if perr != nil || target.Host != issuer.Host || net.ParseIP(target.Hostname()) == nil {
+		return fmt.Errorf("userinfo URL %q is plain HTTP and not the issuer's own origin %s", target.Redacted(), u.issuer)
+	}
+	return nil
 }
 
 // issuerOf returns the token's `iss` claim, "" when it carries none.
@@ -238,7 +334,7 @@ func (u *UserInfo) resolve(ctx context.Context) (string, error) {
 	if err == nil {
 		var parsed *url.URL
 		if parsed, err = url.Parse(endpoint); err == nil {
-			err = secureEndpoint(parsed)
+			err = u.secure(parsed)
 		}
 	}
 	u.mu.Lock()

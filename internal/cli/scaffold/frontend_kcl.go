@@ -159,9 +159,12 @@ func frontendKCLDeclaration(frontendName, kclType string, binding frontendBindin
 	switch {
 	case binding == frontendOnHost && pinnedPort > 0:
 		fmt.Fprintf(&b, "        port = %d\n", pinnedPort)
-	case binding == frontendOnHost:
+	case binding == frontendOnHost && kclType != "rn":
 		fmt.Fprintf(&b, "        port = %s\n", frontendPortIdent(frontendName))
 	}
+	// A native frontend declares no port unless pinned: a declared port wins,
+	// and Metro prefers Expo's 8081 (where a Debug build looks for it) only
+	// when none is (see pickNativeMetroPort).
 	// The route allowlist is a property of the frontend, not of an env, so
 	// every env's declaration carries it: an env that omitted it would
 	// regenerate the full CRUD set the allowlist exists to prevent.
@@ -213,7 +216,7 @@ func spliceFrontendIntoEnvKCL(content, projectName, env, frontendName, kclType s
 	}
 	declaration := frontendKCLDeclaration(frontendName, kclType, binding, pinnedPort, routes)
 	if binding == frontendOnHost {
-		if pinnedPort <= 0 {
+		if pinnedPort <= 0 && kclType != "rn" {
 			declaration = frontendKCLPortDecl(projectName, env, frontendName) + declaration
 		}
 		if !strings.Contains(content, "_on_host_frontend = lambda") {
@@ -237,7 +240,7 @@ var hostedCORSOrigin = regexp.MustCompile(`CORS_ORIGINS\s*=\s*forge\.WorkloadURL
 func frontendKCLStanzaHint(projectName, env, frontendName, kclType string, binding frontendBinding, pinnedPort int, routes []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Declare frontend '%s' in deploy/kcl/%s/main.k by hand (forge could not place it unambiguously):\n\n", frontendName, env)
-	if binding == frontendOnHost && pinnedPort <= 0 {
+	if binding == frontendOnHost && pinnedPort <= 0 && kclType != "rn" {
 		b.WriteString(frontendKCLPortDecl(projectName, env, frontendName))
 	}
 	b.WriteString(frontendKCLDeclaration(frontendName, kclType, binding, pinnedPort, routes))

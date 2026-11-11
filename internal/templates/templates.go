@@ -59,6 +59,11 @@ func FuncMap() template.FuncMap {
 		"plural":               pluralize,
 		"singular":             singularize,
 		"formatComment":        formatComment,
+		// nativeAppID derives a mobile app's reverse-DNS id from the project
+		// and frontend names (native_app_id.go).
+		"nativeAppID": NativeAppID,
+		// dnsLabel makes a name safe as one DNS label (native_app_id.go).
+		"dnsLabel": DNSLabel,
 		// typePinTarget maps a tsconfig `paths` KEY to the node_modules
 		// directory its VALUE must point at. They differ only for packages
 		// whose typings ship separately under @types/ — see

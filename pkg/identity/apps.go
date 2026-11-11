@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -189,9 +190,24 @@ func (p *run) ensureApplications(ctx context.Context) error {
 	existing := p.apps0
 	var errs []error
 	for _, a := range p.spec.Applications {
-		if err := p.ensureApplication(ctx, a, existing); err != nil {
-			errs = append(errs, err)
+		err := p.ensureApplication(ctx, a, existing)
+		if err == nil {
+			continue
 		}
+		// An Optional application the instance refused is skipped, but only
+		// when the pass itself is still healthy: a cancelled context fails
+		// every later step too, and must not read as a refusal.
+		if a.Optional && ctx.Err() == nil {
+			delete(p.apps, a.Name)
+			// A refused write is not a change: drop what was recorded ahead of it.
+			p.rep.Changes = slices.DeleteFunc(p.rep.Changes, func(c Change) bool {
+				return c.Kind == "application" && c.Name == a.Name
+			})
+			p.rep.Skipped = append(p.rep.Skipped, Skipped{Kind: "application", Name: a.Name, Err: err})
+			p.rep.warn("optional application %q was NOT registered and is left out of the output: %v", a.Name, err)
+			continue
+		}
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

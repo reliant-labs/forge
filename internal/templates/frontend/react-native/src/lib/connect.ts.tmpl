@@ -1,8 +1,19 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { createClient, type Transport } from "@connectrpc/connect";
+import { fetch as expoFetch } from "expo/fetch";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime/interceptors";
 import type { DescService } from "@bufbuild/protobuf";
+{{- if .Workspaces}}
+import { setApiTransport } from "{{.HooksPackage}}";
+{{- end}}
+import {
+  authExpiredInterceptor,
+  epochInterceptor,
+  tokenRejectedInterceptor,
+} from "./auth/transport";
+import { currentEpoch, currentSignal, isCurrent } from "./auth/session";
 import { DEV_API_URL } from "./apiurl_gen";
+import { emitAuthExpired } from "./events";
 
 // The API URL is read from the EXPO_PUBLIC_API_URL environment variable.
 // In dev it falls back to DEV_API_URL — regenerated on every `forge
@@ -18,15 +29,29 @@ import { DEV_API_URL } from "./apiurl_gen";
 // reach (the dev machine's LAN IP, or a tunnel to the API port).
 const baseUrl = process.env.EXPO_PUBLIC_API_URL ?? DEV_API_URL;
 
-// Module-level token getter. Nothing wires it by default: this tree ships
-// the mock session provider, whose fixture token no server accepts, so the
-// scaffold sends NO Authorization header rather than one that is guaranteed
-// to be rejected. Call this from app/_layout.tsx once you have implemented
-// AuthProvider (src/lib/auth/provider) over a real identity source.
+// Module-level token getter. With native sign-in configured
+// (EXPO_PUBLIC_FORGE_OIDC_*), src/lib/auth/context wires it to the OIDC
+// provider's getToken() — which renews the token when it is about to expire —
+// and unwires it on sign-out. In mock mode nothing wires it: the mock's
+// fixture token is accepted by no server, so the scaffold sends NO
+// Authorization header rather than one that is guaranteed to be rejected. If
+// you implement your own AuthProvider (src/lib/auth/provider), feed its token
+// here.
 let _getToken: () => Promise<string | null> = async () => null;
 
 export function setAuthTokenGetter(fn: () => Promise<string | null>) {
   _getToken = fn;
+}
+
+// Called when the API answers Unauthenticated: renew the token and resolve
+// true to have the request replayed once (see src/lib/auth/transport). Unset
+// by default, so an app that never wires it never replays.
+let _onTokenRejected: ((rejectedToken: string | null) => Promise<boolean>) | null = null;
+
+export function setTokenRejectedHandler(
+  fn: ((rejectedToken: string | null) => Promise<boolean>) | null,
+) {
+  _onTokenRejected = fn;
 }
 
 // The forge frontend runtime owns the interceptor stack: auth-token attach,
@@ -38,27 +63,60 @@ export function setAuthTokenGetter(fn: () => Promise<string | null>) {
 // no captured value to go stale.
 //
 // The import is the runtime's DOM-free entry point, not its "." barrel: the
-// barrel also carries React components typed against React 19, which Expo's
-// React 18 types reject. "/interceptors" reaches only the transport layer.
-const interceptors = buildRuntimeInterceptors({
-  getToken: () => _getToken(),
-});
+// barrel also carries browser UI components that native transport does not
+// need. "/interceptors" reaches only the transport layer.
+//
+// Wrapped around it, outermost first (src/lib/auth/transport):
+//   - authExpired:   a call that ENDS Unauthenticated emits `auth:expired`, as
+//                    the browser transports do, so the auth context re-checks
+//                    the session. (Without it that listener is dead code here.)
+//   - epoch:         requests run under the identity epoch and abort on
+//                    sign-out; a response that lands for a previous identity is
+//                    dropped, so it cannot repopulate the cache.
+//   - tokenRejected: on Unauthenticated, renew the token once and replay a
+//                    unary call once.
+const identity = { currentEpoch, currentSignal, isCurrent };
+const interceptors = [
+  authExpiredInterceptor(emitAuthExpired),
+  epochInterceptor(identity),
+  tokenRejectedInterceptor({ session: identity, handler: () => _onTokenRejected }),
+  ...buildRuntimeInterceptors({
+    getToken: () => _getToken(),
+  }),
+];
 
-function buildTransport(): Transport {
+// Hermes' built-in fetch (React Native's XHR-backed polyfill) buffers the whole
+// response, so a server-streaming RPC would deliver nothing until the stream
+// ends. expo/fetch is Expo's native fetch: its Response.body is a real
+// ReadableStream fed chunk by chunk from the platform networking stack, which
+// is what connect-web's streaming path reads. It is passed explicitly, rather
+// than relying on the global, so streaming does not depend on
+// EXPO_PUBLIC_USE_RN_FETCH (which swaps the global back to React Native's).
+// On web, expo/fetch resolves to the browser's own fetch.
+//
+// Unary calls go through it too, so every call has one network layer and the
+// same AbortSignal semantics: aborting cancels the native request and errors
+// the body stream.
+//
+// createTransport takes the fetch implementation as a parameter only so tests
+// can drive the real transport with a fake network; the app uses `transport`
+// below, which always gets expo/fetch.
+export function createTransport(fetchImpl: typeof globalThis.fetch = expoFetch): Transport {
   return createConnectTransport({
     baseUrl,
     interceptors,
+    fetch: fetchImpl,
   });
 }
 
-export const transport = buildTransport();
+export const transport = createTransport();
 {{- if .Workspaces}}
 
 // Wire the workspace-shared hooks package to this frontend's Transport.
 // The hooks package is DOM-free; each frontend hands its Transport over
 // once at module load so generated hooks resolve against the right
-// network layer.
-import { setApiTransport } from "{{.HooksPackage}}";
+// network layer. (Hooks resolve the transport at call time, so importing
+// setApiTransport before `transport` exists is safe.)
 setApiTransport(transport);
 {{- end}}
 

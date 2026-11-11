@@ -47,6 +47,12 @@ type LoginBrokerTemplateData struct {
 	// trusted_proxy_hops, how many proxies' X-Forwarded-For entries the
 	// broker's rate limits may trust.
 	TrustedProxyHopsField bool
+	// LocalOnlyField reports whether that config declares
+	// jwt_userinfo_allow_local_http, the dev-only knob `forge env up
+	// --device-host` sets. The broker then reads it to confine its IdP client
+	// to this machine at connect time (devidp.Client.LocalOnly). A config
+	// without it gets a broker that does not read it, and still compiles.
+	LocalOnlyField bool
 }
 
 // Go names of the optional broker fields.
@@ -121,6 +127,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		LoginPolicyField:                      declares(loginPolicyConfigField),
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
+		LocalOnlyField:                        declares(userInfoLocalHTTPConfigField),
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

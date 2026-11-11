@@ -66,7 +66,10 @@ type fakeZitadel struct {
 	hosts    map[string]bool
 	flaky    map[string]int // path substring -> remaining 503s
 	failPath map[string]int // path substring -> HTTP status to return always
-	smallPg  bool
+	// rejectApp refuses to create an application whose OIDC config it returns
+	// true for, as Zitadel does for a client it finds invalid.
+	rejectApp func(cfg map[string]any) bool
+	smallPg   bool
 	// projectionLag makes the v2 user reads of a human created through the
 	// fake answer 404 "User could not be found", as real Zitadel does while
 	// its projections trail the write.
@@ -590,6 +593,10 @@ func (f *fakeZitadel) projectChild(w http.ResponseWriter, r *http.Request, segs 
 			if k != "name" {
 				cfg[k] = v
 			}
+		}
+		if f.rejectApp != nil && f.rejectApp(cfg) {
+			zerr(w, 400, 3, "V3-REJ", "redirect uri is not valid for this application type")
+			return
 		}
 		a := &fApp{ID: f.id(), Name: name, ClientID: f.id(), Config: cfg}
 		out := map[string]any{"appId": a.ID, "clientId": a.ClientID, "details": details()}

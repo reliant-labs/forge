@@ -212,11 +212,11 @@ Wired in every scaffold, disabled until you supply a key validator. A key arrive
 
 Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge env up` brings up as a host process and converges (`identity` on the dev Bundle) for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge env up` reproduces it, credential included.
 
-Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to ONE hostname (`localhost`, which is why its dev loop is `forge env up`, not a containerized app), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
+Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to `localhost` (plus one LAN address under `--device-host`; run it with `forge env up`, not a container), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
 
 ## Frontend wiring
 
-**Sign-in is NATIVE, and the browser never contacts the identity provider.** The browser POSTs credentials to this app's own API (`POST /auth/login`) and receives an HttpOnly session cookie; the server runs the whole OIDC flow against the issuer (`internal/app/login_broker.go`, over `forge/pkg/devidp`). So there is no token in JavaScript, no redirect, and no PKCE in the bundle — the issuer values (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are read SERVER-side. React Native cannot use the cookie model and keeps the `AuthProvider` seam (`src/lib/auth/provider.ts`) instead. All of it is in `auth/frontend`.
+**Sign-in is NATIVE, and the browser never contacts the identity provider.** The browser POSTs credentials to this app's own API (`POST /auth/login`) and receives an HttpOnly session cookie; the server runs the whole OIDC flow against the issuer (`internal/app/login_broker.go`, over `forge/pkg/devidp`). So there is no token in JavaScript, no redirect, and no PKCE in the bundle — the issuer values (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are read SERVER-side. React Native cannot use cookies: it ships a real OIDC provider (system-browser PKCE, keystore) behind `AuthProvider`; mock only as fallback (`auth/frontend`).
 
 ## Testing auth
 

@@ -88,3 +88,22 @@ func TestDefaultExportName(t *testing.T) {
 		}
 	}
 }
+
+// React Native 0.87 (Expo SDK 58) made the Strict TypeScript API the default,
+// whose TextInput ref is TextInputInstance. Older RN has no such export. Derive
+// the ref from TextInput so a ui-native package can serve SDK 52 or SDK 58.
+// Consumer fixtures and the dual-RN type probe are the compile evidence.
+func TestInputForwardsVersionNeutralRef(t *testing.T) {
+	src, err := NewLibrary().Get("input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"export type InputRef = React.ComponentRef<typeof TextInput>", "forwardRef<InputRef, InputProps>", "RefAttributes<InputRef>"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("input must forward a version-neutral TextInput ref; missing %q", want)
+		}
+	}
+	if strings.Contains(src, "type TextInputInstance") || strings.Contains(src, "<TextInputInstance") {
+		t.Error("input must not import RN 0.87+-only TextInputInstance")
+	}
+}

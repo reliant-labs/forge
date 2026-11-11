@@ -89,6 +89,7 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		Project:         e.Project,
 		Identity:        id,
 		BaseURL:         fmt.Sprintf("http://localhost:%d", zitadel.Port),
+		DeviceHost:      zitadel.DeviceHost,
 		PATPath:         idpPATLocations(zitadel, projectDir).Checkout,
 		WorkloadOrigins: map[string]string{},
 		Refs:            hostIdentityRefs(e, id),
@@ -107,6 +108,12 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 		if f.Runtime.Type != "" && f.Runtime.Type != FrontendRuntimeHost {
 			continue
 		}
+		// A native app's port is Metro's, and it serves no sign-in or
+		// callback route: the origin the web app's routes are derived from
+		// is a browser frontend's.
+		if isNativeFrontend(f.Type) {
+			continue
+		}
 		if f.Port > 0 {
 			in.FrontendOrigin = fmt.Sprintf("http://localhost:%d%s", f.Port, strings.TrimSuffix(f.BasePath, "/"))
 			break
@@ -119,6 +126,7 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 			}
 		}
 	}
+	in.NativeAppSchemes, in.NativeAppWarnings = nativeAppSchemes(e, id, projectDir)
 	mail, err := devMailInfra(e, id)
 	if err != nil {
 		return devidentity.Input{}, err
@@ -157,6 +165,9 @@ func idpPATLocations(zitadel *HostInfraEntity, projectDir string) hostinfra.IDPP
 		IDPDatabasePort: zitadel.IDPDatabasePort,
 	}.IDPPATLocations(projectDir)
 }
+
+// idpServesDomain is hostinfra.ServesDomain, swappable so a test needs no IdP.
+var idpServesDomain = hostinfra.ServesDomain
 
 // convergeDevIdentityFn is devidentity.Converge, swappable so a test needs no
 // IdP.
@@ -286,6 +297,15 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 	if id == nil {
 		return
 	}
+	// A device origin is published as the issuer only when the IdP really
+	// answers there. When it does not (the restart that adds the domain failed
+	// and the IdP fell back to localhost), the device host is dropped for the
+	// run and the localhost issuer is published, so nothing is pinned to an
+	// origin nobody serves.
+	if z, zerr := hostZitadel(e, id); zerr == nil && z.DeviceHost != "" && !idpServesDomain(ctx, z.Port, z.DeviceHost) {
+		fmt.Printf("[up] identity %s: the dev IdP does not answer at %s, so this run keeps the localhost issuer and devices cannot sign in.\n", id.Name, z.DeviceHost)
+		z.DeviceHost = ""
+	}
 	in, err := devIdentityInput(e, id, projectDir, prov)
 	if err != nil {
 		fmt.Printf("[up] identity %s: %v\n[up] sign-in is unavailable this run; everything else still starts.\n", id.Name, err)
@@ -333,14 +353,15 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 	if mailUI != "" {
 		fmt.Printf("[up] identity %s: Mail: %s\n", id.Name, mailUI)
 	}
+	origin, _ := in.IssuerOrigin() // the issuer the run published: the device origin under --device-host
 	switch {
 	case res.Report.Changed():
-		fmt.Printf("[up] identity %s: converged %s (%d change(s))\n", id.Name, in.BaseURL, len(res.Report.Changes))
+		fmt.Printf("[up] identity %s: converged %s (%d change(s))\n", id.Name, origin, len(res.Report.Changes))
 		for _, c := range res.Report.Changes {
 			fmt.Printf("[up]   %s\n", c)
 		}
 	default:
-		fmt.Printf("[up] identity %s: already converged at %s\n", id.Name, in.BaseURL)
+		fmt.Printf("[up] identity %s: already converged at %s\n", id.Name, origin)
 	}
 	if len(res.StoreKeys) > 0 {
 		fmt.Printf("[up] identity %s: wrote %s to %s\n", id.Name, strings.Join(res.StoreKeys, ", "), relTo(projectDir, in.StorePath))

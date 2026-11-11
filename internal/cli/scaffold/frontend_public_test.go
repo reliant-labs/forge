@@ -33,11 +33,18 @@ func writeDevMainK(t *testing.T, root string, withIDP bool) {
 // "every page redirects to /auth/sign-in": a frontend added to a project whose
 // dev env declares no identity provider shipped the native sign-in guard, and
 // nothing in that project can complete a sign-in. It must come out public.
+//
+// The project here has deploy/kcl/identity.k but binds no identity in its dev
+// env — the author removed it on purpose, so the first frontend must not put it
+// back (reconcileFirstFrontendIdentity), and the frontend is public.
 func TestRunAddFrontend_NoIdPScaffoldsPublicFrontend(t *testing.T) {
 	skipNpmInstall(t)
 	dir := withTempProject(t, freshServiceForgeYAML)
 	markServiceProject(t, dir)
 	writeDevMainK(t, dir, false)
+	if err := generator.ScaffoldIdentityKCL(dir, "demo"); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "web"}); err != nil {
 		t.Fatalf("runFrontend: %v", err)
@@ -74,6 +81,31 @@ func TestRunAddFrontend_NoIdPScaffoldsPublicFrontend(t *testing.T) {
 	}
 }
 
+// TestRunAddFrontend_FirstFrontendBringsTheIdPAndTheSignInGate: a project born
+// without a frontend has no IdP, but its first frontend now brings the dev
+// identity with it, so the default is the gated native frontend with something
+// behind its sign-in form — not a public one.
+func TestRunAddFrontend_FirstFrontendBringsTheIdPAndTheSignInGate(t *testing.T) {
+	skipNpmInstall(t)
+	dir := withTempProject(t, freshServiceForgeYAML)
+	markServiceProject(t, dir)
+	writeDevMainK(t, dir, false)
+
+	if err := runFrontend(context.Background(), testFactory(), frontendArgs{name: "web"}); err != nil {
+		t.Fatalf("runFrontend: %v", err)
+	}
+	if !projectDeclaresDevIDP(dir) {
+		t.Error("the first frontend must leave the dev env declaring an IdP")
+	}
+	providers, err := os.ReadFile(filepath.Join(dir, "frontends", "web", "src", "app", "providers.tsx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(providers), "<AppRouteGuard>") {
+		t.Error("with an IdP now declared the frontend must keep the sign-in gate")
+	}
+}
+
 // TestRunAddFrontend_WithIdPKeepsTheSignInGate is the counterweight: a
 // project that declares a dev IdP keeps the gated native frontend.
 func TestRunAddFrontend_WithIdPKeepsTheSignInGate(t *testing.T) {
@@ -101,14 +133,14 @@ func TestRunAddFrontend_WithIdPKeepsTheSignInGate(t *testing.T) {
 func TestResolveFrontendAuthMode_ExplicitWins(t *testing.T) {
 	root := t.TempDir()
 	writeDevMainK(t, root, false)
-	if got := resolveFrontendAuthMode(root, authModeNative); got != authModeNative {
+	if got := resolveFrontendAuthMode(root, authModeNative, false); got != authModeNative {
 		t.Errorf("explicit native = %q", got)
 	}
 	writeDevMainK(t, root, true)
-	if got := resolveFrontendAuthMode(root, authModeNone); got != authModeNone {
+	if got := resolveFrontendAuthMode(root, authModeNone, false); got != authModeNone {
 		t.Errorf("explicit none = %q", got)
 	}
-	if got := resolveFrontendAuthMode(root, ""); got != authModeNative {
+	if got := resolveFrontendAuthMode(root, "", false); got != authModeNative {
 		t.Errorf("default with IdP = %q, want native", got)
 	}
 }

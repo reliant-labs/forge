@@ -1,9 +1,22 @@
-import { userMessage } from "@reliantlabs/forge-web-runtime";
+// The portable /interceptors entry, never the root barrel (it pulls
+// browser-only modules into native bundles); see lib/query-client.ts.
+import { normalizeError } from "@reliantlabs/forge-web-runtime/interceptors";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 import type { UseMutationOptions } from "@tanstack/react-query";
+
+const FALLBACK_MESSAGE = "Something went wrong. Please try again.";
+
+/**
+ * normalizeError reports "Unknown error" for null / undefined / non-Error
+ * values; the user-facing copy for that case is the generic retry prompt.
+ */
+function userFacingMessage(err: unknown): string {
+  const message = normalizeError(err).message;
+  return !message || message === "Unknown error" ? FALLBACK_MESSAGE : message;
+}
 
 /**
  * useOptimisticMutation — mutate with an optimistic cache write, automatic
@@ -109,7 +122,7 @@ export function useOptimisticMutation<TData, TVariables, TSnapshot = unknown>(
       if (context && "previous" in context) {
         queryClient.setQueryData(queryKey, context.previous);
       }
-      setError(userMessage(err));
+      setError(userFacingMessage(err));
     },
     onSettled: () => {
       // Reconcile with the server regardless of outcome.

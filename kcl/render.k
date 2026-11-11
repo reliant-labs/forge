@@ -951,14 +951,48 @@ _idn_services = lambda workloads: [any], id: any -> [any] {
     [w for w in workloads if w.kind == "service" and w.runtime and w.runtime.type in _idn_reach(id)]
 }
 
+# The BROKER applications: the declared ones, else one derived per service
+# workload. A kind "native" application is a mobile client of a frontend, not
+# a broker of a workload, so it is neither counted here nor does it stop the
+# default from being derived (see _idn_native_apps).
 _idn_apps = lambda workloads: [any], id: any, env: str, project: str -> [IdentityApplication] {
     _svc = _idn_services(workloads, id)
     _api = [w for w in _svc if w.name == "api"]
-    id.applications if id.applications else [IdentityApplication {
+    _declared = [a for a in id.applications if a.kind != "native"] if id.applications else []
+    _declared if _declared else [IdentityApplication {
         name = "${env or project}:${w.name}"
         workload = w.name
         kind = "native_broker"
     } for w in (_api if _api else _svc)]
+}
+
+# The NATIVE applications: the declared ones, plus one `<env>:<frontend>` for
+# every `rn` frontend that has none, on an identity that runs on the host IdP.
+#
+# WHY DERIVED, NOT DECLARED. A mobile frontend that has managed identity
+# needs a client at the IdP the way a browser frontend needs its callback:
+# nothing about it is a decision (public client, PKCE, the IdP's hosted
+# login, a callback named by the app's own scheme), so asking the author to
+# declare it would be ceremony that can only be forgotten. Declaring one
+# stays possible for the 20% (a literal or https/universal-link callback, a
+# second app), and `Frontend.native_sign_in = False` opts one frontend out. The derived application carries NO redirect: the callbacks
+# come from the frontend's app.json (the reverse-DNS entry of expo.scheme),
+# which `forge env up` reads, so the scheme the app registers with the OS and
+# the scheme the IdP trusts are one fact.
+#
+# Only the host-run IdP converges a native client today. A hosted identity
+# gets the application only when it is declared (with explicit callbacks), so
+# nothing here changes what a hosted env renders until the control plane
+# converges the kind.
+_idn_native_apps = lambda frontends: [any], id: any, env: str, project: str -> [IdentityApplication] {
+    _declared = [a for a in id.applications if a.kind == "native"] if id.applications else []
+    _covered = [a.frontend for a in _declared]
+    _derived = [IdentityApplication {
+        name = "${env or project}:${f.name}"
+        kind = "native"
+        frontend = f.name
+    } for f in frontends if f.type == "rn" and f.native_sign_in and f.name not in _covered] if _idn_rt(id) == "host" else []
+    _declared + _derived
 }
 
 _idn_app_of = lambda apps: [any], workload: str -> str {
@@ -987,6 +1021,9 @@ _idn_workload = lambda workloads: [any], name: str -> any {
 # Names a declaration points at that the env cannot honour. Empty = fine.
 _idn_bad_apps = lambda workloads: [any], id: any, env: str, project: str -> [str] {
     [a.workload for a in _idn_apps(workloads, id, env, project) if len([w for w in workloads if w.name == a.workload and w.kind == "service"]) == 0] if id else []
+}
+_idn_bad_native_apps = lambda frontends: [any], id: any, env: str, project: str -> [str] {
+    [a.frontend for a in _idn_native_apps(frontends, id, env, project) if a.frontend not in [f.name for f in frontends if f.type == "rn"]] if id else []
 }
 _idn_bad_consumers = lambda workloads: [any], id: any, env: str, project: str -> [str] {
     [c.workload for c in _idn_consumers(workloads, id, env, project) if len([w for w in _idn_services(workloads, id) if w.name == c.workload]) == 0] if id else []
@@ -1236,7 +1273,7 @@ _idn_managed_names = lambda b: Bundle -> [str] {
 
 _render_identity = lambda b: Bundle -> any {
     _id = b.identity
-    _apps = _idn_apps(b.workloads, _id, b.env, b.project)
+    _apps = _idn_apps(b.workloads, _id, b.env, b.project) + _idn_native_apps(b.frontends, _id, b.env, b.project)
     _dl = [s for s in _idn_cps(b.workloads, _id, b.env, b.project) if s.kind in IDENTITY_SECRET_KINDS]
     {
         "name": _id.name
@@ -1257,6 +1294,8 @@ _render_identity = lambda b: Bundle -> any {
             "name": a.name
             "workload": a.workload
             "kind": a.kind
+            if a.frontend:
+                "frontend": a.frontend
             "redirect_uris": a.redirect_uris if a.redirect_uris else None
             "logout_uris": a.logout_uris if a.logout_uris else None
             "login_uri": a.login_uri if a.login_uri else None
@@ -2838,7 +2877,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "path": f.path if f.path else None
         "source": _render_git_source(f.source) if f.source else None
         "dev_runner": f.dev_runner
-        "port": f.port
+        "port": f.port if f.port != Undefined else None
         "env_file": f.env_file if f.env_file else None
         "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -202,6 +203,10 @@ allowBuilds:
   esbuild: true
   unrs-resolver: true
   protobufjs: false
+  # Jest 30's file watcher (jest-expo 58, the Expo app's test runner): its
+  # install script only runs node-gyp when npm_config_build_from_source=true;
+  # the prebuilt binary arrives through a platform optional dependency.
+  "@parcel/watcher": false
 `
 	return writeIfMissing(path, body)
 }
@@ -420,14 +425,22 @@ export function getApiTransport(): Transport {
   return _transport;
 }
 
+// Resolve at RPC invocation, not client construction: service modules create
+// clients while the root barrel is still loading, before frontend bootstrap.
+// Swaps affect subsequent calls; already-started calls keep their transport.
+const forwardingTransport: Transport = {
+  unary: (...args) => getApiTransport().unary(...args),
+  stream: (...args) => getApiTransport().stream(...args),
+};
+
 /**
- * connectClient creates a typed Connect client against the currently-
- * registered Transport. Mirrors the per-frontend connectClient() helper
+ * connectClient creates a typed Connect client that resolves the registered
+ * Transport on each call. Mirrors the per-frontend connectClient() helper
  * so generated hooks can call ` + "`connectClient(UserService)`" + ` exactly
  * like they do in the non-workspace layout.
  */
 export function connectClient<S extends DescService>(service: S) {
-  return createClient(service, getApiTransport());
+  return createClient(service, forwardingTransport);
 }
 `
 	if err := writeIfMissing(filepath.Join(hooksDir, "src", "transport.ts"), transportTS); err != nil {
@@ -436,7 +449,7 @@ export function connectClient<S extends DescService>(service: S) {
 
 	useAPIQuery := `import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiQuery wraps a Connect client promise-returning call in a
@@ -475,7 +488,7 @@ export function useApiQuery<TData, TError = ConnectClientError>(
 
 	useAPIMutation := `import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 
-import type { ConnectClientError } from "@reliantlabs/forge-web-runtime";
+import type { ConnectClientError } from "@reliantlabs/forge-web-runtime/interceptors";
 
 /**
  * useApiMutation wraps a Connect client promise-returning call in a
@@ -710,6 +723,27 @@ func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error 
 // you add a new component and want it re-exported, edit the barrel —
 // `forge generate` won't fight you. Stable sorted on the first emit
 // so initial diffs are clean.
+// This recognizes the supported scaffold's export declarations, not arbitrary
+// TypeScript semantics. The seeded barrel is owned after birth; custom module
+// shapes can be re-exported explicitly by the app without a parser in Forge.
+var uiWebDefaultExport = regexp.MustCompile(`(?m)^\s*export\s+default\b`)
+var uiWebNamedExports = regexp.MustCompile(`(?ms)^\s*export\s*\{([^}]*)\}`)
+
+func uiWebHasDefaultExport(source string) bool {
+	if uiWebDefaultExport.MatchString(source) {
+		return true
+	}
+	for _, block := range uiWebNamedExports.FindAllStringSubmatch(source, -1) {
+		for _, entry := range strings.Split(block[1], ",") {
+			fields := strings.Fields(entry)
+			if len(fields) == 1 && fields[0] == "default" || len(fields) == 3 && fields[1] == "as" && fields[2] == "default" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func writeUIWebBarrel(uiDir string) error {
 	indexPath := filepath.Join(uiDir, "src", "index.ts")
 	if _, err := os.Stat(indexPath); err == nil {
@@ -740,12 +774,20 @@ func writeUIWebBarrel(uiDir string) error {
 	b.WriteString("// Add/remove exports below as you add/remove components; subsequent\n")
 	b.WriteString("// `forge generate` runs will NOT clobber edits to this file.\n")
 	b.WriteString("//\n")
-	b.WriteString("// Each component file exports its component as default; the barrel\n")
-	b.WriteString("// re-names it to PascalCase for ergonomic named imports:\n")
+	b.WriteString("// Default components are exposed as PascalCase named imports. Helper\n")
+	b.WriteString("// modules without a default retain their named exports.\n")
 	b.WriteString("//   import { Button, DataTable } from \"@<scope>/ui-web\";\n\n")
 	for _, name := range names {
-		pascal := toPascalCase(name)
-		fmt.Fprintf(&b, "export { default as %s } from \"./components/ui/%s\";\n", pascal, name)
+		body, err := os.ReadFile(filepath.Join(componentsDir, name+".tsx"))
+		if err != nil {
+			return fmt.Errorf("read ui-web export %s: %w", name, err)
+		}
+		if uiWebHasDefaultExport(string(body)) {
+			pascal := toPascalCase(name)
+			fmt.Fprintf(&b, "export { default as %s } from \"./components/ui/%s\";\n", pascal, name)
+		} else {
+			fmt.Fprintf(&b, "export * from \"./components/ui/%s\";\n", name)
+		}
 	}
 	if len(names) == 0 {
 		// Keep the file a valid module even when there are no components.
@@ -828,8 +870,8 @@ func WriteUINativePackageFiles(projectDir string, layout FrontendWorkspaceLayout
     "react-native-safe-area-context": "*"
   },
   "devDependencies": {
-    "@types/react": "~18.3.0",
-    "typescript": "^5.8.0"
+    "@types/react": "~19.3.0",
+    "typescript": "~6.0.3"
   }
 }
 `, layout.UINativePackage)

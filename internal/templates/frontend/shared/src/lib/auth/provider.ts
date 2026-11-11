@@ -54,4 +54,33 @@ export interface AuthProvider {
   getUser(): AuthUser | null;
   /** Sign out. */
   logout(): Promise<void>;
+
+  // ── Optional: a provider that owns a persisted, renewable session ─────
+  //
+  // All three are optional so the mock provider, the browser frontends and
+  // any provider an app wrote against the three members above keep
+  // typechecking unchanged. The auth context calls them only when present.
+
+  /**
+   * Load the session persisted by an earlier launch (secure storage), and
+   * renew it when it has lapsed. Resolves to the user, or null when there is
+   * no session. Called once on mount, with the context in its loading state.
+   */
+  restore?(): Promise<AuthUser | null>;
+  /**
+   * Interactive sign-in (the system browser). Resolves to the user, or null
+   * when the person cancelled — not an error. Rejects with a typed error for
+   * a failure worth telling them about.
+   */
+  signIn?(): Promise<AuthUser | null>;
+  /**
+   * The API refused the token this provider handed out (HTTP 401). Force one
+   * renewal; resolve true when a different token is now available, so the
+   * transport replays the request once. False means do not replay.
+   *
+   * `rejectedToken` is the token the refused request carried, so concurrent
+   * 401s for one stale token share a single renewal instead of each forcing
+   * another. Ignoring it is allowed.
+   */
+  onTokenRejected?(rejectedToken?: string | null): Promise<boolean>;
 }

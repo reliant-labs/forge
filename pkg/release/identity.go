@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -39,6 +40,10 @@ const (
 const (
 	IdentityAppNativeBroker = "native_broker"
 	IdentityAppOIDCWeb      = "oidc_web"
+	// IdentityAppNative is a mobile app's own OIDC client: a public PKCE
+	// client that signs in at the identity provider's hosted pages, with no
+	// broker and no secret. It is tied to a native frontend, not a workload.
+	IdentityAppNative = "native"
 )
 
 // Where a role's members are managed ([ShapeIdentityRole.MembersFrom]).
@@ -311,8 +316,16 @@ type ShapeIdentityRole struct {
 type ShapeIdentityApplication struct {
 	Name string `json:"name"`
 	// Workload is the broker: the workload that runs the sign-in endpoint.
-	Workload     string   `json:"workload"`
-	Kind         string   `json:"kind"`
+	// Empty for kind native, which has no broker.
+	Workload string `json:"workload"`
+	Kind     string `json:"kind"`
+	// Frontend is the native (Expo) frontend a kind-native application
+	// belongs to. Empty for every other kind.
+	Frontend string `json:"frontend,omitempty"`
+	// RedirectURIs are ordered for kind native: the first is the one the app
+	// signs in with, so a later https (universal link) entry can be appended
+	// or promoted without the app branching on the scheme. Every other kind
+	// is a set and is sorted in the canonical form.
 	RedirectURIs []string `json:"redirect_uris,omitempty"`
 	LogoutURIs   []string `json:"logout_uris,omitempty"`
 	// LoginURI is the declared literal override. Empty means the control plane
@@ -417,8 +430,13 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 	if len(i.Applications) > 0 {
 		out.Applications = make([]ShapeIdentityApplication, len(i.Applications))
 		for n, a := range i.Applications {
-			a.RedirectURIs = sortedNonEmpty(a.RedirectURIs)
-			a.LogoutURIs = sortedNonEmpty(a.LogoutURIs)
+			if a.Kind == IdentityAppNative {
+				a.RedirectURIs = orderedNonEmpty(a.RedirectURIs)
+				a.LogoutURIs = orderedNonEmpty(a.LogoutURIs)
+			} else {
+				a.RedirectURIs = sortedNonEmpty(a.RedirectURIs)
+				a.LogoutURIs = sortedNonEmpty(a.LogoutURIs)
+			}
 			out.Applications[n] = a
 		}
 		sort.Slice(out.Applications, func(a, b int) bool { return out.Applications[a].Name < out.Applications[b].Name })
@@ -509,6 +527,21 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 	return out
 }
 
+// orderedNonEmpty keeps the declared order (it is meaningful) and drops
+// repeats and blanks; nil when nothing is left.
+func orderedNonEmpty(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range in {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
 // sortedNonEmpty is [sortedStrings] that returns nil for an empty list, so a
 // field tagged omitempty omits it and a round trip compares equal.
 func sortedNonEmpty(in []string) []string {
@@ -584,11 +617,14 @@ func (i ShapeIdentity) validate(controlPlaneSecrets []ShapeControlPlaneSecret) e
 
 	apps := map[string]bool{}
 	for _, a := range i.Applications {
-		if strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Workload) == "" {
-			return bad("an application needs a name and a workload")
+		if strings.TrimSpace(a.Name) == "" {
+			return bad("an application needs a name")
 		}
-		if a.Kind != IdentityAppNativeBroker && a.Kind != IdentityAppOIDCWeb {
-			return bad("application %q: kind %q (expected %s or %s)", a.Name, a.Kind, IdentityAppNativeBroker, IdentityAppOIDCWeb)
+		if a.Kind != IdentityAppNativeBroker && a.Kind != IdentityAppOIDCWeb && a.Kind != IdentityAppNative {
+			return bad("application %q: kind %q (expected %s, %s or %s)", a.Name, a.Kind, IdentityAppNativeBroker, IdentityAppOIDCWeb, IdentityAppNative)
+		}
+		if err := i.validateApplication(a); err != nil {
+			return err
 		}
 		if apps[a.Name] {
 			return bad("application %q declared twice", a.Name)
@@ -935,3 +971,116 @@ func ValidIdentitySlug(s string) bool {
 func IdentityIssuer(slug string) string {
 	return "https://" + slug + "." + IdentityDomain
 }
+
+// NativeAppNotOnHostedMessage is the refusal of a kind-native application on an
+// identity that is not host-run; the KCL schema says the same thing.
+const NativeAppNotOnHostedMessage = "kind native: native identity applications are not yet supported on hosted identity (only on forge.IdentityOnHost, the dev loop); see `forge skill load deploy/managed-identity/mobile`"
+
+// validateApplication checks what differs by kind: a broker or web app needs
+// the workload that serves its callbacks; a native app is a mobile client of
+// one frontend, with callback URIs a phone can own.
+func (i ShapeIdentity) validateApplication(a ShapeIdentityApplication) error {
+	bad := func(format string, args ...any) error {
+		return fmt.Errorf("%w: shape identity %q: application %q: %s", ErrInvalid, i.Name, a.Name, fmt.Sprintf(format, args...))
+	}
+	if a.Kind != IdentityAppNative {
+		if strings.TrimSpace(a.Workload) == "" {
+			return bad("needs a workload")
+		}
+		if a.Frontend != "" {
+			return bad("frontend applies only to kind %s", IdentityAppNative)
+		}
+		return nil
+	}
+	if strings.TrimSpace(a.Frontend) == "" {
+		return bad("kind %s needs the native frontend it belongs to", IdentityAppNative)
+	}
+	if a.Workload != "" {
+		return bad("kind %s has no broker workload (it signs in at the identity provider's own pages)", IdentityAppNative)
+	}
+	if a.LoginURI != "" {
+		return bad("kind %s has no login_uri: it uses the identity provider's own sign-in pages", IdentityAppNative)
+	}
+	// Only a host-run instance converges a native client today: hosted
+	// registration is not built, and a shape that declared one would be
+	// recorded as if it were converged. What a hosted native app needs once it
+	// is (required redirect_uris, no http) is in ValidateNativeCallbackURI;
+	// lift this refusal, and the matching KCL check, in the change that lands
+	// it, and advertise BundleFeatureIdentityNativeApp with it.
+	if i.Runtime != IdentityRuntimeHost {
+		return bad("%s", NativeAppNotOnHostedMessage)
+	}
+	// A host-run instance is the dev loop: the redirect is derived from the
+	// frontend's app.json when none is declared, and plain http is allowed.
+	for _, u := range a.RedirectURIs {
+		if err := ValidateNativeCallbackURI(u, true); err != nil {
+			return bad("redirect_uris: %v", err)
+		}
+	}
+	for _, u := range a.LogoutURIs {
+		if err := ValidateNativeCallbackURI(u, true); err != nil {
+			return bad("logout_uris: %v", err)
+		}
+	}
+	return nil
+}
+
+// ValidateNativeCallbackURI checks a redirect or post-logout URI of a native
+// (mobile) OIDC client against RFC 8252 section 7: either a private-use URI
+// scheme named by the reverse of a domain you control and written with a
+// single slash (section 7.1, `com.acme.app:/oauthredirect`), or a claimed
+// https URL (section 7.2, a universal or app link). Plain http is accepted
+// only with allowHTTP, which is the dev loop. Wildcards, queries and
+// fragments are never accepted: the identity provider compares literally.
+func ValidateNativeCallbackURI(raw string, allowHTTP bool) error {
+	bad := func(format string, args ...any) error {
+		return fmt.Errorf("%q: %s", raw, fmt.Sprintf(format, args...))
+	}
+	if strings.TrimSpace(raw) != raw || raw == "" {
+		return bad("is empty or has surrounding whitespace")
+	}
+	if strings.ContainsAny(raw, "*? \t#") {
+		return bad("contains a wildcard, query, fragment or whitespace: a native callback is compared literally")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" {
+		return bad("is not an absolute URI")
+	}
+	if raw[:len(u.Scheme)] != u.Scheme { // url.Parse lowercases the scheme
+		return bad("the scheme must be lowercase")
+	}
+	switch u.Scheme {
+	case "https":
+		if u.Host == "" || u.User != nil {
+			return bad("an https callback needs a host and no credentials")
+		}
+		return nil
+	case "http":
+		if !allowHTTP {
+			return bad("http is accepted only for a dev env's host-run identity: use https (a universal or app link) or a private-use scheme such as com.acme.app:/oauthredirect")
+		}
+		if u.Host == "" {
+			return bad("an http callback needs a host")
+		}
+		return nil
+	}
+	if !nativeSchemeRE.MatchString(u.Scheme) {
+		return bad("the scheme must be a reverse-DNS name (RFC 8252 section 7.1), e.g. com.acme.app: lowercase letters, digits, '-', and at least one '.'")
+	}
+	if u.Host != "" || u.User != nil || u.Opaque != "" || len(u.Path) < 2 || !strings.HasPrefix(raw, u.Scheme+":/") || strings.HasPrefix(raw, u.Scheme+"://") {
+		return bad("a private-use scheme callback is written with a single slash and no host: %s:/oauthredirect (RFC 8252 section 7.1)", u.Scheme)
+	}
+	return nil
+}
+
+// nativeSchemeRE: a lowercase scheme with at least one dot, i.e. the reverse
+// of a domain name.
+var nativeSchemeRE = regexp.MustCompile(`^[a-z][a-z0-9-]*(\.[a-z0-9-]+)+$`)
+
+// IsNativePrivateScheme reports whether scheme can name a native app's
+// callback: a lowercase reverse-DNS scheme (RFC 8252 section 7.1) with at
+// least one dot, the exact shape [ValidateNativeCallbackURI] accepts. It is
+// how `forge env up` picks the callback scheme out of an app's `expo.scheme`
+// without equating it with the bundle id, whose rules differ (Android allows
+// uppercase and `_`, a plain `mobile` link scheme has no dot).
+func IsNativePrivateScheme(scheme string) bool { return nativeSchemeRE.MatchString(scheme) }

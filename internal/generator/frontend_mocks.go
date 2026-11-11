@@ -75,7 +75,7 @@ import (
 // stub that would silently drop the scenario mechanism) that also carries no
 // `@/gen/...` imports, so the scaffold-time render stands alone before the
 // TypeScript stubs exist.
-func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, entities []codegen.EntityDef, seed *codegen.SeedProjection, cs *FileChecksums) (int, error) {
+func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, entities []codegen.EntityDef, seed *codegen.SeedProjection, cs *FileChecksums, apiImportBase ...string) (int, error) {
 	mockDataTmplContent, err := templates.FrontendTemplates().Get(filepath.Join("mocks", "mock-data.ts.tmpl"))
 	if err != nil {
 		return 0, fmt.Errorf("read mock-data template: %w", err)
@@ -117,7 +117,7 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 	// Always emit the scenarios scaffolding (types + default + registry)
 	// before the per-entity mocks. The registry walks src/mocks/scenarios/
 	// for *.ts files and re-exports them; rerunning is idempotent.
-	if err := EmitScenarioScaffolding(root, mocksRel, services, cs); err != nil {
+	if err := EmitScenarioScaffolding(root, mocksRel, services, cs, apiImportBase...); err != nil {
 		return 0, fmt.Errorf("emit scenario scaffolding: %w", err)
 	}
 
@@ -327,7 +327,7 @@ func retireMocksIndex(root, mocksRel string, cs *FileChecksums) {
 //
 // User-authored scenarios (created with `forge scaffold scenario`) are NEVER
 // touched here — the registry just re-exports them.
-func EmitScenarioScaffolding(root, mocksRel string, services []codegen.ServiceDef, cs *FileChecksums) error {
+func EmitScenarioScaffolding(root, mocksRel string, services []codegen.ServiceDef, cs *FileChecksums, apiImportBase ...string) error {
 	scenariosRel := filepath.Join(mocksRel, "scenarios")
 	if err := os.MkdirAll(filepath.Join(root, scenariosRel), 0o755); err != nil {
 		return fmt.Errorf("create scenarios directory: %w", err)
@@ -353,8 +353,12 @@ func EmitScenarioScaffolding(root, mocksRel string, services []codegen.ServiceDe
 	if err != nil {
 		return fmt.Errorf("parse scenario-rpcs template: %w", err)
 	}
+	data := codegen.BuildScenarioRPCData(services)
+	if len(apiImportBase) > 0 && apiImportBase[0] != "" {
+		data = codegen.BuildScenarioRPCDataWithImportBase(services, apiImportBase[0])
+	}
 	var rpcsBuf bytes.Buffer
-	if err := rpcsTmpl.Execute(&rpcsBuf, codegen.BuildScenarioRPCData(services)); err != nil {
+	if err := rpcsTmpl.Execute(&rpcsBuf, data); err != nil {
 		return fmt.Errorf("render scenario-rpcs_gen: %w", err)
 	}
 	if _, err := WriteGeneratedFileTier1(root, filepath.Join(mocksRel, "scenario-rpcs_gen.ts"), rpcsBuf.Bytes(), cs, true); err != nil {

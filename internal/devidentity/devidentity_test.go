@@ -445,3 +445,32 @@ func TestWriteStore_IsIdempotentAndKeepsTheRest(t *testing.T) {
 		t.Errorf("store mode = %v, want 0600", fi.Mode().Perm())
 	}
 }
+
+// The issuer follows the device host (its port stays the IdP's) while the IdP
+// is still dialled at BaseURL, with the device origin as the Host header: that
+// header is how Zitadel picks the instance and the `iss` it mints.
+func TestInput_IssuerOrigin(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in     Input
+		issuer string
+		host   string
+	}{
+		"no device host: BaseURL is the issuer and no Host override": {
+			Input{BaseURL: "http://localhost:8180"}, "http://localhost:8180", ""},
+		"a trailing slash on BaseURL is not part of the issuer": {
+			Input{BaseURL: "http://localhost:8180/"}, "http://localhost:8180", ""},
+		"device host": {
+			Input{BaseURL: "http://localhost:8180", DeviceHost: "192.168.1.20"}, "http://192.168.1.20:8180", "192.168.1.20:8180"},
+		"IPv6 device host": {
+			Input{BaseURL: "http://localhost:8180", DeviceHost: "[fd00::1]"}, "http://[fd00::1]:8180", "[fd00::1]:8180"},
+		"hostname": {
+			Input{BaseURL: "http://localhost:8180", DeviceHost: "my-mac.local"}, "http://my-mac.local:8180", "my-mac.local:8180"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			issuer, host := tc.in.IssuerOrigin()
+			if issuer != tc.issuer || host != tc.host {
+				t.Errorf("IssuerOrigin() = (%q, %q), want (%q, %q)", issuer, host, tc.issuer, tc.host)
+			}
+		})
+	}
+}

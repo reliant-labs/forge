@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -539,6 +540,7 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 			if rerr != nil {
 				return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, rerr)
 			}
+			NoteNativeAppsWithheld(os.Stderr, ref.Name, reader.WithheldNativeApplications(declared))
 			declared = reader.LimitShape(declared)
 		}
 		shape, err := shapeWireFields(declared)

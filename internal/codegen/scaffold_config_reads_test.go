@@ -174,3 +174,49 @@ func TestProvidersGraph_DevSessionCookieReadsTheAuthConfigsEnvironment(t *testin
 		t.Errorf("UserAuth sets DevSessionCookie from the command config SetupAuth reads:\n%s", providers)
 	}
 }
+
+// The userinfo dev opt-in is read only when the config SetupAuth reads declares
+// jwt_userinfo_allow_local_http, so a project whose config predates it still
+// compiles, and the default (off) render never calls AllowLocalPlainHTTP.
+func TestAuthScaffold_UserInfoLocalHTTPIsOptInAndDeclared(t *testing.T) {
+	without := renderFormatted(t, "app-auth.go.tmpl", AuthSetupTemplateData{Module: "example.com/rbc", Graph: true})
+	if strings.Contains(without, "AllowLocalPlainHTTP") || strings.Contains(without, "JwtUserinfoAllowLocalHttp") {
+		t.Errorf("a config without the field must not read it:\n%s", without)
+	}
+	if !strings.Contains(without, "authenticator.UseUserInfo(userInfo)") {
+		t.Errorf("the userinfo lookup is still installed:\n%s", without)
+	}
+	with := renderFormatted(t, "app-auth.go.tmpl", AuthSetupTemplateData{Module: "example.com/rbc", Graph: true, UserInfoLocalHTTPField: true})
+	if !strings.Contains(with, "if cfg.JwtUserinfoAllowLocalHttp {\n\t\t\tuserInfo.AllowLocalPlainHTTP()") {
+		t.Errorf("the declared field gates the opt-in:\n%s", with)
+	}
+	// The issuer's discovery and JWKS requests take the local-only client under
+	// the same opt-in, and a config without the field leaves them on the default.
+	for _, want := range []string{
+		"auth.LocalIssuerHTTPClient(cfg.JwtIssuer)",
+		"HTTPClient:    httpClient,",
+		"oauth2.Discover(ctx, discoveryDoer(httpClient), cfg.JwtIssuer)",
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("the declared field must route discovery and the JWKS fetch through the local-only client; missing %q:\n%s", want, with)
+		}
+	}
+	if strings.Contains(without, "HTTPClient") || !strings.Contains(without, "oauth2.Discover(ctx, nil, cfg.JwtIssuer)") {
+		t.Errorf("a config without the field keeps the default client for discovery and the JWKS fetch:\n%s", without)
+	}
+}
+
+// The broker confines its IdP client to this machine only when the config it
+// reads declares the dev knob; the default render never sets LocalOnly.
+func TestLoginBrokerScaffold_LocalOnlyIsDeclaredAndGated(t *testing.T) {
+	data := LoginBrokerTemplateData{Module: "example.com/rbc", Name: "rbc"}
+	without := renderFormatted(t, "app-login-broker.go.tmpl", data)
+	if strings.Contains(without, "LocalOnly") || strings.Contains(without, "JwtUserinfoAllowLocalHttp") {
+		t.Errorf("a config without the field must not read it:\n%s", without)
+	}
+	data.LocalOnlyField = true
+	with := renderFormatted(t, "app-login-broker.go.tmpl", data)
+	if !strings.Contains(with, "LocalOnly: cfg.JwtUserinfoAllowLocalHttp,") {
+		t.Errorf("the declared field must set devidp.Client.LocalOnly:\n%s", with)
+	}
+}

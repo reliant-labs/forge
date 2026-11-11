@@ -226,3 +226,37 @@ func TestFrontendKCLEntry_DeclaresANonDefaultType(t *testing.T) {
 		t.Errorf("a Next.js frontend is the schema default and must not declare a type:\n%s", got)
 	}
 }
+
+// A native (rn) frontend declares NO dev port by default: a declared port wins
+// over forge's Metro preference (8081, where a native Debug build looks for
+// it), so a scaffolded `resolve_port(..., 3000)` made Metro come up on 3001
+// with 8081 free. A browser frontend keeps its resolve_port, and a pinned port
+// (--port) is written verbatim for either.
+func TestSpliceFrontendIntoEnvKCL_NativeFrontendDeclaresNoPort(t *testing.T) {
+	in := renderNoFrontendEnv(t, "kcl/dev/main.k.tmpl", "dev")
+	out, status := spliceFrontendIntoEnvKCL(in, "acme", "dev", "mobile", "rn", frontendOnHost, 0, nil)
+	if status != frontendKCLApplied {
+		t.Fatalf("status %d", status)
+	}
+	decl := out[strings.Index(out, "_mobile_frontend = forge.Frontend {"):]
+	decl = decl[:strings.Index(decl, "\n}\n")]
+	if strings.Contains(out, "_mobile_frontend_port") || strings.Contains(decl, "port") {
+		t.Errorf("a native frontend must declare no port (so Metro prefers 8081):\n%s", decl)
+	}
+	if !strings.Contains(decl, `type = "rn"`) || !strings.Contains(out, "_on_host_frontend(_mobile_frontend)") {
+		t.Errorf("the native frontend is still declared and bound:\n%s", out)
+	}
+	if hint := frontendKCLStanzaHint("acme", "dev", "mobile", "rn", frontendOnHost, 0, nil); strings.Contains(hint, "resolve_port") {
+		t.Errorf("the by-hand stanza must not suggest a port either:\n%s", hint)
+	}
+
+	pinned, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "mobile", "rn", frontendOnHost, 8090, nil)
+	if !strings.Contains(pinned, "port = 8090") {
+		t.Errorf("a pinned port is still honoured for a native frontend:\n%s", pinned)
+	}
+
+	web, _ := spliceFrontendIntoEnvKCL(in, "acme", "dev", "admin", "vite", frontendOnHost, 0, nil)
+	if !strings.Contains(web, "port = _admin_frontend_port") {
+		t.Errorf("a browser frontend keeps its resolve_port:\n%s", web)
+	}
+}

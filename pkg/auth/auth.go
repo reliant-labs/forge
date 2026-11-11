@@ -172,6 +172,15 @@ type JWTConfig struct {
 	// included — still lets the validator start. Same exclusivity as JWKSURL.
 	JWKSDiscover func(ctx context.Context) (string, error)
 
+	// HTTPClient, when set, is the client the JWKS fetches (the first one and
+	// every refresh and retry) go out through: its Transport, Timeout and
+	// CheckRedirect apply. Nil keeps the default, which is
+	// [http.DefaultTransport] and so honours HTTP_PROXY. It does not reach
+	// JWKSDiscover, which is the caller's own function (pass the same client
+	// to oauth2.Discover there). Use [LocalIssuerHTTPClient] for a development
+	// issuer at this machine's own LAN address.
+	HTTPClient *http.Client
+
 	// JWKSSnapshot is the optional offline fallback key source. With it,
 	// an issuer that is unreachable at boot no longer prevents startup when a
 	// fresh snapshot exists; see [JWKSSnapshot] for exactly what is trusted.

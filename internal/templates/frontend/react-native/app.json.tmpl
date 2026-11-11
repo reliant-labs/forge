@@ -4,23 +4,25 @@
     "slug": "{{.FrontendName}}",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "{{.FrontendName}}",
+    "scheme": "{{nativeAppID .ProjectName .FrontendName}}",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.{{.ProjectName}}.{{.FrontendName}}"
+      "bundleIdentifier": "{{nativeAppID .ProjectName .FrontendName}}"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#ffffff"
       },
-      "package": "com.{{.ProjectName}}.{{.FrontendName}}"
+      "package": "{{nativeAppID .ProjectName .FrontendName}}"
     },
     "web": {
       "bundler": "metro",
       "output": "static"
     },
-    "plugins": ["expo-router"]
+    "plugins": [
+      "expo-router",
+      ["expo-secure-store", { "faceIDPermission": false }]
+    ]
   }
 }

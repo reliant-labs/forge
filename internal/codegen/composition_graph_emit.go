@@ -1031,7 +1031,7 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	// fields — a command config's, in a binary_config project — or none.
 	authConfig, hasJWT := configDeclaring(projectDir, jwtConfigFields)
 	brokerConfig, hasBroker := configDeclaring(projectDir, brokerConfigFields)
-	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT}); err != nil {
+	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT, UserInfoLocalHTTPField: hasJWT && authDeclaresUserInfoLocalHTTP(projectDir, authConfig)}); err != nil {
 		return err
 	}
 	rel := filepath.Join("internal", "app", "providers.go")

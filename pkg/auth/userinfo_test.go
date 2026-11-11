@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/netguard"
 )
 
 // userInfoServer answers the userinfo endpoint with body for the bearer token
@@ -222,6 +226,200 @@ func TestUserInfo_RefusesAnInsecureEndpoint(t *testing.T) {
 		}
 		if c.Email != "" || len(rt.urls) != 0 {
 			t.Errorf("%s: Email %q, requests %v; want no request sent", endpoint, c.Email, rt.urls)
+		}
+	}
+}
+
+// lanIPv4 is a non-loopback IPv4 address of this machine, "" when it has none.
+func lanIPv4() string {
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
+			return n.IP.String()
+		}
+	}
+	return ""
+}
+
+// lanUserInfoServer serves userinfo for the bearer "good" at this machine's LAN
+// address (not loopback), so a request reaches it only if it was dialled there.
+func lanUserInfoServer(t *testing.T, lan string, hits *atomic.Int64) *httptest.Server {
+	t.Helper()
+	l, err := net.Listen("tcp", lan+":0")
+	if err != nil {
+		t.Skipf("cannot listen on %s: %v", lan, err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("Authorization") != "Bearer good" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sub": "u1", "email": "a@b.c", "email_verified": true})
+	}))
+	srv.Listener = l
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func lanAuthenticator(issuer, endpoint string, mutate func(*UserInfo)) (*Authenticator, *UserInfo) {
+	a := issuerAuthenticator(issuer, "u1")
+	ui := NewUserInfo(issuer, fixedEndpoint(endpoint), nil)
+	if mutate != nil {
+		mutate(ui)
+	}
+	a.UseUserInfo(ui)
+	return a, ui
+}
+
+// DEFAULT OFF. Without AllowLocalPlainHTTP, an issuer at this machine's own LAN
+// address is just a non-loopback plain-HTTP host: no token is sent. This is
+// production's behaviour and must not change.
+func TestUserInfo_LANAddressIsRefusedByDefault(t *testing.T) {
+	lan := lanIPv4()
+	if lan == "" {
+		t.Skip("no non-loopback IPv4 address")
+	}
+	var hits atomic.Int64
+	srv := lanUserInfoServer(t, lan, &hits)
+	a, _ := lanAuthenticator(srv.URL, srv.URL+"/userinfo", nil)
+	c, err := a.Authenticate(context.Background(), "good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Email != "" || hits.Load() != 0 {
+		t.Errorf("Email %q, %d requests: a LAN plain-HTTP issuer must not be reachable unless opted in", c.Email, hits.Load())
+	}
+}
+
+// With the opt-in the lookup works against the LAN address, and the client is
+// wired to netguard.LocalOnly: a transport with no Proxy (so HTTP_PROXY, which
+// would capture a LAN-address request because only loopback is exempt, is never
+// consulted) and the connect-time guard. That LocalOnly's transport really
+// bypasses a proxy is proven in pkg/netguard; ProxyFromEnvironment caches the
+// environment per process, so a behavioural proxy check here would prove nothing.
+func TestUserInfo_AllowLocalPlainHTTP_WorksAndUsesTheLocalOnlyTransport(t *testing.T) {
+	lan := lanIPv4()
+	if lan == "" {
+		t.Skip("no non-loopback IPv4 address")
+	}
+	var hits atomic.Int64
+	srv := lanUserInfoServer(t, lan, &hits)
+	a, ui := lanAuthenticator(srv.URL, srv.URL+"/userinfo", func(u *UserInfo) { u.AllowLocalPlainHTTP() })
+
+	tr, ok := ui.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want netguard.LocalOnly's *http.Transport", ui.client.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("the opted-in transport must not consult proxy variables")
+	}
+	if _, err := tr.DialContext(context.Background(), "tcp", "192.0.2.1:80"); !errors.Is(err, netguard.ErrNotLocal) {
+		t.Errorf("dialing a non-local address: err = %v, want netguard.ErrNotLocal (the connect-time guard)", err)
+	}
+
+	c, err := a.Authenticate(context.Background(), "good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Email != "a@b.c" || !c.EmailVerified {
+		t.Errorf("Email %q verified %v, want the verified address", c.Email, c.EmailVerified)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("%d requests reached the LAN listener, want 1", hits.Load())
+	}
+}
+
+// Without the opt-in the client keeps the transport it was given: nothing in
+// the default path is replaced.
+func TestUserInfo_DefaultKeepsTheGivenTransport(t *testing.T) {
+	rt := &recordingTransport{}
+	ui := NewUserInfo("http://192.168.1.20:8080", fixedEndpoint(""), &http.Client{Transport: rt})
+	if ui.client.Transport != rt {
+		t.Errorf("transport = %T: the default must not replace the caller's transport", ui.client.Transport)
+	}
+}
+
+// The "this machine" decision is made at DIAL time against the interfaces as
+// they are then, not once at resolve time: after the address leaves the
+// machine's interfaces the cached endpoint is still refused at connect.
+func TestUserInfo_AllowLocalPlainHTTP_RefusedAtDialWhenTheAddressLeaves(t *testing.T) {
+	lan := lanIPv4()
+	if lan == "" {
+		t.Skip("no non-loopback IPv4 address")
+	}
+	var hits atomic.Int64
+	srv := lanUserInfoServer(t, lan, &hits)
+	owned := true
+	a, ui := lanAuthenticator(srv.URL, srv.URL+"/userinfo", func(u *UserInfo) {
+		u.interfaces = func() ([]net.Addr, error) {
+			if !owned {
+				return nil, nil // the network changed: nothing is ours any more
+			}
+			return []net.Addr{&net.IPNet{IP: net.ParseIP(lan), Mask: net.CIDRMask(24, 32)}}, nil
+		}
+		u.AllowLocalPlainHTTP()
+	})
+	c, err := a.Authenticate(context.Background(), "good")
+	if err != nil || c.Email != "a@b.c" {
+		t.Fatalf("while the address is ours: Email %q err %v", c.Email, err)
+	}
+	if ui.resolved == "" {
+		t.Fatal("fixture: the endpoint should be cached after the first lookup")
+	}
+	owned = false
+	ui.mu.Lock()
+	ui.cache = map[string]userInfoEntry{} // force a new request on the cached endpoint
+	ui.mu.Unlock()
+	before := hits.Load()
+	c, err = a.Authenticate(context.Background(), "good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Email != "" || hits.Load() != before {
+		t.Errorf("Email %q, %d new requests: after the address left this machine the connection must be refused at dial", c.Email, hits.Load()-before)
+	}
+}
+
+// The userinfo URL must have the issuer's own origin: a discovery document
+// naming another host (even another local port or address) is not followed.
+func TestUserInfo_AllowLocalPlainHTTP_RefusesACrossOriginUserinfo(t *testing.T) {
+	lan := lanIPv4()
+	if lan == "" {
+		t.Skip("no non-loopback IPv4 address")
+	}
+	var hits, otherHits atomic.Int64
+	issuer := lanUserInfoServer(t, lan, &hits)
+	other := lanUserInfoServer(t, lan, &otherHits) // same address, different port: another origin
+	for _, endpoint := range []string{other.URL + "/userinfo", "http://192.0.2.9:80/userinfo", "http://example.test/userinfo"} {
+		a, _ := lanAuthenticator(issuer.URL, endpoint, func(u *UserInfo) { u.AllowLocalPlainHTTP() })
+		c, err := a.Authenticate(context.Background(), "good")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Email != "" {
+			t.Errorf("%s: Email %q, a cross-origin userinfo must be refused", endpoint, c.Email)
+		}
+	}
+	if hits.Load() != 0 || otherHits.Load() != 0 {
+		t.Errorf("requests: issuer %d other %d, want none sent", hits.Load(), otherHits.Load())
+	}
+}
+
+// The opt-in changes nothing for any issuer it is not meant for: HTTPS, a
+// loopback dev issuer and a name keep exactly the default rules.
+func TestUserInfo_AllowLocalPlainHTTP_IsInertForOtherIssuers(t *testing.T) {
+	for _, issuer := range []string{"https://issuer.example.test", "http://localhost:8080", "http://127.0.0.1:8080", "http://my-mac.local:8080", "http://[fd00::1]:8080"} {
+		ui := NewUserInfo(issuer, fixedEndpoint(""), nil).AllowLocalPlainHTTP()
+		if ui.localHTTP {
+			t.Errorf("%s: the opt-in applied to an issuer it is not for", issuer)
+		}
+	}
+	for _, endpoint := range []string{"http://192.168.1.20:8080/userinfo", "http://my-mac.local/userinfo"} {
+		u, _ := url.Parse(endpoint)
+		if secureEndpoint(u) == nil {
+			t.Errorf("secureEndpoint(%s) allowed: the default must refuse every non-loopback plain-HTTP host", endpoint)
 		}
 	}
 }

@@ -4,10 +4,17 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -472,4 +479,209 @@ func TestEnsureZitadelBinary_RealUpstreamArchiveMatchesPin(t *testing.T) {
 	if err := verifyZitadelBinary(bin); err != nil {
 		t.Fatalf("the downloaded binary is not %s: %v", ZitadelVersion, err)
 	}
+}
+
+// The device host is ONE env var and nothing else: the cold start stays under
+// localhost, and the domain Zitadel's setup then adds is the device's.
+func TestZitadelEnvFor_CarriesTheDomain(t *testing.T) {
+	spec := Spec{Name: "idp", Engine: EngineZitadel, Port: 8180, User: "postgres", Password: "postgres", IDPDatabase: "zitadel", IDPDatabasePort: 5433}
+	domain := func(env []string) string {
+		for _, kv := range env {
+			if v, ok := strings.CutPrefix(kv, "ZITADEL_EXTERNALDOMAIN="); ok {
+				return v
+			}
+		}
+		return "<unset>"
+	}
+	if got := domain(spec.zitadelEnv("/tmp/pat")); got != "localhost" {
+		t.Errorf("default domain = %q, want localhost", got)
+	}
+	if got := domain(spec.zitadelEnvFor("/tmp/pat", "192.168.1.20")); got != "192.168.1.20" {
+		t.Errorf("device domain = %q", got)
+	}
+	a, b := spec.zitadelEnv("/tmp/pat"), spec.zitadelEnvFor("/tmp/pat", "localhost")
+	if strings.Join(a, "\n") != strings.Join(b, "\n") {
+		t.Error("zitadelEnv must be zitadelEnvFor(localhost): the localhost-only IdP is unchanged")
+	}
+}
+
+type fakeDomainOps struct {
+	serves  []bool // answers of successive servesDeviceDomain calls; the last repeats
+	waits   []bool // answers of successive waitServesDeviceDomain calls; the last repeats
+	calls   []string
+	bootErr map[string]error // by domain
+}
+
+func next(list *[]bool) bool {
+	v := (*list)[0]
+	if len(*list) > 1 {
+		*list = (*list)[1:]
+	}
+	return v
+}
+
+func (f *fakeDomainOps) ops() zitadelDomainOps {
+	return zitadelDomainOps{
+		servesDeviceDomain: func(context.Context) bool { f.calls = append(f.calls, "serves"); return next(&f.serves) },
+		waitServesDeviceDomain: func(context.Context) bool {
+			f.calls = append(f.calls, "wait")
+			return next(&f.waits)
+		},
+		stop: func() error { f.calls = append(f.calls, "stop"); return nil },
+		boot: func(_ context.Context, domain string, appendLog bool) error {
+			f.calls = append(f.calls, fmt.Sprintf("boot(%s,append=%v)", domain, appendLog))
+			return f.bootErr[domain]
+		},
+	}
+}
+
+func TestConvergeZitadelDomains(t *testing.T) {
+	const dev = "192.168.1.20"
+	cases := []struct {
+		name    string
+		device  string
+		running bool
+		serves  []bool
+		waits   []bool
+		want    string
+	}{
+		{"no device host, cold: one localhost boot, nothing else", "", false, []bool{false}, nil, "boot(localhost,append=false)"},
+		{"no device host, running: nothing to do", "", true, []bool{false}, nil, ""},
+		{"cold start, database already carries the device domain: no restart", dev, false, []bool{true}, nil, "boot(localhost,append=false) serves"},
+		{"cold start, fresh database: localhost first, then ONE restart under the device host", dev, false, []bool{false}, []bool{true},
+			"boot(localhost,append=false) serves stop boot(192.168.1.20,append=true) wait"},
+		{"running and serving the device host: no restart", dev, true, []bool{true}, nil, "serves"},
+		{"running without the device host: one restart", dev, true, []bool{false}, []bool{true}, "serves stop boot(192.168.1.20,append=true) wait"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.waits == nil {
+				tc.waits = []bool{false}
+			}
+			f := &fakeDomainOps{serves: tc.serves, waits: tc.waits}
+			spec := Spec{Name: "idp", Port: 8180, DeviceHost: tc.device}
+			if err := convergeZitadelDomains(context.Background(), spec, f.ops(), tc.running); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(f.calls, " "); got != tc.want {
+				t.Errorf("calls = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// DEGRADE: the device host is an extra. Whatever goes wrong adding it, the
+	// IdP ends up serving under localhost again and the run is not aborted.
+	for name, tc := range map[string]struct {
+		bootErr map[string]error
+		waits   []bool
+	}{
+		"the restart under the device host fails to boot":        {map[string]error{"192.168.1.20": errors.New("boom")}, []bool{false}},
+		"the restart boots but never answers at the device host": {nil, []bool{false}},
+	} {
+		t.Run("degrades: "+name, func(t *testing.T) {
+			f := &fakeDomainOps{serves: []bool{false}, waits: tc.waits, bootErr: tc.bootErr}
+			out := captureStdout(t, func() {
+				if err := convergeZitadelDomains(context.Background(), Spec{Name: "idp", Port: 8180, DeviceHost: dev}, f.ops(), true); err != nil {
+					t.Fatalf("a failed device domain must not abort the run: %v", err)
+				}
+			})
+			calls := strings.Join(f.calls, " ")
+			if !strings.HasSuffix(calls, "stop boot(localhost,append=true)") {
+				t.Errorf("calls = %q: the IdP must be put back under localhost", calls)
+			}
+			for _, want := range []string{"could not serve 192.168.1.20", "falling back to localhost only", "devices cannot sign in"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("notice missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+	t.Run("a failing cold boot is the error", func(t *testing.T) {
+		f := &fakeDomainOps{serves: []bool{false}, waits: []bool{false}, bootErr: map[string]error{"localhost": errors.New("boom")}}
+		if err := convergeZitadelDomains(context.Background(), Spec{Name: "idp"}, f.ops(), false); err == nil {
+			t.Fatal("want the boot error")
+		}
+	})
+	t.Run("the fallback boot failing is reported, not swallowed", func(t *testing.T) {
+		f := &fakeDomainOps{serves: []bool{false}, waits: []bool{false}, bootErr: map[string]error{"192.168.1.20": errors.New("a"), "localhost": errors.New("b")}}
+		if err := convergeZitadelDomains(context.Background(), Spec{Name: "idp", DeviceHost: dev}, f.ops(), true); err == nil || err.Error() != "b" {
+			t.Fatalf("err = %v, want the localhost boot error", err)
+		}
+	})
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	fn()
+	_ = w.Close()
+	b, _ := io.ReadAll(r)
+	return string(b)
+}
+
+func TestPollUntil(t *testing.T) {
+	n := 0
+	if !pollUntil(context.Background(), time.Second, time.Millisecond, func() bool { n++; return n == 3 }) || n != 3 {
+		t.Errorf("polled %d times, want success on the 3rd", n)
+	}
+	if pollUntil(context.Background(), 20*time.Millisecond, time.Millisecond, func() bool { return false }) {
+		t.Error("a probe that never succeeds must give up at the deadline")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if pollUntil(ctx, time.Minute, time.Millisecond, func() bool { return false }) {
+		t.Error("a cancelled context stops the poll")
+	}
+}
+
+// The LAN-reachability fact is stated on the line every start prints.
+func TestZitadelLANNotice(t *testing.T) {
+	for _, want := range []string{"all interfaces", "LAN", "plain HTTP", "dev credentials"} {
+		if !strings.Contains(zitadelLANNotice, want) {
+			t.Errorf("notice %q lacks %q", zitadelLANNotice, want)
+		}
+	}
+}
+
+// servesDomain is decided by what the instance ANSWERS for that Host, with
+// that origin as the issuer: not by what forge started the process with.
+func TestZitadelServesDomain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Host {
+		case "localhost:" + portOf(r):
+			_, _ = io.WriteString(w, `{"issuer":"http://localhost:`+portOf(r)+`"}`)
+		case "192.168.1.20:" + portOf(r):
+			_, _ = io.WriteString(w, `{"issuer":"http://192.168.1.20:`+portOf(r)+`"}`)
+		case "10.0.0.9:" + portOf(r):
+			_, _ = io.WriteString(w, `{"issuer":"http://localhost:`+portOf(r)+`"}`) // a wrong issuer
+		default:
+			http.Error(w, "Instance not found", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	port, _ := strconv.Atoi(portOf(&http.Request{Host: strings.TrimPrefix(srv.URL, "http://")}))
+	ctx := context.Background()
+	if !zitadelServesDomain(ctx, port, "192.168.1.20") {
+		t.Error("an instance answering with the device origin as issuer serves the domain")
+	}
+	if zitadelServesDomain(ctx, port, "192.168.1.99") {
+		t.Error("an unregistered host is not served")
+	}
+	if zitadelServesDomain(ctx, port, "10.0.0.9") {
+		t.Error("an answer whose issuer is another origin is not the device domain")
+	}
+	if zitadelServesDomain(ctx, port, "") {
+		t.Error("no device host, nothing to serve")
+	}
+}
+
+func portOf(r *http.Request) string {
+	_, p, _ := net.SplitHostPort(r.Host)
+	return p
 }

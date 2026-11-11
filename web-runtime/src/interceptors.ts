@@ -245,6 +245,7 @@ export {
   FORGE_ERROR_REASON_HEADER,
   isRetryableCode,
   normalizeError,
+  userMessage,
 } from "./errors.js";
 
 export {

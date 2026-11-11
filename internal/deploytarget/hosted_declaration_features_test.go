@@ -146,3 +146,53 @@ func TestEnsureHostedEnvironment_RefusesToGuessWhenCapabilitiesFail(t *testing.T
 		t.Error("an ensure was sent after the capability question failed")
 	}
 }
+
+func nativeAppShape() *release.Shape {
+	return &release.Shape{
+		Kind: release.EnvLocal,
+		Identity: &release.ShapeIdentity{
+			Name: "identity", Runtime: release.IdentityRuntimeHost, Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
+			Applications: []release.ShapeIdentityApplication{
+				{Name: "dev:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
+				{Name: "dev:mobile", Kind: release.IdentityAppNative, Frontend: "mobile"},
+			},
+		},
+	}
+}
+
+// A control plane that decodes every feature this forge ADVERTISES still is not
+// sent a native application: hosted registration is not built, and the feature
+// that would say it is is not advertised.
+func TestEnsureHostedEnvironment_NeverSendsNativeApplications(t *testing.T) {
+	c := &capsCaller{features: release.BundleDocFeatures()}
+	ref := HostedEnvRef{Project: "p", Name: "dev", Kind: HostedEnvSelfManaged, Shape: nativeAppShape()}
+	if _, _, err := EnsureHostedEnvironment(context.Background(), c, ref); err != nil {
+		t.Fatal(err)
+	}
+	got := sentShape(t, c)
+	if strings.Contains(got, "dev:mobile") || strings.Contains(got, `"frontend"`) {
+		t.Errorf("a native application reached a control plane that cannot register it:\n%s", got)
+	}
+	if !strings.Contains(got, "dev:api") {
+		t.Errorf("the broker application was dropped with it:\n%s", got)
+	}
+}
+
+func TestNoteNativeAppsWithheld(t *testing.T) {
+	var b strings.Builder
+	NoteNativeAppsWithheld(&b, "note-env-a", nil)
+	if b.Len() != 0 {
+		t.Fatalf("printed for nothing withheld: %q", b.String())
+	}
+	NoteNativeAppsWithheld(&b, "note-env-a", []string{"dev:mobile"})
+	for _, want := range []string{"note-env-a", "dev:mobile", "not yet supported on hosted identity", "deploy/managed-identity/mobile"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("note missing %q: %q", want, b.String())
+		}
+	}
+	n := b.Len()
+	NoteNativeAppsWithheld(&b, "note-env-a", []string{"dev:mobile"})
+	if b.Len() != n {
+		t.Error("said twice for one env")
+	}
+}

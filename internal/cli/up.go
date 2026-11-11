@@ -90,6 +90,10 @@ type upOptions struct {
 	// agent-driven preview flow reaches Vite
 	// (`forge env up dev -- --host 0.0.0.0`). Empty (no `--`) is a no-op.
 	frontendArgs []string
+	// deviceHost, when non-empty, is the opted-in host (--device-host /
+	// FORGE_DEV_DEVICE_HOST) a native frontend's API origin advertises
+	// instead of localhost. See native_dev_origin.go.
+	deviceHost string
 	// telemetry is --telemetry: where this stack's telemetry is stored
 	// (auto|hosted|local), over FORGE_DEV_TELEMETRY and the env's
 	// observability.dev_telemetry. See up_devtelemetry.go.
@@ -294,6 +298,7 @@ func newEnvUpCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&opts.deviceHost, deviceHostFlag, "", "Host a native (Expo) frontend uses to reach the API, instead of localhost: this machine's LAN address for a physical device, 10.0.2.2 for an Android emulator. Default: the "+deviceHostEnv+" environment variable, else localhost (reaches the iOS simulator only). forge never picks an interface or starts a tunnel; an explicit EXPO_PUBLIC_API_URL still wins. The API must listen on a non-loopback interface (forge warns when it does not).")
 	cmd.Flags().DurationVar(&opts.hostReadyTimeout, "host-ready-timeout", hostReadyTimeout, "Maximum wait for host services to bind their ports, including compilation; exited runners fail immediately")
 	cmd.Flags().BoolVar(&opts.noBuild, "no-build", false, "Skip the build phase (use already-built images / binaries)")
 	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
@@ -1075,7 +1080,24 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// Only host services that declare no port of their own get one — see
 	// resolveEphemeralHostPorts.
 	apiBaseURL := resolveEphemeralHostPorts(entities)
-	resolveEphemeralFrontendPorts(cfg, entities)
+	metro := &metroPreference{cfg: cfg, names: resolveEphemeralFrontendPorts(cfg, entities, opts.targets, forgeReclaimablePortFree(projectID, opts.env))}
+	// The env var is only consulted when a native frontend runs, so a stale
+	// global export cannot fail a web-only run; an explicit flag is always
+	// validated because the developer asked for it on this command.
+	deviceHostEnvLookup := os.LookupEnv
+	if !targetsNativeFrontend(entities, opts.targets) {
+		deviceHostEnvLookup = nil
+	}
+	deviceHost, err := resolveDeviceHost(opts.deviceHost, deviceHostEnvLookup)
+	if err != nil {
+		return err
+	}
+	// Before any infra starts: the IdP's domains and the identity's issuer
+	// both follow the device host (see deviceIdPHost).
+	localAddrs, _ := net.InterfaceAddrs()
+	if notice := applyDeviceHostToIdP(entities, opts.targets, deviceHost, localAddrs); notice != "" {
+		fmt.Println(notice)
+	}
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
@@ -1162,7 +1184,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// start are considered) and the frontend feature gate.
 	frontendsOn := frontendPhaseEnabled(entities)
 	_, replaceSpan := startUpSpan(ctx, "replace-stack")
-	err = upPreflight(projectID, opts.env, entities, opts.targets, frontendsOn)
+	err = upPreflightMetro(projectID, opts.env, entities, opts.targets, frontendsOn, metro)
 	replaceSpan.end(err)
 	if err != nil {
 		// Undo any resolve_port drift this rejected render persisted, so the
@@ -1242,7 +1264,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 				if n.frontend {
 					failures = upFrontends(ctx, frontendLaunch{entities: entities, env: opts.env, background: detach,
 						noInstall: opts.noInstall, targets: []string{n.name}, frontendArgs: opts.frontendArgs,
-						apiBaseURL: apiBaseURL, procs: procs, projectDir: projectDir, secrets: provider.All()})
+						apiBaseURL: apiBaseURL, deviceHost: deviceHost, metro: metro, procs: procs, projectDir: projectDir, secrets: provider.All()})
 				} else {
 					failures = upHostServices(ctx, cfg, entities, provider, opts.env, detach, []string{n.name}, procs)
 				}
@@ -1273,7 +1295,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		feFailures := upFrontends(feCtx, frontendLaunch{
 			entities: entities, env: opts.env, background: detach,
 			noInstall: opts.noInstall, targets: opts.targets,
-			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, procs: procs,
+			frontendArgs: opts.frontendArgs, apiBaseURL: apiBaseURL, deviceHost: deviceHost, metro: metro, procs: procs,
 			projectDir: projectDir, secrets: prov.All(),
 		})
 		var feErr error
@@ -1317,6 +1339,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err != nil {
 		return err
 	}
+	warnDeviceHostBinding(os.Stdout, entities, opts.targets, deviceHost, apiBaseURL)
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
 	// run (readiness gate passed), so the schema is current. Warn-never-
 	// fatal: a seed failure never breaks the dev loop.
@@ -1628,9 +1651,21 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 //     all the port probe was ever for. After (1) every remaining holder is
 //     foreign by construction — a foreign process is reported, never killed.
 func upPreflight(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool) error {
+	return upPreflightMetro(projectID, env, e, targets, frontendsOn, nil)
+}
+
+// upPreflightMetro is upPreflight plus the preferred-Metro-port re-check: once
+// the predecessor stack is stopped, a native frontend still on its PREFERRED
+// 8081 whose port a process forge doesn't own took in the meantime moves to an
+// ephemeral port instead of failing the run below. A declared port is never in
+// metro and keeps the refusal.
+func upPreflightMetro(projectID, env string, e *KCLEntities, targets []string, frontendsOn bool, metro *metroPreference) error {
 	res, err := replaceStack(projectID, env, targets)
 	if err != nil {
 		return err
+	}
+	if frontendsOn {
+		metro.settleAll(e, forgeReclaimablePortFree(projectID, env), os.Stdout)
 	}
 	stopped := res.stopped
 	if stopped > 0 {
@@ -3460,7 +3495,11 @@ type frontendLaunch struct {
 	targets      []string
 	frontendArgs []string
 	apiBaseURL   string
-	procs        *procRegistry
+	deviceHost   string
+	// metro re-checks a native frontend's preferred (not declared) Metro port
+	// just before it launches; nil leaves ports as resolved.
+	metro *metroPreference
+	procs *procRegistry
 	// projectDir is the project root, where an out-of-tree frontend's
 	// runtime config document is rendered (.forge/runtime-config/).
 	projectDir string
@@ -3482,16 +3521,21 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 	e, background, noInstall := fl.entities, fl.background, fl.noInstall
 	targets, procs := fl.targets, fl.procs
 	failures := 0
-	for _, fe := range e.Frontends {
-		if !inTargetSet(targets, fe.Name) {
+	for i := range e.Frontends {
+		if !inTargetSet(targets, e.Frontends[i].Name) {
 			continue
 		}
+		fl.metro.settle(e, e.Frontends[i].Name, metroPortFreeAtLaunch, os.Stdout)
+		fe := e.Frontends[i]
 		if err := ensureFrontendDeps(ctx, fe, noInstall); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
 			continue
 		}
 		cmd := buildFrontendDevCmd(ctx, fl, fe, os.Environ())
+		announceNativeAPIOrigin(os.Stdout, fl, fe, cmd.Env)
+		localAddrs, _ := net.InterfaceAddrs()
+		announceNativeOIDC(os.Stdout, fe.Name, readNativeOIDC(fl.projectDir, fl.entities, fe), cmd.Env, deviceHostStateFor(fl.entities, fl.deviceHost, localAddrs))
 		if err := procs.start("frontend:"+fe.Name, cmd, background); err != nil {
 			fmt.Printf("[up] frontend %s: %v\n", fe.Name, err)
 			failures++
@@ -3504,7 +3548,18 @@ func upFrontends(ctx context.Context, fl frontendLaunch) int {
 // dev server's launch env (buildFrontendCmd), the secrets this frontend
 // declares, then the telemetry env `forge env up` owns.
 func buildFrontendDevCmd(ctx context.Context, fl frontendLaunch, fe FrontendEntity, parentEnv []string) *exec.Cmd {
-	cmd := buildFrontendCmd(ctx, fe, fl.env, parentEnv, fl.frontendArgs, fl.apiBaseURL)
+	cmd := buildFrontendCmd(ctx, fe, fl.env, parentEnv, fl.frontendArgs, nativeAPIOrigin(fe, fl.apiBaseURL, fl.deviceHost))
+	// Any declared or exported value (KCL, env-file, shell) wins over forge's.
+	if origin := nativeDevlogOrigin(fe, fl.deviceHost); origin != "" && envLookupLastOr(cmd.Env, devlogOriginEnv) == "" {
+		cmd.Env = withForcedEnv(cmd.Env, devlogOriginEnv, origin)
+	}
+	// A native frontend of a managed-identity env signs in at the env's IdP:
+	// hand it the converged client (shell, KCL and .env win, per variable).
+	var oidcNote string
+	cmd.Env, oidcNote = withNativeOIDCEnvNote(cmd.Env, readNativeOIDC(fl.projectDir, fl.entities, fe))
+	if oidcNote != "" {
+		fmt.Printf("[up] frontend %s: %s\n", fe.Name, oidcNote)
+	}
 	// Declared secrets, scoped to this frontend's own secret_ref
 	// declarations, layered over the dev server's env. In memory:
 	// the value reaches the child process environment only.
@@ -3642,9 +3697,19 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 	// forge baked into the frontend (DEV_API_URL) would be stale; inject the
 	// type-appropriate API-URL env var the frontend's dev transport reads
 	// (NEXT_PUBLIC_API_URL / VITE_API_URL / EXPO_PUBLIC_API_URL). Placed in
-	// the LOWEST (env-file) layer so a developer's shell or an explicit KCL
-	// env_var still overrides it. No-op for a full cluster up (apiBaseURL "").
-	if apiBaseURL != "" {
+	// the env-file layer, so an explicit KCL env_var still overrides it.
+	// Declared layers (env-file, KCL) beat the developer's shell unless the
+	// key is in FORGE_ENV_OVERRIDE. No-op for a full cluster up (apiBaseURL "").
+	// Exception, native only: an API origin is a per-device choice (LAN
+	// address, emulator alias, tunnel), so when the shell sets one forge skips
+	// its injection and the shell value is used (a value written in the
+	// frontend's own .env.<env> still wins). Web frontends are unchanged.
+	// Native precedence is therefore KCL > .env.<env> > shell > forge's own
+	// value, the same as the OIDC and dev-log variables.
+	apiURLVar := frontendAPIURLEnvVar(fe.Type)
+	shellAPI, _ := envLookupLast(parentEnv, apiURLVar)
+	fileAPI := envFileMap[apiURLVar] != ""
+	if apiBaseURL != "" && !(isNativeFrontend(fe.Type) && (shellAPI != "" || fileAPI)) {
 		if envFileMap == nil {
 			envFileMap = map[string]string{}
 		}
@@ -4301,6 +4366,7 @@ func stopHostInfra(env string) (int, error) {
 			IDPMasterKey:    hi.IDPMasterKey,
 			IDPStepsFile:    hi.IDPStepsFile,
 			IDPPATPath:      hi.IDPPATPath,
+			DeviceHost:      hi.DeviceHost,
 		}
 		stopped, serr := hostinfra.StopReport(projectDir, spec)
 		if serr != nil {

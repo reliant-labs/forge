@@ -35,7 +35,9 @@
 # but test users. Your real IdP is a different issuer — point `jwt_issuer`
 # at it (see the `auth` skill); nothing in this file is used against it.
 FirstInstance:
-  InstanceName: {{.ProjectName}}-dev
+  # Zitadel derives the instance's domain from this name, so it must be a
+  # valid DNS label: a project named "My_App" boots as "my-app-dev".
+  InstanceName: {{dnsLabel .ProjectName}}-dev
 
   Org:
     Name: {{.ProjectName}}

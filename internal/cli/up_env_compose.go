@@ -202,21 +202,43 @@ func freeTCPPort() (int, error) {
 // it verbatim (no-op), so existing projects are unaffected. Allocation
 // failure leaves the port at 0 — buildFrontendCmd then falls through to the
 // dev server's own default, exactly as before.
-func resolveEphemeralFrontendPorts(cfg *config.ProjectConfig, e *KCLEntities) {
+//
+// One exception: the first TARGETED native (Expo) frontend without a declared
+// port prefers Expo's conventional 8081 when metroFree says it is free, since a
+// native Debug build looks for Metro there (see expoMetroDefaultPort). A busy
+// 8081 falls back to the ephemeral port, never displacing its holder. Web
+// frontends are unaffected.
+//
+// Returns the names of the native frontends that took 8081 as a preference,
+// for metroPreference to re-check before launch.
+func resolveEphemeralFrontendPorts(cfg *config.ProjectConfig, e *KCLEntities, targets []string, metroFree func(feName string, port int) bool) map[string]bool {
+	preferred := map[string]bool{}
 	if e == nil {
-		return
+		return preferred
 	}
+	claimed := claimedFrontendPorts(e)
 	for i := range e.Frontends {
 		if e.Frontends[i].Port > 0 {
 			continue
 		}
-		port, err := freeTCPPort()
-		if err != nil {
-			fmt.Printf("[up] frontend %s: could not allocate an ephemeral port (%v); falling back to the dev server default\n", e.Frontends[i].Name, err)
-			continue
+		var port int
+		if isNativeFrontend(e.Frontends[i].Type) && inTargetSet(targets, e.Frontends[i].Name) {
+			if port = pickNativeMetroPort(e.Frontends[i].Name, claimed, metroFree); port > 0 {
+				claimed[port] = true
+				preferred[e.Frontends[i].Name] = true
+				fmt.Printf("[up] frontend %s: Metro dev port %d (Expo default)\n", e.Frontends[i].Name, port)
+			}
+		}
+		if port == 0 {
+			var err error
+			port, err = freeTCPPort()
+			if err != nil {
+				fmt.Printf("[up] frontend %s: could not allocate an ephemeral port (%v); falling back to the dev server default\n", e.Frontends[i].Name, err)
+				continue
+			}
+			fmt.Printf("[up] frontend %s: ephemeral dev port %d\n", e.Frontends[i].Name, port)
 		}
 		e.Frontends[i].Port = port
-		fmt.Printf("[up] frontend %s: ephemeral dev port %d\n", e.Frontends[i].Name, port)
 		if cfg != nil {
 			for j := range cfg.Frontends {
 				if cfg.Frontends[j].Name == e.Frontends[i].Name {
@@ -225,6 +247,7 @@ func resolveEphemeralFrontendPorts(cfg *config.ProjectConfig, e *KCLEntities) {
 			}
 		}
 	}
+	return preferred
 }
 
 // resolveEphemeralHostPorts assigns a free OS port to every long-running host

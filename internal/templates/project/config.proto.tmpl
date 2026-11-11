@@ -549,6 +549,13 @@ message AppConfig {
     description: "The same JWKS snapshot as jwt_jwks_snapshot_file, delivered inline as a config value — the shape the secret store (a ManagedSecret / ControlPlaneSecret) carries. Marked sensitive only so it rides the secret path instead of being inlined into a manifest; the keys in it are PUBLIC. It needs `delivered_at`, because an inline value has no file mtime to date it by. If both are set the newer snapshot wins."
   }];
 
+  bool jwt_userinfo_allow_local_http = 51 [(forge.v1.config) = {
+    env_var: "JWT_USERINFO_ALLOW_LOCAL_HTTP"
+    flag: "jwt-userinfo-allow-local-http"
+    default_value: "false"
+    description: "DEVELOPMENT ONLY. Let the userinfo lookup that fills Claims.Email reach an issuer served over plain HTTP at this machine's own non-loopback IPv4 address, which is what `forge env up --device-host` makes the dev issuer so a physical device and this server agree on one origin. OFF by default, and never set in a deployed environment: with it off, only a loopback issuer is ever sent a token over plain HTTP. When on, the userinfo URL must share the issuer's origin and every request is confined to this machine at connect time, ignoring proxy variables (auth.UserInfo.AllowLocalPlainHTTP). `forge env up` sets it for you on a host workload of a host-run identity when --device-host is given."
+  }];
+
   google.protobuf.Duration jwt_jwks_snapshot_max_age = 45 [(forge.v1.config) = {
     env_var: "JWT_JWKS_SNAPSHOT_MAX_AGE"
     flag: "jwt-jwks-snapshot-max-age"

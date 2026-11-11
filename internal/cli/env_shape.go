@@ -1108,6 +1108,10 @@ func writeIdentitySummary(w io.Writer, id *release.ShapeIdentity) {
 	}
 	fmt.Fprintf(w, "  identity:  %s (%s, %s sign-in, %s)\n", id.Name, where, id.Login.Mode, exposure)
 	for _, a := range id.Applications {
+		if a.Kind == release.IdentityAppNative {
+			fmt.Fprintf(w, "    application %s [%s] signs in frontend %s\n", a.Name, a.Kind, a.Frontend)
+			continue
+		}
 		fmt.Fprintf(w, "    application %s [%s] brokered by %s\n", a.Name, a.Kind, a.Workload)
 	}
 	if len(id.Roles) > 0 {

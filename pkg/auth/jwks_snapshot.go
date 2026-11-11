@@ -158,6 +158,22 @@ func (t okTracker) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// jwksHTTPClient is the client one JWKS fetch goes out through: the caller's
+// (its transport, timeout and redirect policy), or a default client, with the
+// transport wrapped to record the last successful fetch.
+func jwksHTTPClient(client *http.Client, last *atomic.Int64) *http.Client {
+	var c http.Client
+	if client != nil {
+		c = *client
+	}
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	c.Transport = okTracker{base: base, last: last}
+	return &c
+}
+
 // jwksResolver yields the JWKS URL for one live attempt: a fixed URL, or OIDC
 // discovery re-run on every attempt (the issuer that is down is the one
 // discovery asks).
@@ -173,7 +189,7 @@ func (j JWTConfig) resolver() jwksResolver {
 
 // attemptLive makes one fail-fast attempt to reach the issuer's keys. The
 // returned cancel stops the refresh goroutine the attempt started.
-func attemptLive(ctx context.Context, resolve jwksResolver, fetchTimeout time.Duration) (*liveJWKS, context.CancelFunc, error) {
+func attemptLive(ctx context.Context, resolve jwksResolver, client *http.Client, fetchTimeout time.Duration) (*liveJWKS, context.CancelFunc, error) {
 	actx, cancel := context.WithCancel(ctx)
 	rctx := actx
 	if fetchTimeout > 0 {
@@ -191,7 +207,7 @@ func attemptLive(ctx context.Context, resolve jwksResolver, fetchTimeout time.Du
 	kf, err := keyfunc.NewDefaultOverrideCtx(actx, []string{url}, keyfunc.Override{
 		NoErrorReturnFirstHTTPReq: &failFast,
 		HTTPTimeout:               fetchTimeout,
-		Client:                    &http.Client{Transport: okTracker{base: http.DefaultTransport, last: last}},
+		Client:                    jwksHTTPClient(client, last),
 	})
 	if err != nil {
 		cancel()
@@ -210,7 +226,7 @@ func newJWKSKeyfunc(cfg JWTConfig) (jwt.Keyfunc, func(), error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if !cfg.JWKSSnapshot.configured() {
-		live, lcancel, err := attemptLive(ctx, resolve, 0)
+		live, lcancel, err := attemptLive(ctx, resolve, cfg.HTTPClient, 0)
 		if err != nil {
 			cancel()
 			return nil, nil, err
@@ -228,7 +244,7 @@ func newJWKSKeyfunc(cfg JWTConfig) (jwt.Keyfunc, func(), error) {
 	}
 
 	bootAttempt := jwksBootAttempt
-	live, lcancel, liveErr := attemptLive(ctx, resolve, bootAttempt)
+	live, lcancel, liveErr := attemptLive(ctx, resolve, cfg.HTTPClient, bootAttempt)
 	if liveErr == nil {
 		f.live.Store(live)
 		return f.keyfunc, func() { lcancel(); cancel() }, nil
@@ -243,7 +259,7 @@ func newJWKSKeyfunc(cfg JWTConfig) (jwt.Keyfunc, func(), error) {
 	}
 	f.log.Warn("issuer JWKS unreachable at boot; starting on the delivered JWKS snapshot and retrying the issuer in the background",
 		"error", liveErr, "max_age", snap.maxAge().String())
-	go f.retryLive(ctx, resolve, jwksRetryInitial, jwksRetryMax, jwksBootAttempt)
+	go f.retryLive(ctx, resolve, cfg.HTTPClient, jwksRetryInitial, jwksRetryMax, jwksBootAttempt)
 	return f.keyfunc, cancel, nil
 }
 
@@ -259,7 +275,7 @@ type fallbackKeys struct {
 // retryLive keeps trying to reach the issuer until it can, then installs the
 // live source. From that moment the snapshot only serves the rotation-overlap
 // exception.
-func (f *fallbackKeys) retryLive(ctx context.Context, resolve jwksResolver, initial, maxDelay, attempt time.Duration) {
+func (f *fallbackKeys) retryLive(ctx context.Context, resolve jwksResolver, client *http.Client, initial, maxDelay, attempt time.Duration) {
 	delay := initial
 	for {
 		select {
@@ -267,7 +283,7 @@ func (f *fallbackKeys) retryLive(ctx context.Context, resolve jwksResolver, init
 			return
 		case <-time.After(delay):
 		}
-		live, _, err := attemptLive(ctx, resolve, attempt)
+		live, _, err := attemptLive(ctx, resolve, client, attempt)
 		if err == nil {
 			// Its refresh goroutine is bound to ctx, which the validator's
 			// stop func cancels.

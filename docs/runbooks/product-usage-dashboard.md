@@ -30,6 +30,7 @@ pin moves.
 
 2. **The console draws it.** Deploy a project (`reliant forge env deploy <env>`),
    open its Product usage dashboard in the console and confirm:
+
    - the four section headings (At a glance, Users, What users do, Retention),
      each with its description;
    - the eight headline figures, each with a sparkline, and the

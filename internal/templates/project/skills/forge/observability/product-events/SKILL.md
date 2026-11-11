@@ -154,10 +154,10 @@ control-plane #2517 is deployed. `observe.EdgeContextMiddleware` (on every
 serverkit listener) and `observe.EdgeContextInterceptor` (in `observe.Chain`)
 read them only when the process sets `FORGE_TRUSTED_EDGE=reliant`; then
 `Track` and `TrackAuth` record `visitor.day`, linking a server-side sign-up to
-the anonymous visit that produced it. forge does not render that variable for
-hosted workloads yet, so until it does the headers are ignored and nothing
-carries `visitor.day`. Never set it on a workload a client can reach without
-that proxy: the headers would be the client's.
+the anonymous visit that produced it. forge renders it for every
+`forge.OnHosted` workload; set `FORGE_TRUSTED_EDGE=none` in a workload's `env`
+to turn it off. Never set it on a workload a client can reach without that
+proxy: the headers would be the client's.
 
 From the browser, `identifyUser` is the one call every app should make, wherever
 it learns who is signed in (Clerk's `useUser`, Auth0's `useAuth0`, a session

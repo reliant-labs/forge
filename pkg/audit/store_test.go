@@ -29,6 +29,9 @@ func newTestStore(t *testing.T) *DBAuditStore {
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("boots postgres; skipped under -short")
+	}
 	dsn, cleanup, err := pgtest.NewURL()
 	if err != nil {
 		t.Fatalf("test postgres: %v", err)

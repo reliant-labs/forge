@@ -19,6 +19,9 @@ import (
 // `users` table with one secondary index.
 func newDiffTestClient(t *testing.T) *Client {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("boots postgres; skipped under -short")
+	}
 	sqldb, cleanup, err := pgtest.New()
 	if err != nil {
 		t.Fatalf("pgtest.New: %v", err)

@@ -16,6 +16,9 @@ import (
 // calls. pgx hands json/jsonb (a column or a `->` projection) back as []byte
 // and the same document selected as text as string; both must scan.
 func TestJSONThroughPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots postgres; skipped under -short")
+	}
 	db, cleanup, err := pgtest.New()
 	if err != nil {
 		t.Fatalf("pgtest.New: %v", err)
@@ -64,6 +67,9 @@ func TestJSONThroughPostgres(t *testing.T) {
 // timestamptz column arrives as time.Time, and the same instant selected as
 // text arrives in postgres's own output format, which NullTime must parse.
 func TestNullTimeThroughPostgres(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots postgres; skipped under -short")
+	}
 	db, cleanup, err := pgtest.New()
 	if err != nil {
 		t.Fatalf("pgtest.New: %v", err)

@@ -219,6 +219,12 @@ type Deps struct {
 	// own claims (authn.ClaimsFromContext). Unused when Auth is nil.
 	Caller CallerLookup
 
+	// AuthProvider names the auth provider in the daily sign-in heartbeat
+	// (AuthHeartbeatInterceptor): "auth0", "clerk", "supabase", …. Empty is
+	// "forge" for forge's managed identity, else "jwt". Unused when Auth is
+	// nil.
+	AuthProvider string
+
 	// Audit is the project's audit interceptor — the value returned by
 	// middleware.AuditInterceptor(sink, ...), with the durable audit sink
 	// already bound. This retires middleware.SetAuditStore: the
@@ -258,6 +264,8 @@ type Deps struct {
 //     server span and sets the browser's session.id on it (span_identity.go).
 //  1. RecoveryInterceptor   — observes panics from everything below.
 //  2. RequestIDInterceptor — mints/propagates the correlation id early.
+//     EdgeContextInterceptor follows it behind a trusted edge
+//     (FORGE_TRUSTED_EDGE=reliant): the visitor's daily hash Track records.
 //  3. LoggingInterceptor   — every failure; every success, or a sample
 //     of them when sampling is turned on.
 //  4. TracingInterceptor   — one OTel span per RPC.
@@ -268,7 +276,8 @@ type Deps struct {
 //  7. Auth                 — authenticate (when non-nil). Inner to
 //     observability so auth failures are still logged / traced / counted.
 //     IdentitySpanInterceptor follows it, stamping the caller's user.id on
-//     the server span.
+//     the server span, then AuthHeartbeatInterceptor, recording one
+//     auth_signed_in {kind: resumed} per user per UTC day.
 //  8. Audit                — durable audit record (when non-nil); runs
 //     after auth so it sees the authenticated principal.
 //  9. RateLimit            — throttle (when non-nil); keyed off the
@@ -297,6 +306,13 @@ func Chain(deps Deps) []connect.Interceptor {
 	chain = append(chain,
 		RecoveryInterceptor(deps.Logger),
 		RequestIDInterceptor(),
+	)
+	// Only behind a trusted edge (FORGE_TRUSTED_EDGE=reliant): elsewhere the
+	// headers are a client's, and the chain stays as it was.
+	if edgeTrusted() {
+		chain = append(chain, EdgeContextInterceptor())
+	}
+	chain = append(chain,
 		LoggingInterceptor(deps.Logger, deps.LogOptions...),
 		TracingInterceptor(deps.Tracer),
 		MetricsInterceptor(meter),
@@ -305,7 +321,7 @@ func Chain(deps Deps) []connect.Interceptor {
 		chain = append(chain, deadline)
 	}
 	if deps.Auth != nil {
-		chain = append(chain, deps.Auth, IdentitySpanInterceptor(deps.Caller))
+		chain = append(chain, deps.Auth, IdentitySpanInterceptor(deps.Caller), AuthHeartbeatInterceptor(deps.Caller, deps.AuthProvider))
 	}
 	if deps.Audit != nil {
 		chain = append(chain, deps.Audit)

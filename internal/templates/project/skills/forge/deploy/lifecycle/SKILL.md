@@ -77,6 +77,19 @@ authority: none implies another product's, and `forge cloud token create
 | `storage:read` | reading an env's object storage: list a bucket, read an object's metadata, preview it, mint a short-lived download URL | implies nothing and is implied by nothing, `db:query` included: uploads are not rows. May be bound to one environment; a real env may restrict it further to people (`data_access.storage`) |
 | `deploy:config:read` | a release's config VALUES: a workload's plain env var values and its redacted rendered manifest (`deploy:read` sees names only) | implies nothing and is implied by nothing, `deploy:write` included: shipping a release is not reading what it carries. May be bound to one environment. Secret objects and secret refs never show a value, and a secret-looking plain value shows only as `redacted` (`release.RedactObject`), with no value-derived digest |
 
+### A registry-only credential for filing source maps
+
+`sourcemaps:write` files a frontend's source maps (`forge frontend sourcemaps
+push`) and does nothing else. The registry grants it push and pull on
+`<org>/<project>/<frontend>-sourcemaps` repositories only, and the control plane
+refuses it on every RPC. It is a whole credential: a token carrying it carries
+no other scope, acts as no person, is bound to nothing, and no wildcard resolves
+to it. Because it cannot ask the control plane for its org, the push names the
+org itself:
+
+    forge cloud token create --env prod --name desktop-sourcemaps --scopes sourcemaps:write --expires-in 2160h
+    forge frontend sourcemaps push dist --frontend desktop --build-id "$VERSION" --env <env> --org <org id>
+
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
 list every member (`db/closed-sets`).
 

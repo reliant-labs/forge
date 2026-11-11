@@ -1,6 +1,6 @@
 ---
 name: deploy/delivery-policy
-description: What an env's releases must prove before they ship — `forge.DeliveryPolicy`, the per-env controls (trusted builder, signing, provenance/SBOM, Flux verification, admission verification, signed promotions, vulnerability gate, bundle kinds, approvals, the promotion health gate), their off/audit/enforce modes and defaults (signing and flux_verify depend on whether the env has a control plane), what bundle signing proves, what is mandatory and NOT in the policy, and which controls are recorded but not enforced yet.
+description: What an env's releases must prove before they ship — `forge.DeliveryPolicy`, the per-env controls (trusted builder, signing, provenance/SBOM, Flux verification, admission verification, signed promotions, vulnerability gate, bundle kinds, approvals, the promotion health gate, required gates, the approval hook), their off/audit/enforce modes and defaults (signing and flux_verify depend on whether the env has a control plane), what bundle signing proves, what is mandatory and NOT in the policy, and which controls are recorded but not enforced yet.
 ---
 
 # Delivery policy
@@ -32,8 +32,9 @@ Unset is valid: every control is at its default. Name only what you change.
 
 ## The controls, their defaults, and where each is enforced
 
-**`signing` and `flux_verify` are live on a control plane; everything else is
-recorded, not enforced yet.** forge validates and records every control. For the
+**`signing`, `flux_verify` and `health_gate` are live on a control plane, and
+`required_gates` and `approval_hook` are enforced wherever the env's ledger
+lives; everything else is recorded, not enforced yet.** forge validates and records every control. For the
 others the enforcement points are control-plane work that has not landed: a
 control set to `enforce` is a **declaration of intent**, in the shape and the
 ledger, and nothing refuses a release because of it. The last column says which
@@ -57,6 +58,8 @@ in the release path reads those signatures.)
 | `bundle_kinds` | **audit** | a narrowing can reject a bundle that built yesterday | narrows the kinds a bundle may carry for this env (`allow` / `deny`), on top of the mandatory ingest baseline; empty lists narrow nothing | control-plane C19 (ingest) | recorded, not enforced yet |
 | `approvals` | **audit** | `enforce` makes every promotion wait for a person | a promotion stays pending until `required` distinct people approve; `--yes` cannot bypass it | control-plane C12 | recorded, not enforced yet |
 | `health_gate` | **enforce**, gating nothing until `after` names an env | the order is declared, never inferred: declaring `after` is the opt-in | a promotion of release R is refused until every env in `after` holds a PASS release-health verdict for R; see below | the control plane, at promote, in the promotion's transaction | **enforced** by a control plane that advertises `shape-health-gate`; recorded only by one that does not, and by a self-hosted env |
+| `required_gates` | **enforce**, requiring nothing until `names` names a check | naming a check is the opt-in | a promotion is refused unless it carries a gate of every name, each `passed` (`--gate name=e2e,status=passed`); see below | the control plane at promote, in the promotion's transaction; forge before the write for an env with no control plane | **enforced** by a control plane that advertises `shape-promotion-checks`, and by forge for a self-hosted env |
+| `approval_hook` | **enforce**, once declared | declaring the hook is the opt-in | your approval system is asked approve / deny / pending before the promotion is written; anything but approve refuses, and a hook that times out or fails denies; `--yes` never answers for it; see below | as `required_gates`: a `url` asked by the control plane; a `url` or `argv` asked by forge for a self-hosted env | **enforced**, as `required_gates` |
 
 The rule behind the defaults: **a control that cannot block a deploy and costs
 you nothing defaults to `enforce`; a control that can refuse a deploy defaults to
@@ -107,6 +110,76 @@ skip it or supply it. The check runs inside the promotion's transaction.
   acknowledged code `health_gate` plus the note; the flag spells both.)
 - `after` may name several envs; each must have proved R. An env not in this
   project's control plane, or a local one, never proves anything.
+
+### `required_gates`
+
+```kcl
+delivery_policy = forge.DeliveryPolicy {
+    required_gates = forge.RequiredGates {names = ["e2e", "security-scan"]}   # mode defaults to "enforce"
+}
+```
+
+The pipeline runs its checks and hands their results to the promote:
+
+```bash
+forge env deploy prod "$VERSION" --yes \
+  --gate name=e2e,status=passed --gate scan.json   # scan.json: a check's JSON verdict document
+```
+
+| the promotion carries | refusal (exit) |
+|---|---|
+| every named gate, each `passed` | admitted; a `required_gates` gate is recorded on the promotion |
+| a named gate `failed`, `error` or `skipped` | `required_gate_failed` (1) |
+| no gate of a name | `required_gate_missing` (4) |
+
+Every gate of a name must be `passed`: a failing run beside a passing one is a
+failure on the record the promotion freezes. `audit` admits and records what
+enforce would refuse. The names `health_gate`, `required_gates` and
+`approval_hook` are the ledger's own and cannot be required or supplied.
+
+### `approval_hook`
+
+Plug in your own approval system: a change board, a ticketing workflow, a
+Slack bot, a script.
+
+```kcl
+approval_hook = forge.ApprovalHook {url = "https://approvals.acme.dev/forge"}   # timeout_seconds = 10
+approval_hook = forge.ApprovalHook {argv = ["./scripts/approve.sh"]}            # an env with no control plane
+```
+
+Before the promotion is written, the hook is sent a `forge.approval-request/v1`
+document — `env`, `release`, `from_env`, `commit`, `promoter`, the promotion's
+`gates` (including the `required_gates` verdict) and `note` — as the POST body
+of a `url` or the stdin of an `argv`, and answers:
+
+```json
+{"decision": "approve", "reason": "CAB-1234 approved", "url": "https://approvals.acme.dev/r/1234"}
+```
+
+(the response body, or the command's stdout; an `argv` that exits 0 with no
+output approves, and one that exits non-zero denies with its stderr as the reason).
+
+| the hook | refusal (exit) |
+|---|---|
+| `approve` | admitted; an `approval_hook` gate is recorded with the answer and its url |
+| `deny` | `approval_denied` (4) |
+| `pending` | `approval_pending` (4): approve it in your system, then retry the same command |
+| times out (`timeout_seconds`, 1..60), fails, answers non-2xx or unreadable | `approval_denied` (4): it fails closed |
+
+An approval that takes a person longer than a request should answer `pending`
+and let the pipeline retry. `--yes` never answers for the hook, and there is no
+override flag: the hook IS the approval. `audit` asks, records and admits.
+
+**Where it runs.** For an env with a control plane, the control plane asks the
+`url` (https, on the public internet; redirects are not followed) before its
+promotion transaction, and the transaction refuses a promotion the hook did not
+approve, so no client can skip it. `argv` is refused at render there: an answer
+collected on a laptop is one a caller could skip. For an env with no control
+plane the ledger is forge's, so forge asks, before its write. A run that writes
+nothing (`--plan`, `--plan-only`, `--dry-run`) does not ask.
+
+The request is not signed yet: treat it as a question, and decide from your own
+system's state, not from anything the request claims.
 
 ### `vuln_gate`
 
@@ -177,6 +250,8 @@ pass, so it is refused at render, naming both:
 | `flux_verify`, `admission_verify` or `signed_promotions` = `enforce` with `signing` = `off` | nothing would carry a signature |
 | `trusted_builder` = `enforce` with `provenance_sbom` = `off` | the builder is read from the provenance |
 | `vuln_gate` = `enforce` with `provenance_sbom` = `off` | the gate scans the SBOM |
+| `approval_hook` with both or neither of `url` and `argv`, an `http` url to a remote host, a url carrying credentials, or `timeout_seconds` outside 1..60 | the hook could not be asked safely |
+| `required_gates` naming `health_gate`, `required_gates` or `approval_hook` | those are the ledger's own verdicts |
 | `approvals.required` > 1 with no approvers, fewer than `required`, a duplicate, or mode `off` | nobody could satisfy it, or it would never apply |
 | `signing.key = "customer"` without `key_ref`, `"keyless"` without an OIDC identity, or a field the chosen key model does not use | the declaration does not say whose signature to trust |
 | an exemption without a reason or with a date that is not `YYYY-MM-DD` | exemptions are time-boxed and justified |
@@ -189,6 +264,11 @@ Turning `signing` off alone is accepted, because `flux_verify` defaults to
 |---|---|
 | `signing` or `flux_verify` = `enforce` | nothing signs a self-hosted env's bundles yet |
 | `admission_verify` or `signed_promotions` = `enforce` with `signing` unset | `signing` is `off` there, so nothing would carry a signature |
+
+| Declared, WITH a `control_plane` | Why it is refused |
+|---|---|
+| `approval_hook.argv` | the control plane cannot run your command; use `url` |
+| `required_gates` or `approval_hook` = `enforce`, to a control plane that does not advertise `shape-promotion-checks` (refused by `forge env deploy`, not at render) | it would admit every promotion the policy refuses; use `audit` until the control plane is upgraded |
 
 ## Not in this policy (mandatory for every env)
 

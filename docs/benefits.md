@@ -2682,6 +2682,24 @@ _Enforced · Reliant hosting_
 - library [`pkg/releasehealth`](../pkg/releasehealth)
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
 
+<a id="promotion-required-gates-approval-hook"></a>
+
+### Required checks and your approvals
+
+An env refuses a promotion that does not carry its required checks as passed, or that your own approval system did not approve, enforced where the env's ledger lives so no client can skip it.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { required_gates = forge.RequiredGates { names = ["e2e"] }, approval_hook = forge.ApprovalHook { url = "https://approvals.example.com/forge" } }`, then `forge env deploy prod <v> --gate name=e2e,status=passed`
+
+**Why:** A control plane that advertises `shape-promotion-checks` judges both at promote; for an env without one, forge judges them before its own write and runs an `argv` hook with no shell. The refusals are distinct: `required_gate_missing` (exit 4), `required_gate_failed` (exit 1), `approval_denied` (exit 4; a hook that times out or fails denies) and `approval_pending` (exit 4, retry once approved). `--yes` never answers for the hook, and each verdict is recorded on the promotion. `audit` records what `enforce` would refuse.
+
+**Evidence:**
+
+- skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
+- source [`internal/cli/promote_policy_checks.go`](../internal/cli/promote_policy_checks.go)
+- source [`pkg/release/promotion_checks.go`](../pkg/release/promotion_checks.go)
+
 <a id="release-health-policy"></a>
 
 ### Release health policy as code
@@ -2703,7 +2721,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Delivery policy, stated honestly
 
-`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, while `provenance_sbom`, `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
+`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, while `provenance_sbom`, `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
 
 _Recorded · Forge, on any infrastructure_
 

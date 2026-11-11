@@ -539,6 +539,15 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 			if rerr != nil {
 				return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, rerr)
 			}
+			// An ENFORCING promotion check this control plane predates would
+			// be withheld below and so enforce nothing: refuse rather than
+			// let a declared refusal silently become an admission.
+			if missing := reader.UnenforcedChecks(declared); len(missing) > 0 {
+				return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: delivery_policy.%s is \"enforce\", but this control plane "+
+					"does not enforce it yet (it does not advertise %q), so it would admit every promotion the policy refuses. "+
+					"Set its mode to \"audit\" until the control plane is upgraded, or remove it",
+					ref.Name, strings.Join(missing, " and delivery_policy."), release.BundleFeaturePromotionChecks)
+			}
 			declared = reader.LimitShape(declared)
 		}
 		shape, err := shapeWireFields(declared)

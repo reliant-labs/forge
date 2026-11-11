@@ -215,6 +215,7 @@ func executeSnapshotPromotion(ctx context.Context, r release.Release, ledger env
 	if err != nil {
 		return err
 	}
+	promotion.Gates = append(promotion.Gates, opts.policyGates...)
 	promotion.Run, err = opts.Run.resolveRun()
 	if err != nil {
 		return err

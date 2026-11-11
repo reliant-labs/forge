@@ -146,6 +146,14 @@ const (
 	// that predates it refuses those values, so it is sent only the funnels
 	// counted by "session" or "user".
 	BundleFeatureFunnelPerson = "shape-funnel-person"
+	// BundleFeaturePromotionChecks is ShapeDeliveryPolicy.RequiredGates and
+	// ShapeDeliveryPolicy.ApprovalHook: the gates a promotion must carry as
+	// passed, and the team's approval hook asked before one is written. A
+	// control plane that predates it enforces neither, so a shape carrying
+	// them is written only to one that names the feature, which is the control
+	// plane that enforces them — and forge refuses to declare an ENFORCING
+	// one to a control plane that does not ([BundleReader.UnenforcedChecks]).
+	BundleFeaturePromotionChecks = "shape-promotion-checks"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -153,7 +161,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeaturePromotionChecks}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -209,6 +217,25 @@ func (s Shape) HasOptionalParts() bool {
 		return true
 	}
 	return !bytes.Equal(limited, full)
+}
+
+// UnenforcedChecks names the promotion checks s declares in enforce mode that
+// LimitShape would withhold from this reader: a control plane that predates
+// them would admit every promotion they were declared to refuse. The
+// environment declaration refuses to send such a shape rather than let an
+// enforcing check silently become nothing.
+func (r *BundleReader) UnenforcedChecks(s Shape) []string {
+	if r.Supports(BundleFeaturePromotionChecks) || s.DeliveryPolicy == nil {
+		return nil
+	}
+	var out []string
+	if g := s.DeliveryPolicy.RequiredGates; g != nil && g.Mode == DeliveryEnforce && len(g.Names) > 0 {
+		out = append(out, "required_gates")
+	}
+	if h := s.DeliveryPolicy.ApprovalHook; h != nil && h.Mode == DeliveryEnforce {
+		out = append(out, "approval_hook")
+	}
+	return out
 }
 
 // LimitShape returns s without every optional part the reader does not decode.
@@ -268,6 +295,12 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {
 		pol := *s.DeliveryPolicy
 		pol.HealthGate = nil
+		s.DeliveryPolicy = &pol
+	}
+	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
+		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {
+		pol := *s.DeliveryPolicy
+		pol.RequiredGates, pol.ApprovalHook = nil, nil
 		s.DeliveryPolicy = &pol
 	}
 	if !r.Supports(BundleFeatureStorage) {

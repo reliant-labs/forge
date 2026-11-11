@@ -168,16 +168,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
 
-### Rotating a credential without a restart
-
-`OTEL_EXPORTER_OTLP_HEADERS` is read once, so a token that gets renewed would need a pod restart. Point `OTEL_EXPORTER_OTLP_HEADERS_FILE` at a mounted Secret instead (a Secret **volume**, never `subPath`, which the kubelet never refreshes; the file holds e.g. `authorization=Bearer <token>`). All four signals (traces, metrics, logs, profiles; HTTP and gRPC) take their headers from it **per request**:
-
-- The file is re-stat'ed at most every 5s (one stat per interval per process, shared by all signals) and re-read only when it changed. There is no watcher goroutine.
-- **Precedence:** a header named in `OTEL_EXPORTER_OTLP_HEADERS` (or the signal's own `…_<SIGNAL>_HEADERS`, which replaces the general one for that signal) is never overridden by the file; the file supplies the rest. Pick one place for the credential.
-- A missing, unreadable or empty file means the export goes out **without** the file's headers (the collector decides whether that is acceptable) and logs one `WARN` per minute. It never fails a call, blocks the app or crashes. A removed file stops sending its last token. A file that appears later is picked up.
-- Rotate with overlap: have the receiver accept old and new, swap the file, then drop the old. The kubelet needs about a minute to refresh a Secret volume.
-
-On a cluster, the node agent does the same for the **destination** with `destination.token_secret` (below): `bearertokenauth{filename}` reads the mounted token and re-reads it on change (verified against contrib 0.162 with a kubelet-style symlink swap, in `pkg/observe`'s `RUN_HEADERS_FILE_SMOKE=1` integration test).
+**Rotating a credential without a restart:** point `OTEL_EXPORTER_OTLP_HEADERS_FILE` at a mounted Secret volume (never `subPath`); every signal re-reads it per request. Precedence, failure behaviour and the overlap procedure: `observability/destination`, "Rotating a credential without a restart".
 
 ### Logs: exactly one shipping path
 

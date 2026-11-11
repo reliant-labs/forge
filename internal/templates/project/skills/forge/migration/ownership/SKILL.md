@@ -56,6 +56,14 @@ scaffold:
   created or deleted there before it exits — including writes by an external
   tool. Paths a `generate.hooks` entry declares in `writes:` are the project's
   own output and exempt.
+- Nothing it undoes is lost: the guard cannot tell forge's write from yours or
+  another agent's made while the run held the lock, so before it removes or
+  puts back a file it keeps what it found under `.forge/exclude-guard/<run>/`
+  and names each path and its copy.
+- `.git/`, `.forge/`, `node_modules/` and `.next/` are outside the guarantee:
+  the guard never descends them (it neither captures nor undoes anything
+  there). An entry naming a path inside one fails the load; exclude the source
+  tree around it instead.
 - A bad glob (`/abs`, `../x`, `a**`) fails the forge.yaml load, naming the entry.
 - Unlike a disowned file, deleting an excluded one does not hand it back: the
   glob, not the file, carries the decision. Remove the glob to let forge write

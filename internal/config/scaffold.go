@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -41,6 +42,18 @@ type ScaffoldConfig struct {
 func validateScaffoldExclude(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
 	for i, g := range cfg.Scaffold.Exclude {
+		if dir, ok := excludeEntersUnguardedDir(g); ok && pathglob.Validate(g) == nil {
+			line, col := findNodePos(root, []string{"scaffold", "exclude", fmt.Sprintf("[%d]", i)})
+			if line == 0 {
+				line, col = findNodePos(root, []string{"scaffold", "exclude"})
+			}
+			out = append(out, validationIssue{line: line, column: col,
+				msg: fmt.Sprintf("scaffold.exclude[%d] %q names a path inside %s/, which scaffold.exclude cannot guard: "+
+					"forge never scaffolds there, and the run's guard does not capture it (git's, forge's own state, "+
+					"or a dependency or build cache)", i, g, dir),
+				fix: "drop the entry; exclude the source tree around it instead (e.g. `frontends/web/**`, which leaves its node_modules alone)."})
+			continue
+		}
 		if err := pathglob.Validate(g); err != nil {
 			line, col := findNodePos(root, []string{"scaffold", "exclude", fmt.Sprintf("[%d]", i)})
 			if line == 0 {
@@ -53,6 +66,30 @@ func validateScaffoldExclude(cfg *ProjectConfig, root *yaml.Node) []validationIs
 		}
 	}
 	return out
+}
+
+// ExcludeUnguardedDir reports whether a directory of this name is outside
+// scaffold.exclude's guarantee: git's own, forge's own state, or a dependency
+// or build cache. The run's guard never descends one (it captures and puts
+// back nothing there, either way), so an exclude entry that names a path
+// inside one is a load error rather than a promise the guard cannot keep.
+func ExcludeUnguardedDir(name string) bool {
+	switch name {
+	case ".git", ".forge", "node_modules", ".next":
+		return true
+	}
+	return false
+}
+
+// excludeEntersUnguardedDir is the unguarded directory a glob names as one
+// of its segments (`.next/`, `web/node_modules/**`, `**/.forge/x`), if any.
+func excludeEntersUnguardedDir(glob string) (string, bool) {
+	for _, seg := range strings.Split(pathglob.Normalize(glob), "/") {
+		if ExcludeUnguardedDir(seg) {
+			return seg, true
+		}
+	}
+	return "", false
 }
 
 // ReadGenerateHookWrites returns the `writes:` every generate hook declares:

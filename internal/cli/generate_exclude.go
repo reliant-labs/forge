@@ -100,10 +100,11 @@ func excludedTSStubs(root, feDir string) (skip bool, err error) {
 // reported, since it cannot be put back.
 const excludeCaptureLimit = 16 << 20
 
-// excludeWalkSkip are directories the guard never descends: no forge writer
-// targets them, and walking node_modules under a `frontends/web/**` glob
-// would dominate the run.
-var excludeWalkSkip = map[string]bool{".git": true, "node_modules": true, ".forge": true, ".next": true}
+// The guard never descends a directory config.ExcludeUnguardedDir names: no
+// forge writer targets one, and walking node_modules under a
+// `frontends/web/**` glob would dominate the run. Arm and settle share this
+// one walk, so a pruned directory is neither captured nor undone; an exclude
+// entry that names a path inside one is a load error (validateScaffoldExclude).
 
 type excludedFile struct {
 	data []byte // nil when over excludeCaptureLimit
@@ -171,7 +172,7 @@ func (g *excludeGuard) walk(visit func(rel, glob, full string, fi fs.FileInfo)) 
 				return nil
 			}
 			if d.IsDir() {
-				if p != start && excludeWalkSkip[d.Name()] {
+				if p != start && config.ExcludeUnguardedDir(d.Name()) {
 					return filepath.SkipDir
 				}
 				return nil

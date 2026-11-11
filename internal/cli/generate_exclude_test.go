@@ -309,3 +309,40 @@ func TestExcludeGuard_KeepsWhatItUndoes(t *testing.T) {
 		t.Errorf("each kept path is named once:\n%s", report)
 	}
 }
+
+// A directory the guard never descends (here a frontend's node_modules under
+// an excluded frontend) is neither captured nor undone: arm and settle share
+// one walk, so whatever happens there during the run is left exactly as it
+// is, never removed as if it were new.
+func TestExcludeGuard_LeavesUnguardedDirsAlone(t *testing.T) {
+	root := excludeTestProject(t, "name: x\nscaffold:\n  exclude: [frontends/web/]\n",
+		map[string]string{
+			"frontends/web/src/app.tsx":                 "mine\n",
+			"frontends/web/node_modules/pkg/index.js":   "v1\n",
+			"frontends/web/node_modules/pkg/removed.js": "gone soon\n",
+		})
+	g := armExcludeGuard(root)
+	if g == nil {
+		t.Fatal("no guard armed for a project with scaffold.exclude")
+	}
+	writeRel(t, root, "frontends/web/node_modules/pkg/index.js", "v2\n")
+	writeRel(t, root, "frontends/web/node_modules/pkg/added.js", "new\n")
+	if err := os.Remove(filepath.Join(root, "frontends/web/node_modules/pkg/removed.js")); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	releaseExcludeGuard(g, &out)
+	for rel, want := range map[string]string{
+		"frontends/web/node_modules/pkg/index.js":   "v2\n",
+		"frontends/web/node_modules/pkg/added.js":   "new\n",
+		"frontends/web/node_modules/pkg/removed.js": "<absent>",
+		"frontends/web/src/app.tsx":                 "mine\n",
+	} {
+		if got := readOrEmpty(root, rel); got != want {
+			t.Errorf("%s = %q, want %q (left as the run left it)", rel, got, want)
+		}
+	}
+	if strings.Contains(out.String(), "node_modules") {
+		t.Errorf("the report names a path the guard does not guard:\n%s", out.String())
+	}
+}

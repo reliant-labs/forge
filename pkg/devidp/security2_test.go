@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -211,13 +212,13 @@ func TestTakeover_AFailedProofsLateUnlockExposesNoPlantedCredential(t *testing.T
 		t.Fatal(err)
 	}
 
-	// A's first metadata delete is releaseFailed's, right after it read
-	// its own mark: hold it until B has verified the address.
+	// A's first delete of its proof mark is releaseFailed's, right after it
+	// read its own mark: hold it until B has verified the address.
 	paused, resume := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	a.z.mu.Lock()
 	a.z.beforeRequest = func(r *http.Request) {
-		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/metadata") {
+		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/metadata") && r.URL.Query().Get("keys") == MetaProofLock {
 			once.Do(func() { close(paused); <-resume })
 		}
 	}
@@ -331,6 +332,9 @@ func TestProof_AStaleMarkLeavesTheIssuersLockoutInPlace(t *testing.T) {
 
 // Finding 4, the other half: a mark that fails to clear once is retried.
 func TestProof_AMarkThatFailsToClearOnceIsRetried(t *testing.T) {
+	// The failed deletes also keep this proof's window: its own wait for it
+	// is short here.
+	shrinkProofWindow(t, 100*time.Millisecond, 50*time.Millisecond)
 	h := newHarness(t, policyWith(SignupOpen, allMethods))
 	u := preRegister(t, h)
 	h.z.mu.Lock()
@@ -655,5 +659,165 @@ func TestProof_AWrongCodeLeavesAWorkingUnverifiedAccountIntact(t *testing.T) {
 	}
 	if got.metadata[MetaProofLock] != "" {
 		t.Errorf("a wrong code left a proof mark: %q", got.metadata[MetaProofLock])
+	}
+}
+
+// shrinkProofWindow shortens the pre-proof window and its slack for one
+// test, so a successful proof's wait for another proof's window is short.
+func shrinkProofWindow(t *testing.T, window, slack time.Duration) {
+	t.Helper()
+	w, s := preProofWindow, proofFenceSlack
+	preProofWindow, proofFenceSlack = window, slack
+	t.Cleanup(func() { preProofWindow, proofFenceSlack = w, s })
+}
+
+// The forge#1821 review, B1, forced deterministically: replica A's
+// wrong-code proof has announced its pre-proof window and is held right
+// before it takes the account's credentials back; replica B's proof takes the
+// lock over, verifies the address and hands the account back; the owner then
+// sets a password, as HandleVerify does after a proof. Only then is A's
+// request let through. A's cleanup must not land on the owner's credential:
+// every call it sends is bounded by its window, and B waits that window out
+// before handing the account back.
+func TestTakeover_AStaleProofsCleanupNeverRevokesTheOwnersNewCredential(t *testing.T) {
+	shrinkProofWindow(t, 300*time.Millisecond, 100*time.Millisecond)
+	policy := policyWith(SignupOpen, allMethods)
+	a := newHarness(t, policy)
+	b := newHarnessOn(t, a.z, policy)
+	u := preRegister(t, a)
+	code := a.z.lastMail(t).code
+	c := a.z.client()
+	ctx := context.Background()
+	before, err := c.FindUserByID(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A's first credential read is its revocation's (whether a password is
+	// set): hold it until the owner has a new password. Only the first: a
+	// sync.Once would hold B's read too, until A's returned.
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	a.z.mu.Lock()
+	a.z.beforeRequest = func(r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/authentication_methods") && first.CompareAndSwap(false, true) {
+			close(paused)
+			<-resume
+		}
+	}
+	a.z.mu.Unlock()
+	t.Cleanup(func() {
+		select {
+		case <-resume:
+		default:
+			close(resume)
+		}
+	})
+
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := a.routes.proveAddress(ctx, before, func() error { return ErrInvalidCode })
+		aDone <- err
+	}()
+	select {
+	case <-paused:
+	case err := <-aDone:
+		t.Fatalf("A's proof never reached its pre-proof revocation (returned %v)", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("A's proof never reached its pre-proof revocation")
+	}
+
+	if _, err := b.routes.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, u.id, code) }); err != nil {
+		t.Fatalf("the owner's proof: %v", err)
+	}
+	const ownerPassword = "owner-password-1"
+	if err := c.SetPassword(ctx, u.id, ownerPassword); err != nil {
+		t.Fatal(err)
+	}
+	close(resume) // A's held request goes through now, after the owner's password
+	select {
+	case err := <-aDone:
+		if err == nil {
+			t.Error("A's wrong-code proof succeeded")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("A's proof never returned")
+	}
+	// Let anything A could still send arrive.
+	time.Sleep(50 * time.Millisecond)
+	if !signsIn(t, a, "victim@acme.com", ownerPassword) {
+		t.Fatal("PROOF RACE: a wrong-code proof's late cleanup revoked the password the owner set after proving the address")
+	}
+	got := a.z.user(u.id)
+	a.z.mu.Lock()
+	defer a.z.mu.Unlock()
+	if !got.verified || got.locked {
+		t.Fatalf("after both proofs: verified=%v locked=%v, want verified and unlocked", got.verified, got.locked)
+	}
+}
+
+// A proof that announces its window and then finds the address verified by
+// another proof takes nothing from the account: what it holds now was set
+// after a proof.
+func TestProof_AnAddressVerifiedSinceTheFirstReadIsLeftAlone(t *testing.T) {
+	policy := policyWith(SignupOpen, allMethods)
+	h := newHarness(t, policy)
+	u := preRegister(t, h)
+	code := h.z.lastMail(t).code
+	c := h.z.client()
+	ctx := context.Background()
+	before, err := c.FindUserByID(ctx, u.id) // unverified
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.VerifyEmail(ctx, u.id, code); err != nil {
+		t.Fatal(err)
+	}
+	const ownerPassword = "owner-password-1"
+	if err := c.SetPassword(ctx, u.id, ownerPassword); err != nil {
+		t.Fatal(err)
+	}
+	// The stale read says unverified; the first re-read already sees the
+	// proof, so force the announcement path by locking the account under a
+	// fresh foreign mark, as another proof would leave it.
+	if err := c.SetMetadata(ctx, u.id, MetaProofLock, newProofMark(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.routes.proveAddress(ctx, before, func() error { return ErrInvalidCode }); err == nil {
+		t.Fatal("a wrong code was accepted")
+	}
+	if !signsIn(t, h, "victim@acme.com", ownerPassword) {
+		t.Fatal("a wrong-code proof on a verified address revoked its password")
+	}
+}
+
+// Windows older than proofLockTTL are left over: a successful proof neither
+// waits for them nor keeps them; a live one is waited out.
+func TestAwaitPreProofWindows_WaitsOutLiveWindowsAndDropsStaleOnes(t *testing.T) {
+	shrinkProofWindow(t, 200*time.Millisecond, 50*time.Millisecond)
+	h := newHarness(t, policyWith(SignupOpen, allMethods))
+	u := preRegister(t, h)
+	c := h.z.client()
+	ctx := context.Background()
+	stale := MetaProofWindowPrefix + "stale"
+	if err := c.SetMetadata(ctx, u.id, stale, strconv.FormatInt(time.Now().Add(-2*proofLockTTL).UnixMilli(), 10)); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	h.routes.awaitPreProofWindows(ctx, u.id)
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Fatalf("waited %v for a stale window", d)
+	}
+	if _, ok, _ := c.Metadata(ctx, u.id, stale); ok {
+		t.Fatal("a stale window was kept")
+	}
+	live := MetaProofWindowPrefix + "live"
+	opened := time.Now()
+	if err := c.SetMetadata(ctx, u.id, live, strconv.FormatInt(opened.UnixMilli(), 10)); err != nil {
+		t.Fatal(err)
+	}
+	h.routes.awaitPreProofWindows(ctx, u.id)
+	if d := time.Since(opened); d < 240*time.Millisecond {
+		t.Fatalf("returned %v after a live window opened, want at least the window plus its slack", d)
 	}
 }

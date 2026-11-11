@@ -21,8 +21,10 @@ package cli
 //   - `forge env deploy <env> <ver> --target <chart>` installs just that chart
 //     and applies nothing else.
 //
-// ORDER IS LOAD-BEARING: Flux first, then charts that ship a CRD bundle, then
-// the rest, each group in declaration order. A chart's Manifests (a
+// ORDER IS LOAD-BEARING: the env's own cluster-scoped prerequisites first
+// (PriorityClasses, StorageClasses, CRDs, ... — applyPlatformPrerequisites),
+// then Flux, then charts that ship a CRD bundle, then the rest, each group in
+// declaration order. A chart's Manifests (a
 // GatewayClass, a ClusterIssuer) are applied by the chart's own install after
 // its controllers, so the only cross-chart dependency to honour is "providers
 // of CRDs before consumers of them".

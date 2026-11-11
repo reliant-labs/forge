@@ -122,16 +122,10 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	requireTool(t, "node", "npm", "pnpm")
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin,
-		"project", "new", "feapp",
-		"--mod", "example.com/feapp",
-		"--frontend", "web",
-	)
-
-	projectDir := filepath.Join(dir, "feapp")
-	addCorpusForgePkgReplace(t, projectDir)
+	// `project new feapp --frontend web` + `scaffold service item`, shared
+	// with the other web+item tests (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, webItemProjectE2E)
 
 	// One CRUD entity so the generated frontend surface (dynamic [id]
 	// detail page, list/create pages, hooks, dashboard tiles) exists.
@@ -139,7 +133,6 @@ func TestE2EScaffoldFrontendBuilds(t *testing.T) {
 	// is user-written CRUD RPCs + a migration owning the schema —
 	// frontend pages are only emitted for entities whose table exists
 	// (codegen.ParseEntityProtos → schemadef.ApplyAndIntrospect).
-	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
 	writeFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"), itemCRUDProto)
 	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "0001_create_items.up.sql"), itemsTableMigration)
 	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "0002_items_scalar_vocabulary.up.sql"), itemsVocabularyMigration)

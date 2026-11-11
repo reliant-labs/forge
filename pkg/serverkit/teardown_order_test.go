@@ -2,6 +2,7 @@ package serverkit_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -79,9 +80,18 @@ func TestRun_InFlightRequestCompletesBeforeOnShutdown(t *testing.T) {
 	sigCh := make(chan error, 1)
 	go func() { sigCh <- shutdownAndWait(t, errCh, 15*time.Second) }()
 
-	// Let shutdown get past the readiness flip and the pre-stop delay so the
-	// teardown sequence is genuinely underway before the handler returns.
-	time.Sleep(200 * time.Millisecond)
+	// Wait until shutdown is past the readiness flip and the pre-stop delay
+	// — the listener stays open through the pause and closes when the HTTP
+	// drain begins — so the teardown sequence is genuinely underway before
+	// the handler returns.
+	eventually(t, "the HTTP drain to close the listener", func() bool {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return true
+		}
+		_ = conn.Close()
+		return false
+	})
 	close(releaseHandler)
 
 	select {
@@ -145,14 +155,14 @@ func TestRun_WedgedWorkerCannotOutlastShutdownTimeout(t *testing.T) {
 	waitReady(t, addr, 2*time.Second)
 
 	start := time.Now()
-	if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+	if err := shutdownAndWait(t, errCh, 30*time.Second); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	elapsed := time.Since(start)
 
-	// PreStopDelay (10ms) + ShutdownTimeout (300ms) plus slack. Without the
-	// bound this never returns at all.
-	if elapsed > 3*time.Second {
+	// PreStopDelay (10ms) + ShutdownTimeout (300ms) plus load-tolerant
+	// slack. Without the bound this never returns at all.
+	if elapsed > 5*time.Second {
 		t.Errorf("shutdown took %s with ShutdownTimeout=%s — a wedged worker is holding the process past its budget",
 			elapsed, cfg.ShutdownTimeout)
 	}

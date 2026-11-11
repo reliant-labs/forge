@@ -67,4 +67,3 @@ Naming the lane on the command line (`forge lint --migration-safety`) still runs
 it. The three dials, coarsest first: `lint.lanes` (a lane is not this project's
 concern), `lint.rules` (one rule's severity), `lint.allow_skip` (a lane that
 could not run here, accepted with a reason).
-

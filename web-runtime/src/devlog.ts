@@ -59,6 +59,11 @@
 // methods, and the scaffolded call site is an ordinary line in main.tsx /
 // providers.tsx that a project can delete outright.
 
+import {
+  formatRpcFailure,
+  setRpcFailureSink,
+  type RpcFailureSink,
+} from "./rpc-failure-log.js";
 import { serverTraceIdOf } from "./trace-id.js";
 
 /** Console methods this module mirrors. */
@@ -424,6 +429,7 @@ function onRejection(event: PromiseRejectionEvent): void {
   capture("error", ["unhandled rejection:", event.reason]);
 }
 
+let previousRpcFailureSink: RpcFailureSink | null = null;
 let errorHandler: ((e: ErrorEvent) => void) | undefined;
 let rejectionHandler: ((e: PromiseRejectionEvent) => void) | undefined;
 let pageHideHandler: (() => void) | undefined;
@@ -472,6 +478,15 @@ export function installDevLogging(options: DevLoggingOptions): void {
     };
   }
 
+  // Every failed RPC the runtime's interceptors see, as one error line naming
+  // its procedure, code and trace id (rpc-failure-log.ts). Straight into the
+  // buffer, not through console.error: the browser already prints the failed
+  // request, and the telemetry SDK already records it, so a console call
+  // would only make a second copy of each.
+  previousRpcFailureSink = setRpcFailureSink((failure) =>
+    capture("error", [formatRpcFailure(failure)]),
+  );
+
   errorHandler = (e) => onWindowError(e);
   rejectionHandler = (e) => onRejection(e);
   pageHideHandler = () => flushOnUnload();
@@ -498,6 +513,8 @@ export function uninstallDevLogging(): void {
   clearFlushTimer();
   flush();
 
+  setRpcFailureSink(previousRpcFailureSink);
+  previousRpcFailureSink = null;
   for (const level of LEVELS) {
     const previous = original[level];
     if (previous) console[level] = previous;

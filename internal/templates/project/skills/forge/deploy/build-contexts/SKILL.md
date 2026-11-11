@@ -1,6 +1,6 @@
 ---
 name: deploy/build-contexts
-description: Docker build contexts for a forge build — the MAIN context a DockerBuild sends (DockerBuild.context), the NAMED --build-context entries a Dockerfile COPY --from=s, and which of the two a given Dockerfile actually needs.
+description: Docker build contexts for a forge build — the MAIN context a DockerBuild sends (DockerBuild.context, a path or a pinned forge.GitSource in another repo), the NAMED --build-context entries a Dockerfile COPY --from=s, and which of the two a given Dockerfile actually needs.
 ---
 
 # Docker Build Contexts
@@ -47,10 +47,28 @@ bug. A Dockerfile that COPYs repo-root-relative paths
 (`COPY frontends/internal-console/package.json ./`) wants the default and
 should not set `context` at all.
 
+**Code in another repository** — a deploy repo building an app repo's image —
+pins the context instead of naming a path:
+
+```kcl
+forge.DockerBuild {
+    context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
+    # dockerfile unset: the pinned repo's own <context>/Dockerfile
+}
+```
+
+The pin resolves through the shared source cache (or `.forge/source-overrides.yaml`
+while you develop both repos); a string `dockerfile` is then read INSIDE the
+pinned context, and `dockerfile = forge.GitSource {…, subdir = "<file>"}`
+takes the Dockerfile from its own pinned repo. The build state and the release
+(`built_from`) record the repo and commit. Topologies and costs:
+`deploy/polyrepo`.
+
 Two details that trip people up:
 
-- **`dockerfile` is always project-root relative**, whatever `context` says,
-  and it need NOT live under the context. Docker allows `-f` outside the
+- **A path `dockerfile` is project-root relative** whatever a path `context`
+  says (under a GitSource context it is context-relative), and it need NOT
+  live under the context. Docker allows `-f` outside the
   context and forge does not narrow that.
 - **A narrower context is not just correctness, it is speed** — docker sends
   the context to the daemon, so a root context on a large monorepo ships the

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -130,11 +132,11 @@ func TestLocalAutopilotReceiverIsScopedToTheEnv(t *testing.T) {
 	}
 }
 
-// The in-app sink takes only the bearer forge generated, and prints one line
+// The in-app sink takes only the bearer forge generated, and logs one record
 // per alert with the platform's identity labels left out.
 func TestAlertSinkHandler(t *testing.T) {
 	var out strings.Builder
-	h := alertSinkHandler("tok", &out)
+	h := alertSinkHandler("tok", newAlertsRunLogger(&out))
 	body := `{"receiver":"local/reliant-inapp","status":"firing","alerts":[{"status":"firing","labels":{"alertname":"Slow","severity":"critical","service":"api","reliant_org_id":"local"},"annotations":{"summary":"api is slow"}}]}`
 
 	rec := httptest.NewRecorder()
@@ -150,9 +152,74 @@ func TestAlertSinkHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d", rec.Code)
 	}
-	if got, want := strings.TrimSpace(out.String()), "ALERT firing   Slow service=api severity=critical — api is slow"; got != want {
-		t.Fatalf("line = %q, want %q", got, want)
+	recs := alertsLogRecords(t, out.String())
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1: %q", len(recs), out.String())
 	}
+	if got, want := recs[0]["msg"], "ALERT firing   Slow service=api severity=critical — api is slow"; got != want {
+		t.Fatalf("msg = %q, want %q", got, want)
+	}
+	if recs[0]["level"] != "INFO" || recs[0]["alertname"] != "Slow" || recs[0]["status"] != "firing" {
+		t.Fatalf("record = %v, want level INFO, alertname Slow, status firing", recs[0])
+	}
+}
+
+// Every line `forge obs alerts run` writes is collector-readable: the local
+// collector (deploy/observability/otel-collector.yaml) parses a JSON line's
+// `level` into its severity, and hands any other line to ClickStack's
+// fallback, which infers severity from the first keyword in the body — and
+// `\balert` is a FATAL keyword there. As logfmt, "alert rules loaded" and
+// every delivered "ALERT firing …" were stored as fatal and listed by
+// `forge obs issues` as the alerts service's issues on a fresh stack.
+func TestAlertsRunLinesCarryTheirLevel(t *testing.T) {
+	var out strings.Builder
+	log := newAlertsRunLogger(&out)
+	// The evaluator's own records: a rules file not rendered yet (WARN), and
+	// the start line.
+	src := &alerting.FileRuleSource{Path: filepath.Join(t.TempDir(), "absent.json"), Owner: "o", Logger: log}
+	if _, err := src.Rules(context.Background(), "o"); err != nil {
+		t.Fatal(err)
+	}
+	log.Info("evaluating alert rules", "env", "dev")
+
+	req := httptest.NewRequest(http.MethodPost, clickstack.AlertsSinkPath, strings.NewReader(
+		`{"alerts":[{"status":"firing","labels":{"alertname":"Slow"}},{"status":"resolved","labels":{"alertname":"Slow"}}]}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	rec := httptest.NewRecorder()
+	alertSinkHandler("tok", log).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sink status %d", rec.Code)
+	}
+
+	recs := alertsLogRecords(t, out.String())
+	want := []string{"WARN", "INFO", "INFO", "INFO"} // rules file unusable, evaluating, firing, resolved
+	if len(recs) != len(want) {
+		t.Fatalf("records = %d, want %d: %q", len(recs), len(want), out.String())
+	}
+	for i, r := range recs {
+		if r["level"] != want[i] || r["msg"] == "" {
+			t.Fatalf("record %d = %v: want level %s and a msg", i, r, want[i])
+		}
+	}
+}
+
+// alertsLogRecords parses the process's output the way the local collector
+// does: one JSON object per line.
+func alertsLogRecords(t *testing.T, out string) []map[string]string {
+	t.Helper()
+	var recs []map[string]string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatalf("line %q is not a JSON object, so the collector cannot read its level: %v", line, err)
+		}
+		r := map[string]string{}
+		for k, v := range raw {
+			r[k] = fmt.Sprint(v)
+		}
+		recs = append(recs, r)
+	}
+	return recs
 }
 
 func TestSelfForgeCommand(t *testing.T) {

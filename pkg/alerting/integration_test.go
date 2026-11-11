@@ -271,6 +271,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	if got := a["annotations"].(map[string]any)["summary"]; got == nil || got == "" {
 		t.Fatalf("annotations = %v", a["annotations"])
 	}
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a spoofed org-b alert the chance to arrive; a correct scheduler passes however long this takes
 	time.Sleep(600 * time.Millisecond)
 	if n := len(firingFor("org-b")); n != 0 {
 		t.Fatalf("org-b has no slow service but %d alerts carry its identity (a spoofed label?)", n)
@@ -435,6 +436,7 @@ func TestPerEnvRuleCapEndToEndIsLoud(t *testing.T) {
 		}
 		return true
 	})
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives the over-cap rule w4 the chance to be evaluated; a correct scheduler passes however long this takes
 	time.Sleep(500 * time.Millisecond)
 	if got := byName("w4"); len(got) != 0 {
 		t.Fatalf("w4 is past the cap and must not be evaluated, but alerted: %v", got)

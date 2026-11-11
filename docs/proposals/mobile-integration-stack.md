@@ -126,8 +126,14 @@ decision" is the status, not a claim that it is acceptable):
 - **Android.** No emulator or device run: Gradle builds, Hermes streaming and
   cancellation, lifecycle, and sign-in (an emulator needs `adb reverse` for the
   issuer). JS export for Android passes; that is not Android evidence.
-- **Hosted (control-plane) registration of native clients.** The runs used the
-  host-run dev IdP; a hosted identity refuses `kind = "native"` today.
+- **Hosted (control-plane) registration of native clients, end to end.** The runs
+  used the host-run dev IdP. forge now derives a native application for an `rn`
+  frontend on a hosted identity, resolves its callbacks from `app.json`
+  (`expo.scheme`) when it projects the shape, and sends it to a control plane that
+  advertises `shape-identity-native-app`; a control plane that does not is sent
+  none and a note says so. Registration at a real hosted IdP, and a mobile build
+  consuming the registered client, are not exercised here (design:
+  control-plane `docs/proposals/hosted-native-identity.md`).
 - **Whole-module `task test`** in full mode: the lanes listed above passed on this
   head; the rest runs in CI on the merge queue.
 - **Universal links** (https callbacks). The callback path is identical and the

@@ -77,7 +77,7 @@ What a new app would otherwise stitch together from separate tools:
 | **Run**        | [Observability stack included](docs/benefits.md#local-clickstack) · [Production alerts out of the box](docs/benefits.md#default-alerts) · [Prove each deploy is good](docs/benefits.md#obs-check)                                                                                                                                 |
 | **Agents**     | [Skills that match your forge](docs/benefits.md#skills-in-the-binary) · [Built-in MCP server](docs/benefits.md#mcp-server)                                                                                                                                                                                                        |
 
-Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (234 entries, 123 lint rules)
+Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (236 entries, 123 lint rules)
 
 <!-- benefits:end -->
 

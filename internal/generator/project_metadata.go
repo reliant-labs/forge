@@ -48,6 +48,11 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 		return err
 	}
 
+	// harness: none — no agent surface at all, MCP config included.
+	if g.Harness == HarnessNone {
+		return nil
+	}
+
 	templateData := ProjectMemoryData{Name: g.Name, CLI: cliName()}
 
 	// User-owned MCP config — write only if absent.
@@ -137,6 +142,9 @@ type agentFile struct{ path, tmpl string }
 // pointer says only to run the forge binary: skill bodies never leave the
 // binary.
 func (h Harness) agentFiles() []agentFile {
+	if h == HarnessNone {
+		return nil // the project keeps its own agent instructions, or none
+	}
 	files := []agentFile{{"AGENTS.md", "reliant.md.tmpl"}}
 	switch h {
 	case HarnessClaude:

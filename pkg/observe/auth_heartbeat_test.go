@@ -94,7 +94,6 @@ func TestAuthHeartbeatSkipsAnonymousAndAPIKeyCallers(t *testing.T) {
 }
 
 func TestAuthHeartbeatProviderDefault(t *testing.T) {
-	t.Setenv(EnvAuthProvider, "")
 	t.Setenv(EnvIDPBrokerToken, "")
 	t.Setenv(EnvIDPBrokerToken+"_FILE", "")
 	if p := AuthHeartbeatInterceptor(nil, "").(authHeartbeat).provider; p != AuthProviderJWT {
@@ -106,34 +105,6 @@ func TestAuthHeartbeatProviderDefault(t *testing.T) {
 	}
 	if p := AuthHeartbeatInterceptor(nil, "clerk").(authHeartbeat).provider; p != "clerk" {
 		t.Errorf("provider = %q, want the named one", p)
-	}
-}
-
-func TestAuthHeartbeatProviderFromEnv(t *testing.T) {
-	t.Setenv(EnvIDPBrokerToken, "")
-	t.Setenv(EnvIDPBrokerToken+"_FILE", "/run/secrets/broker")
-	// FORGE_AUTH_PROVIDER names the provider, ahead of the managed default.
-	t.Setenv(EnvAuthProvider, " Supabase ")
-	if p := AuthHeartbeatInterceptor(nil, "").(authHeartbeat).provider; p != "supabase" {
-		t.Errorf("provider = %q, want supabase from %s", p, EnvAuthProvider)
-	}
-	// The code's own name still wins over the environment.
-	if p := AuthHeartbeatInterceptor(nil, "auth0").(authHeartbeat).provider; p != "auth0" {
-		t.Errorf("provider = %q, want the named one", p)
-	}
-	t.Setenv(EnvAuthProvider, "")
-	if p := AuthProviderFromEnv(); p != AuthProviderForge {
-		t.Errorf("AuthProviderFromEnv() = %q with %s unset, want forge", p, EnvAuthProvider)
-	}
-}
-
-func TestAuthHeartbeatRecordsEnvProvider(t *testing.T) {
-	t.Setenv(EnvAuthProvider, "supabase")
-	h := newHeartbeatHarness(t, "")
-	h.call(&authn.Claims{UserID: "u-env"})
-	ev := h.events()
-	if len(ev) != 1 || ev[0]["product.provider"] != "supabase" {
-		t.Fatalf("events = %v, want one auth_signed_in with provider supabase", ev)
 	}
 }
 
@@ -166,5 +137,14 @@ func TestChainRunsTheHeartbeatAfterAuth(t *testing.T) {
 		if _, ok := ic.(authHeartbeat); ok {
 			t.Error("Chain without Auth installs a heartbeat")
 		}
+	}
+}
+
+func TestAuthHeartbeatRecordsTheNamedProvider(t *testing.T) {
+	h := newHeartbeatHarness(t, "supabase")
+	h.call(&authn.Claims{UserID: "u-named"})
+	ev := h.events()
+	if len(ev) != 1 || ev[0]["product.provider"] != "supabase" {
+		t.Fatalf("events = %v, want one auth_signed_in with provider supabase", ev)
 	}
 }

@@ -170,11 +170,10 @@ type ChainDeps struct {
 
 	// AuthProvider names the auth provider in the daily sign-in heartbeat
 	// (observe.AuthHeartbeatInterceptor): "supabase", "auth0", "clerk", ….
-	// Empty is observe.AuthProviderFromEnv — FORGE_AUTH_PROVIDER, else
-	// "forge" for forge's managed identity, else "jwt". The heartbeat reads
-	// the caller through Auth's Caller, so an authenticator that keeps its
-	// caller in a context of its own is built with AuthWithCaller, or the
-	// heartbeat sees nobody.
+	// The provider is self-reported, in code; empty is "forge" for forge's
+	// managed identity, else "jwt". The heartbeat reads the caller through
+	// Auth's Caller, so an authenticator that keeps its caller in a context
+	// of its own is built with AuthWithCaller, or the heartbeat sees nobody.
 	AuthProvider string
 
 	// Outer runs in declared order before Trace and the rest of the chain.

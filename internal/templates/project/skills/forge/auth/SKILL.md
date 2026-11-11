@@ -89,6 +89,8 @@ validator, err := auth.Firebase(auth.FirebaseOpts{ProjectIDs: strings.Split(cfg.
 
 A constructor needing a value the config lacks gets a config field, never an `os.Getenv`. Other non-standard shapes ride `UserResolver`. Point the login broker at the same issuer — both halves must name it, or a session minted by one is rejected by the other.
 
+**Name the provider, and let the chain see the caller.** The chain's daily sign-in heartbeat (`auth_signed_in {kind: resumed}`, which is what counts active users) labels its events with the provider: set `FORGE_AUTH_PROVIDER=supabase` (or `auth0`, `clerk`, `firebase`, …) in the env, or `ChainDeps.AuthProvider` in code. Unset, it is `forge` with managed identity and `jwt` otherwise. The heartbeat reads the caller through the Authenticator's `Caller`: **if your auth does not stash forge's `authn` claims (`authn.ContextWithClaims`), pass `Caller`** — build `ChainDeps.Auth` with `serverkit.AuthWithCaller(audience, interceptor, lookup)` (or set `observe.Deps.Caller`), or the heartbeat, and the `user.id` on server spans, see nobody. Return `false` from the lookup for anonymous sessions and machine callers, so they are not counted as signed-in users.
+
 ## Shared-issuer runtime (sub-skill `auth/shared-issuer`)
 
 For an app whose issuer is a shared, operated one (a managed Zitadel), three typed config knobs exist, all inert until set — Clerk, Firebase and generic issuers are unchanged:

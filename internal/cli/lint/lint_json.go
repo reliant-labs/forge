@@ -288,11 +288,16 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	if err != nil {
 		return nil, err
 	}
+	off, err := lanesOff(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return collectAllLintersJSON(ctx, lintRunOptions{
 		reportFormat:  !flags.autoFix(),
 		strict:        flags.strict,
-		skipFrontends: flags.skipFrontends,
+		skipFrontends: flags.skipFrontends || off["frontend lint"],
 		allowSkip:     allow,
+		lanesOff:      off,
 		paths:         paths,
 		cfg:           cfg,
 		scope:         scope,
@@ -433,12 +438,16 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		strict:        opts.strict,
 		skipFrontends: opts.skipFrontends,
 		allowSkip:     opts.allowSkip,
+		lanesOff:      opts.lanesOff,
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
 		scope:         opts.scope,
 	})
-	if opts.reportFormat {
+	switch {
+	case opts.lanesOff[formatLaneName]:
+		outcomes = append(outcomes, offOutcome(formatLaneName, true))
+	case opts.reportFormat:
 		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends))
 	}
 	findings, gated := flattenLintOutcomes(outcomes)

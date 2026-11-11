@@ -186,6 +186,7 @@ func TestWriteStallGuardKeepAliveDeadlineDoesNotLeak(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, response.Body)
 	_ = response.Body.Close()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: idles the kept-alive connection past the stall timeout so a leaked deadline would fire; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(3 * testStall)
 
 	var reused bool

@@ -382,6 +382,7 @@ func TestDialContext_RefusesRefusedLiteralWithoutConnecting(t *testing.T) {
 	if !errors.Is(err, ErrRefused) {
 		t.Fatalf("dial to loopback = %v, want ErrRefused", err)
 	}
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a connection that wrongly reached the socket the chance to be accepted; a correct guard passes however long this takes
 	time.Sleep(20 * time.Millisecond)
 	if accepted.Load() != 0 {
 		t.Fatal("the listener saw a connection: the dial reached the socket layer")
@@ -527,6 +528,7 @@ func TestDialContext_RefusesRebindingToRefusedIP(t *testing.T) {
 	if !errors.Is(err, ErrRefused) {
 		t.Fatalf("dial after rebinding = %v, want ErrRefused", err)
 	}
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a connection that wrongly reached the socket the chance to be accepted; a correct guard passes however long this takes
 	time.Sleep(20 * time.Millisecond)
 	if accepted.Load() != 0 {
 		t.Fatal("the listener saw a connection: rebinding reached the socket layer")

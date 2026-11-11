@@ -136,6 +136,7 @@ func TestSlowRepliesDoNotLoseAHealthySession(t *testing.T) {
 
 	// Each heartbeat now takes five intervals to answer; let several of them
 	// complete.
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a soak — a slow reply misread as a lost session shows up as a restart within it; a correct lease passes however long it runs
 	time.Sleep(8 * latency)
 	if !a.leading.Load() || a.starts.Load() != 1 {
 		t.Fatalf("leading=%v starts=%d: a slow reply was treated as a lost session", a.leading.Load(), a.starts.Load())

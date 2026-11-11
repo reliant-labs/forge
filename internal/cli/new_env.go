@@ -120,6 +120,14 @@ Examples:
 	return cmd
 }
 
+// envBaseImportRe matches an env's import of the shared env base
+// (deploy/kcl/base/, the convention `forge project new` scaffolds).
+var envBaseImportRe = regexp.MustCompile(`(?m)^\s*import\s+\.\.base(\.|\s|$)`)
+
+// importsEnvBase reports whether an env's main.k binds through the shared
+// env base, so it holds only its own values.
+func importsEnvBase(mainK string) bool { return envBaseImportRe.MatchString(mainK) }
+
 // placeholderRe matches a stamped placeholder anywhere in a line.
 var placeholderRe = regexp.MustCompile(`REPLACE_ME[A-Z_]*`)
 
@@ -185,6 +193,12 @@ func runNewEnvWithBinds(ctx context.Context, name, fromEnv string, check, force 
 	for _, f := range written {
 		rel, _ := filepath.Rel(projectDir, f)
 		fmt.Printf("  %s\n", rel)
+	}
+	// THE SHARED BASE (deploy/kcl/base/): a template env that binds through
+	// it carries only its own values, so the copy just written IS the new
+	// env's deltas. Say so, and say where the rest lives.
+	if body, err := os.ReadFile(filepath.Join(srcDir, "main.k")); err == nil && importsEnvBase(string(body)) {
+		fmt.Printf("\nOnly %s's own values were written: it shares deploy/kcl/base/ with %s (and every env built on it).\n", name, template)
 	}
 
 	// Best-effort: surface the placeholders the author must now fill, so the

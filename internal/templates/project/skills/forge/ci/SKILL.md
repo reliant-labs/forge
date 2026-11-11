@@ -42,7 +42,8 @@ ci:
     coverage: false
   gate:
     extra_checks: [] # project-owned checks for `forge ci gate` — see `ci/gate`
-  vuln_scan: # zero-value = "all enabled"
+  workflows: { deploy: false } # opt one out — see `ci/extending`
+  vuln_scan:
     go: true
     docker: true
     npm: true

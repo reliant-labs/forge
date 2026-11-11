@@ -490,6 +490,7 @@ func TestHeadersFileLeaksNoGoroutines(t *testing.T) {
 	tracesWith(t, Config{ServiceName: "warm"}) // warm lazily started runtime goroutines
 	rcv.CloseClientConnections()
 	http.DefaultClient.CloseIdleConnections()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: settles the goroutine baseline; a short settle only raises the baseline and makes the leak check more lenient, never fail
 	time.Sleep(50 * time.Millisecond)
 	before := runtime.NumGoroutine()
 	for i := 0; i < 5; i++ {

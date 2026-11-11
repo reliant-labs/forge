@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
 
 // InTx is a pure ctx probe: no transaction, no database.
@@ -177,8 +176,9 @@ func TestBeginDetached_CtxCancelRollsBack(t *testing.T) {
 	if err := tx.Commit(); err == nil {
 		t.Fatal("Commit after ctx cancel succeeded; the transaction should have been rolled back")
 	}
-	// database/sql rolls back asynchronously; the row must never appear.
-	time.Sleep(50 * time.Millisecond)
+	// database/sql rolls back asynchronously, but an uncommitted row is
+	// invisible to every other session whether or not the rollback has
+	// landed yet, so no wait is needed: the row must never appear.
 	if got := countNotes(t, c); got != 0 {
 		t.Fatalf("after cancel: %d rows, want 0", got)
 	}

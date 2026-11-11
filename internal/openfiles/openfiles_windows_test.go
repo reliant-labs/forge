@@ -76,11 +76,17 @@ func TestWindowsHoldsWorkingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
-	time.Sleep(500 * time.Millisecond) // let it reach its working directory
-
-	snap, err := Take(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	// The child reaches its working directory some time after Start: take
+	// snapshots until one sees it, for up to 30s.
+	var snap Snapshot
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		var err error
+		if snap, err = Take(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if snap.Holds(dir) || time.Now().After(deadline) {
+			break
+		}
 	}
 	if !snap.Holds(dir) {
 		t.Error("a tree containing another process's working directory was not reported held")

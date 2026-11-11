@@ -73,6 +73,28 @@ const (
 	// BrowseView). The console runs it through the data browser's own read;
 	// HyperDX cannot.
 	KindBrowse PanelKind = "browse"
+
+	// The delivery kinds are drawn from the release ledger (releases,
+	// promotions, rollbacks) and the release-health verdict, which live in
+	// the control plane rather than in telemetry, so no statement can read
+	// them. Each kind is one read the console already makes; see delivery.go.
+
+	// KindReleaseHealth is the release scorecard: for each environment in
+	// scope, its running release judged against the one it replaced, by the
+	// release-health rule `forge obs check` applies (pkg/releasehealth):
+	// the verdict, the findings and the before/after figures. Served by
+	// ObservabilityService GetReleaseHealth.
+	KindReleaseHealth PanelKind = "release_health"
+	// KindPromotions is the promotion timeline: every promotion and rollback
+	// of the environments in scope over the range, with the release, its
+	// commit, who promoted it and when. Limit caps the rows. Served by
+	// DeliveryInsightsService ListReleases.
+	KindPromotions PanelKind = "promotions"
+	// KindDelivery is the four DORA figures over the range (deployment
+	// frequency, lead time, change failure rate, time to restore), each
+	// with the definition that produced it. Served by DeliveryInsightsService
+	// GetDoraMetrics.
+	KindDelivery PanelKind = "delivery"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
@@ -82,7 +104,7 @@ func IsConsoleKind(k PanelKind) bool {
 	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse:
 		return true
 	}
-	return false
+	return IsDeliveryKind(k)
 }
 
 // MaxMarkdownBytes bounds a KindText panel's Markdown.
@@ -401,7 +423,8 @@ type Panel struct {
 	Formula string `json:"formula,omitempty"`
 	// Limit keeps the top Limit rows of a table or bar panel, largest
 	// Series[0] first. Zero is DefaultBarLimit for a bar and the reader's own
-	// row cap for a table; at most MaxLimit.
+	// row cap for a table; at most MaxLimit. On a promotions panel it is the
+	// newest Limit promotions (zero is DefaultPromotionsLimit).
 	Limit int `json:"limit,omitempty"`
 	// SQL is a KindSQL panel's statement: one read-only SELECT over the
 	// telemetry tables, which may use the SQLParam* query parameters. Only

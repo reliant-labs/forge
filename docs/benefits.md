@@ -408,6 +408,20 @@ _Enforced · Forge, on any infrastructure_
 - skill `db/store` (`forge skill load db/store`)
 - skill `db` (`forge skill load db`)
 
+<a id="orm-opt-out"></a>
+
+### Keep your own data layer
+
+A project with a hand-written repository layer keeps forge's migrations and codegen without the generated ORM, by pinning `features: {orm: false}` in forge.yaml or marking the package `//forge:no-orm`.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- marker `// forge:no-orm`
+- command `forge project features`
+- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
+
 <a id="migration-safety"></a>
 
 ### Migration safety checks
@@ -1166,6 +1180,20 @@ _Enforced · Forge, on any infrastructure_
 - command `forge ci summarize`
 - command `forge gate record`
 - skill `ci/gate` (`forge skill load ci/gate`)
+
+<a id="ci-workflow-opt-out"></a>
+
+### Keep your own workflows
+
+`ci.workflows` in forge.yaml switches single forge workflows off (deploy, build-images, e2e, ...), and a same-named workflow the repo wrote itself is never overwritten or silently adopted: forge warns until forge.yaml says so.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- skill `ci/extending` (`forge skill load ci/extending`)
+- source [`internal/config/ci_workflows.go`](../internal/config/ci_workflows.go)
+- source [`internal/generator/ci_workflows.go`](../internal/generator/ci_workflows.go)
 
 <a id="generated-drift"></a>
 
@@ -2701,6 +2729,24 @@ _Enforced · Forge, on any infrastructure_
 - skill `deploy/preview` (`forge skill load deploy/preview`)
 - library [`pkg/release`](../pkg/release)
 
+<a id="shared-env-base"></a>
+
+### One env base, per-env deltas
+
+Every deployed env binds its workloads through one shared base, so an env file holds only what is its own and a new env starts as its deltas.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by each env as `import ..base.env as envbase`; `forge env new <name> --from <env>` copies only the source env's own values
+
+**Why:** It is plain KCL, so `forge env render`, `env diff` and `env shape` read it like any import, and an env overrides a shared binder by wrapping it. The scaffold tools keep editing each env's one binding line per workload.
+
+**Evidence:**
+
+- source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
+- command `forge env new`
+- skill `deploy/model` (`forge skill load deploy/model`)
+
 <a id="release-health-policy"></a>
 
 ### Release health policy as code
@@ -3736,14 +3782,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agent memory file generated
 
-`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge.
+`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge, and describes the project as it is: an adopted app gets the forge pieces it uses and its own test commands, never forge's greenfield layout.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Read off the tree and forge.yaml: a forge Go service gets the full Go guide; an adopted app keeps its language and layout, with sections only for what it opted into (deploy envs, monitoring, its migration tool, frontends) and the gate taken from its Taskfile, package.json scripts or Makefile; a static site gets the frontend guide.
 
 **Evidence:**
 
 - command `forge project memory`
 - source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
+- source [`internal/cli/memory_surface.go`](../internal/cli/memory_surface.go)
+- source [`internal/cli/testdata/memory`](../internal/cli/testdata/memory)
 
 <a id="harness-pointers"></a>
 
@@ -3756,6 +3806,20 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge skill list`
+
+<a id="harness-none"></a>
+
+### No agent files when unwanted
+
+`harness: none` (`forge project new --harness none`) adopts forge without adding an agent memory file, harness pointer or MCP config to a repository that keeps its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project new --harness`
+- source [`internal/generator/harness.go`](../internal/generator/harness.go)
+- skill `forge/greenfield` (`forge skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 

@@ -35,6 +35,7 @@ func TestAgentSurfacesPerHarness(t *testing.T) {
 		HarnessCursor:  {".cursor/rules/forge.mdc", ".cursorrules", "AGENTS.md"},
 		HarnessCopilot: {".github/copilot-instructions.md", "AGENTS.md"},
 		"":             {"AGENTS.md"},
+		HarnessNone:    nil,
 	}
 	for h, files := range want {
 		t.Run(string(h), func(t *testing.T) {
@@ -63,6 +64,9 @@ func TestAgentsMDIsTheSingleRenderedGuide(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, h := range ValidHarnesses() {
+			if h == HarnessNone {
+				continue // writes no guide at all (TestAgentSurfacesPerHarness)
+			}
 			root := t.TempDir()
 			if err := writeAgentSurfaces(root, "demo", h, site); err != nil {
 				t.Fatal(err)
@@ -164,5 +168,28 @@ func TestAgentSurfacesKeepExistingFiles(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(root, "AGENTS.md"))
 	if string(got) != string(mine) {
 		t.Fatalf("existing AGENTS.md was overwritten:\n%s", got)
+	}
+}
+
+// harness: none is the brownfield promise that adopting forge adds no agent
+// file: no guide, no pointer, no MCP config — through `forge project new`
+// as well as writeAgentSurfaces.
+func TestHarnessNoneWritesNoAgentSurface(t *testing.T) {
+	if h, err := ParseHarness("none"); err != nil || h != HarnessNone {
+		t.Fatalf("ParseHarness(none) = %q, %v", h, err)
+	}
+	if HarnessNone.MemoryFilePath() != "" {
+		t.Fatalf("none has a memory file: %q", HarnessNone.MemoryFilePath())
+	}
+	root := t.TempDir()
+	g := NewProjectGenerator("demo", root, "example.com/demo")
+	g.Harness = HarnessNone
+	if err := g.writeProjectMetadata(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range writtenFiles(t, root) {
+		if !strings.HasPrefix(f, ".reliant/") {
+			t.Errorf("harness none wrote %s", f)
+		}
 	}
 }

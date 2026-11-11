@@ -408,6 +408,20 @@ _Enforced · Forge, on any infrastructure_
 - skill `db/store` (`forge skill load db/store`)
 - skill `db` (`forge skill load db`)
 
+<a id="orm-opt-out"></a>
+
+### Keep your own data layer
+
+A project with a hand-written repository layer keeps forge's migrations and codegen without the generated ORM, by pinning `features: {orm: false}` in forge.yaml or marking the package `//forge:no-orm`.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- marker `// forge:no-orm`
+- command `forge project features`
+- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
+
 <a id="migration-safety"></a>
 
 ### Migration safety checks
@@ -3737,6 +3751,20 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge skill list`
+
+<a id="harness-none"></a>
+
+### No agent files when unwanted
+
+`harness: none` (`forge project new --harness none`) adopts forge without adding an agent memory file, harness pointer or MCP config to a repository that keeps its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project new --harness`
+- source [`internal/generator/harness.go`](../internal/generator/harness.go)
+- skill `forge/greenfield` (`forge skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 

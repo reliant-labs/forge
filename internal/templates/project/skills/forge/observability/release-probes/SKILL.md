@@ -91,6 +91,30 @@ plane never derives one for it: a project starts being probed when it deploys
 with a forge that renders the field. A control plane that predates the field is
 sent the shape without it, and the deploy succeeds unprobed.
 
+## Alerts
+
+An env with release probes records two default alerts over its targets, read
+from the prober's `reliant.probe.requests` (tagged `probe.outcome`,
+`probe.path`, `status_class`, `error.type`):
+
+| alert | fires when |
+|---|---|
+| `ReleaseProbeFailing` (warning) | a target had 2 or more `failed` probes in the last 5 minutes |
+| `ReleaseProbeDown` (critical, after 5m) | 80% or more of a target's `ok` and `failed` probes in the last 5 minutes failed, over at least 10 |
+
+A `throttled` probe (429) is neither a success nor a failure, and a
+`degraded` one (a failure recorded while the platform's own prober was
+failing) is the platform's problem, never your alert. Both carry
+`release_health = "exclude"`, so a firing one is not counted again by the
+release verdict, which already judges probe failures as `probe_failed`. They
+are recorded even for a static site, which has no other generated defaults.
+Tune or turn them off with the ids `release-probe-failing` and
+`release-probe-down` (`observability/alerts`).
+
+Your other alerts never see probes: a workload records no `rpc.server.*`
+metrics for a probe, and in a probed env the span-reading defaults drop
+`forge.probe = true` spans.
+
 ## Related
 
 - `observability/release-health` — how `forge obs check` judges a release, and

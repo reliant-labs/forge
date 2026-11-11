@@ -75,6 +75,11 @@ func alertDefaultsInput(projectDir string) (obsdash.AlertInput, bool, error) {
 // project pins it to (composedAlertSources). A composed source whose
 // inventory cannot be read is reported on warn, which may be nil.
 //
+// An env with release probes also records the probe defaults
+// (ReleaseProbeFailing, ReleaseProbeDown) for its targets, even when the
+// project has no generated defaults (a static site): they read only the
+// env's render.
+//
 // An env whose observability is off or undeclared evaluates nothing, so it
 // records nothing.
 func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName string, e *KCLEntities) ([]release.ShapeAlert, []release.ShapeAlertRoute, error) {
@@ -96,6 +101,11 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 	if err := obsdash.ValidateAlertTuning(tuning); err != nil {
 		return nil, nil, err
 	}
+	var disabled []string
+	if e.Observability.Policy != nil {
+		disabled = e.Observability.Policy.Disabled
+	}
+	probeTargets := releaseProbeTargets(e)
 	var defaults []obsdash.AlertRule
 	if have {
 		sources, notes, err := composedAlertSources(ctx, projectDir, e)
@@ -115,11 +125,14 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		for _, c := range e.UptimeChecks {
 			in.UptimeChecks = append(in.UptimeChecks, c.Name)
 		}
-		var disabled []string
-		if e.Observability.Policy != nil {
-			disabled = e.Observability.Policy.Disabled
-		}
+		in.ReleaseProbeTargets = probeTargets
 		if defaults, _, err = obsdash.ResolveAlertDefaultsFor(in, envName, tuning, disabled); err != nil {
+			return nil, nil, err
+		}
+	} else if len(probeTargets) > 0 {
+		// No generated defaults (a static site writes none), but the probe
+		// defaults read only the env's own release probes.
+		if defaults, _, err = obsdash.ResolveEnvAlertDefaultsFor(obsdash.AlertInput{ReleaseProbeTargets: probeTargets}, envName, tuning, disabled); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -163,6 +176,17 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		routes = defaultAlertRoutes()
 	}
 	return out, routes, nil
+}
+
+// releaseProbeTargets are the targets of the env's release probes, as the
+// render resolved them (sorted, one per target).
+func releaseProbeTargets(e *KCLEntities) []string {
+	var out []string
+	for _, p := range e.ReleaseProbes {
+		out = append(out, p.Target)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // defaultAlertRoutes is where alerts go until the author routes them: in-app

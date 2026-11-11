@@ -18,6 +18,11 @@ const (
 	// the uptime prober's metrics (uptime.check.up, tls.cert.expiry_seconds).
 	DetectorUptimeCheck         = "uptime_check"
 	DetectorCertificateExpiring = "certificate_expiring"
+	// DetectorReleaseProbe is a release-probe target whose probes failed:
+	// a few in a window (ReleaseProbeFailing) or most of them
+	// (ReleaseProbeDown). Both read the release prober's
+	// reliant.probe.requests.
+	DetectorReleaseProbe = "release_probe"
 )
 
 // Why is the shared "why it fired" payload: what a detector observed, against

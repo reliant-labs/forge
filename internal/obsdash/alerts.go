@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // AlertDefaultsVersion identifies the serialized shape of AlertDefaultsFile.
@@ -57,6 +59,14 @@ type AlertInput struct {
 	// env. The uptime defaults apply only to an env that has checks, and read
 	// only those checks' series, so a check an env opts out of cannot alert.
 	UptimeChecks []string `json:"-"`
+	// ReleaseProbeTargets are the targets of the env's release probes (the
+	// release shape's release_probes): the service.name the control plane's
+	// release prober writes each target's reliant.probe.requests under. Like
+	// UptimeChecks they are a fact about one env, set by the resolver and
+	// never recorded in the generated file. The probe defaults apply only to
+	// an env that has them, and the span-reading defaults exclude
+	// forge.probe=true spans only there.
+	ReleaseProbeTargets []string `json:"-"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -145,6 +155,14 @@ type alertDef struct {
 	// critical level and 0 otherwise, and decides its band from that. The
 	// levels share the default's params, so a threshold is tuned once.
 	levels []alertLevel
+	// labels are fixed labels every rule of the default carries beside its
+	// severity. The env's tuning may still override them.
+	labels map[string]string
+	// envScoped marks a default that reads only what the env's render
+	// declares (its release probes), nothing from the project's generated
+	// metadata. ResolveEnvAlertDefaultsFor resolves these alone, for a
+	// project forge generate writes no alert defaults for (a static site).
+	envScoped bool
 }
 
 // alertLevel is one severity of a default with levels.
@@ -371,6 +389,39 @@ var alertDefs = []alertDef{
 		needs:       hasUptimeChecks,
 		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
 		sql:         certificateExpiringSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "release-probe-failing", Alert: "ReleaseProbeFailing",
+			Title:    "A release-probe target failed probes in the last few minutes",
+			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pFailures, 2, "failed probes in the window that fire (a throttled or degraded probe is never a failure)"},
+				{pWindow, 5, "minutes of probes considered"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.target }} failed {{ $value }} release probes in the last window: a status it does not expect (429 aside), or no response after a retry"},
+		applies:     hasReleaseProbes,
+		labels:      releaseProbeLabels,
+		envScoped:   true,
+		sql:         releaseProbeFailingSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: "release-probe-down", Alert: "ReleaseProbeDown",
+			Title:    "Most of a release-probe target's probes are failing",
+			Severity: SeverityCritical, For: "5m", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pFailureRatio, 0.8, "share (0..1) of the window's ok and failed probes that failed, at or above which it fires"},
+				{pMinSamples, 10, "fewer ok and failed probes than this in the window never fire"},
+				{pWindow, 5, "minutes of probes considered"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.target }} is failing {{ $value }} of its release probes: it looks down from outside the platform"},
+		applies:     hasReleaseProbes,
+		labels:      releaseProbeLabels,
+		envScoped:   true,
+		sql:         releaseProbeDownSQL,
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -601,6 +652,20 @@ func ResolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 // because the control plane raises it from its own events: enabled, it is an
 // entry carrying the env's `for` and labels; disabled, an entry marked off.
 func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string) ([]AlertRule, []AlertSkip, error) {
+	return resolveAlertDefaults(in, env, tuning, disabled, func(alertDef) bool { return true })
+}
+
+// ResolveEnvAlertDefaultsFor is ResolveAlertDefaultsFor for an env whose
+// project has no generated alert defaults (ReadAlertInput's ok is false, as
+// for a static site): it resolves only the defaults that read nothing but the
+// env's own render (the release-probe defaults, from in.ReleaseProbeTargets),
+// so such an env still records them, and nothing that needs the project's
+// metadata.
+func ResolveEnvAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string) ([]AlertRule, []AlertSkip, error) {
+	return resolveAlertDefaults(in, env, tuning, disabled, func(d alertDef) bool { return d.envScoped })
+}
+
+func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string, include func(alertDef) bool) ([]AlertRule, []AlertSkip, error) {
 	if err := ValidateAlertTuning(tuning); err != nil {
 		return nil, nil, err
 	}
@@ -613,7 +678,7 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 		skipped []AlertSkip
 	)
 	for _, d := range alertDefs {
-		if !d.applies(in) || (d.needs != nil && !d.needs(in)) {
+		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
 			continue
 		}
 		t, tuned := tuning[d.ID]
@@ -669,6 +734,9 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 				For: d.For, Interval: d.Interval,
 				Labels:      map[string]string{"severity": lv.severity},
 				Annotations: map[string]string{},
+			}
+			for k, v := range d.labels {
+				r.Labels[k] = v
 			}
 			for k, v := range d.annotations {
 				r.Annotations[k] = v
@@ -872,11 +940,11 @@ WHERE ServiceName IN (%[2]s)
   AND ResourceAttributes['rum.sessionId'] != ''
   AND lower(StatusCode) = 'error'
   AND SpanAttributes['component'] NOT IN ('fetch', 'xml-http-request')
-  AND (SpanName != 'console.error' OR has(Events.Name, 'exception'))
+  AND (SpanName != 'console.error' OR has(Events.Name, 'exception'))%[7]s
 GROUP BY ServiceName
 HAVING value >= %[5]s
    AND value > %[6]s * countIf(Timestamp < now() - INTERVAL %[1]s MINUTE) * %[1]s / %[3]s
-ORDER BY service`, num(p[pWindow]), frontendServiceList(in), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]))
+ORDER BY service`, num(p[pWindow]), frontendServiceList(in), num(p["baseline_minutes"]), sqlQuote(env), num(p["min_errors"]), num(p["spike_factor"]), notProbeSpans(in))
 }
 
 // frontendLCPSQL fires per frontend when the p75 of its LCP web-vitals spans
@@ -894,10 +962,23 @@ WHERE ServiceName IN (%[1]s)
   AND ResourceAttributes['deployment.environment.name'] = %[3]s
   AND ResourceAttributes['rum.sessionId'] != ''
   AND SpanName = 'webvitals'
-  AND SpanAttributes['lcp'] != ''
+  AND SpanAttributes['lcp'] != ''%[6]s
 GROUP BY ServiceName
 HAVING samples >= %[4]s AND value > %[5]s
-ORDER BY service`, frontendServiceList(in), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]))
+ORDER BY service`, frontendServiceList(in), num(p[pWindow]), sqlQuote(env), num(p[pMinSamples]), num(p["threshold_ms"]), notProbeSpans(in))
+}
+
+// notProbeSpans is the condition every span-reading default adds in an env
+// that has release probes: a span a workload wrote while serving a probe
+// (forge.probe=true) is not real traffic, and the probes have their own
+// defaults. An env with no probes gets no probe traffic, so its SQL is
+// unchanged. The rpc RED defaults need no condition: a workload never records
+// rpc.server.* metrics for a probe.
+func notProbeSpans(in AlertInput) string {
+	if !hasReleaseProbes(in) {
+		return ""
+	}
+	return "\n  AND SpanAttributes['" + release.ProbeAttr + "'] != 'true'"
 }
 
 // ── customer metadata ────────────────────────────────────────────────────────

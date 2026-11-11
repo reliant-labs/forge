@@ -74,6 +74,19 @@
     "overrides": {},
     "project": "acme",
     "release_manifest_consumers": [],
+    "release_probes": [
+      {
+        "kind": "frontend",
+        "method": "GET",
+        "paths": [
+          "/"
+        ],
+        "rate_per_min": 4,
+        "source": "default",
+        "target": "web",
+        "timeout_seconds": 10
+      }
+    ],
     "rendered_secrets": [],
     "required_dns": [],
     "required_secrets": [],

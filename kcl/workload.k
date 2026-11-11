@@ -393,6 +393,88 @@ schema FlowCheck:
     check:
         path.startswith("/"), "FlowCheck.path must start with '/' (e.g. '/flow-health') — got '${path}'"
 
+# ---------------------------------------------------------------------------
+# A release probe.
+# ---------------------------------------------------------------------------
+
+# The bounds of a release probe: pkg/release MaxReleaseProbePaths,
+# MaxReleaseProbePathLen, Min/MaxReleaseProbeRate and Min/MaxReleaseProbeTimeout,
+# held equal by kcl/release_probe_test.go.
+_RELEASE_PROBE_MAX_PATHS = 5
+_RELEASE_PROBE_MAX_PATH_LEN = 256
+_RELEASE_PROBE_MIN_RATE = 1
+_RELEASE_PROBE_MAX_RATE = 12
+_RELEASE_PROBE_MIN_TIMEOUT_SECONDS = 1
+_RELEASE_PROBE_MAX_TIMEOUT_SECONDS = 30
+
+# A release-probe path the prober can request as written: a plain
+# origin-relative path, the same rule as pkg/release (ShapeReleaseProbe):
+# it starts with '/', is not too long, has no query, fragment, '..', empty
+# ('//') or '.' segment and no percent-encoding, and holds only RFC 3986
+# path characters (so no backslash, space, control or non-ASCII character).
+# Held equal to Go by kcl/release_probe_test.go.
+_RELEASE_PROBE_PATH_RE = r"^/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$"
+_release_probe_path_ok = lambda p: str -> bool {
+    regex.match(p, _RELEASE_PROBE_PATH_RE) and len(p) <= _RELEASE_PROBE_MAX_PATH_LEN \
+        and ".." not in p and "//" not in p and "/./" not in p and not p.endswith("/.")
+}
+
+schema Probe:
+    """Steady synthetic traffic the control plane sends to this workload or
+    frontend in a hosted env, so its releases can be judged when real traffic
+    is too thin (ReleaseHealth.min_requests).
+
+        release_probe = forge.Probe {paths = ["/", "/flow-health"]}
+
+    The control plane requests each path in turn from outside the platform
+    cluster, through the public hostname (DNS, TLS, the CDN, the proxy), about
+    `rate_per_min` times a minute in total, and records every outcome in the
+    env's telemetry. Requests are signed, so this workload's spans and logs
+    carry forge.probe=true and the release-health verdict judges them apart
+    from real traffic: any probe failure fails a release, and a release with
+    too little real traffic can pass on probes alone (judged_by = "probe").
+
+    GET or HEAD only, no body, no cookies, no credentials. Declare only paths
+    that are safe to request forever, by anyone, many times a minute.
+
+    A hosted static frontend is probed at its root (`<base_path>/`) with no
+    declaration; `release_probe = forge.Probe {enabled = False}` turns that
+    off. A workload is probed only when it declares one, and only if it
+    exposes a port (`expose = True`): the platform has no hostname for one
+    that does not. Rendered only for a forge.OnHosted runtime in an env with a
+    control plane that is not local or ephemeral; elsewhere it is ignored, so
+    one base declaration serves every env.
+
+    Not `probes`: that field of a workload is its liveness and readiness
+    (fw.Probes), which the platform runs inside the cluster.
+    """
+    enabled: bool = True
+    # Request paths on the target's platform hostname, requested in turn. A
+    # frontend's `base_path` is not prepended: write the whole path.
+    paths: [str] = ["/"]
+    method: "GET" | "HEAD" = "GET"
+    # Requests per minute across all paths. The control plane may lower it
+    # (its per-target cap); the verdict reports the rate it used.
+    rate_per_min: int = 4
+    # Bounds one request: connect, TLS, headers and body. A number and s or m.
+    timeout: str = "10s"
+    # Statuses that count as success: "200" or a class ("2xx"). Empty (the
+    # default) is 2xx and 3xx.
+    expect_status: [str] = []
+
+    check:
+        1 <= len(paths) <= _RELEASE_PROBE_MAX_PATHS, \
+            "Probe.paths: name 1 to ${_RELEASE_PROBE_MAX_PATHS} paths, not ${len(paths)}"
+        isunique(paths), "Probe.paths ${paths} names a path twice"
+        all p in paths {_release_probe_path_ok(p)}, \
+            "Probe.paths ${[p for p in paths if not _release_probe_path_ok(p)]}: each path starts with '/', is at most ${_RELEASE_PROBE_MAX_PATH_LEN} characters, has no query, fragment, '..', '//', '.' segment or percent-encoding, and uses only A-Z a-z 0-9 and -._~!$&'()*+,;=:@/"
+        _RELEASE_PROBE_MIN_RATE <= rate_per_min <= _RELEASE_PROBE_MAX_RATE, \
+            "Probe.rate_per_min ${rate_per_min} must be ${_RELEASE_PROBE_MIN_RATE} to ${_RELEASE_PROBE_MAX_RATE}"
+        _RELEASE_PROBE_MIN_TIMEOUT_SECONDS <= _uptime_seconds(timeout) <= _RELEASE_PROBE_MAX_TIMEOUT_SECONDS and _uptime_seconds(timeout) * rate_per_min < 60, \
+            "Probe.timeout '${timeout}' must be ${_RELEASE_PROBE_MIN_TIMEOUT_SECONDS}s to ${_RELEASE_PROBE_MAX_TIMEOUT_SECONDS}s (a number and s or m) and shorter than one interval (60s / rate_per_min ${rate_per_min})"
+        all s in expect_status {regex.match(s, _UPTIME_STATUS_RE)}, \
+            "Probe.expect_status ${expect_status} must be statuses like \"200\" or classes like \"2xx\""
+
 # Minutes in a Profiling.heap_interval ("15m", "2h"); 0 when malformed.
 _profiling_minutes = lambda d: str -> int {
     (int(d[:-1]) * (60 if d.endswith("h") else 1)) if regex.match(d, r"^[0-9]+[mh]$") else 0
@@ -494,6 +576,11 @@ schema Workload:
     # App-flow health checks `forge env smoke` runs against this workload.
     # See FlowCheck.
     flow_checks: [FlowCheck] = []
+    # Steady synthetic traffic the control plane sends to this workload in a
+    # hosted env, so its releases can be judged when real traffic is thin.
+    # Opt-in: a workload declares none by default. See Probe. Not `probes`
+    # (liveness and readiness).
+    release_probe?: Probe
     # The components this workload's process runs besides the one it is
     # named for, by component name. A subcommand that mounts several
     # components (control-plane's `admin-api` serves six admin services) is

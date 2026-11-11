@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -218,5 +220,147 @@ func TestFindExpiredPreviews(t *testing.T) {
 	}
 	if want := "instance:preview-pr-10,namespace:demo-preview-pr-1"; strings.Join(names, ",") != want {
 		t.Fatalf("expired: %v, want %s", names, want)
+	}
+}
+
+// A refresh makes the instance exactly the template again: a nested file the
+// template renamed or removed does not linger in the copy, and nothing the
+// template does not hold (but the marker and header) is left behind.
+func TestPreviewCreateRefreshMatchesTheTemplateExactly(t *testing.T) {
+	dir := previewProject(t)
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	installPreviewWorld(t, &fakePreviewWorld{}, now)
+	tmpl := filepath.Join(dir, "deploy", "kcl", "preview")
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(tmpl, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("overlays/api.k", "# api\n")
+	write("overlays/old.k", "# old\n")
+	write("values/prod.yaml", "a: 1\n")
+	f := previewKeyFlags{pr: 5, from: "preview"}
+	if _, err := createPreview(context.Background(), dir, f, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	inst := filepath.Join(dir, "deploy", "kcl", "preview-pr-5")
+
+	// The template moves on: a nested rename, a nested removal, a new file.
+	if err := os.Rename(filepath.Join(tmpl, "overlays", "old.k"), filepath.Join(tmpl, "overlays", "renamed.k")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(tmpl, "values")); err != nil {
+		t.Fatal(err)
+	}
+	write("overlays/api.k", "# api v2\n")
+	// And something stray in the instance itself.
+	if err := os.WriteFile(filepath.Join(inst, "stray.k"), []byte("# stray\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := createPreview(context.Background(), dir, f, time.Hour)
+	if err != nil || !doc.Refreshed {
+		t.Fatalf("refresh: %+v %v", doc, err)
+	}
+
+	var got []string
+	err = filepath.WalkDir(inst, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(inst, p)
+		got = append(got, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{kclrender.PreviewMarkerFile, previewHeaderFileName, "config.k", "main.k", "overlays/api.k", "overlays/renamed.k"}
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("instance holds %v, want exactly the template plus marker and header: %v", got, want)
+	}
+	if b, _ := os.ReadFile(filepath.Join(inst, "overlays", "api.k")); string(b) != "# api v2\n" {
+		t.Errorf("overlays/api.k = %q, want the template's current content", b)
+	}
+	if m, ok, err := kclrender.ReadPreviewMarker(inst); err != nil || !ok || m.Of != "preview" {
+		t.Errorf("marker after refresh: %+v %v %v", m, ok, err)
+	}
+	entries, _ := os.ReadDir(filepath.Join(dir, "deploy", "kcl"))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("a staging directory was left behind: %s", e.Name())
+		}
+	}
+}
+
+// A symlink in the template is refused by name, and the existing instance is
+// left as it was.
+func TestPreviewCreateRefusesASymlinkInTheTemplate(t *testing.T) {
+	dir := previewProject(t)
+	installPreviewWorld(t, &fakePreviewWorld{}, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
+	tmpl := filepath.Join(dir, "deploy", "kcl", "preview")
+	if err := os.Symlink("main.k", filepath.Join(tmpl, "link.k")); err != nil {
+		t.Skipf("host resource missing: cannot create a symlink: %v", err)
+	}
+	_, err := createPreview(context.Background(), dir, previewKeyFlags{pr: 6, from: "preview"}, time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "symlink") || !strings.Contains(err.Error(), "link.k") {
+		t.Fatalf("err = %v, want a refusal naming the symlink", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "deploy", "kcl", "preview-pr-6")); !os.IsNotExist(err) {
+		t.Errorf("a refused create left an instance: %v", err)
+	}
+}
+
+// GC judges a cluster namespace on its own expiry unless the local instance
+// it belongs to is of the SAME template: a same-named directory of another
+// template, or a local directory that was removed, does not hide an expired
+// namespace; a live local instance's namespace is kept.
+func TestFindExpiredPreviewsDedupesOnlyAgainstTheSameTemplate(t *testing.T) {
+	dir := previewProject(t)
+	created := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	expired := "2026-11-02T00:00:00Z"
+	w := &fakePreviewWorld{
+		namespaces: map[string]map[string]string{
+			"demo-live":    {previewOfLabel: "preview", previewInstanceLabel: "preview-pr-20"}, // a live local instance's
+			"demo-other":   {previewOfLabel: "preview", previewInstanceLabel: "other-pr-21"},   // local dir is another template's
+			"demo-removed": {previewOfLabel: "preview", previewInstanceLabel: "preview-pr-22"}, // local dir removed
+		},
+		annotations: map[string]string{"demo-live": expired, "demo-other": expired, "demo-removed": expired},
+	}
+	installPreviewWorld(t, w, created)
+	// other: a second template, with an instance named like the label above.
+	other := filepath.Join(dir, "deploy", "kcl", "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "main.k"), []byte("# other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []previewKeyFlags{{pr: 20, from: "preview"}, {pr: 21, from: "other"}, {pr: 22, from: "preview"}} {
+		if _, err := createPreview(context.Background(), dir, f, 30*24*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "deploy", "kcl", "preview-pr-22")); err != nil {
+		t.Fatal(err)
+	}
+	installPreviewWorld(t, w, created.Add(5*24*time.Hour))
+	got, err := findExpiredPreviews(context.Background(), dir, []string{"preview"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Kind+":"+c.Name)
+	}
+	sort.Strings(names)
+	if want := "namespace:demo-other,namespace:demo-removed"; strings.Join(names, ",") != want {
+		t.Fatalf("expired: %v, want %s (the live instance's namespace kept)", names, want)
 	}
 }

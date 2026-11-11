@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -256,17 +257,25 @@ func createPreview(ctx context.Context, projectDir string, f previewKeyFlags, tt
 		ExpiresAt: previewNow().UTC().Add(ttl).Truncate(time.Second).Format(time.RFC3339),
 		Source:    release.PreviewKey{PR: f.pr, Branch: f.branch}.Source(),
 	}
-	if err := copyPreviewFiles(srcDir, dstDir, refreshed); err != nil {
+	// The instance is staged whole beside it, marker and header included, and
+	// swapped in: it is then exactly the template, whatever the template
+	// renamed, removed or nested since the last create.
+	stage, err := stagePreviewCopy(srcDir, kclDir, name)
+	if err != nil {
 		return previewCreateDoc{}, err
 	}
+	defer func() { _ = os.RemoveAll(stage) }()
 	data, _ := json.MarshalIndent(marker, "", "  ")
-	if err := atomicfile.WriteFile(filepath.Join(dstDir, kclrender.PreviewMarkerFile), append(data, '\n'), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(stage, kclrender.PreviewMarkerFile), append(data, '\n'), 0o644); err != nil {
 		return previewCreateDoc{}, err
 	}
 	header := fmt.Sprintf("This directory is a PREVIEW INSTANCE of deploy/kcl/%s/, written by `%s env preview create`.\n"+
 		"Edit the template, not this copy: the next create overwrites it. It expires %s;\n"+
 		"`%s env preview delete` or `%s env gc` removes it. Do not commit it.\n", f.from, Name(), marker.ExpiresAt, Name(), Name())
-	if err := atomicfile.WriteFile(filepath.Join(dstDir, previewHeaderFileName), []byte(header), 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(stage, previewHeaderFileName), []byte(header), 0o644); err != nil {
+		return previewCreateDoc{}, err
+	}
+	if err := swapPreviewDir(stage, dstDir); err != nil {
 		return previewCreateDoc{}, err
 	}
 
@@ -295,36 +304,71 @@ func createPreview(ctx context.Context, projectDir string, f previewKeyFlags, tt
 	return doc, nil
 }
 
-// copyPreviewFiles copies the template env's regular files into the instance
-// directory. A refresh first removes the instance's own .k files, so a file
-// deleted from the template does not linger in the copy.
-func copyPreviewFiles(srcDir, dstDir string, refresh bool) error {
-	if refresh {
-		old, _ := filepath.Glob(filepath.Join(dstDir, "*.k"))
-		for _, f := range old {
-			if err := os.Remove(f); err != nil {
-				return err
-			}
-		}
-	}
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(srcDir)
+// stagePreviewCopy copies the template env's whole tree, nested directories
+// included, into a new staging directory beside the instances (so the swap is
+// a rename on one filesystem) and returns it. The template's own marker and
+// header are not copied: the instance gets its own. A symlink is refused, not
+// skipped: a preview is the template verbatim, and a link would either
+// change meaning in the copy or be silently missing from it.
+func stagePreviewCopy(srcDir, kclDir, name string) (string, error) {
+	stage, err := os.MkdirTemp(kclDir, "."+name+".stage-")
 	if err != nil {
-		return err
+		return "", err
 	}
-	for _, e := range entries {
-		if !e.Type().IsRegular() || e.Name() == kclrender.PreviewMarkerFile || e.Name() == previewHeaderFileName {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
+	err = filepath.WalkDir(srcDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if err := atomicfile.WriteFile(filepath.Join(dstDir, e.Name()), data, 0o644); err != nil {
+		rel, err := filepath.Rel(srcDir, p)
+		if err != nil || rel == "." {
 			return err
 		}
+		if rel == kclrender.PreviewMarkerFile || rel == previewHeaderFileName {
+			return nil
+		}
+		dst := filepath.Join(stage, rel)
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			return cliutil.UserErr("forge env preview create",
+				fmt.Sprintf("template env holds a symlink, %s", filepath.ToSlash(filepath.Join(filepath.Base(srcDir), rel))), "",
+				"replace it with the file it points at: a preview copies its template verbatim and does not follow links")
+		case d.IsDir():
+			return os.MkdirAll(dst, 0o755)
+		case !d.Type().IsRegular():
+			return fmt.Errorf("template env holds %s, which is neither a file nor a directory", rel)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	})
+	if err != nil {
+		_ = os.RemoveAll(stage)
+		return "", err
+	}
+	return stage, nil
+}
+
+// swapPreviewDir replaces dstDir with the staged copy: the old instance is
+// renamed aside, the stage renamed in, and only then is the old one removed,
+// so a failure part-way leaves either the old instance or the new one.
+func swapPreviewDir(stage, dstDir string) error {
+	old := ""
+	if _, err := os.Stat(dstDir); err == nil {
+		old = stage + ".old"
+		if err := os.Rename(dstDir, old); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(stage, dstDir); err != nil {
+		if old != "" {
+			_ = os.Rename(old, dstDir)
+		}
+		return err
+	}
+	if old != "" {
+		return os.RemoveAll(old)
 	}
 	return nil
 }
@@ -548,13 +592,15 @@ func findExpiredPreviews(ctx context.Context, projectDir string, from, contexts 
 	if err != nil {
 		return nil, err
 	}
-	local := map[string]bool{}
+	// local is each local instance's template, by instance name: what a
+	// cluster namespace's instance label is checked against below.
+	local := map[string]string{}
 	for _, env := range envs {
 		m, ok, err := kclrender.ReadPreviewMarker(filepath.Join(projectDir, "deploy", "kcl", env))
 		if err != nil || !ok {
 			continue
 		}
-		local[env] = true
+		local[env] = m.Of
 		if (release.ShapePreview{Of: m.Of, ExpiresAt: m.ExpiresAt}).Expired(now) {
 			out = append(out, gcCandidate{Kind: "instance", Name: env, Of: m.Of, ExpiresAt: m.ExpiresAt})
 		}
@@ -597,8 +643,16 @@ func findExpiredPreviews(ctx context.Context, projectDir string, from, contexts 
 		for _, ns := range list.Items {
 			of := ns.Metadata.Labels[previewOfLabel]
 			at := ns.Metadata.Annotations[previewExpiresAnnot]
-			if !ofs[of] || local[ns.Metadata.Labels[previewInstanceLabel]] {
-				continue // another template's, or a local instance's (deleted above)
+			if !ofs[of] {
+				continue // another template's
+			}
+			// The namespace of a local instance of the SAME template is that
+			// instance's: deleted with it above when it expired, and kept
+			// while it is live (a refreshed instance restamps it on its next
+			// deploy). A same-named directory of another template, or none
+			// at all, says nothing about it: it is judged on its own expiry.
+			if inst := ns.Metadata.Labels[previewInstanceLabel]; inst != "" && local[inst] == of {
+				continue
 			}
 			if (release.ShapePreview{Of: of, ExpiresAt: at}).Expired(now) {
 				out = append(out, gcCandidate{Kind: "namespace", Name: ns.Metadata.Name, Context: kctx, Of: of, ExpiresAt: at})

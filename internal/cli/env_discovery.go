@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
@@ -41,7 +42,9 @@ func ListEnvsFromKCLDir(kclDir string) ([]string, error) {
 	}
 	var envs []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		// A dot directory is never an env: `forge env preview create` stages
+		// an instance in one before swapping it in.
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		mainK := filepath.Join(kclDir, e.Name(), "main.k")

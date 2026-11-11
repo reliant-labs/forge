@@ -70,6 +70,9 @@ const (
 	KindSessions        = dashspec.KindSessions
 	KindFunnel          = dashspec.KindFunnel
 	KindText            = dashspec.KindText
+	KindReleaseHealth   = dashspec.KindReleaseHealth
+	KindPromotions      = dashspec.KindPromotions
+	KindDelivery        = dashspec.KindDelivery
 	FunnelBySession     = dashspec.FunnelBySession
 	FunnelByUser        = dashspec.FunnelByUser
 	DefaultFunnelWindow = dashspec.DefaultFunnelWindow
@@ -106,6 +109,9 @@ const (
 
 // IsConsoleKind is dashspec.IsConsoleKind.
 func IsConsoleKind(k PanelKind) bool { return dashspec.IsConsoleKind(k) }
+
+// IsDeliveryKind is dashspec.IsDeliveryKind.
+func IsDeliveryKind(k PanelKind) bool { return dashspec.IsDeliveryKind(k) }
 
 // ParseDashboard is dashspec.ParseDashboard.
 func ParseDashboard(name string, raw []byte) (Dashboard, error) {

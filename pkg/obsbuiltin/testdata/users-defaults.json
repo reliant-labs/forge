@@ -45,7 +45,8 @@
       "sql": "SELECT sum(if(has_snapshot, snapshot, toInt64(seen))) AS \"Accounts\"\nFROM (\n    SELECT EnvId,\n           countIf(EventName = 'auth_accounts' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 3 DAY) \u003e 0 AS has_snapshot,\n           argMaxIf(toInt64OrZero(Props['total']), Timestamp, EventName = 'auth_accounts' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 3 DAY) AS snapshot,\n           uniqExactIf(UserId, UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts')) AS seen\n    FROM product_events\n    WHERE Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId)) AND (EventName = 'auth_accounts' OR (UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts')))\n    GROUP BY EnvId)",
       "trendSql": "SELECT day, sum(total) AS \"Accounts\"\nFROM (\n    SELECT toDate(Timestamp) AS day, EnvId, argMax(toInt64OrZero(Props['total']), Timestamp) AS total\n    FROM product_events\n    WHERE EventName = 'auth_accounts' AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY day, EnvId)\nGROUP BY day ORDER BY day",
       "display": {
-        "color": "slate"
+        "color": "slate",
+        "exact": true
       },
       "unit": "count",
       "width": 6,
@@ -60,7 +61,8 @@
       "sql": "SELECT uniqExact((EnvId, UserId)) AS \"Active users\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))",
       "trendSql": "SELECT toDate(Timestamp) AS day, uniqExact((EnvId, UserId)) AS \"Active users\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\nGROUP BY day ORDER BY day",
       "display": {
-        "color": "blue"
+        "color": "blue",
+        "exact": true
       },
       "unit": "count",
       "width": 6,
@@ -75,7 +77,8 @@
       "sql": "SELECT count() AS \"New users\"\nFROM (SELECT EnvId, UserId, if(reports = 1, signed_up_at, first_at) AS NewAt, reports AS ReportsSignups\nFROM (\n  SELECT EnvId, UserId, first_at, signed_up_at, has_signup, max(has_signup) OVER (PARTITION BY EnvId) AS reports\n  FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,\n           toUInt8(countIf(EventName = 'auth_signed_up') \u003e 0) AS has_signup\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY EnvId, UserId))\nWHERE has_signup = 1 OR reports = 0)\nWHERE NewAt \u003e= {from:DateTime64(9)}",
       "trendSql": "SELECT toDate(NewAt) AS day, count() AS \"New users\"\nFROM (SELECT EnvId, UserId, if(reports = 1, signed_up_at, first_at) AS NewAt, reports AS ReportsSignups\nFROM (\n  SELECT EnvId, UserId, first_at, signed_up_at, has_signup, max(has_signup) OVER (PARTITION BY EnvId) AS reports\n  FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,\n           toUInt8(countIf(EventName = 'auth_signed_up') \u003e 0) AS has_signup\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY EnvId, UserId))\nWHERE has_signup = 1 OR reports = 0)\nWHERE NewAt \u003e= {from:DateTime64(9)}\nGROUP BY day ORDER BY day",
       "display": {
-        "color": "amber"
+        "color": "amber",
+        "exact": true
       },
       "unit": "count",
       "width": 6,
@@ -89,7 +92,8 @@
       "kind": "sql",
       "sql": "SELECT uniqExact((EnvId, UserId)) AS \"Returning users\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n  AND (EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM (SELECT EnvId, UserId, if(reports = 1, signed_up_at, first_at) AS NewAt, reports AS ReportsSignups\nFROM (\n  SELECT EnvId, UserId, first_at, signed_up_at, has_signup, max(has_signup) OVER (PARTITION BY EnvId) AS reports\n  FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,\n           toUInt8(countIf(EventName = 'auth_signed_up') \u003e 0) AS has_signup\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY EnvId, UserId))\nWHERE has_signup = 1 OR reports = 0) WHERE NewAt \u003e= {from:DateTime64(9)})",
       "display": {
-        "color": "cyan"
+        "color": "cyan",
+        "exact": true
       },
       "unit": "count",
       "width": 6,
@@ -266,7 +270,7 @@
       "title": "Most active users",
       "description": "Signed-in users by product events in the range, with the days they were active and when they were last seen. `forge obs sessions \u003cenv\u003e --user \u003cid\u003e` lists a user's sessions.",
       "kind": "sql",
-      "sql": "SELECT UserId AS \"User\", count() AS \"Events\",\n       uniqExact(toDate(Timestamp)) AS \"Active days\",\n       uniqExact(EventName) AS \"Distinct events\",\n       formatDateTime(max(Timestamp), '%Y-%m-%d %H:%i') AS \"Last seen (UTC)\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\nGROUP BY UserId ORDER BY count() DESC, UserId LIMIT 25",
+      "sql": "SELECT UserId AS \"User\", count() AS \"Events\",\n       uniqExact(toDate(Timestamp)) AS \"Active days\",\n       uniqExact(EventName) AS \"Distinct events\",\n       toDateTime(max(Timestamp), 'UTC') AS \"Last seen\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\nGROUP BY UserId ORDER BY count() DESC, UserId LIMIT 25",
       "width": 24,
       "height": 9
     }

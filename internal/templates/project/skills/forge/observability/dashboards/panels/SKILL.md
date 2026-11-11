@@ -129,13 +129,15 @@ default and is still right about the numbers. Every field is optional:
 |---|---|---|
 | `line` | `line`, `area`, `bars` (one bar per bucket) | `stack` (area or bars), `topN` |
 | `bar` | `bar`, `pie`, `donut` (a pie takes exactly one series) | `stack` and `horizontal` (bars), `topN` (pie, donut) |
-| `number` | `stat`, `gauge` | `min` (default 0) and `max` (gauge; required unless `unit` is `percent`, whose scale is 0 to 1) |
-| `sql` | `line`, `area`, `bars`, `funnel`, `heatmap` | `stack` (area or bars), `topN` (line styles) |
+| `number` | `stat`, `gauge` | `min` (default 0) and `max` (gauge; required unless `unit` is `percent`, whose scale is 0 to 1), `exact` |
+| `sql` | `line`, `area`, `bars`, `funnel`, `heatmap` | `stack` (area or bars), `topN` (line styles), `exact` (figures) |
 
 Every kind with a `display` also takes `color` and `colors` (below).
 
 - `stack` adds the series up, so the top edge is their total: right for counts,
   sums and rates, wrong for a p95 or an average. You decide.
+- `exact: true` draws a figure in full (1,284), never abbreviated (1.3k): for
+  a count a reader checks against another page that states it exactly.
 - `topN` (1 to 50) is how many series (or slices) are drawn before the rest
   fold into one "Other", summed where the values add up. The console keeps the
   full list behind "Show all"; without `topN` it picks its own.

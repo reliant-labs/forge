@@ -129,16 +129,16 @@ WHERE `+active+` AND `+envScope+` AND Timestamp >= toStartOfDay(`+to+`) - INTERV
 GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active users": colorUsers}), 24, 7)
 	dau.MinStep = "1d"
 	return []dashspec.Panel{
-		figure("users", "active-7d", "Active users", "Distinct users with any signed-in product event."+fixed,
-			twoWeeks("Active users (7 days)", activeIn), "", dashspec.UnitCount, colorUsers),
-		figure("users", "new-7d", "New users",
+		exact(figure("users", "active-7d", "Active users", "Distinct users with any signed-in product event."+fixed,
+			twoWeeks("Active users (7 days)", activeIn), "", dashspec.UnitCount, colorUsers)),
+		exact(figure("users", "new-7d", "New users",
 			fmt.Sprintf("Users who signed up; in an environment that reported no sign-up in the %d days before, the users first seen.", obsquery.NewUsersWindowDays)+fixed,
-			twoWeeks("New users (7 days)", newIn), "", dashspec.UnitCount, colorNew),
-		figure("users", "returning-7d", "Returning users", "Active users who are not new."+fixed,
-			twoWeeks("Returning users (7 days)", returningIn), "", dashspec.UnitCount, colorWeekly),
-		figure("users", "accounts", "Accounts",
+			twoWeeks("New users (7 days)", newIn), "", dashspec.UnitCount, colorNew)),
+		exact(figure("users", "returning-7d", "Returning users", "Active users who are not new."+fixed,
+			twoWeeks("Returning users (7 days)", returningIn), "", dashspec.UnitCount, colorWeekly)),
+		exact(figure("users", "accounts", "Accounts",
 			"Accounts in the environment's identity instance, from the platform's daily snapshot; an environment with none shows its users seen in the last 90 days.",
-			accountsSQL, "", dashspec.UnitCount, colorNeutral),
+			accountsSQL, "", dashspec.UnitCount, colorNeutral)),
 		dau,
 	}
 }

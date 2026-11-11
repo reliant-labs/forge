@@ -292,3 +292,70 @@ func TestAnalyticsDefaults(t *testing.T) {
 		t.Error("IsProductFunnel")
 	}
 }
+
+// finalSelect is the statement's last top-level SELECT list: the columns the
+// panel draws (the CTEs above it name their own).
+var finalSelect = regexp.MustCompile(`(?s)\nSELECT (.*?)\nFROM`)
+
+// A panel grouped by a fixed bucket declares it (minStep), so a reader
+// names the bucket from the spec rather than from its result's type: a week
+// read back as a Date would otherwise be captioned a day.
+func TestFixedBucketPanelsDeclareTheirStep(t *testing.T) {
+	for _, d := range every(fullInput()) {
+		for _, p := range d.Panels {
+			sql := "\n" + p.SQL
+			m := finalSelect.FindAllStringSubmatch(sql, -1)
+			if len(m) == 0 {
+				continue
+			}
+			cols := m[len(m)-1][1]
+			first := strings.TrimSpace(strings.SplitN(cols, ",", 2)[0])
+			var want string
+			switch {
+			case strings.HasSuffix(first, " AS week") || first == "week":
+				want = "7d"
+			case strings.HasSuffix(first, " AS day") || first == "day":
+				want = "1d"
+			default:
+				continue
+			}
+			if p.MinStep != want {
+				t.Errorf("%s/%s groups by %q but declares minStep %q, want %q", d.ID, p.ID, first, p.MinStep, want)
+			}
+		}
+	}
+	for _, id := range []string{"lifecycle-weekly", "signups-by-channel-weekly"} {
+		for _, d := range every(fullInput()) {
+			for _, p := range d.Panels {
+				if p.ID == id && p.MinStep != "7d" {
+					t.Errorf("%s: minStep %q, want 7d", id, p.MinStep)
+				}
+			}
+		}
+	}
+}
+
+// Counts a reader checks against another page (accounts, users) are drawn
+// exactly, and "last seen" is a time the reader formats, so it sorts as one.
+func TestCountFiguresAreExactAndLastSeenIsATime(t *testing.T) {
+	in := fullInput()
+	ov := ExtendOverview(dashspec.Dashboard{ID: "overview"}, in)
+	for _, c := range []struct {
+		d   dashspec.Dashboard
+		ids []string
+	}{{Users(in), []string{"accounts", "active", "new", "returning"}}, {ov, []string{"accounts", "active-7d", "new-7d", "returning-7d"}}} {
+		for _, id := range c.ids {
+			if p := panel(t, c.d, id); p.Display == nil || !p.Display.Exact {
+				t.Errorf("%s/%s is not drawn exactly", c.d.ID, id)
+			}
+		}
+	}
+	for _, p := range []dashspec.Panel{panel(t, Users(in), "most-active-users"), panel(t, Product(in), "events-by-name")} {
+		if strings.Contains(p.SQL, "formatDateTime") || !strings.Contains(p.SQL, `toDateTime(max(`) {
+			t.Errorf("%s: last seen is not a time:\n%s", p.ID, p.SQL)
+		}
+	}
+	if sql := panel(t, Product(in), "funnel-activation").SQL; !strings.Contains(sql, `AS "Persons"`) {
+		t.Errorf("funnel-activation does not name its count Persons:\n%s", sql)
+	}
+}

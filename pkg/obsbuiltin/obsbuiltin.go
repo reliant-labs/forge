@@ -95,6 +95,15 @@ func figure(section, id, title, desc, sql, trend string, unit dashspec.Unit, col
 		Unit: unit, Display: &dashspec.Display{Color: color}, Width: 6, Height: 4}
 }
 
+// exact keeps a count figure's value in full (1,284, not 1.3k): a reader
+// compares it with another page that states it exactly.
+func exact(p dashspec.Panel) dashspec.Panel {
+	d := *p.Display
+	d.Exact = true
+	p.Display = &d
+	return p
+}
+
 // chart is a sql panel drawn as display, width w.
 func chart(section, id, title, desc, sql string, display *dashspec.Display, w, h int) dashspec.Panel {
 	return dashspec.Panel{Section: section, ID: id, Title: title, Description: desc, Kind: dashspec.KindSQL, SQL: sql, Display: display, Width: w, Height: h}

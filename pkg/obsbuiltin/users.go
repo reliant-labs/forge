@@ -79,14 +79,14 @@ func Users(in Input) dashspec.Dashboard {
 		verifiedShareSQL, "", dashspec.UnitPercent, colorSignups)
 
 	d.Panels = []dashspec.Panel{
-		figure("glance", "accounts", "Accounts",
+		exact(figure("glance", "accounts", "Accounts",
 			"Accounts in the environment's identity instance, from the platform's daily auth_accounts snapshot (the newest in the 3 days before the end of the range). "+
 				fmt.Sprintf("An environment with no snapshot shows its distinct users seen in the %d days before the end of the range instead. The trend is each day's snapshot.", obsquery.NewUsersWindowDays),
-			accountsSQL, accountsTrendSQL, dashspec.UnitCount, colorNeutral),
-		figure("glance", "active", "Active users", "Distinct users with any signed-in product event in the range (a sign-in, the daily session heartbeat, a CRUD write, an app event). The trend is each UTC day's.",
-			activeSQL, activeTrendSQL, dashspec.UnitCount, colorUsers),
-		figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew),
-		figure("glance", "returning", "Returning users", "Active users in the range who are not new in it.", returningSQL, "", dashspec.UnitCount, colorWeekly),
+			accountsSQL, accountsTrendSQL, dashspec.UnitCount, colorNeutral)),
+		exact(figure("glance", "active", "Active users", "Distinct users with any signed-in product event in the range (a sign-in, the daily session heartbeat, a CRUD write, an app event). The trend is each UTC day's.",
+			activeSQL, activeTrendSQL, dashspec.UnitCount, colorUsers)),
+		exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)),
+		exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it.", returningSQL, "", dashspec.UnitCount, colorWeekly)),
 		dauWauMau,
 		figure("glance", "stickiness", "Stickiness (DAU / MAU)",
 			"The average daily active users over the average 30-day active users across the range's days: how habitual the product is. DAU over MAU, not Statsig's rolling stickiness.",
@@ -296,7 +296,7 @@ ORDER BY o, client`
 	mostActiveUsersSQL = `SELECT UserId AS "User", count() AS "Events",
        uniqExact(toDate(Timestamp)) AS "Active days",
        uniqExact(EventName) AS "Distinct events",
-       formatDateTime(max(Timestamp), '%Y-%m-%d %H:%i') AS "Last seen (UTC)"
+       toDateTime(max(Timestamp), 'UTC') AS "Last seen"
 FROM product_events
 WHERE ` + active + ` AND ` + scope + `
 GROUP BY UserId ORDER BY count() DESC, UserId LIMIT 25`

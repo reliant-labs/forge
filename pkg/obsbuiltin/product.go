@@ -128,7 +128,7 @@ ORDER BY "Exits" DESC, "Exit page" LIMIT 50`, 12, 9),
 			"Every product event in the range but page views: how often, by how many persons, and when it was last seen.",
 			with(stitchCTE(inRange), personsCTE(inRange, "EventName NOT IN ('page_viewed', 'auth_accounts')"))+`
 SELECT EventName AS "Event", count() AS "Events", uniqExactIf((EnvId, person), person != '') AS "Persons",
-       formatDateTime(max(ts), '%Y-%m-%d %H:%i') AS "Last seen (UTC)"
+       toDateTime(max(ts), 'UTC') AS "Last seen"
 FROM persons GROUP BY EventName ORDER BY "Events" DESC, "Event" LIMIT 50`, 24, 9),
 		chart("events", "records-by-entity", "Records written per entity",
 			"The automatic CRUD product events (creates, updates and deletes together), one colour per entity, stacked: the top edge is every write.",
@@ -173,7 +173,7 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 func activationFunnelSQL(a *Analytics) string {
 	w := activationWindow(a)
 	return with(webCTE(inRange), stitchCTE(inRange), suCTE(from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `
-SELECT step AS "Step", n AS "Count"
+SELECT step AS "Step", n AS "Persons"
 FROM (
   SELECT 1 AS i, 'Visited' AS step, (SELECT uniqExact(` + visitor + `) FROM web) AS n
   UNION ALL

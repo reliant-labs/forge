@@ -68,7 +68,9 @@ a unit of s, m, h or d, at most 30d) is the range it opens on when the viewer
 picked none. A `sql` panel whose statement groups by a fixed bucket
 (`toDate`, `toStartOfWeek`) rather than by `{step}` declares `minStep` (`"1d"`):
 a range shorter than two such buckets draws one point, so the console widens
-that panel's range to hold two and says so. Prefer `{step}` in the statement
+that panel's range to hold two and says so. `minStep` is also the bucket the
+console names ("7-day buckets"): a `toMonday` week reads back as a Date, which
+alone would be taken for a day, so a weekly panel declares `"7d"`. Prefer `{step}` in the statement
 when the panel can follow the range. `defaultCompare` on a dashboard
 (`"period"`, or `"release"`, which needs one selected environment) is the
 comparison it opens with: a dashboard of headline figures declares `"period"`,

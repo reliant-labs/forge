@@ -594,7 +594,9 @@ const StreamTypeAttr = "forge.rpc.stream_type"
 // ServiceName, requests, errors, q (p50,p95,p99 in ms), source, then one
 // String column per group-by key. Requests and errors count every server
 // span; the latency quantiles are over unary ones only, since a streaming
-// RPC's span lasts as long as the stream (spanStreamExpr).
+// RPC's span lasts as long as the stream (spanStreamExpr). A release probe's
+// span is not a request of the real population (SpanNotProbeSQL): RED,
+// REDByEndpoint and Trend leave it out.
 func (q Overview) RED() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -608,7 +610,7 @@ func (q Overview) RED() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr}, sc...)
+	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr, SpanNotProbeSQL}, sc...)
 	return b.stmt("SELECT ServiceName, toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors,\n" +
 		"       quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ", NOT " + spanStreamExpr + ") AS q,\n" +
 		"       maxIf(ResourceAttributes['reliant.source'], ResourceAttributes['reliant.source'] != '') AS source" + gsel + "\n" +
@@ -637,7 +639,7 @@ func (q Overview) REDByEndpoint() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr}, sc...)
+	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr, SpanNotProbeSQL}, sc...)
 	return b.stmt("SELECT ServiceName, SpanName AS endpoint, toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors,\n" +
 		"       quantilesExactWeightedIf(0.5, 0.95, 0.99)(Duration / 1000000, " + spanWeightInt + ", NOT " + spanStreamExpr + ") AS q\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
@@ -659,7 +661,7 @@ func (q Overview) Trend(stepSec int64) (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr}, sc...)
+	conds := append([]string{b.rangeCond("Timestamp", q.Scope), spanServerExpr, SpanNotProbeSQL}, sc...)
 	return b.stmt("SELECT ServiceName, toStartOfInterval(toDateTime(Timestamp), toIntervalSecond(" + b.u32(uint32(stepSec)) + ")) AS bucket,\n" +
 		"       toUInt64(round(sum(" + spanWeightExpr + "))) AS requests, toUInt64(round(sumIf(" + spanWeightExpr + ", " + spanErrorExpr + "))) AS errors" + gsel + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
@@ -671,6 +673,7 @@ func (q Overview) Trend(stepSec int64) (Stmt, error) {
 // group keys apply: a span-level filter does not describe a log record, and
 // would silently zero the count. IsNotOnLogs(err) means a group key is
 // span-level, so there is no log figure to give.
+// The records of a release probe's requests are not counted (LogNotProbeSQL).
 func (q Overview) Logs() (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeOverview); err != nil {
 		return Stmt{}, err
@@ -684,7 +687,7 @@ func (q Overview) Logs() (Stmt, error) {
 	if err != nil {
 		return Stmt{}, err
 	}
-	conds := append([]string{b.rangeCond("Timestamp", q.Scope)}, sc...)
+	conds := append([]string{b.rangeCond("Timestamp", q.Scope), LogNotProbeSQL}, sc...)
 	errSet := make([]string, 0, 8)
 	for _, n := range severitySet(4, 5) {
 		errSet = append(errSet, b.str(n))

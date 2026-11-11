@@ -44,7 +44,8 @@ func ValidFingerprint(s string) bool { return fingerprintRe.MatchString(s) }
 // scope, the issue events, an optional service and an optional fingerprint.
 // The events are those of one issue when a fingerprint is given (whatever its
 // source), else those of source: server errors without one for "", the
-// records carrying it otherwise.
+// records carrying it otherwise, and never a release probe's
+// (LogNotProbeSQL).
 func (b *builder) issueConds(s Scope, service, fingerprint, source string) ([]string, error) {
 	conds := []string{b.rangeCond("Timestamp", s)}
 	sc, err := b.scopeConds(SigLogs, s)
@@ -52,6 +53,9 @@ func (b *builder) issueConds(s Scope, service, fingerprint, source string) ([]st
 		return nil, err
 	}
 	conds = append(conds, sc...)
+	// A release probe's records are no issue's events: a probe failure is
+	// judged once, as the release's probe_failed finding.
+	conds = append(conds, LogNotProbeSQL)
 	switch {
 	case fingerprint != "":
 		conds = append(conds, IssueEventFilterSQL)

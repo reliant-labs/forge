@@ -393,7 +393,8 @@ func TestOverviewGroupingAndLogs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(st.SQL, "LogAttributes") {
+	// (LogNotProbeSQL is the one record-level condition Logs always carries.)
+	if strings.Contains(strings.ReplaceAll(st.SQL, LogNotProbeSQL, ""), "LogAttributes") {
 		t.Errorf("a span-level filter was applied to logs:\n%s", st.SQL)
 	}
 	if _, err := (Overview{Scope: scopeWith(nil), GroupBy: []string{"a", "b", "c", "d"}}).RED(); !isInvalid(err) {

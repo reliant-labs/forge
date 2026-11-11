@@ -16,7 +16,11 @@ func TestScanTestsReadsDeclarationsNotText(t *testing.T) {
 		}
 	}
 	write("a_e2e_test.go", "//go:build e2e\n\npackage p\n\nimport \"testing\"\n\n"+
-		"func TestE2EReal(t *testing.T) {}\n"+
+		"func TestE2EReal(t *testing.T) {\n"+
+		"\tp := newProjectFromSharedE2E(t, bin, webSpec)\n"+
+		"\tt.Run(\"sub\", func(t *testing.T) { _ = sharedProjectE2E(t, bin, dashSpec); _ = sharedProjectE2E(t, bin, webSpec) })\n"+
+		"\t_ = otherHelper(t, bin, ignoredSpec)\n"+
+		"}\n"+
 		// A Go file embedded in a string, as forge's e2e tests write into
 		// the projects they scaffold: not a test of THIS package.
 		"var embedded = `\nfunc TestEmbedded(t *testing.T) {}\n`\n"+
@@ -34,7 +38,7 @@ func TestScanTestsReadsDeclarationsNotText(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []testFunc{
-		{name: "TestE2EReal", file: "a_e2e_test.go", e2eFile: true},
+		{name: "TestE2EReal", file: "a_e2e_test.go", e2eFile: true, fixtures: []string{"dashSpec", "webSpec"}},
 		{name: "Test", file: "a_e2e_test.go", e2eFile: true},
 		{name: "TestUnit", file: "b_test.go", e2eFile: false},
 		{name: "TestE2ELinux", file: "c_e2e_linux_test.go", e2eFile: true},

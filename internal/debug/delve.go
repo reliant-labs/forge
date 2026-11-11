@@ -163,6 +163,9 @@ func (d *DelveDebugger) Attach(ctx context.Context, opts AttachOptions) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	dlvArgs := dlvServerArgs("attach", addr, strconv.Itoa(opts.PID))
 	if err := d.spawn(ctx, dlvArgs, nil, opts.OutputPath, addr); err != nil {
+		if hint := ptraceScopeHint(); hint != "" {
+			return fmt.Errorf("%w\n%s", err, hint)
+		}
 		return err
 	}
 	return d.afterSpawn(opts.StopOnStart, opts.PID)
@@ -216,20 +219,70 @@ func (d *DelveDebugger) spawn(ctx context.Context, dlvArgs, env []string, output
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting dlv %s: %w", dlvArgs[0], err)
 	}
-	if err := waitForServer(ctx, addr, dlvReadyTimeout); err != nil {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+	// A dlv that cannot start (attach refused, binary unreadable) exits at
+	// once; waiting out dlvReadyTimeout for it to listen would only hide
+	// why. The waiter also reaps dlv if it exits while forge still runs;
+	// forge exiting leaves dlv, in its own session, running.
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	if err := waitForServer(ctx, addr, dlvReadyTimeout, exited); err != nil {
+		if !errors.Is(err, errDlvExited) {
+			_ = cmd.Process.Kill()
+			<-exited
+		}
 		if outputPath != "" {
-			return fmt.Errorf("waiting for dlv: %w (dlv output: %s)", err, outputPath)
+			return fmt.Errorf("waiting for dlv: %w (dlv output: %s)%s", err, outputPath, dlvOutputTail(outputPath))
 		}
 		return fmt.Errorf("waiting for dlv: %w", err)
 	}
 	d.addr = addr
 	d.dlvPID = cmd.Process.Pid
-	// Release the process handle so the Go runtime does not reap dlv when
-	// forge exits; the dlv PID is recorded for reaping on stop.
-	_ = cmd.Process.Release()
 	return nil
+}
+
+// errDlvExited reports that dlv exited before it listened.
+var errDlvExited = errors.New("dlv exited before it listened")
+
+// dlvOutputTailBytes bounds how much of dlv's log a launch error quotes:
+// enough for dlv's own error line, not a whole DWARF-loading transcript.
+const dlvOutputTailBytes = 2048
+
+// dlvOutputTail returns the end of dlv's log as an indented block to append
+// to an error, or "" when there is nothing to show.
+func dlvOutputTail(path string) string {
+	b, err := os.ReadFile(path) // #nosec G304 -- forge's own log path
+	if err != nil {
+		return ""
+	}
+	if len(b) > dlvOutputTailBytes {
+		b = b[len(b)-dlvOutputTailBytes:]
+	}
+	text := strings.TrimSpace(string(b))
+	if text == "" {
+		return ""
+	}
+	return ":\n  " + strings.ReplaceAll(text, "\n", "\n  ")
+}
+
+// ptraceScopePath is Linux Yama's ptrace policy. A var so tests can point it
+// at a file of their own.
+var ptraceScopePath = "/proc/sys/kernel/yama/ptrace_scope"
+
+// ptraceScopeHint explains a failed attach on a host whose Yama policy lets a
+// process trace only its own descendants (Ubuntu's default, 1, and GitHub's
+// runners): dlv is not the target's ancestor, so the kernel refuses it. It
+// returns "" where Yama is absent or allows the attach (0).
+func ptraceScopeHint() string {
+	b, err := os.ReadFile(ptraceScopePath)
+	if err != nil {
+		return ""
+	}
+	scope := strings.TrimSpace(string(b))
+	if scope == "" || scope == "0" {
+		return ""
+	}
+	return fmt.Sprintf("kernel.yama.ptrace_scope is %s, so dlv may trace only processes it started. "+
+		"Allow the attach with `sudo sysctl -w kernel.yama.ptrace_scope=0`, or debug a build forge starts itself (`forge debug start <workload>`).", scope)
 }
 
 // Connect connects to an already-running Delve instance at addr.
@@ -937,7 +990,9 @@ func freePort(ctx context.Context) (int, error) {
 	return port, nil
 }
 
-func waitForServer(ctx context.Context, addr string, timeout time.Duration) error {
+// waitForServer polls addr until it accepts a connection, the timeout
+// passes, or exited delivers (dlv is gone, so nothing will ever listen).
+func waitForServer(ctx context.Context, addr string, timeout time.Duration, exited <-chan error) error {
 	dialer := net.Dialer{Timeout: 200 * time.Millisecond}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -946,7 +1001,14 @@ func waitForServer(ctx context.Context, addr string, timeout time.Duration) erro
 			_ = conn.Close()
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case werr := <-exited:
+			if werr != nil {
+				return fmt.Errorf("%w (%v)", errDlvExited, werr)
+			}
+			return errDlvExited
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	return fmt.Errorf("timeout waiting for dlv at %s", addr)
 }

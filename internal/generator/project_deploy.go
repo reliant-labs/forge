@@ -80,6 +80,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	for _, env := range hostedEnvNames() {
 		envs = append(envs, struct{ env, template string }{env, "kcl/cloud/main.k.tmpl"})
 	}
+	wroteBase := false
 	for _, e := range envs {
 		var apiSecrets []string
 		data := templates.EnvTemplateData{
@@ -123,6 +124,23 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 		if e.env != codegen.DevEnvName {
 			g.hostedEnvs = append(g.hostedEnvs, e.env)
+		}
+		// THE SHARED BASE the deployed envs bind through
+		// (deploy/kcl/base/env.k): written once, with the first env that
+		// imports it, from the same project-wide data.
+		if e.template == "kcl/cloud/main.k.tmpl" && !wroteBase {
+			base, err := templates.DeployTemplates().Render("kcl/base/env.k.tmpl", data)
+			if err != nil {
+				return fmt.Errorf("render deploy/kcl/base/env.k: %w", err)
+			}
+			basePath := filepath.Join(deployDir, "base", "env.k")
+			if err := os.MkdirAll(filepath.Dir(basePath), 0755); err != nil {
+				return err
+			}
+			if err := atomicfile.WriteFile(basePath, base, 0644); err != nil {
+				return fmt.Errorf("write deploy/kcl/base/env.k: %w", err)
+			}
+			wroteBase = true
 		}
 	}
 	ingressOn := hasBackend

@@ -73,7 +73,10 @@
  *     success badge have the same visual weight.
  *   - Every `-ink` on its matching `-surface`, and every `on-*` on its
  *     matching fill, clears WCAG AA (4.5:1); body text on both surfaces
- *     clears AAA (7:1). Those pairs are asserted in
+ *     clears AAA (7:1). `border-strong` is a CONTROL's edge (an input, an
+ *     outline button, a checkbox, a toggle's off track), not structure, so
+ *     it clears 3:1 against every surface (WCAG 1.4.11 non-text contrast);
+ *     cards and dividers keep the quiet `border`. Those pairs are asserted in
  *     internal/templates/frontend_palette_contract_test.go — if you retune
  *     a token, that test tells you what you broke.
  *   - Chromas are trimmed to what sRGB can actually display. An oklch color
@@ -112,7 +115,7 @@
   --color-surface-sunken: oklch(96.6% 0.004 262deg);
   --color-surface-muted: oklch(97.7% 0.003 262deg); /* subtle fills: table head, hovers */
   --color-border: oklch(92.2% 0.005 262deg);
-  --color-border-strong: oklch(86.5% 0.008 262deg);
+  --color-border-strong: oklch(61% 0.012 262deg); /* a control's edge: 3:1 */
   --color-ink: oklch(21% 0.012 262deg); /* primary text */
   --color-ink-muted: oklch(47.5% 0.012 262deg); /* secondary text */
   --color-ink-subtle: oklch(54% 0.01 262deg); /* tertiary text, placeholders, icons */
@@ -165,7 +168,7 @@
     --color-surface-sunken: oklch(12.5% 0.006 262deg);
     --color-surface-muted: oklch(20% 0.009 262deg);
     --color-border: oklch(25.5% 0.01 262deg);
-    --color-border-strong: oklch(34% 0.012 262deg);
+    --color-border-strong: oklch(53% 0.012 262deg);
     --color-ink: oklch(96.5% 0.004 262deg);
     --color-ink-muted: oklch(72.5% 0.011 262deg);
     --color-ink-subtle: oklch(62% 0.012 262deg);
@@ -202,7 +205,7 @@
   --color-surface-sunken: oklch(12.5% 0.006 262deg);
   --color-surface-muted: oklch(20% 0.009 262deg);
   --color-border: oklch(25.5% 0.01 262deg);
-  --color-border-strong: oklch(34% 0.012 262deg);
+  --color-border-strong: oklch(53% 0.012 262deg);
   --color-ink: oklch(96.5% 0.004 262deg);
   --color-ink-muted: oklch(72.5% 0.011 262deg);
   --color-ink-subtle: oklch(62% 0.012 262deg);

@@ -41,7 +41,8 @@
         "p50_ms": 10,
         "p95_ms": 110,
         "p99_ms": 300
-      }
+      },
+      "signal": "spans"
     }
   ],
   "findings": [

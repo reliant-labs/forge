@@ -26,7 +26,7 @@
 #
 # A RELEASE NEVER PUSHES TO THE BRANCH. The tag goes on a commit that is
 # already on origin/<branch> and whose full CI is green; the bookkeeping
-# (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json) is committed on top
+# (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json, npm/server.json) is committed on top
 # of that commit, pushed to release/vX.Y.Z, and lands through a pull request
 # and the merge queue like any other change. main is protected by a ruleset
 # that only the merge queue may satisfy, so a direct push would need a bypass
@@ -68,9 +68,12 @@
 # Nothing here signs them: the `release: published` event of the GitHub
 # release runs .github/workflows/release-attest.yml, which attaches
 # forge-release.sigstore.json (docs/releasing.md, "Signed release assets").
-# npm/package.json is synced to the release version too; the npm package is
-# published by .github/workflows/release-npm.yml, which the GitHub release
-# created here triggers (docs/releasing.md, "Installers").
+# npm/package.json and npm/server.json (the MCP registry listing) are synced to
+# the release version too; .github/workflows/release-npm.yml, which the GitHub
+# release created here triggers, publishes the npm package and then the
+# listing (docs/releasing.md, "Installers"). Like VERSION, the TAGGED tree's
+# copies still name the previous version — the sync is in the bookkeeping
+# commit — so that workflow sets both from the tag before it publishes.
 #
 # WEB RUNTIME. @reliantlabs/forge-web-runtime ships with every release: before
 # anything is tagged, scripts/release-web-runtime.sh publishes it from the

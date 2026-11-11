@@ -75,9 +75,35 @@ func TestNpmPublishWorkflowUsesTrustedPublishing(t *testing.T) {
 		`npm pkg set version=`, // the tag's version, not the tagged manifest's
 		"npm publish --provenance --access public",
 		"scripts/verify-npm-published.sh",
+		// The MCP registry listing follows every npm release, logged in with
+		// the same OIDC token, by a publisher pinned to its digest.
+		"mcp-publisher login github-oidc",
+		"mcp-publisher publish server.json",
+		"sha256sum --strict -c -",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("release-npm.yml lacks %q", want)
+		}
+	}
+	if !regexp.MustCompile(`(?m)^\s+MCP_PUBLISHER_SHA256: [0-9a-f]{64}$`).MatchString(body) {
+		t.Errorf("release-npm.yml does not pin mcp-publisher's sha256 (MCP_PUBLISHER_SHA256)")
+	}
+	if !regexp.MustCompile(`(?m)^\s+MCP_PUBLISHER_VERSION: \d+\.\d+\.\d+$`).MatchString(body) {
+		t.Errorf("release-npm.yml does not pin mcp-publisher's version (MCP_PUBLISHER_VERSION)")
+	}
+	// The listing is published only after npm serves the version it names:
+	// the registry fetches the package to verify mcpName.
+	if npm, mcp := strings.Index(body, "npm publish --provenance"), strings.Index(body, "mcp-publisher publish"); npm < 0 || mcp < npm {
+		t.Errorf("release-npm.yml must publish the MCP registry listing after the npm package")
+	}
+	// Nothing of the listing's may gate the npm publish: installing
+	// mcp-publisher downloads from github.com and validating calls the
+	// registry, so either failing before npm's publish would keep the package
+	// off npm for a listing problem.
+	npm := strings.Index(body, "npm publish --provenance")
+	for _, step := range []string{"mcp-publisher_linux_amd64.tar.gz", "mcp-publisher validate"} {
+		if i := strings.Index(body, step); i < 0 || i < npm {
+			t.Errorf("release-npm.yml runs %q before the npm publish; the MCP listing must not gate it", step)
 		}
 	}
 	// A token would take precedence over the OIDC exchange and silently turn

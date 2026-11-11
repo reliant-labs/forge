@@ -73,7 +73,7 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 			svc:  "api",
 			spec: RunnerSpec{Runner: "delve", GoPkg: "./cmd/acme", OutputName: "acme", Args: []string{"api"}},
 			want: []string{
-				"dlv", "exec", "--headless", "--listen=:2345",
+				"dlv", "exec", "--headless", "--listen=127.0.0.1:2345",
 				"--api-version=2", "--accept-multiclient", "--continue",
 				"./bin/acme", "--", "api",
 			},
@@ -83,7 +83,7 @@ func TestBuildCmd_RunnerMatrix(t *testing.T) {
 			svc:  "api",
 			spec: RunnerSpec{Runner: "delve", DelvePort: 4567, GoPkg: "./cmd/acme", OutputName: "acme"},
 			want: []string{
-				"dlv", "exec", "--headless", "--listen=:4567",
+				"dlv", "exec", "--headless", "--listen=127.0.0.1:4567",
 				"--api-version=2", "--accept-multiclient", "--continue",
 				"./bin/acme",
 			},
@@ -501,8 +501,8 @@ func TestBuildCmdForWindowsBinaryAndDelve(t *testing.T) {
 	}{
 		{"windows", "binary", []string{"./bin/app-bin.exe", "server"}},
 		{"linux", "binary", []string{"./bin/app-bin", "server"}},
-		{"windows", "delve", []string{"dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin.exe", "--", "server"}},
-		{"darwin", "delve", []string{"dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin", "--", "server"}},
+		{"windows", "delve", []string{"dlv", "exec", "--headless", "--listen=127.0.0.1:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin.exe", "--", "server"}},
+		{"darwin", "delve", []string{"dlv", "exec", "--headless", "--listen=127.0.0.1:2345", "--api-version=2", "--accept-multiclient", "--continue", "./bin/app-bin", "--", "server"}},
 	} {
 		spec := base
 		spec.Runner = c.runner

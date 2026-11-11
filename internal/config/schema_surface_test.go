@@ -42,12 +42,12 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			},
 		},
 		{
-			// Every feature but orm, whose switch is //forge:no-orm.
+			// Every feature; orm also has //forge:no-orm.
 			name: "FeaturesConfig",
 			typ:  reflect.TypeFor[FeaturesConfig](),
 			want: []string{
 				"build", "ci", "codegen", "contracts", "deploy", "frontend",
-				"hot_reload", "ingress", "migrations", "observability", "operators",
+				"hot_reload", "ingress", "migrations", "observability", "operators", "orm",
 			},
 		},
 		{
@@ -64,9 +64,12 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			//
 			// gate: read by `forge ci gate` (internal/cli/ci_gate.go) for
 			// the project's extra_checks.
+			//
+			// workflows: read by generator.CIWorkflowsFor — the per-workflow
+			// opt-out every CI writer goes through.
 			want: []string{
 				"e2e", "gate", "lint", "permissions", "provider",
-				"test", "test_skips", "vuln_scan",
+				"test", "test_skips", "vuln_scan", "workflows",
 			},
 		},
 		{

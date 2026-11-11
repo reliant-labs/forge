@@ -69,11 +69,6 @@ type skillSection struct {
 	printed bool
 }
 
-// writeGroupedSkills renders the default `skill list` view in a forge project.
-func writeGroupedSkills(w io.Writer, skills []skillMeta) error {
-	return writeGroupedSkillsFor(w, skills, true)
-}
-
 // adoptSkillPath is the skill an agent in a repo that is not a forge project
 // loads first; it leads the APPLIES TO YOUR REPO group.
 const adoptSkillPath = "adopt"

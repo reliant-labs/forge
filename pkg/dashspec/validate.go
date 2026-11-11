@@ -429,7 +429,8 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse),
+		string(KindReleaseHealth), string(KindPromotions), string(KindDelivery))
 	if raw, has := o["link"]; has && kind != "" {
 		v.link(path, o, PanelKind(kind), raw)
 	}
@@ -439,6 +440,10 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	if _, has := o["markdown"]; has {
 		v.add(childPath(path, "markdown"), "only a text panel takes \"markdown\"")
+	}
+	if IsDeliveryKind(PanelKind(kind)) {
+		v.deliveryPanel(path, o, PanelKind(kind))
+		return
 	}
 	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres) && kind != string(KindBrowse), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)

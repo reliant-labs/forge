@@ -219,6 +219,8 @@ type lintStepOutcome struct {
 	skipMsg string
 	// unscoped marks a whole-project lane skipped because of --scope.
 	unscoped bool
+	// off marks a lane forge.yaml's lint.lanes switched off.
+	off      bool
 	findings []lintJSONFinding
 	// gated reports that this lane fails the build.
 	gated bool
@@ -271,6 +273,10 @@ func lintRulesOutcomes(cfg *config.ProjectConfig) []lintStepOutcome {
 func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOutcome {
 	outcomes := make([]lintStepOutcome, 0, len(pipeline))
 	for _, step := range pipeline {
+		if rc.lanesOff[step.name] {
+			outcomes = append(outcomes, offOutcome(step.name, step.gates))
+			continue
+		}
 		o := lintStepOutcome{name: step.name, gates: step.gates}
 		run, skipMsg := step.shouldRun(rc)
 		if !run {
@@ -357,6 +363,8 @@ func flattenLintOutcomes(outcomes []lintStepOutcome) ([]lintJSONFinding, bool) {
 	gated := false
 	for _, o := range outcomes {
 		switch {
+		case o.off:
+			findings = append(findings, skippedFinding(o.name+": "+laneOffNote))
 		case o.unscoped:
 			findings = append(findings, skippedFinding(o.name+
 				": whole-project lane — not run under --scope (run an unscoped `forge lint` for it)"))
@@ -484,6 +492,10 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 	if err != nil {
 		return err
 	}
+	off, err := lanesOff(cfg)
+	if err != nil {
+		return err
+	}
 
 	// A human run says where it is as each lane starts; --quiet promises
 	// one line for a clean run, so it does not.
@@ -500,24 +512,30 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 		// A targeted lane never auto-fixes, in text mode or here.
 	default:
 		fix := resolveFixMode(flags)
-		if fix {
-			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, flags.skipFrontends)
+		// A frontend whose lint lane is off is not forge's to format either.
+		runSkip, skipFrontends := frontendSkips(flags.skipFrontends, off)
+		if fix && !off[formatLaneName] {
+			fixed = structuredFixPrePass(ctx, cwd, cfg, scope, skipFrontends)
 		}
 		outcomes = collectLintOutcomes(&lintRunCtx{
 			ctx:           ctx,
 			fix:           fix,
 			strict:        flags.strict,
-			skipFrontends: flags.skipFrontends,
+			skipFrontends: runSkip,
 			paths:         paths,
 			cfg:           cfg,
 			cwd:           cwd,
 			scope:         scope,
 			allowSkip:     allow,
+			lanesOff:      off,
 			progress:      progress,
 			golangciMemo:  newGolangciMemo(productionGolangciToolchain()),
 		})
-		if !fix {
-			outcomes = append(outcomes, formatOutcome(ctx, cwd, cfg, scope, paths, flags.skipFrontends))
+		switch {
+		case off[formatLaneName]:
+			outcomes = append(outcomes, offOutcome(formatLaneName, true))
+		case !fix:
+			outcomes = append(outcomes, formatOutcome(ctx, cwd, cfg, scope, paths, skipFrontends))
 		}
 	}
 	os.Stdout = realStdout
@@ -573,6 +591,12 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 	v := lintVerdict{scope: scope.String(), graced: gracedFindings(outcomes)}
 	for _, o := range outcomes {
 		switch {
+		case o.off:
+			v.off = append(v.off, o.name)
+			if !quiet {
+				fmt.Fprintf(w, "○ %s — %s\n", o.name, laneOffNote)
+			}
+			continue
 		case o.unscoped:
 			v.unscoped = append(v.unscoped, o.name)
 			continue
@@ -746,6 +770,8 @@ func tallyFromOutcomes(outcomes []lintStepOutcome) lintLaneTally {
 	var t lintLaneTally
 	for _, o := range outcomes {
 		switch {
+		case o.off:
+			t.skipped = append(t.skipped, o.name+" ("+laneOffNote+")")
 		case o.unscoped:
 			t.skipped = append(t.skipped, o.name)
 		case !o.ran:

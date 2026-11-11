@@ -240,6 +240,16 @@ Examples:
 The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
 
+forge.yaml switches a whole lane off for the project (the frontend linted by
+its own toolchain, migrations owned by another tool):
+
+  lint:
+    lanes: {frontend: off, migration-safety: off, db-grants: off}
+
+An off lane does not run and is never silently missing: it is listed as
+"off (forge.yaml lint.lanes)" in the report and the verdict. Naming the lane
+on the command line (forge lint --migration-safety) still runs it.
+
 Additional maintainer/debug flags exist (forge-repo internals, wiring
 audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`
 
@@ -412,10 +422,16 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
+	// formatSkipFrontends keeps the format lane off the frontends without
+	// dropping their typecheck: a frontend whose lint lane is off
+	// (frontendSkips).
+	formatSkipFrontends bool
 	// allowSkip is the parsed --allow-skip + lint.allow_skip (lint_skip.go).
 	allowSkip skipAllowances
-	paths     []string
-	cfg       *config.ProjectConfig
+	// lanesOff is the resolved lint.lanes (lint_lanes.go).
+	lanesOff map[string]bool
+	paths    []string
+	cfg      *config.ProjectConfig
 	// scope restricts findings to files under the --scope paths; nil is
 	// the whole project (lint_structured.go).
 	scope *lintScope
@@ -938,6 +954,9 @@ type lintVerdict struct {
 	failed []string
 	// unscoped are whole-project lanes a --scope run did not run.
 	unscoped []string
+	// off are the lanes forge.yaml's lint.lanes switched off: named, never
+	// counted as passed.
+	off []string
 	// scope is the --scope value, "" for a whole-project run.
 	scope string
 	// hiddenWarnings counts findings --quiet did not print.
@@ -988,6 +1007,9 @@ func (v lintVerdict) render(w io.Writer) error {
 		if len(v.skipped) > 0 {
 			detail = append(detail, "skipped: "+strings.Join(v.skipped, ", "))
 		}
+		if len(v.off) > 0 {
+			detail = append(detail, laneOffNote+": "+strings.Join(v.off, ", "))
+		}
 		if len(detail) == 0 {
 			detail = append(detail, "no gating linter was applicable here")
 		}
@@ -1010,6 +1032,9 @@ func (v lintVerdict) render(w io.Writer) error {
 	}
 	if len(v.skipped) > 0 {
 		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
+	}
+	if len(v.off) > 0 {
+		extras = append(extras, fmt.Sprintf("%d %s: %s", len(v.off), laneOffNote, strings.Join(v.off, ", ")))
 	}
 	if len(v.graced) > 0 {
 		extras = append(extras, describeGraced(v.graced))

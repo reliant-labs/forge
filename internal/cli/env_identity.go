@@ -165,7 +165,7 @@ type identityWatch struct {
 // observe reads the identity once and returns the current line (nil: nothing
 // to report).
 func (w *identityWatch) observe(ctx context.Context) *envIdentityReport {
-	if w == nil || w.read == nil || w.stopped {
+	if w == nil || w.read == nil || w.stopped || identityReadSkipped() {
 		return w.current()
 	}
 	doc, err := w.read(ctx)
@@ -202,6 +202,15 @@ func (w *identityWatch) current() *envIdentityReport {
 // gating reports whether the identity is known to be declared and not ready.
 func (w *identityWatch) gating() bool {
 	return w != nil && w.tracked && w.last != nil && w.last.blocking()
+}
+
+// identityReadSkipped reports whether the identity read is not made at all. An
+// anonymous --claimable deploy holds only deploy:read and deploy:write, so the
+// control plane would always answer permission_denied: a refusal that says
+// nothing about the env and reads as a failed deploy. A signed-in caller's
+// refusal is still reported.
+func identityReadSkipped() bool {
+	return cloud.ClaimableActive()
 }
 
 // identityReadIsPermanent: a control plane that does not serve the API, or a

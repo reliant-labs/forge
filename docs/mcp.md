@@ -119,8 +119,8 @@ entrypoint is `forge mcp`. Mount the project at `/workspace`, where the server
 starts:
 
 ```bash
-docker build -f Dockerfile.mcp -t forge-mcp https://github.com/reliant-labs/forge.git
-docker run -i --rm -v "$PWD:/workspace" forge-mcp
+docker build -f Dockerfile.mcp -t forge:mcp https://github.com/reliant-labs/forge.git
+docker run -i --rm -v "$PWD:/workspace" forge:mcp
 ```
 
 ```json
@@ -128,7 +128,7 @@ docker run -i --rm -v "$PWD:/workspace" forge-mcp
   "mcpServers": {
     "forge": {
       "command": "docker",
-      "args": ["run", "-i", "--rm", "-v", "${PWD}:/workspace", "forge-mcp"]
+      "args": ["run", "-i", "--rm", "-v", "${PWD}:/workspace", "forge:mcp"]
     }
   }
 }

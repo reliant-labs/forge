@@ -157,6 +157,14 @@ case " $* " in
     rm -f "$in"
     for d in $FAKE_DEPLOYMENTS; do echo "$d"; done
     exit 0 ;;
+  *' rollout status '*)
+    # FAKE_ROLLOUT_FAIL names one Deployment whose rollout fails
+    # (unit_waves_test.go); every other one is ready.
+    rm -f "$in"
+    case " $* " in
+      *" deployment/$FAKE_ROLLOUT_FAIL "*) [ -n "$FAKE_ROLLOUT_FAIL" ] && { echo "error: deployment \"$FAKE_ROLLOUT_FAIL\" exceeded its progress deadline" >&2; exit 1; } ;;
+    esac
+    exit 0 ;;
   *' get statefulset '*)
     # Every StatefulSet has rolled out (workload_wait.go reads its status).
     rm -f "$in"

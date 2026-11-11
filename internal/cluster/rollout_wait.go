@@ -48,6 +48,20 @@ type PendingRollout struct {
 	// prune is the owned-object prune that follows this apply's rollout, run
 	// only once every Deployment and Job it waited on came up healthy.
 	prune *ownedPruneJob
+	// units, when set, are the delivery-unit waves this apply held back
+	// (unit_waves.go): WaitRollouts applies and awaits them, wave by wave
+	// across every pending rollout, before the ordinary wait.
+	units *unitStages
+	// deferredPrune is a staged apply's apply-time prune, run only once
+	// every wave has rolled out.
+	deferredPrune func(context.Context)
+	// skipFinalWait is a staged apply under rollout mode skip: the waves are
+	// still awaited (the order is a declaration, not a wait preference), the
+	// ordinary wait is not.
+	skipFinalWait bool
+	// waveReady are the workloads a wave already saw ready, so the ordinary
+	// wait does not await and report them twice.
+	waveReady map[workloadRef]bool
 }
 
 // WithLabel names the pending rollout in WaitRollouts' error, e.g.
@@ -151,10 +165,15 @@ func (d deploymentWait) label() string {
 
 // WaitRollouts waits on every pending rollout and grades them as ONE result.
 //
-// Nothing is applied here: by the time this runs every cluster in the deploy
-// has its manifests and is converging concurrently, so a dependency between
-// clusters resolves while forge waits rather than expiring because it was
-// never sent.
+// Nothing is applied here, with one exception: by the time this runs every
+// cluster in the deploy has its manifests and is converging concurrently, so a
+// dependency between clusters resolves while forge waits rather than expiring
+// because it was never sent. The exception is an env whose workloads span
+// several delivery units: their apply held the workloads back, and this
+// applies and awaits them unit wave by unit wave, across every cluster, before
+// the ordinary wait (unit_waves.go). A wave that does not roll out ends the
+// call with a *UnitRolloutError, having applied no later unit and pruned
+// nothing.
 //
 // Every cluster's Deployments are awaited as one sequence ordered by
 // RolloutPolicy.Order, so `--rollout-order` means the same thing across
@@ -169,11 +188,21 @@ func (d deploymentWait) label() string {
 // error Apply always has; several return a *RolloutFailedError when more than
 // one of them failed.
 func WaitRollouts(ctx context.Context, pending ...*PendingRollout) error {
+	if err := convergeUnitWaves(ctx, pending); err != nil {
+		return err
+	}
 	var waits []*rolloutWait
 	for _, p := range pending {
-		if p != nil {
-			waits = append(waits, &rolloutWait{p: p})
+		if p == nil {
+			continue
 		}
+		if p.skipFinalWait {
+			if !p.opts.Quiet {
+				fmt.Println("Skipping rollout wait (rollout mode: skip)")
+			}
+			continue
+		}
+		waits = append(waits, &rolloutWait{p: p})
 	}
 	if len(waits) == 0 {
 		return nil
@@ -229,15 +258,18 @@ func awaitRollouts(ctx context.Context, waits []*rolloutWait) error {
 		}
 		hub := unitSet(w.p.skipDeployments)
 		for _, dep := range deployments {
-			if hub[dep] {
+			if hub[dep] || w.p.waveReady[workloadRef{Kind: "Deployment", Namespace: w.p.opts.Namespace, Name: dep}] {
 				continue
 			}
 			queue = append(queue, deploymentWait{w: w, name: dep, kind: "Deployment", namespace: w.p.opts.Namespace})
 		}
 		// The workloads the namespace list cannot see: every StatefulSet and
 		// DaemonSet this apply sent, and its Deployments in other namespaces
-		// (workload_wait.go).
+		// (workload_wait.go). A delivery-unit wave already awaited some.
 		for _, ref := range w.p.workloads {
+			if w.p.waveReady[ref] {
+				continue
+			}
 			queue = append(queue, deploymentWait{w: w, name: ref.Name, kind: ref.Kind, namespace: ref.Namespace})
 		}
 	}

@@ -6959,8 +6959,10 @@ schema StatefulSetResize:
         release_owner == Undefined or regex.match(release_owner, r"^[a-z][a-z0-9-]*$"), "StatefulSetResize.release_owner must name an explicit manifest consumer"
 
 schema DeliveryUnit:
-    """A delivery unit: a named slice of an env that a Flux-applied bundle
-    delivers as its own trees (cluster × unit × phase), in a declared order.
+    """A delivery unit: a named slice of an env delivered in a declared order,
+    by both appliers: a Flux-applied bundle delivers it as its own trees
+    (cluster × unit × phase), and `forge env deploy` rolls its workloads out
+    unit by unit.
 
         delivery_units = [
             forge.DeliveryUnit {name = "reliant", after = []}
@@ -6983,8 +6985,21 @@ schema DeliveryUnit:
     if you also want other waits kept. Within a unit and cluster the phases
     always chain pre → rollout → post.
 
-    Direct apply ignores units: it applies the env in forge's own order. They
-    exist for the bundle a reconciler applies.
+    DIRECT APPLY (`forge env deploy`) honours the same order for the
+    workloads (Deployments, StatefulSets, DaemonSets, CronJobs, ...). It still
+    sends everything a release sends ahead of its workloads first, for every
+    unit at once (CRDs, Namespaces, ConfigMaps and Secrets, the secret-store
+    stages, Services and RBAC, the pre-rollout Jobs), then applies each unit's
+    workloads and waits for them on every cluster before applying the units
+    after it. A unit that does not roll out stops the deploy in every rollout
+    mode: the later units are not applied and nothing is pruned. An env that
+    declares no unit, or whose workloads all sit in one, is applied exactly as
+    before. Units the hub converges (`hub_converges`) are neither applied nor
+    awaited by direct apply.
+
+    Moving an object between two units forge applies directly is reported as
+    an info-class `tree_moved` (only its place in the order changes); under a
+    reconciler it is a stop finding.
     """
     name: str
     after?: [str]

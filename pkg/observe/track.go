@@ -93,6 +93,9 @@ func ValidEventName(name string) bool { return eventNameRE.MatchString(name) }
 // Property values are stringified; keep them low-cardinality and never put
 // secrets or personal data in them.
 //
+// Track records nothing while serving a platform release probe (IsProbe): a
+// probe is not a person using the product.
+//
 // Track never fails the caller. A name that is not snake_case is dropped with
 // a warning, because the pipeline would drop it anyway.
 //
@@ -100,6 +103,9 @@ func ValidEventName(name string) bool { return eventNameRE.MatchString(name) }
 func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if IsProbe(ctx) {
+		return
 	}
 	logger := FromContext(ctx)
 	if !ValidEventName(name) {

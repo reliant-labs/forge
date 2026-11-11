@@ -77,7 +77,7 @@ What a new app would otherwise stitch together from separate tools:
 | **Run**        | [Observability stack included](docs/benefits.md#local-clickstack) · [Production alerts out of the box](docs/benefits.md#default-alerts) · [Prove each deploy is good](docs/benefits.md#obs-check)                                                                                                                                 |
 | **Agents**     | [Skills that match your forge](docs/benefits.md#skills-in-the-binary) · [Built-in MCP server](docs/benefits.md#mcp-server)                                                                                                                                                                                                        |
 
-Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (235 entries, 123 lint rules)
+Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (238 entries, 123 lint rules)
 
 <!-- benefits:end -->
 
@@ -244,6 +244,8 @@ npx @reliantlabs/forge version
 # Go toolchain
 go install github.com/reliant-labs/forge/cmd/forge@latest
 ```
+
+To install forge's agent skill with [skills.sh](https://skills.sh): `npx skills add reliant-labs/forge --skill forge`
 
 Pinning a version for CI, verifying a release's signature, and building from a
 clone: [docs/install.md](docs/install.md).

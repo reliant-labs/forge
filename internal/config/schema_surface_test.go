@@ -102,7 +102,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// MigrationsDirIn by every reader of the migrations.
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
-			want: []string{"migration_safety", "migrations_dir", "orm", "postgres_version"},
+			// migrations: the migration tool hook (MigrationsConfig).
+			want: []string{"migration_safety", "migrations", "migrations_dir", "orm", "postgres_version"},
 		},
 		{
 			// orm.package: where the generated data layer lands, read by

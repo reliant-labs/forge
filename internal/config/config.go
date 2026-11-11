@@ -759,12 +759,16 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 type DatabaseConfig struct {
 	// Driver is "postgres" or "none" — derived, see DeriveDatabase.
 	Driver string `yaml:"-"`
-	// MigrationsDir is the project-relative directory that holds the
-	// migrations: `database.migrations_dir`, absent meaning
-	// DefaultMigrationsDir. Read it through MigrationsPath (or
-	// MigrationsDirIn when all you have is a project directory) so the
-	// default is applied in one place.
-	MigrationsDir   string                `yaml:"migrations_dir,omitempty"`
+	// MigrationsDir is `database.migrations_dir`, the shorthand for
+	// `database.migrations.dir` (Migrations.Dir, the canonical spelling).
+	// Read the directory through MigrationsPath (or MigrationsDirIn when all
+	// you have is a project directory) so the alias and the default are
+	// applied in one place.
+	MigrationsDir string `yaml:"migrations_dir,omitempty"`
+	// Migrations is `database.migrations:` — where the migrations live and
+	// which tool applies them. Absent, forge's own migrator applies
+	// db/migrations.
+	Migrations      MigrationsConfig      `yaml:"migrations,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.
 	ORM ORMConfig `yaml:"orm,omitempty"`

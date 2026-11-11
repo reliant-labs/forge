@@ -166,6 +166,7 @@ func TestEnvironmentPredicateUsesTheEnvIdColumnOnlyWhenTheScopeSaysItExists(t *t
 				"overview RED": ov.RED,
 				"overview log": ov.Logs,
 				"logs":         LogQuery{Scope: sc, Limit: 5}.Compile,
+				"trace extent": TraceExtent{Scope: sc, TraceID: "abc"}.Compile,
 				"metric":       MetricLookup{Scope: sc, Name: "m"}.Compile,
 			}
 			for name, f := range stmts {

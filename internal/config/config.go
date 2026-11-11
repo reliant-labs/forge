@@ -753,16 +753,20 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 
 // DatabaseConfig holds database-related settings.
 //
-// Only migration_safety is forge.yaml surface. The driver and migrations
-// directory are DERIVED: a service project whose tree has db/migrations uses
-// postgres and that directory, and one without it has no database (driver
-// "none"). The dev seed has no config at all — rows, auto-seed and table
-// scoping are fixed defaults (see internal/cli/db_seed.go).
+// The driver is DERIVED: a project whose tree has its migrations directory
+// (database.migrations_dir, default db/migrations) uses postgres, and one
+// without it has no database (driver "none"). The dev seed has no config at
+// all — rows, auto-seed and table scoping are fixed defaults (see
+// internal/cli/db_seed.go).
 type DatabaseConfig struct {
 	// Driver is "postgres" or "none" — derived, see DeriveDatabase.
 	Driver string `yaml:"-"`
-	// MigrationsDir is always db/migrations when there is a database.
-	MigrationsDir   string                `yaml:"-"`
+	// MigrationsDir is the project-relative directory that holds the
+	// migrations: `database.migrations_dir`, absent meaning
+	// DefaultMigrationsDir. Read it through MigrationsPath (or
+	// MigrationsDirIn when all you have is a project directory) so the
+	// default is applied in one place.
+	MigrationsDir   string                `yaml:"migrations_dir,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.
 	ORM ORMConfig `yaml:"orm,omitempty"`

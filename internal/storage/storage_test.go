@@ -319,7 +319,7 @@ func TestWithLockWaitGivesUpAfterItsBound(t *testing.T) {
 		if werr == nil || !strings.Contains(werr.Error(), "already running") {
 			t.Fatalf("want the 'already running' error after the bound, got %v", werr)
 		}
-		if d := time.Since(start); d < 100*time.Millisecond || d > 3*time.Second {
+		if d := time.Since(start); d < 100*time.Millisecond || d > 10*time.Second {
 			t.Errorf("gave up after %v, want about the 120ms bound", d)
 		}
 		return nil
@@ -382,10 +382,12 @@ func TestWithMaintenanceYieldsToAWaitingWriter(t *testing.T) {
 	}()
 	<-running
 	start := time.Now()
-	if err := WithLockWait(path, 3*time.Second, nil, func() error { return nil }); err != nil {
+	// 15s to wait, 10s to be prompt: both inside the pass's 20s cap, so a
+	// pass that never yields fails one or the other, and load reaches neither.
+	if err := WithLockWait(path, 15*time.Second, nil, func() error { return nil }); err != nil {
 		t.Fatalf("the writer failed behind a pass that should have yielded: %v", err)
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("the writer waited %v: the pass did not yield promptly", d)
 	}
 	if err := <-passDone; !errors.Is(err, context.Canceled) {

@@ -230,10 +230,14 @@ export function trackAuthEvent(
     if (optOut) {
       return;
     }
-    track(record.name, record.attributes);
     if (kind === "signed_in") {
       // A credential sign-in is today's sign-in: no `resumed` on top of it.
-      writeSeen(seenValue(record.userId));
+      // Stored on the device only once the event reached the sink.
+      const seen = seenValue(record.userId);
+      memorySeen = seen;
+      track(record.name, record.attributes, () => persistSeen(seen));
+    } else {
+      track(record.name, record.attributes);
     }
   } catch {
     // Telemetry must never break the app.
@@ -274,11 +278,16 @@ export function identifyUser(
       return;
     }
     const seen = seenValue(record.userId);
-    if (readSeen() === seen) {
+    // This page load's own marker first: the device's may still hold an
+    // earlier day's while today's event waits for the SDK.
+    if (memorySeen === seen || readSeen() === seen) {
       return;
     }
-    writeSeen(seen);
-    track(record.name, record.attributes);
+    // This page load sends it once. The device remembers it (full tier) only
+    // after the event reached the sink: a heartbeat lost to an SDK that never
+    // loaded, or to a navigation first, is sent again on the next load.
+    memorySeen = seen;
+    track(record.name, record.attributes, () => persistSeen(seen));
   } catch {
     // Telemetry must never break the app.
   }
@@ -308,8 +317,7 @@ function readSeen(): string | undefined {
   }
 }
 
-function writeSeen(value: string): void {
-  memorySeen = value;
+function persistSeen(value: string): void {
   try {
     storage()?.setItem(AUTH_SEEN_STORAGE_KEY, value);
   } catch {

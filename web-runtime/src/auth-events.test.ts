@@ -223,6 +223,61 @@ describe("identifyUser", () => {
     expect(ops.filter((o) => o[0] === "track")).toEqual([]);
   });
 
+  it("stores the full tier's marker only once the heartbeat reached the sink", () => {
+    setAnalyticsMode("full");
+    grantAnalyticsConsent();
+    // The SDK is still loading: the heartbeat is held, the device remembers nothing.
+    setTelemetrySink(null);
+    identifyUser("u1");
+    identifyUser("u1");
+    expect(ops).toEqual([]);
+    expect(store.has(AUTH_SEEN_STORAGE_KEY)).toBe(false);
+
+    // The start fails (initBrowserTelemetry clears the sink): the held
+    // heartbeat is dropped, and still nothing is stored.
+    setTelemetrySink(null);
+    expect(store.has(AUTH_SEEN_STORAGE_KEY)).toBe(false);
+
+    // The next load retries: the heartbeat is sent again, and once the SDK
+    // takes it, the day is remembered.
+    resetAuthEventState();
+    identifyUser("u1");
+    expect(store.has(AUTH_SEEN_STORAGE_KEY)).toBe(false);
+    install();
+    expect(ops).toEqual([
+      ["user", "u1"],
+      ["track", "auth_signed_in", { kind: "resumed" }],
+    ]);
+    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
+  });
+
+  it("stores a credential sign-in's marker only once it reached the sink", () => {
+    setAnalyticsMode("full");
+    grantAnalyticsConsent();
+    setTelemetrySink(null);
+    trackAuthEvent("signed_in", { userId: "u1" });
+    // The same load sends no resumed on top of it, delivered or not.
+    identifyUser("u1");
+    expect(store.has(AUTH_SEEN_STORAGE_KEY)).toBe(false);
+    install();
+    expect(ops.filter((o) => o[0] === "track")).toEqual([
+      ["track", "auth_signed_in", { kind: "credential" }],
+    ]);
+    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
+  });
+
+  it("sends today's heartbeat once while yesterday's marker is still stored", () => {
+    setAnalyticsMode("full");
+    grantAnalyticsConsent();
+    store.set(AUTH_SEEN_STORAGE_KEY, "u1:2026-11-09");
+    setTelemetrySink(null);
+    identifyUser("u1");
+    identifyUser("u1");
+    install();
+    expect(ops.filter((o) => o[0] === "track")).toHaveLength(1);
+    expect(store.get(AUTH_SEEN_STORAGE_KEY)).toBe("u1:2026-11-10");
+  });
+
   it("attaches no id and sends no heartbeat under GPC", () => {
     nav.globalPrivacyControl = true;
     identifyUser("u1");

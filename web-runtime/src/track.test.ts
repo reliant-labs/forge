@@ -192,6 +192,36 @@ describe("track", () => {
     expect(again.track).not.toHaveBeenCalled();
   });
 
+  it("tells an emitter its event reached the sink, and never one that was dropped", () => {
+    const delivered: string[] = [];
+    const s = sink();
+    setTelemetrySink(s);
+    recordProductEvent("now", {}, () => delivered.push("now"));
+    expect(delivered).toEqual(["now"]);
+
+    // Held while the SDK loads: told on replay, after the sink has it.
+    setTelemetrySink(null);
+    recordProductEvent("held", {}, () => {
+      expect(s.track).toHaveBeenCalledWith("held", {});
+      delivered.push("held");
+    });
+    expect(delivered).toEqual(["now"]);
+    setTelemetrySink(s);
+    expect(delivered).toEqual(["now", "held"]);
+
+    // A start that failed drops what was held: never told.
+    setTelemetrySink(null);
+    recordProductEvent("lost", {}, () => delivered.push("lost"));
+    setTelemetrySink(null);
+    setTelemetrySink(s);
+    // A throwing callback never breaks the app.
+    recordProductEvent("throws", {}, () => {
+      throw new Error("boom");
+    });
+    expect(delivered).toEqual(["now", "held"]);
+    expect(s.track).toHaveBeenCalledWith("throws", {});
+  });
+
   it("holds at most MAX_QUEUED_EVENTS and drops the rest", () => {
     for (let i = 0; i < MAX_QUEUED_EVENTS + 25; i++) track(`e${i}`);
     const s = sink();

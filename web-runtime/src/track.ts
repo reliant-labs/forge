@@ -90,8 +90,22 @@ export interface TelemetrySink {
 }
 
 type Pending =
-  | { kind: "track"; name: string; attributes: Record<string, TrackValue> }
+  | {
+      kind: "track";
+      name: string;
+      attributes: Record<string, TrackValue>;
+      onSent?: () => void;
+    }
   | { kind: "user"; id: string };
+
+// Tell an emitter its event reached the sink (recordProductEvent's onSent).
+function sent(onSent: (() => void) | undefined): void {
+  try {
+    onSent?.();
+  } catch {
+    // Telemetry must never break the app.
+  }
+}
 
 let sink: TelemetrySink | null = null;
 let disabled = false;
@@ -265,8 +279,18 @@ export function track(name: string, props?: TrackProps): void {
  * track() without the reserved-prefix warning: how the runtime's own
  * emitters (page views, auth events, exposures) record their events. Not
  * exported from the barrel.
+ *
+ * `onSent` runs once the event is handed to the SDK's sink: at once when the
+ * SDK is running, or when a held event is replayed. It never runs for an
+ * event that is dropped (tier `off`, a full queue, a start that failed and
+ * cleared the sink, a page that navigated away first), so state that must
+ * follow delivery (auth-events.ts's daily marker) is committed there.
  */
-export function recordProductEvent(name: string, props?: TrackProps): void {
+export function recordProductEvent(
+  name: string,
+  props?: TrackProps,
+  onSent?: () => void,
+): void {
   if (typeof window === "undefined" || disabled) {
     return;
   }
@@ -282,9 +306,10 @@ export function recordProductEvent(name: string, props?: TrackProps): void {
     if (sink) {
       if (analyticsTier() !== "off") {
         sink.track(trimmed, attributes);
+        sent(onSent);
       }
     } else {
-      enqueue({ kind: "track", name: trimmed, attributes });
+      enqueue({ kind: "track", name: trimmed, attributes, onSent });
     }
   } catch {
     // Telemetry must never break the app.
@@ -387,6 +412,7 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
       if (op.kind === "track") {
         if (analyticsTier() !== "off") {
           next.track(op.name, op.attributes);
+          sent(op.onSent);
         }
       } else {
         lastStamped = stampable(op.id);

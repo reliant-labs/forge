@@ -3,9 +3,10 @@ package cli
 import (
 	"context"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
-	"gopkg.in/yaml.v3"
 )
 
 // requiredSnapshotResourceFeatures reads the sealed CR inventory rather than

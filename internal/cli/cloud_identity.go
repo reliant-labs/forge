@@ -274,13 +274,7 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 				}
 				for _, app := range doc.Apps {
 					fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
-					if n := nativeOIDCFromStatus(doc, app); n != nil {
-						for _, kv := range n.vars() {
-							if kv[1] != "" {
-								fmt.Fprintf(out, "  %s=%s\n", kv[0], kv[1])
-							}
-						}
-					}
+					writeNativeOIDCStatus(out, nativeOIDCFromStatus(doc, app))
 				}
 				for _, d := range doc.Deliveries {
 					written := ""

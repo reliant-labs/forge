@@ -3,10 +3,25 @@ package cli
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
+
+func TestHostedNativeStatusIncludesAppLinkFallback(t *testing.T) {
+	n := nativeOIDCFromOutput(nativeIdentityOutput(), "dev:mobile")
+	n.RedirectURI = "https://app.acme.example/oauthredirect"
+	n.FallbackRedirectURI = "com.acme.mobile:/oauthredirect"
+	n.FallbackPostLogoutRedirectURI = "com.acme.mobile:/signedout"
+	var out bytes.Buffer
+	writeNativeOIDCStatus(&out, n)
+	for _, kv := range n.allVars() {
+		if kv[1] != "" && !strings.Contains(out.String(), "  "+kv[0]+"="+kv[1]+"\n") {
+			t.Errorf("status omits %s: %s", kv[0], out.String())
+		}
+	}
+}
 
 func TestHostedNativeIdentity_AppLinks(t *testing.T) {
 	for _, tc := range []struct {

@@ -57,6 +57,19 @@ func isNativeApp(a release.ShapeIdentityApplication) bool {
 	return a.Kind == release.IdentityAppNative
 }
 
+// writeNativeOIDCStatus prints the complete registered client's build config,
+// including private-scheme fallbacks when HTTPS is the primary callback.
+func writeNativeOIDCStatus(out io.Writer, n *nativeOIDC) {
+	if n == nil {
+		return
+	}
+	for _, kv := range n.allVars() {
+		if kv[1] != "" {
+			fmt.Fprintf(out, "  %s=%s\n", kv[0], kv[1])
+		}
+	}
+}
+
 // resolveHostedNativeApp fills the callbacks of one native application: the
 // declared redirect_uris kept as they are, else the ones derived from scheme.
 // logout_uris left empty become the `signedout` URI beside each redirect, in

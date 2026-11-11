@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -140,7 +141,7 @@ func writeAppLinkConfig(frontendDir string, c appLinkConfig) error {
 		return err
 	}
 	body = append(body, '\n')
-	if old, err := os.ReadFile(path); err == nil && string(old) == string(body) {
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
 		return nil
 	}
 	if err := os.MkdirAll(frontendDir, 0o755); err != nil {

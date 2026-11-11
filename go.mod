@@ -2,7 +2,7 @@ module github.com/reliant-labs/forge
 
 go 1.27.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
@@ -33,7 +33,6 @@ require (
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jinzhu/inflection v1.0.0
 	github.com/lib/pq v1.12.3
-	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/minio/minio-go/v7 v7.4.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/nats-io/nats.go v1.55.0

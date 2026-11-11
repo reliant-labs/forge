@@ -59,15 +59,26 @@ func TestPlatformPrerequisitesBeforeChartsAcrossClusters(t *testing.T) {
 				for _, target := range []string{"k3d-a", "k3d-b", "remote"} {
 					docs = append(docs, "apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: platform-"+target+"\n  labels:\n    forge.dev/cluster: "+target+"\nvalue: 1000")
 				}
-				docs = append(docs, "apiVersion: example.test/v1\nkind: PriorityClass\nmetadata:\n  name: not-builtin", "apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: shared\nvalue: 100")
+				docs = append(docs, "apiVersion: example.test/v1\nkind: PriorityClass\nmetadata:\n  name: not-builtin", "apiVersion: scheduling.k8s.io/v1\nkind: PriorityClass\nmetadata:\n  name: shared\nvalue: 100",
+					// Not a PriorityClass special case: a StorageClass and a CRD
+					// are prerequisites too; a webhook (its backend may be what
+					// a chart installs) is not.
+					"apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata:\n  name: shared-storage\nprovisioner: rancher.io/local-path",
+					"apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.test",
+					"apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nmetadata:\n  name: not-a-prerequisite")
 				return strings.Join(docs, "\n---\n"), nil
 			}
 			var events []string
 			sentinel := errors.New("admission denied")
 			applyPlatformPrerequisitesFn = func(_ context.Context, kctx, stream string) error {
 				events = append(events, "pre@"+kctx)
-				if !strings.Contains(stream, "name: shared") {
-					t.Fatalf("shared class missing on %s: %s", kctx, stream)
+				for _, name := range []string{"shared", "shared-storage", "widgets.example.test"} {
+					if !strings.Contains(stream+"\n", "name: "+name+"\n") {
+						t.Fatalf("shared prerequisite %s missing on %s: %s", name, kctx, stream)
+					}
+				}
+				if strings.Contains(stream, "not-a-prerequisite") {
+					t.Fatalf("webhook promoted ahead of the charts: %s", stream)
 				}
 				if !strings.Contains(stream, "name: platform-"+kctx) || strings.Contains(stream, "not-builtin") || strings.Contains(stream, "platform-remote") {
 					t.Fatalf("wrong routing: %s", stream)

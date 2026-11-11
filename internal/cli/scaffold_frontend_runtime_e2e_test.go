@@ -52,15 +52,9 @@ func TestE2EScaffoldFrontendRuntime(t *testing.T) {
 	}
 	registerSharedTempDir(dir) // preserve a failed bundle for diagnostics
 
-	runCmd(t, dir, forgeBin,
-		"project", "new", "rtapp",
-		"--mod", "example.com/rtapp",
-		"--frontend", "web",
-	)
-	projectDir := filepath.Join(dir, "rtapp")
-	addCorpusForgePkgReplace(t, projectDir)
-
-	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
+	// `project new feapp --frontend web` + `scaffold service item`, shared
+	// with the other web+item tests (shared_project_e2e_test.go).
+	projectDir := copyProjectE2E(t, sharedProjectE2E(t, forgeBin, webItemProjectE2E), dir)
 	writeFileE2E(t, filepath.Join(projectDir, "proto", "services", "item", "v1", "item.proto"), itemCRUDProtoRuntime)
 	writeFileE2E(t, filepath.Join(projectDir, "db", "migrations", "0001_create_items.up.sql"), itemsTableMigration)
 
@@ -533,7 +527,7 @@ package services.item.v1;
 import "forge/v1/forge.proto";
 import "google/protobuf/timestamp.proto";
 
-option go_package = "example.com/rtapp/gen/services/item/v1;itemv1";
+option go_package = "example.com/feapp/gen/services/item/v1;itemv1";
 
 // ItemService defines the item service RPCs.
 service ItemService {

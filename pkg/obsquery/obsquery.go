@@ -393,10 +393,12 @@ func where(conds []string) string {
 }
 
 // OperatorSource reports whether a reliant.source value marks Reliant operator
-// data (the platform's own telemetry, present only in the operator's own org).
+// data: the platform's own telemetry, or what the platform measured about a
+// customer's workload and wrote into its tenant (gateway service-graph edges,
+// IngressSource ingress RED). Never billed.
 func OperatorSource(source string) bool {
 	switch source {
-	case "daemon", "platform", "gateway":
+	case "daemon", "platform", "gateway", IngressSource:
 		return true
 	}
 	return false
@@ -425,4 +427,26 @@ const (
 	// Stream<Name> (".../StreamChatUpdates"). Latency quantiles exclude it;
 	// request and error counts keep it.
 	spanStreamExpr = "(SpanAttributes['" + StreamTypeAttr + "'] != '' OR match(SpanName, '/Stream[A-Z][^/]*$'))"
+)
+
+// The span expressions above, for a sql panel's statement over otel_traces, so
+// a hand-written count means what this package's own reads (and release
+// health, which judges a release from them) mean: requests are weighted server
+// spans, an error is a non-cancelled error span, and latency leaves streams
+// out. Each is a ClickHouse boolean or numeric expression over one
+// otel_traces row, safe to splice into a statement forge writes; none takes a
+// parameter.
+const (
+	// SpanWeightSQL is how many real spans a stored span stands for (see
+	// weight.go): sum(SpanWeightSQL) is a request count.
+	SpanWeightSQL = spanWeightExpr
+	// SpanWeightIntSQL is SpanWeightSQL as the UInt64 a weighted quantile takes.
+	SpanWeightIntSQL = spanWeightInt
+	// SpanServerSQL keeps server spans: a request the service answered.
+	SpanServerSQL = spanServerExpr
+	// SpanErrorSQL is an error span that is not a cancellation.
+	SpanErrorSQL = spanErrorExpr
+	// SpanStreamSQL is a streaming RPC's server span, whose duration is the
+	// stream's: latency quantiles exclude it.
+	SpanStreamSQL = spanStreamExpr
 )

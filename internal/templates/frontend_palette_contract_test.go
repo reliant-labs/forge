@@ -381,6 +381,15 @@ var contrastPairs = []contrastPair{
 	// icons, so it is held to the text floor (it measured 3.69:1 at 60% L).
 	{"ink-subtle", "surface", 4.5, "tertiary text / placeholder on a card"},
 	{"ink-subtle", "surface-muted", 4.5, "tertiary text / placeholder on the page background"},
+	{"ink-subtle", "surface-sunken", 4.5, "tertiary text / placeholder in an inset"},
+	// border-strong is a CONTROL's edge — ui/input, select, textarea,
+	// search_input, the outline button, checkboxes, the toggle's off track —
+	// so it is held to WCAG 1.4.11's 3:1 non-text floor against every surface
+	// a control sits on. At 86.5% L (light) / 34% L (dark) it measured
+	// 1.4-1.7:1: a field on a card read as text floating on the card.
+	{"border-strong", "surface", 3.0, "an input or outline-button edge on a card"},
+	{"border-strong", "surface-muted", 3.0, "an input or outline-button edge on the page background"},
+	{"border-strong", "surface-sunken", 3.0, "an input or outline-button edge in an inset"},
 	// The avatar's identity rotation (pkg/components ui/avatar.tsx).
 	{"accent-ink", "accent-surface", 4.5, "avatar initials"},
 	{"success-ink", "success-surface", 4.5, "avatar initials"},

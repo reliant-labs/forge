@@ -73,16 +73,9 @@ func TestE2EGeneratedHooksReadNoSideEffectsAndTypeMutationContext(t *testing.T) 
 	requireTool(t, "node", "npm")
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmdTimeout(t, dir, 10*time.Minute, forgeBin,
-		"project", "new", "kindsapp",
-		"--mod", "example.com/kindsapp",
-		"--frontend", "web",
-	)
-	projectDir := filepath.Join(dir, "kindsapp")
-	addCorpusForgePkgReplace(t, projectDir)
-	runCmd(t, projectDir, forgeBin, "scaffold", "service", "item")
+	// `project new feapp --frontend web` + `scaffold service item`, shared
+	// with the other web+item tests (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, webItemProjectE2E)
 
 	// A CRUD entity for the mutation (CreateItem); a custom read named as a
 	// noun (Version), born WITHOUT NO_SIDE_EFFECTS so it starts as a

@@ -274,6 +274,7 @@ func TestOpenDB_ClosingConnectionsThePoolerDroppedIsNotAnError(t *testing.T) {
 	}
 
 	pooler.dropAll()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: gives the RSTs time to reach the client so Close meets the broken pipe; the client exposes no event for it, and a late RST only makes the test pass trivially, never fail
 	time.Sleep(200 * time.Millisecond) // let the resets land
 
 	if err := pool.Close(); err != nil {

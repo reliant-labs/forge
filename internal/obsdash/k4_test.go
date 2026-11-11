@@ -77,23 +77,60 @@ func TestReleasesDashboardGolden(t *testing.T) {
 	if len(d.Annotations) != 1 || d.Annotations[0].Source != AnnotationReleases {
 		t.Fatalf("annotations = %+v, want the releases source", d.Annotations)
 	}
-	var lines, table int
+	if d.DefaultRange != "7d" {
+		t.Errorf("default range = %q; an hour draws one flat line per version", d.DefaultRange)
+	}
+	var sections []string
+	for _, s := range d.Sections {
+		sections = append(sections, s.ID)
+	}
+	if got := strings.Join(sections, ","); got != "latest,delivery,adoption,health" {
+		t.Errorf("sections = %s", got)
+	}
+	// The verdict and the ledger are drawn by the console from the control
+	// plane's reads, one panel each, in the sections a reader looks for them.
+	wantDelivery := map[PanelKind]string{KindReleaseHealth: "latest", KindDelivery: "delivery", KindPromotions: "delivery"}
+	lines := 0
 	for _, p := range d.Panels {
-		switch p.Kind {
-		case KindLine:
+		if p.Section == "" {
+			t.Errorf("%s names no section", p.ID)
+		}
+		if strings.Contains(p.Title+p.Description, "resource.attr") {
+			t.Errorf("%s shows a raw attribute name: %q / %q", p.ID, p.Title, p.Description)
+		}
+		switch {
+		case p.Kind == KindLine:
 			lines++
 			if len(p.GroupBy) != 1 || p.GroupBy[0] != "resource.attr.service.version" {
 				t.Errorf("%s groups by %v, want service.version", p.ID, p.GroupBy)
 			}
-		case KindTable:
-			table++
-			if len(p.GroupBy) != 1 || p.GroupBy[0] != "resource.attr.service.version" {
-				t.Errorf("%s groups by %v, want service.version", p.ID, p.GroupBy)
+		case p.Kind == KindSQL:
+			if !strings.Contains(p.SQL, `AS "Version"`) {
+				t.Errorf("%s does not name its version column for people", p.ID)
 			}
+		case IsDeliveryKind(p.Kind):
+			if section, ok := wantDelivery[p.Kind]; !ok || section != p.Section {
+				t.Errorf("%s: %s panel in section %q (want one, in %q)", p.ID, p.Kind, p.Section, section)
+			}
+			delete(wantDelivery, p.Kind)
+		default:
+			t.Errorf("%s: unexpected %s panel", p.ID, p.Kind)
 		}
 	}
-	if lines < 4 || table != 1 {
-		t.Errorf("releases dashboard has %d line panels and %d comparison tables", lines, table)
+	if len(wantDelivery) != 0 || lines < 3 {
+		t.Errorf("missing delivery panels %v; %d line panels", wantDelivery, lines)
+	}
+	for _, f := range d.Filters {
+		if strings.Contains(f.Label, ".") {
+			t.Errorf("filter %s is labelled with a field name %q", f.ID, f.Label)
+		}
+	}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseDashboard("releases.json", raw); err != nil {
+		t.Fatalf("the releases dashboard does not validate: %v", err)
 	}
 }
 

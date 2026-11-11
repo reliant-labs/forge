@@ -9,10 +9,8 @@ import (
 
 // JSON wraps a Go value for storage as a JSON column value. The generated
 // ORM code uses it for repeated scalar entity fields (e.g. `repeated
-// string tags`): the value is marshalled to JSON text on write, which
-// both postgres (a jsonb column accepts an untyped text parameter) and
-// sqlite (a TEXT-affinity column) store natively — one generated code
-// path, two dialects.
+// string tags`): the value is marshalled to JSON text on write, which a
+// postgres json/jsonb column accepts as an untyped text parameter.
 //
 // A nil/empty slice round-trips as SQL NULL so the column stays cleanly
 // nullable and scans back to the zero value.
@@ -46,8 +44,9 @@ func (j jsonValue) Value() (driver.Value, error) {
 
 // ScanJSON returns a sql.Scanner that unmarshals a JSON column into dst
 // (a pointer, e.g. *[]string). NULL / empty values leave dst at its zero
-// value. It accepts []byte (postgres jsonb) and string (sqlite TEXT)
-// sources.
+// value. It accepts []byte and string sources: the pgx driver hands a
+// json/jsonb value back as []byte, and a JSON document selected as text (a
+// `::text` cast, a text column holding JSON) as string.
 func ScanJSON(dst any) sql.Scanner { return jsonScanner{dst: dst} }
 
 type jsonScanner struct{ dst any }

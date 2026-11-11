@@ -47,16 +47,9 @@ import (
 func TestE2EValidateConstraintsProjection(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmd(t, dir, forgeBin,
-		"project", "new", "shopapp",
-		"--mod", "example.com/shopapp",
-		"--service", "catalog",
-		"--frontend", "dashboard",
-	)
-	projectDir := filepath.Join(dir, "shopapp")
-	addCorpusForgePkgReplace(t, projectDir)
+	// `project new dashapp --service catalog --frontend dashboard`, shared
+	// with the other tests that start there (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, dashboardCatalogProjectE2E)
 
 	// Author the marked entity with the full protovalidate subset. The
 	// validate.proto import is inserted after the syntax line; forge

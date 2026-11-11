@@ -17,9 +17,10 @@ func TestNullTime_Scan(t *testing.T) {
 	}{
 		{name: "nil is NULL", value: nil, wantValid: false},
 		{name: "time.Time passthrough", value: ref, wantValid: true, wantTime: ref},
-		{name: "sqlite datetime string", value: "2026-06-11 14:30:05", wantValid: true, wantTime: ref},
-		{name: "sqlite datetime bytes", value: []byte("2026-06-11 14:30:05"), wantValid: true, wantTime: ref},
-		{name: "sqlite fractional with offset", value: "2026-06-11 14:30:05.000000000+00:00", wantValid: true, wantTime: ref},
+		{name: "postgres timestamptz text", value: "2026-06-11 14:30:05+00", wantValid: true, wantTime: ref},
+		{name: "postgres timestamptz bytes", value: []byte("2026-06-11 14:30:05+00"), wantValid: true, wantTime: ref},
+		{name: "postgres timestamptz text, fractional, half-hour offset", value: "2026-06-11 20:00:05.000000+05:30", wantValid: true, wantTime: ref},
+		{name: "postgres timestamp text", value: "2026-06-11 14:30:05", wantValid: true, wantTime: ref},
 		{name: "rfc3339", value: "2026-06-11T14:30:05Z", wantValid: true, wantTime: ref},
 		{name: "date only", value: "2026-06-11", wantValid: true, wantTime: time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC)},
 		{name: "empty string is NULL", value: "", wantValid: false},

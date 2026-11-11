@@ -477,6 +477,19 @@ benefits:
       - skill: db/store
       - skill: db
 
+  - id: orm-opt-out
+    category: data
+    title: Keep your own data layer
+    claim: >-
+      A project with a hand-written repository layer keeps forge's migrations
+      and codegen without the generated ORM, by pinning `features: {orm: false}`
+      in forge.yaml or marking the package `//forge:no-orm`.
+    availability: forge
+    evidence:
+      - marker: forge:no-orm
+      - command: project features
+      - skill: db/orm-and-safety
+
   - id: migration-safety
     category: data
     title: Migration safety checks
@@ -1256,6 +1269,20 @@ benefits:
       - command: ci summarize
       - command: gate record
       - skill: ci/gate
+
+  - id: ci-workflow-opt-out
+    category: guardrails
+    title: Keep your own workflows
+    claim: >-
+      `ci.workflows` in forge.yaml switches single forge workflows off (deploy,
+      build-images, e2e, ...), and a same-named workflow the repo wrote itself
+      is never overwritten or silently adopted: forge warns until forge.yaml
+      says so.
+    availability: forge
+    evidence:
+      - skill: ci/extending
+      - path: internal/config/ci_workflows.go
+      - path: internal/generator/ci_workflows.go
 
   - id: generated-drift
     category: guardrails
@@ -3149,6 +3176,26 @@ benefits:
       - library: pkg/releasehealth
       - skill: deploy/delivery-policy
 
+  - id: shared-env-base
+    category: ship
+    title: One env base, per-env deltas
+    claim: >-
+      Every deployed env binds its workloads through one shared base, so an env
+      file holds only what is its own and a new env starts as its deltas.
+    availability: forge
+    use: >-
+      `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by
+      each env as `import ..base.env as envbase`; `forge env new <name> --from
+      <env>` copies only the source env's own values
+    why: >-
+      It is plain KCL, so `forge env render`, `env diff` and `env shape` read it
+      like any import, and an env overrides a shared binder by wrapping it. The
+      scaffold tools keep editing each env's one binding line per workload.
+    evidence:
+      - path: internal/templates/deploy/kcl/base/env.k.tmpl
+      - command: env new
+      - skill: deploy/model
+
   - id: release-health-policy
     category: ship
     title: Release health policy as code
@@ -4151,11 +4198,21 @@ benefits:
     title: Agent memory file generated
     claim: >-
       `forge project memory` renders the framework guide every agent session
-      loads, kept current with the pinned forge.
+      loads, kept current with the pinned forge, and describes the project as
+      it is: an adopted app gets the forge pieces it uses and its own test
+      commands, never forge's greenfield layout.
     availability: forge
+    why: >-
+      Read off the tree and forge.yaml: a forge Go service gets the full Go
+      guide; an adopted app keeps its language and layout, with sections only
+      for what it opted into (deploy envs, monitoring, its migration tool,
+      frontends) and the gate taken from its Taskfile, package.json scripts
+      or Makefile; a static site gets the frontend guide.
     evidence:
       - command: project memory
       - path: internal/templates/project/reliant.md.tmpl
+      - path: internal/cli/memory_surface.go
+      - path: internal/cli/testdata/memory
 
   - id: harness-pointers
     category: agents
@@ -4166,6 +4223,19 @@ benefits:
     availability: forge
     evidence:
       - command: skill list
+
+  - id: harness-none
+    category: agents
+    title: No agent files when unwanted
+    claim: >-
+      `harness: none` (`forge project new --harness none`) adopts forge without
+      adding an agent memory file, harness pointer or MCP config to a repository
+      that keeps its own.
+    availability: forge
+    evidence:
+      - command: project new --harness
+      - path: internal/generator/harness.go
+      - skill: forge/greenfield
 
   - id: predictable-layout
     category: agents

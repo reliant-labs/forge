@@ -67,7 +67,7 @@ failed applies and the times the dev stack started.
 	f := cmd.Flags()
 	o.out.Register(f, 50)
 	f.StringVar(&o.backend, "backend", "", "local | cloud (default: from the env's declaration)")
-	f.DurationVar(&o.since, "since", 2*time.Hour, "how far back to read (ignored with --from)")
+	obsDurationVar(f, &o.since, "since", 2*time.Hour, "how far back to read (ignored with --from)")
 	f.StringVar(&o.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&o.to, "to", "", "range end, RFC 3339 (default now)")
 	return cmd

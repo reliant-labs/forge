@@ -341,7 +341,7 @@ func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths 
 					fmt.Sprintf("run `%s env render %s` to see why, fix it, then re-run rescaffold", Name(), unrendered[0]))
 			}
 		}
-		return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReason(p)),
+		return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReasonFor(cfg, p)),
 			"change forge.yaml or the project so it has one, then re-run rescaffold")
 	}
 	return nil

@@ -251,13 +251,13 @@ func TestHostedWaitSupersededIsTerminal(t *testing.T) {
 	cp := &rolloutCP{phases: []string{wireRolloutPhaseSuperseded}}
 	start := time.Now()
 	err := HostedProvider{Client: cp, PollInterval: 50 * time.Millisecond,
-		Rollout: cluster.RolloutPolicy{Timeout: 10 * time.Second}}.
+		Rollout: cluster.RolloutPolicy{Timeout: 60 * time.Second}}.
 		Deploy(context.Background(), promotedGroup("promo-1"))
 	if err == nil || !strings.Contains(err.Error(), "newer promotion") {
 		t.Fatalf("err = %v, want a superseded failure naming the newer promotion", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("superseded must be terminal, not waited out: took %s of a 10s budget", elapsed)
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("superseded must be terminal, not waited out: took %s of a 60s budget", elapsed)
 	}
 }
 

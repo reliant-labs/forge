@@ -95,6 +95,83 @@ func TestGenerateMigrate_DirOutsideDB(t *testing.T) {
 	}
 }
 
+// setMigrationsDir rewrites forge.yaml's database.migrations_dir.
+func setMigrationsDir(t *testing.T, root, dir string) {
+	t.Helper()
+	body := "name: p\nmodule_path: example.com/p\ndatabase:\n  migrations_dir: " + dir + "\n"
+	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertNotExist(t *testing.T, root, rel, why string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+		t.Errorf("%s must be retired: %s (stat: %v)", rel, why, err)
+	}
+}
+
+// Moving or emptying migrations_dir after a generation retires the embeds
+// the earlier run wrote, which would otherwise embed SQL that is gone.
+func TestGenerateMigrate_RetiresStaleEmbedsAfterTheDirChanges(t *testing.T) {
+	t.Run("outside db, then under db", func(t *testing.T) {
+		root := migrateDirProject(t, "sql/migrations", false)
+		if err := GenerateMigrate(root, "example.com/p", true, nil); err != nil {
+			t.Fatalf("GenerateMigrate: %v", err)
+		}
+		setMigrationsDir(t, root, "db/migrations")
+		if err := GenerateMigrate(root, "example.com/p", true, nil); err != nil {
+			t.Fatalf("GenerateMigrate after the move: %v", err)
+		}
+		assertNotExist(t, root, "sql/migrations/embed_gen.go", "db/ now embeds the SQL itself")
+		if embed := readGenerated(t, root, "db/embed_gen.go"); !strings.Contains(embed, "//go:embed migrations/*.sql\n") {
+			t.Errorf("db/embed_gen.go must embed migrations/*.sql:\n%s", embed)
+		}
+	})
+	t.Run("outside db, then another dir outside db", func(t *testing.T) {
+		root := migrateDirProject(t, "sql/migrations", false)
+		if err := GenerateMigrate(root, "example.com/p", true, nil); err != nil {
+			t.Fatalf("GenerateMigrate: %v", err)
+		}
+		setMigrationsDir(t, root, "migrations")
+		if err := GenerateMigrate(root, "example.com/p", true, nil); err != nil {
+			t.Fatalf("GenerateMigrate after the move: %v", err)
+		}
+		assertNotExist(t, root, "sql/migrations/embed_gen.go", "the package moved to migrations/")
+		if src := readGenerated(t, root, "db/source_gen.go"); !strings.Contains(src, `migrations "example.com/p/migrations"`) {
+			t.Errorf("db/source_gen.go must mount the new package:\n%s", src)
+		}
+	})
+	for _, dir := range []string{"db/migrations", "sql/migrations"} {
+		t.Run("migrations removed from "+dir, func(t *testing.T) {
+			root := migrateDirProject(t, dir, true)
+			if err := GenerateMigrate(root, "example.com/p", true, nil); err != nil {
+				t.Fatalf("GenerateMigrate: %v", err)
+			}
+			if err := os.Remove(filepath.Join(root, filepath.FromSlash(dir), "00001_init.up.sql")); err != nil {
+				t.Fatal(err)
+			}
+			if err := GenerateMigrate(root, "example.com/p", false, nil); err != nil {
+				t.Fatalf("GenerateMigrate with no SQL: %v", err)
+			}
+			assertNotExist(t, root, "db/embed_gen.go", "nothing is embedded with no SQL")
+			assertNotExist(t, root, dir+"/embed_gen.go", "its *.sql matches nothing")
+			if src := readGenerated(t, root, "db/source_gen.go"); !strings.Contains(src, "const HasMigrations = false") {
+				t.Errorf("db/source_gen.go must report no migrations:\n%s", src)
+			}
+		})
+	}
+}
+
+// An unembeddable directory is refused before its first migration, too.
+func TestGenerateMigrate_UnembeddableDirIsRefusedWithoutMigrations(t *testing.T) {
+	root := migrateDirProject(t, "_sql", false)
+	err := GenerateMigrate(root, "example.com/p", false, nil)
+	if err == nil || !strings.Contains(err.Error(), `"_sql"`) {
+		t.Fatalf("GenerateMigrate = %v; want a refusal naming the directory the go tool ignores", err)
+	}
+}
+
 func TestGenerateMigrate_UnembeddableDirIsRefused(t *testing.T) {
 	root := migrateDirProject(t, "_sql", false)
 	err := GenerateMigrate(root, "example.com/p", true, nil)

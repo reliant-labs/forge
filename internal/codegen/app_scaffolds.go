@@ -48,11 +48,24 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs
 	removeRetiredForgeFile(targetDir, filepath.Join("pkg", "app", "migrate.go"), cs)
 
 	layout := migrationEmbedLayoutOf(config.MigrationsDirIn(targetDir))
+	if layout.pkgDir != "" {
+		// Refuse a directory the go tool cannot build in now, not only once
+		// its first migration lands.
+		if err := checkEmbeddableMigrationsDir(modulePath, layout.dir); err != nil {
+			return err
+		}
+	}
+	// An embed package generated into a previous migrations_dir would keep
+	// embedding SQL that moved (or compile against none at all).
+	retireStaleMigrationsPackage(targetDir, modulePath, layout, hasMigrations, cs)
 	if !hasMigrations {
 		// No SQL yet, so `//go:embed migrations/*.sql` would not compile.
 		// Source() reports nil in this state and migratekit skips at boot —
 		// see migratekit.AutoMigrate on why boot tolerates that while an
-		// explicit `db migrate up` does not.
+		// explicit `db migrate up` does not. An embed from an earlier run,
+		// when SQL existed, would now match nothing and fail the build.
+		RetireRenamedGenerated(targetDir, filepath.Join("db", "embed.go"), cs)
+		removeRetiredForgeFile(targetDir, filepath.Join("db", "embed_gen.go"), cs)
 		return writeMigrationSource(targetDir, layout, false, nil, cs)
 	}
 
@@ -205,6 +218,44 @@ var GrantsFS embed.FS
 		removeRetiredForgeFile(targetDir, filepath.Join("db", "embed_gen.go"), cs)
 	}
 	return writeMigrationSource(targetDir, layout, true, &migrationMount{importPath: modulePath + "/" + layout.pkgDir, grants: hasGrants}, cs)
+}
+
+// retireStaleMigrationsPackage removes the <dir>/embed_gen.go generated into
+// an earlier migrations_dir (migrationEmbedLayout's second shape) once it is
+// no longer the one in use: the directory moved, moved under db/, or holds no
+// SQL now. The previous directory is read from the db/source_gen.go that
+// mounted it — the one record of where forge last generated the package.
+func retireStaleMigrationsPackage(targetDir, modulePath string, layout migrationEmbedLayout, hasMigrations bool, cs *checksums.FileChecksums) {
+	prev := previousMigrationsPackageDir(targetDir, modulePath)
+	if prev == "" || (hasMigrations && prev == layout.pkgDir) {
+		return
+	}
+	removeRetiredForgeFile(targetDir, filepath.Join(filepath.FromSlash(prev), "embed_gen.go"), cs)
+}
+
+// previousMigrationsPackageDir is the project-relative directory of the embed
+// package the existing db/source_gen.go imports, or "" when it imports none.
+func previousMigrationsPackageDir(targetDir, modulePath string) string {
+	if modulePath == "" {
+		return ""
+	}
+	body, err := os.ReadFile(filepath.Join(targetDir, "db", "source_gen.go"))
+	if err != nil {
+		return ""
+	}
+	prefix := migrationsEmbedPackage + ` "` + modulePath + "/"
+	for _, line := range strings.Split(string(body), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if !ok {
+			continue
+		}
+		dir, ok := strings.CutSuffix(rest, `"`)
+		if !ok || dir == "" || strings.Contains(dir, "..") {
+			return ""
+		}
+		return dir
+	}
+	return ""
 }
 
 // checkEmbeddableMigrationsDir refuses a migrations directory the go tool

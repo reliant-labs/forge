@@ -65,6 +65,10 @@ control plane that predates floors is `null`/`false` — unknown, not none).
 The control plane enforces floors in Promote under the env's row lock, with a
 database trigger behind it. The machine ledger enforces them in its file lock.
 `--offline-ledger` judges the floors its copy recorded and refuses `--floor`
-(floors change only on the control plane). `--floor` is refused against a
+(floors change only on the control plane). A copy whose floors are unknown
+(it predates them, or they could not be read at its last refresh) refuses the
+deploy with exit 2: refresh it with `forge env status <env>` while the control
+plane is up. A control plane without floors is recorded as having none.
+`--floor` is refused against a
 control plane that does not advertise floors, because it would silently drop
 the field.

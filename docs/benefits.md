@@ -3381,7 +3381,7 @@ _Enforced · Reliant hosting_
 
 ### A console for every project
 
-The Reliant web app has a Forge console per project: workloads, releases, observability and dashboards, data, storage, environments, secrets, domains, monitoring and activity.
+The Forge console (forge.reliantlabs.io, also inside the Reliant web app) covers every project: workloads, releases, observability and dashboards, data, storage, environments, secrets, domains, monitoring and activity.
 
 _Enforced · Reliant harness_
 

@@ -57,7 +57,9 @@ That is the whole integration. forge builds nothing and applies nothing.
   overwrite: a version names one release.
 - **Never a forge deploy.** The control plane refuses to bind a record-only
   release to an env forge itself deploys (a hosted env, or one bound to a
-  cluster forge reconciles): reason `record_only_release`. When forge takes
+  cluster forge reconciles): reason `record_only_release`. The command refuses
+  an env that has `deploy/kcl/<env>/main.k` the same way, before it cuts
+  anything, on every ledger. When forge takes
   over deploying an env, its own `forge env deploy` releases follow the
   recorded ones in the same history.
 
@@ -65,9 +67,9 @@ That is the whole integration. forge builds nothing and applies nothing.
 
 | Situation | Ledger |
 |---|---|
-| `deploy/kcl/<env>/main.k` exists | the ledger that env's KCL selects, as for every ledger verb (`FORGE_LEDGER=machine` included) |
-| no KCL, signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
-| no KCL, not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
+| `deploy/kcl/<env>/main.k` exists | none: refused (`record_only_release`), forge deploys that env |
+| signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
+| `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
 
 Monitoring needs sign-in: a record on this machine is history, not a marker.
 

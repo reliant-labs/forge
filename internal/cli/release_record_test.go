@@ -282,6 +282,50 @@ func TestReleaseRecord_RefusalOnAForgeDeployedEnv(t *testing.T) {
 	}
 }
 
+// An env forge's KCL declares is one forge deploys: a record into it is
+// refused before anything is cut, on the machine ledger too, where no control
+// plane would refuse it.
+func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
+	home := t.TempDir()
+	prevHome := ledgerHome
+	ledgerHome = func() (string, error) { return home, nil }
+	t.Cleanup(func() { ledgerHome = prevHome })
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectDir, "deploy", "kcl", "dev"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k"), []byte("# dev\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
+	_, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "dev", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})
+	var refused *promoteRefusedError
+	if !errors.As(err, &refused) || refused.Reason != reasonRecordOnlyRelease {
+		t.Fatalf("err = %v, want the record_only_release refusal", err)
+	}
+	l, err := machineLedger(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel, err := l.Releases.Get(context.Background(), "v1"); err == nil && rel != nil {
+		t.Fatalf("a refused record cut release %+v", rel)
+	}
+	if _, bound, err := l.Bindings.Current(context.Background(), "dev"); err != nil || bound {
+		t.Fatalf("a refused record bound dev (bound=%v err=%v)", bound, err)
+	}
+
+	// An env with no declaration still records.
+	if _, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{}); err != nil {
+		t.Fatalf("an undeclared env: %v", err)
+	}
+}
+
 // Not signed in, or FORGE_LEDGER=machine: the record lands in this machine's
 // ledger, record-only, idempotently — and a version-only record at another
 // commit is a conflict there too.

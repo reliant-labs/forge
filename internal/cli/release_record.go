@@ -11,18 +11,19 @@ package cli
 // a promotion of it into the env — the deploy marker `obs changes` lists and
 // `obs check` judges. forge builds nothing and applies nothing here. The
 // release is RECORD-ONLY (release.Release.RecordOnly): it may name no
-// artifacts at all (a version and a commit), and the control plane refuses to
-// bind one to an env forge itself deploys, so a record can never pose as a
-// forge deploy.
+// artifacts at all (a version and a commit), and it never binds to an env
+// forge itself deploys, so a record can never pose as a forge deploy. That is
+// enforced twice: the control plane refuses the promotion, and before any cut
+// this command refuses an env declared in deploy/kcl/<env>/main.k — an env
+// forge's KCL declares is one forge applies, and the machine ledger (or a
+// control plane that predates record-only) has nothing else to refuse it.
 //
 // IT NEEDS NO deploy/kcl. forge.yaml `name:` is the project; the env is
 // ensured on the control plane as SELF_MANAGED (forge keeps its ledger, the
 // team's pipeline deploys it). Where the record goes:
 //
-//   - an env whose KCL exists: the ledger that KCL selects, exactly as every
-//     other ledger verb (selectLedger) — FORGE_LEDGER=machine included;
-//   - otherwise, signed in (forge login, FORGE_CONTROL_PLANE_TOKEN, a
-//     credential helper): Reliant cloud;
+//   - signed in (forge login, FORGE_CONTROL_PLANE_TOKEN, a credential
+//     helper), and FORGE_LEDGER is not machine: Reliant cloud;
 //   - otherwise: this machine's ledger, with a note saying monitoring cannot
 //     see it until it is recorded signed in (`forge ledger import`).
 //
@@ -167,19 +168,6 @@ type recordLedger struct {
 var openRecordLedger = defaultRecordLedger
 
 func defaultRecordLedger(ctx context.Context, projectDir, project, env, token string) (recordLedger, error) {
-	// An env forge's KCL declares keeps the ledger its declaration selects,
-	// whichever verb writes to it.
-	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err == nil {
-		l, err := selectLedger(ctx, projectDir, env)
-		if err != nil {
-			return recordLedger{}, err
-		}
-		out := recordLedger{ledger: l}
-		if l.Hosted {
-			out.endpoint = l.Bindings.Location()
-		}
-		return out, nil
-	}
 	selection, err := ledgerSelectionFromEnv()
 	if err != nil {
 		return recordLedger{}, err
@@ -209,6 +197,28 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, deploytarget.HostedEnvSelfManaged),
 		endpoint: ep.URL,
 	}, nil
+}
+
+// reasonRecordOnlyRelease is the control plane's refusal of a record-only
+// release bound to an env forge deploys; the client uses the same reason.
+const reasonRecordOnlyRelease = "record_only_release"
+
+// refuseForgeDeclaredEnv refuses, before anything is cut, a record into an env
+// forge's own KCL declares: forge applies that env, so a record-only release
+// must not become its current promotion, on any ledger. The control plane
+// refuses it too, but the machine ledger has no such check, and a control
+// plane that predates record-only would accept it.
+func refuseForgeDeclaredEnv(projectDir, env string) error {
+	decl := filepath.Join("deploy", "kcl", env, "main.k")
+	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil {
+		return nil //nolint:nilerr // no declaration: an env forge does not deploy
+	}
+	return &promoteRefusedError{
+		Reason: reasonRecordOnlyRelease,
+		Detail: fmt.Sprintf("environment %q is declared in %s, so forge deploys it; `%s release record` records "+
+			"deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, or record into an env forge does not declare",
+			env, decl, Name(), Name(), env),
+	}
 }
 
 func runReleaseRecord(ctx context.Context, o releaseRecordOptions, out, errOut io.Writer) error {
@@ -269,6 +279,9 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 		return releaseRecordResult{}, err
 	}
 	project := sc.project
+	if err := refuseForgeDeclaredEnv(sc.projectDir, env); err != nil {
+		return releaseRecordResult{}, err
+	}
 
 	target, err := openRecordLedger(ctx, sc.projectDir, project, env, o.token)
 	if err != nil {

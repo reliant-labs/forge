@@ -942,23 +942,41 @@ func (s *Shadow) Close() {
 // same apply-then-introspect pass — but the caller can additionally interrogate
 // the applied schema directly.
 //
-// A non-nil *Shadow is returned whenever one was opened, INCLUDING on a later
-// error, so the caller's deferred Close always reclaims the scratch database.
+// A shadow the migrations failed to apply to is dropped before returning (nil
+// *Shadow); one that applied but failed introspection is returned beside the
+// error. Either way the caller's deferred Close (nil-safe) reclaims whatever is
+// left, so no scratch database leaks.
 func ApplyAndIntrospectShadowAt(migDir, baseURL string) ([]Table, *Shadow, error) {
 	set, err := ReadMigrationSet(migDir)
-	if err != nil || set.Len() == 0 {
+	if err != nil {
 		return nil, nil, err
 	}
+	return ApplyAndIntrospectSetShadowAt(set, baseURL)
+}
 
-	db, cleanup, err := openShadow(baseURL)
+// ApplyAndIntrospectSetAt is ApplyAndIntrospectAt over a migration set the
+// caller already holds — ReadMigrationSet's, or a NewCommandMigrationSet a
+// project's own migration tool applies. An empty set returns (nil, nil).
+func ApplyAndIntrospectSetAt(set *MigrationSet, baseURL string) ([]Table, error) {
+	tables, shadow, err := ApplyAndIntrospectSetShadowAt(set, baseURL)
+	if shadow != nil {
+		defer shadow.Close()
+	}
+	return tables, err
+}
+
+// ApplyAndIntrospectSetShadowAt is ApplyAndIntrospectShadowAt over a
+// migration set the caller already holds. A set the shadow could not be
+// migrated to returns no shadow: nothing is left open.
+func ApplyAndIntrospectSetShadowAt(set *MigrationSet, baseURL string) ([]Table, *Shadow, error) {
+	if set == nil || set.Len() == 0 {
+		return nil, nil, nil
+	}
+	db, cleanup, err := set.openApplied(baseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("open postgres shadow db: %w", err)
+		return nil, nil, err
 	}
 	shadow := &Shadow{db: db, cleanup: cleanup}
-	if err := set.apply(db); err != nil {
-		return nil, shadow, err
-	}
-
 	tables, err := introspect(db)
 	return tables, shadow, err
 }

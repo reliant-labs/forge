@@ -16,7 +16,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/database"
+	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -194,6 +196,21 @@ func seedShadowServer(projectDir string) string {
 	return shadowdb.Resolve(projectDir)
 }
 
+// buildLiveSeedPlan is seedplan.BuildLivePlan on the shadow server, except
+// in a project that keeps its own migration tool (the `database.migrations`
+// hook): a replay of *.up.sql there reads no schema at all, so the applied
+// schema comes from internal/shadowdb, whose shadow that tool migrates.
+func buildLiveSeedPlan(ctx context.Context, db *sql.DB, projectDir, migDir, shadowServer string, cfg seedplan.Config) (*seedplan.Plan, error) {
+	if _, hooked := migrationhook.ResolveIn(projectDir); !hooked {
+		return seedplan.BuildLivePlan(ctx, db, migDir, shadowServer, cfg)
+	}
+	tables, err := shadowdb.Tables(projectDir, migDir)
+	if err != nil {
+		return nil, fmt.Errorf("introspect applied schema: %w", err)
+	}
+	return seedplan.BuildLivePlanFromTables(ctx, db, tables, migDir, cfg)
+}
+
 // seedConfigFromProject is the project's dev dataset configuration: the
 // library defaults (20 rows per table, salt 0) — the salt and row counts every
 // consumer of the dataset shares. There is no forge.yaml seed block — the
@@ -332,7 +349,7 @@ func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending 
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	if checkPending {
-		block, perr := seedplan.MigrationsPending(ctx, db, migDir)
+		block, perr := seedMigrationsPending(ctx, db, resolved, dbProjectRoot(), migDir)
 		if perr != nil {
 			_ = db.Close()
 			return nil, perr
@@ -343,6 +360,137 @@ func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending 
 		}
 	}
 	return db, nil
+}
+
+// seedMigrationsPending is seedplan.MigrationsPending, except in a project
+// that keeps its own migration tool (the `database.migrations` hook). There
+// the tool keeps its own ledger, under its own name (goose_db_version, a
+// custom x-migrations-table, ...), and forge's schema_migrations may not exist
+// at all on a fully migrated database, so reading it would refuse forever.
+//
+// Instead the tool's own answer decides (hookMigrationsPending), and the
+// target must also hold every table and column the tool's migrations produce
+// (shadowdb.Tables, the same schema the seed plan is built from). The shape
+// alone is never proof: a pending data-only migration, or one that failed
+// after its DDL, leaves the schema looking current.
+func seedMigrationsPending(ctx context.Context, db *sql.DB, dsn, projectDir, migDir string) (*seedplan.MigrationBlock, error) {
+	h, hooked := migrationhook.ResolveIn(projectDir)
+	if !hooked {
+		return seedplan.MigrationsPending(ctx, db, migDir)
+	}
+	tables, block, err := hookMigrationsPending(ctx, h, db, dsn, projectDir, migDir)
+	if err != nil || block != nil {
+		return block, err
+	}
+	missing, err := schemaMissing(ctx, db, tables)
+	if err != nil || missing == "" {
+		return nil, err
+	}
+	return &seedplan.MigrationBlock{Reason: "the database is behind its migrations: " + missing + " is missing"}, nil
+}
+
+// hookMigrationsPending asks the project's migration tool whether db is fully
+// migrated, and returns the schema its migrations produce. A declared
+// `check:` argv answers for any tool. Otherwise forge reads a built-in tool's
+// ledger in db and in the shadow the tool just migrated: every version the
+// shadow records must be recorded in db, and none may have failed part-way. A
+// custom tool without `check:` cannot answer, so seeding is refused rather
+// than guessed at.
+func hookMigrationsPending(ctx context.Context, h migrationhook.Hook, db *sql.DB, dsn, projectDir, migDir string) ([]schemadef.Table, *seedplan.MigrationBlock, error) {
+	if len(h.Check) > 0 {
+		tables, err := shadowdb.Tables(projectDir, migDir)
+		if err != nil {
+			return nil, nil, fmt.Errorf("introspect applied schema: %w", err)
+		}
+		var out strings.Builder
+		if err := migrationhook.Check(ctx, h, migrationhook.Invocation{DSN: dsn, Phase: migrationhook.PhaseCLI, Stdout: &out, Stderr: &out}); err != nil {
+			return nil, &seedplan.MigrationBlock{Reason: fmt.Sprintf("database.migrations.check says the database is not fully migrated (%v)", err)}, nil
+		}
+		return tables, nil, nil
+	}
+	if !h.HasLedger() {
+		return nil, nil, fmt.Errorf("refusing to seed: forge cannot tell whether migration tool %s has applied every migration to this database. "+
+			"Add `database.migrations.check:` to forge.yaml, the argv that exits 0 only when every migration is applied and none failed, then seed again", h.Tool)
+	}
+	tables, shadow, err := shadowdb.Open(projectDir, migDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("introspect applied schema: %w", err)
+	}
+	defer shadow.Close()
+	if shadow == nil {
+		// No migrations: nothing can be pending.
+		return tables, nil, nil
+	}
+	want, _, err := h.ReadLedger(ctx, shadow.DB())
+	if err != nil {
+		return nil, nil, fmt.Errorf("read migration tool %s's history in the shadow database: %w", h.Tool, err)
+	}
+	if want.Empty() {
+		return nil, nil, fmt.Errorf("refusing to seed: migration tool %s recorded no history in %s when it migrated the shadow database, so forge cannot tell whether this database is behind. "+
+			"If the tool keeps its history elsewhere, name that table in its apply argv, or declare `database.migrations.check:`", h.Tool, ledgerName(want.Table))
+	}
+	have, _, err := h.ReadLedger(ctx, db)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read migration tool %s's history: %w", h.Tool, err)
+	}
+	if have.Dirty != "" {
+		return nil, nil, fmt.Errorf("refusing to seed: %s records migration %s as failed part-way, so the schema is in an unknown state. "+
+			"Repair it with %s itself (for golang-migrate: fix the database, then `migrate force <last good version>`), run `forge db migrate up`, then seed again", ledgerName(have.Table), have.Dirty, h.Tool)
+	}
+	if v := want.Behind(have); v != "" {
+		return nil, &seedplan.MigrationBlock{Reason: fmt.Sprintf("the database is behind its migrations: %s has not recorded migration %s at its current content", ledgerName(have.Table), v)}, nil
+	}
+	if v := want.Diverged(have); v != "" {
+		return nil, nil, fmt.Errorf("refusing to seed: %s records migration %s as applied from different content than the file on disk now, so the schema is not the one the migrations produce. "+
+			"Restore the file, or repair the database with %s itself, then seed again", ledgerName(have.Table), v, h.Tool)
+	}
+	return tables, nil, nil
+}
+
+// ledgerName is a ledger table as a person would write it.
+func ledgerName(t migrationhook.LedgerTable) string {
+	if t.Schema == "" {
+		return t.Name
+	}
+	return t.Schema + "." + t.Name
+}
+
+// schemaMissing names the first table or column of want that db lacks
+// ("table s.t" or "column s.t.c"), or "" when db has every one.
+func schemaMissing(ctx context.Context, db *sql.DB, want []schemadef.Table) (string, error) {
+	have := map[string]bool{}
+	rows, err := db.QueryContext(ctx, `SELECT table_schema, table_name, column_name FROM information_schema.columns
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema')`)
+	if err != nil {
+		return "", fmt.Errorf("read the database's columns: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var schema, table, column string
+		if err := rows.Scan(&schema, &table, &column); err != nil {
+			return "", err
+		}
+		have[schema+"."+table] = true
+		have[schema+"."+table+"."+column] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	for _, t := range want {
+		schema := t.Schema
+		if schema == "" {
+			schema = "public"
+		}
+		if !have[schema+"."+t.Name] {
+			return "table " + schema + "." + t.Name, nil
+		}
+		for _, c := range t.Columns {
+			if !have[schema+"."+t.Name+"."+c.Name] {
+				return "column " + schema + "." + t.Name + "." + c.Name, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // resolveSeedTargetDSN resolves the DSN a seed command will write through.
@@ -420,7 +568,7 @@ func runDBSeedApply(ctx context.Context, o seedOptions) error {
 	defer func() { _ = db.Close() }()
 
 	cfg := liveSeedConfig()
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}
@@ -603,7 +751,7 @@ func runDBSeedStatus(ctx context.Context, dsn, flagDir string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), liveSeedConfig())
 	if err != nil {
 		return err
 	}
@@ -638,7 +786,7 @@ func runDBSeedReset(ctx context.Context, o seedOptions) error {
 	defer func() { _ = db.Close() }()
 
 	cfg := liveSeedConfig()
-	plan, err := seedplan.BuildLivePlan(ctx, db, migDir, seedShadowServer(dbProjectRoot()), cfg)
+	plan, err := buildLiveSeedPlan(ctx, db, dbProjectRoot(), migDir, seedShadowServer(dbProjectRoot()), cfg)
 	if err != nil {
 		return err
 	}

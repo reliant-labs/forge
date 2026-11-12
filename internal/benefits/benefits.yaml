@@ -244,17 +244,26 @@ benefits:
     category: build
     title: Adopt an existing app
     claim: >-
-      An app that already exists, in any language, keeps its code: your agent
-      declares its Dockerfile in `forge.yaml` and `deploy/kcl/` from the
-      `adopt` skill's templates, then works in tiers you can stop after (ship
-      it, see it with OpenTelemetry, harden it with gated promotion and CI, and
-      move pieces onto forge's Go stack only when that pays).
-      `forge project new --in-place` and `forge project migrate import` bring an
-      existing repository onto forge without a rewrite, with migration skills for
-      service, CLI and library projects.
+      An app that already exists, in any language, keeps its code: one command,
+      `forge project new --in-place --kind app`, reads its Dockerfile(s) and
+      compose file (ports, Postgres, migration command, credentials) and writes
+      only `forge.yaml` and `deploy/kcl/` (dev, staging and prod envs with a
+      managed Postgres and a pre-rollout migration job), printing what it
+      detected and what it assumed (`--dry-run` prints the files instead).
+      `--claimable` sizes prod for a deploy with no account. Then work in tiers
+      you can stop after (ship it, see it with OpenTelemetry, harden it with
+      gated promotion and CI, and move pieces onto forge's Go stack only when
+      that pays). `forge project new --in-place` and
+      `forge project migrate import` bring an existing Go repository onto forge
+      without a rewrite, with migration skills for service, CLI and library
+      projects.
     availability: forge
     evidence:
       - command: project new
+      - path: internal/cli/new_app.go
+      - path: internal/cli/new_app_detect.go
+      - path: internal/generator/app.go
+      - path: internal/cli/new_app_test.go
       - command: project migrate import
       - skill: adopt
       - skill: migration
@@ -600,6 +609,31 @@ benefits:
           A migration that says neither `forge:backward-compatible` nor
           `forge:breaks-rollback`, which a rollback decision and the release
           guard read
+
+  - id: keep-your-migration-tool
+    category: data
+    title: Keep your migration tool
+    claim: >-
+      A team on goose, atlas, flyway, dbmate, golang-migrate or its own command
+      keeps it and its migrations directory: forge runs that tool to build the
+      schema it projects the ORM and seeds from, lints every SQL file it applies,
+      and runs it from `forge db migrate up` — no protos, no conversion.
+    availability: forge
+    headline: false
+    use: >-
+      `database: {migrations: {dir: migrations, tool: goose}}` in forge.yaml;
+      `tool: custom` with `apply: [...]` runs any command.
+    why: >-
+      Moving a live history onto a new migrator is the step teams put off, so
+      forge's schema features would wait behind it. Running the team's own tool
+      against forge's throwaway Postgres gives the same applied schema without
+      the move.
+    evidence:
+      - path: internal/migrationhook
+      - path: internal/shadowdb/hook.go
+      - path: internal/linter/migrationlint/tools.go
+      - command: db migrate up
+      - skill: db/own-migration-tool
 
   - id: managed-postgres-backups
     category: data

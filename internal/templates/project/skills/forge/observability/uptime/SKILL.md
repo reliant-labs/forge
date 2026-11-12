@@ -101,7 +101,8 @@ forge obs metrics query prod uptime.check.up --group-by check --since 3h
 ## Alerts
 
 Two defaults, each with a warning and a critical level, only for an env that
-has checks (see `observability/alerts` for tuning):
+has checks, static sites included (see `observability/alerts` for tuning and
+for turning them off per env):
 
 - `UptimeCheckFailing` (warning) after 3 failed probes in a row,
   `UptimeCheckDown` (critical) after 10.

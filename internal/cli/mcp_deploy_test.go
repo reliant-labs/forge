@@ -14,6 +14,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/deploy"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // progressLog collects the progress notifications a client receives.
@@ -269,6 +270,41 @@ func TestMCPRunner_AdoptForClaimable_AdoptsAViteAppInPlace(t *testing.T) {
 	again, _, err := r.adoptForClaimable(context.Background(), dir, "", nil)
 	if err != nil || again {
 		t.Errorf("second adoption = %v, %v; want a no-op", again, err)
+	}
+}
+
+// An existing app with its own Dockerfile and no forge.yaml is adopted in
+// place as `--kind app --claimable`: prod declares the anonymous plan, and the
+// app's files are untouched.
+func TestMCPRunner_AdoptForClaimable_AdoptsADockerfileAppInPlace(t *testing.T) {
+	testkit.Slow(t, "adopts an app through the command tree; the .gitignore merge execs git")
+	dir := nodeExpressApp(t)
+	dockerfile := readFile(t, filepath.Join(dir, "Dockerfile"))
+	resetCmdRoute(t)
+	t.Chdir(dir)
+	r, err := newMCPRunner(NewRootCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, refusal, err := r.adoptForClaimable(context.Background(), dir, "todo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refusal != nil {
+		t.Fatalf("refused: %+v", refusal(&claimableDeployResult{Env: "prod"}))
+	}
+	if !adopted {
+		t.Fatal("adopted = false")
+	}
+	prod := readFile(t, filepath.Join(dir, "deploy", "kcl", "prod", "main.k"))
+	if !strings.Contains(prod, "claimable = True") || !strings.Contains(prod, "OnHosted") {
+		t.Errorf("prod is not a hosted claimable env:\n%s", prod)
+	}
+	if got := readFile(t, filepath.Join(dir, "Dockerfile")); got != dockerfile {
+		t.Errorf("adoption changed the Dockerfile:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		t.Error("adoption wrote a go.mod")
 	}
 }
 

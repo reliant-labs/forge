@@ -26,7 +26,10 @@ Forge instruments three boundaries, so a request is observable end to end:
    `SlowRepeat` (30s), then `rpc completed slowly` — so a wedged handler shows
    up in the log tail before its deadline (30s by default; per rpc from
    `(forge.v1.method).timeout`) ends it. `Deadline.OnSlow` replaces that log,
-   e.g. to count slow calls in a metric too.
+   e.g. to count slow calls in a metric too. When that deadline ends the
+   call, `rpc failed` is a WARN with `deadline=server` (an ERROR under
+   `Deadline.ExpiryIsError`); a caller's shorter deadline is WARN with
+   `deadline=caller` (see `observability`, "Whose deadline").
 2. **The in-process component boundary** — every internal component→component
    method call (a `contract.go` `Service`) gets one span, one metric sample
    and one log record (every failure, every success unless sampling is on),

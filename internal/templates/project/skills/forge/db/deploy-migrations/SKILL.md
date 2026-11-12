@@ -17,6 +17,14 @@ container — so a migrator reading `file://db/migrations` could only ever fail
 there. Embedding is what makes the image able to migrate itself, and therefore
 what makes a deploy-time migration step possible at all.
 
+`database.migrations_dir` (or `database.migrations.dir`) moves the directory:
+one level under `db/` is embedded by `db/embed_gen.go` as above; anywhere else
+forge generates `<dir>/embed_gen.go` and `db.Source()` mounts it beside the
+grants, so the binary still migrates itself. A project whose migrations
+another tool applies (`database.migrations.tool`) embeds nothing — its migrate
+job runs that tool, in an image holding the tool and the migrations: load
+`db/own-migration-tool`.
+
 ## The wiring
 
 ```

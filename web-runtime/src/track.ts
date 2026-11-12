@@ -87,6 +87,12 @@ export interface TelemetrySink {
   track(name: string, attributes: Record<string, TrackValue>): void;
   setUser(id: string): void;
   disable(): void;
+  /**
+   * Export what is batched now, without waiting for the batch timer: the
+   * page is being hidden or unloaded (page-engagement.ts). Optional, so a
+   * sink written before it existed still type-checks.
+   */
+  flush?(): void;
 }
 
 type Pending =
@@ -338,6 +344,23 @@ export function recordProductEvent(
 }
 
 /**
+ * Ask the running SDK to export the product events it has batched now: the
+ * page is about to be hidden or unloaded and the batch timer may never fire.
+ * A no-op before the SDK runs and after disableTelemetry(). Never throws.
+ * For the runtime's own emitters; not exported from the barrel.
+ */
+export function flushProductEvents(): void {
+  if (disabled) {
+    return;
+  }
+  try {
+    sink?.flush?.();
+  } catch {
+    // Telemetry must never break the app.
+  }
+}
+
+/**
  * Attach the signed-in user's id to every span and replay from here on, so an
  * error, a funnel step and a replay can be joined to a user. Pass an opaque
  * id — never an email, a name or anything else a person would recognise. Pass
@@ -394,7 +417,8 @@ function idsAllowed(): boolean {
 
 /**
  * Turn browser telemetry off for the rest of this page load: stop the replay
- * recorder, drop anything held, and make track(), setTelemetryUser() and
+ * recorder (dropping what it buffered), drop anything held, and make
+ * track(), setTelemetryUser() and
  * reportException() no-ops. For when the user withdraws consent mid-session.
  * See the module header for what it cannot undo.
  */

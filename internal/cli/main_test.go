@@ -42,6 +42,11 @@ const defaultTestOrg = "4f3c2b1a-0000-4000-8000-000000000001"
 // the real root command, so the plugin under test is the production one rather
 // than a stand-in that could drift from it.
 func TestMain(m *testing.M) {
+	// A hooked-project test's migration tool is this binary (see
+	// fakeMigrationTool in db_seed_hook_test.go).
+	if os.Getenv(fakeMigrationToolEnv) == "1" {
+		os.Exit(fakeMigrationTool())
+	}
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
 	// This binary serves `forge protoc-gen-forge` (below), so the root may

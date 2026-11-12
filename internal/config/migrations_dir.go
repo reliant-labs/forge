@@ -11,12 +11,16 @@ import (
 )
 
 // MigrationsPath is the project-relative, slash-separated migrations
-// directory: `database.migrations_dir` when declared, else
-// DefaultMigrationsDir. It is the one place the default is applied — every
-// reader of the directory (generate, the ORM's shadow apply, migration-safety,
-// the db commands, the embedded migration set, audit) goes through it or
-// through MigrationsDirIn.
+// directory: `database.migrations.dir`, else its shorthand
+// `database.migrations_dir`, else DefaultMigrationsDir. It is the one place
+// the alias and the default are applied — every reader of the directory
+// (generate, the ORM's shadow apply, migration-safety, the db commands, the
+// embedded migration set, audit) goes through it or through MigrationsDirIn.
+// The loader refuses the two keys naming different directories.
 func (c DatabaseConfig) MigrationsPath() string {
+	if d := cleanMigrationsDir(c.Migrations.Dir); d != "" {
+		return d
+	}
 	if d := cleanMigrationsDir(c.MigrationsDir); d != "" {
 		return d
 	}
@@ -47,17 +51,25 @@ func cleanMigrationsDir(dir string) string {
 // forge.yaml is the default: the command that loaded it first has already
 // reported it.
 func MigrationsDirIn(projectDir string) string {
+	db, _ := readDatabaseBlock(projectDir)
+	return db.MigrationsPath()
+}
+
+// readDatabaseBlock decodes forge.yaml's `database:` block alone. ok is false
+// when there is no readable, parseable forge.yaml; the zero block is then
+// every default.
+func readDatabaseBlock(projectDir string) (DatabaseConfig, bool) {
 	data, err := os.ReadFile(filepath.Join(projectDir, ProjectConfigFile)) //nolint:gosec // project dir + fixed filename
 	if err != nil {
-		return DefaultMigrationsDir
+		return DatabaseConfig{}, false
 	}
 	var doc struct {
 		Database DatabaseConfig `yaml:"database"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return DefaultMigrationsDir
+		return DatabaseConfig{}, false
 	}
-	return doc.Database.MigrationsPath()
+	return doc.Database, true
 }
 
 // MigrationsPathIn joins MigrationsDirIn onto projectDir: the on-disk

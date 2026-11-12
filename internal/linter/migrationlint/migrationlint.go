@@ -57,6 +57,12 @@ type Result struct {
 	// rule set disabled, directory absent, or directory empty. Phrased as
 	// a clause that completes "nothing was checked: ...".
 	Skipped string
+	// Tool is the migration tool the directory was linted for (forge.yaml
+	// database.migrations.tool); empty for forge's own migrator.
+	Tool string
+	// RuleSkips are the rules that did not run because they do not apply
+	// under Tool (tools.go), each with why. Reported, never silent.
+	RuleSkips []RuleSkip
 }
 
 // HasErrors reports whether any Finding is of severity Error.
@@ -76,11 +82,16 @@ func (r Result) HasErrors() bool {
 // the same way. A pass that examined nothing gets ⏭️, not ✅ — a check
 // that looked at no files has not earned a green.
 func (r Result) FormatText() string {
+	var skips strings.Builder
+	for _, sk := range r.RuleSkips {
+		fmt.Fprintf(&skips, "⏭️  migration safety: %s\n", sk)
+	}
 	if r.Skipped != "" {
-		return fmt.Sprintf("⏭️  migration safety: nothing was checked — %s\n", r.Skipped)
+		return fmt.Sprintf("⏭️  migration safety: nothing was checked — %s\n", r.Skipped) + skips.String()
 	}
 
 	var b strings.Builder
+	b.WriteString(skips.String())
 	for _, finding := range r.Findings {
 		fmt.Fprintf(&b, "%s:%d: %s [%s] %s\n", finding.File, finding.Line, finding.Severity, finding.Rule, finding.Message)
 	}
@@ -128,6 +139,19 @@ type RuleConfig struct {
 	// RequireCompatDeclaration turns on migration-compat-undeclared and
 	// migration-compat-reason (compat_declaration.go).
 	RequireCompatDeclaration bool
+	// Tool is the migration tool that applies the directory (forge.yaml
+	// database.migrations.tool). Empty or forge lints forge's file shape;
+	// any other runs only the rules whose scope includes it (tools.go).
+	Tool string
+}
+
+// ForTool returns c for a directory tool applies.
+func (c RuleConfig) ForTool(tool string) RuleConfig {
+	if tool == config.MigrationToolForge {
+		tool = ""
+	}
+	c.Tool = tool
+	return c
 }
 
 // ConfigFromProject lifts a config.MigrationSafetyConfig into a
@@ -168,7 +192,10 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 		return Result{Dir: dir, Skipped: "the rule set is off (database.migration_safety.enabled: false in forge.yaml) — remove that key to turn the checks back on"}, nil
 	}
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return Result{Dir: dir, Skipped: fmt.Sprintf("no migrations directory at %s (path is resolved from the current directory — run this from the project root, or set database.migrations_dir in forge.yaml)", dir)}, nil
+		return Result{Dir: dir, Tool: cfg.Tool, Skipped: fmt.Sprintf("no migrations directory at %s (path is resolved from the current directory — run this from the project root, or set database.migrations.dir in forge.yaml)", dir)}, nil
+	}
+	if cfg.Tool != "" && cfg.Tool != config.MigrationToolForge {
+		return lintForeignToolDir(dir, cfg)
 	}
 
 	var files, rollbackCandidates []string
@@ -214,6 +241,12 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 		if len(findings) > 0 {
 			return Result{Findings: findings, Dir: dir}, nil
 		}
+		if n := len(rollbackCandidates); n > 0 {
+			// Another tool's files (goose's one-file NNNNN_x.sql, dbmate's,
+			// atlas's): forge's migrator would apply none of them, so the
+			// pass read nothing — and must not read as a clean one.
+			return Result{Dir: dir, Skipped: fmt.Sprintf("%s holds %s but no *.up.sql — forge's migrator applies none of them. If another tool applies them, declare it (forge.yaml database.migrations.tool: goose|atlas|flyway|dbmate|golang-migrate|custom) and its rules run", dir, plural(n, ".sql file"))}, nil
+		}
 		return Result{Dir: dir, Skipped: fmt.Sprintf("%s exists but holds no *.up.sql files — create one with `forge db migration new <name>`", dir)}, nil
 	}
 
@@ -253,6 +286,14 @@ var (
 )
 
 func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
+	// The file-as-one-transaction rules read the original content: they
+	// lex comments and strings themselves (see lex.go).
+	return append(lintStatements(file, content, cfg), lintTransactionBlock(file, content)...)
+}
+
+// lintStatements runs the SQL-text rules — the ones that hold for any
+// migration tool (tools.go) — over one file's statements.
+func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// Honor in-file pragmas before stripping comments. The destructive-
 	// change rule is opted out per migration, in the file, with
 	// `-- forge:allow-destructive`: the intent lives next to the SQL it
@@ -286,7 +327,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
-				Rule:     "destructive-change",
+				Rule:     RuleDestructiveChange,
 				Severity: severity,
 				Message:  "destructive migration operation detected; split data-preserving rollout steps or allowlist this file intentionally",
 			})
@@ -304,7 +345,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
-				Rule:     "unsafe-add-not-null-column",
+				Rule:     RuleUnsafeAddNotNullColumn,
 				Severity: severity,
 				Message:  "ADD COLUMN ... NOT NULL without a DEFAULT fails on populated tables; add nullable column, backfill, then SET NOT NULL",
 			})
@@ -314,7 +355,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			findings = append(findings, Finding{
 				File:     file,
 				Line:     stmt.Line,
-				Rule:     "volatile-default",
+				Rule:     RuleVolatileDefault,
 				Severity: severity,
 				Message:  "volatile DEFAULT in ADD COLUMN can rewrite/lock populated tables; prefer nullable column plus explicit backfill",
 			})
@@ -327,7 +368,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 					findings = append(findings, Finding{
 						File:     file,
 						Line:     stmt.Line,
-						Rule:     "set-not-null-without-backfill",
+						Rule:     RuleSetNotNullWithoutBackfill,
 						Severity: severity,
 						Message:  fmt.Sprintf("SET NOT NULL on column %q without an earlier UPDATE backfill in this migration can fail on populated tables", column),
 					})
@@ -335,9 +376,7 @@ func lintMigrationFile(file, content string, cfg RuleConfig) []Finding {
 			}
 		}
 	}
-	// The file-as-one-transaction rules read the original content: they
-	// lex comments and strings themselves (see lex.go).
-	return append(findings, lintTransactionBlock(file, content)...)
+	return findings
 }
 
 type statement struct {

@@ -86,7 +86,6 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/reliant-labs/forge/internal/shadowdb"
-	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // fixtureDriftRule is the stable rule id for a fixture statement postgres
@@ -199,7 +198,9 @@ func collectFixtureDriftFindings(root, migrationsDir string) (fixtureDriftReport
 		return rep, nil // no schema to execute against: nothing this lane can say
 	}
 
-	_, shadow, err := schemadef.ApplyAndIntrospectShadowAt(migrationsDir, shadowdb.Resolve(root))
+	// shadowdb.Open, not a bare replay: in a project that keeps its own
+	// migration tool (database.migrations.tool) that tool migrates the shadow.
+	_, shadow, err := shadowdb.Open(root, migrationsDir)
 	if err != nil {
 		shadow.Close()
 		rep.Unverified = fmt.Sprintf("could not apply %s to a shadow postgres to execute the fixtures against: %v",

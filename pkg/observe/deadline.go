@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // The Deadline slot's defaults.
@@ -101,6 +103,14 @@ type Deadline struct {
 	// Logger is what a nil OnSlow logs to. nil is the chain's logger
 	// (ChainDeps.Logger), or slog.Default() outside a chain.
 	Logger *slog.Logger
+
+	// ExpiryIsError logs this slot's own budget expiring at ERROR, a server
+	// error that pages and counts against release health, instead of the
+	// retryable WARN it is by default. Either way the record says
+	// deadline=server, so a query can tell it from a caller's deadline. Set
+	// it when the call needing longer than the server allows it is a fault
+	// someone must fix: retrying it fails the same way.
+	ExpiryIsError bool
 }
 
 // SlowCall is one watchdog report of a unary RPC that ran past SlowAfter.
@@ -193,19 +203,25 @@ func (d Deadline) budget(procedure string, streaming bool) (time.Duration, bool)
 	return d.Unary, true
 }
 
+// bound applies the budget to ctx, with this slot's own cause so a layer
+// can tell the server's deadline from the caller's (deadlineOf).
+func (d Deadline) bound(ctx context.Context, b time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, b, serverBudget{pages: d.ExpiryIsError})
+}
+
 // WrapUnary bounds the call by its budget and watches it.
 func (d Deadline) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
 		if b, ok := d.budget(procedure, false); ok {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, b)
+			ctx, cancel = d.bound(ctx, b)
 			defer cancel()
 		}
 		stop := d.watch(ctx, procedure)
 		resp, err := next(ctx, req)
 		stop(err)
-		return resp, err
+		return resp, markDeadline(ctx, err)
 	}
 }
 
@@ -221,11 +237,116 @@ func (d Deadline) WrapStreamingHandler(next connect.StreamingHandlerFunc) connec
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
 		if b, ok := d.budget(conn.Spec().Procedure, true); ok {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, b)
+			ctx, cancel = d.bound(ctx, b)
 			defer cancel()
 		}
-		return next(ctx, conn)
+		return markDeadline(ctx, next(ctx, conn))
 	}
+}
+
+// Whose deadline a DeadlineExceeded ran into.
+//
+// The server's own budget expiring (this slot's) and the caller's deadline
+// (Connect-Timeout-Ms, grpc-timeout, applied by connect before any
+// interceptor) expiring first are both retryable server failures (WARN) by
+// default, as they always were; the record's deadline attribute says which.
+// Deadline.ExpiryIsError makes the server's own expiry an ERROR: the server
+// could not do the work in the time it allows itself, and a call that always
+// needs longer fails every retry the same way. A caller's deadline is the
+// caller's choice and stays WARN. The two are told apart by the context's
+// cause, which the slot sets on its own budget, and the slot marks the error
+// it returns so the layers outside it — logging, metrics — read the answer
+// from the error alone. Layers inside it (audit, components) read the
+// context.
+
+// DeadlineKey is the attribute a DeadlineExceeded failure's record carries
+// when its origin is known: DeadlineServer or DeadlineCaller.
+const DeadlineKey = "deadline"
+
+// The values of DeadlineKey.
+const (
+	DeadlineServer = "server" // the server's own budget (Deadline) expired
+	DeadlineCaller = "caller" // the caller's deadline expired first
+)
+
+// deadlineOrigin is whose deadline a DeadlineExceeded ran into.
+type deadlineOrigin uint8
+
+const (
+	deadlineUnknown deadlineOrigin = iota // not a deadline, or not one the call's context bounded
+	deadlineCaller
+	deadlineServer
+	deadlineServerError // the server's, under Deadline.ExpiryIsError
+)
+
+func (o deadlineOrigin) String() string {
+	switch o {
+	case deadlineCaller:
+		return DeadlineCaller
+	case deadlineServer, deadlineServerError:
+		return DeadlineServer
+	}
+	return ""
+}
+
+// serverBudget is the cause a Deadline's budget expires with. It is a
+// context.DeadlineExceeded to everything that asks errors.Is.
+type serverBudget struct{ pages bool }
+
+func (serverBudget) Error() string { return "server deadline exceeded" }
+func (serverBudget) Unwrap() error { return context.DeadlineExceeded }
+
+// deadlineError carries a DeadlineExceeded's origin out of the slot. It is
+// invisible everywhere else: Error() is the wrapped error's text, and Unwrap
+// returns it, so connect, svcerr.Code and the redaction rules see through it.
+type deadlineError struct {
+	err    error
+	origin deadlineOrigin
+}
+
+func (e *deadlineError) Error() string { return e.err.Error() }
+func (e *deadlineError) Unwrap() error { return e.err }
+
+// deadlineOf reports whose deadline err ran into: the mark a Deadline slot
+// put on it, else ctx's cause — the slot's own budget — else, when ctx's
+// deadline expired, the caller's (the case with no Deadline slot). An err
+// that is not a DeadlineExceeded, or one the handler's own inner timeout
+// produced while ctx was still live, is deadlineUnknown.
+func deadlineOf(ctx context.Context, err error) deadlineOrigin {
+	if err == nil || svcerr.Code(err) != connect.CodeDeadlineExceeded {
+		return deadlineUnknown
+	}
+	var marked *deadlineError
+	if errors.As(err, &marked) {
+		return marked.origin
+	}
+	if ctx == nil {
+		return deadlineUnknown
+	}
+	var budget serverBudget
+	if errors.As(context.Cause(ctx), &budget) {
+		if budget.pages {
+			return deadlineServerError
+		}
+		return deadlineServer
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return deadlineCaller
+	}
+	return deadlineUnknown
+}
+
+// markDeadline marks err with its deadline origin, when it has one.
+func markDeadline(ctx context.Context, err error) error {
+	origin := deadlineOf(ctx, err)
+	if origin == deadlineUnknown {
+		return err
+	}
+	var marked *deadlineError
+	if errors.As(err, &marked) {
+		return err
+	}
+	return &deadlineError{err: err, origin: origin}
 }
 
 // watch starts the watchdog for one unary call and returns the func that

@@ -97,6 +97,23 @@ func TestErrorInputsAttributes(t *testing.T) {
 			want: map[string]any{keyFunc: nil, keyFile: nil, keyLine: nil, LogKeyExceptionType: nil, LogKeyExceptionMessage: nil},
 		},
 		{
+			// `forge obs issues` groups a WARN server failure too, so it
+			// carries what an ERROR does.
+			name: "warn server failure carries them", level: slog.LevelWarn,
+			args: []any{"err", pgLike, ErrorClassKey, "server"},
+			want: map[string]any{LogKeyExceptionType: "*observe.typedErr", LogKeyExceptionMessage: "duplicate key"},
+		},
+		{
+			name: "warn caller deadline carries none", level: slog.LevelWarn,
+			args: []any{"err", pgLike, ErrorClassKey, "server", DeadlineKey, DeadlineCaller},
+			want: map[string]any{keyFunc: nil, LogKeyExceptionType: nil},
+		},
+		{
+			name: "warn user error carries none", level: slog.LevelWarn,
+			args: []any{"err", pgLike, ErrorClassKey, "user"},
+			want: map[string]any{keyFunc: nil, LogKeyExceptionType: nil},
+		},
+		{
 			name: "info carries none", level: slog.LevelInfo,
 			args: []any{"err", pgLike},
 			want: map[string]any{keyFunc: nil, LogKeyExceptionType: nil},
@@ -121,7 +138,7 @@ func TestErrorInputsAttributes(t *testing.T) {
 					t.Errorf("%s = %v, want %v", k, got, want)
 				}
 			}
-			if tc.level >= slog.LevelError {
+			if _, server := tc.want[LogKeyExceptionType].(string); tc.level >= slog.LevelError || server {
 				for _, k := range []string{keyFunc, keyFile, keyLine} {
 					if _, ok := line[k]; !ok {
 						t.Errorf("ERROR record is missing %s: %v", k, line)
@@ -434,7 +451,8 @@ func (nopHandler) Handle(context.Context, slog.Record) error { return nil }
 func (h nopHandler) WithAttrs([]slog.Attr) slog.Handler      { return h }
 func (h nopHandler) WithGroup(string) slog.Handler           { return h }
 
-// Below ERROR the handler must cost nothing: no scan, no clone, no allocation.
+// Below ERROR the handler must cost nothing but, for a WARN, one walk of its
+// attributes: no clone, no allocation, unless it is a WARN server failure.
 func TestErrorInputsCostNothingBelowError(t *testing.T) {
 	h := errorInputsHandler{next: nopHandler{}}
 	ctx := context.Background()

@@ -60,8 +60,6 @@ func (q Overview) IngressRED() (Stmt, error) {
 		"length(ExplicitBounds) > 0",
 		"length(BucketCounts) = length(ExplicitBounds) + 1",
 	}, sc...)
-	mid := "arrayMap(i -> if(i > length(ExplicitBounds), ExplicitBounds[length(ExplicitBounds)], " +
-		"(if(i = 1, 0, ExplicitBounds[i - 1]) + ExplicitBounds[i]) / 2), arrayEnumerate(BucketCounts))"
 	return b.stmt("SELECT c.ServiceName AS ServiceName, c.requests AS requests, c.errors AS errors, h.q AS q, " + source + " AS source\n" +
 		"FROM (\n" +
 		"  SELECT ServiceName, toUInt64(sum(Value)) AS requests, toUInt64(sumIf(Value, Attributes['" + IngressStatusClass + "'] = '5xx')) AS errors\n" +
@@ -71,7 +69,7 @@ func (q Overview) IngressRED() (Stmt, error) {
 		"LEFT JOIN (\n" +
 		"  SELECT ServiceName, quantilesExactWeighted(0.5, 0.95, 0.99)(tupleElement(bucket, 1) * 1000, tupleElement(bucket, 2)) AS q\n" +
 		"  FROM (\n" +
-		"    SELECT ServiceName, arrayZip(" + mid + ", BucketCounts) AS buckets\n" +
+		"    SELECT ServiceName, arrayZip(" + histogramMidSQL + ", BucketCounts) AS buckets\n" +
 		"    FROM " + b.table(q.Scope, "otel_metrics_histogram") + "\n    " + where(timed) + "\n" +
 		"  )\n  ARRAY JOIN buckets AS bucket\n" +
 		"  WHERE tupleElement(bucket, 2) > 0\n" +

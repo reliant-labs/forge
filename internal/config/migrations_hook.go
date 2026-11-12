@@ -24,7 +24,7 @@ import (
 //	    dir: migrations
 //	    tool: goose
 //
-// The hook contract: forge runs Apply (and Status) as an argv — no shell —
+// The hook contract: forge runs Apply (and Status, Check) as an argv — no shell —
 // in the project root, with DATABASE_URL set to the database to migrate, the
 // tool-specific variables the built-in tool reads (GOOSE_DBSTRING,
 // FLYWAY_URL, …), FORGE_MIGRATIONS_DIR (absolute), FORGE_PROJECT_DIR and
@@ -46,6 +46,12 @@ type MigrationsConfig struct {
 	// Status is the argv that reports what is applied. It overrides a
 	// built-in tool's; optional for `tool: custom`.
 	Status []string `yaml:"status,omitempty"`
+	// Check is the argv that answers "is $DATABASE_URL fully migrated?":
+	// exit 0 only when every migration is applied and none failed part-way.
+	// forge runs it before seeding writes to a database. A built-in tool
+	// needs none (forge reads its ledger); `tool: custom` needs it to seed,
+	// since forge cannot read a ledger it does not know.
+	Check []string `yaml:"check,omitempty"`
 }
 
 // The migration tools `database.migrations.tool` accepts.
@@ -139,7 +145,7 @@ func validateMigrations(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	for _, f := range []struct {
 		key  string
 		argv []string
-	}{{"apply", m.Apply}, {"status", m.Status}} {
+	}{{"apply", m.Apply}, {"status", m.Status}, {"check", m.Check}} {
 		if f.argv == nil {
 			continue
 		}

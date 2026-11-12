@@ -62,6 +62,10 @@ type Hook struct {
 	// Status reports what is applied. Empty when a custom tool declared
 	// none.
 	Status []string
+	// Check exits 0 only when $DATABASE_URL is fully migrated
+	// (config.MigrationsConfig.Check). Empty unless declared: no built-in
+	// tool has one, forge reads its ledger instead (ReadLedger).
+	Check []string
 }
 
 // Resolve returns the hook the project at projectDir declares in db, and
@@ -88,6 +92,7 @@ func Resolve(projectDir string, db config.DatabaseConfig) (Hook, bool) {
 	if len(db.Migrations.Status) > 0 {
 		h.Status = db.Migrations.Status
 	}
+	h.Check = db.Migrations.Check
 	return h, true
 }
 
@@ -184,6 +189,15 @@ func Status(ctx context.Context, h Hook, inv Invocation) error {
 		return fmt.Errorf("database.migrations has no status command for tool %s — add `status:` (the argv that reports what is applied)", h.Tool)
 	}
 	return run(ctx, h, "status", h.Status, inv)
+}
+
+// Check runs the hook's check argv against inv.DSN: nil means the tool says
+// the database is fully migrated. A hook without one is an error saying so.
+func Check(ctx context.Context, h Hook, inv Invocation) error {
+	if len(h.Check) == 0 {
+		return fmt.Errorf("database.migrations has no check command for tool %s — add `check:` (the argv that exits 0 only when every migration is applied and none failed)", h.Tool)
+	}
+	return run(ctx, h, "check", h.Check, inv)
 }
 
 func run(ctx context.Context, h Hook, what string, argv []string, inv Invocation) error {

@@ -34,7 +34,8 @@ your migrations changes.
   the result. Nothing parses your SQL dialect or file names, so goose
   annotations, flyway repeatables and atlas checksums all just work.
 - **Seeding** (`forge db seed apply`) and every other reader of the applied
-  schema: frontend mocks, test factories, CRUD fixtures.
+  schema: frontend mocks, test factories, CRUD fixtures. Seeding writes only to
+  a fully migrated database, and your tool decides what that means (below).
 - **Migration safety** for every `.sql` file your tool applies: destructive
   statements, `ADD COLUMN … NOT NULL` without a default, `SET NOT NULL` without a
   backfill, volatile defaults, and (where your tool wraps a file in a
@@ -86,6 +87,7 @@ database:
     tool: custom
     apply: [npx, prisma, migrate, deploy]
     status: [npx, prisma, migrate, status]
+    check: [npx, prisma, migrate, status]  # exits non-zero when one is pending or failed
 ```
 
 **The password never reaches an argv.** Any user on the machine can read a
@@ -122,6 +124,19 @@ Your tool's history table — `goose_db_version`, `flyway_schema_history`,
 schema-qualified and quoted as postgres reads them — is its bookkeeping: the
 ORM never projects it, and `forge db seed` never plans
 or resets it.
+
+**Seeding asks your tool whether the database is fully migrated.** A matching
+schema is not proof: a pending data-only migration, or one that failed after
+its DDL, leaves the tables looking current. So before `forge db seed apply` or
+`reset` writes, forge reads a built-in tool's history table in the target and
+in the shadow it just migrated: every migration the shadow records must be
+recorded in the target, and none may be marked failed (golang-migrate's
+`dirty`, a flyway row that did not succeed, an atlas revision with an error).
+A custom tool's history is unknown to forge, so it declares
+`check:`, an argv that exits 0 only when every migration is applied and none
+failed; without one, seeding a custom-tool project is refused. A declared
+`check:` answers for a built-in tool too. The target must also hold every
+table and column the migrations create.
 
 The shadow apply is cached per run on a digest of every file in the directory
 plus the apply command, so a `forge generate` applies your migrations once.

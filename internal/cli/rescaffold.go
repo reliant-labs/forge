@@ -159,6 +159,13 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 	// Refuse up front, before anything is written: a batch that is half
 	// applied and half refused is harder to reason about than one that did
 	// nothing.
+	for _, p := range paths {
+		if glob, ok := checksums.ExcludedBy(root, p); ok {
+			return rescaffoldErr(paths,
+				fmt.Sprintf("%s is excluded by scaffold.exclude %q in forge.yaml — forge never writes there", p, glob),
+				"remove or narrow that glob first if you want forge's version of the file back")
+		}
+	}
 	var present []string
 	for _, p := range paths {
 		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr == nil {
@@ -334,7 +341,7 @@ func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths 
 					fmt.Sprintf("run `%s env render %s` to see why, fix it, then re-run rescaffold", Name(), unrendered[0]))
 			}
 		}
-		return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReason(p)),
+		return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReasonFor(cfg, p)),
 			"change forge.yaml or the project so it has one, then re-run rescaffold")
 	}
 	return nil

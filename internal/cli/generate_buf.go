@@ -215,6 +215,10 @@ func runBufGenerateTypeScript(fe config.FrontendConfig, cfg *config.ProjectConfi
 		return nil
 	}
 
+	if skip, err := excludedTSStubs(projectDir, feDir); skip || err != nil {
+		return err
+	}
+
 	fmt.Printf("🔨 Generating TypeScript stubs for %s...\n", fe.Name)
 
 	// Ensure the frontend has a buf.gen.yaml with out: relative to project root.

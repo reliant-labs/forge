@@ -132,6 +132,38 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project rescaffold`
 - command `forge project scaffolded`
 
+<a id="scaffold-exclude"></a>
+
+### Areas forge never writes
+
+`scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+
+**Why:** A team adopting forge keeps its own frontend, workflows or docs without disowning file by file. A locked run puts back anything written under an excluded glob, and a glob over generated code other generated code imports is refused with the dependent named.
+
+**Evidence:**
+
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
+- source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
+
+<a id="prune-orphans"></a>
+
+### Clean up after a feature
+
+When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project prune`
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
+
 <a id="project-upgrade"></a>
 
 ### Guided forge upgrades
@@ -407,6 +439,20 @@ _Enforced · Forge, on any infrastructure_
 - skill `db/generated-orm` (`forge skill load db/generated-orm`)
 - skill `db/store` (`forge skill load db/store`)
 - skill `db` (`forge skill load db`)
+
+<a id="orm-opt-out"></a>
+
+### Keep your own data layer
+
+A project with a hand-written repository layer keeps forge's migrations and codegen without the generated ORM, by pinning `features: {orm: false}` in forge.yaml or marking the package `//forge:no-orm`.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- marker `// forge:no-orm`
+- command `forge project features`
+- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
 
 <a id="migration-safety"></a>
 
@@ -1167,6 +1213,20 @@ _Enforced · Forge, on any infrastructure_
 - command `forge gate record`
 - skill `ci/gate` (`forge skill load ci/gate`)
 
+<a id="ci-workflow-opt-out"></a>
+
+### Keep your own workflows
+
+`ci.workflows` in forge.yaml switches single forge workflows off (deploy, build-images, e2e, ...), and a same-named workflow the repo wrote itself is never overwritten or silently adopted: forge warns until forge.yaml says so.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- skill `ci/extending` (`forge skill load ci/extending`)
+- source [`internal/config/ci_workflows.go`](../internal/config/ci_workflows.go)
+- source [`internal/generator/ci_workflows.go`](../internal/generator/ci_workflows.go)
+
 <a id="generated-drift"></a>
 
 ### Stale codegen can't merge
@@ -1226,6 +1286,21 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
+
+<a id="lint-lanes-off"></a>
+
+### Switch a lint lane off
+
+`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
+
+**Evidence:**
+
+- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
 
 <a id="lint-autofix"></a>
 
@@ -2521,6 +2596,27 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
 - skill `deploy/plan` (`forge skill load deploy/plan`)
 
+<a id="polyrepo-pinned-sources"></a>
+
+### Polyrepo, pinned, any language
+
+Teams outside a monorepo, in any language, share an infra repo's KCL by a git pin in kcl.mod and build other repos' images from a pinned `DockerBuild.context`, with no go.mod and no CI checkout step; a release records each image's source repo and commit.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
+
+**Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
+
+**Evidence:**
+
+- command `forge kcl imports --refresh`
+- source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
+- source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
+- source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
+- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
+- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
+
 <a id="hosted-deploy-plan"></a>
 
 ### Server-side deploy plan
@@ -2701,6 +2797,24 @@ _Enforced · Reliant hosting_
 - library [`pkg/releasehealth`](../pkg/releasehealth)
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
 
+<a id="shared-env-base"></a>
+
+### One env base, per-env deltas
+
+Every deployed env binds its workloads through one shared base, so an env file holds only what is its own and a new env starts as its deltas.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by each env as `import ..base.env as envbase`; `forge env new <name> --from <env>` copies only the source env's own values
+
+**Why:** It is plain KCL, so `forge env render`, `env diff` and `env shape` read it like any import, and an env overrides a shared binder by wrapping it. The scaffold tools keep editing each env's one binding line per workload.
+
+**Evidence:**
+
+- source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
+- command `forge env new`
+- skill `deploy/model` (`forge skill load deploy/model`)
+
 <a id="release-health-policy"></a>
 
 ### Release health policy as code
@@ -2711,7 +2825,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 
@@ -3736,14 +3850,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agent memory file generated
 
-`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge.
+`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge, and describes the project as it is: an adopted app gets the forge pieces it uses and its own test commands, never forge's greenfield layout.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Read off the tree and forge.yaml: a forge Go service gets the full Go guide; an adopted app keeps its language and layout, with sections only for what it opted into (deploy envs, monitoring, its migration tool, frontends) and the gate taken from its Taskfile, package.json scripts or Makefile; a static site gets the frontend guide.
 
 **Evidence:**
 
 - command `forge project memory`
 - source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
+- source [`internal/cli/memory_surface.go`](../internal/cli/memory_surface.go)
+- source [`internal/cli/testdata/memory`](../internal/cli/testdata/memory)
 
 <a id="harness-pointers"></a>
 
@@ -3756,6 +3874,20 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge skill list`
+
+<a id="harness-none"></a>
+
+### No agent files when unwanted
+
+`harness: none` (`forge project new --harness none`) adopts forge without adding an agent memory file, harness pointer or MCP config to a repository that keeps its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project new --harness`
+- source [`internal/generator/harness.go`](../internal/generator/harness.go)
+- skill `forge/greenfield` (`forge skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 

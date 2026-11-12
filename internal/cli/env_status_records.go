@@ -58,6 +58,12 @@ type envStatusRecords struct {
 	// records were empty" is a different diagnosis from "I read a
 	// different store than I meant to".
 	Source string `json:"source"`
+	// RollbackFloors are the env's ACTIVE rollback floors (floor.go) and
+	// RollbackFloorsSupported whether its ledger could say: unsupported or
+	// unreadable is `null` with supported false, never `[]` — "none" and
+	// "unknown" are different claims. Never affects the verdict.
+	RollbackFloors          []release.Floor `json:"rollback_floors"`
+	RollbackFloorsSupported bool            `json:"rollback_floors_supported"`
 	// Location is the store's address — a directory or an endpoint.
 	Location string `json:"location,omitempty"`
 	// Provenance is where the BOUND release's content came from, and how
@@ -567,6 +573,7 @@ func writeEnvStatusRecords(w io.Writer, r envStatusRecords) {
 		fmt.Fprintf(w, " %s", r.Location)
 	}
 	fmt.Fprintf(w, ")\n")
+	printStatusFloors(w, r.RollbackFloors, r.RollbackFloorsSupported)
 	if r.Detail != "" {
 		// Stated as a read failure, never as an empty result — the
 		// empty-versus-unknown rule from the file header. The reader

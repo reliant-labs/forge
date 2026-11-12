@@ -448,6 +448,9 @@ type promoteCmdFlags struct {
 	// deploy cuts that carries a migration not on the default branch.
 	allowPassedMigrations   bool
 	allowUnmergedMigrations bool
+	// floorReason is --floor "<why>": also set a roll-forward-only
+	// rollback floor at the deployed release, in the same write.
+	floorReason string
 
 	// --from / --from-promotion, held FLAT rather than as a nested
 	// promoteFromOptions so each is a plain flag target like every field
@@ -513,6 +516,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Deploy even though the current promotion is still rolling out (recorded on the new entry); without it that is exit 4")
 	flags.BoolVar(&f.allowPassedMigrations, allowPassedMigrationsFlag, false,
 		"Deploy a release carrying a migration the env's schema has already passed (exit 4 without it). Only for SQL already applied to the env's database by hand and recorded in schema_migrations_applied — otherwise the env's migrator refuses it at boot")
+	flags.StringVar(&f.floorReason, "floor", "",
+		"Also set a roll-forward-only rollback floor at this release, in the same write, with this reason: no release cut before it can be deployed here until the floor is lowered or lifted (forge env floor). Refused against a control plane that predates floors")
 	flags.BoolVar(&f.allowUnmergedMigrations, allowUnmergedMigrationsFlag, false,
 		"When this deploy cuts the release (no version) for an env on a control plane: cut it even though it carries a migration not on the default branch (exit 4 without it)")
 
@@ -819,6 +824,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		ExpectCurrent:         p.expectCurrent,
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
+		RaiseFloorReason:      p.floorReason,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
 		Run:                   p.run,
@@ -2171,24 +2177,25 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
-			MainK:        in.mainK,
-			ImageTag:     in.imageTag,
-			ImageDigests: in.imageDigests,
-			Namespace:    in.namespace,
-			Env:          in.envName,
-			Context:      in.deployContext,
-			EnvConfigKV:  in.envCfgKV,
-			DryRun:       in.dryRun,
-			DryRunFramed: true,
-			Prune:        in.prune,
-			Project:      projectNameOf(in.cfg),
-			PruneCRDs:    true,
-			Targets:      in.targets,
-			HelmCharts:   in.helmSpecs,
-			Rollout:      in.rollout,
-			SkipUnits:    in.skipUnits,
-			OnStream:     in.report.streamObserver(),
-			OnRollout:    in.report.rolloutObserver(),
+			MainK:         in.mainK,
+			ImageTag:      in.imageTag,
+			ImageDigests:  in.imageDigests,
+			Namespace:     in.namespace,
+			Env:           in.envName,
+			Context:       in.deployContext,
+			EnvConfigKV:   in.envCfgKV,
+			DryRun:        in.dryRun,
+			DryRunFramed:  true,
+			Prune:         in.prune,
+			Project:       projectNameOf(in.cfg),
+			PruneCRDs:     true,
+			Targets:       in.targets,
+			HelmCharts:    in.helmSpecs,
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(),
+			OnRollout:     in.report.rolloutObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -2198,9 +2205,10 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
-			Rollout:   in.rollout,
-			SkipUnits: in.skipUnits,
-			OnStream:  in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
@@ -5662,4 +5670,13 @@ func (f promoteCmdFlags) withHealthGateOverride() (promoteCmdFlags, error) {
 		f.note = "health gate overridden: " + reason
 	}
 	return f, nil
+}
+
+// declaredDeliveryUnits is the env's Bundle.delivery_units, nil-safe: the
+// order direct apply rolls the workloads out in (cluster.ApplyOpts.DeliveryUnits).
+func declaredDeliveryUnits(e *KCLEntities) []release.DeliveryUnit {
+	if e == nil {
+		return nil
+	}
+	return e.DeliveryUnits
 }

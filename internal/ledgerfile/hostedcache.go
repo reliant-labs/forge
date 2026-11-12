@@ -50,6 +50,13 @@ type HostedSnapshot struct {
 	// means History was never read, so a reader refetches it.
 	History []CachedPromotion `json:"history,omitempty"`
 	Window  int               `json:"window,omitempty"`
+	// Floors are the env's rollback floors (lifted included) as the control
+	// plane reported them at refresh time, and FloorsRecorded whether they
+	// were read at all: a copy that predates floors, or one whose floor read
+	// failed, reads as "unknown", never as "none" (an offline deploy from it
+	// is refused). A control plane that has no floors records none.
+	Floors         []release.Floor `json:"floors,omitempty"`
+	FloorsRecorded bool            `json:"floors_recorded,omitempty"`
 }
 
 // CachedPromotion is one cached promotion and the release it bound. Release

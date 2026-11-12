@@ -44,6 +44,66 @@ func assertPartition(t *testing.T, selected []string, p shardPlan) {
 	}
 }
 
+// assertGroupsTogether fails unless every test of a group is in one shard.
+func assertGroupsTogether(t *testing.T, groups map[string]string, p shardPlan) {
+	t.Helper()
+	shardOf := map[string]int{} // group -> shard
+	for i, s := range p.shards {
+		for _, name := range s.tests {
+			g, ok := groups[name]
+			if !ok {
+				continue
+			}
+			if prev, ok := shardOf[g]; ok && prev != i {
+				t.Errorf("group %s is split across shards %d and %d (at %s): each shard would build its fixture", g, prev, i, name)
+			}
+			shardOf[g] = i
+		}
+	}
+}
+
+func TestPlanKeepsAFixtureGroupInOneShard(t *testing.T) {
+	timings := map[string]int{"TestE2EA": 100, "TestE2EB": 90, "TestE2EC": 60, "TestE2ED": 40, "TestE2EE": 10}
+	groups := map[string]string{"TestE2EA": "g", "TestE2EB": "g"}
+	p, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ED", "TestE2EE"}, timings, groups, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// g(190)→0; C(60)→1; D(40)→1; E(10)→1.
+	got := [][]string{p.shards[0].tests, p.shards[1].tests}
+	want := [][]string{{"TestE2EA", "TestE2EB"}, {"TestE2EC", "TestE2ED", "TestE2EE"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("plan = %v, want %v", got, want)
+	}
+	if p.shards[0].load != 190 || p.shards[1].load != 110 {
+		t.Fatalf("loads = %d, %d; want 190, 110", p.shards[0].load, p.shards[1].load)
+	}
+	// Two jobs cannot fill three shards, however many tests they hold.
+	if _, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC"}, timings, groups, 3); err == nil {
+		t.Fatal("3 shards for 2 jobs: want an error, since one shard would run nothing")
+	}
+}
+
+func TestFixtureGroupsJoinTestsThroughSharedFixtures(t *testing.T) {
+	tests := []testFunc{
+		{name: "TestE2EA", fixtures: []string{"web"}},
+		{name: "TestE2EB", fixtures: []string{"web", "dash"}},
+		{name: "TestE2EC", fixtures: []string{"dash"}},
+		{name: "TestE2ED", fixtures: []string{"alone"}}, // the only user: no group
+		{name: "TestE2EE"},
+		{name: "TestE2EF", fixtures: []string{"pair"}},
+		{name: "TestE2EG", fixtures: []string{"pair"}},
+	}
+	got := fixtureGroups(tests)
+	want := map[string]string{
+		"TestE2EA": got["TestE2EA"], "TestE2EB": got["TestE2EA"], "TestE2EC": got["TestE2EA"],
+		"TestE2EF": got["TestE2EF"], "TestE2EG": got["TestE2EF"],
+	}
+	if !reflect.DeepEqual(got, want) || got["TestE2EA"] == got["TestE2EF"] {
+		t.Fatalf("fixtureGroups = %v; want A, B, C in one group (B shares with both), F and G in another, D and E in none", got)
+	}
+}
+
 func TestPlanPartitionsAnySelection(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for iter := 0; iter < 200; iter++ {
@@ -66,7 +126,7 @@ func TestPlanPartitionsAnySelection(t *testing.T) {
 				timings[tests[i]] = 1 + rng.Intn(500)
 			}
 		}
-		p, err := plan(tests, timings, shards)
+		p, err := plan(tests, timings, nil, shards)
 		if err != nil {
 			t.Fatalf("iter %d: %v", iter, err)
 		}
@@ -76,7 +136,7 @@ func TestPlanPartitionsAnySelection(t *testing.T) {
 
 func TestPlanIsLongestFirstOntoTheLightestShard(t *testing.T) {
 	timings := map[string]int{"TestE2EA": 100, "TestE2EB": 90, "TestE2EC": 60, "TestE2ED": 40, "TestE2EE": 10}
-	p, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ED", "TestE2EE"}, timings, 2)
+	p, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ED", "TestE2EE"}, timings, nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +164,7 @@ func TestPlanBalancesBetterThanRoundRobin(t *testing.T) {
 	}
 	sort.Strings(tests)
 	for n := 2; n <= 6; n++ {
-		p, err := plan(tests, timings, n)
+		p, err := plan(tests, timings, nil, n)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +180,7 @@ func TestPlanBalancesBetterThanRoundRobin(t *testing.T) {
 
 func TestPlanFallsBackToTheMedianForUntimedTests(t *testing.T) {
 	timings := map[string]int{"TestE2EA": 10, "TestE2EB": 30, "TestE2EC": 50}
-	p, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ENew"}, timings, 2)
+	p, err := plan([]string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ENew"}, timings, nil, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,12 +201,12 @@ func TestPlanFallsBackToTheMedianForUntimedTests(t *testing.T) {
 func TestPlanIsDeterministic(t *testing.T) {
 	tests := []string{"TestE2EA", "TestE2EB", "TestE2EC", "TestE2ED", "TestE2EE", "TestE2EF"}
 	timings := map[string]int{"TestE2EA": 5, "TestE2EB": 5, "TestE2EC": 5, "TestE2ED": 5}
-	first, err := plan(tests, timings, 3)
+	first, err := plan(tests, timings, nil, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 20; i++ {
-		again, _ := plan(tests, timings, 3)
+		again, _ := plan(tests, timings, nil, 3)
 		if !reflect.DeepEqual(first, again) {
 			t.Fatalf("plan changed between identical calls:\n%v\n%v", first, again)
 		}
@@ -154,10 +214,10 @@ func TestPlanIsDeterministic(t *testing.T) {
 }
 
 func TestPlanRefusesMoreShardsThanTests(t *testing.T) {
-	if _, err := plan([]string{"TestE2EA"}, nil, 2); err == nil {
+	if _, err := plan([]string{"TestE2EA"}, nil, nil, 2); err == nil {
 		t.Fatal("2 shards for 1 test: want an error, since one shard would run nothing")
 	}
-	if _, err := plan([]string{"TestE2EA"}, nil, 0); err == nil {
+	if _, err := plan([]string{"TestE2EA"}, nil, nil, 0); err == nil {
 		t.Fatal("0 shards: want an error")
 	}
 }
@@ -202,7 +262,7 @@ func TestRunPlanWritesTheShardFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
-	if err := run([]string{"plan", "-list", list, "-timings", timings, "-shards", "2", "-select", "pr", "-out", out, "-summary", summary}, &stdout); err != nil {
+	if err := run([]string{"plan", "-list", list, "-timings", timings, "-shards", "2", "-select", "pr", "-out", out, "-summary", summary, "-dir", cliDir}, &stdout); err != nil {
 		t.Fatal(err)
 	}
 	read := func(name string) string {

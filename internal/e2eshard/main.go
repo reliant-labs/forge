@@ -7,11 +7,12 @@
 //	    file built only under the e2e tag. This is the set the naming guard
 //	    (naming_test.go) holds to the TestE2E prefix.
 //
-//	e2eshard plan     -list FILE -timings FILE -shards N -select pr|all -out DIR [-summary FILE]
+//	e2eshard plan     -list FILE -timings FILE -shards N -select pr|all -out DIR [-summary FILE] [-dir internal/cli]
 //	    Split the tests named in FILE (the e2e test binary's
 //	    `-test.list '^TestE2E'` output) into N shards of roughly equal
-//	    recorded duration. Writes DIR/selected-tests.txt and
-//	    DIR/shard-<i>.txt.
+//	    recorded duration, keeping the tests that share a project fixture
+//	    (read from -dir's source) in one shard. Writes
+//	    DIR/selected-tests.txt and DIR/shard-<i>.txt.
 //
 //	e2eshard timings  [-merge FILE] [-dir internal/cli] SHARD.json...
 //	    Fold `go test -json` streams from shard runs into a timings file on
@@ -37,6 +38,12 @@
 // committed timings, so every shard's expected load is close to the mean. A
 // test with no recorded timing yet (a new one) is planned at the median of
 // the known ones; a stale timing only reorders work, it never drops a test.
+//
+// SHARED FIXTURES. Some tests start from a copy of one project that the test
+// process builds once (internal/cli/shared_project_e2e_test.go). Split
+// across shards, each shard would build it again, and the saving would
+// shrink with every shard added; so plan treats the tests sharing a fixture
+// as one job and puts them in one shard.
 //
 // NIGHTLY TESTS. A test named TestE2ENightly* is part of the suite but not of
 // a pull request's run: `-select pr` leaves it out and nightly.yml runs the
@@ -105,6 +112,7 @@ func runPlan(args []string, stdout io.Writer) error {
 	sel := fs.String("select", selectPR, "which tests: pr (all but TestE2ENightly*) or all")
 	outDir := fs.String("out", "", "directory for selected-tests.txt and shard-<i>.txt")
 	summaryPath := fs.String("summary", "", "append a markdown summary to this file (e.g. $GITHUB_STEP_SUMMARY)")
+	dir := fs.String("dir", filepath.Join("internal", "cli"), "package directory read for the tests that share a project fixture")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -123,7 +131,11 @@ func runPlan(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	p, err := plan(selected, timings, *shards)
+	scanned, err := scanTests(*dir)
+	if err != nil {
+		return fmt.Errorf("plan: read %s for shared fixtures: %w", *dir, err)
+	}
+	p, err := plan(selected, timings, fixtureGroups(scanned), *shards)
 	if err != nil {
 		return err
 	}

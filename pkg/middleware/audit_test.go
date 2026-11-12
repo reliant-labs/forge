@@ -39,7 +39,7 @@ func (f *fakeSink) waitOne(t *testing.T) AuditEvent {
 	t.Helper()
 	select {
 	case <-f.done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for sink.Record")
 	}
 	f.mu.Lock()
@@ -201,18 +201,25 @@ func TestAuditInterceptorWithSink_DispatchOffPathAndBounded(t *testing.T) {
 		return nil, nil
 	})
 
-	rpcStart := time.Now()
-	if _, err := wrapped(context.Background(), connect.NewRequest(&struct{}{})); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// RPC returned while the sink is still blocked → dispatch is off-path.
-	if elapsed := time.Since(rpcStart); elapsed > time.Second {
-		t.Fatalf("RPC blocked on sink dispatch: %v", elapsed)
+	// The sink blocks until released, which happens only after the RPC
+	// returns: a synchronous dispatch never returns, and the wait fails.
+	rpcErr := make(chan error, 1)
+	go func() {
+		_, err := wrapped(context.Background(), connect.NewRequest(&struct{}{}))
+		rpcErr <- err
+	}()
+	select {
+	case err := <-rpcErr:
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("RPC blocked on sink dispatch")
 	}
 	close(release)
 	select {
 	case <-blocking.recorded:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("sink Record never ran")
 	}
 	if !blocking.hadDeadline {

@@ -25,10 +25,50 @@ const (
 	HealthAlertFiring = "alert_firing"
 	// HealthWorkloadRestarts: restarts or OOM kills after the promotion.
 	HealthWorkloadRestarts = "workload_restarts"
+	// HealthBrowserErrors: a frontend's JavaScript errors per page view rose
+	// by more than MaxErrorRateIncrease (browser telemetry).
+	HealthBrowserErrors = "browser_errors"
+	// HealthBrowserFailedRequests: the share of a frontend's own fetch and XHR
+	// requests that failed (5xx, or no response) rose by more than
+	// MaxErrorRateIncrease.
+	HealthBrowserFailedRequests = "browser_failed_requests"
+	// HealthBrowserPageLoad: a frontend's p95 page load grew by more than
+	// MaxP95Ratio.
+	HealthBrowserPageLoad = "browser_page_load"
+	// HealthProbeFailed: a release probe (forge.Probe) failed in the window
+	// after the promotion. It fails a release by default, whatever the real
+	// traffic says.
+	HealthProbeFailed = "probe_failed"
+	// HealthProbeLatency: a release probe's p95 grew by more than MaxP95Ratio,
+	// and by at least the probe latency floor. It warns by default, as
+	// latency does.
+	HealthProbeLatency = "probe_latency"
 )
 
 // HealthFindings is every finding code, in a stable order.
-var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts}
+var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
+	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency}
+
+// How many services a release needs a baseline for
+// (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before
+// window; it is too thin to compare error rate and latency against below
+// MinRequests requests.
+const (
+	// BaselineAny, the default: a release is proven good by any service it
+	// can compare; a service with a thin baseline is not compared, and is
+	// named in not_evaluated. With no comparable service it is inconclusive.
+	BaselineAny = "any"
+	// BaselineEvery: every service with enough after-window traffic needs a
+	// baseline; one with a thin baseline holds the release inconclusive.
+	BaselineEvery = "every"
+	// BaselineNone: compare against whatever the before window held, however
+	// thin, as forge did before the baseline rule. For a low-traffic env that
+	// accepts the noise.
+	BaselineNone = "none"
+)
+
+// BaselinePolicies are the RequireBaseline values, default first.
+var BaselinePolicies = []string{BaselineAny, BaselineEvery, BaselineNone}
 
 // Release-health window bounds.
 const (
@@ -62,13 +102,29 @@ type ShapeReleaseHealth struct {
 	// FailOn are the finding codes that fail a release; the rest warn.
 	// Sorted, no duplicates.
 	FailOn []string `json:"fail_on"`
+	// RequireBaseline is how many services the release needs a before window
+	// of MinRequests for: BaselineAny, BaselineEvery or BaselineNone. Empty
+	// means BaselineAny, and is how the default is recorded, so a shape that
+	// keeps it encodes as it did before the field (a reader that predates it
+	// is sent none: BundleFeatureReleaseHealthBaseline).
+	RequireBaseline string `json:"require_baseline,omitempty"`
+}
+
+// Baseline is RequireBaseline with the default filled in.
+func (h ShapeReleaseHealth) Baseline() string {
+	if h.RequireBaseline == "" {
+		return BaselineAny
+	}
+	return h.RequireBaseline
 }
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
-// restarts warn: both are noisy on a fresh rollout.
+// restarts warn: both are noisy on a fresh rollout. A release-probe failure
+// fails: an env has probe findings only when it is probed.
 //
 // It must agree with the defaults of forge.ReleaseHealth in kcl/schema.k;
-// TestReleaseHealthDefaultsAgreeWithKCL fails if they drift.
+// TestReleaseHealthDefaultsAgreeWithKCL and TestDefaultFailOnMatchesKCL fail
+// if they drift.
 func DefaultReleaseHealth() ShapeReleaseHealth {
 	return ShapeReleaseHealth{
 		WindowSeconds:        int((15 * time.Minute).Seconds()),
@@ -76,7 +132,7 @@ func DefaultReleaseHealth() ShapeReleaseHealth {
 		MaxErrorRateIncrease: 0.01,
 		MaxP95Ratio:          1.5,
 		NewIssueMinEvents:    3,
-		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthRegressedIssue},
+		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
 	}
 }
 
@@ -100,6 +156,9 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	out.FailOn = append([]string{}, h.FailOn...)
 	sort.Strings(out.FailOn)
 	out.FailOn = slices.Compact(out.FailOn)
+	if out.RequireBaseline == BaselineAny {
+		out.RequireBaseline = ""
+	}
 	return out
 }
 
@@ -118,6 +177,9 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.NewIssueMinEvents < 1 {
 		return fmt.Errorf("%w: shape release_health new_issue_min_events must be at least 1", ErrInvalid)
+	}
+	if h.RequireBaseline != "" && !slices.Contains(BaselinePolicies, h.RequireBaseline) {
+		return fmt.Errorf("%w: shape release_health require_baseline %q (expected one of %v)", ErrInvalid, h.RequireBaseline, BaselinePolicies)
 	}
 	for _, c := range h.FailOn {
 		if !slices.Contains(HealthFindings, c) {

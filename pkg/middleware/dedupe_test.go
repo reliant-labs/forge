@@ -35,6 +35,7 @@ func TestDedupeStore_EmptyKey(t *testing.T) {
 func TestDedupeStore_TTLExpiry(t *testing.T) {
 	s := NewDedupeStore(DedupeConfig{MaxKeys: 10, TTL: time.Millisecond})
 	s.Mark("evt-1")
+	// forge:lint-disable-next-line forge-test-fixed-sleep: advances the wall clock past the 1ms TTL; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(5 * time.Millisecond)
 	if s.Seen("evt-1") {
 		t.Fatal("key still seen after TTL lapsed")

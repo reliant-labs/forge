@@ -101,6 +101,16 @@ func TestParseTokenScopes(t *testing.T) {
 	if _, err := parseTokenScopes(" , "); err == nil {
 		t.Error("an empty scope list must be refused")
 	}
+	// sourcemaps:write is a whole credential: alone it is accepted, beside
+	// anything else it is refused before the round trip.
+	if got, err := parseTokenScopes("sourcemaps:write"); err != nil || strings.Join(got, ",") != "sourcemaps:write" {
+		t.Errorf("sourcemaps:write alone = %v, %v", got, err)
+	}
+	for _, mixed := range []string{"sourcemaps:write,deploy:write", "deploy:read,sourcemaps:write"} {
+		if _, err := parseTokenScopes(mixed); err == nil || !strings.Contains(err.Error(), "registry-only") {
+			t.Errorf("%s: err = %v, want a registry-only refusal", mixed, err)
+		}
+	}
 }
 
 // list never carries a secret, and --json is an array even when empty.

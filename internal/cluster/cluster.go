@@ -416,6 +416,14 @@ type ApplyOpts struct {
 	// orphan. See delivery_unit_filter.go.
 	SkipUnits []string
 
+	// DeliveryUnits are the env's declared delivery units (Bundle.delivery_units),
+	// in the order and with the `after` the author wrote. When set and the
+	// env's workloads span two or more unit waves, the workloads are applied
+	// unit wave by unit wave, each awaited on every cluster before the next
+	// (unit_waves.go). Empty, or every workload in one wave: the apply is
+	// exactly what it always was.
+	DeliveryUnits []release.DeliveryUnit
+
 	// OnRollout, when non-nil, receives one observation per resource whose
 	// readiness was awaited, as each verdict arrives.
 	//
@@ -957,6 +965,25 @@ func ApplyNoWait(ctx context.Context, opts ApplyOpts) (*PendingRollout, error) {
 	return applyRenderedNoWait(ctx, opts, manifests)
 }
 
+// envWideStream is the env's stream as this apply selects it — the --target
+// filter applied and the hub's units taken out — before the per-cluster scope:
+// what the chart prerequisites and the delivery-unit decision read.
+func envWideStream(opts ApplyOpts, manifests string) string {
+	if len(opts.Targets) > 0 {
+		manifests = SelectManifestsByGroup(manifests, opts.Targets)
+	}
+	return DropDeliveryUnits(manifests, opts.SkipUnits)
+}
+
+// dropHubUnits takes the units the hub converges out of what this apply sends,
+// and says so.
+func dropHubUnits(opts ApplyOpts, manifests string) string {
+	if len(opts.SkipUnits) > 0 && !opts.Quiet {
+		fmt.Printf("Leaving delivery unit(s) %s to the hub (Bundle.hub_converges): not applied from here\n", strings.Join(opts.SkipUnits, ", "))
+	}
+	return DropDeliveryUnits(manifests, opts.SkipUnits)
+}
+
 // selectAndScope narrows the rendered env stream to what THIS apply owns and
 // stamps its CRDs. It returns the helm charts the same selection keeps, the
 // narrowed stream, and the CRD owner label it stamped.
@@ -1028,21 +1055,22 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// Charts can target a secondary context even when this apply's app stream
 	// is scoped to the primary. Keep their prerequisites before that narrowing,
 	// but honour the same target and delivery-unit selection.
-	chartPrerequisites := manifests
-	if len(opts.Targets) > 0 {
-		chartPrerequisites = SelectManifestsByGroup(chartPrerequisites, opts.Targets)
+	chartPrerequisites := envWideStream(opts, manifests)
+	// The delivery-unit decision is env-wide — made on this same pre-scope
+	// stream — so every cluster of the deploy stages, or none does
+	// (unit_waves.go). Refused here, before anything is sent, when the
+	// declared order is invalid.
+	unitOrder, err := planUnitWaves(opts.DeliveryUnits, chartPrerequisites)
+	if err != nil {
+		return nil, err
 	}
-	chartPrerequisites = DropDeliveryUnits(chartPrerequisites, opts.SkipUnits)
 	chartPrerequisites = StampOwnership(chartPrerequisites, ObjectOwner(opts.Project, opts.Env))
 	selectedCharts, manifests, crdOwner := selectAndScope(opts, manifests)
 	// What the render holds for this cluster, before the hub's units are taken
 	// out: the prunes below compare the cluster against THIS, never against
 	// what this apply chose to send.
 	desired := manifests
-	manifests = DropDeliveryUnits(manifests, opts.SkipUnits)
-	if len(opts.SkipUnits) > 0 && !opts.Quiet {
-		fmt.Printf("Leaving delivery unit(s) %s to the hub (Bundle.hub_converges): not applied from here\n", strings.Join(opts.SkipUnits, ", "))
-	}
+	manifests = dropHubUnits(opts, manifests)
 
 	// The WHOLE scoped stream, checked once before any pass is sent: an object
 	// still stamped for another cluster here would otherwise be refused only
@@ -1119,10 +1147,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	// chart applies in CRD-first order (forge-supplied CRDs → wait
 	// Established → the --skip-crds controllers). When this apply also
 	// carries app manifests (a mixed --target), the charts land before them.
-	// Controllers can reference PriorityClasses declared outside their chart.
-	// Send these before any controller wait, to each chart's actual context.
-	// The stream has already passed target, cluster and delivery-unit filters.
-	if err := applyChartSchedulingPrerequisites(ctx, opts.Context, renderedCharts, manifests, chartPrerequisites); err != nil {
+	// Controllers can reference cluster-scoped objects declared outside their
+	// chart (a PriorityClass, StorageClass, RuntimeClass, ...). Send these
+	// before any controller wait, to each chart's actual context. The stream
+	// has already passed target, cluster and delivery-unit filters.
+	if err := applyChartClusterPrerequisites(ctx, opts.Context, renderedCharts, manifests, chartPrerequisites); err != nil {
 		return nil, err
 	}
 	if err := applyRenderedCharts(ctx, opts.Context, renderedCharts, opts.Quiet); err != nil {
@@ -1209,6 +1238,18 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 			fmt.Println("Pre-rollout Jobs complete; applying workloads...")
 		}
 	}
+	// Delivery units: the env's workloads span several unit waves, so they are
+	// held back here and WaitRollouts applies them wave by wave across every
+	// cluster (unit_waves.go). What is not a workload — support objects a
+	// gated stream already sent, or that an ungated one sends now — goes now,
+	// with everything else the release sends ahead of its workloads. The
+	// apply-time prunes wait until every wave has rolled out.
+	if unitOrder != nil {
+		return applyUnitStaged(ctx, opts, policy, unitStagedInput{
+			order: unitOrder, rest: rest, manifests: manifests, desired: desired, crdOwner: crdOwner,
+			phases: phases, stages: stages,
+		})
+	}
 	// A stream the secret stages consumed whole has nothing left to send: kubectl
 	// refuses an empty stream, as it always did here for a gated one.
 	if strings.TrimSpace(rest) != "" || (!phases.gated() && !stages.active()) {
@@ -1252,11 +1293,11 @@ func applyRenderedNoWait(ctx context.Context, opts ApplyOpts, manifests string) 
 	return pending, nil
 }
 
-// applyChartSchedulingPrerequisites sends, once per chart context, the
-// PriorityClasses and other scheduling prerequisites the charts' controllers
-// reference: the scoped stream for the apply's own context, the
-// target-and-unit-filtered prerequisites for a secondary one.
-func applyChartSchedulingPrerequisites(ctx context.Context, primary string, renderedCharts []renderedChart, manifests, chartPrerequisites string) error {
+// applyChartClusterPrerequisites sends, once per chart context, the
+// cluster-scoped objects the charts may reference (ChartClusterPrerequisites):
+// the scoped stream for the apply's own context, the target-and-unit-filtered
+// prerequisites for a secondary one.
+func applyChartClusterPrerequisites(ctx context.Context, primary string, renderedCharts []renderedChart, manifests, chartPrerequisites string) error {
 	seen := map[string]bool{}
 	for _, rc := range renderedCharts {
 		kctx := chartContext(primary, rc.spec)
@@ -1268,10 +1309,10 @@ func applyChartSchedulingPrerequisites(ctx context.Context, primary string, rend
 		if kctx != primary {
 			preStream = chartPrerequisitesForSecondary(chartPrerequisites, kctx)
 		}
-		prereqs := ChartSchedulingPrerequisites(preStream)
+		prereqs := ChartClusterPrerequisites(preStream)
 		if strings.TrimSpace(prereqs) != "" {
-			if err := KubectlApply(ctx, kctx, prereqs); err != nil {
-				return fmt.Errorf("apply chart scheduling prerequisites to %q: %w", kctx, err)
+			if err := ApplyClusterPrerequisites(ctx, kctx, prereqs); err != nil {
+				return fmt.Errorf("apply chart cluster prerequisites to %q: %w", kctx, err)
 			}
 		}
 	}

@@ -36,6 +36,7 @@ Examples:
 			} else {
 				printVariable(*v, "")
 			}
+			markObserved()
 			return nil
 		},
 	}
@@ -60,6 +61,7 @@ func newLocalsCmd(_ *factory.Factory) *cobra.Command {
 				return fmt.Errorf("listing locals: %w", err)
 			}
 			printVariables(vars, jsonOutput)
+			markObserved()
 			return nil
 		},
 	}
@@ -84,6 +86,7 @@ func newArgsCmd(_ *factory.Factory) *cobra.Command {
 				return fmt.Errorf("listing args: %w", err)
 			}
 			printVariables(vars, jsonOutput)
+			markObserved()
 			return nil
 		},
 	}
@@ -111,6 +114,7 @@ func newStackCmd(_ *factory.Factory) *cobra.Command {
 				return fmt.Errorf("getting stacktrace: %w", err)
 			}
 			printStacktrace(frames, jsonOutput)
+			markObserved()
 			return nil
 		},
 	}
@@ -136,6 +140,7 @@ func newGoroutinesCmd(_ *factory.Factory) *cobra.Command {
 				return fmt.Errorf("listing goroutines: %w", err)
 			}
 			printGoroutines(goroutines, jsonOutput)
+			markObserved()
 			return nil
 		},
 	}

@@ -32,13 +32,24 @@ describe("nativeBrowser.openAuthSession", () => {
     await nativeBrowser.openAuthSession(
       "https://idp.example.com/authorize?x=1",
       "com.example.app:/oauthredirect",
-      { preferEphemeralSession: true },
+      { preferEphemeralSession: true, preferUniversalLinks: false },
     );
     expect(mockOpenAuthSessionAsync).toHaveBeenCalledTimes(1);
     const [url, redirect, options] = lastCall();
     expect(url).toBe("https://idp.example.com/authorize?x=1");
     expect(redirect).toBe("com.example.app:/oauthredirect");
     expect(options.preferEphemeralSession).toBe(true);
+  });
+
+  it("requests an HTTPS callback while retaining the Android task option", async () => {
+    await nativeBrowser.openAuthSession(
+      "https://idp.example.com/authorize",
+      "https://app.example.com/oauthredirect",
+      { preferEphemeralSession: true, preferUniversalLinks: true },
+    );
+    expect(lastCall()[1]).toBe("https://app.example.com/oauthredirect");
+    expect(lastCall()[2].preferUniversalLinks).toBe(true);
+    expect(lastCall()[2].createTask).toBe(false);
   });
 
   // Android: in a separate task (expo-web-browser's default) an abandoned tab
@@ -48,7 +59,7 @@ describe("nativeBrowser.openAuthSession", () => {
     await nativeBrowser.openAuthSession(
       "https://idp.example.com/authorize",
       "com.example.app:/oauthredirect",
-      { preferEphemeralSession: true },
+      { preferEphemeralSession: true, preferUniversalLinks: false },
     );
     expect(lastCall()[2].createTask).toBe(false);
   });

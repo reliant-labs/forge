@@ -47,6 +47,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -58,7 +59,7 @@ import (
 // emits: `output = forge.render(bundle)` (P2 map §9 is normative).
 //
 // Every runnable thing is a Workload (ADR 0002). Each one carries its
-// RESOLVED runtime — host, compose, cluster, hosted or build-only — so the
+// RESOLVED runtime — host, compose, cluster, hosted, build-only or external — so the
 // placement question "where does this run" is answered per workload, never
 // env-wide. Callers (`forge build`, `forge env deploy`, `forge env up`,
 // `forge env up`) read this rather than reaching back into forge.yaml,
@@ -864,6 +865,9 @@ const (
 	RuntimeCluster   = "cluster"
 	RuntimeHosted    = "hosted"
 	RuntimeBuildOnly = "build-only"
+	// RuntimeExternal is forge.OnExternal: the author's own deploy tooling,
+	// driven through argv hooks (deploytarget/external.go).
+	RuntimeExternal = "external"
 )
 
 // FlowCheckEntity mirrors the kcl/workload.k FlowCheck: one app-flow health
@@ -885,6 +889,7 @@ type RuntimeEntity struct {
 	Cluster   *ClusterRuntime
 	Hosted    *HostedRuntime
 	BuildOnly *BuildOnlyDeploy
+	External  *deploytarget.ExternalRuntime
 }
 
 // DefaultHostedPlatform is the GOARCH of the reliant platform's nodes,
@@ -2143,10 +2148,21 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 	case RuntimeBuildOnly:
 		var b BuildOnlyDeploy
 		return RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &b}, decode(&b)
+	case RuntimeExternal:
+		var x deploytarget.ExternalRuntime
+		if err := decode(&x); err != nil {
+			return RuntimeEntity{}, err
+		}
+		// The KCL schema checks the same rules; this is the Go half, for a
+		// render that reached forge some other way.
+		if err := x.Validate(); err != nil {
+			return RuntimeEntity{}, fmt.Errorf("workload %q: %w", name, err)
+		}
+		return RuntimeEntity{Type: RuntimeExternal, External: &x}, nil
 	case "":
-		return RuntimeEntity{}, fmt.Errorf("workload %q: runtime.type missing (expected host/compose/cluster/hosted/build-only)", name)
+		return RuntimeEntity{}, fmt.Errorf("workload %q: runtime.type missing (expected host/compose/cluster/hosted/build-only/external)", name)
 	default:
-		return RuntimeEntity{}, fmt.Errorf("workload %q: unrecognised runtime.type %q (expected host/compose/cluster/hosted/build-only)", name, probe.Type)
+		return RuntimeEntity{}, fmt.Errorf("workload %q: unrecognised runtime.type %q (expected host/compose/cluster/hosted/build-only/external)", name, probe.Type)
 	}
 }
 

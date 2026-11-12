@@ -14,7 +14,7 @@ What lives where:
 
   * kcl/workload.k — the ONE workload declaration (`fw.Workload`), its env
     references, and the runtimes it binds to (`forge.OnHost | OnCompose |
-    OnCluster | OnHosted | BuildOnly`).
+    OnCluster | OnHosted | BuildOnly | OnExternal`).
   * this file     — everything else an env declares: the Bundle, the
     cluster target, infra, frontends, databases, secrets, gateways and
     routes, clusters, builds.
@@ -8035,7 +8035,7 @@ schema Bundle:
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
         # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
         all w in workloads { _bound_runtime(w) }, \
-            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {} | forge.OnExternal {}}`"
         # One name per env: the name is the WorkloadURL namespace, the
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \

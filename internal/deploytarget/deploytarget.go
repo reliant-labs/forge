@@ -3,9 +3,9 @@
 // target) to a concrete pipeline that ships it somewhere.
 //
 // Placement is fully owned by KCL: every fw.Workload is bound to one runtime
-// (forge.OnHost | OnCompose | OnCluster | OnHosted | BuildOnly), per workload,
-// so one env can run some workloads on a cluster, some on the control plane
-// and some as host processes. The CLI walks the rendered workloads, groups
+// (forge.OnHost | OnCompose | OnCluster | OnHosted | BuildOnly | OnExternal),
+// per workload, so one env can run some workloads on a cluster, some on the
+// control plane and some as host processes. The CLI walks the rendered workloads, groups
 // them by target (workloads that share a cluster/namespace or a compose file
 // flow through one pipeline invocation), and dispatches to the right
 // Provider.
@@ -23,6 +23,8 @@
 //     infrastructure; Compose is the opt-in for projects that want the
 //     container. See internal/hostinfra.
 //   - FirebaseProvider / StaticSiteProvider — frontends.
+//   - ExternalProvider   — forge.OnExternal: the author's own deploy
+//     tooling, driven through argv hooks (external.go).
 //
 // Host-bound and build-only workloads aren't providers — `forge env up` /
 // `forge env up` own the host story, and BuildOnly is consumed by `forge
@@ -44,6 +46,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -191,6 +194,7 @@ type ResolvedService struct {
 	Compose    *ComposeSpec
 	HostInfra  *HostInfraSpec
 	Hosted     *HostedWorkload
+	External   *ExternalSpec
 
 	// Secrets carries resolved secret values to inject into the runtime
 	// env (compose). Populated by the deploy dispatch from a
@@ -353,6 +357,7 @@ func NewRegistry() *Registry {
 	r.Register(FirebaseProvider{})
 	r.Register(StaticSiteProvider{})
 	r.Register(HostedProvider{})
+	r.Register(ExternalProvider{Hooks: ExternalHooks{Runner: ExecHookRunner{}, Stderr: os.Stderr}, Out: os.Stdout})
 	return r
 }
 
@@ -479,6 +484,19 @@ func GroupServices(env string, services []RawService) ([]ServiceGroup, error) {
 				HostInfra: s.HostInfra,
 			})
 
+		case s.External != nil:
+			const key = ExternalProviderID
+			grp, ok := groups[key]
+			if !ok {
+				grp = &ServiceGroup{Env: env, ProviderID: ExternalProviderID}
+				groups[key] = grp
+				keyOrder = append(keyOrder, key)
+			}
+			grp.Services = append(grp.Services, ResolvedService{
+				Name:     s.Name,
+				External: s.External,
+			})
+
 		default:
 			// Host / BuildOnly / nil — skipped by the deploy dispatch.
 		}
@@ -507,6 +525,9 @@ type RawService struct {
 
 	Compose   *ComposeSpec
 	HostInfra *HostInfraSpec
+	// External is a forge.OnExternal workload: ONE group per env, like
+	// host-infra — the hooks share no target to key on.
+	External *ExternalSpec
 
 	// Secrets carries resolved secret values to inline into the runtime
 	// env for Compose services. Carried verbatim onto the
@@ -561,6 +582,8 @@ func groupTarget(g ServiceGroup) string {
 		return "file=?"
 	case "host-infra":
 		return "host processes"
+	case ExternalProviderID:
+		return "your deploy tooling (forge.OnExternal hooks)"
 	case "firebase":
 		if len(g.Frontends) > 0 {
 			return "site=" + g.Frontends[0].Spec.resolvedTarget()

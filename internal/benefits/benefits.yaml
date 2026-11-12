@@ -185,6 +185,39 @@ benefits:
       - command: project rescaffold
       - command: project scaffolded
 
+  - id: scaffold-exclude
+    category: build
+    title: Areas forge never writes
+    claim: >-
+      `scaffold.exclude` in forge.yaml names the parts of an existing repo forge
+      must never write, and every generate, scaffold, upgrade and rescaffold
+      leaves them exactly as they are and says which writes it skipped.
+    availability: forge
+    use: >-
+      `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+    why: >-
+      A team adopting forge keeps its own frontend, workflows or docs without
+      disowning file by file. A locked run puts back anything written under an
+      excluded glob, and a glob over generated code other generated code
+      imports is refused with the dependent named.
+    evidence:
+      - skill: forge/migration/ownership
+      - path: internal/checksums/exclude.go
+      - path: internal/cli/generate_exclude.go
+
+  - id: prune-orphans
+    category: build
+    title: Clean up after a feature
+    claim: >-
+      When a feature is pinned off, `forge generate` lists the files it left
+      behind and `forge project prune --orphans` deletes the ones still exactly
+      as forge wrote them, never an edited one.
+    availability: forge
+    evidence:
+      - command: project prune
+      - skill: forge/migration/ownership
+      - path: internal/cli/generate_orphans.go
+
   - id: project-upgrade
     category: build
     title: Guided forge upgrades
@@ -1312,6 +1345,19 @@ benefits:
     evidence:
       - command: lint --allow-skip
       - command: lint --strict
+
+  - id: lint-lanes-off
+    category: guardrails
+    title: Switch a lint lane off
+    claim: >-
+      `lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend,
+      migration safety, db grants, ...) for a repo that checks them another way,
+      and the verdict still names every lane that is off.
+    availability: forge
+    use: "`lint: {lanes: {frontend: off, migration-safety: off}}`"
+    evidence:
+      - skill: ci/lint-rollout
+      - path: internal/cli/lint/lint_lanes.go
 
   - id: lint-autofix
     category: guardrails
@@ -3008,6 +3054,35 @@ benefits:
       - path: internal/cli/deploy_plan_gate.go
       - path: internal/cli/deploy_confirm.go
       - skill: deploy/plan
+
+  - id: polyrepo-pinned-sources
+    category: ship
+    title: Polyrepo, pinned, any language
+    claim: >-
+      Teams outside a monorepo, in any language, share an infra repo's KCL by a
+      git pin in kcl.mod and build other repos' images from a pinned
+      `DockerBuild.context`, with no go.mod and no CI checkout step; a release
+      records each image's source repo and commit.
+    availability: forge
+    use: >-
+      `[forge_projects] infra = { repo = "github.com/acme/infra", ref =
+      "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`;
+      `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`;
+      `forge kcl imports [--refresh]`.
+    why: >-
+      A sibling path (`../billing`) builds whatever is checked out there and is
+      absent in CI. A pin resolves to the same bytes on every machine through
+      one shared cache, renders offline once fetched, and a `commit` lock
+      refuses a moved tag as a pin mismatch. A gitignored
+      `.forge/source-overrides.yaml` points a repo at a working copy while you
+      develop both, and a release refuses to cut while one is in use.
+    evidence:
+      - command: kcl imports --refresh
+      - path: internal/kclprojects/gitimport.go
+      - path: internal/cli/build_docker_source.go
+      - path: docs/cross-repo-sources.md
+      - skill: deploy/polyrepo
+      - skill: deploy/kcl-imports
 
   - id: hosted-deploy-plan
     category: ship

@@ -28,7 +28,14 @@
 //
 // The dashboards forge generates must not use a kind or field in the release
 // that introduces it (none uses browse or link), or a reader on the previous
-// pin would refuse the bundle carrying them. Promotion
+// pin would refuse the bundle carrying them. The one deliberate exception is
+// the delivery kinds (release_health, promotions, delivery), which the
+// generated Releases dashboard uses from the release that adds them: the
+// control plane records a bundle's dashboards with a structural check only
+// (forge validated them at the cut) and serves them without re-validating, and
+// the console draws a kind it does not know as "not yet", so an older reader
+// still shows the dashboard. Only saving a copy of it (which re-validates)
+// waits for the control plane's pin. Promotion
 // (PromoteDashboardToCode) carries a saved dashboard from the control plane
 // into the repository, the reader that already accepted it, never the other
 // way. Once validated, the HyperDX renderer needs no change: it skips every

@@ -42,26 +42,39 @@ var (
 	stopStragglerWait = time.Second
 )
 
-// requireStopGrace extends the shutdown grace so a runner that declares its
-// own drain (Air's kill_delay) can finish it before forge escalates. A drain
-// that cannot fit under maxStopGrace is reported once, at start, rather than
-// discovered as a SIGKILL at the next Ctrl-C.
-func (p *procRegistry) requireStopGrace(who string, drain time.Duration) {
+// requireStopGrace extends the shutdown grace so a process whose stop is
+// declared to take drain — its runner's own kill delay (Air's kill_delay), or
+// the workload's preStopSeconds — gets it before forge escalates. knob names
+// the declaration, for the messages. A drain that cannot fit under
+// maxStopGrace is reported once, at start, rather than discovered as a
+// SIGKILL at the next Ctrl-C.
+func (p *procRegistry) requireStopGrace(who string, drain time.Duration, knob string) {
 	if drain <= 0 {
 		return
 	}
 	need := drain + stopGraceMargin
 	if need > maxStopGrace {
-		fmt.Printf("[up] %s: its runner drains for %s on stop, longer than forge waits (%s): stopping the stack will SIGKILL it before that drain ends — lower its kill_delay\n",
-			who, drain, maxStopGrace-stopGraceMargin)
+		fmt.Printf("[up] %s: its %s asks for %s on stop, longer than forge waits (%s): stopping the stack will SIGKILL it before then — lower its %s\n",
+			who, knob, drain, maxStopGrace-stopGraceMargin, knob)
 		need = maxStopGrace
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if need > p.stopGrace && need > defaultStopGrace {
 		p.stopGrace = need
-		p.graceFor = fmt.Sprintf("%s drains for %s", who, drain)
+		p.graceFor = fmt.Sprintf("%s's %s is %s", who, knob, drain)
 	}
+}
+
+// hostPreStop is a host workload's preStopSeconds as a stop drain. A host
+// process has no load balancer to leave, so nothing pauses before SIGTERM;
+// the declaration still says this server needs that long to stop, so forge
+// waits it out before SIGKILL rather than cutting it short.
+func hostPreStop(w WorkloadEntity) time.Duration {
+	if n := w.Spec.PreStopSeconds; n != nil && *n > 0 {
+		return time.Duration(*n) * time.Second
+	}
+	return 0
 }
 
 // shutdown stops every process this run started, and everything they started:

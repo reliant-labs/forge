@@ -110,11 +110,13 @@ func TestDrainer_ShutdownContextIsItsOwnBudget(t *testing.T) {
 // A negative PreStopDelay is no pause — the same rule as ShutdownTimeout.
 func TestDrainer_NegativePreStopDelayIsNoPause(t *testing.T) {
 	t.Parallel()
-	d := &serverkit.Drainer{PreStopDelay: -1}
-	start := time.Now()
+	var logs syncBuf
+	d := &serverkit.Drainer{PreStopDelay: -1, Logger: bufLogger(&logs)}
 	d.Begin()
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("Begin paused %s for a negative PreStopDelay, want no pause", elapsed)
+	// Begin logs the pause it is about to take: assert that, not how fast
+	// this machine ran it (the 5s default would show as pre_stop_delay=5s).
+	if out := logs.String(); !strings.Contains(out, "pre_stop_delay=0s") {
+		t.Fatalf("Begin did not take a zero pause for a negative PreStopDelay:\n%s", out)
 	}
 }
 
@@ -260,7 +262,9 @@ func TestRun_OpenStreamDoesNotHoldShutdown(t *testing.T) {
 	})
 
 	cfg := baseConfig(addr)
-	cfg.ShutdownTimeout = 10 * time.Second
+	// A budget long enough that a held drain is unmistakable even on a
+	// loaded machine: the elapsed check below sits well inside it.
+	cfg.ShutdownTimeout = 30 * time.Second
 	errCh, _ := runInBackground(t, cfg, serverkit.Server{Handler: mux, Logger: bufLogger(&logs)})
 	waitReady(t, addr, 2*time.Second)
 
@@ -286,15 +290,10 @@ func TestRun_OpenStreamDoesNotHoldShutdown(t *testing.T) {
 
 	start := time.Now()
 	runErr := make(chan error, 1)
-	go func() { runErr <- shutdownAndWait(t, errCh, 15*time.Second) }()
+	go func() { runErr <- shutdownAndWait(t, errCh, 45*time.Second) }()
 
-	select {
-	case drained := <-streamEnded:
-		if !drained {
-			t.Error("the stream ended, but not with the drain cause")
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the open stream was not ended by the drain")
+	if drained := receive(t, "the drain to end the open stream", streamEnded); !drained {
+		t.Error("the stream ended, but not with the drain cause")
 	}
 	if err := <-streamRead; err != nil && !errors.Is(err, io.EOF) {
 		t.Errorf("client read of the drained stream = %v, want a clean end of body", err)
@@ -302,6 +301,7 @@ func TestRun_OpenStreamDoesNotHoldShutdown(t *testing.T) {
 
 	// The unary request is still being served after the stream ended: the
 	// drain waits for it rather than cutting it.
+	// forge:lint-disable-next-line forge-test-fixed-sleep: gives a drain that wrongly cuts in-flight unaries the chance to; a correct drain passes however long this takes
 	time.Sleep(100 * time.Millisecond)
 	close(releaseUnary)
 	if code := <-unaryCode; code != http.StatusOK {
@@ -311,7 +311,7 @@ func TestRun_OpenStreamDoesNotHoldShutdown(t *testing.T) {
 	if err := <-runErr; err != nil {
 		t.Fatalf("Run returned %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("shutdown took %s with ShutdownTimeout=%s — an open stream held the drain", elapsed, cfg.ShutdownTimeout)
 	}
 	if out := logs.String(); strings.Contains(out, "server shutdown error") || strings.Contains(out, "level=ERROR") {

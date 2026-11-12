@@ -41,6 +41,16 @@ type TreeNode struct {
 	// Gap is the largest such stretch, as offsets from the span's start.
 	Uninstrumented time.Duration
 	Gap            [2]time.Duration
+	// Unread is how much of the span no READ child covers after the read
+	// stopped (TreeOptions.ReadUntil), when [IsGap] says it matters. Its
+	// children there were never fetched, so the time is unknown, not
+	// uninstrumented; UnreadFrom is where it begins, from the span's start.
+	Unread     time.Duration
+	UnreadFrom time.Duration
+	// WholeTrace is this run's count over the whole trace
+	// (TreeOptions.Runs) when the read saw only part of it: the read run is
+	// "×4996", the trace's is "×79427".
+	WholeTrace *SpanGroup
 }
 
 // Thresholds for reporting a span's uninstrumented time: at least
@@ -72,9 +82,36 @@ type Tree struct {
 	Capped bool
 }
 
+// TreeOptions shape BuildTreeWith.
+type TreeOptions struct {
+	// Full lifts the caps.
+	Full bool
+	// ReadUntil is set when the spans are a truncated read of the trace
+	// (TraceResult.SpansTruncated): the start of the last span read. Spans
+	// are read in start order, so a child starting after it may exist
+	// unread, and a parent's time past it is reported as Unread, never as
+	// uninstrumented.
+	ReadUntil time.Time
+	// Runs are the trace's runs of identical siblings counted over every span
+	// (TraceResult.SiblingRuns); a run the read saw only part of carries its
+	// whole-trace count in WholeTrace.
+	Runs []SpanGroup
+}
+
 // BuildTree arranges spans into a tree under the caps. full lifts them.
 func BuildTree(spans []Span, full bool) Tree {
+	return BuildTreeWith(spans, TreeOptions{Full: full})
+}
+
+// BuildTreeWith is BuildTree for a read that may be partial.
+func BuildTreeWith(spans []Span, o TreeOptions) Tree {
+	full := o.Full
 	b := newTreeBuilder(spans, full)
+	b.readUntil = o.ReadUntil
+	b.runs = map[string]*SpanGroup{}
+	for i, r := range o.Runs {
+		b.runs[runKey(r.ParentID, r.Service, r.Name, r.StatusCode)] = &o.Runs[i]
+	}
 	if len(spans) == 0 {
 		return b.t
 	}
@@ -105,6 +142,23 @@ type treeBuilder struct {
 	// failing[id]: this span or a descendant failed. critical[id]: on the
 	// critical path.
 	failing, critical map[string]bool
+	readUntil         time.Time
+	// runs are TreeOptions.Runs by runKey.
+	runs map[string]*SpanGroup
+}
+
+func runKey(parent, service, name, status string) string {
+	return parent + "\x00" + service + "\x00" + name + "\x00" + strings.ToLower(status)
+}
+
+// wholeRun is the whole-trace run s belongs to, when the trace has more of it
+// than the read members (have).
+func (b *treeBuilder) wholeRun(s *Span, have int) *SpanGroup {
+	r := b.runs[runKey(s.ParentID, s.Service, s.Name, s.StatusCode)]
+	if r == nil || r.Count <= have {
+		return nil
+	}
+	return r
 }
 
 func newTreeBuilder(spans []Span, full bool) *treeBuilder {
@@ -243,7 +297,7 @@ func (b *treeBuilder) build(s *Span, depth int) *TreeNode {
 	b.t.Shown++
 	cs := b.kids[s.SpanID]
 	orderSpans(cs)
-	nd.Uninstrumented, nd.Gap = uninstrumented(s, cs)
+	nd.Uninstrumented, nd.Gap, nd.Unread, nd.UnreadFrom = uninstrumented(s, cs, b.readUntil)
 	if !b.full && depth >= MaxTreeDepth {
 		for _, c := range cs {
 			nd.Hidden += b.size(c)
@@ -271,11 +325,17 @@ func (b *treeBuilder) addGroup(nd *TreeNode, g []*Span, depth int) {
 	}
 	if len(g) == 1 || b.full {
 		for _, m := range g {
-			nd.Children = append(nd.Children, b.build(m, depth+1))
+			c := b.build(m, depth+1)
+			if len(g) == 1 && !b.full && !c.Error {
+				// The read holds one of a run the trace has many of.
+				c.WholeTrace = b.wholeRun(m, 1)
+			}
+			nd.Children = append(nd.Children, c)
 		}
 		return
 	}
 	run := collapse(g, b.first, &b.budget, &b.t.Shown)
+	run.WholeTrace = b.wholeRun(g[0], len(g))
 	for _, m := range g {
 		run.Critical = run.Critical || b.critical[m.SpanID]
 		// The run is shown as ×N; what is not shown is what hangs under its members.
@@ -306,25 +366,40 @@ func collapse(ms []*Span, first time.Time, budget, shown *int) *TreeNode {
 // when [IsGap] says it matters. A leaf counts only when its kind says the work
 // was its own: a client or producer span's time is spent by the peer it
 // called, which is not a gap in this service's instrumentation.
-func uninstrumented(s *Span, kids []*Span) (time.Duration, [2]time.Duration) {
+//
+// readUntil, when set, is where a truncated read stopped. The uncovered time
+// after it is unread (its children may exist and were not fetched), returned
+// as unread from unreadFrom when [IsGap] says it matters; only the time before
+// it can be uninstrumented.
+func uninstrumented(s *Span, kids []*Span, readUntil time.Time) (gap time.Duration, largest [2]time.Duration, unread, unreadFrom time.Duration) {
 	dur := time.Duration(s.DurationNs)
+	horizon := dur
+	if !readUntil.IsZero() {
+		horizon = min(max(readUntil.Sub(s.Start), 0), dur)
+	}
 	if len(kids) == 0 {
 		switch strings.ToLower(s.Kind) {
 		case "client", "producer", "":
-			return 0, [2]time.Duration{}
+			return 0, [2]time.Duration{}, 0, 0
 		}
-		if IsGap(dur, dur) {
-			return dur, [2]time.Duration{0, dur}
-		}
-		return 0, [2]time.Duration{}
 	}
 	// kids are ordered by start; walk the union of their intervals, clipped
-	// to the parent.
-	var covered, cursor time.Duration
-	var largest [2]time.Duration
-	note := func(from, to time.Duration) {
-		if to-from > largest[1]-largest[0] {
-			largest = [2]time.Duration{from, to}
+	// to the parent, splitting what they leave uncovered at the horizon.
+	var cursor time.Duration
+	uncovered := func(from, to time.Duration) {
+		if from < horizon {
+			end := min(to, horizon)
+			gap += end - from
+			if end-from > largest[1]-largest[0] {
+				largest = [2]time.Duration{from, end}
+			}
+		}
+		if to > horizon {
+			start := max(from, horizon)
+			if unread == 0 {
+				unreadFrom = start
+			}
+			unread += to - start
 		}
 	}
 	for _, k := range kids {
@@ -335,21 +410,20 @@ func uninstrumented(s *Span, kids []*Span) (time.Duration, [2]time.Duration) {
 		from := min(max(start, 0), dur)
 		to := min(max(start+time.Duration(k.DurationNs), from), dur)
 		if from > cursor {
-			note(cursor, from)
+			uncovered(cursor, from)
 		}
-		if to > cursor {
-			covered += to - max(from, cursor)
-			cursor = to
-		}
+		cursor = max(cursor, to)
 	}
 	if cursor < dur {
-		note(cursor, dur)
+		uncovered(cursor, dur)
 	}
-	gap := dur - covered
 	if !IsGap(gap, dur) {
-		return 0, [2]time.Duration{}
+		gap, largest = 0, [2]time.Duration{}
 	}
-	return gap, largest
+	if !IsGap(unread, dur) {
+		unread, unreadFrom = 0, 0
+	}
+	return gap, largest, unread, unreadFrom
 }
 
 func isErrorSpan(s *Span) bool {

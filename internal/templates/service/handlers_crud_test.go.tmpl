@@ -34,7 +34,7 @@ import (
 
 // findMigrationsDir walks up from the test's working directory (the package
 // dir, at internal/handlers/<svc>/) to the repo root — the nearest ancestor
-// containing db/migrations — and returns that db/migrations path. A hardcoded
+// containing {{ .MigrationsDir }} — and returns that {{ .MigrationsDir }} path. A hardcoded
 // relative depth is fragile: this file lives THREE levels under the repo root,
 // but a differently-nested package would need another count. Walking up finds
 // it regardless of depth.
@@ -45,20 +45,20 @@ func findMigrationsDir(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	for {
-		cand := filepath.Join(dir, "db", "migrations")
+		cand := filepath.Join(dir, {{ .MigrationsDirArgs }})
 		if info, statErr := os.Stat(cand); statErr == nil && info.IsDir() {
 			return cand
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("could not locate db/migrations walking up from %s", dir)
+			t.Fatalf("could not locate {{ .MigrationsDir }} walking up from %s", dir)
 		}
 		dir = parent
 	}
 }
 
 // crudTestDB builds a real-postgres database with the project's own
-// migrations applied (db/migrations/*.up.sql, in order) — the schema the
+// migrations applied ({{ .MigrationsDir }}/*.up.sql, in order) — the schema the
 // generated CRUD code runs against in production.
 func crudTestDB(t *testing.T) orm.Context {
 	t.Helper()

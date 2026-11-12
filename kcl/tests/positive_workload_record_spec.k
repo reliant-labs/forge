@@ -45,6 +45,7 @@ _all = [
         priorityClassName = "demo-platform"
         enableServiceLinks = True
         strategy = "Recreate"
+        preStopSeconds = 10
     }
     fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10, serves = ["blobs", "index"]}
     fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily"}
@@ -80,11 +81,12 @@ assert_spec_byte_equal = all n in _record {
 }
 # And not vacuously: the covered fields actually made it into the spec.
 _api = _record["api"]
-assert_fields_present = all k in ["kind", "image", "command", "args", "replicas", "resources", "ports", "env", "namespacedRBAC", "serviceAccountAnnotations", "sidecars", "volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName", "enableServiceLinks", "strategy", "probes"] {
+assert_fields_present = all k in ["kind", "image", "command", "args", "replicas", "resources", "ports", "env", "namespacedRBAC", "serviceAccountAnnotations", "sidecars", "volumes", "nodeSelector", "tolerations", "podAnnotations", "priorityClassName", "enableServiceLinks", "strategy", "preStopSeconds", "probes"] {
     k in _api
 }
 # The opt-in reaches the wire spec; a workload that never sets it carries nothing.
 assert_service_links_opt_in = _api.enableServiceLinks == True and "enableServiceLinks" not in _record["store"]
+assert_pre_stop = _api.preStopSeconds == 10 and "preStopSeconds" not in _record["store"]
 assert_storage = _record["store"].storageGiB == 10
 assert_cron = _record["nightly"].schedule == "@daily" and _record["nightly"].kind == "cron"
 assert_before = _record["migrate"].before == ["*"]

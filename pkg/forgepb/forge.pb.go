@@ -99,7 +99,7 @@ type StoreAs int32
 const (
 	// Inferred from the protobuf type (default behavior).
 	StoreAs_STORE_AS_UNSPECIFIED StoreAs = 0
-	// Store as a JSONB column (PostgreSQL) or JSON text (SQLite).
+	// Store as a JSONB column.
 	StoreAs_STORE_AS_JSONB StoreAs = 1
 	// Store as a TEXT column.
 	StoreAs_STORE_AS_TEXT StoreAs = 2

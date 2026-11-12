@@ -245,6 +245,17 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 		return TraceResult{}, compileErr(err)
 	}
 	res := TraceResult{TraceID: id, Statements: []Statement{stmt("trace spans", st)}}
+	// The whole trace's counts, run only when the span read is truncated.
+	names, err := obsquery.TraceSpanGroups{Scope: whole, TraceID: id}.Compile()
+	if err != nil {
+		return res, compileErr(err)
+	}
+	runs, err := obsquery.TraceSpanGroups{Scope: whole, TraceID: id, Siblings: true}.Compile()
+	if err != nil {
+		return res, compileErr(err)
+	}
+	when := fmt.Sprintf(" (run only when the trace has more than %d spans)", obsquery.MaxSpansPerTrace)
+	res.Statements = append(res.Statements, stmt("trace spans by name"+when, names), stmt("trace sibling runs"+when, runs))
 	logLimit := req.LogLimit
 	var lq obsquery.LogQuery
 	var lst obsquery.Stmt
@@ -281,6 +292,20 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 		return res, Wrong("no trace %s in the local ClickStack for %s — traces are kept 72h, and a trace is only stored once its spans have been exported", id, rangeText(req.Range)).
 			With(Cmd("forge", "obs", "traces", l.Env, "--since", "1h"))
 	}
+	if res.SpansTruncated {
+		// Each count reads every span of the trace; they run at once.
+		var runsErr error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			res.SiblingRuns, res.SiblingRunsTruncated, _, runsErr = l.spanGroups(ctx, runs)
+		}()
+		res.SpanNames, res.SpanNamesTruncated, res.SpansInTrace, err = l.spanGroups(ctx, names)
+		<-done
+		if joined := errors.Join(err, runsErr); joined != nil {
+			return res, joined
+		}
+	}
 	if logLimit > 0 {
 		lr, err := l.run(ctx, lst, DefaultLimits())
 		if err != nil {
@@ -298,6 +323,37 @@ func (l Local) Trace(ctx context.Context, req TraceRequest) (TraceResult, error)
 		}
 	}
 	return res, nil
+}
+
+// spanGroups runs a TraceSpanGroups statement: its rows, whether they stopped
+// at the cap, and the spans the rows sum to before the LIMIT.
+func (l Local) spanGroups(ctx context.Context, st obsquery.Stmt) ([]SpanGroup, bool, int, error) {
+	r, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return nil, false, 0, err
+	}
+	var out []SpanGroup
+	total := 0
+	for _, row := range r.Rows {
+		if len(row) < 11 {
+			return nil, false, 0, Undetermined("the local ClickStack returned %d columns for a trace's span counts, want 11", len(row))
+		}
+		total = int(AsInt(row[5]))
+		if len(out) == obsquery.MaxTraceSpanGroups {
+			return out, true, total, nil
+		}
+		g := SpanGroup{
+			ParentID: AsString(row[0]), Service: AsString(row[1]), Name: AsString(row[2]),
+			StatusCode: strings.ToLower(strings.TrimPrefix(AsString(row[3]), "STATUS_CODE_")),
+			Count:      int(AsInt(row[4])), Total: time.Duration(AsInt(row[6])),
+			Min: time.Duration(AsInt(row[7])), Max: time.Duration(AsInt(row[8])), Errors: int(AsInt(row[10])),
+		}
+		if q := AsFloats(row[9]); len(q) == 2 {
+			g.P50, g.P95 = time.Duration(finite(q[0])), time.Duration(finite(q[1]))
+		}
+		out = append(out, g)
+	}
+	return out, false, total, nil
 }
 
 func spanOf(row []any) Span {

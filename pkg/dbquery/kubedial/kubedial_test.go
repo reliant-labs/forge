@@ -317,6 +317,7 @@ func TestConnWriteDeadlineAndClose(t *testing.T) {
 	c2 := newConn(cl2, "x")
 	errc := make(chan error, 1)
 	go func() { _, err := c2.Read(make([]byte, 1)); errc <- err }()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: lets the Read block before Close; a Read that starts after Close fails at once, so a short wait only makes the check easier, never fail
 	time.Sleep(20 * time.Millisecond)
 	_ = c2.Close()
 	_ = c2.Close()

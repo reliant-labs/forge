@@ -710,6 +710,15 @@ schema Workload:
     # Overrides the grace period Go derives from the drain env
     # (PRE_STOP_DELAY + SHUTDOWN_TIMEOUT). Full profile only.
     terminationGracePeriodSeconds?: int
+    # Seconds a stopping pod keeps running before SIGTERM, so load balancers
+    # drop it from its Service first: for a server forge did not build (a
+    # DockerBuild, a third-party image), which reads no PRE_STOP_DELAY and
+    # closes its listener while still routed. A forge-built server needs
+    # none. Rendered as the main container's preStop `sleep` (Kubernetes
+    # 1.30+; no shell needed in the image), and the derived grace period
+    # grows by it. 0-120; long-running kinds only. On the host runtime
+    # `forge env down` waits this much longer before SIGKILL.
+    preStopSeconds?: int
     # A job or cron run's deadline. On the host runtime it is the process
     # timeout.
     activeDeadlineSeconds?: int

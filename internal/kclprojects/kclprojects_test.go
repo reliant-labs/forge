@@ -219,7 +219,7 @@ func TestResolveRefusesAnUnrequiredModule(t *testing.T) {
 	root := t.TempDir()
 	kclRoot := importer(t, root, "", pinA)
 	_, err := Resolve(kclRoot)
-	wantErr(t, err, "does not require", "go get "+producerMod+"@<version>", "kpm git dependency")
+	wantErr(t, err, "does not require", "go get "+producerMod+"@<version>", "pin it by git instead", `repo = "<host/owner/name>"`)
 }
 
 func TestResolveRefusesForgeVersionSkew(t *testing.T) {

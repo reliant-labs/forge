@@ -7,32 +7,30 @@ import (
 )
 
 // NullTime is a nullable timestamp scanner that tolerates every
-// representation forge's supported engines hand back for a timestamp
-// column:
+// representation the postgres driver hands back for a timestamp:
 //
-//   - time.Time (Postgres via pgx/stdlib; SQLite when the declared type
-//     is one the driver recognizes),
-//   - string / []byte (SQLite for declared types like TIMESTAMPTZ, which
-//     mattn/go-sqlite3 does NOT auto-convert — it only recognizes
-//     "timestamp", "datetime" and "date" verbatim),
+//   - time.Time (a timestamp/timestamptz/date column, decoded by pgx),
+//   - string / []byte (the same value selected as text — a `::text` cast, a
+//     `->>` JSON extraction, a text column holding timestamps — in postgres's
+//     own output format or RFC 3339),
 //   - nil (NULL column).
 //
-// database/sql's own sql.NullTime rejects the string forms, which made
-// generated entity scans fail at runtime against the SQLite test
-// harness. Generated *_orm.go scan code uses this type instead.
+// database/sql's own sql.NullTime rejects the text forms. Generated
+// *_orm.go scan code uses this type instead.
 type NullTime struct {
 	Time  time.Time
 	Valid bool
 }
 
 // nullTimeFormats are tried in order when a timestamp arrives as text.
-// The first three are SQLite's canonical storage formats (see
-// mattn/go-sqlite3 SQLiteTimestampFormats); RFC 3339 covers values
-// written by other tools.
+// The first two are postgres's ISO DateStyle output for timestamptz — an
+// offset of whole hours prints as "+00", any other as "+05:30" — and the
+// third its output for timestamp without time zone; RFC 3339 covers values
+// written by other tools (JSON documents, mostly).
 var nullTimeFormats = []string{
+	"2006-01-02 15:04:05.999999999-07",
 	"2006-01-02 15:04:05.999999999-07:00",
 	"2006-01-02 15:04:05.999999999",
-	"2006-01-02 15:04:05",
 	time.RFC3339Nano,
 	time.RFC3339,
 	"2006-01-02",

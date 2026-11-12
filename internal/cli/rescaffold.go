@@ -159,6 +159,13 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 	// Refuse up front, before anything is written: a batch that is half
 	// applied and half refused is harder to reason about than one that did
 	// nothing.
+	for _, p := range paths {
+		if glob, ok := checksums.ExcludedBy(root, p); ok {
+			return rescaffoldErr(paths,
+				fmt.Sprintf("%s is excluded by scaffold.exclude %q in forge.yaml — forge never writes there", p, glob),
+				"remove or narrow that glob first if you want forge's version of the file back")
+		}
+	}
 	var present []string
 	for _, p := range paths {
 		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(p))); statErr == nil {

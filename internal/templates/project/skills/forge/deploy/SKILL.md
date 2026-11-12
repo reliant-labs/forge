@@ -75,6 +75,7 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | several repos, any language: a shared infra/envs repo, or one deploy repo building N app repos at pinned refs | `deploy/polyrepo` |
 | "never deploy older than X"; a `below_rollback_floor` refusal; declaring an API/feature/data change that cannot be rolled back past | `deploy/rollback-floor` |
 | a cut that died mid-push; control plane unreachable; the k3d registry mirror | `deploy/interrupted-cut`, `deploy/offline-ledger`, `deploy/k3d-registry` |
+| your own CI deploys; forge only records each deploy (`forge release record`) for monitoring | `deploy/record` |
 
 ## Rules
 

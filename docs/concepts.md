@@ -758,6 +758,10 @@ waitlist or a checkout, the API is its own forge project beside it.
 where the whole structure is yours from the first commit. An existing app
 doesn't have to wait for that. Forge builds and deploys code it never compiled,
 so a service in any language gets environments, secrets, release promotion and
-some monitoring as it is, and a Vite or Next.js app is adopted in place. Move
+some monitoring as it is, and a Vite or Next.js app is adopted in place. A team
+whose own CI keeps deploying adds one step after its deploy job, `forge release
+record --env prod --version "$TAG"`, and monitoring gets a deploy marker and a
+per-release verdict (`forge obs check`) without forge building or applying
+anything (`forge skill load deploy/record`). Move
 code onto Forge's structure over time as it earns it: `forge skill load
 migration` is the playbook.

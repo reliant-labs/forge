@@ -793,6 +793,17 @@ func firstOf(s string, words ...string) string {
 
 var credentialName = regexp.MustCompile(`(?i)(SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIAL|_KEY$|^KEY$|DSN)`)
 
+// credentialURL matches a URL carrying userinfo (redis://:pass@cache,
+// amqp://user:pass@mq, https://token@host) or a credential in its query.
+var credentialURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/?#\s@]+@|[?&](password|passwd|pwd|token|secret|api_?key|access_?key|sig|signature)=`)
+
+// credentialValue reports a value that carries a credential whatever its
+// variable is named, so it becomes a secret and never a literal in
+// workloads.k or --dry-run output.
+func credentialValue(v string) bool {
+	return credentialURL.MatchString(v)
+}
+
 var invalidWorkloadChars = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // workloadName makes a compose service or directory name a DNS label.
@@ -947,7 +958,13 @@ func (d *appDetection) composeWorkload(root string, s composeService, pg *compos
 		w.Command = s.command
 		w.CommandSource = fmt.Sprintf("compose service %q's command", s.name)
 	}
+	// A worker command compose runs in place of a shared image's CMD
+	// inherits that image's EXPOSE and ENV PORT, which are the web
+	// process's: unless compose publishes a port or the command binds one,
+	// it listens on nothing.
+	overriddenWorker := s.commandRaw != "" && len(s.ports) == 0 && portInCommand(cmdRaw) == 0 && looksLikeWorker(s.name, cmdRaw)
 	switch {
+	case overriddenWorker:
 	case len(s.ports) > 0:
 		w.Port, w.PortSource = s.ports[0], fmt.Sprintf("the container port compose service %q publishes", s.name)
 	case len(facts.expose) > 0:
@@ -983,7 +1000,7 @@ func (d *appDetection) composeWorkload(root string, s composeService, pg *compos
 			w.UsesDatabase = true
 			w.DatabaseEnv = append(w.DatabaseEnv, k)
 			d.assumed = append(d.assumed, fmt.Sprintf("%s reads its database URL from %s; hosting delivers a postgres:// URL there (SQLAlchemy wants postgresql://: adjust in the app if it refuses it)", name, k))
-		case strings.Contains(v, "${") || credentialName.MatchString(k):
+		case strings.Contains(v, "${") || credentialName.MatchString(k) || credentialValue(v):
 			w.Secrets = append(w.Secrets, k)
 			d.addSecret(k)
 		default:

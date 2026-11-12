@@ -502,3 +502,102 @@ func TestSplitComposeCommand(t *testing.T) {
 		}
 	}
 }
+
+// A credential travels in a value as often as in a name: an authenticated
+// URL under any name becomes a secret, never a literal in a generated file
+// or the --dry-run output (which prints those files and the summary), in
+// claimable prod too.
+func TestDetectApp_CredentialURLsBecomeSecrets(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"Dockerfile": "FROM python:3.12-slim\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+		"docker-compose.yml": `services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://default:hunter2redis@cache:6379/0
+      BROKER: amqp://guest:hunter2amqp@mq:5672//
+      UPSTREAM: https://hunter2token@api.example.com/v1
+      SEARCH_ENDPOINT: https://search.example.com/q?api_key=hunter2query
+      CACHE_HOST: redis://cache:6379/0
+`,
+	})
+	for _, claimable := range []bool{false, true} {
+		det, err := detectApp(root, "shop", claimable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := det.spec.Workloads[0]
+		if strings.Join(w.Secrets, ",") != "REDIS_URL,BROKER,UPSTREAM,SEARCH_ENDPOINT" {
+			t.Errorf("secrets = %v, want every authenticated URL", w.Secrets)
+		}
+		if w.Env["CACHE_HOST"] != "redis://cache:6379/0" {
+			t.Errorf("env = %v, want the credential-free URL kept literal", w.Env)
+		}
+		files, err := generator.RenderAppScaffold(det.spec, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := strings.Join(append(append(det.detected, det.assumed...), det.skipped...), "\n")
+		for _, f := range files {
+			out += "\n" + string(f.Content)
+		}
+		if strings.Contains(out, "hunter2") {
+			t.Errorf("claimable=%v: a credential reached the generated files or summary:\n%s", claimable, out)
+		}
+	}
+}
+
+// A worker sharing the web Dockerfile inherits its EXPOSE and ENV PORT, but
+// its compose command serves neither: it is a worker, with no public port
+// and no TCP probe.
+func TestDetectApp_SharedImageWorkerIgnoresWebPort(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"requirements.txt": "flask==3.0.0\ngunicorn==22.0.0\ncelery==5.4.0\n",
+		"Dockerfile":       "FROM python:3.12-slim\nENV PORT=8000\nEXPOSE 8000\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+		"docker-compose.yml": `services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+  jobs:
+    build: .
+    command: celery -A app.tasks worker
+`,
+	})
+	det, err := detectApp(root, "shop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jobs *generator.AppWorkload
+	for i := range det.spec.Workloads {
+		if det.spec.Workloads[i].Name == "jobs" {
+			jobs = &det.spec.Workloads[i]
+		}
+	}
+	if jobs == nil || jobs.Kind != "worker" || jobs.Port != 0 || jobs.Expose {
+		t.Fatalf("jobs = %+v, want a worker with no port, not exposed", jobs)
+	}
+	files, err := generator.RenderAppScaffold(det.spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path != "deploy/kcl/workloads.k" {
+			continue
+		}
+		body := string(f.Content)
+		i := strings.Index(body, "name = \"jobs\"")
+		if i < 0 {
+			t.Fatalf("no jobs workload:\n%s", body)
+		}
+		block := body[i:]
+		if j := strings.Index(block[1:], "name = \""); j >= 0 {
+			block = block[:j+1]
+		}
+		if strings.Contains(block, "port") || strings.Contains(strings.ToLower(block), "tcp") {
+			t.Errorf("the worker carries a port or tcp probe:\n%s", block)
+		}
+	}
+}

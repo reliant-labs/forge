@@ -2982,6 +2982,7 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 		Path:          f.Path,
 		DevRunner:     f.DevRunner,
 		BuildEnv:      buildEnv,
+		WellKnown:     maps.Clone(f.WellKnown),
 		Project:       f.Project,
 		VersionEnvVar: frontendVersionEnvVar(f.Type),
 		Sourcemaps:    f.Sourcemaps,
@@ -3048,6 +3049,7 @@ func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
 		}
 	}
 	return deploytarget.StaticSiteFrontend{
+		WellKnown:     maps.Clone(f.WellKnown),
 		Name:          f.Name,
 		Path:          f.Path,
 		DevRunner:     f.DevRunner,

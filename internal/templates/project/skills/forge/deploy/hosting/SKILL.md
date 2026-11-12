@@ -100,6 +100,7 @@ it as `claim` (`state`, `url`, `claim_url`, `expires_at`, `purge_after`,
 
 | Rule | Detail |
 |---|---|
+| Adopts a bare app | In a directory with no `forge.yaml` that holds a Vite or Next.js static export at its root (or an app with its own Dockerfile), `--claimable` first runs `forge project new --in-place` for it (`--kind site`, or `--kind app --claimable`), prints one line saying it added `forge.yaml` and `deploy/kcl/` and left the app's own files untouched, then deploys. A Go module with no Dockerfile, or a directory with no app, is refused with the command to run instead. Only `--claimable` adopts: a plain `forge env deploy` needs an existing project. `npx -y @reliantlabs/forge env deploy prod --claimable` is the whole procedure for a fresh `npm create vite` app |
 | Only with the flag | There is no auto-detection. With no credential, a plain `forge env deploy` fails and its error names `--claimable` |
 | Signed in? Refused (exit 1) | A user with a login or `$FORGE_CREDENTIAL_HELPER` deploys to their own org: drop the flag |
 | Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |

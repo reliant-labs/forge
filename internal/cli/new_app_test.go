@@ -207,7 +207,7 @@ func TestNewApp_WritesOnlyTheDeclarations(t *testing.T) {
 		}
 	}
 	sort.Strings(added)
-	want := "deploy/kcl/dev/main.k,deploy/kcl/kcl.mod,deploy/kcl/prod/main.k,deploy/kcl/staging/main.k,deploy/kcl/workloads.k,forge.yaml"
+	want := "deploy/kcl/dev/main.k,deploy/kcl/kcl.mod,deploy/kcl/kcl.mod.lock,deploy/kcl/prod/main.k,deploy/kcl/staging/main.k,deploy/kcl/workloads.k,forge.yaml"
 	if strings.Join(added, ",") != want {
 		t.Errorf("added %v, want exactly %s", added, want)
 	}

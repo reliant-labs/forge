@@ -337,7 +337,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 
 	if !opts.DryRun && opts.Confirm != nil {
-		plan.renderForConfirmation(opts.JSON)
+		plan.renderForConfirmation(opts.JSON, *opts.Confirm)
 		outcome := confirmDeployPlan(env, plan, *opts.Confirm, opts.JSON)
 		if outcome.Err != nil {
 			return outcome.Err

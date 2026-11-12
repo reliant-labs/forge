@@ -139,7 +139,11 @@ type deployReuseQuery struct {
 	Provenance release.Provenance
 	// Changes are the checkout's uncommitted paths and ignored nested
 	// checkouts. Wording only: Provenance.Dirty decides.
-	Changes  release.Changes
+	Changes release.Changes
+	// Adopted are the files an auto-adoption wrote in this very run, relative
+	// to the project root. When they are all that is uncommitted, the reason
+	// says so instead of warning about the user's changes.
+	Adopted  []string
 	Releases releaseLedger
 	Now      time.Time
 }
@@ -195,6 +199,7 @@ func decideDeployRelease(ctx context.Context, projectDir, envName string, ledger
 		Env:        envName,
 		Provenance: captureReleaseProvenance(ctx, projectDir),
 		Changes:    inspectDeployCheckout(ctx, projectDir),
+		Adopted:    adoptedPathsFrom(ctx),
 		Releases:   ledger.Releases,
 		Now:        time.Now(),
 	})
@@ -207,6 +212,8 @@ func chooseDeployReleaseFor(ctx context.Context, q deployReuseQuery) deployRelea
 	switch {
 	case q.Provenance.Tree == "":
 		return cut("this checkout's tree could not be hashed, so no recorded release can be shown to hold the same content")
+	case q.Provenance.Dirty && onlyAdoptedPaths(q.Changes.Paths, q.Adopted):
+		return cut("forge added" + describePaths(q.Adopted) + " to this app a moment ago and git has not seen them yet, so no recorded release can match this tree (commit them, and the next deploy of the same tree reuses its release)")
 	case q.Provenance.Dirty:
 		return cut("the checkout has uncommitted changes" + describePaths(q.Changes.Paths) + ", and only a clean tree — whose hash git can check against its commit — is matched to an existing release")
 	case q.Releases == nil:

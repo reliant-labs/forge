@@ -16,6 +16,7 @@ package kclrender
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -314,7 +315,7 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 			defer restore()
 		}
 		return c.Run(
-			client.WithRunSourceUrl(kpmSourceURL(source)),
+			client.WithRunSourceUrl(kpmRunSource(workDir, source)),
 			client.WithWorkDir(workDir),
 			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(withPreviewDArgs(source, dArgs)))),
 			client.WithExternalPkgs(externalPkgs),
@@ -370,6 +371,30 @@ func absPaths(workDir, source string) (string, string, error) {
 // accepts forward slashes in every file API. A no-op on POSIX.
 func kpmSourceURL(source string) string {
 	return filepath.ToSlash(source)
+}
+
+// kpmRunSource is the source handed to kpm for a render in workDir.
+//
+// kpm percent-encodes the source when it re-serializes it and never decodes it
+// again, so an absolute path with a space (a project in "My Landing") reached
+// the filesystem as `My%20Landing` and every render failed with "Cannot find
+// the kcl file". A source under workDir is handed over relative to it instead,
+// which kpm resolves against workDir; that keeps the offending directory name
+// out of the URL. A source that survives the round trip, or one outside
+// workDir, goes as before.
+func kpmRunSource(workDir, source string) string {
+	abs := kpmSourceURL(source)
+	if (&url.URL{Path: abs}).EscapedPath() == abs {
+		return abs
+	}
+	rel, err := filepath.Rel(workDir, source)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return abs
+	}
+	if relSlash := kpmSourceURL(rel); (&url.URL{Path: relSlash}).EscapedPath() == relSlash {
+		return relSlash
+	}
+	return abs
 }
 
 // chdir moves the process to dir and returns a func restoring the previous

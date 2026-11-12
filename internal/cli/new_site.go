@@ -196,7 +196,7 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 
 	fmt.Printf("✅ Static site '%s' adopted at %s\n", in.projectName, in.targetPath)
 	fmt.Printf("   frontend %q: the %s app at the root (path \".\", builds into %s/)\n", fe.Name, fe.Type, fe.PublicDir)
-	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod, deploy/kcl/{dev,staging,prod}/main.k — no Go, no server")
+	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod (+ its empty kcl.mod.lock), deploy/kcl/{dev,staging,prod}/main.k — no Go, no server")
 	fmt.Println("   Existing app: session recording remains off. To opt in, initialize browser telemetry and enable _session_replay in each env (forge skill load frontend-runtime/telemetry).")
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)

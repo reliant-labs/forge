@@ -83,6 +83,9 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 	if err := writeSiteFile(dir, filepath.Join("deploy", "kcl", "kcl.mod"), kclMod); err != nil {
 		return err
 	}
+	if err := writeSiteFile(dir, filepath.FromSlash(kclModLockPath), nil); err != nil {
+		return err
+	}
 
 	envs := append([]string{codegen.DevEnvName}, hostedEnvNames()...)
 	for _, env := range envs {
@@ -108,6 +111,13 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 	}
 	return nil
 }
+
+// kclModLockPath is the lock kpm writes beside deploy/kcl/kcl.mod on the first
+// render. A scaffold's kcl.mod has no dependencies, so kpm writes it byte-empty
+// and the same every time; writing it with the scaffold puts it in the user's
+// first commit, where the render that would otherwise create it after that
+// commit makes the checkout look dirty to the next deploy.
+const kclModLockPath = "deploy/kcl/kcl.mod.lock"
 
 // siteGitignore keeps forge's per-developer state out of a site's commits
 // while keeping the ledger and ownership records that are shared: the same

@@ -544,6 +544,10 @@ type promotePlan struct {
 	// what decides whether the footer reports what shipped or names the
 	// deploy that will ship it.
 	followed bool
+	// pending is set on the plan a real (not --plan, not --plan-only) deploy
+	// prints before it writes: the plan is a preview of what the next lines
+	// do, so it must not call itself a dry run.
+	pending planPending
 	// NextStep is the command that actually ships these digests.
 	NextStep string `json:"next_step"`
 	// Note is the human phrasing of ShipsNothing.
@@ -1399,10 +1403,28 @@ func renderPromotePlanHeadline(out io.Writer, plan promotePlan) {
 		} else {
 			fmt.Fprintf(out, "Promoted env %q → release %s\n", plan.Env, plan.Target.Release)
 		}
+	case plan.pending == planApproved:
+		fmt.Fprintf(out, "PLAN (approved — recording and publishing follow): promote env %q → release %s\n", plan.Env, plan.Target.Release)
+	case plan.pending == planAwaitingApproval:
+		fmt.Fprintf(out, "PLAN (nothing is written until you approve it): promote env %q → release %s\n", plan.Env, plan.Target.Release)
 	default:
 		fmt.Fprintf(out, "PLAN (dry run — nothing was written): promote env %q → release %s\n", plan.Env, plan.Target.Release)
 	}
 }
+
+// planPending is what stands between a real deploy's printed plan and its
+// write. The zero value is a plan that never writes (--plan, --plan-only).
+type planPending int
+
+const (
+	// planNotPending: the plan writes nothing, whatever happens next.
+	planNotPending planPending = iota
+	// planApproved: --yes, --approve or a claimable deploy already consented;
+	// recording and publishing follow at once.
+	planApproved
+	// planAwaitingApproval: a prompt (or a refusal) decides whether it writes.
+	planAwaitingApproval
+)
 
 func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	renderPromotePlanHeadline(out, plan)
@@ -1554,10 +1576,14 @@ func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
 		}
 	case plan.Applied:
 		fmt.Fprintf(out, "  SHIPS NOTHING: the binding moved; no image reaches %s until you run the deploy below.\n", plan.Env)
+	case plan.pending == planApproved:
+		fmt.Fprintf(out, "  Next:     record this binding, then ship it to %s.\n", plan.Env)
+	case plan.pending == planAwaitingApproval:
+		fmt.Fprintf(out, "  Not yet written: approving it records this binding and ships it to %s.\n", plan.Env)
 	default:
 		fmt.Fprintf(out, "  NOTHING WRITTEN: re-run without --plan to record this binding. Even then, no image ships until the deploy below.\n")
 	}
-	if !plan.followed {
+	if !plan.followed && plan.pending == planNotPending {
 		fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
 	}
 	fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
@@ -1604,4 +1630,21 @@ func (p *promotePlan) recordFollow(shipped *shipLog, err error) {
 	if err != nil {
 		p.FollowError = err.Error()
 	}
+	p.Note = p.followNote()
+}
+
+// followNote replaces the promote-only sentence ("writes a POINTER and ships
+// nothing") once a deploy has run its follow-through: that sentence is false
+// of a deploy that published, and a document that says it ships nothing after
+// a site went live is the lie ShipsNothing exists to prevent.
+func (p promotePlan) followNote() string {
+	switch {
+	case p.FollowError != "" && p.shippedAnything():
+		return fmt.Sprintf("the deploy recorded %s for %s and failed after part of it reached a live target (see shipped and partly_shipped)", p.Target.Release, p.Env)
+	case p.FollowError != "":
+		return fmt.Sprintf("the deploy recorded %s for %s and failed before shipping anything to a live target", p.Target.Release, p.Env)
+	case p.shippedAnything():
+		return fmt.Sprintf("the deploy recorded %s for %s and shipped it (see shipped)", p.Target.Release, p.Env)
+	}
+	return fmt.Sprintf("the deploy recorded %s for %s; nothing was shipped from this machine — %s's control plane applies it", p.Target.Release, p.Env, p.Env)
 }

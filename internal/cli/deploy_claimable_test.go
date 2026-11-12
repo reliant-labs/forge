@@ -48,6 +48,8 @@ type fakeClaimableControlPlane struct {
 	// holdChallenge, when set, makes GetClaimableChallenge wait until the
 	// request is cancelled (or the channel closes): a deploy in flight.
 	holdChallenge chan struct{}
+	// project and env are what Start must be asked for; empty is acme/hosted.
+	project, env string
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +101,7 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 			})
 			return
 		}
-		if req.Project != "acme" || req.Env != "hosted" || req.DeviceID == "" || req.PoWChallenge != "signed-challenge" || req.PoWNonce == "" {
+		if req.Project != emptyAs(f.project, "acme") || req.Env != emptyAs(f.env, "hosted") || req.DeviceID == "" || req.PoWChallenge != "signed-challenge" || req.PoWNonce == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": "invalid_argument", "message": "bad start request"})
 			return

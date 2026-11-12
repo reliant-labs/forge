@@ -126,16 +126,21 @@ func TestFrontendDashboardLeavesProductFunnelsToTheProductDashboard(t *testing.T
 		t.Fatalf("declaredFunnels dropped a funnel: %+v", funnels)
 	}
 	spec := obsdash.Build(obsdash.Input{Project: "acme", Frontends: []string{"web"}, Funnels: funnels})
-	var ids []string
+	ids := map[string][]string{}
 	for _, d := range spec.Dashboards {
 		for _, p := range d.Panels {
 			if strings.HasPrefix(p.ID, "funnel-") {
-				ids = append(ids, p.ID)
+				ids[d.ID] = append(ids[d.ID], p.ID)
 			}
 		}
 	}
-	if !reflect.DeepEqual(ids, []string{"funnel-onboarding"}) {
-		t.Errorf("frontend dashboard funnel panels = %v, want only the session funnel", ids)
+	if !reflect.DeepEqual(ids["frontend"], []string{"funnel-onboarding"}) {
+		t.Errorf("frontend dashboard funnel panels = %v, want only the session funnel", ids["frontend"])
+	}
+	// The built-in visit → sign-up → activation funnel, then the declared
+	// visitor and person funnels.
+	if !reflect.DeepEqual(ids["product"], []string{"funnel-activation", "funnel-buy", "funnel-land"}) {
+		t.Errorf("product dashboard funnel panels = %v, want the built-in one and the visitor and person funnels", ids["product"])
 	}
 }
 

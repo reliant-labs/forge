@@ -103,7 +103,7 @@ func TestFirstRunSendsOneBatchWithInstallID(t *testing.T) {
 	for k, want := range map[string]string{
 		"_body": "product.forge_cli_first_run", "event.name": "product.forge_cli_first_run",
 		"app.client": "cli", "app.version": "1.5.0", "visitor.id": c.InstallID(), "org.id": "org-1",
-		"product.harness": "claude", "product.ci": "false", "product.version": "1.5.0",
+		"product.harness": "claude", "product.version": "1.5.0",
 	} {
 		if first[k] != want {
 			t.Errorf("%s = %q, want %q (record %v)", k, first[k], want, first)
@@ -134,7 +134,13 @@ func TestOptOuts(t *testing.T) {
 		{map[string]string{"DO_NOT_TRACK": "1", "FORGE_TELEMETRY": "on"}, "do_not_track"},
 		{map[string]string{"FORGE_TELEMETRY": "off"}, "env_off"},
 		{map[string]string{"CI": "true"}, "ci"},
-		{map[string]string{"CI": "true", "FORGE_TELEMETRY": "on"}, "on"},
+		{map[string]string{"CI": "true", "FORGE_TELEMETRY": "on"}, "ci"}, // nothing turns it on in CI
+		{map[string]string{"CI": "1"}, "ci"},
+		{map[string]string{"GITHUB_ACTIONS": "true"}, "ci"},
+		{map[string]string{"GITLAB_CI": "true", "FORGE_TELEMETRY": "on"}, "ci"},
+		{map[string]string{"BUILDKITE": "true"}, "ci"},
+		{map[string]string{"JENKINS_URL": "https://jenkins.example"}, "ci"},
+		{map[string]string{"CI": "false"}, "on"},
 		{map[string]string{"DO_NOT_TRACK": "0"}, "on"},
 	} {
 		var stderr bytes.Buffer
@@ -303,5 +309,23 @@ func TestQuietEnvSuppressesTheNotice(t *testing.T) {
 	New(cfg)
 	if stderr.Len() == 0 {
 		t.Error("the next ordinary run shows the notice")
+	}
+}
+
+// Owner decision 2: a CI run sends nothing, and its first-run tags never say
+// "ci" (there is nothing to tag: CI runs are not sent).
+func TestCIRunsSendNothing(t *testing.T) {
+	s, srv := newSink(t)
+	var stderr bytes.Buffer
+	c := New(testConfig(t, srv.URL, map[string]string{"CI": "true", "FORGE_TELEMETRY": "on"}, &stderr))
+	c.Track(context.Background(), FirstRunEvent("forge"), c.FirstRunAttrs("")...)
+	c.Flush(context.Background())
+	if len(s.records()) != 0 || stderr.Len() != 0 || c.InstallID() != "" {
+		t.Errorf("a CI run sent %v, printed %q, minted %q", s.records(), stderr.String(), c.InstallID())
+	}
+	for _, a := range New(testConfig(t, srv.URL, nil, &bytes.Buffer{})).FirstRunAttrs("") {
+		if a.Key == "ci" {
+			t.Error("the first-run event must not carry a ci tag")
+		}
 	}
 }

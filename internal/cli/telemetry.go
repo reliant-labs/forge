@@ -5,9 +5,9 @@ package cli
 // `forge telemetry on|off|status`.
 //
 // On by default with a one-time notice on stderr; off with DO_NOT_TRACK=1,
-// FORGE_TELEMETRY=off or `forge telemetry off`, and automatically when
-// CI=true. Only a release build sends anything: the endpoint (the platform's
-// keyed ingest, with a native key for Reliant's forge-cli environment) is
+// FORGE_TELEMETRY=off or `forge telemetry off`, and always on a CI runner
+// (cliev.InCI). Only a release build sends anything: the endpoint (the platform's
+// keyed ingest, with the forge CLI's native key in Reliant's telemetry org) is
 // stamped by scripts/build-release-assets.sh; a dev build has none. An
 // embedded forge (`reliant forge`) never calls Execute, so it sends nothing.
 
@@ -99,7 +99,8 @@ architecture, the coding agent running it) so the Reliant team can see how
 forge is used. Events carry a random install id and never code, paths, names
 or personal data.
 
-It is off when DO_NOT_TRACK=1, FORGE_TELEMETRY=off or CI=true, and after
+It is off when DO_NOT_TRACK=1 or FORGE_TELEMETRY=off, always on a CI runner
+(CI=true, GITHUB_ACTIONS and the like), and after
 ` + "`forge telemetry off`" + `. Development builds never send anything.`,
 	}
 	status := func(cmd *cobra.Command, c *cliev.Client) {

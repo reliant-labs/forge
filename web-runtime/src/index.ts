@@ -162,6 +162,18 @@ export {
   type ExceptionAttributes,
 } from "./error-reporter.js";
 
+/**
+ * Where failed RPCs are reported: installDevLogging installs a sink that
+ * writes each as an `rpc failed procedure=… code=… trace_id=…` error line to
+ * the dev log; an app may install its own.
+ */
+export {
+  formatRpcFailure,
+  setRpcFailureSink,
+  type RpcFailure,
+  type RpcFailureSink,
+} from "./rpc-failure-log.js";
+
 /** The server trace id a failed RPC's error carries (ConnectClientError.traceId). */
 export { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
 

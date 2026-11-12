@@ -78,6 +78,11 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureReleaseHealthBaseline is ShapeReleaseHealth.RequireBaseline:
+	// how many services a release needs a before window to compare against
+	// (forge.ReleaseHealth.require_baseline). A control plane that predates it
+	// is sent the policy without it, and judges by the default (any).
+	BundleFeatureReleaseHealthBaseline = "shape-release-health-baseline"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -146,6 +151,12 @@ const (
 	// that predates it refuses those values, so it is sent only the funnels
 	// counted by "session" or "user".
 	BundleFeatureFunnelPerson = "shape-funnel-person"
+	// BundleFeatureReleaseProbes is Shape.ReleaseProbes, and the release-probe
+	// finding codes (HealthProbeFailed, HealthProbeLatency) in
+	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
+	// nothing for the env, and its validation refuses a finding code it does
+	// not know, so it is sent neither.
+	BundleFeatureReleaseProbes = "shape-release-probes"
 )
 
 // BundleDocFeatures is every optional bundle feature this version's
@@ -153,7 +164,7 @@ const (
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -228,12 +239,33 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureReleaseHealth) {
 		s.ReleaseHealth = nil
+	} else if !r.Supports(BundleFeatureReleaseHealthBaseline) && s.ReleaseHealth != nil && s.ReleaseHealth.RequireBaseline != "" {
+		h := *s.ReleaseHealth
+		h.RequireBaseline = ""
+		if h.IsDefault() {
+			s.ReleaseHealth = nil // all that differed from the default was the baseline
+		} else {
+			s.ReleaseHealth = &h
+		}
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil
 	}
 	if !r.Supports(BundleFeatureUptimeChecks) {
 		s.UptimeChecks = nil
+	}
+	if !r.Supports(BundleFeatureReleaseProbes) {
+		// A probed env that keeps the default policy records none, and the
+		// default now fails on probe_failed. A reader of release health is
+		// sent that policy stated, without the probe codes, so what it judges
+		// by is the producer's policy rather than its own default. An env
+		// without probes is sent as before.
+		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
+			def := DefaultReleaseHealth()
+			s.ReleaseHealth = &def
+		}
+		s.ReleaseProbes = nil
+		s.ReleaseHealth = withoutProbeFindings(s.ReleaseHealth)
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil

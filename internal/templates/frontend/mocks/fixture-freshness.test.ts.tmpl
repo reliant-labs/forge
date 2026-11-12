@@ -153,7 +153,7 @@ async function readMarker(root: string): Promise<FixtureMarker | string> {
 describe("mock fixture freshness", () => {
   it("fixtures were generated from the schema currently on disk", async (ctx) => {
     const root = join(__dirname, PROJECT_ROOT_FROM_FRONTEND);
-    const actual = await computeFingerprint(join(root, "db", "migrations"));
+    const actual = await computeFingerprint(join(root, {{ .MigrationsDirArgs }}));
     const marker = await readMarker(root);
     if (typeof marker === "string") {
       // Not a pass: nothing here can say which inputs these fixtures came

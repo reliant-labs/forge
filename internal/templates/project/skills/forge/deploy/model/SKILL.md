@@ -131,6 +131,16 @@ unit at a time. See deploy/shape; `applier = "flux"`: deploy/flux/self-hosted.
   none (no pause; no shutdown window) and adds nothing;
   `terminationGracePeriodSeconds` overrides it. What the server does inside
   it: `services/shutdown`.
+- **`preStopSeconds`** for a server forge did not build (a `DockerBuild`, a
+  third-party image): it reads no `PRE_STOP_DELAY`, so it closes its
+  listener while load balancers still route to it, and every rollout drops
+  requests. `preStopSeconds = 15` renders the main container's preStop
+  `sleep` (a native Kubernetes 1.30+ action: no shell or `sleep` binary in
+  the image) and adds 15 to the derived grace period. 0-120, long-running
+  kinds, allowed on hosted; an explicit `terminationGracePeriodSeconds` must
+  be at least `preStopSeconds + 5`. On the host runtime `forge env down`
+  waits that long before SIGKILL; compose refuses it (the compose file's
+  `stop_grace_period` owns the stop). A forge-built server needs none.
 - **Rollout safety** above one replica: a PodDisruptionBudget and soft
   topology spread. On nodes shared with ranked pods, also declare
   `priorityClassName` — see `deploy/pod-priority`.

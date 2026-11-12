@@ -282,6 +282,7 @@ func TestStreamDrainInterceptor_LeavesUnaryAndClientStreamsToTheDrain(t *testing
 	<-inUpload
 
 	drained := drainInBackground(httpSrv, streams)
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a drain that wrongly ends in-flight calls the chance to; a correct drain passes however long this takes
 	time.Sleep(200 * time.Millisecond) // the drain is underway; nothing may end them
 	close(release)
 	if err := <-unaryDone; err != nil {

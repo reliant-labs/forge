@@ -28,6 +28,7 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newDisownCmd())
 	cmd.AddCommand(newRescaffoldCmd())
 	cmd.AddCommand(newScaffoldedCmd())
+	cmd.AddCommand(newPruneCmd())
 	cmd.AddCommand(newMigrateCmd())
 	cmd.AddCommand(newUpgradeCmd())
 	cmd.AddCommand(newMapCmd())

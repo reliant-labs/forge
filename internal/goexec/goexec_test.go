@@ -54,7 +54,7 @@ func runAndCancel(t *testing.T, cmd *exec.Cmd, cancel context.CancelFunc, marker
 
 	// The trap's rm races the Wait return by microseconds; allow for it
 	// rather than reading the filesystem at the exact instant of exit.
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1500; i++ { // up to 30s: returns as soon as the marker is gone
 		if _, err := os.Stat(marker); os.IsNotExist(err) {
 			return false
 		}

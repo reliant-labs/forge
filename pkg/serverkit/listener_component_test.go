@@ -218,13 +218,8 @@ func TestListener_DrainEndsOnlyItsOwnStreams(t *testing.T) {
 	if err := a.Drain(ctx); err != nil {
 		t.Fatalf("Drain: %v", err)
 	}
-	select {
-	case name := <-ended:
-		if name != "a" {
-			t.Fatalf("drain of listener a ended %q's stream", name)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("drain did not end the listener's own stream")
+	if name := receive(t, "the drain to end the listener's own stream", ended); name != "a" {
+		t.Fatalf("drain of listener a ended %q's stream", name)
 	}
 	if n := b.Streams().Active(); n != 1 {
 		t.Fatalf("listener b holds %d streams after a drained, want 1", n)

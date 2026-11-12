@@ -50,7 +50,7 @@ func TestVerdicts(t *testing.T) {
 		{"a clear failure fails while the window is open", input(t, false, svc("api", 1000, 1000, 0, 0.2, 100, 100)), Fail, []string{release.HealthErrorRate}},
 		{"latency alone only warns by default", input(t, true, svc("api", 1000, 1000, 0, 0, 100, 400)), Pass, []string{release.HealthLatency}},
 		{"increase exactly at the limit does not fire", input(t, true, svc("api", 1000, 1000, 0.01, 0.02, 100, 100)), Pass, nil},
-		{"no before traffic: latency is not judged", input(t, true, svc("api", 0, 1000, 0, 0, 0, 900)), Pass, nil},
+		{"no before traffic: nothing to compare, so inconclusive", input(t, true, svc("api", 0, 1000, 0, 0, 0, 900)), Inconclusive, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

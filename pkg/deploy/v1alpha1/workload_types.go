@@ -372,6 +372,26 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Maximum=3600
 	TerminationGracePeriodSeconds *int32 `json:"terminationGracePeriodSeconds,omitempty"`
 
+	// PreStopSeconds is how long a stopping pod keeps running before it is
+	// sent SIGTERM, so the load balancers routing to it see it leave its
+	// Service's endpoints first. A forge-built server needs none: on SIGTERM
+	// it fails /readyz and keeps serving for PRE_STOP_DELAY itself. An image
+	// forge did not build (a DockerBuild, a third-party server) reads neither
+	// knob and closes its listener while it is still routed, so requests
+	// reach a dead socket during every rollout. This pauses it instead.
+	//
+	// Kubernetes renders it as the main container's preStop `sleep` action
+	// (no shell or `sleep` binary needed in the image; Kubernetes 1.30+), and
+	// the drain-derived grace period grows by it, because the kubelet counts
+	// the pause against the grace. An explicit TerminationGracePeriodSeconds
+	// must leave at least 5 seconds after the pause. On the host runtime,
+	// `forge env down` waits this much longer before escalating to SIGKILL.
+	// Long-running kinds only. Unset or 0 is no pause.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=120
+	PreStopSeconds *int32 `json:"preStopSeconds,omitempty"`
+
 	// ActiveDeadlineSeconds bounds a job or cron run: Kubernetes fails the
 	// Job (Job.spec.activeDeadlineSeconds) once it has run this long, and
 	// the host runtime kills the process. A one-shot that can hang would

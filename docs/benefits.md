@@ -132,6 +132,38 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project rescaffold`
 - command `forge project scaffolded`
 
+<a id="scaffold-exclude"></a>
+
+### Areas forge never writes
+
+`scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+
+**Why:** A team adopting forge keeps its own frontend, workflows or docs without disowning file by file. A locked run puts back anything written under an excluded glob, and a glob over generated code other generated code imports is refused with the dependent named.
+
+**Evidence:**
+
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
+- source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
+
+<a id="prune-orphans"></a>
+
+### Clean up after a feature
+
+When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project prune`
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
+
 <a id="project-upgrade"></a>
 
 ### Guided forge upgrades
@@ -1254,6 +1286,21 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
+
+<a id="lint-lanes-off"></a>
+
+### Switch a lint lane off
+
+`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
+
+**Evidence:**
+
+- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
 
 <a id="lint-autofix"></a>
 
@@ -2530,6 +2577,27 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
 - skill `deploy/plan` (`forge skill load deploy/plan`)
 
+<a id="polyrepo-pinned-sources"></a>
+
+### Polyrepo, pinned, any language
+
+Teams outside a monorepo, in any language, share an infra repo's KCL by a git pin in kcl.mod and build other repos' images from a pinned `DockerBuild.context`, with no go.mod and no CI checkout step; a release records each image's source repo and commit.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
+
+**Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
+
+**Evidence:**
+
+- command `forge kcl imports --refresh`
+- source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
+- source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
+- source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
+- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
+- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
+
 <a id="hosted-deploy-plan"></a>
 
 ### Server-side deploy plan
@@ -2738,7 +2806,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 

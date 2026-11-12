@@ -170,12 +170,17 @@ func TestReap_SparesOldServersStillInUse(t *testing.T) {
 	t.Cleanup(func() { stopSharedByPort(standalonePort) })
 	standalonePid, _ := postmaster(filepath.Join(runtimeDir(standalonePort), "data", "postmaster.pid"))
 
-	// Both servers are now older than the stale age, as a fan-out's shared
-	// server is after half an hour (or after a sleep: the age is wall-clock).
-	prev := staleInstanceAge
-	staleInstanceAge = time.Second
-	t.Cleanup(func() { staleInstanceAge = prev })
-	time.Sleep(2 * time.Second)
+	// Make both servers older than the stale age, as a fan-out's shared
+	// server is after half an hour (or after a sleep: the age is wall-clock):
+	// the age is read from the pid file's mtime, so backdate it rather than
+	// wait for the clock.
+	old := time.Now().Add(-2 * staleInstanceAge)
+	for _, p := range []uint32{port, standalonePort} {
+		pidFile := filepath.Join(runtimeDir(p), "data", "postmaster.pid")
+		if err := os.Chtimes(pidFile, old, old); err != nil {
+			t.Fatalf("backdate %s: %v", pidFile, err)
+		}
+	}
 
 	reapStaleInstances()
 	for _, s := range []struct {

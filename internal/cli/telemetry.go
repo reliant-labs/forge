@@ -123,6 +123,17 @@ It is off when DO_NOT_TRACK=1 or FORGE_TELEMETRY=off, always on a CI runner
 			return nil
 		},
 	})
+	// Hidden: install.sh and install.ps1 record where the install came from
+	// (FORGE_INSTALL_ATTRIBUTION, an install page's rid and utm_*).
+	cmd.AddCommand(&cobra.Command{
+		Use:    "attribution <query>",
+		Short:  "Record where this install came from (used by the installer)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return telemetryClient().SetInstallAttribution(args[0])
+		},
+	})
 	for _, on := range []bool{true, false} {
 		use, short := "off", "Stop sending usage events from this machine"
 		if on {

@@ -21,6 +21,13 @@
 //     failure, so telemetry never slows or fails a command.
 //   - Volume bounds: one event per name per run, and at most MaxEventsPerDay
 //     per install.
+//   - Install attribution: where the install came from (an install page's
+//     rid and utm_*), recorded once by SetInstallAttribution and carried on
+//     the first-run event and, by the program, on its own server calls.
+//
+// <APP>_TELEMETRY_QUIET=1 makes a run quiet (no notice, nothing sent) without
+// opting out: an installer that runs the program to print its version sets
+// it, so the notice is not swallowed by a redirect.
 //
 // The transport is OTLP/HTTP JSON logs to Config.Endpoint, normally the
 // platform's keyed ingest (https://ingest.reliantlabs.dev/k/<key>/v1/logs)
@@ -34,8 +41,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -134,6 +143,9 @@ func New(cfg Config) *Client {
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{}
+	}
+	if truthy(cfg.Getenv(strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(strings.TrimSpace(cfg.App)))) + "_TELEMETRY_QUIET")) {
+		cfg.Quiet = true
 	}
 	if cfg.ConfigDir == "" {
 		if dir, err := os.UserConfigDir(); err == nil {
@@ -335,16 +347,83 @@ func FirstRunEvent(app string) string {
 	return strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(app)) + "_cli_first_run"
 }
 
-// FirstRunAttrs are the standard first-run tags: version, os, arch and
-// harness (the coding agent running the command, "" when none). There is no
-// ci tag: a CI runner sends nothing (InCI).
+// FirstRunAttrs are the standard first-run tags: version, os, arch, harness
+// (the coding agent running the command, "" when none) and, when the install
+// recorded one, its attribution (source, medium, campaign, visitor_id: the
+// install page's utm_* and rid). There is no ci tag: a CI runner sends
+// nothing (InCI).
 func (c *Client) FirstRunAttrs(harness string) []slog.Attr {
-	return []slog.Attr{
+	attrs := []slog.Attr{
 		slog.String("version", c.cfg.Version),
 		slog.String("os", runtime.GOOS),
 		slog.String("arch", runtime.GOARCH),
 		slog.String("harness", harness),
 	}
+	q := c.InstallAttribution()
+	for _, kv := range [][2]string{{"utm_source", "source"}, {"utm_medium", "medium"}, {"utm_campaign", "campaign"}, {"rid", "visitor_id"}} {
+		if v := q.Get(kv[0]); v != "" {
+			attrs = append(attrs, slog.String(kv[1], v))
+		}
+	}
+	return attrs
+}
+
+var (
+	attrRIDRE   = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
+	attrValueRE = regexp.MustCompile(`^[A-Za-z0-9 _.+:/-]{1,128}$`)
+)
+
+// attributionKeys are what an install page may pass.
+var attributionKeys = []string{"rid", "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"}
+
+// CleanAttribution keeps the rid and utm_* values of a query string that are
+// well formed (an opaque rid, campaign words with no '@'), and drops the rest.
+func CleanAttribution(raw string) url.Values {
+	out := url.Values{}
+	in, err := url.ParseQuery(strings.TrimPrefix(strings.TrimSpace(raw), "?"))
+	if err != nil || len(raw) > 1024 {
+		return out
+	}
+	for _, k := range attributionKeys {
+		v := strings.TrimSpace(in.Get(k))
+		switch {
+		case v == "":
+		case k == "rid" && attrRIDRE.MatchString(v):
+			out.Set(k, v)
+		case k != "rid" && attrValueRE.MatchString(v) && !observe.LooksLikePII(v):
+			out.Set(k, v)
+		}
+	}
+	return out
+}
+
+// SetInstallAttribution records where this install came from (the install
+// page's rid and utm_*, as a query string; CleanAttribution keeps what is well
+// formed). First touch: an install that already recorded one keeps it. A
+// no-op while telemetry is off.
+func (c *Client) SetInstallAttribution(raw string) error {
+	if !c.Enabled() {
+		return nil
+	}
+	q := CleanAttribution(raw)
+	if len(q) == 0 {
+		return nil
+	}
+	doc := c.state.load()
+	if doc.Attribution != "" {
+		return nil
+	}
+	doc.Attribution = q.Encode()
+	return c.state.saveErr(doc)
+}
+
+// InstallAttribution is the recorded install attribution; empty while
+// telemetry is off or none was recorded.
+func (c *Client) InstallAttribution() url.Values {
+	if !c.Enabled() {
+		return url.Values{}
+	}
+	return CleanAttribution(c.state.load().Attribution)
 }
 
 // ciFlagVars are set to "true" (or "1") by CI services generally.

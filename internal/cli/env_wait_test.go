@@ -638,7 +638,8 @@ func TestEnvWait_OnceReadsExactlyOnceAndNeverBlocks(t *testing.T) {
 			if n := fake.callCount(); n != 1 {
 				t.Errorf("read the rollout %d times; --timeout 0 means exactly ONE read", n)
 			}
-			if elapsed := time.Since(start); elapsed > time.Second {
+			// A poll would sleep the 10s Interval; 5s leaves room for load.
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
 				t.Errorf("a single read must never block, took %s", elapsed)
 			}
 			// A snapshot REPORTS a state; it did not time out, and

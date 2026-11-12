@@ -437,13 +437,9 @@ func buildOverview(in Input) Dashboard {
 			nodePanels = append(nodePanels, p.ID)
 		}
 	}
-	for _, p := range BuildReleases(in.Project).Panels {
-		if p.ID == "request-rate-by-version" {
-			p.Where = scoped(identityScope(FieldService, services), p.Where...)
-			d.Panels = append(d.Panels, p)
-		}
-	}
-	d.Panels = append(d.Panels,
+	byVersion := requestsByVersionPanel()
+	byVersion.Where = scoped(identityScope(FieldService, services), byVersion.Where...)
+	d.Panels = append(d.Panels, byVersion,
 		Panel{ID: "error-logs", Title: "Recent error logs", Kind: KindSearch, Signal: Logs, Where: scoped(identityScope(FieldService, services), errorLogs), Columns: logColumns, Width: 24, Height: 9},
 	)
 	splitServiceFilter(&d, nodePanels, services, workloads)

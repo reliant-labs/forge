@@ -76,11 +76,13 @@ The expr check is syntactic. The evaluator re-checks it and runs it read-only wi
 
 - **`alerts`** (a host workload in `deploy/kcl/dev/main.k`, running `forge obs alerts run`) evaluates the env's rules continuously against the local ClickStack, `for` applied, and posts what fires to the local Alertmanager. It labels alerts `reliant_org_id="local"`, `reliant_env_id=<env>`.
 - **`alertmanager`** (docker-compose.yml) routes them. `forge env up` renders its configuration into `.forge/observability/alertmanager/` with **`forge/pkg/alerting/amconfig`**, the renderer the control plane uses for every org. So a route that reaches `hook` here reaches `hook` there.
-- **`reliant-inapp`** is always present, and locally it is the evaluator's own sink. Every alert it receives becomes one line in **`.forge/logs/dev/alerts.log`**:
+- **`reliant-inapp`** is always present, and locally it is the evaluator's own sink. Every alert it receives becomes one INFO record in **`.forge/logs/dev/alerts.log`** (JSON, like every forge process's log, so the collector stores it at its real level), whose message reads:
 
   ```
   ALERT firing   OrdersBacklog severity=critical service=orders — orders backlog is 812
   ```
+
+  `forge obs logs dev --service alerts` lists them; `grep 'ALERT firing' .forge/logs/dev/alerts.log` finds them on disk. They are not issues: the fault an alert reports is logged by the service that has it.
 
 Other receivers are declared on the env as `forge.AlertReceiver` entries. Only local stacks use them: a hosted env's receivers live in the control-plane console, and this list is ignored there.
 

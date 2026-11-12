@@ -163,6 +163,47 @@ func personOnly(scope Scope) bool {
 	return false
 }
 
+// registryOnlyScopes are scopes whose whole authority is in the platform
+// registry's token realm: a credential carrying one is refused by every RPC of
+// a control plane (which checks RegistryOnly on the principal), so it can do
+// nothing but what the realm grants it.
+//
+// ── WHY A CREDENTIAL, NOT JUST A SCOPE ────────────────────────────────
+//
+// Every other scope is one authority among the ones a token may combine. A
+// registry-only scope is a promise about the WHOLE token: a holder that leaks
+// it leaks a push to a few repositories and nothing else. Combining it with
+// any other scope would break that promise (the token would then be admitted
+// by RPCs for the other scope), so Validate refuses the combination, a person
+// cannot carry it (a token acting as someone is that person's authority), it
+// binds to nothing, and a wildcard never resolves to it.
+var registryOnlyScopes = []Scope{
+	ScopeSourcemapsWrite,
+}
+
+// RegistryOnly reports whether scope is a registry-only scope.
+func RegistryOnly(scope Scope) bool {
+	for _, s := range registryOnlyScopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// RegistryOnly reports whether the set carries a registry-only scope, which
+// (Grant.Validate) makes the whole credential registry-only. A control plane
+// refuses such a principal on every RPC; only the registry's token realm
+// admits it.
+func (s Set) RegistryOnly() bool {
+	for scope := range s {
+		if RegistryOnly(scope) {
+			return true
+		}
+	}
+	return false
+}
+
 // actingUserScopes are the scopes that ACT AS A PERSON: their authority is the
 // acting user's, so a token carrying one without an acting user would be
 // authority attributed to nobody. Org-level automation (deploy, token, secret)
@@ -264,6 +305,10 @@ func (g Grant) Validate(now time.Time) error {
 		}
 	}
 
+	if err := g.validateRegistryOnly(); err != nil {
+		return err
+	}
+
 	if err := g.validateResource(); err != nil {
 		return err
 	}
@@ -299,7 +344,11 @@ func (g Grant) Validate(now time.Time) error {
 func (g Grant) Admissible() Set {
 	out := Set{}
 	for _, scope := range AllScopes {
-		if personOnly(scope) {
+		// A registry-only scope is a whole credential, never one of "every
+		// scope" (see registryOnlyScopes): an org automation wildcard would
+		// otherwise resolve to it, and the control plane would then refuse
+		// that credential on every RPC.
+		if personOnly(scope) || RegistryOnly(scope) {
 			continue
 		}
 		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
@@ -323,6 +372,42 @@ func KnownScopes(raw []string) Set {
 	for _, s := range raw {
 		if scope, ok := ParseScope(s); ok {
 			out[scope] = struct{}{}
+		}
+	}
+	return out
+}
+
+// validateRegistryOnly holds a registry-only credential to its promise (see
+// registryOnlyScopes): it carries registry-only scopes and nothing else, as an
+// org automation token, unbound and not ephemeral.
+func (g Grant) validateRegistryOnly() error {
+	if !g.Scopes.RegistryOnly() {
+		return nil
+	}
+	for _, scope := range AllScopes {
+		if g.Scopes.Has(scope) && !RegistryOnly(scope) {
+			return fmt.Errorf("%w: %s is a registry-only credential and cannot also carry %s; mint a separate token",
+				ErrInvalidGrant, JoinScopes(registryOnlyIn(g.Scopes)), scope)
+		}
+	}
+	switch {
+	case strings.TrimSpace(g.ActingUserID) != "":
+		return fmt.Errorf("%w: %s is an org automation credential and cannot act as a user",
+			ErrInvalidGrant, JoinScopes(registryOnlyIn(g.Scopes)))
+	case g.Resource != nil:
+		return fmt.Errorf("%w: %s cannot be bound to a resource", ErrInvalidGrant, JoinScopes(registryOnlyIn(g.Scopes)))
+	case g.Ephemeral:
+		return fmt.Errorf("%w: %s cannot be ephemeral", ErrInvalidGrant, JoinScopes(registryOnlyIn(g.Scopes)))
+	}
+	return nil
+}
+
+// registryOnlyIn returns the registry-only scopes of s, in AllScopes order.
+func registryOnlyIn(s Set) []Scope {
+	var out []Scope
+	for _, scope := range AllScopes {
+		if s.Has(scope) && RegistryOnly(scope) {
+			out = append(out, scope)
 		}
 	}
 	return out

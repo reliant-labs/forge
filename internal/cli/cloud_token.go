@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -65,7 +67,13 @@ Typical setup for the scaffolded release workflow:
 
   forge cloud token create --env prod --name github-actions \
       --scopes deploy:read,deploy:write --json | jq -r .secret \
-    | gh secret set FORGE_CONTROL_PLANE_TOKEN`,
+    | gh secret set FORGE_CONTROL_PLANE_TOKEN
+
+--env picks the control plane the env's KCL declares. Without it, or for an env
+with no deploy/kcl (a repo whose own CI deploys and only runs
+` + "`forge release record`" + `), the token is minted on Reliant cloud:
+
+  forge cloud token create --name github-actions --scopes deploy:write`,
 	}
 	cmd.AddCommand(newCloudTokenCreateCmd(), newCloudTokenListCmd(), newCloudTokenRevokeCmd())
 	return cmdutil.StrictGroup(cmd)
@@ -81,14 +89,13 @@ type cloudTokenFlags struct {
 
 func (f *cloudTokenFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.org, "org", "", "Explicit organization for token administration (not a login or project preference)")
-	cmd.Flags().StringVar(&f.env, "env", "", "Env whose declared control plane to use (required)")
+	cmd.Flags().StringVar(&f.env, "env", "", "Env whose declared control plane to use (default, and for an env with no deploy/kcl: Reliant cloud)")
 	cmd.Flags().StringVar(&f.token, "token", "", "Credential to use, ahead of the env var and the credentials file")
 	cmd.Flags().BoolVar(&f.jsonOut, "json", false, "Emit machine-readable JSON")
-	_ = cmd.MarkFlagRequired("env")
 }
 
 func (f *cloudTokenFlags) client(ctx context.Context) (cloudCaller, error) {
-	ep, cred, err := resolveCloudTarget(ctx, f.env, f.token)
+	ep, cred, err := f.target(ctx, projectDirForKCL())
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +107,22 @@ func (f *cloudTokenFlags) client(ctx context.Context) (cloudCaller, error) {
 		return organizationAdminCaller{cloud.NewClient(ep, cred), f.org}, nil
 	}
 	return cloud.NewClient(ep, cred), nil
+}
+
+// target resolves the control plane a token verb talks to. An env forge's
+// KCL declares uses the control plane it declares, as every hosted verb does.
+// With no --env, or an env that has no deploy/kcl (a repo that only records
+// deploys with `forge release record`), it is Reliant cloud — the default
+// `forge login` signs into, and the one such a repo's records go to. Safe for
+// the reason login's default is: a token is ORG-scoped, so the env only ever
+// chose WHERE, never what the token may touch.
+func (f *cloudTokenFlags) target(ctx context.Context, projectDir string) (cloud.Endpoint, cloud.Credential, error) {
+	if f.env != "" {
+		if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", f.env, "main.k")); err == nil {
+			return resolveCloudTarget(ctx, f.env, f.token)
+		}
+	}
+	return resolveCloudTargetFor(f.env, &cloud.Declaration{Endpoint: cloud.DefaultEndpoint}, f.token)
 }
 
 type organizationAdminCaller struct {
@@ -174,6 +197,15 @@ func parseTokenScopes(raw string) ([]string, error) {
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("--scopes is empty: name at least one, e.g. deploy:read,deploy:write")
+	}
+	// A registry-only scope is a whole credential (accesstoken.RegistryOnly):
+	// refused here, with why, rather than by the server after the round trip.
+	if set := accesstoken.KnownScopes(out); set.RegistryOnly() {
+		for _, s := range out {
+			if !accesstoken.RegistryOnly(accesstoken.Scope(s)) {
+				return nil, fmt.Errorf("--scopes mixes a registry-only scope with %s: a sourcemaps:write token carries nothing else, so mint a separate token for %s", s, s)
+			}
+		}
 	}
 	return out, nil
 }

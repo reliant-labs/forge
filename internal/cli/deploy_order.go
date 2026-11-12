@@ -58,12 +58,13 @@ type stageEdge struct {
 }
 
 // stageOfWorkload is the stage a workload deploys in; "" when no deploy
-// applies it (build-only, a host process `forge env up` runs).
+// applies it (build-only, a host process `forge env up` runs). An external
+// workload's hooks run from the deploying machine with the cluster groups.
 func stageOfWorkload(w WorkloadEntity) deployStage {
 	switch w.Runtime.Type {
 	case RuntimeHosted:
 		return stageHosted
-	case RuntimeCluster, RuntimeCompose:
+	case RuntimeCluster, RuntimeCompose, RuntimeExternal:
 		return stageLocal
 	}
 	return ""

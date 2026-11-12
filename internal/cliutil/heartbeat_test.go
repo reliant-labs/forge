@@ -24,15 +24,28 @@ func (b *lockedBuf) String() string {
 	return b.sb.String()
 }
 
+// waitForDraws waits until out holds at least n occurrences of line, failing
+// the test after 30s. It returns as soon as they are there, so a passing
+// test pays only for the heartbeat itself. (testkit.Eventually will replace
+// it.)
+func waitForDraws(t *testing.T, out *lockedBuf, line string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for strings.Count(out.String(), line) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("want %d draw(s) of %q, got:\n%q", n, line, out.String())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestHeartbeatSpeaksWhileAStepRuns(t *testing.T) {
 	var out lockedBuf
 	stop := HeartbeatEvery(&out, "lint: golangci", 10*time.Millisecond)
-	time.Sleep(150 * time.Millisecond) // lines at 10, 40, 70, … ms
-	stop()
-	got := out.String()
-	if n := strings.Count(got, "lint: golangci — still running"); n < 2 {
-		t.Fatalf("want a repeating line, got %d:\n%s", n, got)
-	}
+	defer stop()
+	// Lines at 10, 40, 70, … ms: wait for the second, however long a loaded
+	// machine takes to schedule it.
+	waitForDraws(t, &out, "lint: golangci — still running", 2)
 }
 
 // A step inside the first interval prints nothing: a clean --quiet run stays
@@ -56,10 +69,11 @@ func TestHeartbeatDefaultIsUnderAMinute(t *testing.T) {
 func TestHeartbeatStopIsFinalAndIdempotent(t *testing.T) {
 	var out lockedBuf
 	stop := HeartbeatEvery(&out, "x", 5*time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
+	waitForDraws(t, &out, "x", 1)
 	stop()
 	stop()
 	before := out.String()
+	// forge:lint-disable-next-line forge-test-fixed-sleep: a negative wait — gives a heartbeat that outlived stop the chance to write; a correct stop passes however long this takes
 	time.Sleep(30 * time.Millisecond)
 	if after := out.String(); after != before {
 		t.Fatalf("wrote after stop:\n%s", strings.TrimPrefix(after, before))
@@ -90,7 +104,7 @@ func TestLineHeartbeatIsSparseButNeverSilentForAMinute(t *testing.T) {
 func TestTerminalHeartbeatIsOneUpdatingLineErasedAtStop(t *testing.T) {
 	var out lockedBuf
 	stop := heartbeat(&out, "generate: buf generate", 5*time.Millisecond, true)
-	time.Sleep(30 * time.Millisecond)
+	waitForDraws(t, &out, "generate: buf generate", 1)
 	termStatus.redraw() // a refresh, as the 1s ticker would
 	stop()
 	got := out.String()
@@ -115,9 +129,9 @@ func TestTerminalHeartbeatIsOneUpdatingLineErasedAtStop(t *testing.T) {
 func TestNestedTerminalHeartbeatsShareOneLine(t *testing.T) {
 	var out lockedBuf
 	stopOuter := heartbeat(&out, "project new: generate code", time.Millisecond, true)
-	time.Sleep(10 * time.Millisecond)
+	waitForDraws(t, &out, "project new: generate code", 1)
 	stopInner := heartbeat(&out, "generate: buf generate", time.Millisecond, true)
-	time.Sleep(10 * time.Millisecond)
+	waitForDraws(t, &out, "generate: buf generate", 1)
 	before := len(out.String())
 	stopInner()
 	afterInner := out.String()[before:]

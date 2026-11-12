@@ -63,6 +63,7 @@ func TestServiceDockerBuild_ReproducibleImageID(t *testing.T) {
 		return strings.TrimSpace(string(id))
 	}
 	first := build("a")
+	// forge:lint-disable-next-line forge-test-fixed-sleep: moves the wall clock into the next second so an unpinned timestamp would differ between the builds; Sleep waits at least this long, so load cannot make it short
 	time.Sleep(1100 * time.Millisecond)
 	second := build("b")
 	if first != second {

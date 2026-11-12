@@ -20,17 +20,26 @@
 //
 //   - Windows: before = [P-w, P), after = [P, P+w). Each stops at the
 //     neighbouring promotion; the after window also stops at now.
-//   - A service is judged only when its after window has at least
-//     min_requests requests.
+//   - A service is judged on the comparative findings (error_rate, latency,
+//     browser_*) only when BOTH windows have at least min_requests requests
+//     (page views, for browser figures): a thinner before window is no
+//     baseline. One with enough after but too few before is named in
+//     not_evaluated (baseline.go). The other findings need no baseline.
+//   - Signals (signals.go): a service's requests are its own server spans;
+//     one that sent none in either window is judged on what the hosting
+//     platform's ingress measured for it; a frontend's browser telemetry is
+//     judged beside either (browser_* findings), or alone.
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
-//     workload_restarts. A finding's policy is "fail" when its code is in
+//     workload_restarts, browser_errors, browser_failed_requests,
+//     browser_page_load. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
 //   - Alerts count when they opened in the after window [P, after.To); a
 //     critical one (label severity=critical) fails the release whatever
 //     fail_on says. One that opened after the window is not the release's.
 //   - Verdict: FAIL when any finding's policy is fail; else INCONCLUSIVE when
-//     the after window has not finished, every service is below
-//     min_requests, or a critical alert that opened before the promotion is
+//     the after window has not finished, no service can be compared (each is
+//     below min_requests in the after window or in the before window), or a
+//     critical alert that opened before the promotion is
 //     still firing (the release was promoted into it, so nothing proves it
 //     good); else PASS. A clear failure is a failure even while the window is
 //     still open.
@@ -88,6 +97,7 @@ const (
 	ThresholdMaxP95Ratio          = "max_p95_ratio"
 	ThresholdNewIssueMinEvents    = "new_issue_min_events"
 	ThresholdFailOn               = "fail_on"
+	ThresholdRequireBaseline      = "require_baseline"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -146,6 +156,9 @@ type Thresholds struct {
 	MaxP95Ratio          float64
 	NewIssueMinEvents    int
 	FailOn               []string
+	// RequireBaseline is release.BaselineAny, BaselineEvery or BaselineNone
+	// (baseline.go); empty reads as BaselineAny.
+	RequireBaseline string
 	// Sources maps a threshold name to SourceReleaseShape, SourceDefault or
 	// SourceRequest.
 	Sources map[string]string
@@ -171,7 +184,7 @@ type Options struct {
 }
 
 // OverrideNames are the thresholds a request may override by name.
-var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents}
+var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRequireBaseline}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -214,9 +227,11 @@ func Resolve(o Options) (Thresholds, error) {
 		MaxP95Ratio:          base.MaxP95Ratio,
 		NewIssueMinEvents:    base.NewIssueMinEvents,
 		FailOn:               normalizeCodes(base.FailOn),
+		RequireBaseline:      base.Baseline(),
 		Sources: map[string]string{
 			ThresholdWindow: src, ThresholdMinRequests: src, ThresholdMaxErrorRateIncrease: src,
 			ThresholdMaxP95Ratio: src, ThresholdNewIssueMinEvents: src, ThresholdFailOn: src,
+			ThresholdRequireBaseline: src,
 		},
 	}
 	if o.Window > 0 {
@@ -236,6 +251,11 @@ func Resolve(o Options) (Thresholds, error) {
 			t.MaxErrorRateIncrease, err = strconv.ParseFloat(v, 64)
 		case ThresholdMaxP95Ratio:
 			t.MaxP95Ratio, err = strconv.ParseFloat(v, 64)
+		case ThresholdRequireBaseline:
+			if !slices.Contains(release.BaselinePolicies, v) {
+				return Thresholds{}, invalid("threshold require_baseline=%q: use one of %s", v, strings.Join(release.BaselinePolicies, ", "))
+			}
+			t.RequireBaseline = v
 		default:
 			return Thresholds{}, invalid("unknown threshold %q; use one of %s", k, strings.Join(OverrideNames, ", "))
 		}
@@ -259,6 +279,8 @@ func (t Thresholds) validate() error {
 		return invalid("max_p95_ratio %v must be above 1", t.MaxP95Ratio)
 	case t.NewIssueMinEvents < 1:
 		return invalid("new_issue_min_events must be at least 1")
+	case t.RequireBaseline != "" && !slices.Contains(release.BaselinePolicies, t.RequireBaseline):
+		return invalid("require_baseline %q is not a policy; use %s", t.RequireBaseline, strings.Join(release.BaselinePolicies, ", "))
 	}
 	for _, c := range t.FailOn {
 		if !slices.Contains(release.HealthFindings, c) {
@@ -304,6 +326,7 @@ func (t Thresholds) List() []Threshold {
 		{ThresholdMaxP95Ratio, strconv.FormatFloat(t.MaxP95Ratio, 'g', -1, 64), src(ThresholdMaxP95Ratio)},
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
 		{ThresholdFailOn, strings.Join(t.FailOn, ","), src(ThresholdFailOn)},
+		{ThresholdRequireBaseline, baselineOr(t.RequireBaseline), src(ThresholdRequireBaseline)},
 	}
 }
 
@@ -343,6 +366,15 @@ type ServiceHealth struct {
 	// change in which endpoints were called cannot pass for a regression.
 	// Empty = judge the service-level p95.
 	Endpoints []EndpointHealth `json:"endpoints,omitempty"`
+	// Signal is what Before and After were measured from: SignalSpans (the
+	// service's own server spans; "" from a producer that predates the field
+	// means the same), SignalIngress (the hosting platform's ingress, for a
+	// service that sent no server span in either window), or SignalBrowser
+	// (none: a frontend judged on Browser alone). See [Combine].
+	Signal string `json:"signal,omitempty"`
+	// Browser is a frontend's own browser telemetry over both windows, judged
+	// beside the server figures. Nil when the service sent none.
+	Browser *BrowserHealth `json:"browser,omitempty"`
 }
 
 // EndpointHealth is one endpoint's before and after.
@@ -559,7 +591,8 @@ func Evaluate(in Input) Report {
 	p := in.Subject.PromotedAt
 	r := Report{
 		Subject: in.Subject, Before: in.Windows.Before, After: in.Windows.After, AfterComplete: in.Windows.AfterComplete,
-		Services: in.Services, Findings: []Finding{}, Thresholds: t.List(), NotEvaluated: in.NotEvaluated,
+		Services: in.Services, Findings: []Finding{}, Thresholds: t.List(),
+		NotEvaluated: withNotEvaluated(in.NotEvaluated, t.gauge().entries(in.Services)),
 	}
 	critical := criticalRules(in.Alerts, p, in.Windows.After.To)
 	add := func(f Finding) {
@@ -568,8 +601,8 @@ func Evaluate(in Input) Report {
 	}
 
 	for _, s := range in.Services {
-		if s.After.Requests < int64(t.MinRequests) {
-			continue
+		if !t.gauge().comparable(s) {
+			continue // too little traffic in a window to compare (baseline.go)
 		}
 		if inc := s.After.ErrorRate - s.Before.ErrorRate; inc > t.MaxErrorRateIncrease {
 			add(Finding{Code: release.HealthErrorRate, Service: s.Service, Value: inc, Threshold: t.MaxErrorRateIncrease,
@@ -584,6 +617,12 @@ func Evaluate(in Input) Report {
 			add(Finding{Code: release.HealthLatency, Service: s.Service, Value: ratio, Threshold: t.MaxP95Ratio,
 				Message: fmt.Sprintf("%s: p95 %s -> %s (%.2fx%s, limit %.2gx)", s.Service,
 					ms(s.Before.P95Ms), ms(s.After.P95Ms), ratio, per, t.MaxP95Ratio)})
+		}
+	}
+
+	for _, s := range in.Services {
+		for _, f := range browserFindings(s, t) {
+			add(f)
 		}
 	}
 
@@ -641,7 +680,7 @@ func Evaluate(in Input) Report {
 	}
 
 	sortFindings(r.Findings)
-	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, r.unproven())
+	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.gauge(), r.unproven())
 	return Attribute(r)
 }
 
@@ -687,7 +726,7 @@ func WithStandingAlerts(r Report, firing []Alert) Report {
 		}
 	}
 	sortFindings(out.Findings)
-	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven()))
+	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven()))
 	return out
 }
 
@@ -797,7 +836,7 @@ func WithoutExcludedAlerts(r Report, live []Alert) Report {
 		}
 		return out
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven())
 	return out
 }
 
@@ -807,7 +846,7 @@ func WithoutExcludedAlerts(r Report, live []Alert) Report {
 func WithAlertStateUnread(r Report, why string) Report {
 	out := r
 	out.AlertStateUnread = why
-	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven()))
+	out.Verdict = worse(r.Verdict, verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven()))
 	return out
 }
 
@@ -874,7 +913,7 @@ func Rejudge(r Report, failOn []string) Report {
 	if !set {
 		out.Thresholds = append(out.Thresholds, Threshold{ThresholdFailOn, strings.Join(failOn, ","), SourceRequest})
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven())
 	return out
 }
 
@@ -927,19 +966,31 @@ func policyOf(code string, failOn []string) string {
 	return PolicyWarn
 }
 
-func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, minRequests int, unproven bool) Verdict {
+func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth, g gauge, unproven bool) Verdict {
 	for _, f := range findings {
 		if f.Policy == PolicyFail {
 			return Fail
 		}
 	}
-	if !afterComplete || unproven {
+	if !afterComplete || unproven || g.holds(services) {
 		return Inconclusive
 	}
+	// Requests prove a release good: any service with min_requests of them in
+	// the after window AND in the before window it is compared against (a
+	// thinner baseline proves nothing; baseline.go). Page views prove it only
+	// for an app nobody reached by request at all (a frontend alone, served
+	// with no ingress or span figures): a busy frontend never stands in for a
+	// backend that saw requests but too few to judge.
+	var browserJudged, requestsSeen bool
 	for _, s := range services {
-		if s.After.Requests >= int64(minRequests) {
+		if g.comparable(s) {
 			return Pass
 		}
+		requestsSeen = requestsSeen || s.After.Requests > 0
+		browserJudged = browserJudged || g.browserComparable(s)
+	}
+	if browserJudged && !requestsSeen {
+		return Pass
 	}
 	return Inconclusive
 }
@@ -964,7 +1015,7 @@ const (
 // called.
 func (r Report) NoRequestTelemetry() bool {
 	for _, s := range r.Services {
-		if s.Before.Requests > 0 || s.After.Requests > 0 {
+		if s.Before.Requests > 0 || s.After.Requests > 0 || s.Browser.seen() {
 			return false
 		}
 	}
@@ -995,6 +1046,8 @@ func InconclusiveCode(r Report) string {
 		return ReasonWindowOpen
 	case r.NoRequestTelemetry():
 		return ReasonNoRequestTelemetry
+	case r.hasThinBaseline():
+		return ReasonThinBaseline
 	}
 	return ReasonLowTraffic
 }
@@ -1025,6 +1078,9 @@ func InconclusiveWhy(r Report) string {
 	if r.NoRequestTelemetry() {
 		return noRequestTelemetryWhy(r)
 	}
+	if r.hasThinBaseline() {
+		return thinBaselineWhy(r)
+	}
 	return fmt.Sprintf("no service had at least %d requests after the promotion, so there is not enough traffic to judge", minRequestsOf(r.Thresholds))
 }
 
@@ -1034,7 +1090,7 @@ func InconclusiveWhy(r Report) string {
 // app served plenty.
 func noRequestTelemetryWhy(r Report) string {
 	var b strings.Builder
-	b.WriteString("no request telemetry: no service sent a single server span in either window, so error rate and latency could not be judged. ")
+	b.WriteString("no request telemetry: no service sent a single server span in either window, no request reached one through the platform's ingress, and no page sent browser telemetry, so error rate and latency could not be judged. ")
 	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces")
 	if n := len(r.Uninstrumented); n > 0 {
 		verb := "exports"

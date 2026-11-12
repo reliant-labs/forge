@@ -65,6 +65,7 @@ type wirePromotion struct {
 	Targets             []string   `json:"targets"`
 	Note                string     `json:"note"`
 	SupersededInFlight  bool       `json:"supersededInFlight"`
+	RecordOnly          bool       `json:"recordOnly"`
 	CreatedAt           time.Time  `json:"createdAt"`
 	Run                 *struct {
 		URL      string `json:"url"`
@@ -280,6 +281,7 @@ func promotionFromWire(env string, w wirePromotion) release.Promotion {
 		Gates:      gatesFromWire(w.Gates), RecordedGates: gatesFromWire(w.RecordedGates),
 		Targets: w.Targets, Note: w.Note, SupersededInFlight: w.SupersededInFlight,
 		PromotedAt: w.CreatedAt,
+		RecordOnly: w.RecordOnly,
 	}
 	if w.Run != nil {
 		p.Run = release.Run{URL: w.Run.URL, Provider: w.Run.Provider}

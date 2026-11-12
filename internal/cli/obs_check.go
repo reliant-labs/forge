@@ -187,6 +187,13 @@ name=value overrides one for this call (` + strings.Join(releasehealth.OverrideN
 The document says where each effective threshold came from: release_shape,
 default or request.
 
+Error rate and latency compare against the before window, so a service needs
+min_requests in BOTH windows to be compared; one with a thinner before window
+is listed in not_evaluated (service:<name>). require_baseline sets how many
+must be: any (default; INCONCLUSIVE when none can be compared), every (one
+thin baseline holds the release) or none (compare however thin). New and
+regressed issues, alerts and restarts fail a release whatever the baseline.
+
 ` + obsCheckSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -327,6 +334,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if b.Info().Backend == obsbackend.BackendCloud && opts.FailOn != nil {
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
+	// A before window below min_requests is no baseline: a service compared
+	// against it is not_evaluated, and carries no PASS. Evaluate applies
+	// this itself; a control plane's answer that predates the rule is held
+	// to it here, so the CLI never passes what the updated gate would hold.
+	res.Report = releasehealth.WithThinBaselines(res.Report)
 	// Attribution: a finding the after window cannot pin on the release (a
 	// window that ended before it went liveWin, a rollout the window barely saw,
 	// an issue whose events are another version's) never fails it. Before the
@@ -427,7 +439,7 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 		return ""
 	}
 	for _, s := range r.Services {
-		if s.VersionShare == nil || *s.VersionShare < earlyPassVersionShare || s.After.Requests < int64(minReq) {
+		if s.VersionShare == nil || *s.VersionShare < earlyPassVersionShare || s.After.Requests < int64(minReq) || !r.Compared(s) {
 			return ""
 		}
 	}
@@ -676,7 +688,11 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 			if s.VersionShare != nil {
 				share = fmt.Sprintf("%.0f%%", *s.VersionShare*100)
 			}
-			rows[i] = []string{s.Service,
+			name := s.Service
+			if s.Signal == releasehealth.SignalIngress || s.Signal == releasehealth.SignalBrowser {
+				name += " (" + s.Signal + ")" // judged without server spans of its own
+			}
+			rows[i] = []string{name,
 				fmt.Sprintf("%d -> %d", s.Before.Requests, s.After.Requests),
 				fmt.Sprintf("%.1f%% -> %.1f%%", s.Before.ErrorRate*100, s.After.ErrorRate*100),
 				fmt.Sprintf("%.0fms -> %.0fms", s.Before.P95Ms, s.After.P95Ms), share}
@@ -711,7 +727,7 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {
-		fmt.Fprintf(w, "\nnot evaluated on this backend: %s\n", strings.Join(doc.NotEvaluated, ", "))
+		fmt.Fprintf(w, "\nnot evaluated: %s\n", strings.Join(doc.NotEvaluated, ", "))
 	}
 	for _, th := range doc.Thresholds {
 		if th.Source == releasehealth.SourceRequest {

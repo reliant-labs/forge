@@ -168,7 +168,7 @@ func TestReadyz_TimeoutBoundsTheWholeRequest(t *testing.T) {
 
 	// waitReady would spin forever here (readyz never returns 200), so poll
 	// the liveness probe to know the listener is up.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(waitTimeout)
 	for time.Now().Before(deadline) {
 		if resp, err := http.Get("http://" + addr + "/healthz"); err == nil { //nolint:noctx // short-lived probe poll
 			_ = resp.Body.Close()

@@ -326,14 +326,6 @@ var refusedSchemaKeys = map[string]string{
 		"each env's KCL — `registry = \"<registry>\"` on the env's forge.ClusterTarget (or " +
 		"forge.ControlPlane for a hosted env) in deploy/kcl/<env>/main.k.",
 
-	// features.orm: the ORM's switch is `//forge:no-orm` in internal/db, beside
-	// the code it affects. Every other feature can be pinned in `features:`.
-	// A stale `orm: false` that merely went unread would start generating an
-	// ORM over a hand-written DB layer — so the key is refused, not warned
-	// about.
-	"features.orm": "delete the key — the ORM is switched off by `//forge:no-orm: <why>` in the doc comment of " +
-		"the internal/db package, beside the code it affects. The other features can be pinned here " +
-		"(`observability: false`, `hot_reload: false`, ...); `forge project features` shows each one and why.",
 	"stack": "delete the block — the frontend inventory is derived from frontends/<name> on disk and from the " +
 		"KCL forge.Frontend declarations; there is no framework setting.",
 	"frontends": "delete the block — frontends are derived: a directory under frontends/ is detected by its own " +
@@ -347,7 +339,6 @@ var refusedSchemaKeys = map[string]string{
 		"`forge env smoke <env>` resolves the URL from that workload's route or port in the env.",
 	"database.driver": "delete the key — the driver is derived: a service project with db/migrations uses " +
 		"postgres, one without has no database.",
-	"database.migrations_dir": "delete the key — migrations live in db/migrations.",
 	"database.seed": "delete the block — dev seeding uses fixed defaults (20 rows per table, auto-seed on, " +
 		"scoped to the tables behind CRUD entities). `forge env up --no-seed` skips it for one run.",
 	"database.migration_safety.allowed_destructive": "delete the key and mark each intentional migration in the " +
@@ -851,7 +842,11 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateDevStack(cfg, root)...)
 	out = append(out, validateAPIProtoPackage(cfg, root)...)
 	out = append(out, validateGenerateHooks(cfg, root)...)
+	out = append(out, validateMigrationsDir(cfg, root)...)
 	out = append(out, validateUpgradeConfig(cfg, root)...)
+	out = append(out, validateLintLanes(cfg, root)...)
+	out = append(out, validateScaffoldExclude(cfg, root)...)
+	out = append(out, validateCIWorkflows(cfg, root)...)
 	return out
 }
 

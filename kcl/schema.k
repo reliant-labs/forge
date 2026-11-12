@@ -14,7 +14,7 @@ What lives where:
 
   * kcl/workload.k — the ONE workload declaration (`fw.Workload`), its env
     references, and the runtimes it binds to (`forge.OnHost | OnCompose |
-    OnCluster | OnHosted | BuildOnly`).
+    OnCluster | OnHosted | BuildOnly | OnExternal`).
   * this file     — everything else an env declares: the Bundle, the
     cluster target, infra, frontends, databases, secrets, gateways and
     routes, clusters, builds.
@@ -2947,7 +2947,12 @@ schema DockerBuild(Build):
     pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
     wanted."""
     type: str = "docker"
-    dockerfile: str = "Dockerfile"
+    # The Dockerfile: a path relative to the project root — or, when
+    # `context` is a GitSource, relative to that resolved context, so a
+    # deploy repo builds another repo's own Dockerfile by default. A
+    # GitSource here pins a Dockerfile in any repository; its `subdir` names
+    # the FILE (`subdir = "docker/api.Dockerfile"`).
+    dockerfile: str | GitSource = "Dockerfile"
     # The MAIN build context — the directory `docker build` sends as its
     # context, relative to the project root. Empty is the project root, so
     # an unset context builds exactly as before. Set it when the Dockerfile
@@ -2957,7 +2962,18 @@ schema DockerBuild(Build):
     # `--build-context name=value` entries a `COPY --from=name` consumes.
     # `dockerfile` need not live under `context` — docker allows `-f`
     # outside the context.
-    context: str = ""
+    #
+    # A GitSource builds code that lives in ANOTHER repository — the polyrepo
+    # deploy repo that declares workloads from N app repos:
+    #
+    #     build = forge.DockerBuild {
+    #         context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
+    #     }
+    #
+    # It resolves through the same repo+ref cache and local overrides
+    # (.forge/source-overrides.yaml) as a frontend, and the build state and
+    # release ledger record the repo and commit the image was built from.
+    context: str | GitSource = ""
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
@@ -6234,7 +6250,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6255,12 +6271,31 @@ schema ReleaseHealth:
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
+    Error rate, latency and the browser findings compare the after window
+    with the before window, so they also need `min_requests` before the
+    promotion: a thinner before window is no baseline. `require_baseline`
+    says how many services need one. "any" (the default): any comparable
+    service can prove the release good, a service with a thin baseline is
+    listed in `not_evaluated`, and with none comparable the release is
+    inconclusive. "every": a thin baseline on any service with enough
+    after-window traffic holds the release inconclusive. "none": compare
+    against whatever the before window held, however thin. Issues, alerts
+    and restarts need no baseline and fail a release under every setting.
+
     Findings: error_rate (the error rate rose by more than
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
     seen in this release with `new_issue_min_events` events), regressed_issue,
-    alert_firing (an alert opened after the promotion still fires) and
-    workload_restarts.
+    alert_firing (an alert opened after the promotion still fires),
+    workload_restarts, and, for a frontend that sends browser telemetry,
+    browser_errors (JavaScript errors per page view rose by more than
+    `max_error_rate_increase`), browser_failed_requests (the share of its
+    fetch/XHR requests that failed rose by as much) and browser_page_load (p95
+    page load grew by more than `max_p95_ratio`). The browser findings warn
+    unless listed in `fail_on`. For an env with release probes (forge.Probe),
+    probe_failed (a probe failed after the promotion; fails by default) and
+    probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
+    default, as latency does).
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -6270,7 +6305,8 @@ schema ReleaseHealth:
     max_error_rate_increase: float = 0.01
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    require_baseline: str = "any"
 
     check:
         60 <= _release_health_seconds(window) <= 21600, \
@@ -6283,6 +6319,8 @@ schema ReleaseHealth:
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        require_baseline in ["any", "every", "none"], \
+            "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 
 # ---------------------------------------------------------------------------
 # Uptime checks: outside-in HTTP probes the control plane runs on a schedule.
@@ -7028,8 +7066,10 @@ schema StatefulSetResize:
         release_owner == Undefined or regex.match(release_owner, r"^[a-z][a-z0-9-]*$"), "StatefulSetResize.release_owner must name an explicit manifest consumer"
 
 schema DeliveryUnit:
-    """A delivery unit: a named slice of an env that a Flux-applied bundle
-    delivers as its own trees (cluster × unit × phase), in a declared order.
+    """A delivery unit: a named slice of an env delivered in a declared order,
+    by both appliers: a Flux-applied bundle delivers it as its own trees
+    (cluster × unit × phase), and `forge env deploy` rolls its workloads out
+    unit by unit.
 
         delivery_units = [
             forge.DeliveryUnit {name = "reliant", after = []}
@@ -7052,8 +7092,21 @@ schema DeliveryUnit:
     if you also want other waits kept. Within a unit and cluster the phases
     always chain pre → rollout → post.
 
-    Direct apply ignores units: it applies the env in forge's own order. They
-    exist for the bundle a reconciler applies.
+    DIRECT APPLY (`forge env deploy`) honours the same order for the
+    workloads (Deployments, StatefulSets, DaemonSets, CronJobs, ...). It still
+    sends everything a release sends ahead of its workloads first, for every
+    unit at once (CRDs, Namespaces, ConfigMaps and Secrets, the secret-store
+    stages, Services and RBAC, the pre-rollout Jobs), then applies each unit's
+    workloads and waits for them on every cluster before applying the units
+    after it. A unit that does not roll out stops the deploy in every rollout
+    mode: the later units are not applied and nothing is pruned. An env that
+    declares no unit, or whose workloads all sit in one, is applied exactly as
+    before. Units the hub converges (`hub_converges`) are neither applied nor
+    awaited by direct apply.
+
+    Moving an object between two units forge applies directly is reported as
+    an info-class `tree_moved` (only its place in the order changes); under a
+    reconciler it is a stop finding.
     """
     name: str
     after?: [str]
@@ -8056,7 +8109,7 @@ schema Bundle:
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
         # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
         all w in workloads { _bound_runtime(w) }, \
-            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {} | forge.OnExternal {}}`"
         # One name per env: the name is the WorkloadURL namespace, the
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \

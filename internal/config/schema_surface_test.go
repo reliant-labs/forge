@@ -34,20 +34,22 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[ProjectConfig](),
 			// features: read by FeaturesConfig.resolve through every
 			// XxxEnabled accessor, and by followPinnedRequirements.
+			// scaffold: read by checksums.ExcludeGlobs at every write
+			// chokepoint (scaffold.exclude).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "features",
 				"forge_version", "generate", "harness", "k8s",
-				"lint", "module_path", "name", "observability", "upgrade",
+				"lint", "module_path", "name", "observability", "scaffold", "upgrade",
 			},
 		},
 		{
-			// Every feature but orm, whose switch is //forge:no-orm.
+			// Every feature; orm also has //forge:no-orm.
 			name: "FeaturesConfig",
 			typ:  reflect.TypeFor[FeaturesConfig](),
 			want: []string{
 				"build", "ci", "codegen", "contracts", "deploy", "frontend",
-				"hot_reload", "ingress", "migrations", "observability", "operators",
+				"hot_reload", "ingress", "migrations", "observability", "operators", "orm",
 			},
 		},
 		{
@@ -64,9 +66,12 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			//
 			// gate: read by `forge ci gate` (internal/cli/ci_gate.go) for
 			// the project's extra_checks.
+			//
+			// workflows: read by generator.CIWorkflowsFor — the per-workflow
+			// opt-out every CI writer goes through.
 			want: []string{
 				"e2e", "gate", "lint", "permissions", "provider",
-				"test", "test_skips", "vuln_scan",
+				"test", "test_skips", "vuln_scan", "workflows",
 			},
 		},
 		{
@@ -98,9 +103,11 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// The driver and migrations directory derive from db/migrations
 			// existing, and the dev seed has no configuration at all.
 			// postgres_version: read by forge/pkg/pgtest (declaredInForgeYAML).
+			// migrations_dir: read through DatabaseConfig.MigrationsPath /
+			// MigrationsDirIn by every reader of the migrations.
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
-			want: []string{"migration_safety", "orm", "postgres_version"},
+			want: []string{"migration_safety", "migrations_dir", "orm", "postgres_version"},
 		},
 		{
 			// orm.package: where the generated data layer lands, read by
@@ -129,7 +136,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "rules", "tracing"},
+			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
+			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
 		},
 		{
 			name: "LintSkipAllowance",

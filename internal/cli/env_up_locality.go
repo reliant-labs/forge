@@ -72,6 +72,8 @@ func classifyEnvLocality(e *KCLEntities) localityVerdict {
 		switch w.Runtime.Type {
 		case RuntimeHosted:
 			add(fmt.Sprintf("workload %s is bound to forge.OnHosted (the control plane runs it)", w.Name))
+		case RuntimeExternal:
+			add(fmt.Sprintf("workload %s is bound to forge.OnExternal (your own deploy tooling runs it)", w.Name))
 		case RuntimeCluster:
 			if ctx := clusterContextOf(w.Runtime.Cluster); !isLocalCluster(ctx) {
 				add(fmt.Sprintf("workload %s is bound to forge.OnCluster %s", w.Name, describeCluster(ctx)))

@@ -208,6 +208,8 @@ func addSelectedCompositionBinding(ctx context.Context, candidate *release.Snaps
 			requiredPlatform = "linux/" + w.Runtime.HostedPlatform()
 		} else if w.Runtime.Cluster != nil && w.Runtime.Cluster.Platform != "" {
 			requiredPlatform = "linux/" + w.Runtime.Cluster.Platform
+		} else if w.Runtime.External != nil {
+			requiredPlatform = "linux/" + w.Runtime.External.ImagePlatform()
 		}
 		if slot == "build-only" || slot == "container:"+w.Name {
 			var err error

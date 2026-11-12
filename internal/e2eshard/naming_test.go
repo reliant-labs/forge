@@ -51,9 +51,9 @@ func TestE2ETestsAreNamedForTheirTag(t *testing.T) {
 // TestEveryE2ETestLandsInExactlyOneShard plans the real suite against the
 // committed timings for every shard count the workflow could plausibly use,
 // and checks the plan partitions the selection: each selected test in
-// exactly one shard, nothing else in any shard, no shard empty. The ledger
-// job re-checks the same property on every CI run against what the shards
-// actually reported.
+// exactly one shard, nothing else in any shard, no shard empty — and every
+// shared-fixture group in one shard. The ledger job re-checks the partition
+// on every CI run against what the shards actually reported.
 func TestEveryE2ETestLandsInExactlyOneShard(t *testing.T) {
 	tests, err := scanTests(cliDir)
 	if err != nil {
@@ -65,6 +65,7 @@ func TestEveryE2ETestLandsInExactlyOneShard(t *testing.T) {
 			names = append(names, tf.name)
 		}
 	}
+	groups := fixtureGroups(tests)
 	timings, err := readTimings(filepath.Join("..", "..", ".github", "e2e-timings.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -75,11 +76,36 @@ func TestEveryE2ETestLandsInExactlyOneShard(t *testing.T) {
 			t.Fatal(err)
 		}
 		for n := 1; n <= 8; n++ {
-			p, err := plan(selected, timings, n)
+			p, err := plan(selected, timings, groups, n)
 			if err != nil {
 				t.Fatalf("-select %s, %d shards: %v", sel, n, err)
 			}
 			assertPartition(t, selected, p)
+			assertGroupsTogether(t, groups, p)
+		}
+	}
+}
+
+// TestSharedFixturesAreFoundInTheRealSuite proves the scan still recognizes
+// internal/cli's shared-fixture helpers: if they were renamed, every test
+// would scan as sharing nothing, plan would scatter the groups across
+// shards, and each shard would quietly rebuild every fixture again.
+func TestSharedFixturesAreFoundInTheRealSuite(t *testing.T) {
+	tests, err := scanTests(cliDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := fixtureGroups(tests)
+	members := map[string]int{}
+	for _, g := range groups {
+		members[g]++
+	}
+	if len(members) == 0 {
+		t.Fatalf("no e2e tests in %s share a project fixture; has %v been renamed? (sharedFixtureFuncs must name the helpers in shared_project_e2e_test.go)", cliDir, sharedFixtureFuncs)
+	}
+	for g, n := range members {
+		if n < 2 {
+			t.Errorf("group %s has %d member(s); a group is two or more tests", g, n)
 		}
 	}
 }

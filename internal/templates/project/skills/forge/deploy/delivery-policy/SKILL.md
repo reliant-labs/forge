@@ -58,7 +58,7 @@ in the release path reads those signatures.)
 | `bundle_kinds` | **audit** | a narrowing can reject a bundle that built yesterday | narrows the kinds a bundle may carry for this env (`allow` / `deny`), on top of the mandatory ingest baseline; empty lists narrow nothing | control-plane C19 (ingest) | recorded, not enforced yet |
 | `approvals` | **audit** | `enforce` makes every promotion wait for a person | a promotion stays pending until `required` distinct people approve; `--yes` cannot bypass it | control-plane C12 | recorded, not enforced yet |
 | `health_gate` | **enforce**, gating nothing until `after` names an env | the order is declared, never inferred: declaring `after` is the opt-in | a promotion of release R is refused until every env in `after` holds a PASS release-health verdict for R; see below | the control plane, at promote, in the promotion's transaction | **enforced** by a control plane that advertises `shape-health-gate`; recorded only by one that does not, and by a self-hosted env |
-| `required_gates` | **enforce**, requiring nothing until `names` names a check | naming a check is the opt-in | a promotion is refused unless it carries a gate of every name, each `passed` (`--gate name=e2e,status=passed`); see below | the control plane at promote, in the promotion's transaction; forge before the write for an env with no control plane | **enforced** by a control plane that advertises `shape-promotion-checks`, and by forge for a self-hosted env |
+| `required_gates` | **enforce**, requiring nothing until `names` names a check | naming a check is the opt-in | a promotion is refused unless it carries a gate of every name, each `passed` (`--gate name=e2e,status=passed`); see below | the control plane at promote, in the promotion's transaction; forge before the write for an env with no control plane | **enforced** by a control plane that advertises `enforces-promotion-checks` (added by hand to its advertisement, never by a forge pin bump), and by forge for a self-hosted env |
 | `approval_hook` | **enforce**, once declared | declaring the hook is the opt-in | your approval system is asked approve / deny / pending before the promotion is written; anything but approve refuses, and a hook that times out or fails denies; `--yes` never answers for it; see below | as `required_gates`: a `url` asked by the control plane; a `url` or `argv` asked by forge for a self-hosted env | **enforced**, as `required_gates` |
 
 The rule behind the defaults: **a control that cannot block a deploy and costs
@@ -268,7 +268,7 @@ Turning `signing` off alone is accepted, because `flux_verify` defaults to
 | Declared, WITH a `control_plane` | Why it is refused |
 |---|---|
 | `approval_hook.argv` | the control plane cannot run your command; use `url` |
-| `required_gates` or `approval_hook` = `enforce`, to a control plane that does not advertise `shape-promotion-checks` (refused by `forge env deploy`, not at render) | it would admit every promotion the policy refuses; use `audit` until the control plane is upgraded |
+| `required_gates` or `approval_hook` = `enforce`, to a control plane that does not advertise `enforces-promotion-checks` (refused by `forge env deploy`, not at render) | it would admit every promotion the policy refuses; use `audit` until the control plane is upgraded |
 
 ## Not in this policy (mandatory for every env)
 

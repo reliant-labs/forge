@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
@@ -32,6 +34,10 @@ type fixtureFreshnessData struct {
 	// HasSchema selects the real input-hashing guard over the
 	// no-migrations-yet placeholder.
 	HasSchema bool
+	// MigrationsDirArgs is the project-relative migrations directory
+	// (database.migrations_dir) as quoted, comma-separated path elements for
+	// path.join: `"db", "migrations"` by default.
+	MigrationsDirArgs string
 }
 
 // FixtureMarkerDir holds, per frontend, the record of what the last `forge
@@ -202,6 +208,7 @@ func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg se
 		ProjectRootRelative: projectRootFromMocksDir(mocksRel),
 		MarkerRel:           FixtureMarkerPath(feRel),
 		HasSchema:           !files.Empty(),
+		MigrationsDirArgs:   quotedPathElems(config.MigrationsDirIn(root)),
 	}
 
 	for _, f := range []struct{ tmpl, out string }{
@@ -241,4 +248,14 @@ func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg se
 func projectRootFromMocksDir(mocksRel string) string {
 	depth := len(strings.Split(filepath.ToSlash(filepath.Clean(mocksRel)), "/"))
 	return strings.TrimSuffix(strings.Repeat("../", depth), "/")
+}
+
+// quotedPathElems renders a slash path as join's arguments:
+// "db/migrations" → `"db", "migrations"`.
+func quotedPathElems(p string) string {
+	elems := strings.Split(p, "/")
+	for i, e := range elems {
+		elems[i] = strconv.Quote(e)
+	}
+	return strings.Join(elems, ", ")
 }

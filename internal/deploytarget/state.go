@@ -7,10 +7,11 @@ import (
 )
 
 // DeployState records the last image+tag a non-cluster provider
-// (External, Compose) successfully shipped for one service-env pair.
-// It exists because external and compose have no cluster to ask what is
-// deployed: the next deploy reads it back as ${LAST_TAG}, and the
-// reconciler reads it as the observed tag.
+// successfully shipped for one service-env pair (compose, and the
+// static-site provider, which reads it back as what it last published). It
+// exists for targets with nothing else to ask what is deployed. forge.OnExternal does NOT
+// use it: its record is the release ledger, and its read-back is the
+// binding's `status` hook (external.go).
 //
 // The shape mirrors internal/cli.BuildState (image / tag /
 // deployed_at) but it's a deliberate copy rather than a shared type:

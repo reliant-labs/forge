@@ -85,6 +85,7 @@ type wireReleaseHealth struct {
 		Value  string `json:"value"`
 		Source string `json:"source"`
 	} `json:"thresholds"`
+	NotEvaluated []string `json:"notEvaluated"`
 }
 
 // ReleaseHealth implements HealthReader: GetReleaseHealth for the env and
@@ -180,6 +181,7 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 	for _, t := range w.Thresholds {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})
 	}
+	r.NotEvaluated = w.NotEvaluated
 	return r, nil
 }
 
@@ -303,7 +305,7 @@ func firstNonEmpty(ss ...string) string {
 
 // changeOfEntry renders a timeline row as a feed row.
 func changeOfEntry(e releasetimeline.Entry) Change {
-	ch := Change{At: e.At, Version: e.Version, PromotionID: e.PromotionID, Actor: e.Actor, Via: e.Via}
+	ch := Change{At: e.At, Version: e.Version, PromotionID: e.PromotionID, Actor: e.Actor, Via: e.Via, Recorded: e.Recorded}
 	switch e.Kind {
 	case releasetimeline.KindFailedDeploy:
 		ch.Kind = ChangeFailedDeploy
@@ -320,6 +322,9 @@ func changeOfEntry(e releasetimeline.Entry) Change {
 			verb = "rolled back to"
 		}
 		ch.Summary = fmt.Sprintf("%s %s", verb, e.Version)
+		if e.Recorded {
+			ch.Summary += " (recorded by CI)"
+		}
 	}
 	return ch
 }

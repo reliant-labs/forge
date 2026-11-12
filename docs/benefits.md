@@ -132,6 +132,38 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project rescaffold`
 - command `forge project scaffolded`
 
+<a id="scaffold-exclude"></a>
+
+### Areas forge never writes
+
+`scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+
+**Why:** A team adopting forge keeps its own frontend, workflows or docs without disowning file by file. A locked run puts back anything written under an excluded glob, and a glob over generated code other generated code imports is refused with the dependent named.
+
+**Evidence:**
+
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
+- source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
+
+<a id="prune-orphans"></a>
+
+### Clean up after a feature
+
+When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project prune`
+- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
+
 <a id="project-upgrade"></a>
 
 ### Guided forge upgrades
@@ -407,6 +439,20 @@ _Enforced · Forge, on any infrastructure_
 - skill `db/generated-orm` (`forge skill load db/generated-orm`)
 - skill `db/store` (`forge skill load db/store`)
 - skill `db` (`forge skill load db`)
+
+<a id="orm-opt-out"></a>
+
+### Keep your own data layer
+
+A project with a hand-written repository layer keeps forge's migrations and codegen without the generated ORM, by pinning `features: {orm: false}` in forge.yaml or marking the package `//forge:no-orm`.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- marker `// forge:no-orm`
+- command `forge project features`
+- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
 
 <a id="migration-safety"></a>
 
@@ -1167,6 +1213,20 @@ _Enforced · Forge, on any infrastructure_
 - command `forge gate record`
 - skill `ci/gate` (`forge skill load ci/gate`)
 
+<a id="ci-workflow-opt-out"></a>
+
+### Keep your own workflows
+
+`ci.workflows` in forge.yaml switches single forge workflows off (deploy, build-images, e2e, ...), and a same-named workflow the repo wrote itself is never overwritten or silently adopted: forge warns until forge.yaml says so.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- skill `ci/extending` (`forge skill load ci/extending`)
+- source [`internal/config/ci_workflows.go`](../internal/config/ci_workflows.go)
+- source [`internal/generator/ci_workflows.go`](../internal/generator/ci_workflows.go)
+
 <a id="generated-drift"></a>
 
 ### Stale codegen can't merge
@@ -1226,6 +1286,21 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
+
+<a id="lint-lanes-off"></a>
+
+### Switch a lint lane off
+
+`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
+
+**Evidence:**
+
+- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
 
 <a id="lint-autofix"></a>
 
@@ -1689,6 +1764,9 @@ _Enforced · Forge, on any infrastructure_
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
 | `forge-slow-test-unmarked`           | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
 | `forge-slow-test-inputs`             | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
+| `forge-test-fixed-sleep`             | A test that sleeps a fixed time and then asserts, guessing how long the work takes: on a loaded machine the guess is short and the test flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)                                                                               | `--test-waits`  |
+| `forge-test-tight-deadline`          | An event wait that fails the test after a deadline under 5s (a select on `time.After`, testify `Eventually`, a poll bounded by `time.Now().Add`), which a busy machine overruns                                                                                                            | `--test-waits`  |
+| `forge-test-wall-clock-bound`        | A test that fails when real elapsed time passes a bound under 5s, measuring how busy the machine was rather than what the code did                                                                                                                                                         | `--test-waits`  |
 | `forgeconv-handler-tests-use-tdd`    | Hand-rolled `{name, call}` tables instead of `tdd.RunRPCCases` (codemod: `forge project migrate tdd`)                                                                                                                                                                                      | `--tests`       |
 | `forgeconv-frontend-hook-tests`      | A generated hooks file with no sibling test                                                                                                                                                                                                                                                | `--tests`       |
 | `forgeconv-frontend-hook-test-shape` | A hook test whose assertions can never pass (a query-shaped test on a mutation hook, or the reverse)                                                                                                                                                                                       | `--conventions` |
@@ -2380,11 +2458,11 @@ _Enforced · Forge, on any infrastructure_
 
 ### Deploy anywhere, declare once
 
-A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting or build-only, so no env file restates a command or build that could drift.
+A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting, your own deploy tooling or build-only, so no env file restates a command or build that could drift.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
+**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted`, `OnExternal` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
 
 **Evidence:**
 
@@ -2394,6 +2472,45 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/deploytarget/firebase.go`](../internal/deploytarget/firebase.go)
 - skill `deploy/model` (`forge skill load deploy/model`)
 - command `forge env render`
+
+<a id="external-deploy-tooling"></a>
+
+### Keep your deploy tool
+
+A workload bound to `forge.OnExternal` is built, released and promoted by forge and then shipped by your own Helm, Fly.io, Cloud Run, ECS or Argo CD through four optional argv hooks, so adopting forge does not mean replacing the pipeline that deploys today.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
+
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+
+**Evidence:**
+
+- source [`kcl/workload.k`](../kcl/workload.k)
+- source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- command `forge env deploy`
+- command `forge env status`
+- skill `deploy/external` (`forge skill load deploy/external`)
+
+<a id="env-verify-parity"></a>
+
+### Prove parity before deploying
+
+`forge env verify <env>` compares, per workload, the digest the env's promotion pins against the digest running and runs your tool's own dry run, while building, recording and deploying nothing, so forge's first deploy of an existing project is known to change nothing.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge env verify prod`, or `--image api=repo@sha256:…` before any forge release exists; `--json` for CI. Exit 0 match, 1 drift, 2 not verified.
+
+**Why:** A missing `status` or `plan` hook is reported unverified, never as "no diff". Cluster workloads are checked off the cluster and against the release's recorded bundle with a client-side live diff.
+
+**Evidence:**
+
+- command `forge env verify`
+- command `forge env verify --image`
+- source [`internal/cli/env_verify_cmd.go`](../internal/cli/env_verify_cmd.go)
+- skill `deploy/external` (`forge skill load deploy/external`)
 
 <a id="prod-from-day-0"></a>
 
@@ -2483,6 +2600,25 @@ _Enforced · Forge, on any infrastructure_
 - skill `observability/query` (`forge skill load observability/query`)
 - library [`pkg/release`](../pkg/release)
 
+<a id="record-deploys"></a>
+
+### Record deploys from existing CI
+
+One `forge release record` step after the deploy job your pipeline already runs gives monitoring a deploy marker per release, in any repo and any language, with no deploy/kcl and nothing built or applied by forge.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
+
+**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as a forge deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
+
+**Evidence:**
+
+- command `forge release record`
+- skill `deploy/record` (`forge skill load deploy/record`)
+- source [`internal/cli/release_record.go`](../internal/cli/release_record.go)
+- library [`pkg/release`](../pkg/release)
+
 <a id="deploy-plan-approval"></a>
 
 ### Deploy plans with binding approval
@@ -2501,6 +2637,27 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/deploy_plan_gate.go`](../internal/cli/deploy_plan_gate.go)
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
 - skill `deploy/plan` (`forge skill load deploy/plan`)
+
+<a id="polyrepo-pinned-sources"></a>
+
+### Polyrepo, pinned, any language
+
+Teams outside a monorepo, in any language, share an infra repo's KCL by a git pin in kcl.mod and build other repos' images from a pinned `DockerBuild.context`, with no go.mod and no CI checkout step; a release records each image's source repo and commit.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
+
+**Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
+
+**Evidence:**
+
+- command `forge kcl imports --refresh`
+- source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
+- source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
+- source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
+- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
+- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
 
 <a id="hosted-deploy-plan"></a>
 
@@ -2692,13 +2849,31 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `delivery_policy = forge.DeliveryPolicy { required_gates = forge.RequiredGates { names = ["e2e"] }, approval_hook = forge.ApprovalHook { url = "https://approvals.example.com/forge" } }`, then `forge env deploy prod <v> --gate name=e2e,status=passed`
 
-**Why:** A control plane that advertises `shape-promotion-checks` judges both at promote; for an env without one, forge judges them before its own write and runs an `argv` hook with no shell. The refusals are distinct: `required_gate_missing` (exit 4), `required_gate_failed` (exit 1), `approval_denied` (exit 4; a hook that times out or fails denies) and `approval_pending` (exit 4, retry once approved). `--yes` never answers for the hook, and each verdict is recorded on the promotion. `audit` records what `enforce` would refuse.
+**Why:** A control plane that advertises `enforces-promotion-checks` judges both at promote; for an env without one, forge judges them before its own write and runs an `argv` hook with no shell. The refusals are distinct: `required_gate_missing` (exit 4), `required_gate_failed` (exit 1), `approval_denied` (exit 4; a hook that times out or fails denies) and `approval_pending` (exit 4, retry once approved). `--yes` never answers for the hook, and each verdict is recorded on the promotion. `audit` records what `enforce` would refuse.
 
 **Evidence:**
 
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
 - source [`internal/cli/promote_policy_checks.go`](../internal/cli/promote_policy_checks.go)
 - source [`pkg/release/promotion_checks.go`](../pkg/release/promotion_checks.go)
+
+<a id="shared-env-base"></a>
+
+### One env base, per-env deltas
+
+Every deployed env binds its workloads through one shared base, so an env file holds only what is its own and a new env starts as its deltas.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by each env as `import ..base.env as envbase`; `forge env new <name> --from <env>` copies only the source env's own values
+
+**Why:** It is plain KCL, so `forge env render`, `env diff` and `env shape` read it like any import, and an env overrides a shared binder by wrapping it. The scaffold tools keep editing each env's one binding line per workload.
+
+**Evidence:**
+
+- source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
+- command `forge env new`
+- skill `deploy/model` (`forge skill load deploy/model`)
 
 <a id="release-health-policy"></a>
 
@@ -2710,7 +2885,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 
@@ -3735,14 +3910,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agent memory file generated
 
-`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge.
+`forge project memory` renders the framework guide every agent session loads, kept current with the pinned forge, and describes the project as it is: an adopted app gets the forge pieces it uses and its own test commands, never forge's greenfield layout.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Read off the tree and forge.yaml: a forge Go service gets the full Go guide; an adopted app keeps its language and layout, with sections only for what it opted into (deploy envs, monitoring, its migration tool, frontends) and the gate taken from its Taskfile, package.json scripts or Makefile; a static site gets the frontend guide.
 
 **Evidence:**
 
 - command `forge project memory`
 - source [`internal/templates/project/reliant.md.tmpl`](../internal/templates/project/reliant.md.tmpl)
+- source [`internal/cli/memory_surface.go`](../internal/cli/memory_surface.go)
+- source [`internal/cli/testdata/memory`](../internal/cli/testdata/memory)
 
 <a id="harness-pointers"></a>
 
@@ -3755,6 +3934,20 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge skill list`
+
+<a id="harness-none"></a>
+
+### No agent files when unwanted
+
+`harness: none` (`forge project new --harness none`) adopts forge without adding an agent memory file, harness pointer or MCP config to a repository that keeps its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- command `forge project new --harness`
+- source [`internal/generator/harness.go`](../internal/generator/harness.go)
+- skill `forge/greenfield` (`forge skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 

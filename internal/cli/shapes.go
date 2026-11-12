@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/sqlident"
 	"github.com/reliant-labs/forge/kcl"
 )
@@ -274,7 +275,7 @@ func collectShapes(projectDir string) []shape {
 	var out []shape
 	rpcs := scanProtos(filepath.Join(projectDir, "proto"))
 	out = append(out, rpcs...)
-	out = append(out, scanMigrations(filepath.Join(projectDir, "db", "migrations"))...)
+	out = append(out, scanMigrations(config.MigrationsPathIn(projectDir))...)
 	ormDir := codegen.ProjectORMPackage(projectDir).PackageDir()
 	out = append(out, scanStores(filepath.Join(projectDir, filepath.FromSlash(ormDir)), ormDir)...)
 	out = append(out, scanHandlers(projectDir, rpcs)...)

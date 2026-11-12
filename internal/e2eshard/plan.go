@@ -60,38 +60,57 @@ type shard struct {
 
 // plan splits tests into n shards, longest first, each test onto the shard
 // with the least expected load so far (ties to the lower index). Every test
-// lands in exactly one shard, and with at least n tests no shard is empty:
+// lands in exactly one shard, and with at least n jobs no shard is empty:
 // the first n assignments go to the n still-empty shards.
+//
+// groups (test -> group name, from fixtureGroups) holds together the tests
+// that start from one shared project fixture: a group is planned as ONE job,
+// its load the sum of its tests', so all of them run in one test process and
+// the fixture is built once rather than once per shard that drew one of
+// them. A test absent from groups is a job of its own.
 //
 // A test without a recorded duration is planned at the median of the
 // durations recorded for the selected tests, so a new test is neither
 // stacked onto one shard as free nor treated as the slowest.
-func plan(tests []string, timings map[string]int, n int) (shardPlan, error) {
+func plan(tests []string, timings map[string]int, groups map[string]string, n int) (shardPlan, error) {
 	if n < 1 {
 		return shardPlan{}, fmt.Errorf("-shards %d: need at least one shard", n)
 	}
-	if len(tests) < n {
-		return shardPlan{}, fmt.Errorf("%d tests cannot fill %d shards: a shard with nothing to run would pass vacuously", len(tests), n)
-	}
 	p := shardPlan{shards: make([]shard, n), fallback: medianKnown(tests, timings)}
 	type job struct {
-		name string
-		secs int
+		key   string // the group name, or the test's own
+		tests []string
+		secs  int
 	}
-	jobs := make([]job, 0, len(tests))
+	byKey := map[string]*job{}
+	var jobs []*job
 	for _, t := range tests {
 		secs, ok := timings[t]
 		if !ok || secs <= 0 {
 			secs = p.fallback
 			p.estimated = append(p.estimated, t)
 		}
-		jobs = append(jobs, job{t, secs})
+		key := t
+		if g, ok := groups[t]; ok {
+			key = "group:" + g
+		}
+		j, ok := byKey[key]
+		if !ok {
+			j = &job{key: key}
+			byKey[key] = j
+			jobs = append(jobs, j)
+		}
+		j.tests = append(j.tests, t)
+		j.secs += secs
+	}
+	if len(jobs) < n {
+		return shardPlan{}, fmt.Errorf("%d tests (%d after keeping shared-fixture groups together) cannot fill %d shards: a shard with nothing to run would pass vacuously", len(tests), len(jobs), n)
 	}
 	sort.Slice(jobs, func(i, j int) bool {
 		if jobs[i].secs != jobs[j].secs {
 			return jobs[i].secs > jobs[j].secs
 		}
-		return jobs[i].name < jobs[j].name
+		return jobs[i].key < jobs[j].key
 	})
 	for _, j := range jobs {
 		best := 0
@@ -100,7 +119,7 @@ func plan(tests []string, timings map[string]int, n int) (shardPlan, error) {
 				best = i
 			}
 		}
-		p.shards[best].tests = append(p.shards[best].tests, j.name)
+		p.shards[best].tests = append(p.shards[best].tests, j.tests...)
 		p.shards[best].load += j.secs
 	}
 	for i := range p.shards {

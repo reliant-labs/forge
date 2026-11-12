@@ -1793,6 +1793,40 @@ func TestTerminationGraceOverride(t *testing.T) {
 	}
 }
 
+// TestPreStopSeconds: the main container pauses with a native sleep (no
+// exec: the image may have no shell), sidecars do not, and the derived grace
+// grows by the pause; an explicit grace still wins.
+func TestPreStopSeconds(t *testing.T) {
+	w := wl("proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Ports: []v1alpha1.Port{{Name: "http", Port: 8080}}, PreStopSeconds: new(int32(15))})
+	pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/proxy"])
+	if got := get(pod, "containers", 0, "lifecycle", "preStop", "sleep", "seconds"); got != float64(15) {
+		t.Errorf("preStop sleep = %v, want 15", got)
+	}
+	if got := get(pod, "containers", 0, "lifecycle", "preStop", "exec"); got != nil {
+		t.Errorf("preStop must not exec (the image may have no sleep binary): %v", got)
+	}
+	// 5s PRE_STOP_DELAY + 30s SHUTDOWN_TIMEOUT defaults + 5 margin + 15.
+	if got := get(pod, "terminationGracePeriodSeconds"); got != float64(55) {
+		t.Errorf("grace = %v, want the derived 40 plus the 15s pause", got)
+	}
+	w.Spec.TerminationGracePeriodSeconds = new(int32(25))
+	pod = podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/proxy"])
+	if got := get(pod, "terminationGracePeriodSeconds"); got != float64(25) {
+		t.Errorf("grace = %v, want the explicit 25", got)
+	}
+	// Unset and 0 render no lifecycle at all.
+	for _, n := range []*int32{nil, new(int32(0))} {
+		w := wl("proxy", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, PreStopSeconds: n})
+		pod := podOf(objects(t, render(t, v1alpha1.ProfileFull, w))["Deployment/proxy"])
+		if got := get(pod, "containers", 0, "lifecycle"); got != nil {
+			t.Errorf("preStopSeconds %v rendered a lifecycle: %v", n, got)
+		}
+		if got := get(pod, "terminationGracePeriodSeconds"); got != float64(40) {
+			t.Errorf("preStopSeconds %v: grace = %v, want the derived 40", n, got)
+		}
+	}
+}
+
 // TestDeploymentStrategy: an explicit strategy wins, Recreate carries no
 // rollingUpdate parameters, and unset renders Kubernetes' default STATED (the
 // storage rule still overrides it). A reconciler must not see fields the API

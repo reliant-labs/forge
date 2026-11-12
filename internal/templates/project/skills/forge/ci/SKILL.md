@@ -42,7 +42,8 @@ ci:
     coverage: false
   gate:
     extra_checks: [] # project-owned checks for `forge ci gate` — see `ci/gate`
-  vuln_scan: # zero-value = "all enabled"
+  workflows: { deploy: false } # opt one out — see `ci/extending`
+  vuln_scan:
     go: true
     docker: true
     npm: true
@@ -140,9 +141,9 @@ the run. For a pipeline that wants a human in the loop, run
 with required reviewers; `release.yml` has that shape.
 The env list is the project's `deploy/kcl/<env>/main.k` set (dev excluded),
 read when the workflow is scaffolded; with several, the first auto-deploys
-after a green image build on main and the last is protected (health gate,
-required gates, approval hook: `deploy/delivery-policy`). Pass check results
-with `--gate name=e2e,status=passed`. A lone env is never auto-deployed.
+after a green main image build; the last is protected (health gate, required
+gates, approval hook: `deploy/delivery-policy`). A lone env is never
+auto-deployed.
 
 Credentials: an env with `forge.OnCluster` workloads needs `secrets.KUBECONFIG` holding a
 context named exactly the ClusterTarget's `cluster`; `forge.OnHosted`

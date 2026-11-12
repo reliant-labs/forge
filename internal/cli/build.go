@@ -482,6 +482,10 @@ type buildResult struct {
 	// Set by the frontend docker path; the project image derives its own name
 	// from cfg.Name.
 	image string
+	// source is the external checkout a DockerBuild's GitSource context
+	// resolved to; persisted into the build state, and from there into the
+	// release ledger's built_from. nil for a build of this project's tree.
+	source *buildtarget.Source
 	// repository is the full destination this result was tagged and pushed to
 	// (`ghcr.io/acme/internal-console`) — the workload's declared reference
 	// minus its tag. It is what the build state and the release ledger RECORD,
@@ -854,11 +858,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		})...)
 	}
 
-	// External-build dispatcher: services whose KCL declares
-	// `build_cmd` get their image constructed by a user-supplied shell
+	// External-build dispatcher: workloads whose KCL declares a
+	// forge.ShellBuild get their image constructed by a user-supplied shell
 	// command rather than forge's built-in Go-build + docker-build
-	// pipeline. Mirrors the deploytarget/External provider on the build
-	// side. Runs after Go/docker/variant builds so a failing project
+	// pipeline (the build-side escape hatch; the deploy-side one is
+	// forge.OnExternal's argv hooks). Runs after Go/docker/variant builds so a failing project
 	// build doesn't waste time on the (likely orthogonal) external
 	// services — but does NOT short-circuit on docker failures because
 	// the external builds may target a different registry / pipeline.
@@ -1361,15 +1365,13 @@ func renderBuildKCL(ctx context.Context, projectDir, env string) (*KCLEntities, 
 
 // validateExternalBuildTarget checks the preconditions for `--target
 // external`: an --env to resolve KCL against, and at least one service in it
-// that actually declares build_cmd.
+// that actually declares a ShellBuild.
 //
-// No experimental gate here: `build_cmd` is the build-side mirror of
-// External's `deploy_cmd`, and `forge env deploy` of an External target needs
-// no opt-in. Gating build behind features.experimental.external_builds while
-// deploy ran free left the build/deploy pair of the SAME target with
-// mismatched maturity gates (fr-da9a6614fb) — you could deploy an external
-// target but not build it. The gates are unified by retiring the build-side
-// one. The config key is still accepted (back-compat) but no longer governs
+// No experimental gate here. Gating build behind
+// features.experimental.external_builds while the old External deploy target
+// ran free left the build/deploy pair with mismatched maturity gates
+// (fr-da9a6614fb); the build-side gate was retired, and forge.OnExternal (its
+// deploy-side successor) needs no opt-in either. The config key is still accepted (back-compat) but no longer governs
 // whether build_cmd runs.
 func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error {
 	if opts.env == "" {
@@ -1557,13 +1559,11 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 }
 
 // buildExternalServiceResults runs the external-build dispatcher for services
-// whose KCL declares `build_cmd`, returning their build results. Mirrors the
-// deploytarget/External provider on the build side. Returns (nil, nil) when
-// there is no rendered KCL or no service opts into external builds.
+// whose KCL declares a forge.ShellBuild, returning their build results.
+// Returns (nil, nil) when there is no rendered KCL or no service opts into
+// external builds.
 //
-// No experimental gate: build_cmd is the build-side mirror of External's
-// deploy_cmd (which needs no opt-in), so a service that declares build_cmd just
-// builds. See the --target external branch in runBuild for the rationale
+// No experimental gate: a workload that declares a ShellBuild just builds. See the --target external branch in runBuild for the rationale
 // (fr-da9a6614fb).
 func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg *config.ProjectConfig, opts buildOptions, cfgArchForDocker, resolvedTag string) ([]buildResult, error) {
 	if entities == nil {
@@ -1681,6 +1681,7 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			PushedAt:  nowRFC3339(),
 			Digest:    r.digest,
 			Platforms: r.platforms,
+			Source:    r.source,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -3023,7 +3024,7 @@ func summarizeKCLBuildPlan(e *KCLEntities) {
 	}
 	line("Host (skip docker)", e.WorkloadNames(RuntimeHost))
 	line("Compose (compose builds)", e.WorkloadNames(RuntimeCompose))
-	for _, rt := range []string{RuntimeCluster, RuntimeHosted} {
+	for _, rt := range []string{RuntimeCluster, RuntimeHosted, RuntimeExternal} {
 		var built, named []string
 		for _, w := range e.WorkloadsOn(rt) {
 			if w.Build.Type != "" {
@@ -3074,7 +3075,7 @@ func envNeedsProjectImage(e *KCLEntities) bool {
 			continue
 		}
 		switch w.Runtime.Type {
-		case RuntimeCluster, RuntimeHosted, RuntimeBuildOnly:
+		case RuntimeCluster, RuntimeHosted, RuntimeBuildOnly, RuntimeExternal:
 			return true
 		}
 	}
@@ -3103,7 +3104,8 @@ func kclFirstClusterPlatform(e *KCLEntities) string {
 
 // kclEnvImagePlatform is the GOARCH the env's built images must run on, as the
 // env DECLARES it: the cluster platform (kclFirstClusterPlatform), else the
-// platform of the control plane a built workload is bound to. The hosted arch
+// platform of the control plane a built workload is bound to, else an external
+// binding's declared platform. The hosted arch
 // is a property of the platform's nodes, never of the machine running
 // the build — an arm64 Mac building a hosted image must still produce amd64.
 // "" when the env declares neither.
@@ -3117,6 +3119,13 @@ func kclEnvImagePlatform(e *KCLEntities) string {
 	for _, w := range e.WorkloadsOn(RuntimeHosted) {
 		if w.Build.Type != "" {
 			return w.Runtime.HostedPlatform()
+		}
+	}
+	// An external runtime's tooling runs the image somewhere forge cannot
+	// see, so its declared platform is the only statement of the arch.
+	for _, w := range e.WorkloadsOn(RuntimeExternal) {
+		if w.Build.Type != "" {
+			return w.Runtime.External.ImagePlatform()
 		}
 	}
 	return ""
@@ -3405,6 +3414,9 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 // ./`) needs this; one that COPYs repo-root paths wants the default. Keeping
 // the default "." is what makes every pre-existing DockerBuild byte-identical.
 func serviceDockerContext(d *DockerBuild) string {
+	if d != nil && d.ContextDir != "" {
+		return d.ContextDir // a GitSource context, resolved (build_docker_source.go)
+	}
 	if d != nil && strings.TrimSpace(d.Context) != "" {
 		return strings.TrimSpace(d.Context)
 	}
@@ -3420,6 +3432,15 @@ func serviceDockerContext(d *DockerBuild) string {
 // The DOCKERFILE is deliberately not checked against the context — docker
 // allows `-f` outside the context, and forge does not narrow that.
 func checkServiceDockerContext(projectDir, svcName string, d *DockerBuild) error {
+	if d != nil && d.ContextSource != nil {
+		// A pinned context is another repository's tree, so the
+		// inside-the-project rule does not apply; resolution already proved
+		// it is a directory. Unresolved means a caller skipped the pass.
+		if d.ContextDir == "" {
+			return fmt.Errorf("service %q declares build context %s, which was not resolved", svcName, toGitSource(d.ContextSource))
+		}
+		return nil
+	}
 	if d == nil || strings.TrimSpace(d.Context) == "" {
 		return nil
 	}
@@ -3505,12 +3526,19 @@ func serviceDockerImage(w WorkloadEntity, resolvedTag string, opts buildOptions)
 // overrides the env-wide arch.
 func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName, repository string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) buildResult {
 	start := time.Now()
-	dockerfile := "Dockerfile"
-	if d != nil && d.Dockerfile != "" {
-		dockerfile = d.Dockerfile
+	dockerfile := serviceDockerfile(d)
+	if d != nil && d.DockerfileSource != nil && d.DockerfilePath == "" {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+			err: fmt.Errorf("service %q declares Dockerfile %s, which was not resolved", svcName, toGitSource(d.DockerfileSource))}
 	}
 
 	if _, err := os.Stat(dockerfile); os.IsNotExist(err) {
+		// A pinned build never skips: its Dockerfile was named in another
+		// repository, so a missing one is an error, not an optional image.
+		if d != nil && d.HasGitSource() {
+			return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
+				err: fmt.Errorf("service %q: Dockerfile %s does not exist in its pinned source", svcName, dockerfile)}
+		}
 		// No image was built, so the result carries no image: nothing is
 		// recorded for a build that did not happen.
 		fmt.Printf("[build] %s: skipping docker (no %s)\n", svcName, dockerfile)
@@ -3524,7 +3552,14 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
-	dockerArgs = appendSourceDateEpoch(dockerArgs, resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile))
+	epoch := ""
+	if d != nil && d.ContextDir != "" {
+		// Another repository's checkout: its own history dates it.
+		epoch = resolveSourceDateEpoch(ctx, d.ContextDir)
+	} else {
+		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
+	}
+	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
 	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
@@ -3566,5 +3601,8 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		// what it records is the repository. Keying it by the repository would
 		// put slashes in the filename.
 		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
+		// The other repository's checkout, when the context is a GitSource:
+		// the build state and the release ledger (built_from) record it.
+		source: d.sourceForRecord(),
 	}
 }

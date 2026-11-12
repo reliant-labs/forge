@@ -25,11 +25,12 @@ import (
 //
 // # Unknown is a first-class answer, and the zero value IS unknown
 //
-// Not every target can be read back. `External` runs an OPAQUE `sh -c`
-// command — forge does not know whether that command talked to Fly.io,
-// systemd or a wet string, so there is genuinely nothing to read. The
-// honest report is "I do not know", and this package makes that the
-// DEFAULT rather than something a provider must remember to say:
+// Not every target can be read back. A forge.OnExternal workload with no
+// `status` hook is deployed by the author's own tooling — forge does not
+// know whether it talked to Fly.io, systemd or a wet string, so there is
+// genuinely nothing to read. The honest report is "I do not know", and
+// this package makes that the DEFAULT rather than something a provider
+// must remember to say:
 //
 //   - [Health]'s zero value is [HealthUnknown]. A provider that forgets
 //     to set health cannot accidentally report healthy.
@@ -172,8 +173,9 @@ type Observed struct {
 //
 // This is NOT ErrProviderNotImplemented. That sentinel means "forge has
 // not built this yet"; this one covers both that case AND the permanent,
-// structural case — External's `sh -c` is opaque by design, so no future
-// version of forge will be able to observe it either. The two are
+// structural case — an external binding with no `status` hook is opaque
+// by design, so no version of forge can observe it until the author adds
+// one. The two are
 // distinguished by ObservationUnsupportedError.Reason rather than by two
 // sentinels, because every caller treats them identically (report
 // unknown) and only a human reading the message cares which it is.

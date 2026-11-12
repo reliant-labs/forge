@@ -37,8 +37,18 @@ func TestNewBrowserEnvironmentsDeclareReplayOnTheFrontend(t *testing.T) {
 					if strings.Contains(string(out), "VITE_OTEL_REPLAY") || strings.Contains(string(out), "NEXT_PUBLIC_OTEL_REPLAY") {
 						t.Fatal("environment policy must not be baked into a promoted build")
 					}
-					if strings.Contains(tmpl, "cloud") && !strings.Contains(string(out), "runtime_config = f.runtime_config | _api_config") {
-						t.Fatal("hosted binder discarded the frontend's replay config")
+					// The hosted binder lives in the shared env base: it must
+					// keep the frontend's own runtime config (the replay
+					// switch renders into it), adding only the API URL.
+					if strings.Contains(tmpl, "cloud") {
+						base, err := DeployTemplates().Render("kcl/base/env.k.tmpl", EnvTemplateData{ProjectName: "shop", HasFrontend: true, FrontendName: "web"})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !strings.Contains(string(out), "envbase.hosted_frontend(f, _api_config)") ||
+							!strings.Contains(string(base), "runtime_config = f.runtime_config | api") {
+							t.Fatal("hosted binder discarded the frontend's replay config")
+						}
 					}
 				})
 			}

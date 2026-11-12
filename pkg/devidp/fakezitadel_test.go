@@ -710,14 +710,15 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/metadata/search", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
-		want := ""
+		want, prefix := "", false
 		if fs, _ := b["filters"].([]any); len(fs) > 0 {
 			f, _ := fs[0].(map[string]any)
 			want = str(sub(f, "keyFilter"), "key")
+			prefix = str(sub(f, "keyFilter"), "method") == "TEXT_FILTER_METHOD_STARTS_WITH"
 		}
 		res := []any{}
 		for k, v := range u.metadata {
-			if want == "" || k == want {
+			if want == "" || k == want || (prefix && strings.HasPrefix(k, want)) {
 				res = append(res, map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString([]byte(v))})
 			}
 		}

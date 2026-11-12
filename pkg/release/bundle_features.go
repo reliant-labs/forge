@@ -78,6 +78,11 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureReleaseHealthBaseline is ShapeReleaseHealth.RequireBaseline:
+	// how many services a release needs a before window to compare against
+	// (forge.ReleaseHealth.require_baseline). A control plane that predates it
+	// is sent the policy without it, and judges by the default (any).
+	BundleFeatureReleaseHealthBaseline = "shape-release-health-baseline"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -152,16 +157,32 @@ const (
 	// control plane that predates it enforces neither, so a shape carrying
 	// them is written only to one that names the feature, which is the control
 	// plane that enforces them — and forge refuses to declare an ENFORCING
-	// one to a control plane that does not ([BundleReader.UnenforcedChecks]).
+	// one to a control plane that ENFORCES them
+	// ([CapabilityEnforcesPromotionChecks], [BundleReader.UnenforcedChecks]).
 	BundleFeaturePromotionChecks = "shape-promotion-checks"
+	// BundleFeatureReleaseProbes is Shape.ReleaseProbes, and the release-probe
+	// finding codes (HealthProbeFailed, HealthProbeLatency) in
+	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
+	// nothing for the env, and its validation refuses a finding code it does
+	// not know, so it is sent neither.
+	BundleFeatureReleaseProbes = "shape-release-probes"
 )
+
+// CapabilityEnforcesPromotionChecks is advertised beside the bundle features
+// by a control plane whose promote transaction JUDGES the required gates and
+// the approval hook. It is deliberately not in [BundleDocFeatures]: that list
+// means "decodes", and a control plane advertises it verbatim on every forge
+// pin bump, so a pin bump alone would claim enforcement its promote does not
+// perform, and an enforcing check would admit every promotion. A control
+// plane adds this by hand, in the change that makes its promote judge both.
+const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeaturePromotionChecks}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -220,12 +241,13 @@ func (s Shape) HasOptionalParts() bool {
 }
 
 // UnenforcedChecks names the promotion checks s declares in enforce mode that
-// LimitShape would withhold from this reader: a control plane that predates
-// them would admit every promotion they were declared to refuse. The
+// this reader does not enforce: one that does not advertise
+// [CapabilityEnforcesPromotionChecks] (decoding the fields is not judging
+// them) would admit every promotion they were declared to refuse. The
 // environment declaration refuses to send such a shape rather than let an
 // enforcing check silently become nothing.
 func (r *BundleReader) UnenforcedChecks(s Shape) []string {
-	if r.Supports(BundleFeaturePromotionChecks) || s.DeliveryPolicy == nil {
+	if r.Supports(CapabilityEnforcesPromotionChecks) || s.DeliveryPolicy == nil {
 		return nil
 	}
 	var out []string
@@ -255,12 +277,33 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureReleaseHealth) {
 		s.ReleaseHealth = nil
+	} else if !r.Supports(BundleFeatureReleaseHealthBaseline) && s.ReleaseHealth != nil && s.ReleaseHealth.RequireBaseline != "" {
+		h := *s.ReleaseHealth
+		h.RequireBaseline = ""
+		if h.IsDefault() {
+			s.ReleaseHealth = nil // all that differed from the default was the baseline
+		} else {
+			s.ReleaseHealth = &h
+		}
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil
 	}
 	if !r.Supports(BundleFeatureUptimeChecks) {
 		s.UptimeChecks = nil
+	}
+	if !r.Supports(BundleFeatureReleaseProbes) {
+		// A probed env that keeps the default policy records none, and the
+		// default now fails on probe_failed. A reader of release health is
+		// sent that policy stated, without the probe codes, so what it judges
+		// by is the producer's policy rather than its own default. An env
+		// without probes is sent as before.
+		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
+			def := DefaultReleaseHealth()
+			s.ReleaseHealth = &def
+		}
+		s.ReleaseProbes = nil
+		s.ReleaseHealth = withoutProbeFindings(s.ReleaseHealth)
 	}
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil

@@ -162,7 +162,7 @@ func runSnapshotPromote(ctx context.Context, env string, r release.Release, ledg
 	return executeSnapshotPromotion(ctx, r, ledger, opts, plan, expected, record, s)
 }
 
-func executeSnapshotPromotion(ctx context.Context, r release.Release, ledger envLedger, opts promoteOptions, plan release.Plan, expected string, record *release.BundleRecord, s *release.Snapshot) (retErr error) {
+func executeSnapshotPromotion(ctx context.Context, r release.Release, ledger envLedger, opts promoteOptions, plan release.Plan, expected string, record *release.BundleRecord, s *release.Snapshot) (retErr error) { //nolint:funlen // the snapshot promotion's steps, in the order they must run
 	env := s.Environment
 	if opts.Follow != nil && ledger.Hosted && len(ledger.HostedTiers) > 0 && !ledger.hubUnits() {
 		return fmt.Errorf("snapshot hosted client publication adapter not available; no promotion written")

@@ -723,8 +723,6 @@ func TestLoadProject_RemovedBlocksAreRefusedWithTheirHint(t *testing.T) {
 		key   string
 		hints []string
 	}{
-		{"features.orm", "features:\n  orm: false\n", "features.orm",
-			[]string{"//forge:no-orm", "internal/db", "features"}},
 		{"stack", "stack:\n  frontend:\n    framework: nextjs\n", "stack",
 			[]string{"frontends/<name>", "forge.Frontend"}},
 		{"frontends", "frontends:\n  - name: web\n    type: nextjs\n", "frontends",
@@ -735,8 +733,6 @@ func TestLoadProject_RemovedBlocksAreRefusedWithTheirHint(t *testing.T) {
 			[]string{"flow_checks", "forge.FlowCheck", "workload"}},
 		{"database.driver", "database:\n  driver: postgres\n", "database.driver",
 			[]string{"derived", "db/migrations"}},
-		{"database.migrations_dir", "database:\n  migrations_dir: db/migrations\n", "database.migrations_dir",
-			[]string{"db/migrations"}},
 		{"database.seed", "database:\n  seed:\n    rows: 5\n", "database.seed",
 			[]string{"20 rows", "--no-seed"}},
 		{"database.migration_safety.allowed_destructive",
@@ -765,8 +761,8 @@ func TestLoadProject_RemovedBlocksAreRefusedWithTheirHint(t *testing.T) {
 // TestRemovedBlocksAreRefusedNotWarned guards the registry choice itself: these
 // keys live in refusedSchemaKeys (fatal), never removedSchemaKeys (warning).
 func TestRemovedBlocksAreRefusedNotWarned(t *testing.T) {
-	for _, key := range []string{"features.orm", "stack", "frontends", "frontend", "smoke",
-		"database.driver", "database.migrations_dir", "database.seed",
+	for _, key := range []string{"stack", "frontends", "frontend", "smoke",
+		"database.driver", "database.seed",
 		"database.migration_safety.allowed_destructive"} {
 		if _, ok := refusedSchemaKeys[key]; !ok {
 			t.Errorf("%q must be in refusedSchemaKeys so a stale value cannot be silently ignored", key)

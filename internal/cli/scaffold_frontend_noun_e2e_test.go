@@ -46,14 +46,9 @@ func TestE2EAddFrontendKindsProduceABuildableTree(t *testing.T) {
 	requireTool(t, "node", "npm")
 
 	forgeBin := buildforgeBinary(t)
-	dir := t.TempDir()
-
-	runCmd(t, dir, forgeBin, "project", "new", "feadd",
-		"--mod", "example.com/feadd",
-		"--service", "widget",
-	)
-	projectDir := filepath.Join(dir, "feadd")
-	addCorpusForgePkgReplace(t, projectDir)
+	// `project new widgetapp --service widget`, shared with the other
+	// `scaffold frontend` tests (shared_project_e2e_test.go).
+	projectDir := newProjectFromSharedE2E(t, forgeBin, widgetServiceProjectE2E)
 
 	// Each add verb runs its own `npm install`, which dominates the wall time.
 	for _, fe := range []struct{ name, kind string }{

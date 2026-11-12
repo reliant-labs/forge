@@ -39,6 +39,7 @@ judged against a deployed project. They depend on:
 
 2. **The console draws them.** Deploy a project with a frontend
    (`reliant forge env deploy <env>`) and open its Product group:
+
    - Users, Product and Acquisition are listed, and the old _Product usage_
      is not (a star on it moved to _Product_);
    - each section heading has its description, and the headline figures open

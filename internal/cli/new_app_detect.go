@@ -109,6 +109,9 @@ type composeService struct {
 	dependsOn   []string
 	command     []string
 	commandRaw  string
+	// withheldArgs are build args left out of the build because they carry
+	// a credential (credentialBuildArg); named, never valued, in the summary.
+	withheldArgs []string
 }
 
 type composeFile struct {
@@ -140,7 +143,7 @@ func parseComposeFile(path string) (*composeFile, error) {
 		}
 		s := composeService{name: n, environment: map[string]string{}}
 		if b, ok := svc["build"]; ok {
-			s.build = composeBuild(b)
+			s.build, s.withheldArgs = composeBuild(b)
 		}
 		if i, ok := svc["image"]; ok {
 			s.image = i.Value
@@ -165,12 +168,20 @@ func parseComposeFile(path string) (*composeFile, error) {
 	return out, nil
 }
 
+// credentialBuildArg reports a build arg that carries a credential, by name
+// or by value. A build arg is baked into the image and its history, and
+// workloads.k is source-controlled, so such an arg is never copied: it
+// belongs in a build secret (`RUN --mount=type=secret`), set by hand.
+func credentialBuildArg(k, v string) bool {
+	return credentialName.MatchString(k) || credentialValue(v)
+}
+
 // composeBuildMapping reads a compose `build:` mapping into b; false when it
-// is not one.
-func composeBuildMapping(n yaml.Node, b *generator.AppBuild) bool {
+// is not one. withheld names the args it left out (credentialBuildArg).
+func composeBuildMapping(n yaml.Node, b *generator.AppBuild) (withheld []string, ok bool) {
 	var m map[string]yaml.Node
 	if n.Decode(&m) != nil {
-		return false
+		return nil, false
 	}
 	if c, ok := m["context"]; ok {
 		b.Context = c.Value
@@ -182,25 +193,34 @@ func composeBuildMapping(n yaml.Node, b *generator.AppBuild) bool {
 		b.Target = t.Value
 	}
 	if a, ok := m["args"]; ok {
-		args, _ := composeEnvironment(a)
-		for k, v := range args {
-			if strings.Contains(v, "${") {
+		args, order := composeEnvironment(a)
+		for _, k := range order {
+			v := args[k]
+			switch {
+			case strings.Contains(v, "${"):
 				delete(args, k)
+			case credentialBuildArg(k, v):
+				delete(args, k)
+				withheld = append(withheld, k)
 			}
 		}
 		if len(args) > 0 {
 			b.Args = args
 		}
 	}
-	return true
+	return withheld, true
 }
 
-func composeBuild(n yaml.Node) *generator.AppBuild {
+func composeBuild(n yaml.Node) (*generator.AppBuild, []string) {
 	b := &generator.AppBuild{Dockerfile: "Dockerfile"}
+	var withheld []string
 	if n.Kind == yaml.ScalarNode {
 		b.Context = n.Value
-	} else if !composeBuildMapping(n, b) {
-		return nil
+	} else {
+		var ok bool
+		if withheld, ok = composeBuildMapping(n, b); !ok {
+			return nil, nil
+		}
 	}
 	b.Context = cleanRel(b.Context)
 	// compose resolves dockerfile against the context; forge resolves it
@@ -209,7 +229,7 @@ func composeBuild(n yaml.Node) *generator.AppBuild {
 	if b.Context == "." {
 		b.Context = ""
 	}
-	return b
+	return b, withheld
 }
 
 func cleanRel(p string) string {
@@ -1025,6 +1045,9 @@ func (d *appDetection) composeWorkload(root string, s composeService, pg *compos
 		desc += ", reads DATABASE_URL"
 	}
 	d.detected = append(d.detected, desc)
+	for _, k := range s.withheldArgs {
+		d.assumed = append(d.assumed, fmt.Sprintf("%s: build arg %s carries a credential, so it is not copied into workloads.k; pass it as a build secret (RUN --mount=type=secret) and declare it by hand", name, k))
+	}
 	if pg != nil && w.UsesDatabase && s.environment["DATABASE_URL"] == "" {
 		d.assumed = append(d.assumed, fmt.Sprintf("%s reads its database from DATABASE_URL (it depends on %q)", name, pg.name))
 	}

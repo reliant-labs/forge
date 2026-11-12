@@ -549,6 +549,54 @@ func TestDetectApp_CredentialURLsBecomeSecrets(t *testing.T) {
 	}
 }
 
+// A compose build arg is baked into the image, and workloads.k is
+// source-controlled: one that carries a credential, by name or by value, is
+// left out of the build and named (never valued) in the summary, for adoption
+// and for a claimable deploy alike. A plain arg is kept.
+func TestDetectApp_CredentialBuildArgsAreWithheld(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"Dockerfile": "FROM python:3.12-slim\nARG NODE_ENV\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+		"docker-compose.yml": `services:
+  web:
+    build:
+      context: .
+      args:
+        NODE_ENV: production
+        API_TOKEN: hunter2token
+        NPM_REGISTRY: https://deploy:hunter2npm@npm.example.com/
+    ports:
+      - "8000:8000"
+`,
+	})
+	for _, claimable := range []bool{false, true} {
+		det, err := detectApp(root, "shop", claimable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := det.spec.Workloads[0]
+		if w.Build == nil || len(w.Build.Args) != 1 || w.Build.Args["NODE_ENV"] != "production" {
+			t.Errorf("claimable=%v: build args = %v, want only NODE_ENV kept", claimable, w.Build)
+		}
+		files, err := generator.RenderAppScaffold(det.spec, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary := strings.Join(append(append(det.detected, det.assumed...), det.skipped...), "\n")
+		out := summary
+		for _, f := range files {
+			out += "\n" + string(f.Content)
+		}
+		if strings.Contains(out, "hunter2") {
+			t.Errorf("claimable=%v: a credential build arg reached the generated files or summary:\n%s", claimable, out)
+		}
+		for _, k := range []string{"API_TOKEN", "NPM_REGISTRY"} {
+			if !strings.Contains(summary, "build arg "+k+" carries a credential") {
+				t.Errorf("claimable=%v: the summary does not name withheld build arg %s:\n%s", claimable, k, summary)
+			}
+		}
+	}
+}
+
 // A worker sharing the web Dockerfile inherits its EXPOSE and ENV PORT, but
 // its compose command serves neither: it is a worker, with no public port
 // and no TCP probe.

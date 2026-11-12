@@ -40,6 +40,7 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -170,7 +171,7 @@ Language-by-language setup: forge skill load observability (section "Monitoring 
 	f := cmd.Flags()
 	f.StringVar(&o.service, "service", "", "fill OTEL_SERVICE_NAME with this service.name (default: a placeholder to fill per deployable)")
 	f.StringVar(&o.tokenName, "token-name", defaultIngestTokenName, "the ingest token's label (ci, laptop, prod-k8s)")
-	f.DurationVar(&o.ttl, "ttl", 0, "the ingest token's lifetime (default 90 days; 1h to 365 days)")
+	f.DurationVar(&o.ttl, "ttl", 0, "the ingest token's lifetime (default and maximum 90 days, at least 1h)")
 	f.StringVar(&o.org, "org", "", "the organization a NEW project is created in (default: your only one)")
 	f.BoolVar(&o.writeConfig, "write-config", false, "write or update forge.yaml without asking")
 	f.BoolVar(&o.noWrite, "no-write", false, "never write forge.yaml (name the project with --project)")
@@ -518,7 +519,7 @@ func writeYAMLDoc(path string, doc *yaml.Node, changed bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil { //nolint:gosec // forge.yaml is a checked-in project file
+	if err := atomicfile.WriteFile(path, out, 0o644); err != nil { //nolint:gosec // forge.yaml is a checked-in project file
 		return false, err
 	}
 	return true, nil
@@ -579,6 +580,8 @@ func writeObsInit(d obsInitDeps, doc obsInitDoc, o obsInitOpts, selfHosted strin
 			fmt.Fprintf(w, "%s: registered on %s as project %s (environment %s)\n", e.Env, doc.ControlPlane, doc.Project, e.EnvironmentID)
 			fmt.Fprintf(w, "  ingest token %q (%s), expires %s — printed ONCE: store the header below as a secret\n",
 				e.Token.Name, e.Token.ID, e.Token.ExpiresAt.Format("2006-01-02"))
+			fmt.Fprintf(w, "  nothing renews it (90 days at most): before it expires, `forge obs tokens rotate %s --grace 24h` and roll the new header out\n",
+				e.Token.ID)
 		}
 		fmt.Fprintln(w)
 		keys := make([]string, 0, len(e.OTelEnv))

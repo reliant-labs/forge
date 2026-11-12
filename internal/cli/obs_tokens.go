@@ -80,8 +80,10 @@ func newObsTokensCmd() *cobra.Command {
 		Short: "List, create, rotate and revoke an env's telemetry ingest tokens",
 		Long: `Telemetry ingest tokens are what an app forge does not deploy sends its OTLP
 with (OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer <token>). Each is for one
-env, has a name, expires (90 days by default), and can be rotated with a grace
-period or revoked at once. Minting, rotating and revoking need the obs:write
+env, has a name, expires (90 days by default, and at most: the control plane
+refuses a longer --ttl), and nothing renews it: rotate it before it expires
+(list says "expires soon: rotate it" in its last 14 days), with a grace period
+so the old one keeps working while the new one rolls out, or revoke it at once. Minting, rotating and revoking need the obs:write
 permission (owners and admins hold it); listing needs membership.
 
   forge obs tokens list prod
@@ -183,7 +185,7 @@ func newObsTokensCreateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&name, "name", "", "the token's label (ci, laptop, prod-k8s)")
 	_ = cmd.MarkFlagRequired("name")
-	cmd.Flags().DurationVar(&ttl, "ttl", 0, "lifetime (default 90 days; 1h to 365 days)")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "lifetime (default and maximum 90 days, at least 1h)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the token as JSON")
 	return cmd
 }
@@ -214,7 +216,7 @@ func newObsTokensRotateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().DurationVar(&grace, "grace", 24*time.Hour, "how long the old token keeps working (0s revokes it now; at most 7 days)")
-	cmd.Flags().DurationVar(&ttl, "ttl", 0, "the new token's lifetime (default 90 days)")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "the new token's lifetime (default and maximum 90 days, at least 1h)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the token as JSON")
 	return cmd
 }

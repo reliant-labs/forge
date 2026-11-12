@@ -332,3 +332,21 @@ func TestObsInit_GoRepoWithANameOnlyForgeYAML(t *testing.T) {
 		t.Fatalf("forge.yaml = %+v", cfg)
 	}
 }
+
+// The control plane caps an ingest token at 90 days and nothing renews it, so
+// the human view says when it expires and the command that rotates it.
+func TestObsInit_HumanViewSaysHowToRotateBeforeExpiry(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runInit(t, dir, fakeInitControlPlane(), noTTY, nil, "prod", "--write-config")
+	if err != nil {
+		t.Fatalf("obs init: %v\n%s", err, out)
+	}
+	for _, want := range []string{"expires 2027-02-09", "forge obs tokens rotate jti-1 --grace 24h", "90 days at most"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("human view lacks %q:\n%s", want, out)
+		}
+	}
+}

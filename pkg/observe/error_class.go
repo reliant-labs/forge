@@ -52,6 +52,11 @@ const DefaultUserErrorLevel = slog.LevelInfo
 // svcerr.Class of its error ("server", "user", "canceled").
 const ErrorClassKey = "error_class"
 
+// CloseReasonKey is the log attribute naming why the server ended a call on
+// purpose (svcerr.ExpectedClose). The span carries the same value as
+// AttrCloseReason.
+const CloseReasonKey = "close_reason"
+
 // WithUserErrorLevel sets the level for errors that are not a server fault —
 // svcerr.ClassUser and svcerr.ClassCanceled — on one layer. The default is
 // DefaultUserErrorLevel (INFO); slog.LevelWarn is the usual alternative for a
@@ -145,6 +150,9 @@ func errorAttrs(ctx context.Context, err error, class svcerr.Class) []slog.Attr 
 	}
 	if origin := deadlineOf(ctx, err); origin != deadlineUnknown {
 		attrs = append(attrs, slog.String(DeadlineKey, origin.String()))
+	}
+	if reason, ok := svcerr.CloseReason(err); ok {
+		attrs = append(attrs, slog.String(CloseReasonKey, reason))
 	}
 	return attrs
 }

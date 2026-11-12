@@ -28,6 +28,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/migrationgit"
+	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/internal/naming"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/shadowdb"
@@ -735,6 +736,9 @@ func (e entityMigrationEmit) spec() entityscaffold.EntityFromProtoSpec {
 
 func emitEntityFromProtoMigration(e entityMigrationEmit) error {
 	migDir, table := e.migDir, e.table
+	if err := refuseForeignToolBirth(migDir, table); err != nil {
+		return err
+	}
 	mig := entityscaffold.RenderEntityMigrationFromProto(e.spec())
 	upPath, err := writeBirthMigration(migDir, table, mig.UpSQL)
 	if err != nil {
@@ -878,7 +882,7 @@ func markersFromScan(scan *codegen.RawProtoScan, msgName string) entityBirthMark
 // never emits a broken one.
 func appliedSchema(migDir string) (map[string]bool, []entityscaffold.ExistingTable, []schemadef.Table) {
 	out := map[string]bool{}
-	projectDir := filepath.Dir(filepath.Dir(migDir))
+	projectDir := projectDirOfMigrations(migDir)
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		named := parsedSchema(migDir)
@@ -1076,4 +1080,40 @@ func descriptorServiceByName(services []codegen.ServiceDef, svcArg string) (code
 // same leaf `forge scaffold rpc <svc>` uses.
 func descriptorServiceArg(sd codegen.ServiceDef) string {
 	return naming.ServicePackage(strings.TrimSuffix(sd.Name, "Service"))
+}
+
+// projectDirOfMigrations is the project a migrations directory belongs to:
+// the nearest ancestor holding forge.yaml. database.migrations_dir puts the
+// directory at any depth, so the parent of its parent (right for
+// db/migrations) is a guess, and the fallback only when no forge.yaml is
+// found.
+func projectDirOfMigrations(migDir string) string {
+	abs, err := filepath.Abs(migDir)
+	if err == nil {
+		for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+			if _, statErr := os.Stat(filepath.Join(dir, config.ProjectConfigFile)); statErr == nil {
+				return dir
+			}
+			if filepath.Dir(dir) == dir {
+				break
+			}
+		}
+	}
+	return filepath.Dir(filepath.Dir(migDir))
+}
+
+// refuseForeignToolBirth refuses to write a birth migration into a directory
+// another migration tool owns (forge.yaml `database.migrations.tool`): forge's
+// file is `<version>_create_<table>.up.sql` in its own dialect, which goose,
+// atlas, flyway or dbmate would skip or misread. The table is written with the
+// project's tool instead; once it is in the applied schema (which forge reads
+// by running that tool), the entity's CRUD wiring follows on the next run.
+func refuseForeignToolBirth(migDir, table string) error {
+	h, ok := migrationhook.ResolveIn(projectDirOfMigrations(migDir))
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("database.migrations.tool is %s, so forge does not write the %s table's migration into %s — "+
+		"create it with your tool (%s), then re-run `forge scaffold`: the entity's CRUD wiring follows once the table is in the applied schema",
+		h.Tool, table, h.RelDir, migrationhook.NewMigrationHint(h, "create_"+table))
 }

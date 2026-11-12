@@ -285,11 +285,12 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 					migrationsDir = filepath.Join(root, migrationsDir)
 				}
 			}
-			result, err := migrationlint.LintMigrationsDir(migrationsDir, migrationlint.ConfigFromProject(store.Database().MigrationSafety))
+			ruleConfig := migrationlint.ConfigFromProject(store.Database().MigrationSafety).ForTool(store.Database().MigrationTool())
+			result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
 			if err != nil {
 				return cliutil.WrapUserErr("forge ci migration-safety",
 					"could not read the migrations directory "+migrationsDir, "",
-					"check the path and permissions, or point database.migrations_dir in forge.yaml at the right directory", err)
+					"check the path and permissions, or point database.migrations.dir in forge.yaml at the right directory", err)
 			}
 			fmt.Print(result.FormatText())
 			if result.HasErrors() {

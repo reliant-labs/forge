@@ -8,6 +8,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 )
@@ -283,7 +284,9 @@ func generateMigrate(projectDir, modulePath string, cs *checksums.FileChecksums)
 		return fmt.Errorf("failed to generate db/embed.go: %w", err)
 	}
 
-	if has {
+	if tool := config.MigrationToolIn(projectDir); tool != config.MigrationToolForge {
+		fmt.Println("  ⏭️  Migrations are applied by " + tool + " (database.migrations.tool) — nothing to embed")
+	} else if has {
 		fmt.Println("  ✅ Generated db/embed.go (migrations embedded)")
 	} else {
 		fmt.Println("  ⏭️  No migrations yet — nothing to embed")

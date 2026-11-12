@@ -403,6 +403,10 @@ func releaseMigrationGuard(ctx context.Context, out io.Writer, rel releaseRef, p
 	for _, n := range notes {
 		fmt.Fprintf(out, "[build]   note: %s\n", n)
 	}
+	if note := foreignToolGuardNote(projectDir); note != "" {
+		fmt.Fprintf(out, "[build]   note: %s\n", note)
+		return m, nil
+	}
 	if ledger.Hosted {
 		if err := checkUnmergedMigrations(out, "[build]  ", projectDir, version, opts.allowUnmergedMigrations); err != nil {
 			return nil, err
@@ -451,7 +455,28 @@ func checkDeployMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 		fmt.Fprintf(out, "[deploy] note: release %s records no migrations (cut before forge recorded them), so its migrations were not checked against what %s has applied\n", version, env)
 		return nil
 	}
+	if note := foreignToolGuardNote(projectDir); note != "" {
+		fmt.Fprintf(out, "[deploy] note: %s\n", note)
+		return nil
+	}
 	return checkPassedMigrations(ctx, out, "[deploy]", releaseRef{projectDir, env, version}, rel.Migrations, ledger, allow)
+}
+
+// foreignToolGuardNote is why the migration-order guards do not run in a
+// project whose migrations another tool applies (forge.yaml
+// database.migrations.tool), or "" when forge's migrator applies them. Both
+// guards judge forge's ordering rule — a file at a version at or below the
+// env's head that was never applied is one forge's migrator refuses — and
+// another tool numbers, orders and accepts out-of-order files by its own
+// rules. A guard that cannot know is a note, never a refusal (see the top of
+// this file); the tool itself stays the last line of defence. The release
+// still records the directory's files.
+func foreignToolGuardNote(projectDir string) string {
+	tool := config.MigrationToolIn(projectDir)
+	if tool == config.MigrationToolForge {
+		return ""
+	}
+	return fmt.Sprintf("migration-order guards skipped (tool: %s): they judge forge's migrator's version order, and %s applies this project's migrations by its own", tool, tool)
 }
 
 func ledgerLocation(l envLedger) string {

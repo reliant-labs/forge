@@ -532,6 +532,26 @@ _Enforced · Forge, on any infrastructure_
 | `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                            | `--migration-safety` |
 | `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read        | `--migration-safety` |
 
+<a id="keep-your-migration-tool"></a>
+
+### Keep your migration tool
+
+A team on goose, atlas, flyway, dbmate, golang-migrate or its own command keeps it and its migrations directory: forge runs that tool to build the schema it projects the ORM and seeds from, lints every SQL file it applies, and runs it from `forge db migrate up` — no protos, no conversion.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `database: {migrations: {dir: migrations, tool: goose}}` in forge.yaml; `tool: custom` with `apply: [...]` runs any command.
+
+**Why:** Moving a live history onto a new migrator is the step teams put off, so forge's schema features would wait behind it. Running the team's own tool against forge's throwaway Postgres gives the same applied schema without the move.
+
+**Evidence:**
+
+- source [`internal/migrationhook`](../internal/migrationhook)
+- source [`internal/shadowdb/hook.go`](../internal/shadowdb/hook.go)
+- source [`internal/linter/migrationlint/tools.go`](../internal/linter/migrationlint/tools.go)
+- command `forge db migrate up`
+- skill `db/own-migration-tool` (`forge skill load db/own-migration-tool`)
+
 <a id="managed-postgres-backups"></a>
 
 ### Backups and point-in-time restore

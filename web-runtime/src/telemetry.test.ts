@@ -389,6 +389,21 @@ describe("benign browser errors", () => {
     expect(exportedMessages("unhandledrejection")).toEqual(["boom"]);
   });
 
+  it("keeps an unhandled TimeoutError out of the record, and records a real error that mentions a timeout", async () => {
+    await start();
+    dispatchEvent("unhandledrejection", {
+      reason: new DOMException("signal timed out", "TimeoutError"),
+    });
+    expect(exported).toEqual([]);
+
+    dispatchEvent("unhandledrejection", {
+      reason: new Error("request timeout after 30s"),
+    });
+    expect(exportedMessages("unhandledrejection")).toEqual([
+      "request timeout after 30s",
+    ]);
+  });
+
   it("never touches the app's handlers: before and after telemetry starts, they see every event", async () => {
     stubDom();
     const before = vi.fn();

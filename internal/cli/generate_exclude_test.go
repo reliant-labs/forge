@@ -73,7 +73,7 @@ func TestExcludeGuard_PutsBackEveryWriteUnderAnExcludedGlob(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeRel(t, root, "frontends/web/src/hooks/x-hooks.ts", "generated\n")
-	writeRel(t, root, ".github/workflows/deploy.yml", "# forge deploy\n")
+	writeRel(t, root, ".github/workflows/deploy.yml", "# forge env deploy prod\n")
 	writeRel(t, root, "frontends/admin/src/app.tsx", "admin v2\n")
 	writeRel(t, root, "frontends/web/src/own/out.ts", "hook output\n")
 

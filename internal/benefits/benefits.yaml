@@ -526,31 +526,6 @@ benefits:
       - analyzer: --migration-safety
       - path: internal/linter/migrationlint
       - skill: db
-
-  - id: keep-your-migration-tool
-    category: data
-    title: Keep your migration tool
-    claim: >-
-      A team on goose, atlas, flyway, dbmate, golang-migrate or its own command
-      keeps it and its migrations directory: forge runs that tool to build the
-      schema it projects the ORM and seeds from, lints every SQL file it applies,
-      and runs it from `forge db migrate up` — no protos, no conversion.
-    availability: forge
-    headline: false
-    use: >-
-      `database: {migrations: {dir: migrations, tool: goose}}` in forge.yaml;
-      `tool: custom` with `apply: [...]` runs any command.
-    why: >-
-      Moving a live history onto a new migrator is the step teams put off, so
-      forge's schema features would wait behind it. Running the team's own tool
-      against forge's throwaway Postgres gives the same applied schema without
-      the move.
-    evidence:
-      - path: internal/migrationhook
-      - path: internal/shadowdb/hook.go
-      - path: internal/linter/migrationlint/tools.go
-      - command: db migrate up
-      - skill: db/own-migration-tool
       - path: internal/linter/migrationlint/compat_declaration.go
       - path: internal/linter/migrationlint/add_column.go
       - path: internal/linter/migrationlint/transaction_block.go
@@ -625,6 +600,31 @@ benefits:
           A migration that says neither `forge:backward-compatible` nor
           `forge:breaks-rollback`, which a rollback decision and the release
           guard read
+
+  - id: keep-your-migration-tool
+    category: data
+    title: Keep your migration tool
+    claim: >-
+      A team on goose, atlas, flyway, dbmate, golang-migrate or its own command
+      keeps it and its migrations directory: forge runs that tool to build the
+      schema it projects the ORM and seeds from, lints every SQL file it applies,
+      and runs it from `forge db migrate up` — no protos, no conversion.
+    availability: forge
+    headline: false
+    use: >-
+      `database: {migrations: {dir: migrations, tool: goose}}` in forge.yaml;
+      `tool: custom` with `apply: [...]` runs any command.
+    why: >-
+      Moving a live history onto a new migrator is the step teams put off, so
+      forge's schema features would wait behind it. Running the team's own tool
+      against forge's throwaway Postgres gives the same applied schema without
+      the move.
+    evidence:
+      - path: internal/migrationhook
+      - path: internal/shadowdb/hook.go
+      - path: internal/linter/migrationlint/tools.go
+      - command: db migrate up
+      - skill: db/own-migration-tool
 
   - id: managed-postgres-backups
     category: data

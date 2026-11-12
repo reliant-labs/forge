@@ -57,12 +57,12 @@ argv (no shell; `[sh, -c, "..."]` for a pipeline).
 # goose — one file per migration, `-- +goose Up` / `-- +goose Down`
 database:
   migrations: {dir: migrations, tool: goose}
-# runs: goose -dir <dir> postgres $DATABASE_URL up        (status: … status)
+# runs: goose -dir <dir> up    (status: … status); the URL comes from GOOSE_DRIVER/GOOSE_DBSTRING
 
 # golang-migrate — NNN_name.up.sql / .down.sql
 database:
   migrations: {dir: db/migrations, tool: golang-migrate}
-# runs: migrate -path <dir> -database $DATABASE_URL up   (status: … version)
+# runs: migrate -path <dir> -database $DATABASE_URL up   (status: … version); the URL is on the argv
 
 # dbmate — `-- migrate:up` / `-- migrate:down`
 database:
@@ -72,7 +72,7 @@ database:
 # atlas — versioned migrations with atlas.sum
 database:
   migrations: {dir: migrations, tool: atlas}
-# runs: atlas migrate apply --dir file://<dir> --url $DATABASE_URL  (status: atlas migrate status …)
+# runs: atlas migrate apply --dir file://<dir> --url $DATABASE_URL  (status: atlas migrate status …); the URL is on the argv
 
 # flyway — V1__init.sql, R__views.sql
 database:
@@ -87,6 +87,14 @@ database:
     apply: [npx, prisma, migrate, deploy]
     status: [npx, prisma, migrate, status]
 ```
+
+**Keep the database URL off the argv.** It carries the password, and any user
+on the machine can read a process's arguments. goose, dbmate and flyway read
+their connection from the environment forge sets, so their presets never
+pass it. golang-migrate and atlas take it only as a flag, so their presets do
+for the length of the run. Against a shared host, override `apply`/`status`
+with a command that reads `$DATABASE_URL` itself: atlas with an `atlas.hcl` env
+whose `url = getenv("DATABASE_URL")`, or a script.
 
 ## The contract
 

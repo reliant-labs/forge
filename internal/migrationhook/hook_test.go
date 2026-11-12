@@ -28,6 +28,30 @@ func TestResolve_ForgeHasNoHook(t *testing.T) {
 	}
 }
 
+// TestPreset_DSNStaysOffTheArgvWhereTheToolReadsTheEnvironment: the database
+// URL carries credentials and an argv is world-readable (/proc, ps). A tool
+// that takes its connection from the environment Vars sets must not also get
+// it as an argument; only golang-migrate and atlas, whose CLIs have no other
+// way, may.
+func TestPreset_DSNStaysOffTheArgvWhereTheToolReadsTheEnvironment(t *testing.T) {
+	flagOnly := map[string]bool{config.MigrationToolGolangMigrate: true, config.MigrationToolAtlas: true}
+	for _, tool := range config.MigrationTools() {
+		apply, status := Preset(tool)
+		if flagOnly[tool] {
+			continue
+		}
+		for _, arg := range append(apply, status...) {
+			if strings.Contains(arg, "DATABASE_URL") {
+				t.Errorf("%s: preset puts the database URL on the argv (%v / %v); the tool reads it from the environment", tool, apply, status)
+			}
+		}
+	}
+	v, err := Vars(Hook{Tool: config.MigrationToolGoose, Dir: "/m"}, Invocation{DSN: "postgres://u:p@h/db"})
+	if err != nil || v["GOOSE_DRIVER"] != "postgres" || v["GOOSE_DBSTRING"] != "postgres://u:p@h/db" {
+		t.Errorf("goose's connection must come from GOOSE_DRIVER/GOOSE_DBSTRING: %v %v", v, err)
+	}
+}
+
 func TestResolve_PresetsAndOverrides(t *testing.T) {
 	for _, tool := range config.MigrationTools() {
 		if tool == config.MigrationToolForge || tool == config.MigrationToolCustom {

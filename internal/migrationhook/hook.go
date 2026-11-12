@@ -99,15 +99,22 @@ func ResolveIn(projectDir string) (Hook, bool) {
 }
 
 // Preset returns a built-in tool's default apply and status argv. Custom and
-// forge have none. Every preset names its paths and database through the
-// `${...}` variables, so the same argv runs against the shadow database and
-// the env's.
+// forge have none. Every preset names its paths through the `${...}`
+// variables, so the same argv runs against the shadow database and the env's.
+//
+// The database URL carries credentials, and an argv is readable by every user
+// of the machine (/proc, ps). So a tool that reads its connection from the
+// environment (goose: GOOSE_DRIVER/GOOSE_DBSTRING; dbmate: DATABASE_URL;
+// flyway: FLYWAY_*; see Vars) is never handed it on the argv. golang-migrate
+// and atlas take it only as a flag, so theirs is the one exception; the
+// own-migration-tool skill says so and how to avoid it.
 func Preset(tool string) (apply, status []string) {
 	switch tool {
 	case config.MigrationToolGoose:
-		base := []string{"goose", "-dir", "${FORGE_MIGRATIONS_DIR}", "postgres", "${DATABASE_URL}"}
+		base := []string{"goose", "-dir", "${FORGE_MIGRATIONS_DIR}"}
 		return append(clone(base), "up"), append(clone(base), "status")
 	case config.MigrationToolGolangMigrate:
+		// -database is the CLI's only way to name the database.
 		base := []string{"migrate", "-path", "${FORGE_MIGRATIONS_DIR}", "-database", "${DATABASE_URL}"}
 		return append(clone(base), "up"), append(clone(base), "version")
 	case config.MigrationToolDbmate:
@@ -117,6 +124,8 @@ func Preset(tool string) (apply, status []string) {
 		base := []string{"dbmate", "--migrations-dir", "${FORGE_MIGRATIONS_DIR}", "--no-dump-schema"}
 		return append(clone(base), "migrate"), append(clone(base), "status")
 	case config.MigrationToolAtlas:
+		// --url is the CLI's only way to name the database without an
+		// atlas.hcl (whose `getenv("DATABASE_URL")` a custom apply can use).
 		return []string{"atlas", "migrate", "apply", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${DATABASE_URL}"},
 			[]string{"atlas", "migrate", "status", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${DATABASE_URL}"}
 	case config.MigrationToolFlyway:

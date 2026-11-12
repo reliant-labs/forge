@@ -154,7 +154,7 @@ func validateMigrations(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 			line, col := at(f.key)
 			out = append(out, validationIssue{line: line, column: col,
 				msg: "database.migrations." + f.key + " has no command",
-				fix: "set it to the argv to run, e.g. [goose, -dir, \"${FORGE_MIGRATIONS_DIR}\", postgres, \"${DATABASE_URL}\", up]; a shell line is [sh, -c, \"...\"]."})
+				fix: "set it to the argv to run, e.g. [./scripts/migrate.sh, up], which reads $DATABASE_URL and $FORGE_MIGRATIONS_DIR from its environment (keep the credentialed URL off the argv); a shell line is [sh, -c, \"...\"]."})
 		}
 	}
 	if tool == MigrationToolCustom && len(m.Apply) == 0 {

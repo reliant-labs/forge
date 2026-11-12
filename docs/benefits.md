@@ -40,18 +40,53 @@ words deliberately, because a catalog that blurs them is marketing.
 "Reliant hosting" means the benefit needs a project deployed to Reliant
 hosting. "Reliant harness" means it needs the Reliant agent harness.
 
+**Scope.** "Works in any repo" means the benefit needs no forge.yaml:
+it works in an existing app in any language, and the entry says how to
+start and how long an agent takes to first value. Everything else needs a
+forge project; `forge skill load adopt` is how an existing app becomes one.
+
 ## Contents
 
-1. [Build](#build)
-2. [Data](#data)
-3. [Test](#test)
-4. [Dev](#dev)
-5. [Guardrails](#guardrails)
-6. [Security](#security)
-7. [Ship](#ship)
-8. [Host](#host)
-9. [Run](#run)
-10. [Agents](#agents)
+1. [Works in any repo](#any-repo)
+2. [Build](#build)
+3. [Data](#data)
+4. [Test](#test)
+5. [Dev](#dev)
+6. [Guardrails](#guardrails)
+7. [Security](#security)
+8. [Ship](#ship)
+9. [Host](#host)
+10. [Run](#run)
+11. [Agents](#agents)
+
+---
+
+<a id="any-repo"></a>
+
+## Works in any repo
+
+What an existing app gets from forge before it is a forge project: no
+forge.yaml, no generated code, any language. `forge project benefits`
+prints this list for the directory you run it in.
+
+| Benefit                                                       | Start with                                                                                                                                                        | Agent time |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`. | ~5 min     |
+| [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                    | ~15 min    |
+| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                         | ~15 min    |
+| [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                    | ~5 min     |
+| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                       | ~5 min     |
+| [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                       | ~10 min    |
+| [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                             | ~5 min     |
+| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                | ~10 min    |
+| [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                          | ~30 min    |
+| [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                   | ~10 min    |
+| [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                  | ~15 min    |
+| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                               | ~2 min     |
+| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                       | ~2 min     |
+| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                    | ~2 min     |
+| [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                    | ~2 min     |
+| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                 | ~2 min     |
 
 ---
 
@@ -462,6 +497,8 @@ Every migration declares whether the previous release survives it, and `forge li
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`. **Agent time:** ~5 min.
+
 **Use:** Start each migration with `-- forge:backward-compatible — <why>` or `-- forge:breaks-rollback <why>`; run `forge lint --migration-safety`, or `forge ci migration-safety` in CI. A pragma in the migration file suppresses one rule beside the SQL it is about.
 
 **Why:** A migration that a populated table or the previous release cannot survive passes every test on a fresh database and fails on the first real one.
@@ -711,6 +748,8 @@ Database tests run against a real embedded Postgres shared machine-wide, each te
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker. **Agent time:** ~15 min.
+
 **Use:** `testkit.NewPostgresDB(t)`, or `pkg/pgtest` directly.
 
 **Evidence:**
@@ -758,6 +797,8 @@ A test that execs a tool, drives a container or dials the network calls `testkit
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`). **Agent time:** ~15 min.
+
 **Use:** `testkit.Slow(t, "<why>", testkit.Inputs("deploy/**"))` first thing in the test.
 
 **Why:** A plain `if testing.Short() { t.Skip(...) }` also counts. Two guards hold the line because neither sees everything: `forge lint --slow-tests` before a test ever runs, and `go test -short -json ./... | forge ci test-budget` after.
@@ -792,6 +833,8 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`. **Agent time:** ~5 min.
+
 **Evidence:**
 
 - command `forge ci test-budget`
@@ -804,6 +847,8 @@ _Enforced · Forge, on any infrastructure_
 `forge ci verify-test-run` reports packages that skipped so much that their pass proves nothing.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`. **Agent time:** ~5 min.
 
 **Evidence:**
 
@@ -1182,6 +1227,8 @@ _Enforced · Reliant harness_
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why. **Agent time:** ~10 min.
+
 **Use:** `forge lint`; `--quiet` prints only what failed, `--scope <path>` lints a slice of a shared checkout, `--json` and `--gate-json` are for machines, `--skip-frontends` is a backend-only gate, and `lint.frontend.typecheck` dials the frontend typecheck.
 
 **Why:** `lint.rules` in `forge.yaml` grades every forge rule `error`, `warn` or `off` identically in every output mode. Never pipe `forge lint` through `head`: the verdict is the last line.
@@ -1431,6 +1478,8 @@ _Enforced · Forge, on any infrastructure_
 Lint flags a two-argument `date_trunc` over a `TIMESTAMPTZ`, which truncates in the session timezone and moves every daily total with the deploy host.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them). **Agent time:** ~5 min.
 
 **Use:** `date_trunc('day', col, 'UTC')`
 
@@ -1732,6 +1781,8 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form. **Agent time:** ~10 min.
+
 **Why:** All four rules are AST passes over owned source that err toward silence where the code may already be right; a logging wrapper of your own joins through `lint.tracing.log_wrappers`.
 
 **Evidence:**
@@ -1919,6 +1970,8 @@ _Enforced · Forge, on any infrastructure_
 A handler returns `svcerr.Wrap(err)` and the caller gets a classified Connect code while a driver's SQL, a DSN or an internal host stays in the server's log, and the fault class (server, user, canceled) sets the log level.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers. **Agent time:** ~30 min.
 
 **Use:** `return nil, svcerr.Wrap(err)` from every rpc (`svcerr.WithReason`, `svcerr.WithClass`); `forge fix connect-errors` rewrites hand-built Connect errors.
 
@@ -2981,6 +3034,8 @@ A landing page, docs site, SPA or PWA gets dev, staging and prod, build-once rel
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone. **Agent time:** ~10 min.
+
 **Use:** `forge project new site --kind site`, or `forge project new --in-place --kind site`.
 
 **Evidence:**
@@ -3664,6 +3719,21 @@ _Enforced · Forge, on any infrastructure_
 - source [`kcl/schema.k`](../kcl/schema.k)
 - library [`pkg/observe`](../pkg/observe)
 
+<a id="node-telemetry"></a>
+
+### Telemetry for any Node process
+
+`initNodeTelemetry` from `@reliantlabs/forge-web-runtime/node` ships a Node or Electron-main process's logs, uncaught errors and spans to any OTLP/HTTP endpoint, batched, with credential shapes redacted and no OpenTelemetry SDK to configure.
+
+_Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start. **Agent time:** ~15 min.
+
+**Evidence:**
+
+- source [`web-runtime/src/node.ts`](../web-runtime/src/node.ts)
+- source [`web-runtime/README.md`](../web-runtime/README.md)
+
 <a id="real-opt-out"></a>
 
 ### Opt-out enforced at the source
@@ -3782,6 +3852,8 @@ Forge is built to make an LLM agent effective in a project, and several features
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** `forge skill load adopt`: what forge can do for this repo, with estimates to quote. **Agent time:** ~2 min.
+
 **Use:** `forge skill load forge`
 
 **Why:** A skill that disagrees with the project is reported as a forge bug.
@@ -3801,6 +3873,8 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
+**Works in any repo** (no forge.yaml). **Start:** `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool. **Agent time:** ~2 min.
+
 **Evidence:**
 
 - command `forge mcp`
@@ -3814,6 +3888,8 @@ _Enforced · Forge, on any infrastructure_
 `forge project capabilities --json` enumerates every command, lint analyzer and marker from the binary itself, and `forge project annotations` the entity-authoring vocabulary, so neither can drift from the code.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** `forge project capabilities` in any directory. **Agent time:** ~2 min.
 
 **Evidence:**
 
@@ -3841,6 +3917,8 @@ _Enforced · Forge, on any infrastructure_
 `forge project libraries <pkg>` prints every signature of a `forge/pkg` package, which `go doc` renders as `struct{ ... }`, so an agent adopts an existing utility instead of re-implementing it.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`. **Agent time:** ~2 min.
 
 **Evidence:**
 
@@ -3880,6 +3958,8 @@ _Enforced · Forge, on any infrastructure_
 `forge report-bug` sends a redacted defect report with evidence, deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly what would go.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** `forge report-bug --dry-run …` prints exactly what would be sent. **Agent time:** ~2 min.
 
 **Evidence:**
 

@@ -619,6 +619,15 @@ func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDe
 		if err != nil {
 			return fmt.Errorf("resolve factory path for %s: %w", group.pkg, err)
 		}
+		// A name the package already declares by hand (a domain type called
+		// NewDeployment, say) is the package's: emitting a factory of that
+		// name would make the package's tests fail to compile. Such a
+		// factory is left out, and the run says so.
+		var collisions []string
+		group, collisions = dropCollidingFactories(group, handWrittenDecls(dir, group.pkg))
+		for _, c := range collisions {
+			fmt.Fprintf(os.Stderr, "Warning: %s: %s\n", rel, c)
+		}
 		for _, s := range group.specs {
 			if s.failure != "" {
 				fmt.Fprintf(os.Stderr, "Warning: %s: New%s cannot insert a row its schema accepts; calling it fails the test:\n  %s\n", rel, s.goName, s.failure)
@@ -635,6 +644,105 @@ func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDe
 		}
 	}
 	return nil
+}
+
+// handWrittenDecls returns every top-level name the package's own files in
+// dir declare (functions without a receiver, types, vars and consts), test
+// files included and forge's factories file excluded: the names a generated
+// factory must not take. Files of another package clause (the external
+// `<pkg>_test`) have a namespace of their own and are skipped. A file that
+// does not parse is skipped too: the compiler reports it, and guessing at its
+// names would only hide that.
+func handWrittenDecls(dir, pkg string) map[string]bool {
+	taken := map[string]bool{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return taken
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || name == entityFactoryFile {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil || f.Name.Name != pkg {
+			continue
+		}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Recv == nil {
+					taken[d.Name.Name] = true
+				}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch sp := spec.(type) {
+					case *ast.TypeSpec:
+						taken[sp.Name.Name] = true
+					case *ast.ValueSpec:
+						for _, n := range sp.Names {
+							taken[n.Name] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	return taken
+}
+
+// rowFactoryNames are the top-level names one entity's row factory declares.
+func rowFactoryNames(s entityFactorySpec) []string {
+	names := []string{"New" + s.goName}
+	if !s.appendOnly {
+		names = append(names, s.goName+"Override")
+	}
+	if s.failure == "" {
+		if s.parentSQL != "" {
+			names = append(names, s.lower+"FactoryParentSQL")
+		}
+		names = append(names, s.lower+"FactoryRootSQL")
+	}
+	return names
+}
+
+// requestFactoryNames are the top-level names one request factory declares.
+func requestFactoryNames(s createRequestSpec) []string {
+	stem := lowerFirst(strings.TrimPrefix(s.funcName, "New"))
+	return []string{s.funcName, stem + "ParentSQL", stem + "ParentOwners"}
+}
+
+// dropCollidingFactories removes from g every factory that would declare a
+// name taken already holds, and describes each one it removed.
+func dropCollidingFactories(g factoryGroup, taken map[string]bool) (factoryGroup, []string) {
+	clash := func(names []string) string {
+		for _, n := range names {
+			if taken[n] {
+				return n
+			}
+		}
+		return ""
+	}
+	var notes []string
+	specs := g.specs[:0:0]
+	for _, s := range g.specs {
+		if n := clash(rowFactoryNames(s)); n != "" {
+			notes = append(notes, fmt.Sprintf("New%s is not generated: the package already declares %s by hand. Rename that declaration to get the factory back, or insert the row in your test", s.goName, n))
+			continue
+		}
+		specs = append(specs, s)
+	}
+	creates := g.creates[:0:0]
+	for _, s := range g.creates {
+		if n := clash(requestFactoryNames(s)); n != "" {
+			notes = append(notes, fmt.Sprintf("%s is not generated: the package already declares %s by hand. Rename that declaration to get the factory back", s.funcName, n))
+			continue
+		}
+		creates = append(creates, s)
+	}
+	g.specs, g.creates = specs, creates
+	return g, notes
 }
 
 // entityFactoryFile is the file name emitted into each handler package. The

@@ -336,6 +336,29 @@ describe("installPageEngagement", () => {
     watch.stop();
   });
 
+  it("keeps a resumed view cumulative across an away stretch longer than the idle cutoff", () => {
+    const page = stubPage();
+    const watch = installPageEngagement();
+    watch.view("/blog/hello", true);
+    readFor(page, 8_000);
+    page.hide();
+    vi.advanceTimersByTime(ENGAGEMENT_IDLE_MS + 60_000); // away, past the cutoff
+    page.show();
+    readFor(page, 5_000);
+    page.hide();
+    vi.advanceTimersByTime(ENGAGEMENT_IDLE_MS * 3);
+    page.show();
+    readFor(page, 2_000);
+    page.pagehide();
+    // Each report is the view's total so far: 8 s, 8 + 5 s, 8 + 5 + 2 s.
+    expect(engaged(s).map((e) => [e.engaged_ms, e.resumed])).toEqual([
+      [8_000, undefined],
+      [13_000, "true"],
+      [15_000, "true"],
+    ]);
+    watch.stop();
+  });
+
   it("resumes a view restored from the back/forward cache", () => {
     const page = stubPage();
     const watch = installPageEngagement();

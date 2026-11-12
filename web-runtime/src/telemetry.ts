@@ -379,7 +379,7 @@ export interface BrowserTelemetryConfig {
   /**
    * Decides which errors are benign browser noise: kept out of the error
    * pipeline and counted as `forge.errors_filtered` actions instead
-   * (benign-errors.ts). Default classifyBenignError: an AbortError, and the
+   * (benign-errors.ts). Default classifyBenignError: an AbortError or TimeoutError, and the
    * browser's generic "Failed to fetch" TypeError; never a ConnectError. It
    * applies to what the SDK records from unhandled rejections, uncaught
    * errors, console.error and reportException; the app's own handlers see

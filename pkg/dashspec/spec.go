@@ -73,6 +73,28 @@ const (
 	// BrowseView). The console runs it through the data browser's own read;
 	// HyperDX cannot.
 	KindBrowse PanelKind = "browse"
+
+	// The delivery kinds are drawn from the release ledger (releases,
+	// promotions, rollbacks) and the release-health verdict, which live in
+	// the control plane rather than in telemetry, so no statement can read
+	// them. Each kind is one read the console already makes; see delivery.go.
+
+	// KindReleaseHealth is the release scorecard: for each environment in
+	// scope, its running release judged against the one it replaced, by the
+	// release-health rule `forge obs check` applies (pkg/releasehealth):
+	// the verdict, the findings and the before/after figures. Served by
+	// ObservabilityService GetReleaseHealth.
+	KindReleaseHealth PanelKind = "release_health"
+	// KindPromotions is the promotion timeline: every promotion and rollback
+	// of the environments in scope over the range, with the release, its
+	// commit, who promoted it and when. Limit caps the rows. Served by
+	// DeliveryInsightsService ListReleases.
+	KindPromotions PanelKind = "promotions"
+	// KindDelivery is the four DORA figures over the range (deployment
+	// frequency, lead time, change failure rate, time to restore), each
+	// with the definition that produced it. Served by DeliveryInsightsService
+	// GetDoraMetrics.
+	KindDelivery PanelKind = "delivery"
 )
 
 // IsConsoleKind reports whether k is drawn only by the Reliant console, so the
@@ -82,7 +104,7 @@ func IsConsoleKind(k PanelKind) bool {
 	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse:
 		return true
 	}
-	return false
+	return IsDeliveryKind(k)
 }
 
 // MaxMarkdownBytes bounds a KindText panel's Markdown.
@@ -222,6 +244,11 @@ type Display struct {
 	// It is a pointer so Display stays comparable, as it was before Colors
 	// existed: == compares which map two Displays point at, not its entries.
 	Colors *SeriesColors `json:"colors,omitempty"`
+	// Exact draws a figure's values in full, never abbreviated: 1,284, not
+	// 1.3k. For a count a reader compares with another page that states it
+	// exactly (accounts, users). A number panel or a sql panel drawn as
+	// figures; a renderer that never abbreviates ignores it.
+	Exact bool `json:"exact,omitempty"`
 }
 
 // SeriesColors maps a series name to its palette colour (Display.Colors).
@@ -401,7 +428,8 @@ type Panel struct {
 	Formula string `json:"formula,omitempty"`
 	// Limit keeps the top Limit rows of a table or bar panel, largest
 	// Series[0] first. Zero is DefaultBarLimit for a bar and the reader's own
-	// row cap for a table; at most MaxLimit.
+	// row cap for a table; at most MaxLimit. On a promotions panel it is the
+	// newest Limit promotions (zero is DefaultPromotionsLimit).
 	Limit int `json:"limit,omitempty"`
 	// SQL is a KindSQL panel's statement: one read-only SELECT over the
 	// telemetry tables, which may use the SQLParam* query parameters. Only
@@ -421,7 +449,11 @@ type Panel struct {
 	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
 	// {step} parameter. A range shorter than two buckets can draw only one
 	// point, so a renderer widens such a panel's range to hold two, and says
-	// so. Only a sql panel takes it.
+	// so. It is also the panel's bucket: a renderer that names a sql panel's
+	// bucket ("7-day buckets") names MinStep when it is set, rather than
+	// guessing from the result's first column (a Date column is a day, a
+	// toMonday one a week, and both read back as a Date). Only a sql panel
+	// takes it.
 	MinStep string `json:"minStep,omitempty"`
 	// Where narrows every series of the panel.
 	Where   []Predicate `json:"where,omitempty"`

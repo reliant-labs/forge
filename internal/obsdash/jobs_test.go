@@ -326,7 +326,8 @@ func TestOverviewWithoutRPCsOrLimitsDropsThoseGroupsOfPanels(t *testing.T) {
 func TestEveryGeneratedDashboardHasAGroup(t *testing.T) {
 	want := map[string]Group{
 		"overview": GroupOverview, "process-admin-api": GroupServices, "process-workers": GroupServices, "process-workspace": GroupServices,
-		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct, "usage": GroupProduct,
+		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct,
+		"users": GroupProduct, "product": GroupProduct, "acquisition": GroupProduct,
 	}
 	got := map[string]Group{}
 	for _, d := range Build(fleet()).Dashboards {
@@ -359,9 +360,11 @@ func TestProcessDashboardIDIsTheForgeWorkloadName(t *testing.T) {
 	}
 }
 
-func TestWithoutProcessDashboardsKeepsOnlyTheFrontend(t *testing.T) {
+// A static site's environment keeps the dashboards that need no process: its
+// frontend's, and the built-in product dashboards over its own page views.
+func TestWithoutProcessDashboardsKeepsTheFrontendAndProductDashboards(t *testing.T) {
 	sp := WithoutProcessDashboards(Build(Input{Project: "shop", Frontends: []string{"web"}}))
-	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend"}) {
+	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend", "users", "product", "acquisition"}) {
 		t.Fatalf("dashboards = %v", got)
 	}
 }

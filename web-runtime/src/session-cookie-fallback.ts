@@ -32,6 +32,19 @@
 // share one session the way the tabs of one browser do.
 //
 // An origin whose cookies work is left exactly as it was.
+//
+// ── In memory, below the `full` analytics tier ───────────────────────────
+//
+// Below `full` (track.ts, "Analytics tiers") nothing may be stored on the
+// device, the session cookie included. installRumSessionStore answers the
+// same `document.cookie` reads and writes of `__rum_sid` from a variable
+// instead, with the same expiry rules, so the SDK still groups this page's
+// spans into one session and nothing reaches the cookie jar or storage. The
+// session then lasts as long as the page (or its 15-minute inactivity
+// window). When consent raises the tier to `full`, moveToDevice() moves the
+// running session to the cookie (or, where cookies are dropped, to
+// localStorage as above) without starting a new one; moveToMemory() moves it
+// back and erases the device copy.
 
 /** The SDK's session cookie (otel-web COOKIE_NAME). */
 export const RUM_SESSION_COOKIE = "__rum_sid";
@@ -129,6 +142,186 @@ export function installSessionCookieFallback(
 
 const installed = new WeakSet<object>();
 
+/** Where installRumSessionStore keeps the session now. */
+export type RumSessionBackend = "memory" | "cookie" | "storage";
+
+/** The handle installRumSessionStore returns. */
+export interface RumSessionStore {
+  /** Where the session is kept now. */
+  backend(): RumSessionBackend;
+  /**
+   * Keep the session on the device: the cookie when cookies persist, else
+   * `storage`, else (neither works) memory still. The running session moves
+   * with it.
+   */
+  moveToDevice(storage: SessionStore | null): void;
+  /** Keep the session in memory and erase the device copy. */
+  moveToMemory(): void;
+}
+
+/**
+ * Answer the SDK's `__rum_sid` cookie from memory (see "In memory" in the
+ * header), switchable to the device and back. Starts in memory, after
+ * erasing any `__rum_sid` cookie a previous page load left. Call it before
+ * the SDK initialises. Returns null when `doc.cookie` cannot be wrapped (the
+ * SDK then keeps its own cookie, as before this existed). Never throws.
+ */
+export function installRumSessionStore(
+  doc: Document,
+  now: () => number = Date.now,
+  options?: {
+    /**
+     * Keep a session an earlier page load left on the device (the caller
+     * moves the store there at once, in the `full` tier): it is not erased,
+     * so a reload continues the session instead of starting a new one.
+     */
+    keepDeviceSession?: boolean;
+  },
+): RumSessionStore | null {
+  try {
+    const native = findCookieDescriptor(doc);
+    if (!native?.get || !native.set || installed.has(doc)) {
+      return null;
+    }
+    const nativeGet = native.get;
+    const nativeSet = native.set;
+    const jar = {
+      get cookie(): string {
+        return String(nativeGet.call(doc) ?? "");
+      },
+      set cookie(value: string) {
+        nativeSet.call(doc, value);
+      },
+    };
+    const memory = memoryStore();
+    let backend: RumSessionBackend = "memory";
+    let device: SessionStore | null = null;
+    // The store the accessor reads in "memory" and "storage".
+    const held = () => (backend === "storage" && device ? device : memory);
+
+    if (
+      !options?.keepDeviceSession &&
+      nativeSessionValue(jar.cookie) !== null
+    ) {
+      jar.cookie = `${RUM_SESSION_COOKIE}=; path=/; max-age=0`;
+    }
+    Object.defineProperty(doc, "cookie", {
+      configurable: true,
+      enumerable: true,
+      get(this: Document): string {
+        const text = jar.cookie;
+        if (backend === "cookie") {
+          return text;
+        }
+        const session = readStored(held(), now());
+        if (session === null) {
+          return text;
+        }
+        const entry = `${RUM_SESSION_COOKIE}=${session}`;
+        return text ? `${text}; ${entry}` : entry;
+      },
+      set(this: Document, value: string) {
+        const text = String(value);
+        if (
+          backend === "cookie" ||
+          !text.startsWith(`${RUM_SESSION_COOKIE}=`)
+        ) {
+          jar.cookie = text;
+          return;
+        }
+        writeStored(held(), text, now());
+      },
+    });
+    installed.add(doc);
+
+    // The running session as a stored cookie, wherever it is kept now.
+    const current = (): StoredCookie | null => {
+      if (backend === "cookie") {
+        const v = nativeSessionValue(jar.cookie);
+        return v === null
+          ? null
+          : { v, exp: now() + SESSION_COOKIE_FALLBACK_MS };
+      }
+      return readRaw(held(), now());
+    };
+
+    return {
+      backend: () => backend,
+      moveToDevice(storage) {
+        try {
+          if (backend !== "memory") {
+            return;
+          }
+          const session = current();
+          if (cookiesPersist(jar)) {
+            backend = "cookie";
+            memory.removeItem(RUM_SESSION_STORAGE_KEY);
+            if (session) {
+              const seconds = Math.max(
+                1,
+                Math.ceil((session.exp - now()) / 1000),
+              );
+              jar.cookie = `${RUM_SESSION_COOKIE}=${session.v}; path=/; max-age=${seconds}; SameSite=Strict`;
+            }
+          } else if (storage && storageWorks(storage)) {
+            backend = "storage";
+            device = storage;
+            memory.removeItem(RUM_SESSION_STORAGE_KEY);
+            if (session) {
+              storage.setItem(RUM_SESSION_STORAGE_KEY, JSON.stringify(session));
+            }
+          }
+        } catch {
+          // The session stays where it was.
+        }
+      },
+      moveToMemory() {
+        try {
+          if (backend === "memory") {
+            return;
+          }
+          const session = current();
+          if (backend === "cookie") {
+            jar.cookie = `${RUM_SESSION_COOKIE}=; path=/; max-age=0`;
+          } else {
+            device?.removeItem(RUM_SESSION_STORAGE_KEY);
+          }
+          backend = "memory";
+          device = null;
+          if (session) {
+            memory.setItem(RUM_SESSION_STORAGE_KEY, JSON.stringify(session));
+          }
+        } catch {
+          // The session stays where it was.
+        }
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function memoryStore(): SessionStore {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => void values.set(key, value),
+    removeItem: (key) => void values.delete(key),
+  };
+}
+
+// The `__rum_sid` value in a cookie jar string, or null.
+function nativeSessionValue(text: string): string | null {
+  for (const part of text.split(";")) {
+    const entry = part.trim();
+    if (entry.startsWith(`${RUM_SESSION_COOKIE}=`)) {
+      const value = entry.slice(RUM_SESSION_COOKIE.length + 1);
+      return value === "" ? null : value;
+    }
+  }
+  return null;
+}
+
 /** The accessor `doc.cookie` resolves to: its own, or its prototype chain's. */
 function findCookieDescriptor(doc: object): PropertyDescriptor | undefined {
   for (
@@ -157,6 +350,10 @@ function storageWorks(storage: SessionStore): boolean {
 }
 
 function readStored(storage: SessionStore, at: number): string | null {
+  return readRaw(storage, at)?.v ?? null;
+}
+
+function readRaw(storage: SessionStore, at: number): StoredCookie | null {
   try {
     const raw = storage.getItem(RUM_SESSION_STORAGE_KEY);
     if (!raw) {
@@ -172,7 +369,7 @@ function readStored(storage: SessionStore, at: number): string | null {
       storage.removeItem(RUM_SESSION_STORAGE_KEY);
       return null;
     }
-    return stored.v;
+    return { v: stored.v, exp: stored.exp };
   } catch {
     return null;
   }

@@ -2129,7 +2129,12 @@ var removals = []removal{
 			"A surviving `forge env verify prod` is a copy-pasteable command — in a doc, a skill, a " +
 			"KCL comment, a scaffolded CI job or a help string — that now dies on \"unknown command\". " +
 			"The internal helpers stay (runEnvWait, runEnvHistory, runEnvTopology, " +
-			"runEnvStatusRelease); only the command surface went.",
+			"runEnvStatusRelease); only the command surface went.\n" +
+			"`forge env verify` was later re-added as a DIFFERENT command (the owner's brownfield " +
+			"roadmap, 2026-11-11): a side-effect-free parity check of what forge would deploy against " +
+			"what runs — forge.OnExternal's status/plan hooks and the cluster's live diff. It answers a " +
+			"question `env status` does not (would a deploy change anything?), so it is no longer " +
+			"policed here; the other four spellings still are.",
 		Patterns: []*regexp.Regexp{
 			// The removed spellings, on any surface. Requiring `forge env`
 			// IMMEDIATELY before the verb is what keeps the live siblings
@@ -2137,18 +2142,18 @@ var removals = []removal{
 			// env — explicitly kept by the ADR), `forge release where`,
 			// `forge ci run`, and `kubectl rollout status`. The trailing
 			// \b keeps `forge env verifying` and the English "history" out.
-			regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+			regexp.MustCompile(`\bforge\s+env\s+(?:wait|rollout|topology|history)\b`),
 			// The Go ARGV form: exec/test invocations pass the command as
 			// separate string args, so the tokens are never adjacent in
 			// the source and the pattern above cannot see them. Anchored
 			// on the "env" element so `runForge(t, "release", "verify")`
 			// and a bare `"wait"` kubectl arg are untouched.
-			regexp.MustCompile(`"env",\s*"(?:verify|wait|rollout|topology|history)"`),
+			regexp.MustCompile(`"env",\s*"(?:wait|rollout|topology|history)"`),
 			// The constructors. A command that is still BUILT but no
 			// longer registered is worse than one that is registered: it
 			// compiles, it is covered by no test, and the next person to
 			// read env.go sees a verb that looks merely forgotten.
-			regexp.MustCompile(`\bnewEnv(?:Verify|Wait|Rollout|Topology|History)Cmd\b`),
+			regexp.MustCompile(`\bnewEnv(?:Wait|Rollout|Topology|History)Cmd\b`),
 		},
 		Allowances: []allowance{
 			{
@@ -2161,7 +2166,7 @@ var removals = []removal{
 					"does not.\n" +
 					"The removal itself gets its own entry, in the new release's section, naming the " +
 					"replacement. Scoped to the one file.",
-				Token: regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+				Token: regexp.MustCompile(`\bforge\s+env\s+(?:wait|rollout|topology|history)\b`),
 				Paths: []string{"CHANGELOG.md"},
 			},
 			{
@@ -2173,7 +2178,7 @@ var removals = []removal{
 					"would delete the proof the removal is complete. Scoped to the one file, so a " +
 					"line in it that actually registered one of these commands still fails — the " +
 					"constructor pattern is not allowed here.",
-				Token: regexp.MustCompile(`\bforge\s+env\s+(?:verify|wait|rollout|topology|history)\b`),
+				Token: regexp.MustCompile(`\bforge\s+env\s+(?:wait|rollout|topology|history)\b`),
 				Paths: []string{"internal/cli/env_status_cmd_test.go"},
 			},
 		},

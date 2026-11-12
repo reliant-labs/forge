@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // Environment discovery walks `deploy/kcl/<env>/main.k`. This is the
@@ -39,7 +42,9 @@ func ListEnvsFromKCLDir(kclDir string) ([]string, error) {
 	}
 	var envs []string
 	for _, e := range entries {
-		if !e.IsDir() {
+		// A dot directory is never an env: `forge env preview create` stages
+		// an instance in one before swapping it in.
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		mainK := filepath.Join(kclDir, e.Name(), "main.k")
@@ -64,4 +69,22 @@ func EnvExists(projectDir, env string) (bool, error) {
 	} else {
 		return false, fmt.Errorf("stat %s: %w", mainK, err)
 	}
+}
+
+// ListCommittedEnvs is ListEnvs without preview instances (`forge env preview
+// create`): the envs a generated workflow names. An instance is a transient
+// copy its own pipeline creates and deletes, so a workflow generated while one
+// happened to exist on disk must not start deploying it.
+func ListCommittedEnvs(projectDir string) ([]string, error) {
+	envs, err := ListEnvs(projectDir)
+	if err != nil {
+		return nil, err
+	}
+	out := envs[:0]
+	for _, env := range envs {
+		if _, isPreview, _ := kclrender.ReadPreviewMarker(filepath.Join(projectDir, "deploy", "kcl", env)); !isPreview {
+			out = append(out, env)
+		}
+	}
+	return out, nil
 }

@@ -76,6 +76,10 @@ type lintRunCtx struct {
 	// forge.yaml lint.allow_skip), lane name → reason. See lint_skip.go.
 	allowSkip skipAllowances
 
+	// lanesOff are the lanes forge.yaml's lint.lanes switches off
+	// (lint_lanes.go).
+	lanesOff map[string]bool
+
 	// targeted reports that the lane was named on the command line
 	// (`forge lint --tracing`) rather than run by the full sweep. The
 	// tracing lane fixes its warnings too when it was named.
@@ -145,12 +149,10 @@ func lintPipeline() []linterStep {
 			// static site, config.ProjectConfig.HasGoModule): there is no
 			// package to lint, and golangci-lint fails on `./...`. That is a
 			// lane that does not apply, so it skips silently.
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if rc.cfg != nil && !rc.cfg.HasGoModule() {
-					return false, ""
-				}
-				return true, ""
-			},
+			// Without forge.yaml (forge lint in any repo) the same holds for
+			// a directory with no go.mod at or above it: a Node or Python
+			// repo has nothing for golangci-lint either.
+			shouldRun: golangciShouldRun,
 			// The binary is chosen per module (golangci_toolchain.go): the
 			// one on PATH may be missing, built with a Go older than the
 			// module's go directive, or unable to read the export data the
@@ -206,6 +208,9 @@ func lintPipeline() []linterStep {
 			shouldRun: func(rc *lintRunCtx) (bool, string) {
 				if rc.cfg != nil && !rc.cfg.Features.ContractsEnabled() {
 					return false, "contracts feature disabled — skipping contract linter"
+				}
+				if rc.cfg == nil && !rc.inGoModule() {
+					return false, noGoModuleSkip("contract linter")
 				}
 				// No availability gate: the analysis runs in-process
 				// (contract_inprocess.go) — there is no separate
@@ -644,14 +649,16 @@ func lintPipeline() []linterStep {
 		// 13d-ter-bis. DB-grants — a credential-shaped column nobody declared
 		// forge:secret or forge:readable. Gates: the read-only role is built
 		// to be safe by construction, and an undecided column is a decision
-		// somebody skipped (see lint_db_grants.go).
+		// somebody skipped (see lint_db_grants.go). It judges the grants
+		// `forge generate` writes for forge_ro, so in a repo with no
+		// forge.yaml there is no role to judge: the lane skips, naming why,
+		// rather than failing on migrations it was never meant to apply
+		// (an existing app's may not apply from an empty database at all).
 		{
-			name:  "db-grants lint",
-			gates: true,
-			scope: scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				return rc.cwd != "" && dirExists(migrationsDirFor(rc.cfg)), ""
-			},
+			name:      "db-grants lint",
+			gates:     true,
+			scope:     scopeByFile,
+			shouldRun: dbGrantsShouldRun,
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectDBGrantsJSON(rc.cwd, rc.cfg)
 				return fs, len(fs) > 0, err
@@ -710,6 +717,27 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectGoMarkersJSON(rc.cwd)
+			},
+		},
+
+		// 13d-ter-bis. Test waits — a Go test that waits on the wall clock
+		// where it should wait on an event (a fixed sleep, a deadline under
+		// 5s that fails the test, an elapsed-time upper bound): the shapes
+		// that flake on a loaded machine. Syntactic, a parse per _test.go
+		// file, so it runs in the full sweep. GATES, through the warn-first
+		// rollout (lint_test_waits.go).
+		{
+			name:  "test-waits lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectTestWaitsJSON(rc.cwd)
 			},
 		},
 
@@ -1016,4 +1044,30 @@ func lintPipeline() []linterStep {
 			},
 		},
 	}
+}
+
+// golangciShouldRun skips golangci-lint where there is no Go package to lint:
+// a forge project without a Go module, or (no forge.yaml) a directory with no
+// go.mod at or above it. Named rather than inline to keep lintPipeline's
+// cognitive complexity under the gocognit bound.
+func golangciShouldRun(rc *lintRunCtx) (bool, string) {
+	if rc.cfg != nil && !rc.cfg.HasGoModule() {
+		return false, ""
+	}
+	if rc.cfg == nil && !rc.inGoModule() {
+		return false, noGoModuleSkip("golangci-lint")
+	}
+	return true, ""
+}
+
+// dbGrantsShouldRun runs the db-grants lane where there are migrations and a
+// forge.yaml: without one there is no forge_ro role to judge.
+func dbGrantsShouldRun(rc *lintRunCtx) (bool, string) {
+	if rc.cwd == "" || !dirExists(migrationsDirFor(rc.cfg)) {
+		return false, ""
+	}
+	if rc.cfg == nil {
+		return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
+	}
+	return true, ""
 }

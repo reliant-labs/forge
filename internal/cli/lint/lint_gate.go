@@ -255,6 +255,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "config-reach", on: &f.configReach},
 		{name: "graph", on: &f.graph},
 		{name: "slow-tests", on: &f.slowTests},
+		{name: "test-waits", on: &f.testWaits},
 	}
 }
 

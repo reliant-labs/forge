@@ -19,7 +19,7 @@
 //
 // `pretest` builds dist/ before vitest runs, so these assertions always read
 // a current build rather than whatever happened to be on disk.
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +76,10 @@ describe("the published surface", () => {
     // decision, so it is spelled out here rather than derived.
     expect(Object.keys(pkg.exports).sort()).toEqual([
       ".",
+      "./auth/auth0",
+      "./auth/clerk",
+      "./auth/firebase",
+      "./auth/supabase",
       "./interceptors",
       "./mock-transport",
       "./node",
@@ -110,11 +114,16 @@ describe("the published surface", () => {
     //   - vite is a dev-server plugin. It imports node:fs and node:http,
     //     which a browser bundle cannot resolve; it is loaded by
     //     vite.config.ts, in Node, and nowhere else.
+    //   - auth/<provider> are the auth-provider adapters. Each is one
+    //     provider's callbacks mapped onto identifyUser / trackAuthEvent; an
+    //     app imports only its own provider's, and none belongs in every
+    //     bundle.
     //   - otel-proxy is the dev servers' /_otel proxy (Vite mounts it
     //     through ./vite, Next.js's next.config.ts starts its relay). It
     //     imports node:http, node:https and node:fs.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
+      "./auth/",
       "./mock-transport",
       "./node",
       "./otel-proxy",
@@ -265,6 +274,66 @@ describe("the published surface", () => {
     expect(trackJs).not.toMatch(/^\s*import\s/m);
   });
 
+  it("keeps trackAuthEvent and identifyUser IN the barrel, importing only track.js", () => {
+    // Same rule as track(): an app's auth context calls identifyUser whether
+    // or not @hyperdx/browser is installed, so auth-events.ts may reach
+    // nothing but the dependency-free track.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "trackAuthEvent",
+      "identifyUser",
+      "AUTH_SEEN_STORAGE_KEY",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const authJs = readFileSync(join(pkgDir, "dist", "auth-events.js"), "utf8");
+    const imports = [
+      ...authJs.matchAll(/^\s*import[^"']*["']([^"']+)["']/gm),
+    ].map((m) => m[1]);
+    expect(imports).toEqual(["./track.js"]);
+  });
+
+  it("keeps normalizeRoute, the analytics tiers and exposures IN the barrel, and off the SDK", () => {
+    // An app names its own events' routes the way the automatic page_viewed
+    // events do, sets its consent tier and records flag exposures, all from
+    // the barrel. page-views.ts, session-identity.ts and exposure.ts sit in
+    // the barrel's import closure, so none may reach the SDK: they import
+    // only the import-free track.ts and basepath.ts.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "normalizeRoute",
+      "PAGE_VIEWED_EVENT",
+      "analyticsTier",
+      "grantAnalyticsConsent",
+      "revokeAnalyticsConsent",
+      "optOutOfAnalytics",
+      "trackExposure",
+      "forgeExposureHook",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    for (const name of [
+      "page-views.js",
+      "session-identity.js",
+      "exposure.js",
+    ]) {
+      const js = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const imports = [
+        ...js.matchAll(
+          /^\s*(?:import|export)\b[^;]*?from\s*["']([^"']+)["']/gm,
+        ),
+      ].map((m) => m[1]);
+      expect(
+        imports.filter((i) => i !== "./track.js" && i !== "./basepath.js"),
+        `dist/${name} imports more than track.js and basepath.js`,
+      ).toEqual([]);
+    }
+  });
+
   it("keeps the money helpers IN the barrel, free of imports", () => {
     // The frontend skill tells pages to import these from the barrel rather
     // than hand-roll them. money.ts imports nothing, which is what earns it a
@@ -372,12 +441,19 @@ describe("the published surface", () => {
         continue; // "./package.json"
       }
       for (const target of [entry.types, entry.default]) {
-        expect(distFiles, `${target} is declared but not emitted`).toContain(
-          target.replace("./dist/", ""),
-        );
+        // A subpath may live in a dist/ subdirectory (./auth/<provider>).
+        expect(
+          existsSync(join(pkgDir, target)),
+          `${target} is declared but not emitted`,
+        ).toBe(true);
       }
     }
     // Nothing from a test file leaks into the artifact.
     expect(distFiles.filter((f) => f.includes(".test."))).toEqual([]);
+    expect(
+      readdirSync(join(pkgDir, "dist", "auth")).filter((f) =>
+        f.includes(".test."),
+      ),
+    ).toEqual([]);
   });
 });

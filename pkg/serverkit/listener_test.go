@@ -137,7 +137,9 @@ func TestRun_LongLivedStreamsEndBeforeTheDrainWaits(t *testing.T) {
 				},
 			}
 			cfg := baseConfig(addr)
-			cfg.ShutdownTimeout = 5 * time.Second
+			// Long enough that a stream holding the drain until
+			// ShutdownTimeout is unmistakable from a prompt drain.
+			cfg.ShutdownTimeout = 30 * time.Second
 			errCh, _ := runInBackground(t, cfg, srv)
 			waitReady(t, addr, 2*time.Second)
 
@@ -152,10 +154,10 @@ func TestRun_LongLivedStreamsEndBeforeTheDrainWaits(t *testing.T) {
 			defer func() { _ = resp.Body.Close() }()
 			<-inStream
 			start := time.Now()
-			if err := shutdownAndWait(t, errCh, 10*time.Second); err != nil {
+			if err := shutdownAndWait(t, errCh, 45*time.Second); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if took := time.Since(start); took > 3*time.Second {
+			if took := time.Since(start); took > 10*time.Second {
 				t.Errorf("Run took %v: the stream held the drain until ShutdownTimeout", took)
 			}
 			mu.Lock()

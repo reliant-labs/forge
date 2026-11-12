@@ -45,12 +45,13 @@ import (
 
 // The destination vocabulary (forge/pkg/topology's).
 const (
-	destinationHosted  = topology.DestinationHosted
-	destinationCluster = topology.DestinationCluster
-	destinationCompose = topology.DestinationCompose
-	destinationHost    = topology.DestinationHost
-	destinationStatic  = topology.DestinationStatic
-	destinationMixed   = topology.DestinationMixed
+	destinationHosted   = topology.DestinationHosted
+	destinationCluster  = topology.DestinationCluster
+	destinationCompose  = topology.DestinationCompose
+	destinationHost     = topology.DestinationHost
+	destinationStatic   = topology.DestinationStatic
+	destinationMixed    = topology.DestinationMixed
+	destinationExternal = topology.DestinationExternal
 )
 
 // envDestination is where one env runs, as the contract above reports it.
@@ -111,6 +112,8 @@ func destinationKindSet(e *KCLEntities) map[string]bool {
 			kinds[destinationCompose] = true
 		case RuntimeHost:
 			kinds[destinationHost] = true
+		case RuntimeExternal:
+			kinds[destinationExternal] = true
 		}
 	}
 	if len(e.Infra) > 0 {

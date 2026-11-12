@@ -305,7 +305,7 @@ func (c *Client) SignIn(ctx context.Context, cfg FlowConfig, creds Credentials) 
 	if err := c.gate(ctx, cfg, session, creds.UserID); err != nil {
 		return Tokens{}, err
 	}
-	return c.finish(ctx, cfg, flow, session)
+	return c.finish(ctx, cfg, flow, session, methodFromCredentials(creds))
 }
 
 // SignUp registers an account and signs it in, in one call.

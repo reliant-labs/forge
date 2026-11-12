@@ -1,8 +1,8 @@
 // build_external.go is the SINGLE dispatcher for KCL Services whose
 // effective build is a ShellBuild (`build = forge.ShellBuild { cmd, cwd,
-// env }`) — the one shell escape hatch. Mirrors the deploytarget/External
-// provider on the build side — same `sh -c` shape, same ${X} substitution,
-// same fail-when-cwd-missing contract. See internal/buildtarget for the
+// env }`) — the one shell escape hatch: `sh -c` with ${X} substitution and a
+// fail-when-cwd-missing contract. (The deploy side's escape hatch,
+// forge.OnExternal, is argv with no shell.) See internal/buildtarget for the
 // runner + spec types.
 //
 // The dispatcher's responsibilities are deliberately narrow:
@@ -18,9 +18,8 @@
 // Build-side ownership boundary: the user's BuildCmd owns BOTH the
 // build AND the push (the user composes
 // `docker build … && docker push …` into one string). Forge does NOT
-// run docker push afterwards. This matches the External (deploy)
-// provider's "user owns the CLI" contract — one mental model across
-// both escape hatches.
+// run docker push afterwards — the same "the user's tool owns the step"
+// contract forge.OnExternal's deploy hook has.
 package cli
 
 import (

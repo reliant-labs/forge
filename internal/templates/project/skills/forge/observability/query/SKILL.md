@@ -62,10 +62,11 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs issue comment <id> <text> [env]` | Add a comment (cloud; needs `obs:triage`) |
 | `forge obs issue assign <id> <user-id\|me\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
 | `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
+| `forge obs users [env]` | Users over the range (`--since`, default 7d, up to 90d) and the one before: active, new, returning, per env, with `--series N` daily counts and `--seen-total`. Hosted envs only |
 | `forge obs session <id> [env]` | One session as a text timeline: pages, clicks on masked selectors, failed requests, errors with their issue, custom events, trace ids (`--limit`, `--page-token`). No replay bytes. Exit 1 not found, 2 could not look |
-| `forge obs logs [env] [query]` | Search and tail (`--trace`, `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
+| `forge obs logs [env] [query]` | Search and tail (`--trace`, over the trace's own time range; `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
-| `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started. Each span line shows how it ended (`rpc=CANCELED`, `http=403`, `error.type`, a statement's summary, ClickHouse `read_rows` and `query_id`) and a failed span's exception; a log that warns, fails or carries an `error` is printed under its span with its error and cause; a span whose children cover little of it gets `⋯ uninstrumented 9.99s of 10.00s`: the time went to code that emitted no span, so look there |
+| `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started. Each span line shows how it ended (`rpc=CANCELED`, `http=403`, `error.type`, a statement's summary, ClickHouse `read_rows` and `query_id`) and a failed span's exception; a log that warns, fails or carries an `error` is printed under its span with its error and cause; a span whose children cover little of it gets `⋯ uninstrumented 9.99s of 10.00s`: the time went to code that emitted no span, so look there. Past 10,000 spans the read stops and says so (`158,864 spans (10,000 read)`): time past it is `⋯ not read`, runs carry the whole trace's count, and its spans by name follow |
 | `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10) |
 | `forge obs metrics list [env]` | The metric catalog (`--contains`): kind, monotonic, temporality, services, last seen, series estimate; locally, merged with the declared schema (`declared`, `seen`) |
 | `forge obs metrics describe [env] <metric>` | One metric: interval, attribute keys with value counts, suggested breakdowns, the declared spec |
@@ -79,26 +80,7 @@ Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service
 
 ## Issue assignment filters
 
-```bash
-forge obs issues prod --assignee me       # the credential's acting person
-forge obs issues prod --assignee none     # only unassigned issues
-forge obs issue assign ISS-ab12 me prod   # assign to that person
-forge obs issue assign ISS-ab12 none prod # clear the assignee
-```
-
-The server resolves `me` from the **verified credential**, including user-owned CLI
-login and helper tokens; the CLI never infers a user from a stored login, decodes a
-token, or calls the human-only `GetCurrentUser` RPC. Organization automation tokens
-act for nobody: `me` is refused **FailedPrecondition**, exit 2, without a fallback
-or retry. Name a user ID instead. `none` on a list sends the API's `unassigned=true`
-(not `assignee="none"`); an omitted filter sends neither field, including no false
-`unassigned`. Locally every issue is unassigned: `none` includes all rows while a
-named assignee or `me` matches none; assignment writes still need a hosted env.
-
-Backend dependency: listing uses the CP #1402 fields. `assign ... me` additionally
-requires the owner-approved server-side `AssignIssue.assignee_user_id="me"`
-resolution; #1402 alone only supports literal user IDs on that mutation. Until
-that backend change lands, use an explicit user ID for assignment.
+`forge obs issues <env> --assignee me|none|<user-id>` and `forge obs issue assign <id> me|none|<user-id> <env>`. `me` is the verified credential's person (an organization automation token is refused, exit 2); how each value reaches the API and the local behaviour: `observability/query/issues`.
 
 ## What is wrong now: `forge obs status`
 
@@ -113,11 +95,12 @@ The env's KCL declares the thresholds and which findings fail (`forge.ReleaseHea
 ```
 release_health = forge.ReleaseHealth {
     window = "15m"                      # 1m to 6h
-    min_requests = 50                   # below this a service is not judged
+    min_requests = 50                   # below this, in either window, a service is not compared
     max_error_rate_increase = 0.01      # a fraction: one percentage point
     max_p95_ratio = 1.5
     new_issue_min_events = 3
     fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]   # latency, workload_restarts warn
+    require_baseline = "any"            # or "every", "none" (observability/release-health)
 }
 ```
 
@@ -125,10 +108,10 @@ release_health = forge.ReleaseHealth {
 |---|---|
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |
 | 1 | FAIL: a `fail_on` finding fired |
-| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests`), or forge could not look |
+| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
 | 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
 
-An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
+An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
 
 **Signals: spans, then ingress, plus the browser** (`observability/release-health`): a service with no server spans is judged on the platform ingress's figures; a frontend also on its browser telemetry (`browser_*` findings, warn by default). Each service says which (`signal`).
 

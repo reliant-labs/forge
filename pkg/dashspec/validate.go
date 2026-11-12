@@ -429,7 +429,8 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
-	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse))
+	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse),
+		string(KindReleaseHealth), string(KindPromotions), string(KindDelivery))
 	if raw, has := o["link"]; has && kind != "" {
 		v.link(path, o, PanelKind(kind), raw)
 	}
@@ -439,6 +440,10 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	if _, has := o["markdown"]; has {
 		v.add(childPath(path, "markdown"), "only a text panel takes \"markdown\"")
+	}
+	if IsDeliveryKind(PanelKind(kind)) {
+		v.deliveryPanel(path, o, PanelKind(kind))
+		return
 	}
 	sigName := v.oneOf(path, o, "signal", kind != string(KindSQL) && kind != string(KindPostgres) && kind != string(KindBrowse), string(Traces), string(Metrics), string(Logs))
 	sig := Signal(sigName)
@@ -666,7 +671,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 	if !ok {
 		return
 	}
-	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors")
+	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors", "exact")
 	names := make([]string, len(styles))
 	for i, s := range styles {
 		names[i] = string(s)
@@ -704,6 +709,12 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		flag("horizontal")
 		if style != "" && (kind != KindBar || style != StyleBar) {
 			v.add(childPath(dp, "horizontal"), "only a bar panel drawn as bars takes \"horizontal\"")
+		}
+	}
+	if _, has := d["exact"]; has {
+		flag("exact")
+		if kind != KindNumber && kind != KindSQL {
+			v.add(childPath(dp, "exact"), "only a number or sql panel draws figures to keep exact")
 		}
 	}
 	lo, hasMin := v.number(dp, d, "min")

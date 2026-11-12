@@ -15,9 +15,12 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// `forge release` is the release-ledger noun, and it holds only the verbs that
-// act on a ledger ITSELF, independent of any environment: proving its claims
-// (`verify`) and locating a version (`where`).
+// `forge release` is the release-ledger noun, and it holds the verbs that act
+// on a ledger ITSELF: proving its claims (`verify`), locating a version
+// (`where`), and recording a release someone ELSE built and deployed
+// (`record`). `record` names an env, but it moves nothing there: it writes
+// down what an outside pipeline already did, which is a ledger act, not a
+// deploy — so it lives on the ledger noun and never beside `env deploy`.
 //
 // Everything env-scoped lives on the env noun. `forge env build <env>
 // --release <v>` CUTS a ledger and `forge env deploy` ADVANCES one, each where
@@ -29,16 +32,21 @@ import (
 func newReleaseCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "release",
-		Short: "Inspect and verify release ledgers",
+		Short: "Inspect, verify and record release ledgers",
 		Long: `Work with the release ledgers ` + "`forge env build <env> --release <version>`" + ` writes.
 
 A release ledger (.forge/releases/<version>.json) names every artifact a
 release ships — container images, npm packages, Go modules, published files —
-with the coordinate and hash each one was cut with.`,
+with the coordinate and hash each one was cut with.
+
+` + "`forge release record`" + ` writes down a deploy your own CI did — a version, a
+commit and the image digests — so monitoring gets a deploy marker without forge
+building or deploying anything.`,
 	}
 	cmd.AddCommand(newReleaseVerifyCmd())
 	cmd.AddCommand(newReleaseWhereCmd())
 	cmd.AddCommand(newReleaseBundleCmd())
+	cmd.AddCommand(newReleaseRecordCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 

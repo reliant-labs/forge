@@ -469,7 +469,7 @@ func hasRegistryBoundWorkload(e *KCLEntities) bool {
 	}
 	for _, w := range e.Workloads {
 		switch w.Runtime.Type {
-		case RuntimeCluster, RuntimeHosted:
+		case RuntimeCluster, RuntimeHosted, RuntimeExternal:
 			return true
 		}
 	}

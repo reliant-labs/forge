@@ -379,8 +379,10 @@ func TestParseKCLEntities_SpecIsStrict(t *testing.T) {
 }
 
 // A workload with no runtime, or an unknown one, is refused: nothing runs it.
+// ("external" was the unknown example until forge.OnExternal made it a real
+// runtime; "lambda" is not one.)
 func TestParseKCLEntities_RuntimeIsRequired(t *testing.T) {
-	for _, rt := range []string{`null`, `{"type":"external"}`, `{}`} {
+	for _, rt := range []string{`null`, `{"type":"lambda"}`, `{}`} {
 		_, err := parseKCLEntities([]byte(`{"output":{"workloads":[{"name":"api","kind":"service","build":null,` +
 			`"runtime":` + rt + `,"spec":{"image":"x"}}]}}`))
 		if err == nil || !strings.Contains(err.Error(), "runtime") {

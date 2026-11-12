@@ -2,6 +2,7 @@
 name: testing
 description: "Testing Go services and packages — testkit's real-postgres harness, generated contract mocks, pkg/tdd, the task test lanes and their build tags."
 emit: both
+applies: any
 ---
 
 # Testing a forge project
@@ -196,6 +197,49 @@ Two guards hold the line, because neither sees everything:
 every test of a run shares one server and gets a cloned database, so the
 scaffolded CRUD tests belong in the fast tier. A database test that is still
 slow is the budget's to report.
+
+### Wait for the event, never for the clock
+
+A test that sleeps and then asserts is guessing how long the work takes. On
+an idle laptop the guess holds; on a CI machine running ten gates a goroutine
+can wait seconds for a CPU, the assertion reads state that is not there yet,
+and the test fails for no reason in the code. The same goes for a one-second
+`time.After` that fails the test, and for asserting that real elapsed time
+stayed under a bound. Wait for the event itself:
+
+```go
+go w.Start(ctx)
+testkit.Eventually(t, "the worker drains the queue", func() bool { return q.Len() == 0 })
+reply := testkit.Receive(t, "the reply", replies) // a closed channel counts too
+```
+
+`testkit.Eventually` and `testkit.Receive` (`forge/pkg/testkit`) return the
+moment the event happens and fail only after `testkit.DefaultWaitTimeout`
+(30s, or `testkit.Within(d)`): a deadline a busy machine never reaches, which a
+passing test never pays for. A test with a `go test -timeout` nearer than that
+fails at the wait, by name, instead of in the binary's panic dump. A sleep that
+only advances the clock wants an injected clock (a `now func() time.Time`
+field), or `testing/synctest`, whose clock is fake.
+
+`forge lint` flags the shapes that flake (the `test-waits` lane, also
+`forge lint --test-waits` alone), in `_test.go` files only:
+
+| Rule | Flags | Does not flag |
+|---|---|---|
+| `forge-test-fixed-sleep` | `time.Sleep(d)` or a bare `<-time.After(d)` in a test body (a `*testing.T` / `testing.TB` func, a `t.Run` literal, a suite's `Test*` method) with more of the test after it | a sleep in a loop (a poll — the remedy), in a goroutine, fake or handler, as the last statement, right before a context `cancel()`, of at most 2ms (a timestamp tick), in a helper process that calls `os.Exit`, or inside `synctest` |
+| `forge-test-tight-deadline` | an event wait that FAILS the test after a constant deadline under 5s: a `select` case on `time.After` / a timer / a `context.WithTimeout` ctx whose body calls `t.Fatal`/`t.Error`/`Fail`; testify `Eventually`; a poll bounded by `time.Now().Add(d)`, `time.Since(start) < d`, or a counted loop of sleeps that can exit early | a negative assertion (expiry is the pass), a deadline of 5s or more, a duration the file does not spell as a constant |
+| `forge-test-wall-clock-bound` | a test that fails when real elapsed time passes a constant under 5s: `if time.Since(start) > d { t.Fatal }`, `assert.Less(t, elapsed, d)`, `assert.WithinDuration(t, time.Now(), x, d)` | a lower bound (`elapsed < backoff` → fail: load cannot make it fail) |
+
+A deliberate wait — a negative assertion written as a sleep, a test OF timing —
+is suppressed at its line with the reason, like any forge rule:
+
+```go
+// forge:lint-disable-next-line forge-test-fixed-sleep: asserts nothing is sent within 100ms
+time.Sleep(100 * time.Millisecond)
+```
+
+The rules warn in a project pinned below the release after the one that ships
+them, then gate.
 
 ## Don't hand-roll what forge already provides
 

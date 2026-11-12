@@ -2172,29 +2172,30 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 	// of runDeploy because a frontend-only or host-only run applies to no
 	// cluster, and a notice about retiring direct apply would be noise for
 	// a deploy that never touches one.
-	if !in.directApplyAllowed && !frontendOnly {
+	if !in.directApplyAllowed && !frontendOnly && !onlyExternalGroups(in.groups) {
 		fmt.Println(lifecycleNoticeLine)
 	}
 	if len(in.groups) == 0 && !frontendOnly {
 		return cluster.Apply(ctx, cluster.ApplyOpts{
-			MainK:        in.mainK,
-			ImageTag:     in.imageTag,
-			ImageDigests: in.imageDigests,
-			Namespace:    in.namespace,
-			Env:          in.envName,
-			Context:      in.deployContext,
-			EnvConfigKV:  in.envCfgKV,
-			DryRun:       in.dryRun,
-			DryRunFramed: true,
-			Prune:        in.prune,
-			Project:      projectNameOf(in.cfg),
-			PruneCRDs:    true,
-			Targets:      in.targets,
-			HelmCharts:   in.helmSpecs,
-			Rollout:      in.rollout,
-			SkipUnits:    in.skipUnits,
-			OnStream:     in.report.streamObserver(),
-			OnRollout:    in.report.rolloutObserver(),
+			MainK:         in.mainK,
+			ImageTag:      in.imageTag,
+			ImageDigests:  in.imageDigests,
+			Namespace:     in.namespace,
+			Env:           in.envName,
+			Context:       in.deployContext,
+			EnvConfigKV:   in.envCfgKV,
+			DryRun:        in.dryRun,
+			DryRunFramed:  true,
+			Prune:         in.prune,
+			Project:       projectNameOf(in.cfg),
+			PruneCRDs:     true,
+			Targets:       in.targets,
+			HelmCharts:    in.helmSpecs,
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(),
+			OnRollout:     in.report.rolloutObserver(),
 		})
 	}
 	if len(in.groups) > 0 {
@@ -2204,16 +2205,32 @@ func applyDeployGroups(ctx context.Context, in deployApplyInput) error {
 			Targets: in.targets, Groups: in.groups, Entities: in.entities,
 			Topology: in.topology, TopologyEntities: in.topologyEntities,
 			ImageDigests: in.imageDigests, HelmCharts: in.helmSpecs,
-			Rollout:   in.rollout,
-			SkipUnits: in.skipUnits,
-			OnStream:  in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
+			Rollout:       in.rollout,
+			SkipUnits:     in.skipUnits,
+			DeliveryUnits: declaredDeliveryUnits(in.topologyOrEntities()),
+			OnStream:      in.report.streamObserver(), OnRollout: in.report.rolloutObserver(),
 		})
 		registry := deploytarget.NewRegistry()
 		registry.Register(deploytarget.K8sClusterProvider{ApplyOptsBuilder: builder})
+		stampExternalRelease(ctx, in.groups)
 		return dispatchDeployGroupsBeforeClusters(ctx, registry, in.groups,
 			ensureDevDatabaseHook(in.cfg, in.topologyOrEntities(), in.envName, in.dryRun))
 	}
 	return nil
+}
+
+// onlyExternalGroups reports a deploy whose every group is forge.OnExternal
+// hooks: it applies to no cluster, so the direct-apply notice would be noise.
+func onlyExternalGroups(groups []deploytarget.ServiceGroup) bool {
+	if len(groups) == 0 {
+		return false
+	}
+	for _, g := range groups {
+		if g.ProviderID != deploytarget.ExternalProviderID {
+			return false
+		}
+	}
+	return true
 }
 
 // renderGateDeployGroups renders every cluster group a deploy would apply, as a
@@ -2249,8 +2266,8 @@ func (in deployApplyInput) topologyOrEntities() *KCLEntities {
 // buildDeployGroupsForEnv builds the deploy groups from the rendered entities
 // and propagates the resolved plain image tag to every group. Services bucket
 // by deploy target type: K8sCluster groups by (cluster, ns, registry); External
-// by deploy_cmd; Compose by compose_file. Host / build-only services are
-// skipped (forge run / forge build territory).
+// (forge.OnExternal) into one group; Compose by compose_file. Host /
+// build-only services are skipped (forge env up / forge build territory).
 //
 // The tag propagation uses the PLAIN tag, never the digest form: the cluster
 // path consumes ImageTag implicitly via cluster.Apply, and the compose path
@@ -3730,7 +3747,7 @@ func releasePulledDestinations(e *KCLEntities) []imageDestination {
 			if _, seen := buildOnly[repo]; !seen {
 				buildOnly[repo] = true
 			}
-		case RuntimeCluster, RuntimeHosted:
+		case RuntimeCluster, RuntimeHosted, RuntimeExternal:
 			buildOnly[repo] = false
 		}
 	}
@@ -5668,4 +5685,13 @@ func (f promoteCmdFlags) withHealthGateOverride() (promoteCmdFlags, error) {
 		f.note = "health gate overridden: " + reason
 	}
 	return f, nil
+}
+
+// declaredDeliveryUnits is the env's Bundle.delivery_units, nil-safe: the
+// order direct apply rolls the workloads out in (cluster.ApplyOpts.DeliveryUnits).
+func declaredDeliveryUnits(e *KCLEntities) []release.DeliveryUnit {
+	if e == nil {
+		return nil
+	}
+	return e.DeliveryUnits
 }

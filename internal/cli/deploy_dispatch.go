@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // buildDeployGroups walks the rendered entities and produces the deploy
@@ -115,6 +117,14 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				Name:    w.Name,
 				Compose: spec,
 				Secrets: svcSecrets,
+			})
+		case RuntimeExternal:
+			// forge.OnExternal: the author's hooks deploy it. One group per
+			// env (deploytarget.GroupServices); a binding with no deploy
+			// hook is record-only and the provider says so.
+			raw = append(raw, deploytarget.RawService{
+				Name:     w.Name,
+				External: externalSpecFor(envName, w, entities, prov, os.Stderr),
 			})
 		default:
 			// host, build-only — no deploy group; hosted — below.
@@ -400,6 +410,9 @@ type applyOptsContext struct {
 	// SkipUnits are the delivery units the hub converges (Bundle.hub_converges):
 	// this apply leaves their objects alone. See cluster.ApplyOpts.SkipUnits.
 	SkipUnits []string
+	// DeliveryUnits are the env's declared delivery units: direct apply rolls
+	// the workloads out in their order. See cluster.ApplyOpts.DeliveryUnits.
+	DeliveryUnits []release.DeliveryUnit
 	// OnStream and OnRollout are the optional observation callbacks the
 	// --json report installs (nil in text mode). Threaded through the builder
 	// so a multi-group dispatch reports every group's stream and every
@@ -500,8 +513,11 @@ func applyOptsBuilderFromContext(p applyOptsContext) func(deploytarget.ServiceGr
 			HelmCharts:   charts,
 			Rollout:      p.Rollout,
 			SkipUnits:    p.SkipUnits,
-			OnStream:     p.OnStream,
-			OnRollout:    p.OnRollout,
+			// DeliveryUnits: the env's declared order, applied across every
+			// group this builder emits (cluster/unit_waves.go).
+			DeliveryUnits: p.DeliveryUnits,
+			OnStream:      p.OnStream,
+			OnRollout:     p.OnRollout,
 		}
 	}
 }

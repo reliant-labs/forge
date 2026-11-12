@@ -216,6 +216,41 @@ func TestParseRejectsBadRegistries(t *testing.T) {
 			wantErr: `title may not contain '|'`,
 		},
 		{
+			name:    "unknown scope",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, availability: forge, scope: anywhere, evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": scope "anywhere" is not one of any, forge-project`,
+		},
+		{
+			name:    "any scope without a recipe",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, availability: forge, scope: any, estimate: '~5 min', evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": scope: any needs adopt`,
+		},
+		{
+			name:    "any scope without an estimate",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, availability: forge, scope: any, adopt: Run it., evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": scope: any needs estimate`,
+		},
+		{
+			name:    "estimate that is not an estimate",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, availability: forge, scope: any, adopt: Run it., estimate: quick, evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": estimate "quick" is not`,
+		},
+		{
+			name:    "recipe on a forge-project entry",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, availability: forge, adopt: Run it., evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": adopt and estimate are only for scope: any`,
+		},
+		{
+			name:    "in-progress entry offered to any repo",
+			yaml:    validCategories + "benefits:\n  - {id: x, category: build, title: T, claim: C, status: in-progress, availability: forge, scope: any, adopt: Run it., estimate: '~5 min', evidence: [{path: go.mod}]}\n",
+			wantErr: `benefits[0] "x": an in-progress entry may not be scope: any`,
+		},
+		{
+			name:    "id taking the any-repo anchor",
+			yaml:    validCategories + "benefits:\n  - {id: any-repo, category: build, title: T, claim: C, availability: forge, evidence: [{path: go.mod}]}\n",
+			wantErr: `id collides with a docs/benefits.md heading anchor`,
+		},
+		{
 			name:    "duplicate category",
 			yaml:    validCategories + "  - {id: data, title: Data, intro: Again.}\nbenefits:" + ok,
 			wantErr: `categories[2] "data": duplicate category id`,
@@ -257,6 +292,48 @@ func TestStatusDefaultsToEnforced(t *testing.T) {
 	}
 }
 
+// An entry with no scope needs a forge project, so adding the field changed
+// nothing for the entries written before it; AppliesTo offers a repo with no
+// forge.yaml only the scope: any entries, and never an in-progress one.
+func TestScopeDefaultAndAppliesTo(t *testing.T) {
+	r, err := Parse([]byte(validCategories + "benefits:\n" +
+		"  - {id: proj, category: build, title: T, claim: C, availability: forge, evidence: [{path: go.mod}]}\n" +
+		"  - {id: anywhere, category: build, title: T, claim: C, availability: forge, scope: any, adopt: Run it., estimate: '~1-2 hours', evidence: [{path: go.mod}]}\n" +
+		"  - {id: later, category: build, title: T, claim: C, status: in-progress, availability: forge, evidence: [{path: go.mod}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Benefits[0].Scope; got != ScopeForgeProject {
+		t.Errorf("default scope = %q, want %q", got, ScopeForgeProject)
+	}
+	ids := func(bs []Benefit) string {
+		var out []string
+		for _, b := range bs {
+			out = append(out, b.ID)
+		}
+		return strings.Join(out, " ")
+	}
+	if got := ids(r.AppliesTo(false)); got != "anywhere" {
+		t.Errorf("AppliesTo(no forge.yaml) = %q, want %q", got, "anywhere")
+	}
+	if got := ids(r.AppliesTo(true)); got != "proj anywhere" {
+		t.Errorf("AppliesTo(forge project) = %q, want %q", got, "proj anywhere")
+	}
+}
+
+// The embedded registry offers a repo with no forge.yaml something to start
+// with: the front door (forge project benefits, the MCP benefits tool) is
+// empty otherwise.
+func TestEmbeddedRegistryHasAnyRepoBenefits(t *testing.T) {
+	r, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.AppliesTo(false)); n < 5 {
+		t.Errorf("only %d scope: any benefits; the front door needs real ones to offer", n)
+	}
+}
+
 // A rule no flag selects runs only in a bare `forge lint`: `lane: ""` is
 // valid, and the rule table says "bare `forge lint`" rather than an empty
 // code span.
@@ -293,7 +370,7 @@ func TestRenderReadmeTable(t *testing.T) {
 		"| --------- | ------------------------------------------------------------ |\n" +
 		"| **Build** | [Alpha](docs/benefits.md#a) · [Beta two](docs/benefits.md#b) |\n" +
 		"\n" +
-		"Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md) (3 entries, 1 lint rules)\n"
+		"Every benefit, with how to use it and the code that backs it: [docs/benefits.md](docs/benefits.md)\n"
 	if got != want {
 		t.Errorf("RenderReadmeTable:\n%s\nwant:\n%s", got, want)
 	}

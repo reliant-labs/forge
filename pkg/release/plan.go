@@ -350,6 +350,14 @@ func BuildPlan(in PlanInput) (Plan, error) {
 			layoutDetail[m.Key.Cluster] = treeMoveDetail(m)
 			continue
 		}
+		// Between two units forge applies directly, nothing prunes the
+		// object out of the tree it leaves: the apply sends it in its new
+		// unit's wave and the only change is WHEN it rolls. A reconciler on
+		// either side is the case the stop exists for.
+		if forgeAppliesTree(in.Live, m.From) && forgeAppliesTree(&in.Candidate, m.To) {
+			add(FindingTreeMoved, ClassInfo, SectionTrees, m.Key.String(), forgeTreeMoveDetail(m))
+			continue
+		}
 		add(FindingTreeMoved, ClassStop, SectionTrees, m.Key.String(), treeMoveDetail(m))
 	}
 	for _, cluster := range sortedStrings(mapKeys(layout)) {
@@ -626,6 +634,28 @@ func treeMoveDetail(m ObjectMove) string {
 		return fmt.Sprintf("%s %q moves from %s back into the flat cluster tree", m.Key.Kind, m.Key.Name, from)
 	}
 	return fmt.Sprintf("%s %q moves from %s to %s: the tree it leaves prunes it and the tree it joins creates it. Adopt it into the new tree first (suspend, prune off), or accept the delete and re-create", m.Key.Kind, m.Key.Name, from, to)
+}
+
+// forgeAppliesTree reports whether `forge env deploy` applies the delivery unit
+// of tree ("<unit>/<phase>") in shape s, by declaration: the shape's unit split
+// names forge for it, or the env declares applier = "forge" and no split. Any
+// other answer — the hub, an in-cluster Flux, an env that declares nothing (the
+// hub may converge it by inference) — is a reconciler that prunes.
+func forgeAppliesTree(s *Shape, tree string) bool {
+	if s == nil || tree == "" {
+		return false
+	}
+	unit, _, _ := strings.Cut(tree, "/")
+	for _, u := range s.Units {
+		if u.Name == unit {
+			return u.Applier == UnitApplierForge
+		}
+	}
+	return len(s.Units) == 0 && s.Applier == ApplierForge
+}
+
+func forgeTreeMoveDetail(m ObjectMove) string {
+	return fmt.Sprintf("%s %q moves from %s to %s; forge applies both units directly, so nothing prunes it in between: only its place in the rollout order changes", m.Key.Kind, m.Key.Name, m.From, m.To)
 }
 
 func mapKeys(m map[string]int) []string {

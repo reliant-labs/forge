@@ -15,14 +15,15 @@
 //
 // ── Consent ──────────────────────────────────────────────────────────────
 //
-// Nothing here runs until initBrowserTelemetry does, and that is the point an
-// app gates on consent. Before it (or after disableTelemetry) captureAttribution
-// stores nothing and withAttribution returns the URL untouched.
-//
-// A site whose consent has two tiers — error telemetry for everyone, a visitor
-// id only with analytics consent — starts telemetry with `attribution: false`
-// and calls enableAttribution() (telemetry.ts) once analytics is granted. Until
-// then no visitor id is created, read or stamped, and nothing is captured.
+// Everything here is the `full` analytics tier (track.ts, "Analytics tiers"):
+// a persistent visitor id and a stored campaign need the person's consent.
+// telemetry.ts starts it (captureAttribution) only once the tier is `full` —
+// `analytics: "full"` plus grantAnalyticsConsent() — and stops it
+// (stopAttribution) when consent is withdrawn. Until then no visitor id is
+// created, read or stamped, nothing is captured or stored, and
+// withAttribution returns URLs untouched. Below `full`, a campaign still
+// reaches the console without storage: the first page_viewed of a page load
+// carries the URL's utm_* (page-views.ts).
 //
 // ── First or last touch ──────────────────────────────────────────────────
 //
@@ -32,7 +33,7 @@
 // to the FIRST campaign that brought a visitor passes `attributionTouch:
 // "first"`: once a record is stored, later visits never replace it.
 // Dependency-free apart from track.ts, like it.
-import { isTelemetryDisabled } from "./track.js";
+import { isTelemetryDisabled, noteAnalyticsStorageKey } from "./track.js";
 
 /** localStorage key of the captured `{rid, utm_*}` record. */
 export const ATTRIBUTION_STORAGE_KEY = "forge.attribution";
@@ -206,6 +207,8 @@ export function captureAttribution(options?: {
   if (options?.visitorIdStorageKey) {
     visitorKey = options.visitorIdStorageKey;
   }
+  // Written below in this tier, so erased with the rest when it ends.
+  noteAnalyticsStorageKey(visitorKey);
   const search =
     options?.search ??
     (typeof window !== "undefined" ? (window.location?.search ?? "") : "");
@@ -330,6 +333,18 @@ export function takeIdentifyProps(
     }
   }
   return props;
+}
+
+/**
+ * End attribution for this page load (consent withdrawn): no visitor id,
+ * nothing captured, withAttribution returns URLs untouched. What was stored
+ * is erased by track.ts (eraseAnalyticsDeviceState).
+ */
+export function stopAttribution(): void {
+  active = false;
+  memory = {};
+  memoryVisitorId = undefined;
+  memoryIdentified = undefined;
 }
 
 /** Test seam. */

@@ -60,7 +60,7 @@ A hosted deploy needs billing on the Reliant organization; until it is set up `e
 
 ## Database migrations
 
-The schema migrations are prisma's (`prisma/schema.prisma`), applied with `npx prisma migrate deploy`. They stay with prisma. Never convert them to forge migrations, rename or move them unless the user asks. On a forge-deployed env, run them before each rollout as a `kind = "job"` workload from the app's image with `before = [fw.BEFORE_ALL]` (`adopt` has the template).
+The schema migrations are prisma's (`prisma/schema.prisma`), applied with `npx prisma migrate deploy`. They stay with prisma. Never convert them to forge migrations, rename or move them unless the user asks. On a forge-deployed env, run them before each rollout as a `kind = "job"` workload from the app's image with `before = [fw.BEFORE_ALL]` (`adopt/deploy` has the template).
 
 ## Tests and the gate
 

@@ -107,6 +107,81 @@ func TestGenerateFrontendNav_OtelSelfHealsAfterDeletion(t *testing.T) {
 	}
 }
 
+// TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn: otel_gen.ts
+// passes `identify` only to a frontend that has src/lib/auth/native-login.ts
+// (the module that asks /auth/session) AND src/lib/api-base.ts (the module
+// native-login.ts resolves that URL through). With native sign-in but no
+// api-base.ts there is no shared resolution, so the page asks nothing rather
+// than build the URL from the raw configured origin (which misses the dev
+// proxy and can miss the session cookie). Page views are on throughout.
+func TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn(t *testing.T) {
+	for _, kind := range []string{"nextjs", "vite-spa"} {
+		t.Run(kind, func(t *testing.T) {
+			projectDir := t.TempDir()
+			cfg := &config.ProjectConfig{
+				Name:      "demo",
+				Frontends: []config.FrontendConfig{{Name: "web", Type: kind}},
+			}
+			cs := &checksums.FileChecksums{}
+			lib := filepath.Join(projectDir, "frontends", "web", "src", "lib")
+			read := func() string {
+				t.Helper()
+				if err := generateFrontendNav(cfg, nil, projectDir, nil, cs); err != nil {
+					t.Fatalf("generateFrontendNav: %v", err)
+				}
+				body, err := os.ReadFile(filepath.Join(lib, "otel_gen.ts"))
+				if err != nil {
+					t.Fatalf("read otel_gen.ts: %v", err)
+				}
+				return string(body)
+			}
+
+			s := read()
+			if !strings.Contains(s, "pageViews:") {
+				t.Errorf("page views must be on by default:\n%s", s)
+			}
+			if strings.Contains(s, "identify: identify(cfg)") {
+				t.Errorf("no native-login.ts, so no identify:\n%s", s)
+			}
+
+			write := func(rel, body string) {
+				t.Helper()
+				p := filepath.Join(lib, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("auth/native-login.ts", "export {};\n")
+			s = read()
+			for _, absent := range []string{"identify: identify(cfg)", `from "./api-base"`, "/auth/session`"} {
+				if strings.Contains(s, absent) {
+					t.Errorf("native-login.ts without api-base.ts must not identify (found %q):\n%s", absent, s)
+				}
+			}
+			if !strings.Contains(s, "pageViews:") {
+				t.Errorf("page views stay on without identity:\n%s", s)
+			}
+
+			// An api-base.ts that does not export apiBase (an older scaffold's
+			// apiBaseUrl) is not something otel_gen.ts can import from.
+			write("api-base.ts", "export function apiBaseUrl(): string { return \"/api\"; }\n")
+			if s = read(); strings.Contains(s, `from "./api-base"`) {
+				t.Errorf("an api-base.ts without an apiBase export must not be imported from:\n%s", s)
+			}
+			write("api-base.ts", "export function apiBase(configured: string): string { return configured; }\n")
+			s = read()
+			if !strings.Contains(s, "identify: identify(cfg)") ||
+				!strings.Contains(s, `import { apiBase } from "./api-base";`) ||
+				!strings.Contains(s, "${apiBase(configured)}/auth/session") {
+				t.Errorf("with api-base.ts the session URL goes through apiBase:\n%s", s)
+			}
+		})
+	}
+}
+
 // TestGenerateFrontendNav_OtelForNextJSAndViteNotNative: browser telemetry is
 // emitted for the two web frontends, each with its own env-read spelling, and
 // never for React Native. The HyperDX SDK is a browser bundle (rrweb, DOM

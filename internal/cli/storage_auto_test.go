@@ -34,21 +34,26 @@ func TestOpportunisticGC_DoesNotDelayUp(t *testing.T) {
 	origSchedule := storageScheduleInstalledFn
 	storageScheduleInstalledFn = func() bool { return true }
 	t.Cleanup(func() { storageScheduleInstalledFn = origSchedule })
+	// A pass that never ends until the test does: if up ran it in-process,
+	// maybeOpportunisticGC would not return, and the wait below fails.
+	never := make(chan struct{})
+	t.Cleanup(func() { close(never) })
 	nonDisruptiveGCFn = func(ctx context.Context, _ storage.Runner) error {
 		select {
-		case <-time.After(3 * time.Second):
+		case <-never:
 		case <-ctx.Done():
 		}
 		return nil
 	}
 	launched := stubAutoGCLauncher(t)
 
-	start := time.Now()
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("env up waited %s for storage maintenance", elapsed.Round(time.Millisecond))
-	}
+	returned := make(chan struct{})
+	go func() {
+		maybeOpportunisticGC(t.Context(), &out)
+		close(returned)
+	}()
+	awaitRecv(t, "env up to return without waiting for storage maintenance", returned)
 	if !*launched {
 		t.Fatalf("no background pass was started:\n%s", out.String())
 	}

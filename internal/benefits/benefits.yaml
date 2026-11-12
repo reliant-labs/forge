@@ -14,6 +14,15 @@
 #                 availability               forge | hosted | reliant
 #                 headline                   in the README table; never when in-progress
 #                 use, why, docs             optional; use/why are markdown, docs an https URL
+#                 scope                      forge-project (default) | any: works in any repo,
+#                                            any language, with no forge.yaml; never in-progress
+#                 adopt                      scope: any only (required): the one-line entry
+#                                            recipe for a repo that is not a forge project
+#                 estimate                   scope: any only (required): agent time to first
+#                                            value, "~<n> <min|hour|day>" ("~10 min", "~1-2 hours")
+#                 Every scope: any claim is checked by hand in a scratch repo with no
+#                 forge.yaml before it lands; `forge project benefits` and the MCP
+#                 `benefits` tool offer exactly these entries outside a forge project.
 #                 evidence[]                 >= 1, each item exactly ONE of:
 #                   command:  <cobra path under `forge`> [--flag]
 #                   analyzer: --<forge lint flag>
@@ -184,6 +193,39 @@ benefits:
       - command: project disown
       - command: project rescaffold
       - command: project scaffolded
+
+  - id: scaffold-exclude
+    category: build
+    title: Areas forge never writes
+    claim: >-
+      `scaffold.exclude` in forge.yaml names the parts of an existing repo forge
+      must never write, and every generate, scaffold, upgrade and rescaffold
+      leaves them exactly as they are and says which writes it skipped.
+    availability: forge
+    use: >-
+      `scaffold: {exclude: [frontends/web/, .github/workflows/deploy.yml]}`.
+    why: >-
+      A team adopting forge keeps its own frontend, workflows or docs without
+      disowning file by file. A locked run puts back anything written under an
+      excluded glob, and a glob over generated code other generated code
+      imports is refused with the dependent named.
+    evidence:
+      - skill: forge/migration/ownership
+      - path: internal/checksums/exclude.go
+      - path: internal/cli/generate_exclude.go
+
+  - id: prune-orphans
+    category: build
+    title: Clean up after a feature
+    claim: >-
+      When a feature is pinned off, `forge generate` lists the files it left
+      behind and `forge project prune --orphans` deletes the ones still exactly
+      as forge wrote them, never an edited one.
+    availability: forge
+    evidence:
+      - command: project prune
+      - skill: forge/migration/ownership
+      - path: internal/cli/generate_orphans.go
 
   - id: project-upgrade
     category: build
@@ -475,6 +517,9 @@ benefits:
     why: >-
       A migration that a populated table or the previous release cannot survive
       passes every test on a fresh database and fails on the first real one.
+    scope: any
+    adopt: "Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`."
+    estimate: "~5 min"
     evidence:
       - command: lint --migration-safety
       - command: ci migration-safety
@@ -765,6 +810,9 @@ benefits:
     availability: forge
     headline: true
     use: "`testkit.NewPostgresDB(t)`, or `pkg/pgtest` directly."
+    scope: any
+    adopt: "`go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker."
+    estimate: "~15 min"
     evidence:
       - library: pkg/pgtest
       - library: pkg/testkit
@@ -818,6 +866,9 @@ benefits:
       the line because neither sees everything: `forge lint --slow-tests` before
       a test ever runs, and `go test -short -json ./... | forge ci test-budget`
       after.
+    scope: any
+    adopt: "In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`)."
+    estimate: "~15 min"
     evidence:
       - command: lint --slow-tests
       - path: internal/linter/slowtest
@@ -847,6 +898,9 @@ benefits:
       `forge ci test-budget` reads a `go test -json` run and flags unmarked
       tests that blew the fast-tier budget.
     availability: forge
+    scope: any
+    adopt: "In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`."
+    estimate: "~5 min"
     evidence:
       - command: ci test-budget
       - path: internal/cli/ci_test_budget.go
@@ -858,6 +912,9 @@ benefits:
       `forge ci verify-test-run` reports packages that skipped so much that
       their pass proves nothing.
     availability: forge
+    scope: any
+    adopt: "In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`."
+    estimate: "~5 min"
     evidence:
       - command: ci verify-test-run
 
@@ -1204,6 +1261,9 @@ benefits:
       `lint.rules` in `forge.yaml` grades every forge rule `error`, `warn` or
       `off` identically in every output mode. Never pipe `forge lint` through
       `head`: the verdict is the last line.
+    scope: any
+    adopt: "Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why."
+    estimate: "~10 min"
     evidence:
       - command: lint
       - command: lint --scope
@@ -1312,6 +1372,19 @@ benefits:
     evidence:
       - command: lint --allow-skip
       - command: lint --strict
+
+  - id: lint-lanes-off
+    category: guardrails
+    title: Switch a lint lane off
+    claim: >-
+      `lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend,
+      migration safety, db grants, ...) for a repo that checks them another way,
+      and the verdict still names every lane that is off.
+    availability: forge
+    use: "`lint: {lanes: {frontend: off, migration-safety: off}}`"
+    evidence:
+      - skill: ci/lint-rollout
+      - path: internal/cli/lint/lint_lanes.go
 
   - id: lint-autofix
     category: guardrails
@@ -1430,6 +1503,9 @@ benefits:
       deploy host.
     availability: forge
     use: "`date_trunc('day', col, 'UTC')`"
+    scope: any
+    adopt: "Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them)."
+    estimate: "~5 min"
     evidence:
       - command: lint --time-bucketing
       - skill: db/time-buckets
@@ -1930,6 +2006,9 @@ benefits:
       All four rules are AST passes over owned source that err toward silence
       where the code may already be right; a logging wrapper of your own joins
       through `lint.tracing.log_wrappers`.
+    scope: any
+    adopt: "In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form."
+    estimate: "~10 min"
     evidence:
       - path: internal/cli/lint/lint_rules.go
       - command: lint --tracing
@@ -1984,6 +2063,23 @@ benefits:
           `testkit.Slow` runs in the blocking `-short` tier, and a file its
           child process reads is invisible to Go's test cache, so a stale PASS
           replays after an edit
+      - id: forge-test-fixed-sleep
+        lane: --test-waits
+        bug_class: >-
+          A test that sleeps a fixed time and then asserts, guessing how long
+          the work takes: on a loaded machine the guess is short and the test
+          flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)
+      - id: forge-test-tight-deadline
+        lane: --test-waits
+        bug_class: >-
+          An event wait that fails the test after a deadline under 5s (a
+          select on `time.After`, testify `Eventually`, a poll bounded by
+          `time.Now().Add`), which a busy machine overruns
+      - id: forge-test-wall-clock-bound
+        lane: --test-waits
+        bug_class: >-
+          A test that fails when real elapsed time passes a bound under 5s,
+          measuring how busy the machine was rather than what the code did
       - id: forgeconv-handler-tests-use-tdd
         lane: --tests
         bug_class: >-
@@ -2332,6 +2428,9 @@ benefits:
       `svcerr.Classify` sets each record's `error_class` (`server`, `user`,
       `canceled`), so ERROR means "we must act" and alerts, forwarders and
       post-deploy checks can trust it.
+    scope: any
+    adopt: "In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers."
+    estimate: "~30 min"
     evidence:
       - library: pkg/svcerr
       - command: fix connect-errors
@@ -2840,13 +2939,13 @@ benefits:
     claim: >-
       A `fw.Workload` is declared once in `workloads.k` and each env binds it to
       host processes, Docker Compose, a Kubernetes cluster you run, Reliant
-      hosting or build-only, so no env file restates a command or build that
-      could drift.
+      hosting, your own deploy tooling or build-only, so no env file restates a
+      command or build that could drift.
     availability: forge
     headline: true
     use: >-
-      `OnHost`, `OnCompose`, `OnCluster`, `OnHosted` or `BuildOnly` per env;
-      `forge env render|shape|diff` show the result.
+      `OnHost`, `OnCompose`, `OnCluster`, `OnHosted`, `OnExternal` or
+      `BuildOnly` per env; `forge env render|shape|diff` show the result.
     evidence:
       - path: pkg/deploy/workload_render.go
       - path: internal/deploytarget/compose.go
@@ -2854,6 +2953,53 @@ benefits:
       - path: internal/deploytarget/firebase.go
       - skill: deploy/model
       - command: env render
+
+  - id: external-deploy-tooling
+    category: ship
+    title: Keep your deploy tool
+    claim: >-
+      A workload bound to `forge.OnExternal` is built, released and promoted by
+      forge and then shipped by your own Helm, Fly.io, Cloud Run, ECS or Argo CD
+      through four optional argv hooks, so adopting forge does not mean
+      replacing the pipeline that deploys today.
+    availability: forge
+    use: >-
+      `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...],
+      deploy = [...], health = [...]}}`; no hooks at all is record-only.
+    why: >-
+      Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as
+      `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release
+      recorded. The deploy lands in the same ledger and deploy markers as every
+      other runtime, and `forge env status` reads the running digest through
+      the `status` hook.
+    evidence:
+      - path: kcl/workload.k
+      - path: internal/deploytarget/external.go
+      - command: env deploy
+      - command: env status
+      - skill: deploy/external
+
+  - id: env-verify-parity
+    category: ship
+    title: Prove parity before deploying
+    claim: >-
+      `forge env verify <env>` compares, per workload, the digest the env's
+      promotion pins against the digest running and runs your tool's own dry
+      run, while building, recording and deploying nothing, so forge's first
+      deploy of an existing project is known to change nothing.
+    availability: forge
+    use: >-
+      `forge env verify prod`, or `--image api=repo@sha256:…` before any forge
+      release exists; `--json` for CI. Exit 0 match, 1 drift, 2 not verified.
+    why: >-
+      A missing `status` or `plan` hook is reported unverified, never as "no
+      diff". Cluster workloads are checked off the cluster and against the
+      release's recorded bundle with a client-side live diff.
+    evidence:
+      - command: env verify
+      - command: env verify --image
+      - path: internal/cli/env_verify_cmd.go
+      - skill: deploy/external
 
   - id: prod-from-day-0
     category: ship
@@ -2936,6 +3082,37 @@ benefits:
       - skill: observability/query
       - library: pkg/release
 
+  - id: record-deploys
+    category: ship
+    title: Record deploys from existing CI
+    claim: >-
+      One `forge release record` step after the deploy job your pipeline
+      already runs gives monitoring a deploy marker per release, in any repo
+      and any language, with no deploy/kcl and nothing built or applied by
+      forge.
+    availability: forge
+    use: >-
+      Works in any repo: add `forge.yaml` with `name:`, store a token from
+      `forge cloud token create --scopes deploy:write` as
+      `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge
+      release record --env prod --version "$TAG" [--workload api --image
+      ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG"
+      --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the
+      step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and
+      Buildkite are in `forge skill load deploy/record`.
+    why: >-
+      The release is record-only: it may name no artifacts (a version and a
+      commit), it is labelled "recorded by CI" in `forge obs changes` and the
+      console, and the control plane refuses to bind one to an env forge itself
+      deploys, so a record never poses as forge's own deploy. A retried CI step
+      records once, and the same version with other digests is a conflict, not
+      an overwrite. Not signed in, it records on this machine's ledger.
+    evidence:
+      - command: release record
+      - skill: deploy/record
+      - path: internal/cli/release_record.go
+      - library: pkg/release
+
   - id: deploy-plan-approval
     category: ship
     title: Deploy plans with binding approval
@@ -2961,6 +3138,35 @@ benefits:
       - path: internal/cli/deploy_plan_gate.go
       - path: internal/cli/deploy_confirm.go
       - skill: deploy/plan
+
+  - id: polyrepo-pinned-sources
+    category: ship
+    title: Polyrepo, pinned, any language
+    claim: >-
+      Teams outside a monorepo, in any language, share an infra repo's KCL by a
+      git pin in kcl.mod and build other repos' images from a pinned
+      `DockerBuild.context`, with no go.mod and no CI checkout step; a release
+      records each image's source repo and commit.
+    availability: forge
+    use: >-
+      `[forge_projects] infra = { repo = "github.com/acme/infra", ref =
+      "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`;
+      `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`;
+      `forge kcl imports [--refresh]`.
+    why: >-
+      A sibling path (`../billing`) builds whatever is checked out there and is
+      absent in CI. A pin resolves to the same bytes on every machine through
+      one shared cache, renders offline once fetched, and a `commit` lock
+      refuses a moved tag as a pin mismatch. A gitignored
+      `.forge/source-overrides.yaml` points a repo at a working copy while you
+      develop both, and a release refuses to cut while one is in use.
+    evidence:
+      - command: kcl imports --refresh
+      - path: internal/kclprojects/gitimport.go
+      - path: internal/cli/build_docker_source.go
+      - path: docs/cross-repo-sources.md
+      - skill: deploy/polyrepo
+      - skill: deploy/kcl-imports
 
   - id: hosted-deploy-plan
     category: ship
@@ -3143,6 +3349,79 @@ benefits:
       - library: pkg/releasehealth
       - skill: deploy/delivery-policy
 
+  - id: preview-environments
+    category: ship
+    title: Per-PR preview environments
+    claim: >-
+      Every pull request gets its own environment, a copy of a committed
+      template env named for the PR, which deletes itself when it expires.
+    availability: forge
+    use: >-
+      `forge env preview create --pr 123 --ttl 72h`, then `forge env deploy
+      preview-pr-123 --yes`; `forge env preview delete --pr 123 --yes` on close,
+      `forge env gc --yes` on a schedule
+    why: >-
+      The instance is an ordinary env, so every env verb works on it, and its
+      name depends only on the PR or branch, so the job that creates it and the
+      job that deletes it agree with no shared state. Its expiry is recorded in
+      the release shape (a control plane that advertises `shape-preview`
+      deletes an expired hosted instance) and stamped on its namespaces, so
+      `forge env gc` finds an expired preview on a cluster you operate from the
+      cluster alone. `create` refuses an instance that would deploy into the
+      template env's own namespace.
+    evidence:
+      - command: env preview create
+      - command: env gc
+      - skill: deploy/preview
+      - library: pkg/release
+
+  - id: promotion-required-gates-approval-hook
+    category: ship
+    title: Required checks and your approvals
+    claim: >-
+      An env refuses a promotion that does not carry its required checks as
+      passed, or that your own approval system did not approve, enforced where
+      the env's ledger lives so no client can skip it.
+    availability: forge
+    use: >-
+      `delivery_policy = forge.DeliveryPolicy { required_gates =
+      forge.RequiredGates { names = ["e2e"] }, approval_hook =
+      forge.ApprovalHook { url = "https://approvals.example.com/forge" } }`,
+      then `forge env deploy prod <v> --gate name=e2e,status=passed`
+    why: >-
+      A control plane that advertises `enforces-promotion-checks` judges both at
+      promote; for an env without one, forge judges them before its own write
+      and runs an `argv` hook with no shell. The refusals are distinct:
+      `required_gate_missing` (exit 4), `required_gate_failed` (exit 1),
+      `approval_denied` (exit 4; a hook that times out or fails denies) and
+      `approval_pending` (exit 4, retry once approved). `--yes` never answers
+      for the hook, and each verdict is recorded on the promotion. `audit`
+      records what `enforce` would refuse.
+    evidence:
+      - skill: deploy/delivery-policy
+      - path: internal/cli/promote_policy_checks.go
+      - path: pkg/release/promotion_checks.go
+
+  - id: shared-env-base
+    category: ship
+    title: One env base, per-env deltas
+    claim: >-
+      Every deployed env binds its workloads through one shared base, so an env
+      file holds only what is its own and a new env starts as its deltas.
+    availability: forge
+    use: >-
+      `deploy/kcl/base/env.k` (scaffolded by `forge project new`), imported by
+      each env as `import ..base.env as envbase`; `forge env new <name> --from
+      <env>` copies only the source env's own values
+    why: >-
+      It is plain KCL, so `forge env render`, `env diff` and `env shape` read it
+      like any import, and an env overrides a shared binder by wrapping it. The
+      scaffold tools keep editing each env's one binding line per workload.
+    evidence:
+      - path: internal/templates/deploy/kcl/base/env.k.tmpl
+      - command: env new
+      - skill: deploy/model
+
   - id: release-health-policy
     category: ship
     title: Release health policy as code
@@ -3158,7 +3437,10 @@ benefits:
     why: >-
       The thresholds are `window`, `min_requests`, `max_error_rate_increase`,
       `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`,
-      and the check's document says where each effective value came from.
+      and the check's document says where each effective value came from. A
+      service is compared only with `min_requests` in both windows, and
+      `require_baseline` (`any`, `every`, `none`) says how many services need
+      that baseline before a release can pass.
       `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are
       observed, every judged service reached its own `min_requests` on the new
       version, and nothing fired.
@@ -3172,7 +3454,8 @@ benefits:
     claim: >-
       `forge.DeliveryPolicy` declares per env what a release must prove, each
       control `off`, `audit` or `enforce`: `health_gate`, `signing` and
-      `flux_verify` are enforced on a control plane, while `provenance_sbom`,
+      `flux_verify` are enforced on a control plane, `required_gates` and
+      `approval_hook` wherever the env's ledger lives, while `provenance_sbom`,
       `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`,
       `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
     status: recorded
@@ -3277,6 +3560,9 @@ benefits:
     use: >-
       `forge project new site --kind site`, or `forge project new --in-place
       --kind site`.
+    scope: any
+    adopt: "In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone."
+    estimate: "~10 min"
     evidence:
       - command: project new
       - path: internal/codegen/frontend_config_ts.go
@@ -3896,6 +4182,28 @@ benefits:
       - skill: observability/dashboards
       - skill: debug/dashboards
 
+  - id: builtin-product-analytics
+    category: run
+    title: Built-in product analytics dashboards
+    claim: >-
+      A hosted app gets Users, Product and Acquisition dashboards and the
+      Overview's Traffic and Users sections with no code: visitors, channels,
+      sign-ups and their attribution, active and new users, retention, goals and
+      funnels.
+    status: in-progress
+    availability: hosted
+    use: >-
+      `forge.Analytics` adds goals, an activation event and channel rules; a
+      `<project>-users.json` replaces a dashboard; `dashboards = False` drops
+      them.
+    why: >-
+      Visitors are counted by the platform's cookieless daily hash at the
+      ingest edge, which ships with the control plane's edge columns and hash.
+    evidence:
+      - library: pkg/obsbuiltin
+      - path: pkg/obsbuiltin/population_clickhouse_test.go
+      - skill: observability/product-analytics
+
   - id: release-markers
     category: run
     title: Release markers on dashboards
@@ -3940,6 +4248,22 @@ benefits:
       - path: kcl/schema.k
       - library: pkg/observe
 
+  - id: node-telemetry
+    category: run
+    title: Telemetry for any Node process
+    claim: >-
+      `initNodeTelemetry` from `@reliantlabs/forge-web-runtime/node` ships a
+      Node or Electron-main process's logs, uncaught errors and spans to any
+      OTLP/HTTP endpoint, batched, with credential shapes redacted and no
+      OpenTelemetry SDK to configure.
+    availability: forge
+    scope: any
+    adopt: "`npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start."
+    estimate: "~15 min"
+    evidence:
+      - path: web-runtime/src/node.ts
+      - path: web-runtime/README.md
+
   - id: real-opt-out
     category: run
     title: Opt-out enforced at the source
@@ -3977,6 +4301,8 @@ benefits:
     availability: hosted
     scope: any
     use: "`forge login`, then `forge obs init prod`: it registers the env, mints an ingest token and prints the `OTEL_*` variables."
+    adopt: "`forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment"
+    estimate: "~15 min"
     why: >-
       Adopting a platform usually starts with a rewrite. Monitoring needs none:
       one command, three environment variables, and the app's errors and
@@ -4070,6 +4396,9 @@ benefits:
     headline: true
     use: "`forge skill load forge`"
     why: "A skill that disagrees with the project is reported as a forge bug."
+    scope: any
+    adopt: "`forge skill load adopt`: what forge can do for this repo, with estimates to quote."
+    estimate: "~2 min"
     evidence:
       - command: skill load
       - command: skill search
@@ -4084,6 +4413,9 @@ benefits:
       bug reports included, with no shell scraping.
     availability: forge
     headline: true
+    scope: any
+    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool."
+    estimate: "~2 min"
     evidence:
       - command: mcp
       - path: internal/cli/mcp_tools.go
@@ -4098,6 +4430,9 @@ benefits:
       annotations` the entity-authoring vocabulary, so neither can drift from
       the code.
     availability: forge
+    scope: any
+    adopt: "`forge project capabilities` in any directory."
+    estimate: "~2 min"
     evidence:
       - command: project capabilities
       - command: project annotations
@@ -4122,6 +4457,9 @@ benefits:
       package, which `go doc` renders as `struct{ ... }`, so an agent adopts an
       existing utility instead of re-implementing it.
     availability: forge
+    scope: any
+    adopt: "In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`."
+    estimate: "~2 min"
     evidence:
       - command: project libraries
 
@@ -4157,6 +4495,9 @@ benefits:
       deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly
       what would go.
     availability: forge
+    scope: any
+    adopt: "`forge report-bug --dry-run …` prints exactly what would be sent."
+    estimate: "~2 min"
     evidence:
       - command: report-bug
       - path: internal/cli/report_bug.go

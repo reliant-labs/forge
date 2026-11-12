@@ -48,6 +48,17 @@ type SessionReader interface {
 	GetSession(ctx context.Context, req GetSessionRequest) (GetSessionResult, error)
 }
 
+// UserActivityReader counts an env's users: active, new and returning over
+// the range and the one before it, and per UTC day (`forge obs users`). Both
+// backends compile pkg/obsquery's user-activity statement: the local one
+// over its ClickStack, which has no product_events table and so answers
+// "could not look"; the cloud one is the control plane's GetUserActivity.
+//
+//forge:contract
+type UserActivityReader interface {
+	UserActivity(ctx context.Context, req UserActivityRequest) (UserActivityResult, error)
+}
+
 // HealthReader judges a release: the windows before and after a promotion,
 // per service, and what the release opened (`forge obs check`). The local
 // backend judges from the ClickStack with pkg/releasehealth; the cloud

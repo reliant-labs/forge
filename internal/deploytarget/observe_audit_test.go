@@ -114,6 +114,13 @@ func auditGroupFor(id string) (ServiceGroup, bool) {
 			Hosted:   &HostedTarget{Endpoint: "https://cp.example", PushBase: "ghcr.io/acme"},
 			Services: []ResolvedService{{Name: "api", Hosted: &HostedWorkload{Tier: HostedTierWorkload}}},
 		}, true
+	case ExternalProviderID:
+		// A binding with no status hook: the provider must still speak for
+		// it, as unknown with a reason.
+		return ServiceGroup{
+			Env:      "prod",
+			Services: []ResolvedService{{Name: "api", External: &ExternalSpec{Workload: "api"}}},
+		}, true
 	default:
 		return ServiceGroup{}, false
 	}

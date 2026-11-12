@@ -25,6 +25,8 @@ func TestValidationAcceptsDisplayStylesAndTextPanels(t *testing.T) {
 		{"stat", onePanel(`"kind":"number","signal":"traces","display":{"style":"stat"},` + oneCount)},
 		{"sql funnel", onePanel(`"kind":"sql","sql":"SELECT step, users FROM t","display":{"style":"funnel"}`)},
 		{"sql stacked area", onePanel(`"kind":"sql","sql":"SELECT 1","display":{"style":"area","stack":true}`)},
+		{"exact sql figure", onePanel(`"kind":"sql","sql":"SELECT 1284 AS n","display":{"exact":true}`)},
+		{"exact number", onePanel(`"kind":"number","signal":"traces","display":{"exact":true},` + oneCount)},
 		{"text", onePanel(`"kind":"text","markdown":"## Delivery\nSee [the runbook](https://example.com).","width":24,"height":2`)},
 		{"text in a section", `{"id":"x","title":"X","sections":[{"id":"s","title":"S"}],"panels":[{"id":"p","title":"P","section":"s","kind":"text","markdown":"hi"}]}`},
 	}
@@ -49,6 +51,8 @@ func TestValidationRefusesMisusedDisplayAndTextPanels(t *testing.T) {
 		{"stacked lines", onePanel(`"kind":"line","signal":"traces","display":{"stack":true},` + twoCounts), "display.stack", "stacked lines hide"},
 		{"stacked pie", onePanel(`"kind":"bar","signal":"traces","groupBy":["span.name"],"display":{"style":"pie","stack":true},` + oneCount), "display.stack", "no bars to stack"},
 		{"stacked number", onePanel(`"kind":"number","signal":"traces","display":{"stack":true},` + oneCount), "display.stack", "nothing to stack"},
+		{"exact on a line", onePanel(`"kind":"line","signal":"traces","display":{"exact":true},` + oneCount), "display.exact", "only a number or sql panel"},
+		{"exact not a bool", onePanel(`"kind":"sql","sql":"SELECT 1","display":{"exact":"yes"}`), "display.exact", "must be true or false"},
 		{"stack not a bool", onePanel(`"kind":"line","signal":"traces","display":{"style":"area","stack":"yes"},` + oneCount), "display.stack", "must be true or false"},
 		{"horizontal line", onePanel(`"kind":"line","signal":"traces","display":{"horizontal":true},` + oneCount), "display.horizontal", "only a bar panel drawn as bars"},
 		{"horizontal donut", onePanel(`"kind":"bar","signal":"traces","groupBy":["span.name"],"display":{"style":"donut","horizontal":true},` + oneCount), "display.horizontal", "only a bar panel drawn as bars"},

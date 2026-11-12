@@ -424,7 +424,7 @@ The schema migrations are {{.Tool}}'s (`{{.Evidence}}`){{with .Apply}}, applied 
 `{{.Evidence}}` holds the app's migrations, and nothing says which tool applies them: ask the user before running any.
 {{- end}}
 {{- if ne .Tool "forge"}} Never convert them to forge migrations, rename or move them unless the user asks.{{end}}
-{{- if $deploy}} On a forge-deployed env, run them before each rollout as a `kind = "job"` workload from the app's image with `before = [fw.BEFORE_ALL]` (`adopt` has the template).{{end}}
+{{- if $deploy}} On a forge-deployed env, run them before each rollout as a `kind = "job"` workload from the app's image with `before = [fw.BEFORE_ALL]` (`adopt/deploy` has the template).{{end}}
 {{- end}}
 {{- if .Monitoring}}
 

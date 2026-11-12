@@ -682,6 +682,11 @@ func (a *dashAudit) panel(p dashspec.Panel, base time.Duration, source string, s
 		ap.ProbableCause = "a text panel is Markdown; the console runs no query for it"
 		return ap
 	}
+	if dashspec.IsDeliveryKind(p.Kind) {
+		ap.Status, ap.Reason = auditNotApplicable, "delivery_panel"
+		ap.ProbableCause = "a " + string(p.Kind) + " panel is drawn from the control plane's release ledger and release health, not from telemetry; it runs no query here"
+		return ap
+	}
 	op := panelOf(p)
 	var ro obsbackend.PanelReadout
 	attempts, err := a.guarded(func() error {

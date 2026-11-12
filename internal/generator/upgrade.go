@@ -1030,6 +1030,15 @@ func UpgradeWith(projectDir string, cfg *config.ProjectConfig, opts UpgradeOptio
 			})
 			continue
 		}
+		// scaffold.exclude: the project's area, present or absent, and
+		// --force does not reach into it.
+		if checksums.SkipExcluded(projectDir, f.destPath) {
+			results = append(results, UpgradeResult{
+				Path:   f.destPath,
+				Status: UpgradeSkipped,
+			})
+			continue
+		}
 		// Disowned entries are user-owned: upgrade never touches them
 		// while the file exists. A missing Tier-1 file falls through —
 		// deletion is its documented re-adoption path. A missing Tier-2

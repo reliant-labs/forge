@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cloud"
 )
 
 // recordingCaller is a cloudCaller that records the one call it gets and
@@ -150,5 +152,23 @@ func TestCloudTokenRevoke(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"revoked": "tok_1"`) || !strings.Contains(out.String(), `"ok": true`) {
 		t.Errorf("revoke --json = %s", out.String())
+	}
+}
+
+// A repo with no deploy/kcl (one that only records its own CI's deploys) mints
+// its CI token on Reliant cloud, with or without --env; an env forge's KCL
+// declares still resolves through its declaration.
+func TestCloudTokenTarget_DefaultsToReliantCloudWithoutKCL(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, env := range []string{"", "prod"} {
+		f := cloudTokenFlags{env: env, token: "rlat_test"}
+		ep, cred, err := f.target(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("env %q: %v", env, err)
+		}
+		if ep.URL != cloud.DefaultEndpoint || cred.Token != "rlat_test" {
+			t.Errorf("env %q: endpoint %q cred %q; want Reliant cloud with the flag's token", env, ep.URL, cred.Token)
+		}
 	}
 }

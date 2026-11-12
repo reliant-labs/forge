@@ -1,36 +1,70 @@
 # Forge as an MCP server
 
 `forge mcp` serves forge over the [Model Context Protocol](https://modelcontextprotocol.io)
-on stdio, so any MCP-capable harness (Claude Code, Codex, Cursor, ...) can
-introspect a project, read the skill catalog and run lint and generate without a
-memory file in the project explaining how. The server introduces itself as
-Reliant Forge (not Atlassian Forge, not Foundry's `forge`) and tells the model
-to load the `forge` skill first.
+on stdio, so any MCP-capable harness (Claude Code, Codex, Cursor, ...) can use
+forge in **any repo**, with no memory file explaining how. The server introduces
+itself as Reliant Forge (not Atlassian Forge, not Foundry's `forge`), then says
+what forge does for the repo the agent is in, and sends the model to the
+`benefits` tool and the `adopt` skill.
 
 Each tool runs the same command the CLI does, in-process. There is no forge
 binary to shell out to and nothing to keep in sync with the CLI.
 
+## In any repo
+
+Most of what forge offers needs no `forge.yaml`. In an existing app, in any
+language, the server leads with:
+
+- **Linters that run standalone.** `lint` runs migration safety over
+  `db/migrations/*.up.sql` (a destructive `DROP COLUMN`, a `NOT NULL` column
+  with no default, `CREATE INDEX CONCURRENTLY` beside other statements), and in
+  a Go module golangci-lint, the tracing lane and timezone-safe date bucketing.
+  Lanes that need a forge project skip and say why.
+- **Playbooks.** `skill_load` serves the skills built into the forge you run:
+  debugging, testing tiers, migrations, observability, deploys.
+- **Runtime libraries.** `forge/pkg` for Go (`svcerr`, `observe`, `pgtest`,
+  `testkit`, ...) and `@reliantlabs/forge-web-runtime`, whose `/node` entry
+  (`initNodeTelemetry`) ships a Node process's logs, errors and spans over
+  OTLP. `libraries` prints any package's API.
+- **A deploy with no account.** `deploy_claimable` puts an existing Vite or
+  Next.js app live and returns a URL plus a claim link (below).
+- **Monitoring and a deploy history**, once forge deploys the app: dashboards
+  at `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in
+  required). The `adopt` skill walks it without rewriting the app.
+
+`benefits` lists exactly what applies to the directory, each with its first
+step and the agent's time to first value, worded so the agent can quote it to
+its user (`forge project benefits` is the CLI). Then `skill_load` with `name:
+adopt`: the survey, the estimate rubric and every entry point.
+
+Once the repo adopts forge's codegen, the forge-project tools apply too:
+`skill_load` with `name: forge` is their entry point, and `capabilities`,
+`annotations`, `audit`, `shapes` and `generate` work on the project.
+
 ## Tools
 
-Every tool takes an optional `dir`: the forge project to act on. It defaults to
-the directory the server was started in (or `-C`).
+Every tool takes an optional `dir`: the repo to act on. It defaults to the
+directory the server was started in (or `-C`). Those marked _codegen_
+answer questions about the code forge generates, so they matter once the repo
+adopts it; the rest are for any repo.
 
-| Tool                                                          | CLI equivalent                                                | Writes files                                                                                 |
-| ------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `capabilities`                                                | `forge project capabilities`                                  | no                                                                                           |
-| `annotations` (`kind`)                                        | `forge project annotations`                                   | no                                                                                           |
-| `libraries` (`packages`)                                      | `forge project libraries [pkg...]`                            | no                                                                                           |
-| `audit`                                                       | `forge project audit --json`                                  | no                                                                                           |
-| `shapes` (`grep`, `kind`, `service`, `unimplemented`)         | `forge project shapes`                                        | no                                                                                           |
-| `skill_list` (`group`, `all`, `include_migrations`)           | `forge skill list`                                            | no                                                                                           |
-| `skill_search` (`query`)                                      | `forge skill search`                                          | no                                                                                           |
-| `skill_load` (`name`)                                         | `forge skill load`                                            | no                                                                                           |
-| `lint` (`scope`)                                              | `forge lint --quiet [--scope PATH]...`                        | caches only; never `--fix`                                                                   |
-| `generate` (`dry_run`, `check`)                               | `forge generate [--dry-run \| --check]`                       | yes: generated files                                                                         |
-| `report_bug` (`severity`, `title`, `summary`, ...)            | `forge report-bug`                                            | sends one report ([docs/report-bug.md](report-bug.md))                                       |
-| `deploy_claimable` (`env`, `name`, `no_wait`)                 | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
-| `deploy_status` (`env`)                                       | `forge env status <env> --claimable --json`                   | no                                                                                           |
-| `explain_error` (`exit_code`, `error_reason`, `error`, `env`) | none: maps forge's exit codes and reasons to the next command | no                                                                                           |
+| Tool                                                             | CLI equivalent                                                | Writes files                                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `benefits` (`all`, `category`)                                   | `forge project benefits --json`                               | no                                                                                           |
+| `capabilities`                                                   | `forge project capabilities`                                  | no                                                                                           |
+| `annotations` (`kind`), _codegen_                                | `forge project annotations`                                   | no                                                                                           |
+| `libraries` (`packages`)                                         | `forge project libraries [pkg...]`                            | no                                                                                           |
+| `audit`, _codegen_                                               | `forge project audit --json`                                  | no                                                                                           |
+| `shapes` (`grep`, `kind`, `service`, `unimplemented`), _codegen_ | `forge project shapes`                                        | no                                                                                           |
+| `skill_list` (`group`, `all`, `include_migrations`)              | `forge skill list`                                            | no                                                                                           |
+| `skill_search` (`query`)                                         | `forge skill search`                                          | no                                                                                           |
+| `skill_load` (`name`)                                            | `forge skill load`                                            | no                                                                                           |
+| `lint` (`scope`)                                                 | `forge lint --quiet [--scope PATH]...`                        | caches only; never `--fix`                                                                   |
+| `generate` (`dry_run`, `check`), _codegen_                       | `forge generate [--dry-run \| --check]`                       | yes: generated files                                                                         |
+| `report_bug` (`severity`, `title`, `summary`, ...)               | `forge report-bug`                                            | sends one report ([docs/report-bug.md](report-bug.md))                                       |
+| `deploy_claimable` (`env`, `name`, `no_wait`)                    | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
+| `deploy_status` (`env`)                                          | `forge env status <env> --claimable --json`                   | no                                                                                           |
+| `explain_error` (`exit_code`, `error_reason`, `error`, `env`)    | none: maps forge's exit codes and reasons to the next command | no                                                                                           |
 
 The read-only tools are annotated `readOnlyHint`; `lint`, `generate`,
 `report_bug` and `deploy_claimable` are not, so a harness can ask before running
@@ -111,6 +145,32 @@ the Smithery config is `npm/smithery.yaml`; `scripts/release-forge.sh` keeps the
 listing's version equal to the npm package's, and every release's
 `.github/workflows/release-npm.yml` run publishes the listing to the registry
 once npm serves the new version (`docs/releasing.md`, "Installers").
+
+### With Docker
+
+`Dockerfile.mcp` builds the forge binary from source into a small image whose
+entrypoint is `forge mcp`. Mount the project at `/workspace`, where the server
+starts:
+
+```bash
+docker build -f Dockerfile.mcp -t forge:mcp https://github.com/reliant-labs/forge.git
+docker run -i --rm -v "$PWD:/workspace" forge:mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "forge": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "${PWD}:/workspace", "forge:mcp"]
+    }
+  }
+}
+```
+
+The image carries git and CA certificates only. `lint` and `generate` run the
+project's own toolchain (Go, buf, ...), so for those use the npx or installed
+forge; introspection, the skill catalog and `deploy_claimable` work as is.
 
 ### With forge installed
 

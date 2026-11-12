@@ -426,7 +426,9 @@ func (set *workloadSet) renderLongRunning(w *workload, ctx Context) ([]runtime.O
 		if err != nil {
 			return nil, fmt.Errorf("workload %q: %w", w.name, err)
 		}
-		pod.TerminationGracePeriodSeconds = new(grace)
+		// The kubelet runs the preStop pause before SIGTERM and counts it
+		// against the grace, so the drain still gets its whole budget after.
+		pod.TerminationGracePeriodSeconds = new(grace + preStopSeconds(s))
 	}
 	if s.Replicas > 1 {
 		pod.TopologySpreadConstraints = spreadConstraints(w.name)
@@ -735,6 +737,11 @@ func mainContainer(w *workload, extraEnv []corev1.EnvVar) corev1.Container {
 	}
 	c.ReadinessProbe, c.LivenessProbe = probePair(probes)
 	c.StartupProbe = startupProbe(probes)
+	// A native sleep, not an exec of `sleep`: the images this is for (a
+	// DockerBuild, a third-party server) may have no shell or sleep binary.
+	if n := preStopSeconds(s); n > 0 {
+		c.Lifecycle = &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: n}}}
+	}
 	if s.StorageGiB > 0 {
 		c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: v1alpha1.DataVolumeName, MountPath: v1alpha1.DataMountPath})
 	}
@@ -961,12 +968,23 @@ func drainSeconds(raw string, def time.Duration) (int64, error) {
 	return int64((d + time.Second - 1) / time.Second), nil
 }
 
+// preStopSeconds is the pause the main container's preStop hook takes before
+// SIGTERM (WorkloadSpec.PreStopSeconds); 0 when there is none.
+func preStopSeconds(s v1alpha1.WorkloadSpec) int64 {
+	if s.PreStopSeconds == nil || *s.PreStopSeconds <= 0 {
+		return 0
+	}
+	return int64(*s.PreStopSeconds)
+}
+
 // gracePeriodSeconds ports expand.k:239-253 _grace_period. On SIGTERM
 // serverkit flips /readyz, sleeps PRE_STOP_DELAY, then shuts down bounded by
 // SHUTDOWN_TIMEOUT. Its defaults (5s + 30s) exceed Kubernetes' implicit 30s,
 // so without this the kubelet SIGKILLs mid-drain on every rollout. Derived
 // from the workload's OWN env, so retuning either knob cannot reintroduce
-// the truncation. No preStop hook: the app owns the drain.
+// the truncation. No preStop hook: the app owns the drain, unless the
+// workload declares PreStopSeconds for an image that cannot (renderLongRunning
+// adds it).
 func gracePeriodSeconds(env []v1alpha1.EnvVar) (int64, error) {
 	pre, err := drainSeconds(envLiteral(env, drainbudget.EnvPreStopDelay, ""), drainbudget.DefaultPreStopDelay)
 	if err != nil {

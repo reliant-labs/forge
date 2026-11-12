@@ -14,7 +14,7 @@ import (
 func TestShape_ReleaseHealthDefaultIsAbsent(t *testing.T) {
 	def := DefaultReleaseHealth()
 	shuffled := def
-	shuffled.FailOn = []string{HealthRegressedIssue, HealthNewIssue, HealthErrorRate, HealthAlertFiring, HealthErrorRate}
+	shuffled.FailOn = []string{HealthRegressedIssue, HealthProbeFailed, HealthNewIssue, HealthErrorRate, HealthAlertFiring, HealthErrorRate}
 	for name, s := range map[string]Shape{
 		"absent":           {Kind: EnvLocal},
 		"default":          {Kind: EnvLocal, ReleaseHealth: &def},

@@ -19,6 +19,10 @@ description: Graceful shutdown of a forge server — the drain sequence (readine
 forge derives `terminationGracePeriodSeconds` from `PRE_STOP_DELAY +
 SHUTDOWN_TIMEOUT`, so both are honoured exactly.
 
+A server forge did not build gets none of this: it reads neither variable
+and closes its listener on SIGTERM. Declare `preStopSeconds` on its workload
+and Kubernetes pauses it that long before SIGTERM (`deploy/model`).
+
 Both follow the rule every `serverkit.Config` duration does — **zero is the
 default** (5s / 30s), **negative is none** — in config, env and on
 `serverkit.Drainer` alike. "None" is a phase that takes no time: `-1s` pre-stop

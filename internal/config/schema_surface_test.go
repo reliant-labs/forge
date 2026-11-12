@@ -37,11 +37,13 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// envs / monitoring: read by the env-declaration seam
 			// (internal/cli/env_declaration.go) every `forge obs` verb
 			// resolves through, and by `forge obs init`.
+			// scaffold: read by checksums.ExcludeGlobs at every write
+			// chokepoint (scaffold.exclude).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "harness", "k8s",
-				"lint", "module_path", "monitoring", "name", "observability", "upgrade",
+				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
 			},
 		},
 		{
@@ -104,9 +106,11 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// The driver and migrations directory derive from db/migrations
 			// existing, and the dev seed has no configuration at all.
 			// postgres_version: read by forge/pkg/pgtest (declaredInForgeYAML).
+			// migrations_dir: read through DatabaseConfig.MigrationsPath /
+			// MigrationsDirIn by every reader of the migrations.
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
-			want: []string{"migration_safety", "orm", "postgres_version"},
+			want: []string{"migration_safety", "migrations_dir", "orm", "postgres_version"},
 		},
 		{
 			// orm.package: where the generated data layer lands, read by
@@ -135,7 +139,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "LintConfig",
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "rules", "tracing"},
+			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
+			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
 		},
 		{
 			name: "LintSkipAllowance",

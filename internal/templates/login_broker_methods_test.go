@@ -108,16 +108,18 @@ func TestLoginBrokerScaffoldSharesTheProofLockOnTheAppsDatabase(t *testing.T) {
 	src := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "DatabaseURLField": true}))
 	for _, want := range []string{
 		"ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger)",
-		`db, err := sql.Open("pgx", dsn)`,
+		"pc, err := pgx.ParseConfig(dsn)",
+		"return devidp.UnavailableProofLocker(err)",
+		"db := stdlib.OpenDB(*pc)",
 		"return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})",
-		`_ "github.com/jackc/pgx/v5/stdlib"`,
+		`"github.com/jackc/pgx/v5/stdlib"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the broker lacks %q", want)
 		}
 	}
 	without := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true}))
-	if strings.Contains(without, "cfg.DatabaseUrl") || strings.Contains(without, `"database/sql"`) {
+	if strings.Contains(without, "cfg.DatabaseUrl") || strings.Contains(without, `"github.com/jackc/pgx/v5"`) {
 		t.Error("a broker whose config declares no database_url reads it")
 	}
 	if !strings.Contains(without, "ProofLocker: devidp.NewPostgresProofLocker") {

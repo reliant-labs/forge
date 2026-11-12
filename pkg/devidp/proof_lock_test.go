@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -339,7 +340,24 @@ func downLockStore() *PostgresProofLocker {
 // was; signing in with a credential the account already has does not take
 // the lock, and keeps working.
 func TestProofLock_ALockStoreOutageFailsProofsClosedButNotSignIn(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods), func(c *SignInRoutesConfig) { c.ProofLocker = downLockStore() })
+	assertProofsFailClosedButNotSignIn(t, downLockStore())
+}
+
+// A shared lock store that cannot even be set up — a database_url pgx cannot
+// parse, as the scaffolded broker's proofLockerFor checks — fails closed like
+// an outage, never back to the in-process lock that would let every replica
+// accept proofs unserialised (forge#2166).
+func TestProofLock_AMalformedLockStoreDSNFailsProofsClosedButNotSignIn(t *testing.T) {
+	_, err := pgx.ParseConfig("postgres://broker@:not-a-port/app")
+	if err == nil {
+		t.Fatal("pgx accepted a malformed DSN; the test needs one it refuses")
+	}
+	assertProofsFailClosedButNotSignIn(t, UnavailableProofLocker(err))
+}
+
+func assertProofsFailClosedButNotSignIn(t *testing.T, locker ProofLocker) {
+	t.Helper()
+	h := newHarness(t, policyWith(SignupOpen, allMethods), func(c *SignInRoutesConfig) { c.ProofLocker = locker })
 	u := preRegister(t, h)
 
 	status, body := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})

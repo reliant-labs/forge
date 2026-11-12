@@ -49,6 +49,27 @@ func (k *keyedMutex) LockAccount(ctx context.Context, userID string) (func(), er
 	return k.lock(ctx, userID)
 }
 
+// UnavailableProofLocker returns a ProofLocker that refuses every
+// acquisition with err. A broker configured for a shared lock whose store
+// cannot even be set up (a malformed DSN) uses it rather than nil: nil would
+// fall back to the in-process lock, and every replica would accept proofs
+// without the serialisation the configuration asked for. With it, proofs,
+// verification and passkey enrolment answer "unavailable" (fail closed), as
+// during a lock-store outage; signing in with an existing credential does
+// not take the lock and keeps working.
+func UnavailableProofLocker(err error) ProofLocker {
+	if err == nil {
+		err = errors.New("the shared proof lock is not configured")
+	}
+	return unavailableProofLocker{err: err}
+}
+
+type unavailableProofLocker struct{ err error }
+
+func (u unavailableProofLocker) LockAccount(context.Context, string) (func(), error) {
+	return nil, fmt.Errorf("the proof lock is unavailable: %w", u.err)
+}
+
 // ErrProofLockBusy is returned by a PostgresProofLocker that waited its
 // MaxWait for another proof of the account and gave up.
 var ErrProofLockBusy = errors.New("another proof of this account holds its lock")

@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func writeAdoptFixture(t *testing.T, dir string, files map[string]string) {
@@ -102,9 +104,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 // files, says so in one line, leaves the app's files alone, and goes on to the
 // deploy.
 func TestClaimableDeploy_AdoptsABareViteAppThenDeploys(t *testing.T) {
-	if testing.Short() {
-		t.Skip("scaffolds a site project and runs the whole claimable deploy; skipped in -short")
-	}
+	testkit.Slow(t, "scaffolds a site project and runs the whole claimable deploy")
 	fake, _ := claimableFixture(t)
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
@@ -144,9 +144,7 @@ func TestClaimableDeploy_AdoptsABareViteAppThenDeploys(t *testing.T) {
 // Human output: one line says what was added and that the app is untouched,
 // and the scaffolder's own report is not printed above the deploy.
 func TestAdoptBeforeClaimableDeploy_PrintsOneLine(t *testing.T) {
-	if testing.Short() {
-		t.Skip("scaffolds a site project; skipped in -short")
-	}
+	testkit.Slow(t, "scaffolds a site project")
 	dir := filepath.Join(t.TempDir(), "landing")
 	writeAdoptFixture(t, dir, map[string]string{"package.json": `{"devDependencies":{"vite":"^5.0.0"}}`, "index.html": "<h1>hi</h1>\n"})
 	t.Chdir(dir)
@@ -209,5 +207,33 @@ func TestDeploy_WithoutClaimableDoesNotAdopt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "forge.yaml")); err == nil {
 		t.Error("a non-claimable deploy adopted the app")
+	}
+}
+
+// The cwd and stdio swap around the scaffolder is undone on every exit, so a
+// failing adoption leaves the process where it found it.
+func TestRunProjectNewQuietlyRestoresTheProcess(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := os.Stdout, os.Stderr
+	dir := t.TempDir()
+
+	captured, err := runProjectNewQuietly(context.Background(), dir, []string{"--in-place", "--kind", "no-such-kind"})
+	if err == nil {
+		t.Fatalf("an unknown kind was accepted:\n%s", captured)
+	}
+	if now, _ := os.Getwd(); now != wd {
+		t.Errorf("cwd = %q after the call, want %q", now, wd)
+	}
+	if os.Stdout != stdout || os.Stderr != stderr {
+		t.Error("os.Stdout/os.Stderr were not restored")
+	}
+	if _, err := runProjectNewQuietly(context.Background(), filepath.Join(dir, "missing"), nil); err == nil {
+		t.Error("a missing directory was accepted")
+	}
+	if now, _ := os.Getwd(); now != wd {
+		t.Errorf("cwd = %q after a failed chdir, want %q", now, wd)
 	}
 }

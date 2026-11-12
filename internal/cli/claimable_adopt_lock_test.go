@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func gitAdoptIn(t *testing.T, dir string, args ...string) string {
@@ -29,9 +30,7 @@ func gitAdoptIn(t *testing.T, dir string, args ...string) string {
 // next deploy see an uncommitted change. Adoption now writes it, so it is in
 // the commit and a render leaves the tree clean.
 func TestAdoptionWritesTheKCLLockSoARenderLeavesTheTreeClean(t *testing.T) {
-	if testing.Short() {
-		t.Skip("scaffolds a site project and renders KCL; skipped in -short")
-	}
+	testkit.Slow(t, "scaffolds a site project and renders KCL")
 	for _, kind := range []string{"site", "app"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "my-landing")

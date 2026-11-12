@@ -3,15 +3,15 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A real claimable deploy never calls itself a dry run, never says nothing was
 // written, and its --json never says it ships nothing; the plan a --plan-only
 // run prints still says dry run.
 func TestClaimableDeployNeverClaimsToBeADryRun(t *testing.T) {
-	if testing.Short() {
-		t.Skip("renders KCL and runs the whole deploy; skipped in -short")
-	}
+	testkit.Slow(t, "renders KCL and runs the whole deploy")
 	claimableFixture(t)
 	text, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--no-wait")
 	if err != nil {

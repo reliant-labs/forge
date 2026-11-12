@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -203,32 +204,53 @@ func onlyAdoptedPaths(changes, adopted []string) bool {
 	return true
 }
 
-// runProjectNewQuietly runs `forge project new <args>` and returns what it
-// printed instead of printing it: a deploy owes its caller one line about the
-// adoption, not the scaffolder's whole report.
-func runProjectNewQuietly(ctx context.Context, dir string, args []string) (string, error) {
+// processStdioMu serializes the one place the CLI path swaps the process's cwd
+// and stdio, so no two adoptions (or an adoption and the MCP runner, which has
+// its own gate) interleave their swaps.
+var processStdioMu sync.Mutex
+
+// runProjectNewQuietly runs `forge project new <args>` in dir and returns what
+// it printed instead of printing it: a deploy owes its caller one line about
+// the adoption, not the scaffolder's whole report.
+//
+// The scaffolder prints with fmt.Println and resolves the project from the
+// working directory, so cwd and stdio are swapped for the call. Every swap is
+// undone by a defer, so a panic in the command cannot leave the process in the
+// user's app directory with its output going to a capture pipe.
+func runProjectNewQuietly(ctx context.Context, dir string, args []string) (captured string, err error) {
+	processStdioMu.Lock()
+	defer processStdioMu.Unlock()
+
 	capture, err := newOutputCapture(nil)
 	if err != nil {
 		return "", err
 	}
+	closed := false
+	defer func() {
+		if !closed {
+			captured = capture.close()
+		}
+	}()
 	prevWd, err := os.Getwd()
 	if err != nil {
-		capture.close()
 		return "", err
 	}
 	if err := os.Chdir(dir); err != nil {
-		capture.close()
 		return "", err
 	}
+	defer func() { _ = os.Chdir(prevWd) }()
 	prevOut, prevErr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = capture.w, capture.w
+	defer func() { os.Stdout, os.Stderr = prevOut, prevErr }()
+
 	cmd := newNewCmd()
 	cmd.SetArgs(args)
 	cmd.SetOut(capture.w)
 	cmd.SetErr(capture.w)
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	runErr := cmd.ExecuteContext(ctx)
+
 	os.Stdout, os.Stderr = prevOut, prevErr
-	_ = os.Chdir(prevWd)
+	closed = true
 	return capture.close(), runErr
 }

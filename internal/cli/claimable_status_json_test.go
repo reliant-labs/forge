@@ -2,13 +2,13 @@ package cli
 
 import (
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge env status --claimable --json` is a success: ok true, exit_code 0.
 func TestClaimableStatusJSONReportsOKOnSuccess(t *testing.T) {
-	if testing.Short() {
-		t.Skip("renders KCL and runs the whole deploy; skipped in -short")
-	}
+	testkit.Slow(t, "renders KCL and runs the whole deploy")
 	fake, _ := claimableFixture(t)
 	if out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--no-wait", "--json"); err != nil {
 		t.Fatalf("deploy: %v\n%s", err, out)

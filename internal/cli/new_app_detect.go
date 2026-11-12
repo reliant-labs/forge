@@ -1312,6 +1312,13 @@ func (d *appDetection) fromDockerfiles(root string, compose *composeFile) error 
 		}
 		w.Expose = w.Kind == "service"
 		w.DevCommand, w.DevCommandSource = src.devCommand(facts.cmd, facts.cmdRaw, w.Port)
+		// A dev command copied from the Dockerfile's CMD or the Procfile
+		// lands in deploy/kcl/dev/main.k and the summary, as a compose
+		// command would (refuseCredentialCommands).
+		if credentialArg(w.DevCommand) >= 0 {
+			return fmt.Errorf("workload %s: %s, but that command carries a credential, so forge will not copy it into deploy/kcl/dev/main.k or print it: "+
+				"have the command read it from an environment variable (for example ${API_TOKEN}), then adopt again", name, strings.TrimPrefix(w.DevCommandSource, "dev "))
+		}
 		if strings.HasPrefix(w.DevCommandSource, "no dev command") {
 			d.assumed = append(d.assumed, fmt.Sprintf("%s has no dev command forge could find: set it in deploy/kcl/dev/main.k", name))
 		} else if strings.Contains(w.DevCommandSource, "CMD") {

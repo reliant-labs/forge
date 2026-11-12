@@ -789,3 +789,60 @@ func TestCredentialValueRecognizesHyphenatedQueryKeys(t *testing.T) {
 		t.Error("credentialValue: a query parameter that only ends in key is not a credential")
 	}
 }
+
+// With no compose file, dev runs the Dockerfile's CMD or the Procfile's web
+// process on the host, copied into deploy/kcl/dev/main.k and the summary. A
+// credential in either is refused the way a compose command's is: by naming
+// the workload, never the value.
+func TestDetectApp_CredentialDevCommandsAreRefused(t *testing.T) {
+	dockerfile := func(cmd string) string {
+		return "FROM python:3.12-slim\nCOPY . .\nEXPOSE 8000\nCMD " + cmd + "\n"
+	}
+	for _, tc := range []struct {
+		name    string
+		files   map[string]string
+		refused bool
+	}{
+		{name: "a token flag in the CMD", refused: true, files: map[string]string{
+			"Dockerfile": dockerfile(`["gunicorn", "-b", "0.0.0.0:8000", "app:app", "--api-token", "hunter2cmd"]`),
+		}},
+		{name: "a credentialed URL in a shell-form CMD", refused: true, files: map[string]string{
+			"Dockerfile": dockerfile(`celery -A app worker --broker amqp://u:hunter2amqp@mq//`),
+		}},
+		{name: "a password in the Procfile's web process", refused: true, files: map[string]string{
+			"Dockerfile": dockerfile(`["gunicorn", "-b", "0.0.0.0:8000", "app:app"]`),
+			"Procfile":   "web: gunicorn app:app --password=hunter2proc\n",
+		}},
+		{name: "a CMD reading its credential from the environment", files: map[string]string{
+			"Dockerfile": dockerfile(`["sh", "-c", "gunicorn -b 0.0.0.0:8000 app:app --api-token $API_TOKEN"]`),
+		}},
+		{name: "a plain Procfile web process", files: map[string]string{
+			"Dockerfile": dockerfile(`["gunicorn", "-b", "0.0.0.0:8000", "app:app"]`),
+			"Procfile":   "web: gunicorn app:app --bind 0.0.0.0:8000\n",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"requirements.txt": "flask==3.0.0\ngunicorn==22.0.0\n"}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			root := writeAppTree(t, files)
+			for _, claimable := range []bool{false, true} {
+				det, err := detectApp(root, "shop", claimable)
+				if !tc.refused {
+					if err != nil {
+						t.Fatalf("claimable=%v: %v", claimable, err)
+					}
+					continue
+				}
+				if err == nil {
+					files, _ := generator.RenderAppScaffold(det.spec, "")
+					t.Fatalf("claimable=%v: adopted a credential-bearing dev command (%d files)", claimable, len(files))
+				}
+				if strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), "workload api") {
+					t.Errorf("claimable=%v: error %q must name the workload and never the value", claimable, err)
+				}
+			}
+		})
+	}
+}

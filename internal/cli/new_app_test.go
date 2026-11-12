@@ -639,7 +639,15 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 		{name: "a literal default without the colon", command: "worker --password ${WORKER_PASSWORD-hunter2plain}", refused: true},
 		{name: "a shell-wrapped literal default", command: `["sh", "-c", "worker --password $${WORKER_PASSWORD:-hunter2shell}"]`, refused: true},
 		{name: "a secret file", command: "worker --token-file /run/secrets/token"},
+		{name: "a numeric password", command: "worker --password 20262026", refused: true},
+		{name: "a numeric token flag=value", command: "worker --api-token=20262026", refused: true},
+		{name: "a numeric env-style password", command: "worker DB_PASSWORD=20262026", refused: true},
+		{name: "a boolean-looking password", command: "worker --password true", refused: true},
+		{name: "a numeric password under a word containing a setting word", command: "worker --user-password 20262026", refused: true},
 		{name: "a number", command: "worker --max-tokens 512"},
+		{name: "a camelCase setting", command: "worker --passwordMinLength=12"},
+		{name: "a token lifetime", command: "worker --token-ttl 3600"},
+		{name: "a credential switch", command: "worker --require-password=true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := writeAppTree(t, map[string]string{
@@ -659,7 +667,7 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 					files, _ := generator.RenderAppScaffold(det.spec, "")
 					t.Fatalf("claimable=%v: adopted a credential-bearing command (%d files)", claimable, len(files))
 				}
-				if strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "jobs"`) {
+				if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "20262026") || !strings.Contains(err.Error(), `compose service "jobs"`) {
 					t.Errorf("claimable=%v: error %q must name the service and never the value", claimable, err)
 				}
 			}

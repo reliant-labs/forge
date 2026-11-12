@@ -203,10 +203,10 @@ func credentialArg(argv []string) int {
 		if !credentialName.MatchString(name) {
 			continue
 		}
-		if hasValue && secretShaped(value) {
+		if hasValue && secretShaped(name, value) {
 			return i
 		}
-		if !hasValue && strings.HasPrefix(a, "-") && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") && secretShaped(argv[i+1]) {
+		if !hasValue && strings.HasPrefix(a, "-") && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") && secretShaped(name, argv[i+1]) {
 			return i + 1
 		}
 	}
@@ -232,14 +232,19 @@ func envReference(v string) bool {
 	return m[1] == "" || m[2] == "" || envReference(m[2])
 }
 
-// secretShaped reports whether v, the value of a credential-named argument,
-// could be the credential itself: not empty, not exactly a reference to one
-// (an environment variable, a file path) and not a number or a boolean
-// (`--max-tokens 512`). A literal that merely contains '$' is still a
-// credential.
-func secretShaped(v string) bool {
+// secretShaped reports whether v, the value of the credential-named argument
+// name, could be the credential itself: not empty and not exactly a reference
+// to one (an environment variable, a file path). A number or a boolean is a
+// credential too (`--password 123456`, `--api-token=123456`) unless name says
+// the argument is a setting about credentials rather than one
+// (settingQualified: `--max-tokens 512`, `--token-ttl 3600`). A literal that
+// merely contains '$' is still a credential.
+func secretShaped(name, v string) bool {
 	if v == "" || envReference(v) || strings.ContainsAny(v[:1], "/.~") {
 		return false
+	}
+	if !settingQualified(name) {
+		return true
 	}
 	if _, err := strconv.ParseFloat(v, 64); err == nil {
 		return false
@@ -248,6 +253,42 @@ func secretShaped(v string) bool {
 		return false
 	}
 	return true
+}
+
+// settingWords are the words that make a credential-named argument a setting
+// whose value is a count, a limit, a duration or a switch, not the credential:
+// `--max-tokens`, `--token-ttl`, `--password-min-length`, `--use-api-key`.
+var settingWords = map[string]bool{
+	"tokens": true, "max": true, "min": true, "limit": true, "size": true,
+	"count": true, "len": true, "length": true, "ttl": true, "timeout": true,
+	"expiry": true, "expires": true, "lifetime": true, "age": true,
+	"bits": true, "rounds": true, "iterations": true, "enable": true,
+	"enabled": true, "disable": true, "disabled": true, "require": true,
+	"required": true, "allow": true, "use": true, "skip": true,
+	"verify": true, "no": true,
+}
+
+// settingQualified reports whether the argument name holds one of
+// settingWords as a whole word, splitting on '-', '_', '.' and camelCase:
+// `--user-password` is not qualified by "use", `--maxTokens` is by "max".
+func settingQualified(name string) bool {
+	var words []string
+	start := 0
+	for i := 1; i <= len(name); i++ {
+		boundary := i == len(name) || strings.ContainsRune("-_.", rune(name[i])) ||
+			(name[i] >= 'A' && name[i] <= 'Z' && name[i-1] >= 'a' && name[i-1] <= 'z')
+		if !boundary {
+			continue
+		}
+		words = append(words, strings.Trim(name[start:i], "-_."))
+		start = i
+	}
+	for _, w := range words {
+		if settingWords[strings.ToLower(w)] {
+			return true
+		}
+	}
+	return false
 }
 
 // credentialBuildArg reports a build arg that carries a credential, by name

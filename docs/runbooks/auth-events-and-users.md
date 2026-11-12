@@ -41,7 +41,7 @@ that project's checkout.
 
 3. **The heartbeat is daily.** Reload the app several times, and call any
    authenticated rpc a few times. `reliant forge obs users <env> --since 1h
-   --series 1 --json` still counts the account once for today.
+--series 1 --json` still counts the account once for today.
 
 4. **The console agrees.** The env's Overview Users card and the Users
    dashboard show the same active count as step 1 for the same range.
@@ -62,7 +62,7 @@ of the code:
   `TrackAuth` calls are its code's decision and are removed in its code.
 - **Browser events** (`identifyUser`, `trackAuthEvent`, page views):
   `ANALYTICS_MODE=off` in the env's runtime config (`forge.Analytics {mode =
-  "off"}`, or `runtime_config = {ANALYTICS_MODE = "off"}`) is served as
+"off"}`, or `runtime_config = {ANALYTICS_MODE = "off"}`) is served as
   `config.js`, so it applies on the next page load with no rebuild.
 - **`forge obs users`** only reads; it writes nothing and needs no rollback. A
   wrong count is a defect in `pkg/obsquery`'s statement, fixed forward in

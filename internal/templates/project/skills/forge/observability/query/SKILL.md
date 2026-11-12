@@ -80,26 +80,7 @@ Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service
 
 ## Issue assignment filters
 
-```bash
-forge obs issues prod --assignee me       # the credential's acting person
-forge obs issues prod --assignee none     # only unassigned issues
-forge obs issue assign ISS-ab12 me prod   # assign to that person
-forge obs issue assign ISS-ab12 none prod # clear the assignee
-```
-
-The server resolves `me` from the **verified credential**, including user-owned CLI
-login and helper tokens; the CLI never infers a user from a stored login, decodes a
-token, or calls the human-only `GetCurrentUser` RPC. Organization automation tokens
-act for nobody: `me` is refused **FailedPrecondition**, exit 2, without a fallback
-or retry. Name a user ID instead. `none` on a list sends the API's `unassigned=true`
-(not `assignee="none"`); an omitted filter sends neither field, including no false
-`unassigned`. Locally every issue is unassigned: `none` includes all rows while a
-named assignee or `me` matches none; assignment writes still need a hosted env.
-
-Backend dependency: listing uses the CP #1402 fields. `assign ... me` additionally
-requires the owner-approved server-side `AssignIssue.assignee_user_id="me"`
-resolution; #1402 alone only supports literal user IDs on that mutation. Until
-that backend change lands, use an explicit user ID for assignment.
+`forge obs issues <env> --assignee me|none|<user-id>` and `forge obs issue assign <id> me|none|<user-id> <env>`. `me` is the verified credential's person (an organization automation token is refused, exit 2); how each value reaches the API and the local behaviour: `observability/query/issues`.
 
 ## What is wrong now: `forge obs status`
 

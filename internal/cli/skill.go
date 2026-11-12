@@ -92,6 +92,24 @@ const (
 	SkillRelevanceMigration SkillRelevance = "migration"
 )
 
+// SkillApplies says where a skill is useful, read from the YAML frontmatter
+// `applies:` field. Empty (the default) means a forge project: the skill
+// teaches forge's own layout, codegen or deploy model. SkillAppliesAny means
+// the skill is worth reading in ANY repo, with no forge.yaml: a playbook
+// (debug, testing tiers), a lint lane that runs standalone, a runtime library,
+// or the adopt path itself. In a directory with no forge.yaml, `forge skill
+// list` shows these first ("APPLIES TO YOUR REPO"), so an agent meeting forge
+// in an existing app sees what it can use there before forge's architecture.
+//
+// It is orthogonal to [SkillEmit] (which audience the BODY is rendered for:
+// a skill can be applies: any and still carry forge-only blocks) and to
+// [SkillRelevance] (when in a project's life it matters). The frontmatter is
+// the declaration; there is no hard-coded list.
+type SkillApplies string
+
+// SkillAppliesAny marks a skill useful in any repo, forge project or not.
+const SkillAppliesAny SkillApplies = "any"
+
 // skillMeta holds parsed YAML frontmatter from a SKILL.md file plus the scope
 // the skill was loaded from.
 type skillMeta struct {
@@ -101,6 +119,7 @@ type skillMeta struct {
 	Scope       SkillScope     // forge | project | user (inferred from source)
 	Emit        SkillEmit      // forge | general | both (from frontmatter; empty == legacy forge default)
 	Relevance   SkillRelevance // "" (always) | migration (from frontmatter; dir-derived default for migrations/)
+	Applies     SkillApplies   // "" (a forge project) | any (from frontmatter)
 
 	// Version mirrors the migration-skill `version:` frontmatter — the
 	// release that introduced the breaking change. Informational on
@@ -162,6 +181,10 @@ first, then one row per skill group with its sub-skills collapsed into a
 group name ('forge skill list observability') for that group's parent and every
 sub-skill, each with its full path and description.
 
+In a directory with no forge.yaml (an existing app, any language), the skills
+that declare 'applies: any' come first, as APPLIES TO YOUR REPO: the ones that
+work there as it is, led by 'adopt'.
+
 'forge skill search <keyword>' is usually faster than reading either view —
 it scores paths, descriptions and BODIES, so it finds skills whose title
 never mentions your term.
@@ -196,7 +219,8 @@ apply to this project's pinned forge_version.`,
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
 			}
 			if !all {
-				return writeGroupedSkills(cmd.OutOrStdout(), skills)
+				root, _ := findProjectRoot()
+				return writeGroupedSkillsFor(cmd.OutOrStdout(), skills, root != "")
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
@@ -400,6 +424,9 @@ type SkillMetaPublic struct {
 	// the default) or "migration" (one-time upgrade transition; excluded
 	// from default listings, included via SkillListOptions.IncludeMigrations).
 	Relevance SkillRelevance
+	// Applies is the frontmatter `applies:`: "any" when the skill is useful
+	// in a repo with no forge.yaml, "" when it needs a forge project.
+	Applies SkillApplies
 	// Version is the migration skill's frontmatter `version:` — the release
 	// that introduced the breaking change — passed through verbatim for
 	// consumers that want to do their own version gating. A project
@@ -466,6 +493,7 @@ func ListSkillsAtWithOptions(projectRoot string, opts SkillListOptions) ([]Skill
 			Scope:               m.Scope,
 			Emit:                m.Emit,
 			Relevance:           m.Relevance,
+			Applies:             m.Applies,
 			Version:             m.Version,
 			ProjectForgeVersion: projectVersion,
 		}
@@ -895,6 +923,7 @@ func parseFrontmatter(content []byte) skillMeta {
 		Emit        string `yaml:"emit"`
 		Relevance   string `yaml:"relevance"`
 		Version     string `yaml:"version"`
+		Applies     string `yaml:"applies"`
 	}
 	if err := yaml.Unmarshal([]byte(block), &fm); err == nil {
 		return skillMeta{
@@ -903,6 +932,7 @@ func parseFrontmatter(content []byte) skillMeta {
 			Emit:        SkillEmit(strings.TrimSpace(fm.Emit)),
 			Relevance:   SkillRelevance(strings.TrimSpace(fm.Relevance)),
 			Version:     strings.TrimSpace(fm.Version),
+			Applies:     SkillApplies(strings.TrimSpace(fm.Applies)),
 		}
 	}
 
@@ -920,6 +950,8 @@ func parseFrontmatter(content []byte) skillMeta {
 				meta.Emit = SkillEmit(v)
 			case "relevance":
 				meta.Relevance = SkillRelevance(v)
+			case "applies":
+				meta.Applies = SkillApplies(v)
 			case "version":
 				meta.Version = strings.Trim(v, `"'`)
 			}
@@ -944,10 +976,11 @@ type jsonSkill struct {
 	Scope       SkillScope     `json:"scope"`
 	Emit        SkillEmit      `json:"emit,omitempty"`
 	Relevance   SkillRelevance `json:"relevance,omitempty"`
+	Applies     SkillApplies   `json:"applies,omitempty"`
 }
 
 func toJSONSkill(s skillMeta) jsonSkill {
-	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope, Emit: s.Emit, Relevance: s.Relevance}
+	return jsonSkill{Path: s.Path, Name: s.Name, Description: s.Description, Scope: s.Scope, Emit: s.Emit, Relevance: s.Relevance, Applies: s.Applies}
 }
 
 func writeSkillsJSON(w interface{ Write([]byte) (int, error) }, skills []skillMeta) error {

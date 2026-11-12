@@ -21,9 +21,9 @@ var adoptTemplateBlock = regexp.MustCompile("(?s)```(?:yaml|toml|python)\n# ([^\
 // workload and every line marked `# db`).
 func adoptSkillFiles(t *testing.T, noDB bool) string {
 	t.Helper()
-	body, err := RenderSkillContentAt("", "adopt", SkillAudienceAll, "forge")
+	body, err := RenderSkillContentAt("", "adopt/deploy", SkillAudienceAll, "forge")
 	if err != nil {
-		t.Fatalf("load the adopt skill: %v", err)
+		t.Fatalf("load the adopt/deploy skill: %v", err)
 	}
 	root := t.TempDir()
 	write := func(rel, content string) {
@@ -54,7 +54,7 @@ func adoptSkillFiles(t *testing.T, noDB bool) string {
 	}
 	for _, rel := range []string{"forge.yaml", "deploy/kcl/kcl.mod", "deploy/kcl/workloads.k", "deploy/kcl/dev/main.k", "deploy/kcl/staging/main.k"} {
 		if !seen[rel] {
-			t.Fatalf("the adopt skill has no template for %s (a fenced block whose first line is `# %s`)", rel, rel)
+			t.Fatalf("the adopt/deploy skill has no template for %s (a fenced block whose first line is `# %s`)", rel, rel)
 		}
 	}
 	return root

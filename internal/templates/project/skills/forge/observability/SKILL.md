@@ -90,10 +90,29 @@ not from how the call site spelled its log line:
 
 | `error_class` | what it means | example | level | pages (ERROR → alerts) |
 |---|---|---|---|---|
-| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
-| `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
+| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error; DeadlineExceeded when **the server's own deadline** expired (`deadline=server`) under `serverkit.Deadline{ExpiryIsError: true}` | ERROR | yes |
+| `server` | server-side, but "retry", not "page" | DeadlineExceeded (`deadline=server` by default, `deadline=caller`, or origin unknown), Aborted, Unimplemented | WARN | no |
 | `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
 | `canceled` | one end went away: the caller, or this replica draining for a rollout | `context.Canceled`, CodeCanceled, `svcerr.ErrServerDraining` / `svcerr.Draining(…)` | same as `user` | no |
+
+**Whose deadline.** A `DeadlineExceeded` record says whose deadline ran out,
+in `deadline`. `server` means the chain's Deadline slot (`serverkit.Deadline`:
+30s per unary rpc by default, per rpc from `(forge.v1.method).timeout`)
+expired: the server could not finish in the time it allows itself. It is
+WARN by default, a retryable server failure, so `forge obs issues` still
+groups it. A service where a call needing longer than its budget is a fault
+someone must fix — it fails every retry the same way — opts in with
+`serverkit.Deadline{ExpiryIsError: true}`: the record keeps
+`deadline=server` and is logged at ERROR, so it pages and counts against
+release health. `caller` means the caller's own deadline
+(`Connect-Timeout-Ms`, `grpc-timeout`) expired first: the caller's choice,
+WARN either way. A client that hung up is a cancellation, not a deadline.
+
+**Issues are wider than ERROR.** `forge obs issues` groups every ERROR record
+and every WARN server failure (`error_class=server`, except `deadline=caller`),
+so a retryable server failure is still something to triage. What counts as an
+*error* (error counts, `forge obs check`'s new issues, ERROR alerts) stays
+ERROR-only.
 
 A drain is also an **expected outcome** in every logging layer without being
 declared: a call this replica ended because it is shutting down (a stream's
@@ -105,36 +124,9 @@ Nothing is hidden: a user error is still written, with `error`,
 claiming to be an incident. Its volume stays countable: the RPC error counter
 (and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
 
-The policy holds at all three places a record comes from:
-
-1. `rpc failed` / `stream failed` at the RPC edge (`observe.LoggingInterceptor`);
-2. component failures on the in-process chain (`observe.LogMiddleware`);
-3. **every hand-written `logger.Error`** — `observe.NewErrorClassHandler`
-   wraps the process's slog handler (serverkit's `NewLogger` already does) and
-   lowers a record carrying a non-server error to the user-error level, adding
-   `error_class`. It only ever lowers; it never raises a WARN to ERROR.
-
-**If you forward logs to another sink (or count them), wrap
-`observe.NewErrorClassHandler` OUTSIDE that handler**, so it sees the
-classified level — the forwarder keeps gating on `level >= ERROR` and never
-needs to know about svcerr:
-
-```go
-handler := forwardingHandler(serverkit.NewLogger(cfg).Handler()) // forwards >= ERROR
-logger := slog.New(observe.NewErrorClassHandler(handler))
-```
-
-Marking: most user errors need no marker — return the right `svcerr` kind
-(`svcerr.FailedPrecondition`, `svcerr.PlanLimit`, …). Use
-`svcerr.WithClass(err, svcerr.ClassUser)` when the CODE and the FAULT disagree
-(`Unavailable` is the honest code for "the user's machine is offline", and a
-server fault by kind), or when an error never crosses an RPC boundary (a worker
-logging a provider's "credential rejected"). `svcerr.WithClass(err,
-svcerr.ClassServer)` is the reverse: a 4xx the client must see that is really
-our bug. A library error svcerr cannot see into — a workflow engine's
-application error that crossed a serialization boundary — is taught with
-`observe.WithErrorClassifier(func(error) svcerr.Class)` (return
-`svcerr.ClassNone` for "no opinion").
+Where the policy applies (the RPC edge, the component chain, every
+hand-written `logger.Error`), wrapping a log forwarder, and marking an error
+`svcerr.WithClass` or `observe.WithErrorClassifier`: `observability/error-levels`.
 
 Server faults carry a bounded stack: `observability/error-stacks`.
 

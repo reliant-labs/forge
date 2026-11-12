@@ -344,6 +344,98 @@ func TestServerIssuesSeparateCausesAndFormIncidentsOnClickHouse(t *testing.T) {
 	}
 }
 
+// The error issues are ERROR records and WARN server failures, never a
+// caller's deadline, a user error or a WARN with no class; release health's
+// error filter stays ERROR-only.
+func TestServerIssuesIncludeWarnServerFailuresOnClickHouse(t *testing.T) {
+	c := startClickHouse(t)
+	ctx := context.Background()
+	if err := c.Exec(ctx, `CREATE TABLE otel_logs (
+		Timestamp DateTime64(9), TraceId String, SeverityNumber UInt8, ServiceName LowCardinality(String), ScopeName String, Body String,
+		ResourceAttributes Map(LowCardinality(String), String), LogAttributes Map(LowCardinality(String), String)
+	) ENGINE = MergeTree ORDER BY Timestamp`); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 11, 11, 18, 15, 0, 0, time.UTC)
+	res := map[string]string{"deployment.environment.name": "dev"}
+	batch, err := c.PrepareBatch(ctx, "INSERT INTO otel_logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(sev uint8, procedure string, attrs ...string) {
+		m := map[string]string{obsquery.LogKeyProcedure: procedure, obsquery.LogKeyCodeFunction: "observe.log"}
+		for i := 0; i+1 < len(attrs); i += 2 {
+			m[attrs[i]] = attrs[i+1]
+		}
+		if err := batch.Append(base, "", sev, "api", "app", "rpc failed", res, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	class, deadline := obsquery.LogKeyErrorClass, obsquery.LogKeyDeadline
+	add(17, "/s/ServerDeadline", class, "server", deadline, "server")          // in
+	add(13, "/s/Aborted", class, "server")                                     // in
+	add(13, "/s/RetryableServerDeadline", class, "server", deadline, "server") // in
+	add(13, "/s/CallerDeadline", class, "server", deadline, "caller")          // out
+	add(9, "/s/NotFound", class, "user")                                       // out
+	add(9, "/s/Canceled", class, "canceled")                                   // out
+	add(13, "/s/Unclassed")                                                    // out
+	if err := batch.Send(); err != nil {
+		t.Fatal(err)
+	}
+	scope := obsquery.Scope{Database: "default", Local: true, Start: base.Add(-time.Hour), End: base.Add(time.Hour),
+		Filters: []obsquery.AttrFilter{{Key: "deployment.environment.name", Op: "eq", Value: "dev"}}}
+
+	procedures := func(where string) map[string]bool {
+		t.Helper()
+		rows, err := c.Query(ctx, "SELECT LogAttributes['procedure'] FROM otel_logs WHERE "+where)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, where)
+		}
+		defer rows.Close()
+		got := map[string]bool{}
+		for rows.Next() {
+			var p string
+			if err := rows.Scan(&p); err != nil {
+				t.Fatal(err)
+			}
+			got[p] = true
+		}
+		return got
+	}
+	issues := procedures(obsquery.ServerFailureFilterSQL)
+	for p, want := range map[string]bool{
+		"/s/ServerDeadline": true, "/s/Aborted": true, "/s/RetryableServerDeadline": true,
+		"/s/CallerDeadline": false, "/s/NotFound": false, "/s/Canceled": false, "/s/Unclassed": false,
+	} {
+		if issues[p] != want {
+			t.Errorf("ServerFailureFilterSQL selects %s = %v, want %v", p, issues[p], want)
+		}
+	}
+	if events := procedures(obsquery.IssueRecordFilterSQL); len(events) != len(issues) {
+		t.Errorf("IssueRecordFilterSQL selects %v, want the same failures as ServerFailureFilterSQL %v", events, issues)
+	}
+	if errs := procedures(obsquery.ServerErrorFilterSQL); len(errs) != 1 || !errs["/s/ServerDeadline"] {
+		t.Errorf("ServerErrorFilterSQL selects %v, want only the ERROR record", errs)
+	}
+
+	list, err := obsquery.ServerIssues{Scope: scope, Limit: 25}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := c.Query(paramCtx(ctx, list), list.SQL)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, list.SQL)
+	}
+	var n int
+	for rows.Next() {
+		n++
+	}
+	rows.Close()
+	if n != 3 {
+		t.Errorf("obs issues lists %d issues, want 3 (one per server failure's procedure)", n)
+	}
+}
+
 func paramCtx(ctx context.Context, st obsquery.Stmt) context.Context {
 	return clickhouse.Context(ctx, clickhouse.WithParameters(clickhouse.Parameters(st.Params)))
 }

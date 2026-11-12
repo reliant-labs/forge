@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/observe/cliev"
 )
 
 func TestClientHeaderValue(t *testing.T) {
@@ -116,5 +118,26 @@ func TestIdentifiedDoer_StampsHeaders(t *testing.T) {
 	_ = resp.Body.Close()
 	if gotUA != UserAgent() || gotClient != ClientHeaderValue() {
 		t.Errorf("headers = (%q, %q), want (%q, %q)", gotUA, gotClient, UserAgent(), ClientHeaderValue())
+	}
+}
+
+func TestInstallIdentityOnlyWhileTelemetryIsOn(t *testing.T) {
+	dir := t.TempDir()
+	on := cliev.New(cliev.Config{App: "forge", Endpoint: "http://127.0.0.1:1/v1/logs", ConfigDir: dir, Stderr: io.Discard, Getenv: func(string) string { return "" }})
+	if err := on.SetInstallAttribution("utm_source=docs"); err != nil {
+		t.Fatal(err)
+	}
+	h := http.Header{}
+	setInstallIdentity(h, on)
+	if h.Get(InstallIDHeader) != on.InstallID() || h.Get(AttributionHeader) != "install_id="+on.InstallID()+"&utm_source=docs" {
+		t.Errorf("headers = %v", h)
+	}
+	off := cliev.New(cliev.Config{App: "forge", Endpoint: "http://127.0.0.1:1/v1/logs", ConfigDir: dir, Stderr: io.Discard,
+		Getenv: func(k string) string { return map[string]string{"DO_NOT_TRACK": "1"}[k] }})
+	h = http.Header{}
+	setInstallIdentity(h, off)
+	setInstallIdentity(h, nil)
+	if len(h) != 0 {
+		t.Errorf("telemetry off must send neither header: %v", h)
 	}
 }

@@ -264,3 +264,44 @@ func TestNilAndDefaultClientAreSafe(t *testing.T) {
 	Track(context.Background(), "x") // before Init
 	Flush(context.Background())
 }
+
+func TestInstallAttribution(t *testing.T) {
+	s, srv := newSink(t)
+	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	c := New(cfg)
+	if err := c.SetInstallAttribution("rid=v_landing_1234&utm_source=docs&utm_medium=copy+button&email=a@b.c&utm_campaign=someone@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetInstallAttribution("utm_source=later"); err != nil { // first touch wins
+		t.Fatal(err)
+	}
+	got := New(cfg).InstallAttribution()
+	if got.Get("rid") != "v_landing_1234" || got.Get("utm_source") != "docs" || got.Get("utm_medium") != "copy button" || got.Has("email") || got.Has("utm_campaign") {
+		t.Errorf("InstallAttribution = %v", got)
+	}
+	c = New(cfg)
+	c.Track(context.Background(), FirstRunEvent("forge"), c.FirstRunAttrs("")...)
+	c.Flush(context.Background())
+	rec := s.records()[0]
+	if rec["product.source"] != "docs" || rec["product.medium"] != "copy button" || rec["product.visitor_id"] != "v_landing_1234" {
+		t.Errorf("first run carries the install attribution: %v", rec)
+	}
+	off := testConfig(t, srv.URL, map[string]string{"DO_NOT_TRACK": "1"}, &bytes.Buffer{})
+	if err := New(off).SetInstallAttribution("utm_source=docs"); err != nil || len(New(off).InstallAttribution()) != 0 {
+		t.Error("nothing is recorded while telemetry is off")
+	}
+}
+
+func TestQuietEnvSuppressesTheNotice(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg := testConfig(t, "http://127.0.0.1:1/v1/logs", map[string]string{"FORGE_TELEMETRY_QUIET": "1"}, &stderr)
+	c := New(cfg)
+	if !c.Enabled() || stderr.Len() != 0 {
+		t.Errorf("a quiet run is still on but prints nothing: enabled %v, notice %q", c.Enabled(), stderr.String())
+	}
+	cfg.Getenv = func(string) string { return "" }
+	New(cfg)
+	if stderr.Len() == 0 {
+		t.Error("the next ordinary run shows the notice")
+	}
+}

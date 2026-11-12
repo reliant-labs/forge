@@ -19,6 +19,9 @@ type stateDoc struct {
 	FirstRunSent bool   `json:"first_run_sent,omitempty"`
 	Day          string `json:"day,omitempty"`
 	SentToday    int    `json:"sent_today,omitempty"`
+	// Attribution is where the install came from, as the install page passed
+	// it (SetInstallAttribution): a query string of rid and utm_* only.
+	Attribution string `json:"attribution,omitempty"`
 }
 
 // state is the file. A file that cannot be read is a fresh install; one that

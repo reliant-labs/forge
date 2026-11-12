@@ -145,6 +145,11 @@ type alertDef struct {
 	// critical level and 0 otherwise, and decides its band from that. The
 	// levels share the default's params, so a threshold is tuned once.
 	levels []alertLevel
+	// envScoped marks a default that reads only what the env's render
+	// declares (its uptime checks), nothing from the project's generated
+	// metadata. ResolveEnvAlertDefaultsFor resolves these alone, for a
+	// project forge generate writes no alert defaults for (a static site).
+	envScoped bool
 }
 
 // alertLevel is one severity of a default with levels.
@@ -353,6 +358,7 @@ var alertDefs = []alertDef{
 		applies:     func(AlertInput) bool { return true },
 		needs:       hasUptimeChecks,
 		levels:      []alertLevel{{"UptimeCheckFailing", SeverityWarning, false}, {"UptimeCheckDown", SeverityCritical, true}},
+		envScoped:   true,
 		sql:         uptimeFailingSQL,
 	},
 	{
@@ -370,6 +376,7 @@ var alertDefs = []alertDef{
 		applies:     func(AlertInput) bool { return true },
 		needs:       hasUptimeChecks,
 		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
+		envScoped:   true,
 		sql:         certificateExpiringSQL,
 	},
 	{
@@ -601,6 +608,19 @@ func ResolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 // because the control plane raises it from its own events: enabled, it is an
 // entry carrying the env's `for` and labels; disabled, an entry marked off.
 func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string) ([]AlertRule, []AlertSkip, error) {
+	return resolveAlertDefaults(in, env, tuning, disabled, func(alertDef) bool { return true })
+}
+
+// ResolveEnvAlertDefaultsFor is ResolveAlertDefaultsFor for an env whose
+// project has no generated alert defaults (ReadAlertInput's ok is false, as
+// for a static site): it resolves only the defaults that read nothing but the
+// env's own render (the uptime defaults, from in.UptimeChecks), so such an
+// env still records them, and nothing that needs the project's metadata.
+func ResolveEnvAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string) ([]AlertRule, []AlertSkip, error) {
+	return resolveAlertDefaults(in, env, tuning, disabled, func(d alertDef) bool { return d.envScoped })
+}
+
+func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuning, disabled []string, include func(alertDef) bool) ([]AlertRule, []AlertSkip, error) {
 	if err := ValidateAlertTuning(tuning); err != nil {
 		return nil, nil, err
 	}
@@ -613,7 +633,7 @@ func ResolveAlertDefaultsFor(in AlertInput, env string, tuning map[string]AlertT
 		skipped []AlertSkip
 	)
 	for _, d := range alertDefs {
-		if !d.applies(in) || (d.needs != nil && !d.needs(in)) {
+		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
 			continue
 		}
 		t, tuned := tuning[d.ID]

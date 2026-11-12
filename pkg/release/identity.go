@@ -1034,6 +1034,9 @@ func (i ShapeIdentity) validateApplication(a ShapeIdentityApplication) error {
 	if err := ValidateAssociatedDomains(a.AssociatedDomains, a.RedirectURIs); err != nil {
 		return bad("%v", err)
 	}
+	if _, err := validateAssociatedHTTPSHosts(a.AssociatedDomains, a.LogoutURIs); err != nil {
+		return bad("logout_uris: %v", err)
+	}
 	return nil
 }
 

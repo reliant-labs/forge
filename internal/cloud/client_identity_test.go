@@ -141,3 +141,72 @@ func TestInstallIdentityOnlyWhileTelemetryIsOn(t *testing.T) {
 		t.Errorf("telemetry off must send neither header: %v", h)
 	}
 }
+
+// An install id minted while telemetry was on survives on disk; every way of
+// turning telemetry off afterwards must still keep both headers off the wire.
+func TestInstallIdentityOmittedForEveryTelemetryOffReason(t *testing.T) {
+	newClient := func(dir string, env map[string]string) *cliev.Client {
+		return cliev.New(cliev.Config{App: "forge", Endpoint: "http://127.0.0.1:1/v1/logs", ConfigDir: dir, Stderr: io.Discard,
+			Getenv: func(k string) string { return env[k] }})
+	}
+	for _, tc := range []struct {
+		name   string
+		env    map[string]string
+		optOut bool
+	}{
+		{"DO_NOT_TRACK", map[string]string{"DO_NOT_TRACK": "1"}, false},
+		{"FORGE_TELEMETRY=off", map[string]string{"FORGE_TELEMETRY": "off"}, false},
+		{"CI=true", map[string]string{"CI": "true"}, false},
+		{"stored opt-out", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			on := newClient(dir, nil)
+			if !on.Enabled() || on.InstallID() == "" {
+				t.Fatalf("setup: telemetry should be on with a minted id (enabled=%v id=%q)", on.Enabled(), on.InstallID())
+			}
+			if err := on.SetInstallAttribution("utm_source=docs"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.optOut {
+				if err := on.SetEnabled(false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			off := newClient(dir, tc.env)
+			if off.Enabled() {
+				t.Fatalf("setup: telemetry should be off")
+			}
+			if off.InstallID() == "" {
+				t.Fatalf("setup: the previously minted id should still be readable, so the gate is what keeps it off the wire")
+			}
+
+			h := http.Header{}
+			setInstallIdentity(h, off)
+			if h.Get(InstallIDHeader) != "" || h.Get(AttributionHeader) != "" {
+				t.Fatalf("headers sent while telemetry is off: %v", h)
+			}
+
+			cliev.Init(cliev.Config{App: "forge", Endpoint: "http://127.0.0.1:1/v1/logs", ConfigDir: dir, Stderr: io.Discard,
+				Getenv: func(k string) string { return tc.env[k] }})
+			t.Cleanup(func() { cliev.Init(cliev.Config{App: "forge", ConfigDir: t.TempDir(), Stderr: io.Discard}) })
+			var got http.Header
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := NewClient(ep, Credential{}).Call(context.Background(), "controlplane.v1.ClaimableService/GetClaimableChallenge", map[string]any{}, nil); err != nil {
+				t.Fatalf("Call: %v", err)
+			}
+			if got.Get(InstallIDHeader) != "" || got.Get(AttributionHeader) != "" {
+				t.Errorf("request carried install headers while telemetry is off: %v", got)
+			}
+		})
+	}
+}

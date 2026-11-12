@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
@@ -103,7 +104,21 @@ func endRun() {
 // shadow server Resolve(projectDir) picks: schemadef.ApplyAndIntrospectAt's
 // answer. A missing or empty directory returns (nil, nil) without touching
 // postgres. The caller owns the returned slice.
+//
+// In a project whose own tool migrates the shadow (the `database.migrations`
+// hook), the tool's history tables (migrationhook.Hook.LedgerTables) are not
+// part of the answer: they are the tool's bookkeeping, and every reader of
+// Tables (the ORM projection, grants, mocks, seeding) would otherwise treat
+// them as the app's — `forge db seed reset` truncating goose_db_version.
 func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
+	tables, err := appliedTables(projectDir, migDir)
+	if err != nil {
+		return nil, err
+	}
+	return withoutToolLedgers(projectDir, tables), nil
+}
+
+func appliedTables(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
 		set, err := migrationSet(projectDir, migDir)
@@ -117,6 +132,21 @@ func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 	}
 	defer done()
 	return tpl.Tables(), nil
+}
+
+// withoutToolLedgers drops the hook tool's history tables from tables.
+func withoutToolLedgers(projectDir string, tables []schemadef.Table) []schemadef.Table {
+	h, hooked := migrationhook.ResolveIn(projectDir)
+	if !hooked {
+		return tables
+	}
+	out := tables[:0:0]
+	for _, t := range tables {
+		if !h.IsLedgerTable(t.Schema, t.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // Views returns the applied schema's views (schemadef.IntrospectViews) on
@@ -150,6 +180,11 @@ func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 // A missing or empty directory returns (nil, nil, nil). On error nothing is
 // left open.
 func Open(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, error) {
+	tables, shadow, err := openApplied(projectDir, migDir)
+	return withoutToolLedgers(projectDir, tables), shadow, err
+}
+
+func openApplied(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
 		return applyPrivate(projectDir, migDir, Resolve(projectDir))

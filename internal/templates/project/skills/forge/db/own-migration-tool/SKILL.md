@@ -62,7 +62,7 @@ database:
 # golang-migrate — NNN_name.up.sql / .down.sql
 database:
   migrations: {dir: db/migrations, tool: golang-migrate}
-# runs: migrate -path <dir> -database $DATABASE_URL up   (status: … version); the URL is on the argv
+# runs: migrate -path <dir> -database <URL without password> up   (status: … version); password via PGPASSWORD
 
 # dbmate — `-- migrate:up` / `-- migrate:down`
 database:
@@ -72,7 +72,7 @@ database:
 # atlas — versioned migrations with atlas.sum
 database:
   migrations: {dir: migrations, tool: atlas}
-# runs: atlas migrate apply --dir file://<dir> --url $DATABASE_URL  (status: atlas migrate status …); the URL is on the argv
+# runs: atlas migrate apply --dir file://<dir> --url <URL without password>  (status: atlas migrate status …); password via PGPASSWORD
 
 # flyway — V1__init.sql, R__views.sql
 database:
@@ -88,13 +88,13 @@ database:
     status: [npx, prisma, migrate, status]
 ```
 
-**Keep the database URL off the argv.** It carries the password, and any user
-on the machine can read a process's arguments. goose, dbmate and flyway read
-their connection from the environment forge sets, so their presets never
-pass it. golang-migrate and atlas take it only as a flag, so their presets do
-for the length of the run. Against a shared host, override `apply`/`status`
-with a command that reads `$DATABASE_URL` itself: atlas with an `atlas.hcl` env
-whose `url = getenv("DATABASE_URL")`, or a script.
+**The password never reaches an argv.** Any user on the machine can read a
+process's arguments. goose, dbmate and flyway read their connection from the
+environment forge sets, so their presets pass no URL. golang-migrate and atlas
+take the database only as a flag, so their presets pass
+`${FORGE_DATABASE_URL_NO_PASSWORD}` and the password travels as `PGPASSWORD`,
+which their postgres drivers read. Your own `apply`/`status` should do the
+same: name `${FORGE_DATABASE_URL_NO_PASSWORD}`, never `${DATABASE_URL}`.
 
 ## The contract
 
@@ -103,6 +103,7 @@ forge runs the argv in the project root, with:
 | Variable | Value |
 |---|---|
 | `DATABASE_URL` | the database to migrate (a `postgres://` URL) |
+| `FORGE_DATABASE_URL_NO_PASSWORD`, `PGPASSWORD` | the same URL without its password, and the password (set when the URL has one) |
 | `FORGE_MIGRATIONS_DIR` | the migrations directory, absolute |
 | `FORGE_PROJECT_DIR` | the project root, absolute |
 | `FORGE_PHASE` | `shadow` (the throwaway schema database) or `cli` (`forge db migrate`) |
@@ -114,6 +115,12 @@ forge runs the argv in the project root, with:
 expanded (a `$` in a password survives). Exit 0 means applied. `status` output
 is printed as your tool wrote it; forge does not parse it. The tool must be on
 `PATH` — a missing one fails with its name.
+
+Your tool's history table — `goose_db_version`, `flyway_schema_history`,
+`atlas_schema_revisions`, `schema_migrations`, or the one your argv names with
+`-table`, `--migrations-table`, `x-migrations-table` or `--revisions-schema` —
+is its bookkeeping: the ORM never projects it, and `forge db seed` never plans
+or resets it.
 
 The shadow apply is cached per run on a digest of every file in the directory
 plus the apply command, so a `forge generate` applies your migrations once.

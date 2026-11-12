@@ -106,16 +106,19 @@ func ResolveIn(projectDir string) (Hook, bool) {
 // of the machine (/proc, ps). So a tool that reads its connection from the
 // environment (goose: GOOSE_DRIVER/GOOSE_DBSTRING; dbmate: DATABASE_URL;
 // flyway: FLYWAY_*; see Vars) is never handed it on the argv. golang-migrate
-// and atlas take it only as a flag, so theirs is the one exception; the
-// own-migration-tool skill says so and how to avoid it.
+// and atlas take the database only as a flag, so theirs names it as
+// ${FORGE_DATABASE_URL_NO_PASSWORD}, the URL with its password removed, and
+// the password reaches them as PGPASSWORD, which their postgres drivers (lib/pq,
+// pgx) read when the URL carries none.
 func Preset(tool string) (apply, status []string) {
 	switch tool {
 	case config.MigrationToolGoose:
 		base := []string{"goose", "-dir", "${FORGE_MIGRATIONS_DIR}"}
 		return append(clone(base), "up"), append(clone(base), "status")
 	case config.MigrationToolGolangMigrate:
-		// -database is the CLI's only way to name the database.
-		base := []string{"migrate", "-path", "${FORGE_MIGRATIONS_DIR}", "-database", "${DATABASE_URL}"}
+		// -database is the CLI's only way to name the database: the URL
+		// without its password, which travels as PGPASSWORD.
+		base := []string{"migrate", "-path", "${FORGE_MIGRATIONS_DIR}", "-database", "${FORGE_DATABASE_URL_NO_PASSWORD}"}
 		return append(clone(base), "up"), append(clone(base), "version")
 	case config.MigrationToolDbmate:
 		// migrate, not up: up also CREATEs the database, which forge has
@@ -125,9 +128,10 @@ func Preset(tool string) (apply, status []string) {
 		return append(clone(base), "migrate"), append(clone(base), "status")
 	case config.MigrationToolAtlas:
 		// --url is the CLI's only way to name the database without an
-		// atlas.hcl (whose `getenv("DATABASE_URL")` a custom apply can use).
-		return []string{"atlas", "migrate", "apply", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${DATABASE_URL}"},
-			[]string{"atlas", "migrate", "status", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${DATABASE_URL}"}
+		// atlas.hcl: the URL without its password, which travels as
+		// PGPASSWORD.
+		return []string{"atlas", "migrate", "apply", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${FORGE_DATABASE_URL_NO_PASSWORD}"},
+			[]string{"atlas", "migrate", "status", "--dir", "file://${FORGE_MIGRATIONS_DIR}", "--url", "${FORGE_DATABASE_URL_NO_PASSWORD}"}
 	case config.MigrationToolFlyway:
 		// flyway reads FLYWAY_URL / _USER / _PASSWORD / _LOCATIONS from the
 		// environment (toolEnv), so the argv names no connection.
@@ -215,12 +219,22 @@ func run(ctx context.Context, h Hook, what string, argv []string, inv Invocation
 // (GOOSE_DRIVER/GOOSE_DBSTRING/GOOSE_MIGRATION_DIR, DBMATE_MIGRATIONS_DIR,
 // FLYWAY_URL/_USER/_PASSWORD/_LOCATIONS), so a hand-written apply argv that
 // names no connection still reaches the right database.
+//
+// FORGE_DATABASE_URL_NO_PASSWORD is DATABASE_URL with its password removed
+// (userinfo and a `password` query parameter), and PGPASSWORD carries that
+// password, for a tool that must be handed the URL as an argument: the argv
+// then names the database without the credential (Preset).
 func Vars(h Hook, inv Invocation) (map[string]string, error) {
+	noPassword, password := splitDSNPassword(inv.DSN)
 	vars := map[string]string{
-		"DATABASE_URL":         inv.DSN,
-		"FORGE_MIGRATIONS_DIR": h.Dir,
-		"FORGE_PROJECT_DIR":    h.ProjectDir,
-		"FORGE_PHASE":          inv.Phase,
+		"DATABASE_URL":                   inv.DSN,
+		"FORGE_DATABASE_URL_NO_PASSWORD": noPassword,
+		"FORGE_MIGRATIONS_DIR":           h.Dir,
+		"FORGE_PROJECT_DIR":              h.ProjectDir,
+		"FORGE_PHASE":                    inv.Phase,
+	}
+	if password != "" {
+		vars["PGPASSWORD"] = password
 	}
 	switch h.Tool {
 	case config.MigrationToolGoose:
@@ -241,6 +255,33 @@ func Vars(h Hook, inv Invocation) (map[string]string, error) {
 		vars["FLYWAY_LOCATIONS"] = "filesystem:" + h.Dir
 	}
 	return vars, nil
+}
+
+// splitDSNPassword returns dsn without its password (the userinfo password
+// and a `password` query parameter) and the password. A dsn that is not a URL,
+// or carries no password, is returned unchanged with "".
+func splitDSNPassword(dsn string) (noPassword, password string) {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme == "" {
+		return dsn, ""
+	}
+	if u.User != nil {
+		if pw, ok := u.User.Password(); ok {
+			password = pw
+			u.User = url.User(u.User.Username())
+		}
+	}
+	if q := u.Query(); q.Has("password") {
+		if password == "" {
+			password = q.Get("password")
+		}
+		q.Del("password")
+		u.RawQuery = q.Encode()
+	}
+	if password == "" {
+		return dsn, ""
+	}
+	return u.String(), password
 }
 
 // JDBC converts a postgres:// URL into the JDBC URL, user and password flyway
@@ -354,3 +395,70 @@ func orDiscard(w io.Writer) io.Writer {
 }
 
 func clone(s []string) []string { return append([]string(nil), s...) }
+
+// LedgerTable is a table a migration tool keeps its own history in. Schema
+// is "" when the table is matched in any schema.
+type LedgerTable struct {
+	Schema string
+	Name   string
+}
+
+// LedgerTables returns the tables h's tool records its applied migrations
+// in: the tool's default, and the one its apply or status argv names instead
+// (goose -table, dbmate --migrations-table, golang-migrate's
+// x-migrations-table, atlas --revisions-schema, flyway -table). They are the
+// tool's bookkeeping, not the app's schema: the ORM never projects them, and
+// seeding never plans (or resets) them, which would erase or fabricate the
+// tool's history.
+func (h Hook) LedgerTables() []LedgerTable {
+	argv := append(append([]string{}, h.Apply...), h.Status...)
+	switch h.Tool {
+	case config.MigrationToolGoose:
+		return []LedgerTable{{Name: "goose_db_version"}, ledgerFlag(argv, "goose_db_version", "-table", "--table")}
+	case config.MigrationToolDbmate:
+		return []LedgerTable{{Name: "schema_migrations"}, ledgerFlag(argv, "schema_migrations", "--migrations-table")}
+	case config.MigrationToolGolangMigrate:
+		out := []LedgerTable{{Name: "schema_migrations"}}
+		for _, a := range argv {
+			if i := strings.Index(a, "x-migrations-table="); i >= 0 {
+				v, _, _ := strings.Cut(a[i+len("x-migrations-table="):], "&")
+				if v, err := url.QueryUnescape(v); err == nil && v != "" {
+					out = append(out, LedgerTable{Name: strings.Trim(v, `"`)})
+				}
+			}
+		}
+		return out
+	case config.MigrationToolAtlas:
+		schema := ledgerFlag(argv, "atlas_schema_revisions", "--revisions-schema").Name
+		return []LedgerTable{{Schema: "atlas_schema_revisions", Name: "atlas_schema_revisions"}, {Schema: schema, Name: "atlas_schema_revisions"}}
+	case config.MigrationToolFlyway:
+		return []LedgerTable{{Name: "flyway_schema_history"}, ledgerFlag(argv, "flyway_schema_history", "-table")}
+	}
+	return nil
+}
+
+// IsLedgerTable reports whether schema.name is one of h's LedgerTables.
+func (h Hook) IsLedgerTable(schema, name string) bool {
+	for _, l := range h.LedgerTables() {
+		if l.Name == name && (l.Schema == "" || l.Schema == schema) {
+			return true
+		}
+	}
+	return false
+}
+
+// ledgerFlag is the table a flag in argv names (`-table x` or `-table=x`),
+// else def.
+func ledgerFlag(argv []string, def string, flags ...string) LedgerTable {
+	for i, a := range argv {
+		for _, f := range flags {
+			if a == f && i+1 < len(argv) {
+				return LedgerTable{Name: argv[i+1]}
+			}
+			if v, ok := strings.CutPrefix(a, f+"="); ok && v != "" {
+				return LedgerTable{Name: v}
+			}
+		}
+	}
+	return LedgerTable{Name: def}
+}

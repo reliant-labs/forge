@@ -28,27 +28,47 @@ func TestResolve_ForgeHasNoHook(t *testing.T) {
 	}
 }
 
-// TestPreset_DSNStaysOffTheArgvWhereTheToolReadsTheEnvironment: the database
-// URL carries credentials and an argv is world-readable (/proc, ps). A tool
-// that takes its connection from the environment Vars sets must not also get
-// it as an argument; only golang-migrate and atlas, whose CLIs have no other
-// way, may.
-func TestPreset_DSNStaysOffTheArgvWhereTheToolReadsTheEnvironment(t *testing.T) {
-	flagOnly := map[string]bool{config.MigrationToolGolangMigrate: true, config.MigrationToolAtlas: true}
-	for _, tool := range config.MigrationTools() {
-		apply, status := Preset(tool)
-		if flagOnly[tool] {
-			continue
-		}
-		for _, arg := range append(apply, status...) {
-			if strings.Contains(arg, "DATABASE_URL") {
-				t.Errorf("%s: preset puts the database URL on the argv (%v / %v); the tool reads it from the environment", tool, apply, status)
+// TestPreset_PasswordNeverReachesTheArgv: the database URL carries the
+// password and an argv is world-readable (/proc, ps). No built-in preset,
+// expanded against a credentialed URL, carries the password: a tool that reads
+// its connection from the environment gets no URL at all, and golang-migrate
+// and atlas, which must be handed one, get it without the password, which
+// travels as PGPASSWORD.
+func TestPreset_PasswordNeverReachesTheArgv(t *testing.T) {
+	const secret = "s3cr3t-pw"
+	for _, dsn := range []string{
+		"postgres://app:" + secret + "@db.internal:5432/app?sslmode=require",
+		"postgres://app@db.internal:5432/app?password=" + secret + "&sslmode=require",
+	} {
+		for _, tool := range config.MigrationTools() {
+			apply, status := Preset(tool)
+			if len(apply) == 0 {
+				continue
+			}
+			h := Hook{Tool: tool, Dir: "/m", ProjectDir: "/p"}
+			vars, err := Vars(h, Invocation{DSN: dsn, Phase: PhaseCLI})
+			if err != nil {
+				t.Fatalf("%s: Vars: %v", tool, err)
+			}
+			for _, arg := range append(Expand(apply, vars), Expand(status, vars)...) {
+				if strings.Contains(arg, secret) {
+					t.Errorf("%s: the password reached the argv: %q", tool, arg)
+				}
+			}
+			if vars["PGPASSWORD"] != secret {
+				t.Errorf("%s: PGPASSWORD = %q, want the URL's password", tool, vars["PGPASSWORD"])
+			}
+			if got := vars["FORGE_DATABASE_URL_NO_PASSWORD"]; strings.Contains(got, secret) || !strings.Contains(got, "app@db.internal:5432/app") || !strings.Contains(got, "sslmode=require") {
+				t.Errorf("%s: FORGE_DATABASE_URL_NO_PASSWORD = %q, want the URL with only its password removed", tool, got)
 			}
 		}
 	}
 	v, err := Vars(Hook{Tool: config.MigrationToolGoose, Dir: "/m"}, Invocation{DSN: "postgres://u:p@h/db"})
 	if err != nil || v["GOOSE_DRIVER"] != "postgres" || v["GOOSE_DBSTRING"] != "postgres://u:p@h/db" {
 		t.Errorf("goose's connection must come from GOOSE_DRIVER/GOOSE_DBSTRING: %v %v", v, err)
+	}
+	if v, _ := Vars(Hook{Tool: config.MigrationToolGoose}, Invocation{DSN: "postgres://u@h/db"}); v["PGPASSWORD"] != "" || v["FORGE_DATABASE_URL_NO_PASSWORD"] != "postgres://u@h/db" {
+		t.Errorf("a URL with no password is passed through unchanged: %v", v)
 	}
 }
 
@@ -158,5 +178,34 @@ func TestApply_RunsTheCommandWithTheContract(t *testing.T) {
 	}
 	if err := Status(context.Background(), h, Invocation{}); err == nil || !strings.Contains(err.Error(), "no status command") {
 		t.Errorf("custom with no status = %v; want it named", err)
+	}
+}
+
+// Each built-in tool's history table is its ledger, at its default name or the
+// one its argv names instead; the app's tables are not.
+func TestLedgerTables(t *testing.T) {
+	for _, tc := range []struct {
+		tool          string
+		apply         []string
+		schema, table string
+		want          bool
+	}{
+		{tool: config.MigrationToolGoose, schema: "public", table: "goose_db_version", want: true},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", "app_versions", "up"}, schema: "public", table: "app_versions", want: true},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table=app_versions", "up"}, schema: "public", table: "app_versions", want: true},
+		{tool: config.MigrationToolGoose, schema: "public", table: "widgets"},
+		{tool: config.MigrationToolFlyway, schema: "public", table: "flyway_schema_history", want: true},
+		{tool: config.MigrationToolFlyway, apply: []string{"flyway", "-table=history", "migrate"}, schema: "public", table: "history", want: true},
+		{tool: config.MigrationToolAtlas, schema: "atlas_schema_revisions", table: "atlas_schema_revisions", want: true},
+		{tool: config.MigrationToolAtlas, apply: []string{"atlas", "migrate", "apply", "--revisions-schema", "public"}, schema: "public", table: "atlas_schema_revisions", want: true},
+		{tool: config.MigrationToolAtlas, schema: "public", table: "atlas_schema_revisions"},
+		{tool: config.MigrationToolDbmate, apply: []string{"dbmate", "--migrations-table", "dbmate_versions", "migrate"}, schema: "public", table: "dbmate_versions", want: true},
+		{tool: config.MigrationToolGolangMigrate, apply: []string{"migrate", "-database", "postgres://h/db?x-migrations-table=mig_versions&sslmode=disable", "up"}, schema: "public", table: "mig_versions", want: true},
+		{tool: config.MigrationToolCustom, schema: "public", table: "goose_db_version"},
+	} {
+		h := Hook{Tool: tc.tool, Apply: tc.apply}
+		if got := h.IsLedgerTable(tc.schema, tc.table); got != tc.want {
+			t.Errorf("%s %v: IsLedgerTable(%s.%s) = %v, want %v", tc.tool, tc.apply, tc.schema, tc.table, got, tc.want)
+		}
 	}
 }

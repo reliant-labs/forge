@@ -63,6 +63,13 @@ func fakeMigrationTool() int {
 // migration tool, and points the shadow at the shared test server.
 func hookProject(t *testing.T, files map[string]string) (dir, migDir string) {
 	t.Helper()
+	return hookProjectAs(t, "custom", nil, files)
+}
+
+// hookProjectAs is hookProject for a project that names tool, with this
+// binary as its apply command followed by args.
+func hookProjectAs(t *testing.T, tool string, args []string, files map[string]string) (dir, migDir string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("applies migrations to a real postgres through a subprocess; skipped under -short")
 	}
@@ -83,7 +90,11 @@ func hookProject(t *testing.T, files map[string]string) (dir, migDir string) {
 	if err := os.MkdirAll(migDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	forgeYAML := fmt.Sprintf("name: p\nmodule_path: example.com/p\ndatabase:\n  migrations:\n    dir: migrations\n    tool: custom\n    apply: [%q]\n", self)
+	apply := []string{fmt.Sprintf("%q", self)}
+	for _, a := range args {
+		apply = append(apply, fmt.Sprintf("%q", a))
+	}
+	forgeYAML := fmt.Sprintf("name: p\nmodule_path: example.com/p\ndatabase:\n  migrations:\n    dir: migrations\n    tool: %s\n    apply: [%s]\n", tool, strings.Join(apply, ", "))
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(forgeYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +180,38 @@ func TestShadowHookOnlyCoversTheProjectsMigrationsDir(t *testing.T) {
 	}
 	if got := strings.Join(tableNames(t, dir, other), ","); got != "replayed" {
 		t.Errorf("tables = %s, want replayed (forge's replay)", got)
+	}
+}
+
+// The tool's own history table is its bookkeeping, not the app's schema: the
+// shadow every reader introspects (the ORM, grants, mocks and the seed plan,
+// whose reset truncates what it plans) never includes it, at its default name
+// or the one the tool's argv names.
+func TestShadowExcludesTheToolsLedger(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		ledger string
+	}{
+		{name: "default", ledger: "goose_db_version"},
+		{name: "-table", args: []string{"-table", "app_versions"}, ledger: "app_versions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, migDir := hookProjectAs(t, "goose", tc.args, map[string]string{
+				"00000_ledger.sql":  "CREATE TABLE " + tc.ledger + " (id serial PRIMARY KEY, version_id bigint NOT NULL, is_applied boolean NOT NULL)",
+				"00001_widgets.sql": "CREATE TABLE widgets (id TEXT PRIMARY KEY)",
+			})
+			if got := strings.Join(tableNames(t, dir, migDir), ","); got != "widgets" {
+				t.Fatalf("Tables = %s, want widgets alone (the %s ledger excluded)", got, tc.ledger)
+			}
+			tables, shadow, err := Open(dir, migDir)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer shadow.Close()
+			if len(tables) != 1 || tables[0].Name != "widgets" {
+				t.Errorf("Open: tables = %v, want widgets alone", tables)
+			}
+		})
 	}
 }

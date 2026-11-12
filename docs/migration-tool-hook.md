@@ -30,10 +30,12 @@ Nothing changes for a project that sets neither key.
 | `forge lint --migration-safety`, `forge ci migration-safety`                                        | the SQL-text rules over every `.sql` file the tool applies (goose and dbmate: the Up section); forge-only rules are reported as `skipped (tool: <tool>): <why>` |
 
 The command is an argv with no shell, run in the project root with
-`DATABASE_URL`, `FORGE_MIGRATIONS_DIR`, `FORGE_PROJECT_DIR`, `FORGE_PHASE`
-(`shadow` or `cli`), plus the variables the built-in tool reads natively
-(`GOOSE_DBSTRING`, `FLYWAY_URL`, …). `${NAME}` in an argument expands one of
-those; nothing else is expanded.
+`DATABASE_URL`, `FORGE_DATABASE_URL_NO_PASSWORD` and `PGPASSWORD` (the URL
+without its password, and the password), `FORGE_MIGRATIONS_DIR`,
+`FORGE_PROJECT_DIR`, `FORGE_PHASE` (`shadow` or `cli`), plus the variables the
+built-in tool reads natively (`GOOSE_DBSTRING`, `FLYWAY_URL`, …). `${NAME}` in
+an argument expands one of those; nothing else is expanded. No preset puts the
+password on an argv.
 
 ## What forge stops doing
 

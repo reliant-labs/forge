@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,22 @@ func TestTraceStatementsParameterize(t *testing.T) {
 	}
 	if _, err := (TraceSpans{Scope: scope(), TraceID: "x' OR 1=1"}).Compile(); !isInvalid(err) {
 		t.Errorf("hostile trace id accepted")
+	}
+	for _, siblings := range []bool{false, true} {
+		g, err := TraceSpanGroups{Scope: scope(), TraceID: "ABCDEF01", Siblings: siblings}.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertParameterized(t, g, "abcdef01")
+		if !hasValue(g.Params, "abcdef01") || !strings.Contains(g.SQL, "LIMIT "+strconv.Itoa(MaxTraceSpanGroups+1)) {
+			t.Errorf("trace span groups: %s %v", g.SQL, g.Params)
+		}
+		if runs := strings.Contains(g.SQL, "GROUP BY ParentSpanId") && strings.Contains(g.SQL, "HAVING n > 1"); runs != siblings {
+			t.Errorf("siblings=%v groups by parent: %v\n%s", siblings, runs, g.SQL)
+		}
+	}
+	if _, err := (TraceSpanGroups{Scope: scope(), TraceID: "x' OR 1=1"}).Compile(); !isInvalid(err) {
+		t.Errorf("hostile trace id accepted by the span groups")
 	}
 }
 

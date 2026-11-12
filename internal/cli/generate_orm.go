@@ -11,6 +11,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // runDescriptorGenerate runs buf generate with the protoc-gen-forge plugin
@@ -161,7 +162,7 @@ func hasProtoFilesInDir(root string) (bool, error) {
 
 // hasSQLMigrations returns true if db/migrations/ contains at least one .sql file.
 func hasSQLMigrations(projectDir string) bool {
-	migDir := filepath.Join(projectDir, "db", "migrations")
+	migDir := config.MigrationsPathIn(projectDir)
 	entries, err := os.ReadDir(migDir)
 	if err != nil {
 		return false

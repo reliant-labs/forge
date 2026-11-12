@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,8 +13,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
-// fakeRunner answers by substring of the statement and records what ran.
+// fakeRunner answers by substring of the statement and records what ran. It
+// is safe for concurrent use, as a Runner must be.
 type fakeRunner struct {
+	mu      sync.Mutex
 	ran     []obsquery.Stmt
 	limits  []Limits
 	answers []fakeAnswer
@@ -26,6 +29,8 @@ type fakeAnswer struct {
 }
 
 func (f *fakeRunner) Run(_ context.Context, st obsquery.Stmt, lim Limits) (Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.ran = append(f.ran, st)
 	f.limits = append(f.limits, lim)
 	if f.err != nil {
@@ -399,5 +404,44 @@ func TestStatementPerPurposeIsRunnableAsQuerySQL(t *testing.T) {
 		if !strings.Contains(st.SQL, "{"+k+":") {
 			t.Errorf("parameter %s is bound but not used", k)
 		}
+	}
+}
+
+// A read cut at MaxSpansPerTrace counts the whole trace: its spans by name and
+// its runs of identical siblings, so the tree can say ×79427, not ×4996. A
+// complete read runs neither count.
+func TestTraceCountsTheWholeTraceWhenTheReadIsTruncated(t *testing.T) {
+	var rows [][]any
+	rows = append(rows, spanRow("r", "", "ArchiveCustomer", "Server", "Error", 30_000_000_000))
+	for i := 0; i < obsquery.MaxSpansPerTrace; i++ {
+		rows = append(rows, spanRow(fmt.Sprintf("u%d", i), "r", "orm.UpdateMaskedOrder", "Internal", "Unset", 300_000))
+	}
+	group := func(parent, name, status string, n, total int) []any {
+		return []any{parent, "api", name, status, num64(fmt.Sprint(n)), num64(fmt.Sprint(total)), num64("29105655273"),
+			num64("100628"), num64("39638968"), []any{num64("296590"), num64("701119.5")}, num64("1")}
+	}
+	fr := &fakeRunner{answers: []fakeAnswer{
+		{"GROUP BY ServiceName, SpanName", Result{Rows: [][]any{group("", "orm.UpdateMaskedOrder", "", 79_427, 158_864), group("", "UPDATE orders", "", 79_427, 158_864)}}},
+		{"GROUP BY ParentSpanId", Result{Rows: [][]any{group("r", "orm.UpdateMaskedOrder", "Unset", 79_426, 79_426)}}},
+		{"otel_traces", Result{Rows: rows}},
+	}}
+	res, err := (Local{Env: "dev", Runner: fr}).Trace(context.Background(), TraceRequest{Narrow: rng(), TraceID: "ab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.SpansTruncated || len(res.Spans) != obsquery.MaxSpansPerTrace {
+		t.Fatalf("truncated %v, %d spans", res.SpansTruncated, len(res.Spans))
+	}
+	if res.SpansInTrace != 158_864 || len(res.SpanNames) != 2 || res.SpanNames[1].Name != "UPDATE orders" || res.SpanNames[0].Errors != 1 {
+		t.Errorf("by name: %d spans, %+v", res.SpansInTrace, res.SpanNames)
+	}
+	if len(res.SiblingRuns) != 1 || res.SiblingRuns[0].Count != 79_426 || res.SiblingRuns[0].ParentID != "r" || res.SiblingRuns[0].StatusCode != "unset" ||
+		res.SiblingRuns[0].P95 != 701119 || res.SiblingRuns[0].Total != 29105655273 {
+		t.Errorf("runs: %+v", res.SiblingRuns)
+	}
+
+	small := &fakeRunner{answers: []fakeAnswer{{"otel_traces", Result{Rows: rows[:3]}}}}
+	if res, err := (Local{Env: "dev", Runner: small}).Trace(context.Background(), TraceRequest{Narrow: rng(), TraceID: "ab"}); err != nil || res.SpansInTrace != 0 || len(small.ran) != 1 {
+		t.Errorf("a complete read counts nothing more: %v, ran %d statements", err, len(small.ran))
 	}
 }

@@ -14,7 +14,7 @@ What lives where:
 
   * kcl/workload.k — the ONE workload declaration (`fw.Workload`), its env
     references, and the runtimes it binds to (`forge.OnHost | OnCompose |
-    OnCluster | OnHosted | BuildOnly`).
+    OnCluster | OnHosted | BuildOnly | OnExternal`).
   * this file     — everything else an env declares: the Bundle, the
     cluster target, infra, frontends, databases, secrets, gateways and
     routes, clusters, builds.
@@ -2947,7 +2947,12 @@ schema DockerBuild(Build):
     pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
     wanted."""
     type: str = "docker"
-    dockerfile: str = "Dockerfile"
+    # The Dockerfile: a path relative to the project root — or, when
+    # `context` is a GitSource, relative to that resolved context, so a
+    # deploy repo builds another repo's own Dockerfile by default. A
+    # GitSource here pins a Dockerfile in any repository; its `subdir` names
+    # the FILE (`subdir = "docker/api.Dockerfile"`).
+    dockerfile: str | GitSource = "Dockerfile"
     # The MAIN build context — the directory `docker build` sends as its
     # context, relative to the project root. Empty is the project root, so
     # an unset context builds exactly as before. Set it when the Dockerfile
@@ -2957,7 +2962,18 @@ schema DockerBuild(Build):
     # `--build-context name=value` entries a `COPY --from=name` consumes.
     # `dockerfile` need not live under `context` — docker allows `-f`
     # outside the context.
-    context: str = ""
+    #
+    # A GitSource builds code that lives in ANOTHER repository — the polyrepo
+    # deploy repo that declares workloads from N app repos:
+    #
+    #     build = forge.DockerBuild {
+    #         context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
+    #     }
+    #
+    # It resolves through the same repo+ref cache and local overrides
+    # (.forge/source-overrides.yaml) as a frontend, and the build state and
+    # release ledger record the repo and commit the image was built from.
+    context: str | GitSource = ""
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
@@ -6160,7 +6176,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6181,6 +6197,17 @@ schema ReleaseHealth:
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
+    Error rate, latency and the browser findings compare the after window
+    with the before window, so they also need `min_requests` before the
+    promotion: a thinner before window is no baseline. `require_baseline`
+    says how many services need one. "any" (the default): any comparable
+    service can prove the release good, a service with a thin baseline is
+    listed in `not_evaluated`, and with none comparable the release is
+    inconclusive. "every": a thin baseline on any service with enough
+    after-window traffic holds the release inconclusive. "none": compare
+    against whatever the before window held, however thin. Issues, alerts
+    and restarts need no baseline and fail a release under every setting.
+
     Findings: error_rate (the error rate rose by more than
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
@@ -6191,7 +6218,10 @@ schema ReleaseHealth:
     `max_error_rate_increase`), browser_failed_requests (the share of its
     fetch/XHR requests that failed rose by as much) and browser_page_load (p95
     page load grew by more than `max_p95_ratio`). The browser findings warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For an env with release probes (forge.Probe),
+    probe_failed (a probe failed after the promotion; fails by default) and
+    probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
+    default, as latency does).
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -6201,7 +6231,8 @@ schema ReleaseHealth:
     max_error_rate_increase: float = 0.01
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    require_baseline: str = "any"
 
     check:
         60 <= _release_health_seconds(window) <= 21600, \
@@ -6214,6 +6245,8 @@ schema ReleaseHealth:
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        require_baseline in ["any", "every", "none"], \
+            "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 
 # ---------------------------------------------------------------------------
 # Uptime checks: outside-in HTTP probes the control plane runs on a schedule.
@@ -8002,7 +8035,7 @@ schema Bundle:
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
         # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
         all w in workloads { _bound_runtime(w) }, \
-            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {} | forge.OnExternal {}}`"
         # One name per env: the name is the WorkloadURL namespace, the
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \

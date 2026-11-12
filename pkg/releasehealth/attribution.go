@@ -195,7 +195,7 @@ func Attribute(r Report) Report {
 		out.Verdict = r.Verdict
 		return out
 	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
+	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, gaugeOf(out.Thresholds), out.unproven())
 	return out
 }
 

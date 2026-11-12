@@ -56,6 +56,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/slowtest"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
+	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/internal/linter/tracinglint"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -142,6 +143,8 @@ func gradableRules() []string {
 		"forge-config-unreachable",
 		// slow tests
 		slowtest.RuleUnmarked, slowtest.RuleInputs,
+		// test waits
+		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 		// golangci-lint's build-tag passes (rolled out as one unit)
 		rolloutGolangciBuildTags,
 	}

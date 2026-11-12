@@ -29,7 +29,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                     included ("" when it builds none): the build-state /
                     release-ledger key, and where a push goes
           build   — the typed build, or null (forge builds nothing)
-          runtime — {type: host|compose|cluster|hosted|build-only, ...}
+          runtime — {type: host|compose|cluster|hosted|build-only|external, ...}
           spec    — v1alpha1.WorkloadSpec JSON (the generated
                     tiers.workload_json), identical to the record's spec
     infra[], frontends[], databases[]
@@ -505,7 +505,7 @@ _bucket_minio_endpoint = lambda b: any, name: str, where: str, rt: any, bundle: 
 # forge.GoBuild.
 DEFAULT_GO_MEMORY_LIMIT_PERCENT: int = 90
 
-_RUNS_A_PROCESS = ["host", "cluster", "hosted"]
+_RUNS_A_PROCESS = ["host", "cluster", "hosted", "external"]
 _HAS_MEMORY_LIMIT = ["cluster", "hosted"]
 _MIB = 1048576
 
@@ -1424,8 +1424,8 @@ _check_built_digest = lambda w: any -> bool {
 # workload, or a cluster workload forge builds nothing for); there is no
 # reference to check, so both asserts stay inert.
 _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
-    assert not (image and rt.type == "cluster" and not img_lib.has_registry_host(image)), \
-        "workload '${w.name}': image '${image}' names no registry host, and it is bound to a cluster runtime " \
+    assert not (image and rt.type in ["cluster", "external"] and not img_lib.has_registry_host(image)), \
+        "workload '${w.name}': image '${image}' names no registry host, and it is bound to a ${rt.type} runtime " \
         + "that must pull it. The registry is part of the image: declare the full reference on the workload, e.g. " \
         + "`image = \"ghcr.io/<owner>/${image}\"` (or `localhost:5051/${image}` for a k3d-local registry). " \
         + "There is no env-level registry — a ClusterTarget declares the cluster, namespace and platform; " \
@@ -1453,7 +1453,7 @@ _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
 _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
     _name = w.image if w.image else _artifact(w)
     assert _check_image_names_registry(w, rt, _name)
-    workload_image_ref_for(w.name, "container:" + w.name, _name, bundle.image_tag) if rt.type == "cluster" and _name \
+    workload_image_ref_for(w.name, "container:" + w.name, _name, bundle.image_tag) if rt.type in ["cluster", "external"] and _name \
         else (_name if rt.type == "hosted" else "")
 }
 
@@ -1548,10 +1548,23 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
     } if rt.type == "cluster" else ({
         "type": "hosted"
         "platform": rt.platform
-    } if rt.type == "hosted" else {
+    } if rt.type == "hosted" else ({
+        # The hooks are argv, rendered verbatim; an unset hook is null so Go
+        # tells "no hook" from an empty list (which the schema refuses).
+        "type": "external"
+        "status": rt.status if rt.status else None
+        "plan": rt.plan if rt.plan else None
+        "deploy": rt.deploy if rt.deploy else None
+        "health": rt.health if rt.health else None
+        "env": rt.env
+        "pass_env": rt.pass_env
+        "working_dir": rt.working_dir if rt.working_dir else None
+        "timeout": rt.timeout
+        "platform": rt.platform
+    } if rt.type == "external" else {
         "type": "build-only"
         "build_variants": [_render_build_variant(bv) for bv in rt.build_variants]
-    })))
+    }))))
 }
 
 # One output.workloads[] entry. Runs the runtime mask first.
@@ -1953,6 +1966,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 
 # ReleaseHealth, resolved. The key set is the release shape's
 # `release_health`; the window is in seconds and fail_on is sorted.
+# require_baseline is present only when it is not the default ("any"), so a
+# render that keeps it records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -1961,6 +1976,8 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
         "fail_on": sorted(h.fail_on)
+        if h.require_baseline != "any":
+            "require_baseline": h.require_baseline
     }
 }
 
@@ -2924,10 +2941,12 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
-        "dockerfile": b.dockerfile
-        # The MAIN build context (a project-root-relative dir). None is the
-        # project root, which is how every build behaved before this existed.
-        "context": b.context if b.context else None
+        # A path string, or a GitSource pin projected in its stable dict form.
+        "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
+        # The MAIN build context (a project-root-relative dir, or a GitSource
+        # pin). None is the project root, which is how every build behaved
+        # before this existed.
+        "context": _render_git_source_member(b.context) if typeof(b.context) == "GitSource" else (b.context if b.context else None)
         "platform": b.platform if b.platform else None
         "target": b.target if b.target else None
         "build_args": b.build_args if b.build_args else {}
@@ -3084,6 +3103,17 @@ _render_git_source = lambda s: GitSource -> any {
     }
 }
 
+
+# _render_git_source for the GitSource member of a `str | GitSource` union
+# (DockerBuild.context / dockerfile): untyped, because KCL types the union
+# value as the union even after the typeof() guard selects the member.
+_render_git_source_member = lambda s -> any {
+    {
+        "repo": s.repo
+        "ref": s.ref
+        "subdir": s.subdir if s.subdir else None
+    }
+}
 
 _render_gateway_listener = lambda l: GatewayListener -> any {
     {

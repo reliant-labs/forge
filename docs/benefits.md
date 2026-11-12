@@ -1815,6 +1815,9 @@ _Enforced · Forge, on any infrastructure_
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
 | `forge-slow-test-unmarked`           | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
 | `forge-slow-test-inputs`             | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
+| `forge-test-fixed-sleep`             | A test that sleeps a fixed time and then asserts, guessing how long the work takes: on a loaded machine the guess is short and the test flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)                                                                               | `--test-waits`  |
+| `forge-test-tight-deadline`          | An event wait that fails the test after a deadline under 5s (a select on `time.After`, testify `Eventually`, a poll bounded by `time.Now().Add`), which a busy machine overruns                                                                                                            | `--test-waits`  |
+| `forge-test-wall-clock-bound`        | A test that fails when real elapsed time passes a bound under 5s, measuring how busy the machine was rather than what the code did                                                                                                                                                         | `--test-waits`  |
 | `forgeconv-handler-tests-use-tdd`    | Hand-rolled `{name, call}` tables instead of `tdd.RunRPCCases` (codemod: `forge project migrate tdd`)                                                                                                                                                                                      | `--tests`       |
 | `forgeconv-frontend-hook-tests`      | A generated hooks file with no sibling test                                                                                                                                                                                                                                                | `--tests`       |
 | `forgeconv-frontend-hook-test-shape` | A hook test whose assertions can never pass (a query-shaped test on a mutation hook, or the reverse)                                                                                                                                                                                       | `--conventions` |
@@ -2508,11 +2511,11 @@ _Enforced · Forge, on any infrastructure_
 
 ### Deploy anywhere, declare once
 
-A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting or build-only, so no env file restates a command or build that could drift.
+A `fw.Workload` is declared once in `workloads.k` and each env binds it to host processes, Docker Compose, a Kubernetes cluster you run, Reliant hosting, your own deploy tooling or build-only, so no env file restates a command or build that could drift.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
+**Use:** `OnHost`, `OnCompose`, `OnCluster`, `OnHosted`, `OnExternal` or `BuildOnly` per env; `forge env render|shape|diff` show the result.
 
 **Evidence:**
 
@@ -2522,6 +2525,45 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/deploytarget/firebase.go`](../internal/deploytarget/firebase.go)
 - skill `deploy/model` (`forge skill load deploy/model`)
 - command `forge env render`
+
+<a id="external-deploy-tooling"></a>
+
+### Keep your deploy tool
+
+A workload bound to `forge.OnExternal` is built, released and promoted by forge and then shipped by your own Helm, Fly.io, Cloud Run, ECS or Argo CD through four optional argv hooks, so adopting forge does not mean replacing the pipeline that deploys today.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
+
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+
+**Evidence:**
+
+- source [`kcl/workload.k`](../kcl/workload.k)
+- source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- command `forge env deploy`
+- command `forge env status`
+- skill `deploy/external` (`forge skill load deploy/external`)
+
+<a id="env-verify-parity"></a>
+
+### Prove parity before deploying
+
+`forge env verify <env>` compares, per workload, the digest the env's promotion pins against the digest running and runs your tool's own dry run, while building, recording and deploying nothing, so forge's first deploy of an existing project is known to change nothing.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge env verify prod`, or `--image api=repo@sha256:…` before any forge release exists; `--json` for CI. Exit 0 match, 1 drift, 2 not verified.
+
+**Why:** A missing `status` or `plan` hook is reported unverified, never as "no diff". Cluster workloads are checked off the cluster and against the release's recorded bundle with a client-side live diff.
+
+**Evidence:**
+
+- command `forge env verify`
+- command `forge env verify --image`
+- source [`internal/cli/env_verify_cmd.go`](../internal/cli/env_verify_cmd.go)
+- skill `deploy/external` (`forge skill load deploy/external`)
 
 <a id="prod-from-day-0"></a>
 
@@ -2611,6 +2653,25 @@ _Enforced · Forge, on any infrastructure_
 - skill `observability/query` (`forge skill load observability/query`)
 - library [`pkg/release`](../pkg/release)
 
+<a id="record-deploys"></a>
+
+### Record deploys from existing CI
+
+One `forge release record` step after the deploy job your pipeline already runs gives monitoring a deploy marker per release, in any repo and any language, with no deploy/kcl and nothing built or applied by forge.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
+
+**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as a forge deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
+
+**Evidence:**
+
+- command `forge release record`
+- skill `deploy/record` (`forge skill load deploy/record`)
+- source [`internal/cli/release_record.go`](../internal/cli/release_record.go)
+- library [`pkg/release`](../pkg/release)
+
 <a id="deploy-plan-approval"></a>
 
 ### Deploy plans with binding approval
@@ -2629,6 +2690,27 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/deploy_plan_gate.go`](../internal/cli/deploy_plan_gate.go)
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
 - skill `deploy/plan` (`forge skill load deploy/plan`)
+
+<a id="polyrepo-pinned-sources"></a>
+
+### Polyrepo, pinned, any language
+
+Teams outside a monorepo, in any language, share an infra repo's KCL by a git pin in kcl.mod and build other repos' images from a pinned `DockerBuild.context`, with no go.mod and no CI checkout step; a release records each image's source repo and commit.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
+
+**Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
+
+**Evidence:**
+
+- command `forge kcl imports --refresh`
+- source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
+- source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
+- source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
+- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
+- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
 
 <a id="hosted-deploy-plan"></a>
 
@@ -2838,7 +2920,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 

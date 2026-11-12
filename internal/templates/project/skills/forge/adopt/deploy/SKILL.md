@@ -14,9 +14,9 @@ forge builds it from its own Dockerfile and deploys the image: environments,
 build-once releases promoted by digest, plans, rollout waits, managed Postgres
 and secrets on Reliant hosting work as they do for code forge generated.
 
-There is no command that does this: **you write the declarations**, from the
-templates below. That is a handful of files, and writing them yourself is what
-lets them fit the app. Work through the tiers in order and **stop after any
+`forge project new --in-place --kind app` writes the declarations from what it
+reads in the app (Tier 1); the templates below are what it writes, and what
+you review and edit so they fit the app. Work through the tiers in order and **stop after any
 of them**: each one is complete, and each later one costs more.
 
 | Tier | You get | Cost |
@@ -34,11 +34,43 @@ directory with a Dockerfile and no go.mod it refuses and points here.
 
 ## Tier 1: Ship it
 
-**Before you write anything**, read the app: the Dockerfile (what it builds,
-the port it `EXPOSE`s or reads from `PORT`), how it runs in development
-(`package.json` scripts, a Procfile, the README), the env vars it reads
-(`DATABASE_URL`, secrets, and what it falls back to when one is unset), and
-its migration command.
+**One command writes the declarations; you review them.** In the app's
+directory:
+
+```bash
+forge project new --in-place --kind app --dry-run     # what it found, and every file it would write; writes nothing
+forge project new --in-place --kind app --name myapp  # write them
+```
+
+It writes `forge.yaml` and `deploy/kcl/` (kcl.mod, workloads.k, and the dev,
+staging and prod envs below) and nothing else: no Go module, Taskfile, CI
+workflow or memory file, and none of the app's files change except forge's
+block appended to `.gitignore`. It refuses in a directory that already has a
+`forge.yaml`. What it reads, and what it makes of it:
+
+| It reads | It writes |
+|---|---|
+| a `Dockerfile` at the root and in each top-level directory, or each compose service with a `build:` | one workload each, built with `forge.DockerBuild` from the same Dockerfile and context |
+| the compose service's published port, else `EXPOSE`, else a `--port` / `-b` in the start command, else `ENV PORT` | its port, `PORT` in its env, a tcp probe |
+| a compose service on a Postgres image, or a Postgres driver in the app's dependencies | a managed Postgres on staging and prod, `DATABASE_URL` (or the variable the compose file put its URL in) from it |
+| a compose service that migrates, a `migrate` script, prisma / knex / sequelize-cli / drizzle-kit, `alembic.ini`, Django's `manage.py`, Rails' `db/migrate` | a `migrate` job from the app's image, before every rollout |
+| compose env: literals, and credentials (`*_SECRET`, `*_TOKEN`, `*PASSWORD*`, `*_KEY`, `${…}`) | literals in workloads.k; each credential a `forge.ManagedSecret` on staging and prod, set with `forge secret set` |
+| a compose file with a built service | dev runs that compose file (`forge.OnCompose`), exactly as `docker compose up` did |
+| no compose file | dev runs each workload's dev command (`package.json` `dev`/`start`, the Procfile's `web`, else the Dockerfile's `CMD`) on the host, beside a forge host-native Postgres |
+| Redis / Valkey / Memcached in compose | a hosted workload of that image; dev tools (adminer, mailpit) and other services stay dev-only |
+
+It prints what it **detected**, what it **assumed**, what it **left out**,
+and the next commands. Every assumption is also a `# check:` line in the file
+it shaped: read each one before the first deploy. `--claimable` sizes prod
+for a deploy with no account (one service, its migration job and one
+database; no secret values; no outbound internet until claimed).
+`--harness <name>` adds that harness's agent files; without it there are none
+(Reliant reads the project's memory from forge.yaml).
+
+**Before you trust it**, read the app the way the summary cannot: what each
+env var falls back to when it is unset (a `JWT_SECRET || "superSecret"` is a
+production hole if the secret is never delivered), and whether its start
+command reads `PORT`.
 
 ### 1. The Dockerfile must build on its own
 
@@ -50,12 +82,15 @@ tool in the final image, because the migration job runs that image. Prove it
 with `docker build .`. Add `deploy`, `.forge` and `secrets` to
 `.dockerignore` (a KCL-only edit then leaves the image digest alone).
 
-### 2. Write the files
+### 2. The files, for review and edits
 
-Replace `myapp` with the project's name (lowercase, digits, hyphens), `api`
-with the workload's, `3000` with the app's port, and the two commands marked
-`# yours`. No database? Delete the `migrate` workload and every line marked
-`# db`.
+The command writes the files below, with the values it detected. They are the
+reference for reading and editing what it wrote, and for writing them by hand
+where it cannot read the app (no Dockerfile yet, a build it does not
+understand). By hand: replace `myapp` with the project's name (lowercase,
+digits, hyphens), `api` with the workload's, `3000` with the app's port, and
+the two commands marked `# yours`. No database? Delete the `migrate` workload
+and every line marked `# db`.
 
 ```yaml
 # forge.yaml
@@ -174,6 +209,32 @@ output = forge.render(_bundle)
 `deploy/kcl/prod/main.k` is staging's file with `prod` in its docstring: same
 bindings, its own database and secrets.
 
+With a compose file the command binds dev to it instead of to host processes.
+The compose file owns each container (build, ports, healthcheck, env), so dev
+takes only the workload's name, and the compose Postgres stays the dev
+database:
+
+```python
+# dev with a compose file (deploy/kcl/dev/main.k)
+import forge
+import forge.workloads as fw
+import ..workloads as wl
+
+_compose = lambda w: fw.Workload, service: str -> fw.Workload {
+    fw.Workload {name = w.name, runtime = forge.OnCompose {file = "docker-compose.yml", service = service}}
+}
+
+_bundle = forge.Bundle {
+    project = "myapp"
+    lifecycle = "local"
+    workloads = [
+        fw.Workload {name = "db", runtime = forge.OnCompose {file = "docker-compose.yml", service = "db"}}
+        _compose(wl.api, "api")
+    ]
+}
+output = forge.render(_bundle)
+```
+
 Append to `.gitignore` (`.forge/*`, never `.forge/`: git cannot re-include
 under an ignored directory, and `forge lint` gates on it):
 
@@ -205,7 +266,7 @@ when you want to change the image.
 ### 3. Run it, ship it
 
 ```bash
-npm ci                                 # the app's own install: dev runs its command on the host
+npm ci                                 # the app's own install, when dev runs it on the host (no compose file)
 forge env render dev                   # host: migrate (job), api (service)
 forge env up dev                       # Postgres → migrations → the app; output in .forge/logs/dev/api.log
 forge env status dev                   # App Health: "accepts connections (its declared tcp probe)"

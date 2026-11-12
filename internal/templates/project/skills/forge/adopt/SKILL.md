@@ -81,9 +81,6 @@ Coming soon (do not run or promise; say "coming"):
 - **Record deploys from the user's CI**: a `release record` command.
 - **Parity**: `forge.OnExternal` release hooks and an `env verify` command,
   which shows NO DIFF against what is live before forge drives anything.
-- **Deploy-only adoption of a Dockerfile app**: `forge project new --in-place
-  --kind app` (forge#2085), writing only `forge.yaml` and `deploy/kcl`. Today
-  `adopt/deploy` has the templates you write by hand.
 - **The migrations hook**: forge running the user's own migration tool
   (`database.migrations`), and migration-safety rules dialled outside a forge
   project.

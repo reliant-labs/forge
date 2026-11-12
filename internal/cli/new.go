@@ -67,11 +67,13 @@ func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag
 		verify bool
 		// claimable scaffolds prod for an anonymous deploy.
 		claimable bool
+		// dryRun prints what --kind app would write, and writes nothing.
+		dryRun bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "new [project-name] --mod [module-path]",
-		Short: "Create a new Forge project (service / CLI / library / static site)",
+		Short: "Create a new Forge project (service / CLI / library / static site), or adopt an existing app in any language",
 		Long: `Create a new project with the Forge framework structure.
 
 By default no service is scaffolded: the binary is a deployment unit
@@ -97,6 +99,15 @@ Pick a project kind with --kind:
                             a starter app (--frontend-kind nextjs, the default:
                             a static export; or vite-spa); --in-place inside an
                             existing Vite or Next.js app adopts it untouched.
+  --kind app                An existing app in ANY language, with --in-place:
+                            forge.yaml and deploy/kcl (workloads.k + dev,
+                            staging and prod envs) declaring what it runs,
+                            read from its Dockerfile(s) and compose file —
+                            ports, managed Postgres, migration job, secrets.
+                            Nothing else is written (no Go, no Taskfile, no
+                            CI) and none of the app's files change, except a
+                            forge block appended to .gitignore. --dry-run
+                            prints the files instead.
 
 Use --disable to turn features off at creation time. Each is pinned off in
 forge.yaml's features: block, so a later change to the tree does not turn it
@@ -116,6 +127,8 @@ Example:
   forge project new landing    --kind site                          # new static site (Next.js export)
   forge project new landing    --kind site --frontend-kind vite-spa # new static site (Vite SPA)
   cd my-vite-app && forge project new --in-place --kind site --name landing   # adopt an existing site
+  cd my-express-app && forge project new --in-place --kind app --dry-run      # see what adopting an app writes
+  cd my-django-app && forge project new --in-place --kind app --name shop     # adopt an app in any language
   forge project new --in-place --mod github.com/example/my-project
   forge project new --in-place --name my-project --mod github.com/example/my-project
 
@@ -169,13 +182,21 @@ checkout stop being the same source; drop the bridge with
 			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
 			newClaimable = claimable
 			defer func() { newClaimable = false }()
+			if dryRun && !strings.EqualFold(strings.TrimSpace(kindFlag), projectKindApp) {
+				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app would write, and needs --kind app", "",
+					"add --kind app --in-place inside the app, or drop --dry-run")
+			}
+			newAppDryRun = dryRun
+			newHarnessExplicit = cmd.Flags().Changed("harness")
+			defer func() { newAppDryRun, newHarnessExplicit = false, false }()
 			return runNew(cmd.Context(), projectName, projectPath, modulePath, kindFlag, serviceNames, frontendNames, goVersion, inPlace, force, disableFeatures, harness, skipTools, bufPlugins, binaryMode, frontendWorkspaces, linkForgeRequested(linkForge), verbose, verify, newFrontendOptions{output: frontendOutput, routes: frontendRoutes, kind: strings.ToLower(strings.TrimSpace(frontendKind))})
 		},
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
-	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (a static site with no backend: a new starter app, or with --in-place the Vite/Next.js app already here)")
+	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (a static site with no backend: a new starter app, or with --in-place the Vite/Next.js app already here), app (with --in-place: the app already here, in any language, deployed from its own Dockerfile — forge.yaml and deploy/kcl only)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "With --kind app: print what was detected and every file it would write, and write nothing")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated). With --kind site: the one name the site's frontend is declared under (default web)")
 	cmd.Flags().StringVar(&frontendKind, "frontend-kind", "", "With --kind site: the starter a new site gets — nextjs (default; a static export, one HTML file per route) or vite-spa (a single-page app)")
@@ -299,11 +320,11 @@ func validateNewArgs(kindFlag, bufPlugins, binaryMode string, serviceNames, fron
 		kind = config.ProjectKindService
 	}
 	switch kind {
-	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary, projectKindSite:
+	case config.ProjectKindService, config.ProjectKindCLI, config.ProjectKindLibrary, projectKindSite, projectKindApp:
 		// ok
 	default:
 		return "", "", "", cliutil.UserErr("forge project new",
-			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library, site", kindFlag),
+			fmt.Sprintf("invalid --kind %q: valid values are service, cli, library, site, app", kindFlag),
 			"",
 			"pass --kind=service for a Connect-RPC server, --kind=cli for a Cobra binary, --kind=library for a pure Go module, or --kind=site for a static site with no backend")
 	}
@@ -382,10 +403,21 @@ type newFrontendOptions struct {
 }
 
 //nolint:revive,cyclop // Existing cobra flag fan-out; frontend settings travel together.
-func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose, verify bool, frontend newFrontendOptions) error {
+func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag string, serviceNames []string, frontendNames []string, goVersion string, inPlace bool, force bool, disableFeatures []string, harness string, skipTools bool, bufPlugins, binaryMode string, frontendWorkspaces bool, linkForge bool, verbose, verify bool, frontend newFrontendOptions) error { //nolint:funlen // dispatches every project kind; each kind's body is its own function
 	kindNormalized, bufPluginsNormalized, binaryNormalized, err := validateNewArgs(kindFlag, bufPlugins, binaryMode, serviceNames, frontendNames)
 	if err != nil {
 		return err
+	}
+	if kindNormalized == projectKindApp {
+		return runNewApp(newAppInput{
+			projectName: projectName,
+			projectPath: projectPath,
+			inPlace:     inPlace,
+			force:       force,
+			harness:     harness,
+			claimable:   newClaimable,
+			dryRun:      newAppDryRun,
+		})
 	}
 	if kindNormalized == projectKindSite {
 		targetPath, name, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)
@@ -572,13 +604,14 @@ func refuseNonGoInPlaceTarget(targetPath string) error {
 		// A Dockerfile and no Go module is an app in another language.
 		// The Go scaffold would write ~40 files into it (and a
 		// .dockerignore its own image build trips over). Adopting it is
-		// a handful of declarations an agent writes from the `adopt`
-		// skill, not a scaffold; say so before anything is written.
+		// --kind app: forge.yaml and deploy/kcl declaring its Dockerfile.
+		// Say so before anything is written.
 		if _, err := os.Stat(filepath.Join(targetPath, "Dockerfile")); err == nil {
 			return cliutil.UserErr("forge project new --in-place",
 				fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
 				"",
-				"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched — by following "+Name()+" skill load adopt. "+
+				"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched: "+Name()+" project new --in-place --kind app "+
+					"(--dry-run first to see the files; "+Name()+" skill load adopt explains them). "+
 					"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
 		}
 	}

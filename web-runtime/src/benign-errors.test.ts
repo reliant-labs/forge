@@ -28,6 +28,16 @@ describe("classifyBenignError", () => {
       named("AbortError", "The operation was aborted."),
       "abort",
     ],
+    [
+      "a DOMException TimeoutError from AbortSignal.timeout()",
+      new DOMException("signal timed out", "TimeoutError"),
+      "abort",
+    ],
+    [
+      "an Error named TimeoutError",
+      named("TimeoutError", "The operation timed out."),
+      "abort",
+    ],
     ["Chromium's fetch failure", new TypeError("Failed to fetch"), "network"],
     [
       "Chromium's fetch failure naming the host",
@@ -65,6 +75,16 @@ describe("classifyBenignError", () => {
       "a TypeError that only mentions a fetch failure",
       new TypeError("Failed to fetch workflow definition: not found"),
     ],
+    [
+      "a plain Error mentioning a timeout",
+      new Error("Request timeout after 30s"),
+    ],
+    ["an Error named for a timeout", named("RequestTimeoutError", "timeout")],
+    [
+      "a ConnectError for a deadline",
+      named("ConnectError", "[deadline_exceeded] timeout"),
+    ],
+    ["a TypeError mentioning a timeout", new TypeError("timeout of undefined")],
     ["a plain Error saying Failed to fetch", new Error("Failed to fetch")],
     ["a string", "Failed to fetch"],
     ["undefined", undefined],

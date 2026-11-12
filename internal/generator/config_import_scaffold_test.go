@@ -69,13 +69,15 @@ func TestGenerateWorkerFiles_CompilesWithoutTypedConfig(t *testing.T) {
 
 // TestGenerateWebhookFiles_TestFollowsServiceConfig: the webhook test builds
 // the SERVICE's Deps, so it passes a Config exactly when that Deps takes
-// one, from the package the service names.
+// one, of the type and from the package the service names — its own config
+// block included.
 func TestGenerateWebhookFiles_TestFollowsServiceConfig(t *testing.T) {
 	cases := []struct {
-		name, deps, want string
+		name, deps, want, lit string
 	}{
-		{"no config", "type Deps struct {\n\tLogger *slog.Logger\n}\n", ""},
-		{"own config package", "type Deps struct {\n\tLogger *slog.Logger\n\tConfig *settings.Config\n}\n", `config "example.com/myapp/internal/settings"`},
+		{"no config", "type Deps struct {\n\tLogger *slog.Logger\n}\n", "", ""},
+		{"own config package", "type Deps struct {\n\tLogger *slog.Logger\n\tConfig *settings.Config\n}\n", `config "example.com/myapp/internal/settings"`, "Config: &config.Config{}"},
+		{"own config block", "type Deps struct {\n\tLogger *slog.Logger\n\tConfig *settings.TraderConfig\n}\n", `config "example.com/myapp/internal/settings"`, "Config: &config.TraderConfig{}"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -86,6 +88,13 @@ func TestGenerateWebhookFiles_TestFollowsServiceConfig(t *testing.T) {
 			}
 			src := "package billing\n\nimport (\n\t\"log/slog\"\n\n\t\"example.com/myapp/internal/settings\"\n)\n\nvar _ settings.Config\n\n" + c.deps
 			if err := os.WriteFile(filepath.Join(svcDir, "service.go"), []byte(src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			settingsDir := filepath.Join(root, "internal", "settings")
+			if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(settingsDir, "settings.go"), []byte("package settings\n\ntype Config struct{}\n\ntype TraderConfig struct{}\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			if err := GenerateWebhookFiles(root, "example.com/myapp", "billing", "stripe"); err != nil {
@@ -101,7 +110,7 @@ func TestGenerateWebhookFiles_TestFollowsServiceConfig(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(test, c.want) || !strings.Contains(test, "Config: &config.Config{}") {
+			if !strings.Contains(test, c.want) || !strings.Contains(test, c.lit) {
 				t.Errorf("the webhook test must pass the service's own config (%s):\n%s", c.want, test)
 			}
 		})

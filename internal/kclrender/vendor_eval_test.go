@@ -97,3 +97,30 @@ func TestRunRefusesAnUnmigratedKclMod(t *testing.T) {
 		t.Fatalf("Run on an unmigrated kcl.mod = %v; want a refusal naming `forge generate`", err)
 	}
 }
+
+// A project whose directory name has a space renders: the whole of the bug a
+// user hit with "My Landing" (kpm: "Cannot find the kcl file ... My%20Landing").
+func TestRunRendersAProjectInADirectoryWithASpace(t *testing.T) {
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	dir := filepath.Join(t.TempDir(), "My Landing")
+	envDir := filepath.Join(dir, "deploy", "kcl", "dev")
+	for rel, body := range map[string]string{
+		"deploy/kcl/kcl.mod":    "[package]\nname = \"space_probe\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n",
+		"deploy/kcl/dev/main.k": "import forge\n\nok = forge.Bundle is not None\n",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := kclrender.Run(dir, envDir, []string{"env=dev"})
+	if err != nil {
+		t.Fatalf("render in a directory with a space: %v", err)
+	}
+	if !strings.Contains(string(out), `"ok": true`) && !strings.Contains(string(out), `"ok":true`) {
+		t.Errorf("render output does not show the module resolved:\n%s", out)
+	}
+}

@@ -59,6 +59,19 @@ type Config = configv1.{{.RootConfigMessage}}
 
 // {{.}} is a config block composed on {{$.RootConfigMessage}} ({{$.ConfigDir}}).
 type {{.}} = configv1.{{.}}
+
+// Defaults{{.}} returns the {{.}} block Load yields when no config file,
+// environment variable or flag is set: proto defaults applied, nested blocks
+// allocated, sensitive fields empty. It reads nothing from the process, so it
+// is the block the generated test helpers hand a component that takes it. It
+// panics on a malformed proto default, as RegisterFlags does.
+func Defaults{{.}}() *{{.}} {
+	cfg, err := forgeconfig.DefaultsTyped[*configv1.{{.}}]()
+	if err != nil {
+		panic("config: Defaults{{.}}: " + err.Error())
+	}
+	return cfg
+}
 {{- end}}
 {{- end}}
 {{else if .PrimaryConfigMessage}}
@@ -367,6 +380,20 @@ func Load{{.MessageName}}(cmd *cobra.Command) (*{{.MessageName}}, error) {
 	return forgeconfig.LoadTyped[*configv1.{{.MessageName}}](cmd)
 }
 {{- end}}
+
+// Defaults{{.MessageName}} returns the {{.MessageName}} Load{{.MessageName}} produces when no
+// config file, environment variable or flag is set: proto defaults applied,
+// composed blocks allocated, sensitive fields empty. It reads nothing from the
+// process, so it is the config the generated test helpers hand a component
+// that takes it. It panics on a malformed proto default, as
+// Register{{.MessageName}}Flags does.
+func Defaults{{.MessageName}}() *{{.MessageName}} {
+	cfg, err := forgeconfig.DefaultsTyped[*configv1.{{.MessageName}}]()
+	if err != nil {
+		panic("config: Defaults{{.MessageName}}: " + err.Error())
+	}
+	return cfg
+}
 
 // ModeOf{{.MessageName}} derives the runtime mode from the field tagged
 // role=MODE on the `{{.Process}}` process's config (typically carried by a

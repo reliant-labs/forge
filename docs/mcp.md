@@ -95,6 +95,11 @@ Reliant account and may never have heard of forge:
    module with no Dockerfile, or a directory with no app, is refused with the
    command to run instead. An unclaimed service has no outbound internet (DNS
    and its own Postgres only) and takes no secret values.
+   The CLI does the same: `forge env deploy <env> --claimable` in such a
+   directory adopts the app first (one line says what it added), through the
+   same code, so `npx -y @reliantlabs/forge env deploy prod --claimable` works
+   in a fresh `npm create vite` app. Without `--claimable`, `env deploy` never
+   adopts and needs an existing project.
 2. It runs `forge env deploy <env> --claimable --json` (env `prod` by default):
    the availability check, the proof of work, `StartClaimableDeploy`, then the
    ordinary hosted publish as the anonymous account.

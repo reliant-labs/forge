@@ -119,7 +119,15 @@ type deployConfirmOutcome struct {
 // approved must be the thing a preview would have shown, or the approval is
 // of a different document than the one the operator read. Under --json it
 // goes to stderr, so stdout still carries exactly one document.
-func (p promotePlan) renderForConfirmation(jsonMode bool) {
+func (p promotePlan) renderForConfirmation(jsonMode bool, c deployConfirm) {
+	switch {
+	case c.PlanOnly:
+		p.pending = planNotPending
+	case c.Yes || c.Approve != "":
+		p.pending = planApproved
+	default:
+		p.pending = planAwaitingApproval
+	}
 	renderPromotePlanText(progressWriter(jsonMode), p)
 }
 

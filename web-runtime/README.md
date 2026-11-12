@@ -254,7 +254,8 @@ process.versions.chrome })`), which init stamps as `app.desktop.version`,
   its `serviceVersion`).
 
 - Benign browser errors (`classifyBenignError`, `forge.errors_filtered`): an
-  `AbortError` (a cancelled request, an unmounted component, a navigation) and
+  `AbortError` (a cancelled request, an unmounted component, a navigation), a
+  `TimeoutError` (`AbortSignal.timeout()` elapsing) and
   the browser's generic fetch failure (a `TypeError` reading exactly `Failed to
 fetch`, `Load failed` or `NetworkError when attempting to fetch resource.`)
   are kept out of the error pipeline, whether they arrive as an unhandled

@@ -299,7 +299,7 @@ output.
 - Each env's `DATABASE_URL` is per env. The migration job runs before every
   rollout, so a migration that breaks the running release breaks it during
   the deploy. Keep migrations backward-compatible (expand, then contract).
-- The first `env render` creates `deploy/kcl/kcl.mod.lock`; commit it.
+- Adoption writes an empty `deploy/kcl/kcl.mod.lock` (what kpm writes for a package with no dependencies); commit it with the rest, so a later render or deploy finds a clean tree.
 
 **Stop here when** the app runs on staging and prod and you can redeploy any
 release: that is the whole hosting story, with no app change.

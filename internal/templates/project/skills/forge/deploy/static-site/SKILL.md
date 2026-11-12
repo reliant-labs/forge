@@ -189,9 +189,22 @@ Promotion re-points another env at the same digest:
 byte-identical sites (two hosted envs are two sites: the second needs billing,
 above). Recovery rolls forward to a new release; there is no rollback.
 
-**No account at all?** `forge env deploy prod --claimable` ships the same site
-with no signup and prints its URL plus a claim link to hand your user; unless
-they open it within 72h the site goes offline (`deploy/hosting`, "No account:
+**No account at all?** In a bare Vite app or Next.js static export, with no
+`forge.yaml` yet, one command does it:
+
+```bash
+npx -y @reliantlabs/forge env deploy prod --claimable
+```
+
+With no `forge.yaml` it first adopts the app in place (the same as `forge
+project new --in-place --kind site`), says in one line that it added
+`forge.yaml` and `deploy/kcl/` and left the app's own files untouched, then
+ships the site with no signup and prints its URL plus a claim link to hand your
+user; unless they open it within 72h the site goes offline. Run it at the app's
+root. A Go module with no Dockerfile, or a directory with no app, is refused
+with the command to run instead, and a plain `forge env deploy` (no
+`--claimable`) never adopts: it needs an existing project. The MCP tool
+`deploy_claimable` does the same (`deploy/hosting`, "No account:
 `--claimable`").
 
 Signed in to Reliant means signed in to the control plane: there is no second

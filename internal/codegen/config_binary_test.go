@@ -234,6 +234,10 @@ func TestConfigTemplate_PerBinarySurface(t *testing.T) {
 		"func LoadAdminConfig(cmd *cobra.Command) (*AdminConfig, error)",
 		"func LoadGatewayConfig(cmd *cobra.Command) (*GatewayConfig, error)",
 		"func ValidateAdminConfig(cfg *AdminConfig) error",
+		// Each per-process message has its defaults beside its loader, for
+		// the test helpers of a component that takes it.
+		"func DefaultsAdminConfig() *AdminConfig {\n\tcfg, err := forgeconfig.DefaultsTyped[*configv1.AdminConfig]()",
+		"func DefaultsGatewayConfig() *GatewayConfig {",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("per-binary config.go missing %q", want)

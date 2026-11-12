@@ -94,7 +94,7 @@ func leastKnowledgeFindings(p *depsurface.Package, strict bool) []Finding {
 			out = append(out, Finding{
 				Rule: RuleDepsRootConfig, Severity: SeverityWarning, File: f.File, Line: f.Line,
 				Message:     fmt.Sprintf("Deps.%s (%s) is the root config — every field of every component — where the component needs its own block", f.Name, f.Type),
-				Remediation: "declare the fields this component reads as a config message referenced from the root config (a block), take `Config config.<Block>` here, and fill it with `g.Cfg.<Block>` in internal/app/compose.go",
+				Remediation: "declare the fields this component reads as a config message referenced from the root config (a block), take `Config *config.<Block>` here (a pointer: a config is a proto message, never copied), and compose.go fills it by type with `g.Cfg.Get<Block>()`; the generated test helpers default it to `config.Defaults<Block>()`",
 			})
 		}
 		unused := depsurface.Unused(f)

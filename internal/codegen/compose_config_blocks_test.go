@@ -103,6 +103,48 @@ func TestGenerateCompose_ConfigBlockResolvesByType(t *testing.T) {
 	}
 }
 
+// TestGenerateCompose_ConfigFieldTypedAsBlock: a component that takes its own
+// block in the conventional field (`Config *config.AlpacaConfig`, the
+// composition graph's K3) is handed that block, by type. The name Config used
+// to win outright and wire the root `infra.Cfg`, which does not compile
+// there. A Config field typed as the root config still gets infra.Cfg.
+func TestGenerateCompose_ConfigFieldTypedAsBlock(t *testing.T) {
+	dir := newInjectProject(t)
+	writeInfra(t, dir, "\tLog *slog.Logger\n\tCfg *config.Config")
+	writeGeneratedConfig(t, dir, "\tAlpaca *AlpacaConfig")
+	writeContract(t, dir, "internal/alpaca", strings.Replace(alpacaAdapter,
+		"\tCfg    *config.AlpacaConfig\n", "\tConfig *config.AlpacaConfig\n", 1))
+	writeContract(t, dir, "internal/ledger", `package ledger
+
+import "example.com/proj/pkg/config"
+
+type Service interface{ Do() }
+
+type Deps struct {
+	Config *config.Config
+}
+
+func New(d Deps) (Service, error) { return nil, nil }
+`)
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Packages: []BootstrapPackageData{
+			{Name: "alpaca", Package: "alpaca", ImportPath: "alpaca", FieldName: "Alpaca", VarName: "alpaca", Fallible: true},
+			{Name: "ledger", Package: "ledger", ImportPath: "ledger", FieldName: "Ledger", VarName: "ledger", Fallible: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateCompose: %v", err)
+	}
+	flat := strings.Join(strings.Fields(readInject(t, dir)), " ")
+	for _, want := range []string{"Config: infra.Cfg.GetAlpaca(),", "Config: infra.Cfg,"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("compose.go missing %q:\n%s", want, readInject(t, dir))
+		}
+	}
+}
+
 // The resolution is by TYPE and proven, never by a name that looks right.
 func TestConfigBlocks_Resolve(t *testing.T) {
 	dir := t.TempDir()

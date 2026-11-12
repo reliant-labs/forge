@@ -2779,6 +2779,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        it is this frontend's choice in this env, which is
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   PAGE_VIEWS           "false" only; unset means page_viewed events
+#   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
 #                        default "identified" and browser telemetry is not
 #                        off; unset means identified
@@ -2790,6 +2792,8 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
+        | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {}) \
         | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 

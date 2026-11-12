@@ -16,6 +16,14 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// The runtime's telemetry entry points, observed: what the context names to
+// telemetry is the subject of the identity tests below.
+const telemetry = vi.hoisted(() => ({ identifyUser: vi.fn() }));
+vi.mock("@reliantlabs/forge-web-runtime", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  identifyUser: telemetry.identifyUser,
+}));
+
 import { AuthContextProvider } from "./context";
 import { RouteGuard } from "./route-guard";
 import { useAuth } from "./use-auth";
@@ -44,7 +52,7 @@ function setMockMode(mode: string) {
 function stubServer(server: "unreachable" | "signed-in") {
   const fetchMock = vi.fn(async () => {
     if (server === "unreachable") throw new TypeError("Failed to fetch");
-    return new Response(JSON.stringify({ authenticated: true, email: "real@example.com" }), {
+    return new Response(JSON.stringify({ authenticated: true, email: "real@example.com", subject: "sub_real" }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
@@ -71,6 +79,8 @@ afterEach(() => {
   setMockMode("");
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  telemetry.identifyUser.mockClear();
+  delete (window as unknown as { __FORGE_CONFIG__?: unknown }).__FORGE_CONFIG__;
 });
 
 describe("AuthContextProvider", () => {
@@ -121,6 +131,51 @@ describe("AuthContextProvider", () => {
 
     expect(await screen.findByText("signed out")).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("names the signed-in user to telemetry", async () => {
+    setMockMode("");
+    stubServer("signed-in");
+
+    render(
+      <AuthContextProvider>
+        <Probe />
+      </AuthContextProvider>,
+    );
+
+    expect(await screen.findByText("signed in as real@example.com")).toBeTruthy();
+    expect(telemetry.identifyUser).toHaveBeenLastCalledWith("sub_real");
+  });
+
+  it("names nobody to telemetry when the runtime config says IDENTIFY_USER = \"false\"", async () => {
+    setMockMode("");
+    stubServer("signed-in");
+    (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> }).__FORGE_CONFIG__ = { IDENTIFY_USER: "false" };
+
+    render(
+      <AuthContextProvider>
+        <Probe />
+      </AuthContextProvider>,
+    );
+
+    expect(await screen.findByText("signed in as real@example.com")).toBeTruthy();
+    // Only ever cleared: no subject is attached, so no heartbeat is sent.
+    expect(telemetry.identifyUser).toHaveBeenCalled();
+    for (const [id] of telemetry.identifyUser.mock.calls) expect(id).toBeNull();
+  });
+
+  it("names nobody to telemetry in mock mode", async () => {
+    setMockMode("true");
+    stubServer("unreachable");
+
+    render(
+      <AuthContextProvider>
+        <Probe />
+      </AuthContextProvider>,
+    );
+
+    expect(await screen.findByText("signed in as dev@localhost")).toBeTruthy();
+    expect(telemetry.identifyUser).not.toHaveBeenCalled();
   });
 
   it("asks the server who is signed in when mock mode is off", async () => {

@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // SignInRoutes serves the sign-in methods a LOGIN_POLICY document turns on —
@@ -787,7 +789,7 @@ func (r *SignInRoutes) startMagic(ctx context.Context, email string) magicBindin
 		}
 		return magicBinding{Kind: "v", UserID: user.ID}
 	case errors.Is(err, ErrUserNotFound) && r.cfg.Policy.SignupAllows(email):
-		id, err := c.CreateUser(ctx, NewUser{Email: email, VerifyURLTemplate: r.magicTemplate(), SelfSignup: true})
+		id, err := c.CreateUser(WithAuthMethod(ctx, observe.AuthMethodMagicLink), NewUser{Email: email, VerifyURLTemplate: r.magicTemplate(), SelfSignup: true})
 		if err != nil {
 			r.cfg.Logger.ErrorContext(ctx, "magic link: could not create the account", "error", err)
 			return magicBinding{Kind: "n"}
@@ -1037,6 +1039,10 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 		return
 	}
 	intent := &IDPIntent{ID: b.IntentID, Token: strings.TrimSpace(body.Token)}
+	// The sign-in and any account it creates are recorded as social, through
+	// this provider (auth_events.go).
+	ctx = withSocialMethod(ctx, social.Type)
+	req = req.WithContext(ctx)
 	signIn := func(userID string) {
 		s, err := c.CreateSession(ctx, Credentials{UserID: userID, IDPIntent: intent})
 		if err != nil {
@@ -1158,6 +1164,7 @@ func (r *SignInRoutes) acceptInviteBySocial(w http.ResponseWriter, req *http.Req
 		}
 	}
 	r.cfg.Logger.InfoContext(ctx, "invitation accepted", "user_id", userID, "method", InviteMethodSocial, "provider", social.Type)
+	reportInviteAccepted(ctx, userID)
 	signIn(userID)
 }
 
@@ -1238,6 +1245,7 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 	}
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "invitation accepted", "user_id", userID, "method", body.Method)
+	reportInviteAccepted(ctx, userID)
 
 	switch body.Method {
 	case MethodPassword:
@@ -1628,7 +1636,7 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 		}
 		r.cfg.Logger.InfoContext(ctx, "sign-up for an address that already has an account", "user_id", user.ID)
 	case errors.Is(err, ErrUserNotFound):
-		id, err := c.CreateUser(ctx, NewUser{Email: email, GivenName: body.GivenName,
+		id, err := c.CreateUser(WithAuthMethod(ctx, observe.AuthMethodPassword), NewUser{Email: email, GivenName: body.GivenName,
 			FamilyName: body.FamilyName, VerifyURLTemplate: r.verifyTemplate(), SelfSignup: true})
 		if err != nil {
 			r.unavailable(ctx, w, "sign-up: create account", err)
@@ -1679,6 +1687,7 @@ func (r *SignInRoutes) registerWithoutMail(w http.ResponseWriter, req *http.Requ
 		return
 	}
 	r.cfg.Logger.InfoContext(ctx, "account created (no mail delivery; signed in unverified)", "user_id", id)
+	reportSignUp(ctx, id, observe.AuthMethodPassword, false)
 	r.grantSignupRole(ctx, id)
 	tokens, err := c.SignIn(ctx, r.cfg.Flow, Credentials{LoginName: email, Password: body.Password})
 	if err != nil {

@@ -17,8 +17,17 @@ import {
   setTelemetrySink,
   setTelemetryUser,
   track,
+  recordProductEvent,
+  eraseAnalyticsDeviceState,
   type TelemetrySink,
 } from "./track.js";
+import {
+  ATTRIBUTION_STORAGE_KEY,
+  IDENTIFIED_USER_STORAGE_KEY,
+  VISITOR_ID_STORAGE_KEY,
+} from "./attribution.js";
+import { AUTH_SEEN_STORAGE_KEY } from "./auth-events.js";
+import { RUM_SESSION_STORAGE_KEY } from "./session-cookie-fallback.js";
 
 function sink() {
   const track = vi.fn<TelemetrySink["track"]>();
@@ -183,6 +192,36 @@ describe("track", () => {
     expect(again.track).not.toHaveBeenCalled();
   });
 
+  it("tells an emitter its event reached the sink, and never one that was dropped", () => {
+    const delivered: string[] = [];
+    const s = sink();
+    setTelemetrySink(s);
+    recordProductEvent("now", {}, () => delivered.push("now"));
+    expect(delivered).toEqual(["now"]);
+
+    // Held while the SDK loads: told on replay, after the sink has it.
+    setTelemetrySink(null);
+    recordProductEvent("held", {}, () => {
+      expect(s.track).toHaveBeenCalledWith("held", {});
+      delivered.push("held");
+    });
+    expect(delivered).toEqual(["now"]);
+    setTelemetrySink(s);
+    expect(delivered).toEqual(["now", "held"]);
+
+    // A start that failed drops what was held: never told.
+    setTelemetrySink(null);
+    recordProductEvent("lost", {}, () => delivered.push("lost"));
+    setTelemetrySink(null);
+    setTelemetrySink(s);
+    // A throwing callback never breaks the app.
+    recordProductEvent("throws", {}, () => {
+      throw new Error("boom");
+    });
+    expect(delivered).toEqual(["now", "held"]);
+    expect(s.track).toHaveBeenCalledWith("throws", {});
+  });
+
   it("holds at most MAX_QUEUED_EVENTS and drops the rest", () => {
     for (let i = 0; i < MAX_QUEUED_EVENTS + 25; i++) track(`e${i}`);
     const s = sink();
@@ -250,10 +289,36 @@ describe("setTelemetryUser", () => {
     expect(s.setUser.mock.calls).toEqual([[""], [""], [""]]);
   });
 
-  it("holds only the last user while the SDK loads, in front of later events", () => {
+  it("replays each held event under the user it was recorded with, then the last user", () => {
+    track("before");
     setTelemetryUser("first");
     track("e");
     setTelemetryUser("second");
+    track("f");
+    setTelemetryUser(null);
+    const s = sink();
+    const order: string[] = [];
+    s.setUser.mockImplementation((id) => void order.push(`user:${id}`));
+    s.track.mockImplementation((name) => void order.push(name));
+
+    setTelemetrySink(s);
+
+    // "e" is first's, not re-attributed to second; "f" is second's; the
+    // sign-out that came last is what later events carry.
+    expect(order).toEqual([
+      "before",
+      "user:first",
+      "e",
+      "user:second",
+      "f",
+      "user:",
+    ]);
+  });
+
+  it("stamps the last user once when held events already carry it", () => {
+    setTelemetryUser("first");
+    setTelemetryUser("second");
+    track("e");
     const s = sink();
 
     setTelemetrySink(s);
@@ -306,5 +371,62 @@ describe("disableTelemetry", () => {
     setTelemetrySink(s);
 
     expect(() => disableTelemetry()).not.toThrow();
+  });
+});
+
+describe("reserved event names", () => {
+  it("track() sends an app event with a reserved prefix, and warns once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = sink();
+    setTelemetrySink(s);
+    track("page_scrolled");
+    track("auth_custom");
+    expect(s.track.mock.calls.map(([name]) => name)).toEqual([
+      "page_scrolled",
+      "auth_custom",
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("the runtime's own emitters record them without a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setTelemetrySink(sink());
+    recordProductEvent("page_viewed", { route: "/" });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe("eraseAnalyticsDeviceState", () => {
+  it("erases every key the full tier writes, by each module's own constant", () => {
+    const local = new Map<string, string>();
+    const session = new Map<string, string>();
+    const storage = (m: Map<string, string>) => ({
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, v),
+      removeItem: (k: string) => void m.delete(k),
+    });
+    vi.stubGlobal("window", {
+      localStorage: storage(local),
+      sessionStorage: storage(session),
+    });
+    for (const key of [
+      ATTRIBUTION_STORAGE_KEY,
+      VISITOR_ID_STORAGE_KEY,
+      IDENTIFIED_USER_STORAGE_KEY,
+      AUTH_SEEN_STORAGE_KEY,
+      RUM_SESSION_STORAGE_KEY,
+      "forge.analytics_opt_out",
+    ]) {
+      local.set(key, "x");
+    }
+    // REPLAY_SAMPLE_KEY lives in telemetry.ts, which imports the SDK types.
+    session.set("forge.replay.sampled", "1");
+
+    eraseAnalyticsDeviceState();
+
+    expect([...local.keys()]).toEqual(["forge.analytics_opt_out"]);
+    expect(session.size).toBe(0);
   });
 });

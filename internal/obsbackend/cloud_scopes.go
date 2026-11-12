@@ -30,7 +30,7 @@ func DeclareCloudScopes(c ScopeDeclarer) {
 		procSearchLogs, procListTraces, procGetTrace, procListMetrics, procQueryPanel,
 		procGetMetric, procListMetricExemplars,
 		procGetServiceOverview, procListAlerts, procListTelemetryDeliveries, procListWorkloads,
-		procGetReleaseHealth, procListActivity,
+		procGetReleaseHealth, procListActivity, procGetUserActivity,
 		procListIssues, procGetIssue, procListIssueEvents, procListIssueTimeline,
 		procListSessions, procGetSession, procGetSessionTimeline,
 		procListDashboards, procGetDashboard,

@@ -62,6 +62,7 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs issue comment <id> <text> [env]` | Add a comment (cloud; needs `obs:triage`) |
 | `forge obs issue assign <id> <user-id\|me\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
 | `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
+| `forge obs users [env]` | Users over the range (`--since`, default 7d, up to 90d) and the one before: active, new, returning, per env, with `--series N` daily counts and `--seen-total`. Hosted envs only |
 | `forge obs session <id> [env]` | One session as a text timeline: pages, clicks on masked selectors, failed requests, errors with their issue, custom events, trace ids (`--limit`, `--page-token`). No replay bytes. Exit 1 not found, 2 could not look |
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, over the trace's own time range; `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
@@ -79,26 +80,7 @@ Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service
 
 ## Issue assignment filters
 
-```bash
-forge obs issues prod --assignee me       # the credential's acting person
-forge obs issues prod --assignee none     # only unassigned issues
-forge obs issue assign ISS-ab12 me prod   # assign to that person
-forge obs issue assign ISS-ab12 none prod # clear the assignee
-```
-
-The server resolves `me` from the **verified credential**, including user-owned CLI
-login and helper tokens; the CLI never infers a user from a stored login, decodes a
-token, or calls the human-only `GetCurrentUser` RPC. Organization automation tokens
-act for nobody: `me` is refused **FailedPrecondition**, exit 2, without a fallback
-or retry. Name a user ID instead. `none` on a list sends the API's `unassigned=true`
-(not `assignee="none"`); an omitted filter sends neither field, including no false
-`unassigned`. Locally every issue is unassigned: `none` includes all rows while a
-named assignee or `me` matches none; assignment writes still need a hosted env.
-
-Backend dependency: listing uses the CP #1402 fields. `assign ... me` additionally
-requires the owner-approved server-side `AssignIssue.assignee_user_id="me"`
-resolution; #1402 alone only supports literal user IDs on that mutation. Until
-that backend change lands, use an explicit user ID for assignment.
+`forge obs issues <env> --assignee me|none|<user-id>` and `forge obs issue assign <id> me|none|<user-id> <env>`. `me` is the verified credential's person (an organization automation token is refused, exit 2); how each value reaches the API and the local behaviour: `observability/query/issues`.
 
 ## What is wrong now: `forge obs status`
 

@@ -3995,15 +3995,25 @@ schema BrowserTelemetry:
             }
         }
 
-    `console_capture`, `replay`, `replay_sample_rate` and `analytics.mode`
-    reach the browser through the runtime config document (config.js), so one
-    build promotes across environments and each environment sets its own.
-    `replay` is the per-frontend switch for session replay (masked, off by
-    default).
+    `console_capture`, `replay`, `replay_sample_rate`, `page_views`,
+    `identify_user` and `analytics.mode` reach the browser through the
+    runtime config document (config.js), so one build promotes across
+    environments and each environment sets its own. `replay` is the
+    per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
     # noisy or carries data that must not leave the browser.
     console_capture: bool = True
+    # Record a `page_viewed {route}` product event for every route the user
+    # lands on: the pathname only (no query or fragment, the base path
+    # stripped, id-looking segments as `:id`). False renders
+    # PAGE_VIEWS = "false" and the browser records none.
+    page_views: bool = True
+    # Stamp the signed-in user's opaque id (the `subject` the API's
+    # /auth/session answers for a frontend with native sign-in) on every
+    # browser event, so browser and backend events join on one user. False
+    # renders IDENTIFY_USER = "false" and the browser never asks.
+    identify_user: bool = True
     # Session replay for THIS frontend in THIS environment: OFF by default.
     # True renders OTEL_REPLAY = "true" into the frontend's runtime config
     # (config.js, so a promoted build needs no rebuild) and opts the env's

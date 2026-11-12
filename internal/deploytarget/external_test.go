@@ -201,11 +201,29 @@ func TestParseExternalStatus(t *testing.T) {
 	for name, in := range map[string]string{
 		"no json":    "deployed v2",
 		"two values": statusJSON(extDigestA) + statusJSON(extDigestB),
+		"trailing }": statusJSON(extDigestA) + "}",
+		"trailing ]": statusJSON(extDigestA) + " ]",
+		"trailing 1": statusJSON(extDigestA) + "\n1",
 		"tag digest": `{"digest":"v1.2.3"}`,
 	} {
 		if _, err := ParseExternalStatus([]byte(in)); err == nil {
 			t.Errorf("%s: want an error", name)
 		}
+	}
+}
+
+// An inherited FORGE_* variable must not survive beside the overlay's: a
+// child's getenv returns the first occurrence, so a duplicate would let the
+// parent's FORGE_IMAGE override the release's pinned image.
+func TestHookEnviron_OverlayReplacesInherited(t *testing.T) {
+	base := []string{"PATH=/bin", "FORGE_IMAGE=evil@sha256:0", "HOME=/h", "FORGE_ENV=dev", "NOEQUALS"}
+	got := hookEnviron(base, map[string]string{"FORGE_IMAGE": "good@" + extDigestA, "FORGE_ENV": "prod"})
+	want := []string{"PATH=/bin", "HOME=/h", "NOEQUALS", "FORGE_ENV=prod", "FORGE_IMAGE=good@" + extDigestA}
+	if !slices.Equal(got, want) {
+		t.Fatalf("hookEnviron = %q\nwant          %q", got, want)
+	}
+	if got := hookEnviron(base, nil); !slices.Equal(got, base) {
+		t.Errorf("an empty overlay must pass the environment through; got %q", got)
 	}
 }
 

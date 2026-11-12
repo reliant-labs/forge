@@ -46,6 +46,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -304,15 +305,7 @@ func (ExecHookRunner) RunHook(ctx context.Context, inv HookInvocation) (int, err
 	cmd.Dir = inv.Dir
 	cmd.Stdout = inv.Stdout
 	cmd.Stderr = inv.Stderr
-	cmd.Env = os.Environ()
-	keys := make([]string, 0, len(inv.Env))
-	for k := range inv.Env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		cmd.Env = append(cmd.Env, k+"="+inv.Env[k])
-	}
+	cmd.Env = hookEnviron(os.Environ(), inv.Env)
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return -1, fmt.Errorf("%s: %w", inv.Argv[0], ctx.Err())
@@ -325,6 +318,39 @@ func (ExecHookRunner) RunHook(ctx context.Context, inv HookInvocation) (int, err
 		return -1, err
 	}
 	return 0, nil
+}
+
+// hookEnviron is base with every key the overlay sets removed, then the
+// overlay appended in sorted order. Removing rather than only appending is
+// what makes the overlay authoritative: with a duplicate key a child's libc
+// getenv returns the FIRST occurrence, so an inherited FORGE_IMAGE would
+// otherwise win over the release's pinned one.
+func hookEnviron(base []string, overlay map[string]string) []string {
+	norm := func(k string) string {
+		if runtime.GOOS == "windows" {
+			return strings.ToUpper(k)
+		}
+		return k
+	}
+	set := make(map[string]bool, len(overlay))
+	keys := make([]string, 0, len(overlay))
+	for k := range overlay {
+		set[norm(k)] = true
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(base)+len(keys))
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if set[norm(k)] {
+			continue
+		}
+		env = append(env, kv)
+	}
+	for _, k := range keys {
+		env = append(env, k+"="+overlay[k])
+	}
+	return env
 }
 
 // ExternalHooks runs an external workload's hooks. The zero value execs them
@@ -416,7 +442,10 @@ func ParseExternalStatus(out []byte) (ExternalStatus, error) {
 	if err := dec.Decode(&st); err != nil {
 		return ExternalStatus{}, fmt.Errorf("status hook printed no JSON object on stdout (%v); want {\"digest\":\"sha256:…\",\"version\":…,\"image\":…,\"health\":…}", err)
 	}
-	if dec.More() {
+	// Decoder.More reports only on the current array or object, so a second
+	// top-level value is detected by decoding once more and requiring EOF.
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return ExternalStatus{}, errors.New("status hook printed more than one JSON value on stdout; print exactly one object (send logs to stderr)")
 	}
 	if i := strings.LastIndex(st.Digest, "@"); i >= 0 {

@@ -640,10 +640,13 @@ func renderOwnerAwareRequestBody(b *strings.Builder, s createRequestSpec, constN
 }
 
 // createSpecsOwnerAware reports whether any request factory in a group takes
-// FactoryOwner, so the file declares the option and its helpers.
+// FactoryOwner, so the file declares the option and its helpers. A factory
+// that only fails the test (failure set) still has the owner-aware signature,
+// `opts ...FactoryOption`, so it counts too: leaving it out declared a
+// function over an undefined type, and the package's tests did not compile.
 func createSpecsOwnerAware(specs []createRequestSpec) bool {
 	for _, s := range specs {
-		if s.failure == "" && s.ownerAware {
+		if s.ownerAware {
 			return true
 		}
 	}

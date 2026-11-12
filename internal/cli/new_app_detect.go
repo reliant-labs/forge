@@ -187,10 +187,16 @@ func refuseCredentialCommands(composeName string, c *composeFile) error {
 // credentialArg is the index of the first argument of argv that carries a
 // credential, or -1: a value credentialValue recognizes (a URL with userinfo
 // or a credential query parameter), a `--name=value` or `NAME=value` whose
-// name credentialName recognizes, or the value after such a flag.
+// name credentialName recognizes, or the value after such a flag. An argument
+// that is itself a script (`sh -c "worker --password x"`: it holds
+// whitespace) is split into words and judged the same way, so a credential
+// wrapped in a shell is found too.
 func credentialArg(argv []string) int {
 	for i, a := range argv {
 		if credentialValue(a) {
+			return i
+		}
+		if strings.ContainsAny(a, " \t\n") && credentialArg(splitComposeCommand(a)) >= 0 {
 			return i
 		}
 		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
@@ -207,12 +213,19 @@ func credentialArg(argv []string) int {
 	return -1
 }
 
+// envReference is a value that is exactly one environment-variable
+// reference ($NAME or ${NAME}, a ${NAME:-default} included, or compose's
+// escaped $$NAME that it leaves for the container's shell): it is
+// substituted at run time, so the command names no credential.
+var envReference = regexp.MustCompile(`^\$\$?(\{[A-Za-z_][A-Za-z0-9_]*(:?[-=?+][^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)$`)
+
 // secretShaped reports whether v, the value of a credential-named argument,
-// could be the credential itself: not empty, not a reference to one (an
-// environment variable, a file path) and not a number or a boolean
-// (`--max-tokens 512`).
+// could be the credential itself: not empty, not exactly a reference to one
+// (an environment variable, a file path) and not a number or a boolean
+// (`--max-tokens 512`). A literal that merely contains '$' is still a
+// credential.
 func secretShaped(v string) bool {
-	if v == "" || strings.ContainsRune(v, '$') || strings.ContainsAny(v[:1], "/.~") {
+	if v == "" || envReference.MatchString(v) || strings.ContainsAny(v[:1], "/.~") {
 		return false
 	}
 	if _, err := strconv.ParseFloat(v, 64); err == nil {

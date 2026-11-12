@@ -626,7 +626,12 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 		{name: "token flag value", command: "worker --api-token hunter2token", refused: true},
 		{name: "token flag=value", command: "worker --api-token=hunter2token", refused: true},
 		{name: "query credential", command: `["worker", "--upstream", "https://api.example.com/v1?api_key=hunter2query"]`, refused: true},
+		{name: "shell-wrapped password", command: `["sh", "-c", "worker --password hunter2pw"]`, refused: true},
+		{name: "shell-wrapped broker URL", command: `["bash", "-c", "exec celery -A app worker --broker amqp://u:hunter2amqp@mq//"]`, refused: true},
+		{name: "a literal password containing a dollar", command: "worker --password hunter2$dollar", refused: true},
 		{name: "from the environment", command: "celery -A app worker --broker ${BROKER_URL}"},
+		{name: "shell-wrapped, from the environment", command: `["sh", "-c", "worker --password \"$$WORKER_PASSWORD\""]`},
+		{name: "a default-valued reference", command: "worker --password ${WORKER_PASSWORD:-}"},
 		{name: "a secret file", command: "worker --token-file /run/secrets/token"},
 		{name: "a number", command: "worker --max-tokens 512"},
 	} {
@@ -662,6 +667,17 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 	})
 	if _, err := detectApp(root, "shop", false); err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "migrate"`) {
 		t.Errorf("migration command: err = %v, want a value-free refusal naming the service", err)
+	}
+	// ...and so is one wrapped in a shell, in claimable mode too.
+	root = writeAppTree(t, map[string]string{
+		"requirements.txt":   "flask==3.0.0\ngunicorn==22.0.0\n",
+		"Dockerfile":         "FROM python:3.12-slim\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+		"docker-compose.yml": "services:\n  web:\n    build: .\n    ports:\n      - \"8000:8000\"\n  migrate:\n    build: .\n    command: [\"sh\", \"-c\", \"alembic -x db_password=hunter2pg upgrade head\"]\n",
+	})
+	for _, claimable := range []bool{false, true} {
+		if _, err := detectApp(root, "shop", claimable); err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "migrate"`) {
+			t.Errorf("shell-wrapped migration command, claimable=%v: err = %v, want a value-free refusal naming the service", claimable, err)
+		}
 	}
 }
 

@@ -3104,7 +3104,7 @@ benefits:
       The release is record-only: it may name no artifacts (a version and a
       commit), it is labelled "recorded by CI" in `forge obs changes` and the
       console, and the control plane refuses to bind one to an env forge itself
-      deploys, so a record never poses as a forge deploy. A retried CI step
+      deploys, so a record never poses as forge's own deploy. A retried CI step
       records once, and the same version with other digests is a conflict, not
       an overwrite. Not signed in, it records on this machine's ledger.
     evidence:

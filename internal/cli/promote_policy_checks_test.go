@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -188,6 +189,9 @@ esac
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("host resource missing: the argv hook under test is a POSIX shell script, which Windows cannot exec")
 	}
 	hook := release.ShapeApprovalHook{Mode: release.DeliveryEnforce, Argv: []string{"./approve.sh"}, TimeoutSeconds: 5}
 	ctx := context.Background()

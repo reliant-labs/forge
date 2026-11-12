@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -82,6 +83,9 @@ func TestBenefitsCmd_ALookupFailureIsAnError(t *testing.T) {
 	}
 	t.Chdir(gone)
 	if err := os.Remove(gone); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("host resource missing: Windows cannot remove a process's working directory, so there is no removed cwd to look up from")
+		}
 		t.Fatal(err)
 	}
 	if _, err := os.Getwd(); err == nil {

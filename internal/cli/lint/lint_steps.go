@@ -720,6 +720,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-bis. Test waits — a Go test that waits on the wall clock
+		// where it should wait on an event (a fixed sleep, a deadline under
+		// 5s that fails the test, an elapsed-time upper bound): the shapes
+		// that flake on a loaded machine. Syntactic, a parse per _test.go
+		// file, so it runs in the full sweep. GATES, through the warn-first
+		// rollout (lint_test_waits.go).
+		{
+			name:  "test-waits lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectTestWaitsJSON(rc.cwd)
+			},
+		},
+
 		// 13d-quater. Create-nullability — a field's `optional` label must
 		// agree between an entity message and its Create<Entity>Request.
 		// The Create request is the one envelope that FLATTENS the entity,

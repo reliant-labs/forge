@@ -284,7 +284,11 @@ deploys from CI instead of a laptop, and probes that mean "ready".
 - **Gated promotion.** In `deploy/kcl/prod/main.k`, `delivery_policy =
   forge.DeliveryPolicy {health_gate = forge.HealthGate {after = ["staging"]}}`:
   the control plane refuses a release on prod until staging's verdict for it
-  is PASS (needs Tier 2). `deploy/delivery-policy`.
+  is PASS (needs Tier 2). Add `required_gates = forge.RequiredGates {names =
+  ["e2e"]}` to refuse a promote that does not carry your CI's checks as passed
+  (`--gate name=e2e,status=passed`), and `approval_hook = forge.ApprovalHook
+  {url = "https://…"}` to ask your own approval system first; both are
+  enforced with or without a control plane. `deploy/delivery-policy`.
 - **More environments.** `forge env new preview --from staging`; `forge env
   diff`. `deploy/model`.
 - **CI.** forge generates no workflow for a project with no Go module; write

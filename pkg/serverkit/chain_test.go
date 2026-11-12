@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -474,4 +476,59 @@ func TestAuthWithCaller_DefaultsRecordTheProjectsCaller(t *testing.T) {
 	if audit["user_id"] != "u_42" {
 		t.Errorf("audit record user_id = %v, want the project's caller u_42:\n%v", audit["user_id"], audit)
 	}
+}
+
+// ChainDeps.AuthProvider reaches the daily sign-in heartbeat, and the
+// heartbeat reads the caller through Auth's Caller: an app whose auth keeps
+// its caller in a context of its own (AuthWithCaller) still records its
+// signed-in users, under the provider it names.
+// heartbeatRuns numbers the runs of the heartbeat test in this process.
+var heartbeatRuns atomic.Int64
+
+func TestNewChain_HeartbeatNamesTheProviderAndReadsAuthsCaller(t *testing.T) {
+	// Product events write through the request's logger, which is the
+	// process default here: capture it for this (sequential) test.
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	chain, err := serverkit.NewChain(serverkit.ChainDeps{
+		Auth:         serverkit.AuthWithCaller(serverkit.AudienceUser, plainAuth{}, plainCaller),
+		AuthProvider: "supabase",
+	})
+	if err != nil {
+		t.Fatalf("NewChain: %v", err)
+	}
+	const procedure = "/serverkit.chain.v1.Svc/Do"
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(procedure,
+		func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		}, chain.HandlerOptions()...))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// The heartbeat's memory is the process's and remembers a user for the
+	// day, so each run (go test -count=N repeats this in one process) signs
+	// in as a user of its own.
+	user := fmt.Sprintf("u_chain_heartbeat_provider_%d", heartbeatRuns.Add(1))
+	req := connect.NewRequest(&emptypb.Empty{})
+	req.Header().Set("X-User", user)
+	if _, err := connect.NewClient[emptypb.Empty, emptypb.Empty](srv.Client(), srv.URL+procedure).CallUnary(context.Background(), req); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, `"product.auth_signed_in"`) {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if rec["user.id"] != user || rec["product.provider"] != "supabase" || rec["product.kind"] != "resumed" {
+			t.Errorf("heartbeat record = %v, want user.id %s, provider supabase, kind resumed", rec, user)
+		}
+		return
+	}
+	t.Fatalf("no auth_signed_in heartbeat was recorded:\n%s", logs.String())
 }

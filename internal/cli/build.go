@@ -858,11 +858,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		})...)
 	}
 
-	// External-build dispatcher: services whose KCL declares
-	// `build_cmd` get their image constructed by a user-supplied shell
+	// External-build dispatcher: workloads whose KCL declares a
+	// forge.ShellBuild get their image constructed by a user-supplied shell
 	// command rather than forge's built-in Go-build + docker-build
-	// pipeline. Mirrors the deploytarget/External provider on the build
-	// side. Runs after Go/docker/variant builds so a failing project
+	// pipeline (the build-side escape hatch; the deploy-side one is
+	// forge.OnExternal's argv hooks). Runs after Go/docker/variant builds so a failing project
 	// build doesn't waste time on the (likely orthogonal) external
 	// services — but does NOT short-circuit on docker failures because
 	// the external builds may target a different registry / pipeline.
@@ -1365,15 +1365,13 @@ func renderBuildKCL(ctx context.Context, projectDir, env string) (*KCLEntities, 
 
 // validateExternalBuildTarget checks the preconditions for `--target
 // external`: an --env to resolve KCL against, and at least one service in it
-// that actually declares build_cmd.
+// that actually declares a ShellBuild.
 //
-// No experimental gate here: `build_cmd` is the build-side mirror of
-// External's `deploy_cmd`, and `forge env deploy` of an External target needs
-// no opt-in. Gating build behind features.experimental.external_builds while
-// deploy ran free left the build/deploy pair of the SAME target with
-// mismatched maturity gates (fr-da9a6614fb) — you could deploy an external
-// target but not build it. The gates are unified by retiring the build-side
-// one. The config key is still accepted (back-compat) but no longer governs
+// No experimental gate here. Gating build behind
+// features.experimental.external_builds while the old External deploy target
+// ran free left the build/deploy pair with mismatched maturity gates
+// (fr-da9a6614fb); the build-side gate was retired, and forge.OnExternal (its
+// deploy-side successor) needs no opt-in either. The config key is still accepted (back-compat) but no longer governs
 // whether build_cmd runs.
 func validateExternalBuildTarget(entities *KCLEntities, opts buildOptions) error {
 	if opts.env == "" {
@@ -1561,13 +1559,11 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 }
 
 // buildExternalServiceResults runs the external-build dispatcher for services
-// whose KCL declares `build_cmd`, returning their build results. Mirrors the
-// deploytarget/External provider on the build side. Returns (nil, nil) when
-// there is no rendered KCL or no service opts into external builds.
+// whose KCL declares a forge.ShellBuild, returning their build results.
+// Returns (nil, nil) when there is no rendered KCL or no service opts into
+// external builds.
 //
-// No experimental gate: build_cmd is the build-side mirror of External's
-// deploy_cmd (which needs no opt-in), so a service that declares build_cmd just
-// builds. See the --target external branch in runBuild for the rationale
+// No experimental gate: a workload that declares a ShellBuild just builds. See the --target external branch in runBuild for the rationale
 // (fr-da9a6614fb).
 func buildExternalServiceResults(ctx context.Context, entities *KCLEntities, cfg *config.ProjectConfig, opts buildOptions, cfgArchForDocker, resolvedTag string) ([]buildResult, error) {
 	if entities == nil {
@@ -3028,7 +3024,7 @@ func summarizeKCLBuildPlan(e *KCLEntities) {
 	}
 	line("Host (skip docker)", e.WorkloadNames(RuntimeHost))
 	line("Compose (compose builds)", e.WorkloadNames(RuntimeCompose))
-	for _, rt := range []string{RuntimeCluster, RuntimeHosted} {
+	for _, rt := range []string{RuntimeCluster, RuntimeHosted, RuntimeExternal} {
 		var built, named []string
 		for _, w := range e.WorkloadsOn(rt) {
 			if w.Build.Type != "" {
@@ -3079,7 +3075,7 @@ func envNeedsProjectImage(e *KCLEntities) bool {
 			continue
 		}
 		switch w.Runtime.Type {
-		case RuntimeCluster, RuntimeHosted, RuntimeBuildOnly:
+		case RuntimeCluster, RuntimeHosted, RuntimeBuildOnly, RuntimeExternal:
 			return true
 		}
 	}
@@ -3108,7 +3104,8 @@ func kclFirstClusterPlatform(e *KCLEntities) string {
 
 // kclEnvImagePlatform is the GOARCH the env's built images must run on, as the
 // env DECLARES it: the cluster platform (kclFirstClusterPlatform), else the
-// platform of the control plane a built workload is bound to. The hosted arch
+// platform of the control plane a built workload is bound to, else an external
+// binding's declared platform. The hosted arch
 // is a property of the platform's nodes, never of the machine running
 // the build — an arm64 Mac building a hosted image must still produce amd64.
 // "" when the env declares neither.
@@ -3122,6 +3119,13 @@ func kclEnvImagePlatform(e *KCLEntities) string {
 	for _, w := range e.WorkloadsOn(RuntimeHosted) {
 		if w.Build.Type != "" {
 			return w.Runtime.HostedPlatform()
+		}
+	}
+	// An external runtime's tooling runs the image somewhere forge cannot
+	// see, so its declared platform is the only statement of the arch.
+	for _, w := range e.WorkloadsOn(RuntimeExternal) {
+		if w.Build.Type != "" {
+			return w.Runtime.External.ImagePlatform()
 		}
 	}
 	return ""

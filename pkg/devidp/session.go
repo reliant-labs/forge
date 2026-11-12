@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Challenge sessions: the sign-in methods that answer a challenge rather than
@@ -275,7 +277,7 @@ func (c *Client) CompleteSignIn(ctx context.Context, cfg FlowConfig, s Session) 
 	if err != nil {
 		return Tokens{}, err
 	}
-	return c.finish(ctx, cfg, flow, s)
+	return c.finish(ctx, cfg, flow, s, methodFromFactors(factors.Verified))
 }
 
 // gate applies the verified-email rule to a session's user.
@@ -302,7 +304,9 @@ func (c *Client) gate(ctx context.Context, cfg FlowConfig, s Session, userID str
 }
 
 // finish finalizes the auth request with the session and redeems the code.
-func (c *Client) finish(ctx context.Context, cfg FlowConfig, flow Flow, s Session) (Tokens, error) {
+// A redeemed code is a sign-in: it records auth_signed_in (auth_events.go),
+// with the method WithAuthMethod named, else the one method says.
+func (c *Client) finish(ctx context.Context, cfg FlowConfig, flow Flow, s Session, method observe.AuthMethod) (Tokens, error) {
 	callback, err := c.FinalizeAuthRequest(ctx, flow.AuthRequestID, s)
 	if err != nil {
 		return Tokens{}, err
@@ -311,7 +315,12 @@ func (c *Client) finish(ctx context.Context, cfg FlowConfig, flow Flow, s Sessio
 	if err != nil {
 		return Tokens{}, err
 	}
-	return c.RedeemCode(ctx, cfg, code, flow.PKCE)
+	tokens, err := c.RedeemCode(ctx, cfg, code, flow.PKCE)
+	if err != nil {
+		return Tokens{}, err
+	}
+	reportSignIn(ctx, tokens, method)
+	return tokens, nil
 }
 
 // UserInfo is the subject of an access token, as the issuer's userinfo

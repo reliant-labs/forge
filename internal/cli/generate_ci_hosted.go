@@ -44,7 +44,7 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 		return cached
 	}
 	var out ciHostedTopology
-	envs, _ := ListEnvs(projectDir)
+	envs, _ := ListCommittedEnvs(projectDir)
 	for _, r := range renderEnvsPure(context.Background(), projectDir, envs) {
 		env, entities, err := r.env, r.entities, r.err
 		if err != nil || entities == nil {

@@ -1,6 +1,26 @@
 # @reliantlabs/forge
 
-The [forge](https://github.com/reliant-labs/forge) CLI, runnable without a Go toolchain:
+The [forge](https://github.com/reliant-labs/forge) CLI and MCP server, runnable
+without a Go toolchain.
+
+Forge helps the repo you are in today, in any language, with no rewrite:
+`forge lint` catches unsafe SQL migrations (and, in a Go module, cut traces and
+timezone-dependent date buckets), the built-in skills are playbooks for
+debugging, testing, migrations and deploys, and its runtime libraries (`forge/pkg`
+for Go, `@reliantlabs/forge-web-runtime` for web and Node) import as they are.
+An existing Vite or Next.js app goes live with no account. Monitoring and a
+recorded history of every deploy come once forge deploys the app, which the
+`adopt` skill walks without rewriting it.
+
+For an agent, register the MCP server and call its `benefits` tool: what applies
+to the repo, with the first step and the agent time to each.
+
+```sh
+claude mcp add forge -- npx -y @reliantlabs/forge mcp
+npx @reliantlabs/forge project benefits   # the same list, in a terminal
+```
+
+As a CLI:
 
 ```sh
 npx @reliantlabs/forge version

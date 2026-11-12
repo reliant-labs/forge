@@ -193,6 +193,74 @@ export {
 } from "./track.js";
 
 /**
+ * The analytics tiers (off / aggregate / identified / full): cookieless
+ * `aggregate` by default, which stores nothing on the device. An app in
+ * `analytics: "full"` calls grantAnalyticsConsent() once its consent manager
+ * says yes (the persistent visitor id, the session cookie, multi-day
+ * attribution and replay follow) and revokeAnalyticsConsent() when it is
+ * withdrawn; optOutOfAnalytics() is a person's objection to analytics at all.
+ * GPC / DNT cap a browser at aggregate with no user id.
+ */
+export {
+  ANALYTICS_OPT_OUT_STORAGE_KEY,
+  RESERVED_EVENT_PREFIXES,
+  analyticsOptedOut,
+  analyticsTier,
+  grantAnalyticsConsent,
+  optOutOfAnalytics,
+  revokeAnalyticsConsent,
+  type AnalyticsMode,
+  type AnalyticsTier,
+} from "./track.js";
+
+/**
+ * Feature-flag exposures: `trackExposure(flag, variant)` records one
+ * `flag_evaluated` per person, flag and variant per day, and
+ * `forgeExposureHook` does it for every OpenFeature evaluation
+ * (`OpenFeature.addHooks(forgeExposureHook)`).
+ */
+export {
+  FLAG_EVALUATED_EVENT,
+  forgeExposureHook,
+  trackExposure,
+  type ExposureEvaluationDetails,
+  type ExposureHookContext,
+  type ExposureOptions,
+} from "./exposure.js";
+
+/**
+ * The standard auth events (`auth_signed_up`, `auth_signed_in`,
+ * `auth_signed_out`) the console counts users from. `identifyUser(id)` is what
+ * an app calls wherever it learns who is signed in: it attaches the id to
+ * telemetry and sends one `resumed` sign-in per user per day.
+ * `trackAuthEvent` is for an app whose auth never touches a forge server
+ * (forge's managed auth reports these from the server). Same guarantees as
+ * track(), and nothing is sent under GPC or DNT.
+ */
+export {
+  AUTH_SEEN_STORAGE_KEY,
+  identifyUser,
+  trackAuthEvent,
+  type AuthEventKind,
+  type AuthEventProps,
+  type AuthMethod,
+  type IdentifyUserOptions,
+} from "./auth-events.js";
+
+/**
+ * The route a page view is recorded as: `normalizeRoute(pathname, basePath)`
+ * cuts the query and fragment, strips the basePath and replaces id-looking
+ * segments with `:id` — the same naming the runtime's automatic
+ * `page_viewed` events use, for an app that names routes on its own events.
+ */
+export {
+  MAX_ROUTE_CHARS,
+  PAGE_VIEWED_EVENT,
+  ROUTE_ID_PLACEHOLDER,
+  normalizeRoute,
+} from "./page-views.js";
+
+/**
  * Visitor identity and campaign attribution: `withAttribution(url)` appends
  * this browser's `rid` and captured `utm_*` to an outbound link (a marketing
  * site pointing at the app); the runtime reads them on arrival and emits one

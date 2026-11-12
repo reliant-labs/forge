@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
@@ -362,9 +363,16 @@ func declaredKCLEnvs(root string) []string {
 		if !e.IsDir() {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(kclDir, e.Name(), "main.k")); err == nil {
-			envs = append(envs, e.Name())
+		if _, err := os.Stat(filepath.Join(kclDir, e.Name(), "main.k")); err != nil {
+			continue
 		}
+		// A preview instance (`forge env preview create`) is a transient
+		// copy of a template env, created and deleted by its own pipeline;
+		// a workflow that deployed it on every push would keep it alive.
+		if _, err := os.Stat(filepath.Join(kclDir, e.Name(), kclrender.PreviewMarkerFile)); err == nil {
+			continue
+		}
+		envs = append(envs, e.Name())
 	}
 	sort.Strings(envs)
 	return envs

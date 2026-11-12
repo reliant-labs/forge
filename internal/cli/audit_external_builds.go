@@ -97,12 +97,11 @@ func auditExternalBuilds(cfg *config.ProjectConfig, projectDir string) audittype
 	}
 
 	// There is no external_builds gate any more. The flag had already
-	// been reduced to an inert key nothing consulted: `Service.build_cmd`
-	// is the build-side mirror of `External.deploy_cmd`, and since
-	// `forge env deploy` of an External target never required an opt-in,
-	// gating `forge build` of the same target left the pair with
-	// mismatched maturity gates (fr-da9a6614fb). build_cmd just builds,
-	// so the audit reports what is declared, unconditionally.
+	// been reduced to an inert key nothing consulted: deploying through the
+	// old External target never required an opt-in, so gating `forge build`
+	// of the same workload left the pair with mismatched maturity gates
+	// (fr-da9a6614fb). A ShellBuild just builds, so the audit reports what
+	// is declared, unconditionally.
 	entities, err := RenderKCL(context.Background(), projectDir, "dev")
 	if err != nil {
 		// Environmental: kcl not on PATH or deploy/kcl/dev missing.

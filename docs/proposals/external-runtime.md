@@ -1,6 +1,13 @@
 # Proposal: bring back an External runtime (deploy a workload through its platform's own CLI: Fly, Cloud Run, ECS, Vercel, …)
 
-**Status:** proposal, not implemented. Needs an owner decision.
+**Status:** implemented as `forge.OnExternal` (kcl/workload.k), with the owner's
+2026-11-11 decision: four optional ARGV hooks (`status`, `plan`, `deploy`,
+`health`) instead of one `deploy_cmd` shell string, no hooks = record-only, and
+`forge env verify <env>` to prove parity before forge deploys. The design
+points below are answered in `internal/deploytarget/external.go` and the
+`deploy/external` skill; credentials (3) are the hook's inherited environment
+(`FLY_API_TOKEN` and friends never enter KCL or argv), and frontends (4) are
+not covered — `OnExternal` binds workloads only.
 **Date:** 2026-10-02
 **Origin:** forge#400, moved here on 2026-11-04 and closed. Nothing below has changed since then.
 

@@ -34,12 +34,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -184,7 +186,11 @@ type envTargetResolver interface {
 // whose entire output is a claim about a named environment must not silently
 // read whichever cluster someone last switched to, or the claim is about an
 // unknown cluster.
-type kclTargetResolver struct{}
+type kclTargetResolver struct {
+	// memo shares one render between Lifecycle and ExternalWorkloads; nil
+	// renders each time.
+	memo *envStatusRenderMemo
+}
 
 func (kclTargetResolver) Resolve(ctx context.Context, projectDir, envName string) envTarget {
 	// A load failure is not fatal: expectedClusterForEnv reads the config
@@ -204,9 +210,9 @@ type envLifecycleResolver interface {
 	Lifecycle(ctx context.Context, projectDir, envName string) string
 }
 
-func (kclTargetResolver) Lifecycle(ctx context.Context, projectDir, envName string) string {
-	entities, err := RenderKCL(ctx, projectDir, envName)
-	if err != nil || entities == nil {
+func (r kclTargetResolver) Lifecycle(ctx context.Context, projectDir, envName string) string {
+	entities := r.memo.render(ctx, projectDir, envName)
+	if entities == nil {
 		return ""
 	}
 	return entities.Lifecycle
@@ -262,10 +268,50 @@ type envStatusOptions struct {
 	// also selects the hosted path, so a test can state the observer's
 	// answer without a control plane.
 	HostedRollout func(ctx context.Context, env, promotionID string) (wireRollout, error)
+	// ExternalHooks runs forge.OnExternal status hooks; the zero value execs
+	// them (env_status_external.go).
+	ExternalHooks deploytarget.ExternalHooks
 	// HostedIdentity reads a HOSTED env's managed identity. Nil reads it from
 	// the same control plane the rollout is read from — unless HostedRollout
 	// is set, when a test that states no identity gets none.
 	HostedIdentity func(ctx context.Context, env string) (identityStatusDocument, error)
+}
+
+// verifyExternalThenCluster reads forge.OnExternal workloads through their
+// status hook, and only what is left off the cluster (env_status_external.go).
+// source is set when any workload is external.
+func verifyExternalThenCluster(ctx context.Context, projectDir, envName string, resolved map[string]string, opts envStatusOptions) (results []imageVerification, kubeContext, namespace, source string) {
+	external, rest := splitExternalImages(ctx, projectDir, envName, resolved, opts)
+	if len(external) > 0 {
+		source = "forge.OnExternal status hooks"
+	}
+	results = external
+	if len(rest) > 0 || len(external) == 0 {
+		var clusterResults []imageVerification
+		clusterResults, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, rest, opts)
+		results = append(results, clusterResults...)
+	}
+	return results, kubeContext, namespace, source
+}
+
+// withDefaults fills the collaborators a caller (a test) left unset with the
+// real ones.
+func (opts envStatusOptions) withDefaults() envStatusOptions {
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultEnvStatusReleaseTimeout
+	}
+	if opts.Lister == nil {
+		opts.Lister = kubectlImageLister{}
+	}
+	if opts.Resolver == nil {
+		opts.Resolver = kclTargetResolver{memo: &envStatusRenderMemo{}}
+	}
+	if opts.ExternalHooks.Runner == nil {
+		// A status hook's own stderr is its log; the report is what this
+		// command prints, so the log stays out of it.
+		opts.ExternalHooks = deploytarget.ExternalHooks{Runner: deploytarget.ExecHookRunner{}, Stderr: io.Discard}
+	}
+	return opts
 }
 
 // runEnvStatusRelease resolves the binding, reads the cluster, prints a per-image
@@ -274,15 +320,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if opts.Timeout <= 0 {
-		opts.Timeout = defaultEnvStatusReleaseTimeout
-	}
-	if opts.Lister == nil {
-		opts.Lister = kubectlImageLister{}
-	}
-	if opts.Resolver == nil {
-		opts.Resolver = kclTargetResolver{}
-	}
+	opts = opts.withDefaults()
 
 	projectDir := projectDirForKCL()
 	if opts.Bindings == nil {
@@ -373,7 +411,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		}
 		results, queued, identity = verifyHostedWithIdentity(ctx, envName, binding, opts)
 	} else {
-		results, kubeContext, namespace = verifyCluster(ctx, projectDir, envName, binding.Resolved, opts)
+		results, kubeContext, namespace, source = verifyExternalThenCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
 	// An `applier = "flux"` env's reconciler is the env's own Flux: what it
 	// reports about the pointer is part of the verdict, and a Forbidden for

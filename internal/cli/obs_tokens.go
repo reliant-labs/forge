@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/obsbackend"
@@ -89,7 +90,7 @@ permission (owners and admins hold it); listing needs membership.
   forge obs tokens revoke <id> --reason leaked`,
 	}
 	cmd.AddCommand(newObsTokensListCmd(), newObsTokensCreateCmd(), newObsTokensRotateCmd(), newObsTokensRevokeCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newObsTokensListCmd() *cobra.Command {

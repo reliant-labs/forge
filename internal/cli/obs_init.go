@@ -256,6 +256,11 @@ func runObsInit(ctx context.Context, d obsInitDeps, args []string, o obsInitOpts
 		return err
 	}
 	doc.OrgID, doc.ControlPlane, doc.ConsoleURL = sess.OrgID, cp, console.Home("")
+	// A control plane that predates TelemetryTokenService cannot finish
+	// init: refuse before registering any env on it, not after.
+	if err := requireIngestTokens(ctx, sess); err != nil {
+		return err
+	}
 	for _, env := range envs {
 		id, _, err := deploytarget.EnsureHostedEnvironment(ctx, sess.Caller, deploytarget.HostedEnvRef{
 			Project: project, Name: env, Kind: deploytarget.HostedEnvSelfManaged})
@@ -387,30 +392,39 @@ func initWriteConfig(d obsInitDeps, cfgPath, project string, envs []string, o ob
 		return false, cfgPath, nil
 	}
 	if cfgPath == "" {
-		wd, err := d.Getwd()
-		if err != nil {
+		path, err := initNewConfigPath(d, project, envs, o)
+		if err != nil || path == "" {
 			return false, "", err
-		}
-		path := filepath.Join(wd, "forge.yaml")
-		if !o.writeConfig {
-			yes, ok := d.Confirm(fmt.Sprintf("No forge.yaml here. Write a minimal one (name: %s, envs: %s, monitoring: true) to %s?", project, strings.Join(envs, ", "), path))
-			if !ok {
-				if strings.TrimSpace(obsProjectFlag) == "" {
-					return false, "", obsbackend.Wrong("no forge.yaml here, and nobody to ask: pass --write-config to write a minimal one, or --project <name> --no-write")
-				}
-				return false, "", nil
-			}
-			if !yes {
-				if strings.TrimSpace(obsProjectFlag) == "" {
-					return false, "", obsbackend.Wrong("not writing forge.yaml: name the project with --project <name> (and --no-write)")
-				}
-				return false, "", nil
-			}
 		}
 		cfgPath = path
 	}
 	changed, err := upsertMonitoringConfig(cfgPath, project, envs, goModulePath(filepath.Dir(cfgPath)))
 	return changed, cfgPath, err
+}
+
+// initNewConfigPath is where a new forge.yaml goes, once the user agrees (or
+// passed --write-config); "" with no error when they declined and --project
+// names the project instead.
+func initNewConfigPath(d obsInitDeps, project string, envs []string, o obsInitOpts) (string, error) {
+	wd, err := d.Getwd()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(wd, "forge.yaml")
+	if o.writeConfig {
+		return path, nil
+	}
+	yes, ok := d.Confirm(fmt.Sprintf("No forge.yaml here. Write a minimal one (name: %s, envs: %s, monitoring: true) to %s?", project, strings.Join(envs, ", "), path))
+	switch {
+	case yes:
+		return path, nil
+	case strings.TrimSpace(obsProjectFlag) != "":
+		return "", nil
+	case !ok:
+		return "", obsbackend.Wrong("no forge.yaml here, and nobody to ask: pass --write-config to write a minimal one, or --project <name> --no-write")
+	default:
+		return "", obsbackend.Wrong("not writing forge.yaml: name the project with --project <name> (and --no-write)")
+	}
 }
 
 // goModulePath is dir/go.mod's module path, "" when there is none.
@@ -653,6 +667,23 @@ func createIngestToken(ctx context.Context, s obsSession, environmentID, name st
 		return out, ingestTokenErr(err)
 	}
 	return out, nil
+}
+
+// requireIngestTokens asks whether the session's control plane serves
+// TelemetryTokenService, with a read-only ListIngestTokens. Only "it does
+// not" (Unimplemented, or a 404 from a server with no such route) refuses:
+// any other answer means the service is there, and the mint that follows
+// reports its own errors.
+func requireIngestTokens(ctx context.Context, s obsSession) error {
+	var out struct {
+		Tokens []wireIngestToken `json:"tokens"`
+	}
+	err := s.Caller.Call(ctx, procListIngestTokens, map[string]any{"orgId": s.OrgID}, &out)
+	var ce *cloud.Error
+	if errors.As(err, &ce) && (ce.Code == cloud.CodeUnimplemented || ce.HTTPStatus == 404) {
+		return ingestTokenErr(err)
+	}
+	return nil
 }
 
 // ingestTokenErr explains the refusals a person can act on.

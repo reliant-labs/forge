@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
@@ -65,7 +66,7 @@ The secret (a Slack webhook URL, a bearer token, a PagerDuty routing key) is
 write-only: it is never shown again.`,
 	}
 	cmd.AddCommand(newObsReceiversListCmd(), newObsReceiversCreateCmd(), newObsReceiversTestCmd(), newObsReceiversDeleteCmd())
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 func newObsReceiversListCmd() *cobra.Command {

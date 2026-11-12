@@ -18,6 +18,7 @@ import (
 // env-<name>, CreateIngestToken a token for it.
 func fakeInitControlPlane() *fakeCloudCaller {
 	return &fakeCloudCaller{replies: map[string]string{
+		procListIngestTokens:                              `{"tokens":[]}`,
 		"controlplane.v1.DeployService/EnsureEnvironment": `{"environment":{"id":"env-prod","name":"prod","project":"shop","kind":"DEPLOY_ENVIRONMENT_KIND_SELF_MANAGED"},"created":true}`,
 		procCreateIngestToken: `{"token":{"id":"jti-1","orgId":"org-1","environmentId":"env-prod","name":"forge-obs-init","createdBy":"u1",` +
 			`"issuedAt":"2026-11-11T00:00:00Z","expiresAt":"2027-02-09T00:00:00Z"},"jwt":"eyJ.a.b","otlpHeaders":"authorization=Bearer eyJ.a.b",` +
@@ -208,6 +209,33 @@ func TestObsInit_SignInIsRequired(t *testing.T) {
 	}
 	if len(cp.calls) != 0 {
 		t.Fatalf("reached the control plane without a credential: %+v", cp.calls)
+	}
+}
+
+// A control plane that predates TelemetryTokenService is refused before any
+// env is registered on it: init leaves it exactly as it found it.
+func TestObsInit_OldControlPlaneRegistersNothing(t *testing.T) {
+	for name, cerr := range map[string]*cloud.Error{
+		"unimplemented": {HTTPStatus: 501, Code: cloud.CodeUnimplemented, Message: "not served"},
+		"no route":      {HTTPStatus: 404},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cp := fakeInitControlPlane()
+			cp.errs = map[string]error{procListIngestTokens: cerr}
+			_, err := runInit(t, dir, cp, noTTY, nil, "prod", "--write-config")
+			if err == nil || !strings.Contains(err.Error(), "newer control plane") {
+				t.Fatalf("err = %v", err)
+			}
+			for _, c := range cp.calls {
+				if c.procedure != procListIngestTokens {
+					t.Errorf("called %s on a control plane without ingest tokens", c.procedure)
+				}
+			}
+		})
 	}
 }
 

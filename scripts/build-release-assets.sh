@@ -26,6 +26,10 @@
 #                          (default: the six below). Tests use it to build one.
 #   FORGE_RELEASE_COMMIT   commit to stamp (default: git rev-parse HEAD)
 #   FORGE_RELEASE_DATE     build date to stamp (default: today, UTC)
+#   FORGE_TELEMETRY_ENDPOINT
+#                          OTLP logs URL forge's anonymous usage events go to
+#                          (the keyed ingest with the forge-cli native key);
+#                          unset: the build sends none (internal/cli/telemetry.go)
 set -euo pipefail
 
 usage() {
@@ -77,7 +81,7 @@ build_one() {
   dir="$STAGE/$goos-$goarch"
   mkdir -p "$dir" || return
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-    -ldflags "-s -w -X main.Version=$VERSION -X main.GitCommit=$COMMIT -X main.BuildDate=$DATE" \
+    -ldflags "-s -w -X main.Version=$VERSION -X main.GitCommit=$COMMIT -X main.BuildDate=$DATE -X main.TelemetryEndpoint=${FORGE_TELEMETRY_ENDPOINT:-}" \
     -o "$dir/$bin" ./cmd/forge || return
   cp LICENSE NOTICE "$dir/" || return
   chmod 755 "$dir/$bin" || return

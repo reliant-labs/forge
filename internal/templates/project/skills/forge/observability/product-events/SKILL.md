@@ -89,6 +89,12 @@ observe.SetConsentSource(observe.ConsentFunc(func(ctx context.Context, a observe
 }))
 ```
 
+### From a CLI
+
+A command-line program records events with `pkg/observe/cliev` (an anonymous
+install id, a one-time notice, opt-out, a batch at exit). Load
+`observability/product-events/cli`.
+
 ## Automatic events from generated CRUD
 
 Every generated Create, Update and Delete rpc records a product event once its

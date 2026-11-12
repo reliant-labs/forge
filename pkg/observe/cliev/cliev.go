@@ -1,0 +1,402 @@
+// Package cliev records product events ("Events") from a command-line
+// program: the forge CLI, and any CLI a forge project builds.
+//
+// It is the CLI twin of observe.Track. Events share the same contract
+// (observe.ProductEventAttrs: event.name product.<name>, the actor's ids,
+// app.client "cli", app.version, bounded and PII-guarded product.<key>
+// props), so they land in the same product_events table and the same
+// dashboards. What a CLI needs and a server does not is here:
+//
+//   - An anonymous install id: a random UUID minted on first use and kept in
+//     <config dir>/telemetry.json. It is recorded as visitor.id and is the
+//     only identity an unauthenticated CLI sends.
+//   - A one-time notice on stderr before anything is sent, never on a run
+//     that asked for machine output (Config.Quiet). Nothing is sent until the
+//     notice has been shown once.
+//   - Opt-out: DO_NOT_TRACK=1, <APP>_TELEMETRY=off, or `<app> telemetry
+//     off` (SetEnabled), which is remembered. It is off automatically when
+//     CI=true, unless <APP>_TELEMETRY=on says otherwise.
+//   - A batch sent at exit (Flush), capped at 300 ms and dropped on any
+//     failure, so telemetry never slows or fails a command.
+//   - Volume bounds: one event per name per run, and at most MaxEventsPerDay
+//     per install.
+//
+// The transport is OTLP/HTTP JSON logs to Config.Endpoint, normally the
+// platform's keyed ingest (https://ingest.reliantlabs.dev/k/<key>/v1/logs)
+// with a native ingest key: the key says which org and environment the events
+// belong to. An empty Endpoint turns sending off; a development build sets
+// none.
+package cliev
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
+)
+
+const (
+	// FlushTimeout caps the batch sent at exit.
+	FlushTimeout = 300 * time.Millisecond
+	// MaxEventsPerDay bounds what one install sends in a UTC day.
+	MaxEventsPerDay = 50
+	// StateFile is the file, in the config dir, holding the install id and
+	// the opt-out.
+	StateFile = "telemetry.json"
+)
+
+// Config configures a Client.
+type Config struct {
+	// App is the program's name, lowercase: it names the config dir, the
+	// <APP>_TELEMETRY variable, the notice and the telemetry command.
+	App string
+	// Version is recorded as app.version and service.version.
+	Version string
+	// Endpoint is the OTLP/HTTP logs URL events are posted to. Empty turns
+	// sending off (the install id and opt-out still work).
+	Endpoint string
+	// ConfigDir holds StateFile. Default: os.UserConfigDir()/<App>.
+	ConfigDir string
+	// Quiet suppresses the first-run notice for this run (--json, --quiet).
+	// Events are not sent until the notice has been shown once.
+	Quiet bool
+	// NoticeURL, when set, is printed in the notice as where to read more.
+	NoticeURL string
+	// Stderr receives the notice. Default os.Stderr.
+	Stderr io.Writer
+	// Getenv reads the environment. Default os.Getenv.
+	Getenv func(string) string
+	// HTTPClient posts the batch. Default: a client with no timeout of its
+	// own (Flush bounds it).
+	HTTPClient *http.Client
+	// Now is the clock. Default time.Now.
+	Now func() time.Time
+	// SeedInstallID, when set, supplies an install id the program already
+	// minted elsewhere (forge's bug reporter), so one machine has one id.
+	SeedInstallID func() string
+}
+
+// Status says whether events are sent and why.
+type Status struct {
+	Enabled bool
+	// Reason is why: "on", "do_not_track", "env_off", "ci", "opted_out",
+	// "no_endpoint".
+	Reason    string
+	InstallID string
+	// EnvVar is the program's <APP>_TELEMETRY variable.
+	EnvVar string
+}
+
+// Client records one run's events.
+type Client struct {
+	cfg   Config
+	state *state
+
+	mu        sync.Mutex
+	pending   []record
+	seen      map[string]bool
+	firstRun  bool
+	noticeOK  bool
+	installID string
+	status    Status
+}
+
+type record struct {
+	at    time.Time
+	name  string
+	attrs []slog.Attr
+}
+
+// New returns the run's client. It reads the state file and the environment
+// once; it never fails (an unreadable state file is a fresh install).
+func New(cfg Config) *Client {
+	cfg.App = strings.ToLower(strings.TrimSpace(cfg.App))
+	if cfg.App == "" {
+		cfg.App = filepath.Base(os.Args[0])
+	}
+	if cfg.Getenv == nil {
+		cfg.Getenv = os.Getenv
+	}
+	if cfg.Stderr == nil {
+		cfg.Stderr = os.Stderr
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = &http.Client{}
+	}
+	if cfg.ConfigDir == "" {
+		if dir, err := os.UserConfigDir(); err == nil {
+			cfg.ConfigDir = filepath.Join(dir, cfg.App)
+		} else {
+			cfg.ConfigDir = filepath.Join(os.TempDir(), cfg.App)
+		}
+	}
+	c := &Client{cfg: cfg, state: newState(filepath.Join(cfg.ConfigDir, StateFile)), seen: map[string]bool{}}
+	c.status = c.resolve()
+	return c
+}
+
+// EnvVar is the program's opt-out variable, <APP>_TELEMETRY.
+func (c *Client) EnvVar() string {
+	return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(c.cfg.App)) + "_TELEMETRY"
+}
+
+// resolve decides whether this run sends, and mints the install id when it
+// does.
+func (c *Client) resolve() Status {
+	st := Status{EnvVar: c.EnvVar()}
+	doc := c.state.load()
+	switch {
+	case truthy(c.cfg.Getenv("DO_NOT_TRACK")):
+		st.Reason = "do_not_track"
+	case falsy(c.cfg.Getenv(st.EnvVar)):
+		st.Reason = "env_off"
+	case truthy(c.cfg.Getenv("CI")) && !truthy(c.cfg.Getenv(st.EnvVar)):
+		st.Reason = "ci"
+	case doc.Enabled != nil && !*doc.Enabled:
+		st.Reason = "opted_out"
+	case c.cfg.Endpoint == "":
+		st.Reason = "no_endpoint"
+	default:
+		st.Enabled, st.Reason = true, "on"
+	}
+	if !st.Enabled {
+		st.InstallID = doc.InstallID
+		return st
+	}
+	if doc.InstallID == "" {
+		if c.cfg.SeedInstallID != nil {
+			doc.InstallID = c.cfg.SeedInstallID()
+		}
+		if !observe.ValidActorID(doc.InstallID) || doc.InstallID == "" {
+			doc.InstallID = newUUID()
+		}
+	}
+	if !doc.FirstRunSent {
+		c.firstRun = true
+	}
+	if !doc.NoticeShown && !c.cfg.Quiet {
+		c.printNotice()
+		doc.NoticeShown = true
+	}
+	c.noticeOK = doc.NoticeShown
+	c.state.save(doc)
+	st.InstallID = doc.InstallID
+	c.installID = doc.InstallID
+	return st
+}
+
+func (c *Client) printNotice() {
+	name := c.cfg.App
+	msg := name + " sends anonymous usage events (command, version, OS, an install id) to help improve it. " +
+		"No code, paths, names or personal data.\nTurn it off with `" + name + " telemetry off`, " +
+		c.EnvVar() + "=off or DO_NOT_TRACK=1."
+	if c.cfg.NoticeURL != "" {
+		msg += " More: " + c.cfg.NoticeURL
+	}
+	_, _ = io.WriteString(c.cfg.Stderr, msg+"\n")
+}
+
+// Status reports whether this run sends events and why.
+func (c *Client) Status() Status {
+	if c == nil {
+		return Status{Reason: "no_endpoint"}
+	}
+	return c.status
+}
+
+// Enabled reports whether this run records events.
+func (c *Client) Enabled() bool { return c != nil && c.status.Enabled }
+
+// InstallID is this machine's anonymous install id, "" when telemetry is
+// off and none was ever minted. A program may send it to its own server
+// (forge: the X-Forge-Install-Id header) so server events stitch to it.
+func (c *Client) InstallID() string {
+	if c == nil {
+		return ""
+	}
+	return c.status.InstallID
+}
+
+// FirstRun reports whether this install has not yet sent its first-run
+// event. MarkFirstRun records that it has.
+func (c *Client) FirstRun() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.firstRun
+}
+
+// SetEnabled records the user's choice (`<app> telemetry on|off`). Off also
+// drops this run's pending events.
+func (c *Client) SetEnabled(on bool) error {
+	doc := c.state.load()
+	doc.Enabled = &on
+	if on {
+		doc.NoticeShown = true // the user just read about it
+	}
+	if err := c.state.saveErr(doc); err != nil {
+		return err
+	}
+	c.status = c.resolve()
+	if !on {
+		c.mu.Lock()
+		c.pending = nil
+		c.mu.Unlock()
+	}
+	return nil
+}
+
+// Track records one event for the batch sent at Flush. The actor is the
+// install id plus whatever observe.WithActor put on ctx (a signed-in CLI
+// can name its user and org). A name already recorded this run is ignored.
+// Like observe.Track it never fails the caller; an invalid name is dropped.
+func (c *Client) Track(ctx context.Context, name string, attrs ...slog.Attr) {
+	if !c.Enabled() || !observe.ValidEventName(name) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seen[name] {
+		return
+	}
+	c.seen[name] = true
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	actor := observe.ActorFrom(ctx)
+	actor.AnonymousID = c.installID
+	out := observe.ProductEventAttrs(ctx, name, actor, observe.AppClientCLI, attrs)
+	if !hasKey(out, observe.AttrAppVersion) && c.cfg.Version != "" {
+		out = append(out, slog.String(observe.AttrAppVersion, c.cfg.Version))
+	}
+	c.pending = append(c.pending, record{at: c.cfg.Now(), name: name, attrs: out})
+}
+
+// Flush sends the run's events in one batch, waiting at most FlushTimeout,
+// and records the first-run event as sent when it was in the batch. Call it
+// once, as the program exits. Failures are dropped silently.
+func (c *Client) Flush(ctx context.Context) {
+	if !c.Enabled() || !c.noticeOK {
+		return
+	}
+	c.mu.Lock()
+	batch := c.pending
+	c.pending = nil
+	c.mu.Unlock()
+	if len(batch) == 0 {
+		return
+	}
+	doc := c.state.load()
+	day := c.cfg.Now().UTC().Format("2006-01-02")
+	if doc.Day != day {
+		doc.Day, doc.SentToday = day, 0
+	}
+	if room := MaxEventsPerDay - doc.SentToday; room < len(batch) {
+		if room <= 0 {
+			return
+		}
+		batch = batch[:room]
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, FlushTimeout)
+	defer cancel()
+	if !c.post(ctx, batch) {
+		return
+	}
+	doc.SentToday += len(batch)
+	for _, r := range batch {
+		if r.name == FirstRunEvent(c.cfg.App) {
+			doc.FirstRunSent = true
+		}
+	}
+	c.state.save(doc)
+}
+
+// FirstRunEvent is the name of a program's first-run event:
+// <app>_cli_first_run ("forge_cli_first_run").
+func FirstRunEvent(app string) string {
+	return strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(app)) + "_cli_first_run"
+}
+
+// FirstRunAttrs are the standard first-run tags: version, os, arch, harness
+// (the coding agent running the command, "" when none) and ci.
+func (c *Client) FirstRunAttrs(harness string) []slog.Attr {
+	return []slog.Attr{
+		slog.String("version", c.cfg.Version),
+		slog.String("os", runtime.GOOS),
+		slog.String("arch", runtime.GOARCH),
+		slog.String("harness", harness),
+		slog.Bool("ci", truthy(c.cfg.Getenv("CI"))),
+	}
+}
+
+func hasKey(attrs []slog.Attr, key string) bool {
+	for _, a := range attrs {
+		if a.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
+func falsy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "off", "no":
+		return true
+	}
+	return false
+}
+
+// The package-level client, for a program that sets it up once in main.
+var (
+	defaultMu     sync.Mutex
+	defaultClient *Client
+)
+
+// Init builds the process's client (New) and makes it the one the
+// package-level Track and Flush use.
+func Init(cfg Config) *Client {
+	c := New(cfg)
+	defaultMu.Lock()
+	defaultClient = c
+	defaultMu.Unlock()
+	return c
+}
+
+// Default returns the client Init installed, nil before Init.
+func Default() *Client {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	return defaultClient
+}
+
+// Track records an event on the Init client; a no-op before Init.
+func Track(ctx context.Context, name string, attrs ...slog.Attr) {
+	Default().Track(ctx, name, attrs...)
+}
+
+// Flush sends the Init client's batch; a no-op before Init.
+func Flush(ctx context.Context) { Default().Flush(ctx) }

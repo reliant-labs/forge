@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -506,12 +507,29 @@ func withSessionIdentity(projectDir, feDir string, data templates.FrontendTempla
 		info, err := os.Stat(filepath.Join(projectDir, feDir, filepath.FromSlash(rel)))
 		return err == nil && !info.IsDir()
 	}
-	data.IdentifySession = exists("src/lib/auth/native-login.ts") && exists("src/lib/api-base.ts")
+	data.IdentifySession = exists("src/lib/auth/native-login.ts") && exportsAPIBase(filepath.Join(projectDir, feDir, "src", "lib", "api-base.ts"))
 	// Mock mode is read where session-provider.ts reads it: the typed
 	// config module when the frontend has one.
 	typed := frontendTypedConfig(projectDir, data.FrontendName)
 	data.HasTypedConfig, data.HasMockAPI = typed.Bound, typed.HasMockAPI
 	return data
+}
+
+// apiBaseExport matches the declaration otel_gen.ts imports from
+// api-base.ts: `export function apiBase(` (async or not) or an exported
+// const/let of that name.
+var apiBaseExport = regexp.MustCompile(`(?m)^\s*export\s+(?:(?:async\s+)?function\s+apiBase\s*[(<]|(?:const|let)\s+apiBase\b)`)
+
+// exportsAPIBase reports whether the frontend's api-base.ts exports the
+// `apiBase` otel_gen.ts imports. The file is the APP's (scaffolded once,
+// never rewritten): one scaffolded before forge's current template exports
+// `apiBaseUrl()` instead, and gating identity on the file's mere presence made
+// the always-regenerated otel_gen.ts import a name that module does not have,
+// which fails the frontend's typecheck. Such a frontend gets no session
+// identity, as one without api-base.ts does, until it exports apiBase.
+func exportsAPIBase(path string) bool {
+	src, err := os.ReadFile(path)
+	return err == nil && apiBaseExport.Match(src)
 }
 
 // emitOtelGen renders <tmplSubdir>/src/lib/otel_gen.ts.tmpl into the

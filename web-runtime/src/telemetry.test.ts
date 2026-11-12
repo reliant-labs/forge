@@ -1588,11 +1588,16 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
   it("disableTelemetry stops the recorder and silences track, setTelemetryUser and reportException", async () => {
     stubDom();
     const { t, r, k } = await load();
+    // Replay runs only in the full tier.
+    k.grantAnalyticsConsent();
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
+      analytics: "full",
       replay: true,
     });
+    expect(init.mock.calls[0]?.[0]).toMatchObject({ disableReplay: false });
+    addAction.mockReset();
 
     k.disableTelemetry();
     k.track("after_consent_withdrawn", { a: 1 });
@@ -1876,6 +1881,46 @@ describe("app.client, visitor.id and user_identified", () => {
       "app.client": "web",
       "visitor.id": expect.stringMatching(/^[A-Za-z0-9_-]{8,64}$/),
     });
+  });
+
+  // The default config (no `analytics`, no `attribution`) is "identified";
+  // init must not lower the "full" enableAttribution raised before it, or the
+  // landing handoff loses its visitor id and user_identified never fires.
+  it("enableAttribution before init with the default config keeps the full tier", async () => {
+    stubDomWithLocalStorage();
+    const { t, k } = await load();
+    t.enableAttribution({ search: "?rid=v_landing_123456&utm_source=reddit" });
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+
+    expect(setGlobalAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({ "visitor.id": "v_landing_123456" }),
+    );
+    k.setTelemetryUser("user-1");
+    const identified = addAction.mock.calls.filter(
+      ([name]) => name === "user_identified",
+    );
+    expect(identified).toHaveLength(1);
+    expect(identified[0]?.[1]).toMatchObject({
+      visitor_id: "v_landing_123456",
+      utm_source: "reddit",
+    });
+  });
+
+  it("an explicit aggregate mode still wins over enableAttribution before init", async () => {
+    const store = stubDomWithLocalStorage();
+    const { t, k } = await load();
+    t.enableAttribution({ search: "?rid=v_landing_123456" });
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      analytics: "aggregate",
+    });
+
+    k.setTelemetryUser("user-1");
+    expect(
+      addAction.mock.calls.filter(([name]) => name === "user_identified"),
+    ).toEqual([]);
+    expect(store.size).toBe(0);
   });
 
   it("enableAttribution is a no-op after disableTelemetry", async () => {

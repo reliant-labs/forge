@@ -59,7 +59,7 @@ PASS or SKIP. Run status after `forge env up dev` before investigating.
 
 ### Dashboards
 
-HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per deployed process/role and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`.
+HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per deployed process/role and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`. A hosted environment also gets the built-in product analytics (the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards) with no code: `observability/product-analytics`.
 
 **Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the generated defaults: telemetry, customer-metadata and platform), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`. Uptime checks of a hosted env: `observability/uptime`.
 
@@ -90,10 +90,29 @@ not from how the call site spelled its log line:
 
 | `error_class` | what it means | example | level | pages (ERROR → alerts) |
 |---|---|---|---|---|
-| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error | ERROR | yes |
-| `server` | server-side, but "retry", not "page" | DeadlineExceeded, Aborted, Unimplemented | WARN | no |
+| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error; DeadlineExceeded when **the server's own deadline** expired (`deadline=server`) under `serverkit.Deadline{ExpiryIsError: true}` | ERROR | yes |
+| `server` | server-side, but "retry", not "page" | DeadlineExceeded (`deadline=server` by default, `deadline=caller`, or origin unknown), Aborted, Unimplemented | WARN | no |
 | `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
 | `canceled` | one end went away: the caller, or this replica draining for a rollout | `context.Canceled`, CodeCanceled, `svcerr.ErrServerDraining` / `svcerr.Draining(…)` | same as `user` | no |
+
+**Whose deadline.** A `DeadlineExceeded` record says whose deadline ran out,
+in `deadline`. `server` means the chain's Deadline slot (`serverkit.Deadline`:
+30s per unary rpc by default, per rpc from `(forge.v1.method).timeout`)
+expired: the server could not finish in the time it allows itself. It is
+WARN by default, a retryable server failure, so `forge obs issues` still
+groups it. A service where a call needing longer than its budget is a fault
+someone must fix — it fails every retry the same way — opts in with
+`serverkit.Deadline{ExpiryIsError: true}`: the record keeps
+`deadline=server` and is logged at ERROR, so it pages and counts against
+release health. `caller` means the caller's own deadline
+(`Connect-Timeout-Ms`, `grpc-timeout`) expired first: the caller's choice,
+WARN either way. A client that hung up is a cancellation, not a deadline.
+
+**Issues are wider than ERROR.** `forge obs issues` groups every ERROR record
+and every WARN server failure (`error_class=server`, except `deadline=caller`),
+so a retryable server failure is still something to triage. What counts as an
+*error* (error counts, `forge obs check`'s new issues, ERROR alerts) stays
+ERROR-only.
 
 A drain is also an **expected outcome** in every logging layer without being
 declared: a call this replica ended because it is shutting down (a stream's
@@ -105,36 +124,9 @@ Nothing is hidden: a user error is still written, with `error`,
 claiming to be an incident. Its volume stays countable: the RPC error counter
 (and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
 
-The policy holds at all three places a record comes from:
-
-1. `rpc failed` / `stream failed` at the RPC edge (`observe.LoggingInterceptor`);
-2. component failures on the in-process chain (`observe.LogMiddleware`);
-3. **every hand-written `logger.Error`** — `observe.NewErrorClassHandler`
-   wraps the process's slog handler (serverkit's `NewLogger` already does) and
-   lowers a record carrying a non-server error to the user-error level, adding
-   `error_class`. It only ever lowers; it never raises a WARN to ERROR.
-
-**If you forward logs to another sink (or count them), wrap
-`observe.NewErrorClassHandler` OUTSIDE that handler**, so it sees the
-classified level — the forwarder keeps gating on `level >= ERROR` and never
-needs to know about svcerr:
-
-```go
-handler := forwardingHandler(serverkit.NewLogger(cfg).Handler()) // forwards >= ERROR
-logger := slog.New(observe.NewErrorClassHandler(handler))
-```
-
-Marking: most user errors need no marker — return the right `svcerr` kind
-(`svcerr.FailedPrecondition`, `svcerr.PlanLimit`, …). Use
-`svcerr.WithClass(err, svcerr.ClassUser)` when the CODE and the FAULT disagree
-(`Unavailable` is the honest code for "the user's machine is offline", and a
-server fault by kind), or when an error never crosses an RPC boundary (a worker
-logging a provider's "credential rejected"). `svcerr.WithClass(err,
-svcerr.ClassServer)` is the reverse: a 4xx the client must see that is really
-our bug. A library error svcerr cannot see into — a workflow engine's
-application error that crossed a serialization boundary — is taught with
-`observe.WithErrorClassifier(func(error) svcerr.Class)` (return
-`svcerr.ClassNone` for "no opinion").
+Where the policy applies (the RPC edge, the component chain, every
+hand-written `logger.Error`), wrapping a log forwarder, and marking an error
+`svcerr.WithClass` or `observe.WithErrorClassifier`: `observability/error-levels`.
 
 Server faults carry a bounded stack: `observability/error-stacks`.
 
@@ -168,16 +160,7 @@ Apps never learn the collector's backend. The platform renders the standard Open
 
 `Config.OTLPEndpoint` (the typed `otlp_endpoint` config field) overrides the endpoint variables; protocol and headers always come from the environment. With no endpoint nothing is exported, but `/metrics` still works and the W3C TraceContext+Baggage propagator is **always** installed, so `traceparent` is honoured and forwarded regardless. With export on, Go runtime metrics are recorded too.
 
-### Rotating a credential without a restart
-
-`OTEL_EXPORTER_OTLP_HEADERS` is read once, so a token that gets renewed would need a pod restart. Point `OTEL_EXPORTER_OTLP_HEADERS_FILE` at a mounted Secret instead (a Secret **volume**, never `subPath`, which the kubelet never refreshes; the file holds e.g. `authorization=Bearer <token>`). All four signals (traces, metrics, logs, profiles; HTTP and gRPC) take their headers from it **per request**:
-
-- The file is re-stat'ed at most every 5s (one stat per interval per process, shared by all signals) and re-read only when it changed. There is no watcher goroutine.
-- **Precedence:** a header named in `OTEL_EXPORTER_OTLP_HEADERS` (or the signal's own `…_<SIGNAL>_HEADERS`, which replaces the general one for that signal) is never overridden by the file; the file supplies the rest. Pick one place for the credential.
-- A missing, unreadable or empty file means the export goes out **without** the file's headers (the collector decides whether that is acceptable) and logs one `WARN` per minute. It never fails a call, blocks the app or crashes. A removed file stops sending its last token. A file that appears later is picked up.
-- Rotate with overlap: have the receiver accept old and new, swap the file, then drop the old. The kubelet needs about a minute to refresh a Secret volume.
-
-On a cluster, the node agent does the same for the **destination** with `destination.token_secret` (below): `bearertokenauth{filename}` reads the mounted token and re-reads it on change (verified against contrib 0.162 with a kubelet-style symlink swap, in `pkg/observe`'s `RUN_HEADERS_FILE_SMOKE=1` integration test).
+**Rotating a credential without a restart:** point `OTEL_EXPORTER_OTLP_HEADERS_FILE` at a mounted Secret volume (never `subPath`); every signal re-reads it per request. Precedence, failure behaviour and the overlap procedure: `observability/destination`, "Rotating a credential without a restart".
 
 ### Logs: exactly one shipping path
 

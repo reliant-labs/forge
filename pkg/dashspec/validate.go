@@ -671,7 +671,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 	if !ok {
 		return
 	}
-	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors")
+	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors", "exact")
 	names := make([]string, len(styles))
 	for i, s := range styles {
 		names[i] = string(s)
@@ -709,6 +709,12 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		flag("horizontal")
 		if style != "" && (kind != KindBar || style != StyleBar) {
 			v.add(childPath(dp, "horizontal"), "only a bar panel drawn as bars takes \"horizontal\"")
+		}
+	}
+	if _, has := d["exact"]; has {
+		flag("exact")
+		if kind != KindNumber && kind != KindSQL {
+			v.add(childPath(dp, "exact"), "only a number or sql panel draws figures to keep exact")
 		}
 	}
 	lo, hasMin := v.number(dp, d, "min")

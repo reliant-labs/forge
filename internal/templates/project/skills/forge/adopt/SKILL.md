@@ -75,7 +75,7 @@ this repo), then monitoring.
 
 Coming soon (do not run or promise; say "coming"):
 
-- **Monitoring with no forge deploy**: an `obs init` command, user-minted ingest
+- **Monitoring for an app forge does not deploy**: an `obs init` command, user-minted ingest
   tokens and a public OTLP endpoint, so an app forge does not deploy reaches the
   hosted dashboards; and `obs check` on an "inferred" deploy marker.
 - **Record deploys from the user's CI**: a `release record` command.

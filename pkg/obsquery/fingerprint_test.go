@@ -32,6 +32,8 @@ func TestFingerprintKeysAreTheSDKs(t *testing.T) {
 		LogKeyExceptionMessage: observe.LogKeyExceptionMessage,
 		LogKeyErrorGroup:       observe.LogKeyErrorGroup,
 		LogKeyIssueSource:      observe.LogKeyIssueSource,
+		LogKeyErrorClass:       observe.ErrorClassKey,
+		LogKeyDeadline:         observe.DeadlineKey,
 	} {
 		if got != want {
 			t.Errorf("key %q, SDK writes %q", got, want)

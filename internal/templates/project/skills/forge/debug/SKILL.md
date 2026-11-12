@@ -84,7 +84,7 @@ rows. Each step should narrow the hypothesis:
 | Scope, telemetry freshness, failing services and release | `forge obs status prod --since 15m --json` |
 | Error lines in that window | `forge obs logs prod 'body:timeout' --service api --since 15m --limit 5 --json` |
 | Failed requests, then the call tree | `forge obs traces prod --errors --service api --since 15m --limit 5 --json`, then `forge obs trace <trace-id> prod` |
-| Grouped cause, call site and latest event | `forge obs issues prod --since 15m --limit 5 --json`, then `forge obs issue <id> prod` |
+| Grouped cause, call site and latest event: every ERROR and every WARN server failure (`error_class=server`, e.g. a retryable Aborted), not a caller's timeout | `forge obs issues prod --since 15m --limit 5 --json`, then `forge obs issue <id> prod` |
 | Logs for that request | `forge obs logs prod --trace <trace-id> --since 15m --limit 5 --json` |
 | Available metrics, then values | `forge obs metrics list prod --contains rpc --since 15m`, then `forge obs metrics query prod rpc.server.call.duration --agg quantile --quantile 0.95 --since 15m` |
 | A question beyond the structured verbs | `forge obs endpoints dev --explain --json`, then adapt its SQL with `forge obs query dev --sql-file investigation.sql` |

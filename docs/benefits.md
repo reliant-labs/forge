@@ -2667,7 +2667,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
 
-**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as a forge deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
+**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as forge's own deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
 
 **Evidence:**
 
@@ -3713,6 +3713,24 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/dashspec`](../pkg/dashspec)
 - skill `observability/dashboards` (`forge skill load observability/dashboards`)
 - skill `debug/dashboards` (`forge skill load debug/dashboards`)
+
+<a id="builtin-product-analytics"></a>
+
+### Built-in product analytics dashboards
+
+A hosted app gets Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
+
+_In progress · Reliant hosting_
+
+**Use:** `forge.Analytics` adds goals, an activation event and channel rules; a `<project>-users.json` replaces a dashboard; `dashboards = False` drops them.
+
+**Why:** Visitors are counted by the platform's cookieless daily hash at the ingest edge, which ships with the control plane's edge columns and hash.
+
+**Evidence:**
+
+- library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
+- source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="release-markers"></a>
 

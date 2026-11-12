@@ -13,7 +13,9 @@
 //
 //	class     level                                   reaches Sentry / ERROR alerts
 //	server    ERROR (WARN: DeadlineExceeded, Aborted,  yes, at ERROR
-//	          Unimplemented — retryable, not a page)
+//	          Unimplemented — retryable, not a page;
+//	          the server's own deadline is ERROR under
+//	          Deadline.ExpiryIsError)
 //	user      DefaultUserErrorLevel (INFO), or         no
 //	          WithUserErrorLevel
 //	canceled  the same level as user                  no
@@ -88,8 +90,9 @@ func (p *logPolicy) classOf(err error) svcerr.Class {
 	return svcerr.Classify(err)
 }
 
-// failureLevel is the level of a record carrying err, a failure of class.
-func (p *logPolicy) failureLevel(err error, class svcerr.Class) slog.Level {
+// failureLevel is the level of a record carrying err, a failure of class,
+// logged under ctx.
+func (p *logPolicy) failureLevel(ctx context.Context, err error, class svcerr.Class) slog.Level {
 	switch class {
 	case svcerr.ClassNone:
 		return slog.LevelInfo
@@ -98,11 +101,18 @@ func (p *logPolicy) failureLevel(err error, class svcerr.Class) slog.Level {
 	}
 	// A server fault. The retryable codes are WARN: a deadline or a
 	// transaction conflict says "try again", and an unimplemented rpc is a
-	// gap in the API, not an outage. Everything else — Internal, Unknown,
-	// DataLoss, Unavailable, an unrecognised error, and a 4xx explicitly
-	// marked ClassServer — is a page.
+	// gap in the API, not an outage. The server's own deadline expiring
+	// pages when its Deadline slot opted in (Deadline.ExpiryIsError, see
+	// deadline.go). Everything else — Internal, Unknown, DataLoss,
+	// Unavailable, an unrecognised error, and a 4xx explicitly marked
+	// ClassServer — is a page.
 	switch svcerr.Code(err) {
-	case connect.CodeDeadlineExceeded, connect.CodeAborted, connect.CodeUnimplemented:
+	case connect.CodeDeadlineExceeded:
+		if deadlineOf(ctx, err) == deadlineServerError {
+			return slog.LevelError
+		}
+		return slog.LevelWarn
+	case connect.CodeAborted, connect.CodeUnimplemented:
 		return slog.LevelWarn
 	default:
 		return slog.LevelError
@@ -120,9 +130,11 @@ func (p *logPolicy) failureLevel(err error, class svcerr.Class) slog.Level {
 // ENDPOINT is empty by default, so that span goes nowhere in the default
 // configuration and cannot be the only copy. `error_class` and `code` say who
 // must act and what the client received, so a query can split the two.
+// `deadline` says whose deadline a DeadlineExceeded ran into (DeadlineKey),
+// when that is known.
 //
 // SANITIZE THE WIRE, NEVER THE LOG.
-func errorAttrs(err error, class svcerr.Class) []slog.Attr {
+func errorAttrs(ctx context.Context, err error, class svcerr.Class) []slog.Attr {
 	attrs := []slog.Attr{
 		slog.Any("error", err),
 		slog.String(ErrorClassKey, class.String()),
@@ -130,6 +142,9 @@ func errorAttrs(err error, class svcerr.Class) []slog.Attr {
 	}
 	if cause := svcerr.Cause(err); cause != nil {
 		attrs = append(attrs, slog.String("cause", cause.Error()))
+	}
+	if origin := deadlineOf(ctx, err); origin != deadlineUnknown {
+		attrs = append(attrs, slog.String(DeadlineKey, origin.String()))
 	}
 	return attrs
 }

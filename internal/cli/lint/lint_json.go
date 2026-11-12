@@ -422,6 +422,8 @@ func collectSingleLinterJSON(
 		return reportBySeverity(collectGraphJSON(cwd, cfg))
 	case flags.slowTests:
 		return report(collectSlowTestsJSON(ctx, paths))
+	case flags.testWaits:
+		return report(collectTestWaitsJSON(cwd))
 	}
 
 	return nil, false, nil

@@ -1,0 +1,151 @@
+package cli
+
+// Adopting an app that has no forge.yaml, for a claimable deploy.
+//
+// `forge env deploy <env> --claimable` and the deploy_claimable MCP tool both
+// start from a bare Vite or Next.js app (or an app with its own Dockerfile):
+// the decision of what to do with the directory, the refusals and the
+// `forge project new --in-place` invocation live here, so the two entry points
+// cannot drift. Only HOW the command runs differs: the tool runs it through
+// its serialized in-process runner, the CLI runs it directly.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/config"
+)
+
+// claimableAdoptionPlan is the verdict on a directory: nothing to do (it holds
+// a forge.yaml), adopt it with `forge project new --in-place <args>`, or refuse.
+type claimableAdoptionPlan struct {
+	adopt bool
+	name  string
+	// flags are what follows `forge project new` to adopt the directory.
+	flags   []string
+	refusal *claimableAdoptionRefusal
+}
+
+// claimableAdoptionRefusal is why dir cannot be adopted, and the command to
+// run instead.
+type claimableAdoptionRefusal struct {
+	msg  string
+	next string
+}
+
+// planClaimableAdoption decides what a claimable deploy does with dir. A
+// directory with a forge.yaml is already a project. A Vite or Next.js app at
+// the root is adopted as a static site, an app with its own Dockerfile as
+// `--kind app --claimable`; a Go module or anything else is refused.
+func planClaimableAdoption(dir, name string) claimableAdoptionPlan {
+	if _, err := os.Stat(filepath.Join(dir, config.ProjectConfigFile)); err == nil {
+		return claimableAdoptionPlan{}
+	}
+	name = adoptionName(dir, name)
+	kindArgs := []string{"--kind", "site"}
+	_, site := siteFrontendAt(dir)
+	switch {
+	case site:
+	case hasAppToAdopt(dir):
+		kindArgs = []string{"--kind", "app", "--claimable"}
+	default:
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			next := fmt.Sprintf("%s project new %s --service api --claimable", Name(), name)
+			return claimableAdoptionPlan{refusal: &claimableAdoptionRefusal{
+				msg: fmt.Sprintf("%s is a Go module with no forge.yaml and no Dockerfile. deploy_claimable adopts a static "+
+					"Vite or Next.js app, or an app with its own Dockerfile, in place. Add a Dockerfile that builds it, or scaffold a "+
+					"forge project sized for the claimable plan in a new directory, move the code into its service, then deploy it: %s", dir, next),
+				next: next,
+			}}
+		}
+		next := fmt.Sprintf("%s project new %s --kind site", Name(), name)
+		return claimableAdoptionPlan{refusal: &claimableAdoptionRefusal{
+			msg: fmt.Sprintf("%s has no forge.yaml, no Vite or Next.js app at its root "+
+				"(a package.json that depends on vite or next) and no Dockerfile, so there is nothing to adopt. Start a site, or run "+
+				"deploy_claimable in the app's own directory: %s", dir, next),
+			next: next,
+		}}
+	}
+	return claimableAdoptionPlan{
+		adopt: true,
+		name:  name,
+		flags: append(append([]string{"--in-place"}, kindArgs...), "--name", name),
+	}
+}
+
+// command is the full `forge project new ...` argv that adopts the directory.
+func (p claimableAdoptionPlan) command() []string {
+	return append([]string{"project", "new"}, p.flags...)
+}
+
+// failure is the message and the command to retry when running the plan's
+// `project new` failed with err after printing out.
+func (p claimableAdoptionPlan) failure(out string, err error) (msg, next string) {
+	return "adopting the app failed: " + strings.TrimSpace(out+"\n"+err.Error()),
+		fmt.Sprintf("%s %s", Name(), strings.Join(p.command(), " "))
+}
+
+// adoptBeforeClaimableDeploy is the CLI's half: `env deploy <env> --claimable`
+// in a directory that is not yet a forge project adopts the app in place, or
+// refuses with the MCP tool's message. A directory inside a project (forge.yaml
+// in a parent) is left to the ordinary path.
+func adoptBeforeClaimableDeploy(ctx context.Context, out io.Writer) error {
+	if _, err := findProjectConfigFile(); !errors.Is(err, ErrProjectConfigNotFound) {
+		return nil
+	}
+	dir, err := cmdutil.ResolutionRoot()
+	if err != nil {
+		return err
+	}
+	plan := planClaimableAdoption(dir, "")
+	if plan.refusal != nil {
+		return &claimableRefusal{exit: exitWrong, code: cloud.CodeInvalidArgument, msg: plan.refusal.msg, next: []string{plan.refusal.next}}
+	}
+	if !plan.adopt {
+		return nil
+	}
+	captured, err := runProjectNewQuietly(ctx, dir, plan.flags)
+	if err != nil {
+		msg, next := plan.failure(captured, err)
+		return &claimableRefusal{exit: exitCodeForError(err), code: cloud.CodeInvalidArgument, msg: msg + "\n  run instead: " + next, next: []string{next}}
+	}
+	_, _ = fmt.Fprintf(out, "  Adopted this app as forge project %q: added forge.yaml and deploy/kcl/ (and forge's .gitignore entries); the app's own files are untouched.\n", plan.name)
+	return nil
+}
+
+// runProjectNewQuietly runs `forge project new <args>` and returns what it
+// printed instead of printing it: a deploy owes its caller one line about the
+// adoption, not the scaffolder's whole report.
+func runProjectNewQuietly(ctx context.Context, dir string, args []string) (string, error) {
+	capture, err := newOutputCapture(nil)
+	if err != nil {
+		return "", err
+	}
+	prevWd, err := os.Getwd()
+	if err != nil {
+		capture.close()
+		return "", err
+	}
+	if err := os.Chdir(dir); err != nil {
+		capture.close()
+		return "", err
+	}
+	prevOut, prevErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = capture.w, capture.w
+	cmd := newNewCmd()
+	cmd.SetArgs(args)
+	cmd.SetOut(capture.w)
+	cmd.SetErr(capture.w)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	runErr := cmd.ExecuteContext(ctx)
+	os.Stdout, os.Stderr = prevOut, prevErr
+	_ = os.Chdir(prevWd)
+	return capture.close(), runErr
+}

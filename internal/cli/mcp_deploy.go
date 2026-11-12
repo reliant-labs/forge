@@ -34,7 +34,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // claimableDefaultEnv is the env deploy_claimable and deploy_status act on
@@ -281,43 +280,26 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 // when dir is neither a forge project nor an app forge can adopt, and
 // renders the result saying what to run instead.
 func (r *mcpRunner) adoptForClaimable(ctx context.Context, dir, name string, progress *progressSink) (adopted bool, refusal func(*claimableDeployResult) *claimableDeployResult, err error) {
-	if _, err := os.Stat(filepath.Join(dir, config.ProjectConfigFile)); err == nil {
-		return false, nil, nil
-	}
-	name = adoptionName(dir, name)
-	kindArgs := []string{"--kind", "site"}
-	_, site := siteFrontendAt(dir)
-	switch {
-	case site:
-	case hasAppToAdopt(dir):
-		kindArgs = []string{"--kind", "app", "--claimable"}
-	default:
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			next := fmt.Sprintf("%s project new %s --service api --claimable", Name(), name)
-			return false, func(res *claimableDeployResult) *claimableDeployResult {
-				return failedResult(res, exitWrong, fmt.Sprintf("%s is a Go module with no forge.yaml and no Dockerfile. deploy_claimable adopts a static "+
-					"Vite or Next.js app, or an app with its own Dockerfile, in place. Add a Dockerfile that builds it, or scaffold a "+
-					"forge project sized for the claimable plan in a new directory, move the code into its service, then deploy it: %s", dir, next), "", []string{next})
-			}, nil
-		}
-		next := fmt.Sprintf("%s project new %s --kind site", Name(), name)
+	plan := planClaimableAdoption(dir, name)
+	if plan.refusal != nil {
+		ref := plan.refusal
 		return false, func(res *claimableDeployResult) *claimableDeployResult {
-			return failedResult(res, exitWrong, fmt.Sprintf("%s has no forge.yaml, no Vite or Next.js app at its root "+
-				"(a package.json that depends on vite or next) and no Dockerfile, so there is nothing to adopt. Start a site, or run "+
-				"deploy_claimable in the app's own directory: %s", dir, next), "", []string{next})
+			return failedResult(res, exitWrong, ref.msg, "", []string{ref.next})
 		}, nil
 	}
-	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (adds forge.yaml and deploy/kcl/; your files are kept)", dir, name))
-	args := append(append([]string{"project", "new", "--in-place"}, kindArgs...), "--name", name)
+	if !plan.adopt {
+		return false, nil, nil
+	}
+	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (adds forge.yaml and deploy/kcl/; your files are kept)", dir, plan.name))
+	args := plan.command()
 	out, err := r.execStreamsCombined(ctx, dir, progress.line, args...)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, nil, ctx.Err()
 		}
-		msg := strings.TrimSpace(out + "\n" + err.Error())
-		next := fmt.Sprintf("%s %s", Name(), strings.Join(args, " "))
+		msg, next := plan.failure(out, err)
 		return false, func(res *claimableDeployResult) *claimableDeployResult {
-			return failedResult(res, exitCodeForError(err), "adopting the app failed: "+msg, "", []string{next})
+			return failedResult(res, exitCodeForError(err), msg, "", []string{next})
 		}, nil
 	}
 	return true, nil, nil

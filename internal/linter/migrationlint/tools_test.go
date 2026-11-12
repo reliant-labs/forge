@@ -98,9 +98,9 @@ func TestGooseMigrationsLintTheUpSection(t *testing.T) {
 		"00001_users.sql": "-- +goose Up\nCREATE TABLE users (id bigint primary key);\n" +
 			"ALTER TABLE users ADD COLUMN email text NOT NULL;\n" +
 			"-- +goose Down\nDROP TABLE users;\n",
-		"00002_index.sql": "-- +goose Up\nCREATE TABLE t (id int);\nCREATE INDEX CONCURRENTLY t_id ON t (id);\n",
+		"00002_index.sql":       "-- +goose Up\nCREATE TABLE t (id int);\nCREATE INDEX CONCURRENTLY t_id ON t (id);\n",
 		"00003_index_no_tx.sql": "-- +goose NO TRANSACTION\n-- +goose Up\nCREATE TABLE u (id int);\nCREATE INDEX CONCURRENTLY u_id ON u (id);\n",
-		"00004_go.go": "package migrations\n",
+		"00004_go.go":           "package migrations\n",
 	})
 	r, err := LintMigrationsDir(dir, DefaultConfig().ForTool(config.MigrationToolGoose))
 	if err != nil {

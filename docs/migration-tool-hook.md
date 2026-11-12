@@ -11,8 +11,8 @@ have applied them itself.
 # forge.yaml
 database:
   migrations:
-    dir: migrations   # default db/migrations; `database.migrations_dir` is the shorthand
-    tool: goose       # forge (default) | goose | atlas | flyway | dbmate | golang-migrate | custom
+    dir: migrations # default db/migrations; `database.migrations_dir` is the shorthand
+    tool: goose # forge (default) | goose | atlas | flyway | dbmate | golang-migrate | custom
     # apply: [...]    # override the tool's default argv; required for custom
     # status: [...]
 ```
@@ -21,13 +21,13 @@ Nothing changes for a project that sets neither key.
 
 ## What forge runs, and where
 
-| Where | What |
-|---|---|
-| `forge generate` and every schema reader (ORM, seeds, mocks, fixtures, lint lanes that execute SQL) | `apply` against a throwaway Postgres database, then introspects it. Cached per run on a digest of the directory's files and the command. |
-| `forge db migrate up` | `apply` against `--dsn` / `$DATABASE_URL` |
-| `forge db migrate status` / `version` | `status` |
-| `forge db reset` (dev) | drops and recreates the database, then `apply` |
-| `forge lint --migration-safety`, `forge ci migration-safety` | the SQL-text rules over every `.sql` file the tool applies (goose and dbmate: the Up section); forge-only rules are reported as `skipped (tool: <tool>): <why>` |
+| Where                                                                                               | What                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forge generate` and every schema reader (ORM, seeds, mocks, fixtures, lint lanes that execute SQL) | `apply` against a throwaway Postgres database, then introspects it. Cached per run on a digest of the directory's files and the command.                        |
+| `forge db migrate up`                                                                               | `apply` against `--dsn` / `$DATABASE_URL`                                                                                                                       |
+| `forge db migrate status` / `version`                                                               | `status`                                                                                                                                                        |
+| `forge db reset` (dev)                                                                              | drops and recreates the database, then `apply`                                                                                                                  |
+| `forge lint --migration-safety`, `forge ci migration-safety`                                        | the SQL-text rules over every `.sql` file the tool applies (goose and dbmate: the Up section); forge-only rules are reported as `skipped (tool: <tool>): <why>` |
 
 The command is an argv with no shell, run in the project root with
 `DATABASE_URL`, `FORGE_MIGRATIONS_DIR`, `FORGE_PROJECT_DIR`, `FORGE_PHASE`
@@ -46,7 +46,8 @@ migration into the tool's directory; the binary embeds no migrations (so
 
 The migrate job in `deploy/kcl/workloads.k` is yours: point it at an image that
 holds the tool **and** the migrations (a two-line Dockerfile `FROM <tool image>`
-+ `COPY <dir> /migrations`), or, on the host runtime,
-`command = ["forge", "db", "migrate", "up"]`.
+
+- `COPY <dir> /migrations`), or, on the host runtime,
+  `command = ["forge", "db", "migrate", "up"]`.
 
 Per-tool examples and the details: `forge skill load db/own-migration-tool`.

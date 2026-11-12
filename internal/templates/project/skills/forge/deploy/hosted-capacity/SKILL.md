@@ -35,7 +35,7 @@ needs the plan too. When the org has no plan and the deploy needs one:
 Error: deploy to prod is QUEUED, not failed: release 20261006.101500-abc is recorded and waits on billing.
   why   this runs compute (1 workload, 1 database) and the organization has no active compute plan
   do    Subscribe to a Reliant Compute plan in Reliant → Settings → Billing (an org admin can). …
-  open  https://app.reliantlabs.io/forge/env/prod?forgeProject=acme
+  open  https://forge.reliantlabs.io/forge/env/prod?forgeProject=acme
   then  nothing to re-run: it deploys on its own once that is done. To block until it is live: forge env status prod --wait
   (exit 7: queued on a person, not a failure)
 ```

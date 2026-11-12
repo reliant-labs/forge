@@ -438,7 +438,11 @@ func hookMigrationsPending(ctx context.Context, h migrationhook.Hook, db *sql.DB
 			"Repair it with %s itself (for golang-migrate: fix the database, then `migrate force <last good version>`), run `forge db migrate up`, then seed again", ledgerName(have.Table), have.Dirty, h.Tool)
 	}
 	if v := want.Behind(have); v != "" {
-		return nil, &seedplan.MigrationBlock{Reason: fmt.Sprintf("the database is behind its migrations: %s has not recorded migration %s", ledgerName(have.Table), v)}, nil
+		return nil, &seedplan.MigrationBlock{Reason: fmt.Sprintf("the database is behind its migrations: %s has not recorded migration %s at its current content", ledgerName(have.Table), v)}, nil
+	}
+	if v := want.Diverged(have); v != "" {
+		return nil, nil, fmt.Errorf("refusing to seed: %s records migration %s as applied from different content than the file on disk now, so the schema is not the one the migrations produce. "+
+			"Restore the file, or repair the database with %s itself, then seed again", ledgerName(have.Table), v, h.Tool)
 	}
 	return tables, nil, nil
 }

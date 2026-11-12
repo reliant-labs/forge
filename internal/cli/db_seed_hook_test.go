@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,12 +27,16 @@ const fakeMigrationToolEnv = "FORGE_CLI_FAKE_MIGRATION_TOOL"
 // order, to $DATABASE_URL, the way golang-migrate does: the ledger is the
 // table an `x-migrations-table=` argument names (else schema_migrations), one
 // row holding the current version, marked dirty while that version runs.
+//
+// Given the argument "flyway", it is flyway-shaped instead (fakeFlyway).
 func fakeMigrationTool() int {
 	ledger := "schema_migrations"
+	flyway := false
 	for _, a := range os.Args[1:] {
 		if _, v, ok := strings.Cut(a, "x-migrations-table="); ok {
 			ledger, _, _ = strings.Cut(v, "&")
 		}
+		flyway = flyway || a == "flyway"
 	}
 	db, err := sql.Open(pgtest.DriverName, os.Getenv("DATABASE_URL"))
 	if err != nil {
@@ -41,6 +47,12 @@ func fakeMigrationTool() int {
 	fail := func(err error) int {
 		fmt.Fprintln(os.Stderr, "fake tool:", err)
 		return 1
+	}
+	if flyway {
+		if err := fakeFlyway(db); err != nil {
+			return fail(err)
+		}
+		return 0
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ` + ledger + ` (version bigint PRIMARY KEY, dirty boolean NOT NULL)`); err != nil {
 		return fail(err)
@@ -79,6 +91,69 @@ func fakeMigrationTool() int {
 		}
 	}
 	return 0
+}
+
+// flywayHistory is the part of flyway's flyway_schema_history that
+// migrationhook reads.
+const flywayHistory = `CREATE TABLE IF NOT EXISTS flyway_schema_history (installed_rank int PRIMARY KEY, version varchar(50), type varchar(20) NOT NULL, script varchar(1000) NOT NULL, checksum int, success boolean NOT NULL)`
+
+// flywayChecksum is the checksum fakeFlyway records for a script's content.
+func flywayChecksum(body string) int32 { return int32(crc32.ChecksumIEEE([]byte(body))) }
+
+// fakeFlyway migrates the way flyway does: every V<version>__*.sql not yet
+// recorded, in version order, then every R__*.sql whose content differs from
+// its last successful run, each recorded with its checksum.
+func fakeFlyway(db *sql.DB) error {
+	if _, err := db.Exec(flywayHistory); err != nil {
+		return err
+	}
+	dir := os.Getenv("FORGE_MIGRATIONS_DIR")
+	versioned, _ := filepath.Glob(filepath.Join(dir, "V*__*.sql"))
+	repeatable, _ := filepath.Glob(filepath.Join(dir, "R__*.sql"))
+	sort.Strings(versioned)
+	sort.Strings(repeatable)
+	run := func(f, version string, skip func(sum int32) (bool, error)) error {
+		body, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		sum := flywayChecksum(string(body))
+		if done, err := skip(sum); err != nil || done {
+			return err
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(f), err)
+		}
+		var v any
+		if version != "" {
+			v = version
+		}
+		_, err = db.Exec(`INSERT INTO flyway_schema_history SELECT COALESCE(MAX(installed_rank), 0) + 1, $1, 'SQL', $2, $3, true FROM flyway_schema_history`, v, filepath.Base(f), sum)
+		return err
+	}
+	for _, f := range versioned {
+		version := strings.TrimPrefix(strings.SplitN(filepath.Base(f), "__", 2)[0], "V")
+		if err := run(f, version, func(int32) (bool, error) {
+			var n int
+			err := db.QueryRow(`SELECT COUNT(*) FROM flyway_schema_history WHERE version = $1 AND success`, version).Scan(&n)
+			return n > 0, err
+		}); err != nil {
+			return err
+		}
+	}
+	for _, f := range repeatable {
+		if err := run(f, "", func(sum int32) (bool, error) {
+			var last sql.NullInt32
+			err := db.QueryRow(`SELECT checksum FROM flyway_schema_history WHERE version IS NULL AND script = $1 AND success ORDER BY installed_rank DESC LIMIT 1`, filepath.Base(f)).Scan(&last)
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return last.Valid && last.Int32 == sum, err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // hookedSeedProject writes a project whose migrations dir holds files, with
@@ -259,5 +334,61 @@ func TestSeedOfAHookedProjectWithACustomTool(t *testing.T) {
 	block, err := seedMigrationsPending(ctx, db, dsn, dir, migDir)
 	if err != nil || block == nil || !strings.Contains(block.Reason, "not fully migrated") {
 		t.Fatalf("a custom tool whose check fails: block %+v, err %v; want a refusal", block, err)
+	}
+}
+
+// A flyway project's repeatable migrations (R__*.sql) have no version: flyway
+// re-runs one whenever its content changes, and records each run's checksum.
+// A database whose repeatable last ran at other content, or whose last run of
+// it failed, is behind or broken however current its versioned history and
+// its schema look, so seeding refuses it.
+func TestSeedOfAFlywayProjectChecksItsRepeatables(t *testing.T) {
+	if testing.Short() {
+		t.Skip("applies migrations to a real postgres through a subprocess; skipped under -short")
+	}
+	ctx := context.Background()
+	widgets := `CREATE TABLE widgets (id TEXT PRIMARY KEY, label TEXT NOT NULL)`
+	labels := `UPDATE widgets SET label = upper(label)`
+	dir, migDir := hookedSeedProject(t,
+		fmt.Sprintf("    tool: flyway\n    apply: [%q, \"flyway\"]\n", testExecutable(t)),
+		map[string]string{"V1__widgets.sql": widgets, "R__labels.sql": labels})
+	history := func(stmts ...string) []string {
+		return append([]string{widgets, flywayHistory}, stmts...)
+	}
+	current := fmt.Sprintf(`INSERT INTO flyway_schema_history VALUES (1, '1', 'SQL', 'V1__widgets.sql', %d, true), (2, NULL, 'SQL', 'R__labels.sql', %d, true)`,
+		flywayChecksum(widgets), flywayChecksum(labels))
+
+	db, dsn := seedTarget(t, history(current)...)
+	if block, err := seedMigrationsPending(ctx, db, dsn, dir, migDir); err != nil || block != nil {
+		t.Fatalf("a fully migrated flyway database is refused: %+v, %v", block, err)
+	}
+
+	// The repeatable last ran at other content (it changed since; a
+	// data-only change leaves the schema as it was).
+	db, dsn = seedTarget(t, history(fmt.Sprintf(`INSERT INTO flyway_schema_history VALUES (1, '1', 'SQL', 'V1__widgets.sql', %d, true), (2, NULL, 'SQL', 'R__labels.sql', 12345, true)`, flywayChecksum(widgets)))...)
+	block, err := seedMigrationsPending(ctx, db, dsn, dir, migDir)
+	if err != nil || block == nil || !strings.Contains(block.Reason, "repeatable R__labels.sql") {
+		t.Fatalf("a changed repeatable: block %+v, err %v; want a refusal naming repeatable R__labels.sql", block, err)
+	}
+
+	// A baselined database that never ran the repeatable.
+	db, dsn = seedTarget(t, history(`INSERT INTO flyway_schema_history VALUES (1, '1', 'BASELINE', '<< Flyway Baseline >>', NULL, true)`)...)
+	block, err = seedMigrationsPending(ctx, db, dsn, dir, migDir)
+	if err != nil || block == nil || !strings.Contains(block.Reason, "repeatable R__labels.sql") {
+		t.Fatalf("a baseline without the repeatable: block %+v, err %v; want a refusal naming repeatable R__labels.sql", block, err)
+	}
+
+	// The repeatable's last run failed.
+	db, dsn = seedTarget(t, history(current, fmt.Sprintf(`INSERT INTO flyway_schema_history VALUES (3, NULL, 'SQL', 'R__labels.sql', %d, false)`, flywayChecksum(labels)))...)
+	_, err = seedMigrationsPending(ctx, db, dsn, dir, migDir)
+	if err == nil || !strings.Contains(err.Error(), "repeatable R__labels.sql as failed part-way") {
+		t.Fatalf("a failed repeatable: err %v; want a refusal naming it as failed", err)
+	}
+
+	// A versioned migration applied from content other than the file's.
+	db, dsn = seedTarget(t, history(fmt.Sprintf(`INSERT INTO flyway_schema_history VALUES (1, '1', 'SQL', 'V1__widgets.sql', 54321, true), (2, NULL, 'SQL', 'R__labels.sql', %d, true)`, flywayChecksum(labels)))...)
+	_, err = seedMigrationsPending(ctx, db, dsn, dir, migDir)
+	if err == nil || !strings.Contains(err.Error(), "migration 1 as applied from different content") {
+		t.Fatalf("an edited applied migration: err %v; want a refusal naming migration 1", err)
 	}
 }

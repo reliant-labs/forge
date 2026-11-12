@@ -130,8 +130,12 @@ schema is not proof: a pending data-only migration, or one that failed after
 its DDL, leaves the tables looking current. So before `forge db seed apply` or
 `reset` writes, forge reads a built-in tool's history table in the target and
 in the shadow it just migrated: every migration the shadow records must be
-recorded in the target, and none may be marked failed (golang-migrate's
-`dirty`, a flyway row that did not succeed, an atlas revision with an error).
+recorded in the target (a flyway repeatable, `R__*.sql`, at the same checksum,
+since flyway re-runs one whose content changed), none may be marked failed
+(golang-migrate's `dirty`, a flyway migration whose last run did not succeed,
+an atlas revision with an error or unapplied statements), and none may have
+been applied from content other than the file's (flyway's checksum, atlas's
+hash).
 A custom tool's history is unknown to forge, so it declares
 `check:`, an argv that exits 0 only when every migration is applied and none
 failed; without one, seeding a custom-tool project is refused. A declared

@@ -12,24 +12,37 @@ import (
 )
 
 // Ledger is what a built-in tool's history table says about one database:
-// the migrations it records as applied, and the one it records as failed
-// part-way. It is how forge tells "fully migrated" from "behind" without
-// trusting the schema's shape, which a pending data-only migration or a
-// migration that failed after its DDL leaves looking current.
+// the migrations it records as applied (and from which file content, where
+// the tool records that), and the one it records as failed part-way. It is
+// how forge tells "fully migrated" from "behind" without trusting the
+// schema's shape, which a pending data-only migration, a changed repeatable
+// or a migration that failed after its DDL leaves looking current.
 type Ledger struct {
 	// Table is the history table read.
 	Table LedgerTable
-	// Applied are the versions recorded as applied.
+	// Applied are the migrations recorded as applied: versions, and a
+	// flyway repeatable as RepeatablePrefix + its script.
 	Applied []string
+	// Sums is the checksum the tool recorded for an applied migration,
+	// keyed like Applied, where it records one (flyway's checksum, atlas's
+	// hash). A repeatable's is the content it last ran successfully.
+	Sums map[string]string
 	// Through is a version every version at or below which counts as
 	// applied: golang-migrate's current version (it records only that),
-	// or a flyway/atlas baseline. Empty when there is none.
+	// or a flyway/atlas baseline. Empty when there is none. It never
+	// covers a repeatable.
 	Through string
-	// Dirty is the version recorded as failed part-way, "" when none:
-	// golang-migrate's dirty flag, a flyway row that did not succeed, an
-	// atlas revision with an error or fewer statements applied than it has.
+	// Dirty is the migration recorded as failed part-way, "" when none:
+	// golang-migrate's dirty flag, a flyway migration (versioned or
+	// repeatable) whose last run did not succeed, an atlas revision with an
+	// error or fewer statements applied than it has.
 	Dirty string
 }
+
+// RepeatablePrefix marks a flyway repeatable migration (R__*.sql) in
+// Ledger.Applied: it has no version, only a script, and it is pending
+// whenever its content changes.
+const RepeatablePrefix = "repeatable "
 
 // ledgerQuerier is the one database method ReadLedger needs.
 type ledgerQuerier interface {
@@ -74,20 +87,24 @@ func (h Hook) ReadLedger(ctx context.Context, db ledgerQuerier) (l Ledger, exist
 		return l, false, err
 	}
 
+	// Every query yields (migration, ok, kind, sum, repeatable) in the
+	// order the tool applied them.
 	var query string
 	switch h.Tool {
 	case config.MigrationToolGolangMigrate:
-		// One row: the current version and whether it failed part-way.
-		query = `SELECT version::text, dirty FROM ` + ident + ` ORDER BY version DESC LIMIT 1`
+		// One row: the current version, and ok is its dirty flag.
+		query = `SELECT version::text, dirty, '', '', false FROM ` + ident + ` ORDER BY version DESC LIMIT 1`
 	case config.MigrationToolGoose:
 		// Replayed in order: a later is_applied=false row is a down.
-		query = `SELECT version_id::text, is_applied FROM ` + ident + ` WHERE version_id <> 0 ORDER BY id`
+		query = `SELECT version_id::text, is_applied, '', '', false FROM ` + ident + ` WHERE version_id <> 0 ORDER BY id`
 	case config.MigrationToolDbmate:
-		query = `SELECT version::text, true FROM ` + ident
+		query = `SELECT version::text, true, '', '', false FROM ` + ident + ` ORDER BY version`
 	case config.MigrationToolFlyway:
-		query = `SELECT version, success, type FROM ` + ident + ` WHERE version IS NOT NULL ORDER BY installed_rank`
+		// A repeatable has no version: it is its script, re-run (a new
+		// row) whenever its checksum changes.
+		query = `SELECT COALESCE(version, script), success, type, COALESCE(checksum::text, ''), version IS NULL FROM ` + ident + ` ORDER BY installed_rank`
 	case config.MigrationToolAtlas:
-		query = `SELECT version, applied >= total AND COALESCE(error, '') = '', type FROM ` + ident + ` WHERE version NOT LIKE '.%' ORDER BY version`
+		query = `SELECT version, applied >= total AND COALESCE(error, '') = '', type::text, COALESCE(hash, ''), false FROM ` + ident + ` WHERE version NOT LIKE '.%' ORDER BY version`
 	default:
 		return l, false, fmt.Errorf("forge cannot read the history of migration tool %s", h.Tool)
 	}
@@ -96,17 +113,16 @@ func (h Hook) ReadLedger(ctx context.Context, db ledgerQuerier) (l Ledger, exist
 		return l, true, fmt.Errorf("read %s: %w", ident, err)
 	}
 	defer func() { _ = rows.Close() }()
-	state := map[string]bool{}
+	type run struct {
+		ok, undone bool
+		sum        string
+	}
+	last := map[string]run{}
 	var order []string
 	for rows.Next() {
-		var version string
-		var ok bool
-		var kind sql.NullString
-		dest := []any{&version, &ok}
-		if h.Tool == config.MigrationToolFlyway || h.Tool == config.MigrationToolAtlas {
-			dest = append(dest, &kind)
-		}
-		if err := rows.Scan(dest...); err != nil {
+		var key, kind, sum string
+		var ok, repeatable bool
+		if err := rows.Scan(&key, &ok, &kind, &sum, &repeatable); err != nil {
 			return l, true, fmt.Errorf("read %s: %w", ident, err)
 		}
 		switch h.Tool {
@@ -115,58 +131,78 @@ func (h Hook) ReadLedger(ctx context.Context, db ledgerQuerier) (l Ledger, exist
 			// it applies it: a dirty version failed part-way, a clean one
 			// is applied along with every version below it.
 			if ok {
-				l.Dirty = version
+				l.Dirty = key
 			} else {
-				l.Through = version
+				l.Through = key
 			}
 			continue
 		case config.MigrationToolFlyway:
-			switch kind.String {
-			case "SCHEMA", "DELETE":
+			switch {
+			case kind == "SCHEMA" || kind == "DELETE":
 				continue
-			case "BASELINE":
-				l.Through = maxVersion(l.Through, version)
+			case kind == "BASELINE":
+				l.Through = maxVersion(l.Through, key)
+				continue
+			case strings.HasPrefix(kind, "UNDO_") && ok:
+				// An undo takes its version back out.
+				last[key] = run{undone: true}
 				continue
 			}
 		case config.MigrationToolAtlas:
 			// atlas's RevisionType is a bit set; 1 is a baseline.
-			if n, err := strconv.Atoi(kind.String); err == nil && n&1 != 0 {
-				l.Through = maxVersion(l.Through, version)
+			if n, err := strconv.Atoi(kind); err == nil && n&1 != 0 {
+				l.Through = maxVersion(l.Through, key)
 				continue
 			}
 		}
-		if _, seen := state[version]; !seen {
-			order = append(order, version)
+		if repeatable {
+			key = RepeatablePrefix + key
 		}
-		state[version] = ok
+		if _, seen := last[key]; !seen {
+			order = append(order, key)
+		}
+		last[key] = run{ok: ok, sum: sum}
 	}
 	if err := rows.Err(); err != nil {
 		return l, true, fmt.Errorf("read %s: %w", ident, err)
 	}
 	// goose's false is a down (the version is not applied); flyway's and
-	// atlas's is a migration that failed part-way.
+	// atlas's is a migration whose last run failed part-way.
 	failedMeansDirty := h.Tool == config.MigrationToolFlyway || h.Tool == config.MigrationToolAtlas
-	for _, v := range order {
+	for _, k := range order {
+		r := last[k]
 		switch {
-		case state[v]:
-			l.Applied = append(l.Applied, v)
+		case r.undone:
+		case r.ok:
+			l.Applied = append(l.Applied, k)
+			if r.sum != "" {
+				if l.Sums == nil {
+					l.Sums = map[string]string{}
+				}
+				l.Sums[k] = r.sum
+			}
 		case failedMeansDirty && l.Dirty == "":
-			l.Dirty = v
+			l.Dirty = k
 		}
 	}
 	return l, true, nil
 }
 
-// Behind returns the first version l records as applied that have does not
-// (it is neither among have's Applied nor at or below its Through), or ""
-// when have has applied everything l has. l is the ledger of a database the
-// tool brought fully up to date (the shadow), have the target's.
+// Behind returns the first migration l records as applied that have does
+// not, or "" when have has applied everything l has. l is the ledger of a
+// database the tool brought fully up to date (the shadow), have the target's.
+// A version is applied when have records it or it is at or below have's
+// Through; a repeatable only when have records it with the same checksum,
+// since flyway re-runs one whose content changed.
 func (l Ledger) Behind(have Ledger) string {
 	applied := map[string]bool{}
 	for _, v := range have.Applied {
 		applied[v] = true
 	}
 	covered := func(v string) bool {
+		if strings.HasPrefix(v, RepeatablePrefix) {
+			return applied[v] && l.Sums[v] == have.Sums[v]
+		}
 		return applied[v] || (have.Through != "" && CompareVersions(v, have.Through) <= 0)
 	}
 	for _, v := range l.Applied {
@@ -176,6 +212,22 @@ func (l Ledger) Behind(have Ledger) string {
 	}
 	if l.Through != "" && !covered(l.Through) {
 		return l.Through
+	}
+	return ""
+}
+
+// Diverged returns the first versioned migration both ledgers record as
+// applied with different checksums, or "": have applied a file whose content
+// differs from the one on disk now, so its schema is not the shadow's.
+func (l Ledger) Diverged(have Ledger) string {
+	for _, v := range l.Applied {
+		if strings.HasPrefix(v, RepeatablePrefix) {
+			continue
+		}
+		want, theirs := l.Sums[v], have.Sums[v]
+		if want != "" && theirs != "" && want != theirs {
+			return v
+		}
 	}
 	return ""
 }

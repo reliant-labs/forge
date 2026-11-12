@@ -12,7 +12,7 @@ package cli
 // `obs check` judges. forge builds nothing and applies nothing here. The
 // release is RECORD-ONLY (release.Release.RecordOnly): it may name no
 // artifacts at all (a version and a commit), and it never binds to an env
-// forge itself deploys, so a record can never pose as a forge deploy. That is
+// forge itself deploys, so a record can never pose as forge's own deploy. That is
 // enforced twice: the control plane refuses the promotion, and before any cut
 // this command refuses an env declared in deploy/kcl/<env>/main.k — an env
 // forge's KCL declares is one forge applies, and the machine ledger (or a

@@ -55,7 +55,7 @@ That is the whole integration. forge builds nothing and applies nothing.
   `promoted` are false in `--json`). The same version with other digests — or,
   version-only, at another commit — is refused as a conflict, never an
   overwrite: a version names one release.
-- **Never a forge deploy.** The control plane refuses to bind a record-only
+- **Never posing as forge's own deploy.** The control plane refuses to bind a record-only
   release to an env forge itself deploys (a hosted env, or one bound to a
   cluster forge reconciles): reason `record_only_release`. The command refuses
   an env that has `deploy/kcl/<env>/main.k` the same way, before it cuts
@@ -219,5 +219,5 @@ verdict cannot tell the new release's traffic from the old.
 ## Next
 
 - Monitoring first, if it is not set up yet: `observability`.
-- Let forge deploy it, when you are ready: `deploy` (`forge env deploy`); the
+- Hand the deploy to forge when you are ready: `deploy` (`forge env deploy`); the
   recorded history stays in the same ledger, and forge's own releases follow it.

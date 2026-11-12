@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -77,6 +78,11 @@ type AppWorkload struct {
 	// ComposeService is the compose service dev runs it as ("" with no
 	// compose file).
 	ComposeService string
+	// Command overrides the image's entrypoint+CMD on every runtime: a
+	// compose service's `command`, which dev runs and hosting must run too
+	// (a worker sharing the web Dockerfile). Nil runs the image's own.
+	Command       []string
+	CommandSource string
 	// DevCommand is the host process dev runs (no compose file); DevDir its
 	// working directory relative to the root ("" = the root).
 	DevCommand       []string
@@ -220,6 +226,9 @@ func appWorkloadsK(spec AppSpec) string {
 				"    # copies it into your org's registry and pins it by digest.\n")
 			fmt.Fprintf(&b, "    image = %s\n", kclStr(w.Image))
 		}
+		if len(w.Command) > 0 {
+			fmt.Fprintf(&b, "    command = %s  # check: %s\n", kclList(w.Command), w.CommandSource)
+		}
 		if w.Port > 0 {
 			fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = %s}]  # %s\n", w.Port, kclBool(w.Expose), w.PortSource)
 		}
@@ -253,6 +262,33 @@ func appWorkloadsK(spec AppSpec) string {
 		b.WriteString("    before = [fw.BEFORE_ALL]\n}\n")
 	}
 	return b.String()
+}
+
+// migrateEnvAdds is the env the migration job gets in an env's main.k: the
+// database URL under DATABASE_URL and under every name its owning workload
+// reads it from (SQLALCHEMY_DATABASE_URI), plus the owner's managed secrets
+// when the env delivers them. The job runs the owner's image with the owner's
+// configuration, so it must see the same names the owner does.
+func migrateEnvAdds(spec AppSpec, secrets bool) []string {
+	owner := spec.workload(spec.Migrate.Workload)
+	names := []string{"DATABASE_URL"}
+	if owner.UsesDatabase {
+		for _, n := range owner.databaseEnv() {
+			if !slices.Contains(names, n) {
+				names = append(names, n)
+			}
+		}
+	}
+	adds := make([]string, 0, len(names)+len(owner.Secrets))
+	for _, n := range names {
+		adds = append(adds, "env."+n+" = _database_url")
+	}
+	if secrets {
+		for _, s := range owner.Secrets {
+			adds = append(adds, fmt.Sprintf("env.%s = forge.ManagedSecret {name = %s}", s, kclStr(s)))
+		}
+	}
+	return adds
 }
 
 // databaseEnv is where w reads the database's URL.
@@ -362,8 +398,8 @@ func appDevHostMainK(spec AppSpec) string {
 	fmt.Fprintf(&b, "    project = %s\n    lifecycle = \"local\"\n    workloads = [\n", kclStr(spec.ProjectName))
 	if m := spec.Migrate; m != nil {
 		owner := spec.workload(m.Workload)
-		fmt.Fprintf(&b, "        _on_host(wl.migrate, %s, 0, %s) | {env.DATABASE_URL = _database_url}  # check: %s\n",
-			kclList(m.Command), kclStr(emptyAsDot(owner.DevDir)), m.Source)
+		fmt.Fprintf(&b, "        _on_host(wl.migrate, %s, 0, %s) | {%s}  # check: %s\n",
+			kclList(m.Command), kclStr(emptyAsDot(owner.DevDir)), strings.Join(migrateEnvAdds(spec, true), ", "), m.Source)
 	}
 	for _, w := range spec.Workloads {
 		port := "0"
@@ -452,8 +488,8 @@ func appHostedMainK(spec AppSpec, env string, claimable bool) string {
 		b.WriteString("    control_plane = forge.ControlPlane {}\n")
 	}
 	b.WriteString("    workloads = [\n")
-	if spec.Migrate != nil {
-		b.WriteString("        _hosted(wl.migrate) | {env.DATABASE_URL = _database_url}\n")
+	if m := spec.Migrate; m != nil {
+		b.WriteString("        _hosted(wl.migrate) | {" + strings.Join(migrateEnvAdds(spec, !claimable), ", ") + "}\n")
 	}
 	for _, w := range spec.Workloads {
 		var adds []string

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -411,5 +412,71 @@ func TestDetectApp_ComposeTargetIsAnEarlierStage(t *testing.T) {
 	w := det.spec.Workloads[0]
 	if w.Port != 5173 {
 		t.Errorf("web port = %d, want 5173 from the dev stage the compose target names", w.Port)
+	}
+}
+
+// A compose worker that shares the web Dockerfile runs its compose command on
+// every runtime, not the image's web CMD; and the migration job reads the
+// database URL under the name its owner does, with the owner's secrets.
+func TestNewApp_ComposeCommandAndMigrationEnvReachHosting(t *testing.T) {
+	root := writeAppTree(t, map[string]string{
+		"requirements.txt": "flask==3.0.0\ngunicorn==22.0.0\ncelery==5.4.0\nalembic==1.13.2\n",
+		"app/main.py":      "from flask import Flask\napp = Flask(__name__)\n",
+		"Dockerfile":       "FROM python:3.12-slim\nWORKDIR /srv\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app.main:app\"]\n",
+		"docker-compose.yml": `services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SQLALCHEMY_DATABASE_URI: postgresql://app:app@db:5432/shop
+      SECRET_KEY: dev-secret
+  jobs:
+    build: .
+    command: celery -A app.tasks worker
+    environment:
+      SQLALCHEMY_DATABASE_URI: postgresql://app:app@db:5432/shop
+      SECRET_KEY: dev-secret
+  migrate:
+    build: .
+    command: alembic upgrade head
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: shop
+`,
+	})
+	det, err := detectApp(root, "shop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := generator.RenderAppScaffold(det.spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, f := range files {
+		got[f.Path] = string(f.Content)
+	}
+	wk := got["deploy/kcl/workloads.k"]
+	if !strings.Contains(wk, `command = ["sh", "-c", "celery -A app.tasks worker"]`) || !strings.Contains(wk, "name = \"jobs\"\n    kind = \"worker\"") {
+		t.Errorf("the jobs worker lost its compose command:\n%s", wk)
+	}
+	if strings.Count(wk, "\n    command = ") != 2 { // jobs, and the migrate job
+		t.Errorf("only the overridden worker and the migrate job carry a command:\n%s", wk)
+	}
+	prod := got["deploy/kcl/prod/main.k"]
+	var migrate string
+	for _, l := range strings.Split(prod, "\n") {
+		if strings.Contains(l, "wl.migrate") {
+			migrate = l
+		}
+	}
+	for _, want := range []string{"env.DATABASE_URL = _database_url", "env.SQLALCHEMY_DATABASE_URI = _database_url", `env.SECRET_KEY = forge.ManagedSecret {name = "SECRET_KEY"}`} {
+		if !strings.Contains(migrate, want) {
+			t.Errorf("prod's migrate job lacks %s: %q", want, migrate)
+		}
 	}
 }

@@ -165,35 +165,42 @@ func parseComposeFile(path string) (*composeFile, error) {
 	return out, nil
 }
 
+// composeBuildMapping reads a compose `build:` mapping into b; false when it
+// is not one.
+func composeBuildMapping(n yaml.Node, b *generator.AppBuild) bool {
+	var m map[string]yaml.Node
+	if n.Decode(&m) != nil {
+		return false
+	}
+	if c, ok := m["context"]; ok {
+		b.Context = c.Value
+	}
+	if d, ok := m["dockerfile"]; ok {
+		b.Dockerfile = d.Value
+	}
+	if t, ok := m["target"]; ok {
+		b.Target = t.Value
+	}
+	if a, ok := m["args"]; ok {
+		args, _ := composeEnvironment(a)
+		for k, v := range args {
+			if strings.Contains(v, "${") {
+				delete(args, k)
+			}
+		}
+		if len(args) > 0 {
+			b.Args = args
+		}
+	}
+	return true
+}
+
 func composeBuild(n yaml.Node) *generator.AppBuild {
 	b := &generator.AppBuild{Dockerfile: "Dockerfile"}
 	if n.Kind == yaml.ScalarNode {
 		b.Context = n.Value
-	} else {
-		var m map[string]yaml.Node
-		if n.Decode(&m) != nil {
-			return nil
-		}
-		if c, ok := m["context"]; ok {
-			b.Context = c.Value
-		}
-		if d, ok := m["dockerfile"]; ok {
-			b.Dockerfile = d.Value
-		}
-		if t, ok := m["target"]; ok {
-			b.Target = t.Value
-		}
-		if a, ok := m["args"]; ok {
-			args, _ := composeEnvironment(a)
-			for k, v := range args {
-				if strings.Contains(v, "${") {
-					delete(args, k)
-				}
-			}
-			if len(args) > 0 {
-				b.Args = args
-			}
-		}
+	} else if !composeBuildMapping(n, b) {
+		return nil
 	}
 	b.Context = cleanRel(b.Context)
 	// compose resolves dockerfile against the context; forge resolves it
@@ -397,7 +404,7 @@ func parseDockerfile(path, target string) (dockerfileFacts, error) {
 		case "ARG", "ENV":
 			for k, v := range dockerKV(rest) {
 				vars[k] = v
-				if strings.ToUpper(instr) == "ENV" && k == "PORT" {
+				if strings.EqualFold(instr, "ENV") && k == "PORT" {
 					if p, err := strconv.Atoi(expandDockerVars(v, vars)); err == nil {
 						facts.envPort = p
 					}
@@ -509,7 +516,6 @@ func portInCommand(cmd string) int {
 type appSource struct {
 	dir      string // relative to the root, "" = the root
 	lang     string // node, python, ruby, go, java, ""
-	pkg      map[string]any
 	deps     map[string]bool
 	scripts  map[string]string
 	pm       string // npm, pnpm, yarn, bun
@@ -892,6 +898,10 @@ func (d *appDetection) composeWorkload(root string, s composeService, pg *compos
 	cmdRaw := facts.cmdRaw
 	if s.commandRaw != "" {
 		cmdRaw = s.commandRaw
+		// compose runs this instead of the Dockerfile's CMD; every other
+		// runtime must too, or a worker sharing the web image serves web.
+		w.Command = s.command
+		w.CommandSource = fmt.Sprintf("compose service %q's command", s.name)
 	}
 	switch {
 	case len(s.ports) > 0:

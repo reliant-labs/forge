@@ -1,6 +1,7 @@
 ---
 name: deploy/static-site
 description: Ship a landing page, marketing/docs site, SPA or PWA — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
+applies: any
 ---
 
 # Static sites

@@ -24,6 +24,10 @@ const (
 	ReadmeEnd   = "<!-- benefits:end -->"
 )
 
+// AnyRepoAnchor is the docs/benefits.md heading of the "Works in any repo"
+// table. Reserved: no category or benefit may take it.
+const AnyRepoAnchor = "any-repo"
+
 // DocsPath and ReadmePath are the rendered files, relative to the repo root.
 const (
 	DocsPath   = "docs/benefits.md"
@@ -157,17 +161,44 @@ func RenderMarkdown(r *Registry) []byte {
 		"\"Reliant hosting\" means the benefit needs a project deployed to Reliant\n" +
 		"hosting. \"Reliant harness\" means it needs the Reliant agent harness.\n\n")
 
+	p("**Scope.** \"Works in any repo\" means the benefit needs no forge.yaml:\n" +
+		"it works in an existing app in any language, and the entry says how to\n" +
+		"start and how long an agent takes to first value. Everything else needs a\n" +
+		"forge project; `forge skill load adopt` is how an existing app becomes one.\n\n")
+
 	var cats []Category
 	for _, c := range r.Categories {
 		if len(r.InCategory(c.ID)) > 0 {
 			cats = append(cats, c)
 		}
 	}
+	anyRepo := r.AppliesTo(false)
 	p("## Contents\n\n")
-	for i, c := range cats {
-		p("%d. [%s](#%s)\n", i+1, c.Title, c.ID)
+	n := 0
+	if len(anyRepo) > 0 {
+		n++
+		p("%d. [Works in any repo](#%s)\n", n, AnyRepoAnchor)
+	}
+	for _, c := range cats {
+		n++
+		p("%d. [%s](#%s)\n", n, c.Title, c.ID)
 	}
 	p("\n")
+
+	if len(anyRepo) > 0 {
+		p("---\n\n")
+		p("<a id=\"%s\"></a>\n\n", AnyRepoAnchor)
+		p("## Works in any repo\n\n")
+		p("What an existing app gets from forge before it is a forge project: no\n" +
+			"forge.yaml, no generated code, any language. `forge project benefits`\n" +
+			"prints this list for the directory you run it in.\n\n")
+		rows := [][]string{{"Benefit", "Start with", "Agent time"}}
+		for _, b := range anyRepo {
+			rows = append(rows, []string{fmt.Sprintf("[%s](#%s)", b.Title, b.ID), oneLine(b.Adopt), b.Estimate})
+		}
+		writeTable(&buf, rows)
+		p("\n")
+	}
 
 	for _, c := range cats {
 		p("---\n\n")
@@ -188,6 +219,9 @@ func renderEntry(buf *bytes.Buffer, b Benefit) {
 	p("### %s\n\n", b.Title)
 	p("%s\n\n", oneLine(b.Claim))
 	p("_%s · %s_\n\n", statusLabel[b.Status], availabilityLabel[b.Availability])
+	if b.Scope == ScopeAny {
+		p("**Works in any repo** (no forge.yaml). **Start:** %s **Agent time:** %s.\n\n", withStop(oneLine(b.Adopt)), b.Estimate)
+	}
 	if b.Use != "" {
 		p("**Use:** %s\n\n", oneLine(b.Use))
 	}
@@ -243,6 +277,14 @@ func laneCell(lane string) string {
 		return "bare `forge lint`"
 	}
 	return "`" + lane + "`"
+}
+
+// withStop ends a sentence with a full stop unless it already ends in one.
+func withStop(s string) string {
+	if strings.HasSuffix(s, ".") {
+		return s
+	}
+	return s + "."
 }
 
 // oneLine collapses authored prose onto one line. YAML folded scalars already

@@ -281,6 +281,14 @@ func refusalHint(reason string) string {
 		return "this release regressed in an env this one follows (delivery_policy.health_gate). Fix forward in a new release; to override for an incident, re-run with --override-health-gate \"<why>\" (recorded)."
 	case reasonHealthGateUnproven:
 		return "this release is not proven good in an env this one follows (delivery_policy.health_gate). Deploy it there and let it be judged, or re-run with --override-health-gate \"<why>\" (recorded)."
+	case reasonRequiredGateMissing:
+		return "this env's delivery_policy.required_gates names a check the promotion does not carry. Run it, and pass its result: --gate name=<check>,status=passed (or a forge --gate-json file)."
+	case reasonRequiredGateFailed:
+		return "a check this env's delivery_policy.required_gates requires did not pass. Fix it and re-run the check; only a passed result admits the promotion."
+	case reasonApprovalDenied:
+		return "this env's delivery_policy.approval_hook did not approve the promotion (a hook that times out or fails denies). --yes does not answer for the hook."
+	case reasonApprovalPending:
+		return "this env's delivery_policy.approval_hook has not decided yet. Approve it in your approval system, then retry the same command."
 	case reasonHealthGatePending:
 		return "an env this one follows runs this release but its health verdict is not in yet. Wait with `forge obs check <that env> --release <version> --wait`, then retry."
 	default:

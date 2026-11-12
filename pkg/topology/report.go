@@ -13,7 +13,10 @@ const (
 	DestinationCompose = "compose"
 	DestinationHost    = "host"
 	DestinationStatic  = "static"
-	DestinationMixed   = "mixed"
+	// DestinationExternal: every workload runs on the author's own deploy
+	// tooling (forge.OnExternal).
+	DestinationExternal = "external"
+	DestinationMixed    = "mixed"
 )
 
 // The placement vocabulary: where one part runs.
@@ -25,6 +28,7 @@ const (
 	PlacementCompose   = "compose"    // docker compose on a developer machine
 	PlacementHost      = "host"       // a host process / dev server on a developer machine
 	PlacementBuildOnly = "build-only" // built, never run
+	PlacementExternal  = "external"   // the author's own deploy tooling (OnExternal)
 )
 
 // The actuator vocabulary: WHO applies a part.
@@ -34,6 +38,7 @@ const (
 	ActuatorForge    = "forge"    // `forge env deploy` applies it from the deploying machine
 	ActuatorMachine  = "machine"  // `forge env up` runs it on a developer machine
 	ActuatorNone     = "none"     // nothing runs it
+	ActuatorExternal = "external" // the author's tooling applies it, through forge's hooks or on its own (OnExternal)
 )
 
 // The report source vocabulary ([Report.Source]).

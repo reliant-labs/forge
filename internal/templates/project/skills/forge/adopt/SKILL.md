@@ -1,382 +1,221 @@
 ---
 name: adopt
-description: Adopt an existing app in any language (Express, Django, Rails, Spring, …) onto forge and Reliant hosting without rewriting it, in tiers you can stop after — 1 ship it (forge.yaml + deploy/kcl by hand from copy-paste templates, DockerBuild, managed Postgres, migrations job, secrets, dev loop, deploy), 2 see it (OpenTelemetry → dashboards, alerts, obs check verdicts), 3 harden it (promotion, CI, health endpoints), 4 move in (port to forge's Go stack only when it pays).
+description: Bring your app — start anywhere. What forge does for an EXISTING repo (any language, any CI, any cloud) with no rewrite and no required order — standalone linters, playbooks, runtime libraries, monitoring, forge-driven deploys and hosting, migrations, secrets, codegen — plus the survey checklist, the estimate rubric and the phrasing template, so you can tell the user "easy, ~N min" before touching anything. Load first in a repo with no forge.yaml.
 emit: both
+applies: any
 ---
 
-# Adopt an existing app, in any language
+# Bring your app — start anywhere
 
-An app that already exists keeps its language, its framework and every file.
-forge builds it from its own Dockerfile and deploys the image: environments,
-build-once releases promoted by digest, plans, rollout waits, managed Postgres
-and secrets on Reliant hosting work as they do for code forge generated.
+You are in a repo that already exists: its own layout, CI, deploy method and
+database tool. **Forge is a set of independent pieces. Each one is usable on its
+own, in any language, and none requires the others.** Nothing here asks the
+user to rewrite code, move files or give up their CI. Every step is additive,
+and every step can be the last.
 
-There is no command that does this: **you write the declarations**, from the
-templates below. That is a handful of files, and writing them yourself is what
-lets them fit the app. Work through the tiers in order and **stop after any
-of them**: each one is complete, and each later one costs more.
+Already adopted (a `forge.yaml` and `deploy/kcl` declaring the app's
+Dockerfile)? Your path is `adopt/deploy`, the tiers after Tier 1.
 
-| Tier | You get | Cost |
+This skill has two jobs: to let you tell the user, truthfully and briefly, what
+forge would do for this repo and what it costs; and to send you to the
+sub-skill that does the work. Survey before you quote a number.
+
+## What ships, and what does not
+
+You act on a skill literally, so read this rule first. Everything in this skill
+and its sub-skills (`adopt/linters`, `adopt/monitoring`, `adopt/libraries`,
+`adopt/deploy`) runs on the forge you have. Items under **Coming soon** do not
+exist yet: never run them, never write their config keys, never promise them.
+You may tell the user they are coming. If a command here disagrees with
+`forge <command> --help`, trust the binary and report the skill with
+`forge report-bug`.
+
+## Why it is worth the user's time
+
+Say these in the user's terms. Each names its entry in forge's benefits registry
+(`docs/benefits.md#<id>`), where the evidence behind it is checked.
+
+| Outcome | What the repo gets, as it is | Benefit ids |
 |---|---|---|
-| 1 Ship it | dev, staging and prod envs; the app on Reliant hosting with managed Postgres and secrets; releases you can redeploy | ~an hour, no app code changed |
-| 2 See it | traces, metrics, dashboards, alerts and real `obs check` verdicts | an OpenTelemetry SDK in the app |
-| 3 Harden it | gated promotion, CI deploys, real health checks | a little config per env |
-| 4 Move in | forge's Go stack (generated API, ORM, typed frontend hooks) | a port; only when it pays |
+| **Migrations that can't take prod down** | `forge lint --migration-safety` refuses `DROP COLUMN`, `ADD COLUMN … NOT NULL` with no default, `CREATE INDEX CONCURRENTLY` beside other statements, each with a fix | `migration-safety` |
+| **Requests that stay in one trace** (Go) | `forge lint --tracing` names each log call without its context and each hand-built HTTP client; `--fix` rewrites the log calls | `lint-rules-tracing` |
+| **Charts that don't move with the server's timezone** (Go + SQL) | `forge lint --time-bucketing` flags a two-argument `date_trunc` over a `TIMESTAMPTZ` | `time-bucketing-lint` |
+| **A fast test tier that stays fast, and passes that prove something** (Go) | `--slow-tests`, `forge ci test-budget`, `forge ci verify-test-run` over `go test -json` | `slow-test-enforcement`, `test-budget`, `skipped-pass-detector` |
+| **Real Postgres in tests, no Docker** (Go) | `pgtest.New()` from `forge/pkg` | `pgtest-real-postgres` |
+| **Errors that never leak internals** (Go, Connect) | `svcerr.Wrap(err)`: a classified code out, the driver's SQL and DSN stay in the log | `svcerr-redaction` |
+| **Telemetry with no SDK to configure** (Node) | `initNodeTelemetry` ships logs, uncaught errors and spans over OTLP/HTTP | `node-telemetry` |
+| **Playbooks that match the tool** | 180+ skills served by the forge binary, and its MCP tools | `skills-in-the-binary`, `mcp-server` |
+| **A static site or SPA live, with environments** | an existing Vite or Next.js app adopted in place; hosted, one site free | `static-site-first-class`, `free-static-site`, `claimable-deploys` |
+| **Deploys with a memory, and dashboards** | once forge deploys the app: build once, promote by digest, a release ledger, `obs check` verdicts, dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in required) | `build-once-promote-by-digest`, `release-ledger`, `obs-check`, `hosted-observability-store` |
 
-Not this skill: a Vite or Next.js app with no server is a **static site**
-(`forge project new --in-place --kind site --name <name>`, then `deploy/static-site`).
-A Go server with its own protos is Tier 4 from the start (`migration`).
-Never run `forge project new --in-place` with no `--kind` in the app: in a
-directory with a Dockerfile and no go.mod it refuses and points here.
+A project built wholly on forge gets much more (proto→API codegen, an ORM
+projected from SQL, scaffolded CRUD, per-worktree dev stacks). Mention it once,
+last, as "later, if you want". It is not the pitch.
 
-## Tier 1: Ship it
+## The menu: start anywhere
 
-**One command writes the declarations; you review them.** In the app's
-directory:
+Pick from what the user cares about, not the list order. If they have no
+preference, **start with the linters** (the cheapest proof that forge works on
+this repo), then monitoring.
+
+| Entry point | The user gets | Needs | Agent / user time | Load |
+|---|---|---|---|---|
+| **Linters** | findings with `file:line` and a fix; a step in their CI | nothing (Go lanes: a Go module) | ~10 min / ~2 min | `adopt/linters` |
+| **Playbooks** | debugging, testing, migration and deploy guidance; MCP tools for your agent | nothing | ~2 min / ~1 min | below |
+| **Runtime libraries** | `forge/pkg` (Go), `@reliantlabs/forge-web-runtime` (Node, browser) | a Go module, or Node ≥ 22 | ~15–30 min / ~2 min | `adopt/libraries` |
+| **Monitoring: instrument** | logs, traces and RED metrics in forge's shape, to any OTLP backend | nothing | ~30–60 min / ~5 min | `adopt/monitoring` |
+| **Monitoring: hosted dashboards** | dashboards, issues, alerts, `obs check` per release | sign-in; forge deploys the app | Tier 2 of `adopt/deploy` | `adopt/deploy` |
+| **Forge drives deploys** | dev/staging/prod, build once, promote by digest, plans, managed Postgres, secrets | a Dockerfile; sign-in; billing for hosted workloads | ~1 hour / ~10 min | `adopt/deploy` |
+| **Static site or SPA** | envs, CDN hosting, custom domains | a Vite or Next.js app | ~10–15 min / ~5 min | `deploy/static-site` |
+| **Migrations** | the safety lane on their SQL; their migration tool unchanged | `db/migrations/*.up.sql` | ~15 min / ~3 min | `adopt/linters`, `db/orm-and-safety` |
+| **Secrets** | a reference per env; values never in config | a forge env (`adopt/deploy` Tier 1) | ~10 min + 2 per secret / 1 min per secret | `secrets` |
+| **Hosting** | Reliant hosting, domains, managed Postgres | a forge env | inside `adopt/deploy` | `deploy/hosting` |
+| **Codegen** | forge's whole Go stack | a port, per service | a few hours per service | `migration`, `greenfield` |
+| **CI** | forge's lanes beside their own jobs | nothing | ~15 min / ~5 min | `adopt/linters`, `ci` |
+
+Coming soon (do not run or promise; say "coming"):
+
+- **Monitoring with no forge deploy**: an `obs init` command, user-minted ingest
+  tokens and a public OTLP endpoint, so an app forge does not deploy reaches the
+  hosted dashboards; and `obs check` on an "inferred" deploy marker.
+- **Record deploys from the user's CI**: a `release record` command.
+- **Parity**: `forge.OnExternal` release hooks and an `env verify` command,
+  which shows NO DIFF against what is live before forge drives anything.
+- **The migrations hook**: forge running the user's own migration tool
+  (`database.migrations`), and migration-safety rules dialled outside a forge
+  project.
+
+## Survey: read, change nothing
+
+Record each answer; they feed the rubric.
+
+1. **Languages and frameworks.** Read the manifests (`go.mod`,
+   `package.json`, `pyproject.toml`/`requirements*.txt`, `pom.xml`/
+   `build.gradle`, `Gemfile`, `Cargo.toml`). Name the HTTP framework per service.
+2. **Services.** How many deployable units: Dockerfiles, `cmd/*/main.go`,
+   `services/*`, compose services, workers, cron jobs.
+3. **Existing observability.** `rg -n "opentelemetry|@opentelemetry|otel|dd-trace|newrelic|sentry|prom-client|pino|winston|zap|slog|structlog|logrus"`
+   over manifests and source. An OTel SDK already? A JSON logger? A middleware
+   layer where one more middleware is a small change?
+4. **Migrations.** Tool (goose, golang-migrate, Flyway, Alembic, Prisma,
+   Rails, Django, Atlas, dbmate, raw SQL), directory, and file names. forge's
+   lane reads `db/migrations/*.up.sql` only.
+5. **CI.** `.github/workflows/`, `.gitlab-ci.yml`, `Jenkinsfile`,
+   `.circleci/`. Which job builds, which deploys.
+6. **Deploy.** Helm, kustomize, Argo/Flux, Fly, Cloud Run, ECS, compose, a
+   PaaS, a script. A Dockerfile per service?
+7. **Secrets today.** CI secrets, Vault, a cloud secret manager, `.env`.
+8. **Environments.** Which exist and how they differ.
+9. **Test command**, and whether it is fast. forge never replaces it.
+10. **Who must click.** Which steps need a human: `forge login`, a CI secret,
+    a DNS record, a billing link.
+
+## The estimate rubric
+
+Minutes are **agent time**, then **user hands-on time**. Most of every step is
+yours; the user mostly approves a diff or pastes a token. State both; never fold
+yours into theirs.
+
+| Step | Agent | User | Scaling |
+|---|---|---|---|
+| Linters: first findings | 5 | 1 | +5 to add the CI step; +5 if migrations need a `--scope` list (legacy `.down.sql` files) |
+| Playbooks / MCP | 2 | 1 | none |
+| Libraries | 15 | 2 | +10 per further service |
+| Monitoring: instrument | 25 for the first service | 5 (set env vars where the app runs) | **+10 per further service in the same framework**, **+25 per further language or framework**, −10 if an OTel SDK is already there, −5 if a middleware layer exists, +10 with no structured logger |
+| Monitoring: verify | 10 | 0–2 | +5 per service you must exercise |
+| Forge deploys (`adopt/deploy` Tier 1) | ~60 | 10 (sign in, approve the first plan, maybe a billing link) | +15 per further workload; +15 if the Dockerfile does not build on its own |
+| Static site | 10 | 5 | +10 per further site (billing) |
+| Secrets | 10 + 2 per secret | 1 per secret (the user pastes values) | +10 with an external store |
+| Codegen | a few hours per service | 20 review | scope it with the user first |
+
+Rules: sum only the steps the user chose; round to 5 minutes; give a range when
+two modifiers are uncertain. Never quote a number for a Coming-soon item. Never
+say "free" beyond the one free static site: a hosted workload or database needs
+billing (the deploy queues, exits 7 and prints the link). If the survey breaks
+an assumption (no Dockerfile, migrations outside `db/migrations`, a polyrepo),
+say so and revise the number out loud. **When the honest estimate is long, say
+so.** "Easy" is a claim the numbers must back.
+
+**Worked example.** Two Express services, one already on `pino`; GitHub
+Actions deploys with Helm; Postgres with goose files under `db/migrations`
+named `*.up.sql`; the user wants monitoring, and linters too.
+
+- Linters: 5 + 5 (CI step) = **~10 min**
+- Monitoring: 25 + 10 (second service) − 5 (Express middleware) = **~30 min**,
+  verify **~15 min**
+- Total **~55 min of agent time; ~10 min of yours** (set two env vars in the
+  Helm values; read two diffs).
+
+## The phrasing template
+
+Present the plan before changing anything, then wait for a yes.
+
+```
+I looked at the repo: [N services, language/framework, CI, deploy method,
+migration tool, existing observability].
+
+Adding [piece] here is easy — about [T] min of my time and [U] min of yours
+(you mostly [approve a diff / set an env var / paste a token]):
+
+  1. [step] (~[m] min) — [what you can see afterwards]
+  2. [step] (~[m] min) — [...]
+
+It is additive: [one small PR / these N files]; nothing in your layout moves,
+and you can stop after any step. To undo it: [the exit for this piece].
+[Not available yet, so I won't touch it: …]
+
+Shall I start with step 1?
+```
+
+Never write "easy" without the numbers, or the numbers without the undo line.
+After each step, verify (each sub-skill says how), report what you saw, and only
+then offer the next piece.
+
+## Playbooks: forge's skills and MCP server in any repo
 
 ```bash
-forge project new --in-place --kind app --dry-run     # what it found, and every file it would write; writes nothing
-forge project new --in-place --kind app --name myapp  # write them
+forge skill list                     # in a repo with no forge.yaml, APPLIES TO YOUR REPO comes first
+forge skill search migration         # find by keyword; matches bodies too
+forge skill load debug               # print one; it always matches the binary you run
+claude mcp add forge -- npx -y @reliantlabs/forge mcp   # MCP tools, no install
 ```
 
-It writes `forge.yaml` and `deploy/kcl/` (kcl.mod, workloads.k, and the dev,
-staging and prod envs below) and nothing else: no Go module, Taskfile, CI
-workflow or memory file, and none of the app's files change except forge's
-block appended to `.gitignore`. It refuses in a directory that already has a
-`forge.yaml`. What it reads, and what it makes of it:
+The playbooks marked `applies: any` (`debug`, `testing`, `forge-libraries`,
+`observability/tracing-lint`, `db/orm-and-safety`, `deploy/static-site` and
+this one) are worth reading in any repo. The rest describe a forge project:
+adapt them, do not obey them blindly.
 
-| It reads | It writes |
-|---|---|
-| a `Dockerfile` at the root and in each top-level directory, or each compose service with a `build:` | one workload each, built with `forge.DockerBuild` from the same Dockerfile and context |
-| the compose service's published port, else `EXPOSE`, else a `--port` / `-b` in the start command, else `ENV PORT` | its port, `PORT` in its env, a tcp probe |
-| a compose service on a Postgres image, or a Postgres driver in the app's dependencies | a managed Postgres on staging and prod, `DATABASE_URL` (or the variable the compose file put its URL in) from it |
-| a compose service that migrates, a `migrate` script, prisma / knex / sequelize-cli / drizzle-kit, `alembic.ini`, Django's `manage.py`, Rails' `db/migrate` | a `migrate` job from the app's image, before every rollout |
-| compose env: literals, and credentials (`*_SECRET`, `*_TOKEN`, `*PASSWORD*`, `*_KEY`, `${…}`) | literals in workloads.k; each credential a `forge.ManagedSecret` on staging and prod, set with `forge secret set` |
-| a compose file with a built service | dev runs that compose file (`forge.OnCompose`), exactly as `docker compose up` did |
-| no compose file | dev runs each workload's dev command (`package.json` `dev`/`start`, the Procfile's `web`, else the Dockerfile's `CMD`) on the host, beside a forge host-native Postgres |
-| Redis / Valkey / Memcached in compose | a hosted workload of that image; dev tools (adminer, mailpit) and other services stay dev-only |
+## Leaving is easy too
 
-It prints what it **detected**, what it **assumed**, what it **left out**,
-and the next commands. Every assumption is also a `# check:` line in the file
-it shaped: read each one before the first deploy. `--claimable` sizes prod
-for a deploy with no account (one service, its migration job and one
-database; no secret values; no outbound internet until claimed).
-`--harness <name>` adds that harness's agent files; without it there are none
-(Reliant reads the project's memory from forge.yaml).
+Trust is part of the pitch. Say these, with the commands:
 
-**Before you trust it**, read the app the way the summary cannot: what each
-env var falls back to when it is unset (a `JWT_SECRET || "superSecret"` is a
-production hole if the secret is never delivered), and whether its start
-command reads `PORT`.
+- **Lint lanes, libraries and playbooks** leave nothing behind but a CI step
+  and ordinary imports (Apache-2.0).
+- **Telemetry** is standard OTLP and the standard `OTEL_*` environment: point
+  it elsewhere by changing `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- **Kubernetes YAML**: `forge env render <env>` prints every object as plain
+  YAML and contacts no cluster.
+- **Deploy history**: `forge ledger where` names the backend, `forge ledger
+  export` writes it as files, `forge release verify` proves each artifact still
+  exists.
+- **Code**: `forge project disown <file>` makes a generated file yours for good.
+- **Secrets, the honest exception**: hosted secrets are write-only by design;
+  the user keeps their own copy, or uses an external provider.
+- **Removing forge**: delete `forge.yaml`, `deploy/kcl/` and `.forge/`; nothing
+  in the app imports forge unless they chose its libraries or codegen.
 
-### 1. The Dockerfile must build on its own
+## Rules for the agent
 
-A deploy runs `docker build` with the Dockerfile and its context and nothing
-else. An upstream Dockerfile that `COPY`s a `dist/` built on your machine
-fails there: build inside it (a multi-stage `npm ci && npm run build`, `pip
-install`, `mvn package`). If the app migrates its schema, keep the migration
-tool in the final image, because the migration job runs that image. Prove it
-with `docker build .`. Add `deploy`, `.forge` and `secrets` to
-`.dockerignore` (a KCL-only edit then leaves the image digest alone).
-
-### 2. The files, for review and edits
-
-The command writes the files below, with the values it detected. They are the
-reference for reading and editing what it wrote, and for writing them by hand
-where it cannot read the app (no Dockerfile yet, a build it does not
-understand). By hand: replace `myapp` with the project's name (lowercase,
-digits, hyphens), `api` with the workload's, `3000` with the app's port, and
-the two commands marked `# yours`. No database? Delete the `migrate` workload
-and every line marked `# db`.
-
-```yaml
-# forge.yaml
-name: myapp
-forge_version: v0.0.0  # yours: the version `forge version` prints
-```
-
-```toml
-# deploy/kcl/kcl.mod
-[package]
-name = "myapp-deploy"
-edition = "v0.11.0"
-version = "0.0.1"
-
-[dependencies]
-```
-
-```python
-# deploy/kcl/workloads.k
-"""What myapp runs, declared once. Each env's main.k binds it."""
-import forge
-import forge.workloads as fw
-import forge.tiers
-
-api = fw.Workload {
-    name = "api"
-    kind = "service"
-    # Bare: hosting puts the build under <registry>/<org>/myapp/api.
-    image = "api"
-    build = forge.DockerBuild {dockerfile = "Dockerfile", context = "."}
-    ports = [fw.Port {name = "http", port = 3000, expose = True}]
-    env = {PORT = "3000"}
-    # The app serves no /readyz of forge's. Up once it accepts connections; with a
-    # health endpoint, probe it: tiers.Probes {readinessPath = "/health"}.
-    probes = tiers.Probes {tcp = True}
-}
-
-# Schema migrations, from the same image, before every rollout.
-migrate = fw.Workload {
-    name = "migrate"
-    kind = "job"
-    image = api.image
-    build = api.build
-    command = ["npx", "prisma", "migrate", "deploy"]  # yours: the app's migrate command, as run in the image
-    before = [fw.BEFORE_ALL]
-}
-```
-
-```python
-# deploy/kcl/dev/main.k
-"""dev: the app as a host process, beside a host-native Postgres."""
-import forge
-import forge.workloads as fw
-import kcl_plugin.forge as plugin
-import ..workloads as wl
-
-_port = plugin.resolve_port("myapp-dev-api", 3000)
-_pg_port = plugin.resolve_port("myapp-dev-postgres", 5432)  # db
-_database_url = "postgres://postgres:postgres@localhost:${_pg_port}/myapp?sslmode=disable"  # db
-
-_on_host = lambda w: fw.Workload, command: [str] -> fw.Workload {
-    w | {
-        command = command
-        env = w.env | {
-            PORT = str(_port)
-            DATABASE_URL = _database_url  # db
-        }
-        runtime = forge.OnHost {listen_ports = [_port] if w.kind == "service" else []}
-    }
-}
-
-_bundle = forge.Bundle {
-    project = "myapp"
-    lifecycle = "local"
-    workloads = [
-        _on_host(wl.migrate, ["npx", "prisma", "migrate", "deploy"])  # db  # yours
-        _on_host(wl.api, ["npm", "run", "dev"]) | {env.JWT_SECRET = forge.ManagedSecret {name = "JWT_SECRET"}}  # yours: your dev command; one secret per credential
-    ]
-    infra = [forge.HostInfra {name = "postgres", port = _pg_port, database = "myapp"}]  # db
-    secret_provider = forge.FileSecrets {path = "secrets/dev.yaml"}
-}
-output = forge.render(_bundle)
-```
-
-```python
-# deploy/kcl/staging/main.k
-"""staging: on Reliant hosting, with a managed Postgres."""
-import forge
-import forge.workloads as fw
-import ..workloads as wl
-
-# Its name may not be a workload's. RETAIN: deleting it never drops the data.
-_db = forge.ManagedDatabase {name = "myapp", runtime = forge.OnHosted {}}  # db
-
-_hosted = lambda w: fw.Workload -> fw.Workload {
-    w | {
-        image = w.image[w.image.rfind("/") + 1:]
-        env = w.env | {DATABASE_URL = forge.DatabaseRef {name = _db.name}}  # db
-        runtime = forge.OnHosted {}
-    }
-}
-
-_bundle = forge.Bundle {
-    project = "myapp"
-    control_plane = forge.ControlPlane {}
-    workloads = [
-        _hosted(wl.migrate)  # db
-        _hosted(wl.api) | {env.JWT_SECRET = forge.ManagedSecret {name = "JWT_SECRET"}}  # yours: one per credential
-    ]
-    databases = [_db]  # db
-    secret_provider = forge.HostedSecrets {}
-}
-output = forge.render(_bundle)
-```
-
-`deploy/kcl/prod/main.k` is staging's file with `prod` in its docstring: same
-bindings, its own database and secrets.
-
-With a compose file the command binds dev to it instead of to host processes.
-The compose file owns each container (build, ports, healthcheck, env), so dev
-takes only the workload's name, and the compose Postgres stays the dev
-database:
-
-```python
-# dev with a compose file (deploy/kcl/dev/main.k)
-import forge
-import forge.workloads as fw
-import ..workloads as wl
-
-_compose = lambda w: fw.Workload, service: str -> fw.Workload {
-    fw.Workload {name = w.name, runtime = forge.OnCompose {file = "docker-compose.yml", service = service}}
-}
-
-_bundle = forge.Bundle {
-    project = "myapp"
-    lifecycle = "local"
-    workloads = [
-        fw.Workload {name = "db", runtime = forge.OnCompose {file = "docker-compose.yml", service = "db"}}
-        _compose(wl.api, "api")
-    ]
-}
-output = forge.render(_bundle)
-```
-
-Append to `.gitignore` (`.forge/*`, never `.forge/`: git cannot re-include
-under an ignored directory, and `forge lint` gates on it):
-
-```
-.forge-kcl/
-secrets/
-.forge/*
-!.forge/disowned.json
-!.forge/hashes/
-!.forge/scaffolded/
-```
-
-**Credentials.** The app reads them from env vars, so deliver each one in its
-`env`, as `JWT_SECRET` above (`forge.ManagedSecret`), and set the value once per
-env: `forge secret set --env staging JWT_SECRET` (the value on stdin). Dev
-delivers the same names from the gitignored `secrets/dev.yaml`
-(`JWT_SECRET: dev-only`). `config_secrets`
-delivers nothing to an app forge did not write; a name listed there that `env`
-does not deliver fails the render. Read each fallback in the app: one that
-silently defaults (`JWT_SECRET || "superSecret"`) is a production hole if the
-secret is never delivered.
-
-**A third-party image** (Redis, a worker someone else ships): declare it with
-no `build`, its registry host included, `image = "docker.io/library/redis:7"`.
-On hosting forge copies it into your org's registry at release cut and pins it
-by digest. A one-line `FROM` Dockerfile with a `forge.DockerBuild` works too,
-when you want to change the image.
-
-### 3. Run it, ship it
-
-```bash
-npm ci                                 # the app's own install, when dev runs it on the host (no compose file)
-forge env render dev                   # host: migrate (job), api (service)
-forge env up dev                       # Postgres → migrations → the app; output in .forge/logs/dev/api.log
-forge env status dev                   # App Health: "accepts connections (its declared tcp probe)"
-forge lint                             # the verdict is the LAST line
-forge env render staging               # the hosted spec, with the image under your org's registry
-forge secret set --env staging JWT_SECRET < secret.txt
-forge env deploy staging --plan-only   # builds, pushes, cuts a release, prints the plan; promotes NOTHING
-forge env deploy staging --yes         # publish: managed DB, migrate job, rollout
-forge env status staging               # its URL
-forge obs check staging --wait --json  # branch on exit_code
-forge env deploy prod <release>        # the same bytes, by digest
-```
-
-**Verify.** `curl` a real endpoint in dev and on the staging URL, one that
-reads and writes the database. `forge obs workloads staging` shows 0 restarts
-and no failed job runs. `forge obs logs staging --service api` shows the app's
-output.
-
-**Gotchas, all seen in practice:**
-
-- `--plan-only` is not a dry run: it builds, pushes and cuts a release (no
-  promotion). `env render` is the dry run.
-- A hosted deploy needs billing on the org. Until it is set up, `env deploy`
-  exits 7 and prints the link: give the user that link, and do not retry.
-- `forge_version` is the forge you run. If it names another build, forge
-  runs that build (it says so on stderr); keep the pin current.
-- `obs check` is INCONCLUSIVE (exit 2, `reason_code: no_request_telemetry`)
-  until Tier 2: it judges requests from the app's own traces, never from
-  the ingress. That means "not proven good", never "passed".
-- Each env's `DATABASE_URL` is per env. The migration job runs before every
-  rollout, so a migration that breaks the running release breaks it during
-  the deploy. Keep migrations backward-compatible (expand, then contract).
-- The first `env render` creates `deploy/kcl/kcl.mod.lock`; commit it.
-
-**Stop here when** the app runs on staging and prod and you can redeploy any
-release: that is the whole hosting story, with no app change.
-
-## Tier 2: See it
-
-**You get:** request rates, error rates and latency per endpoint, traces, logs
-correlated with them, generated dashboards and default alerts
-(`observability/alerts`), `obs check` verdicts that PASS or FAIL a release
-instead of INCONCLUSIVE, and the evidence an agent on call needs
-(`forge obs status`, `forge obs issue`).
-
-**Steps.** Add the language's OpenTelemetry SDK with auto-instrumentation for
-its HTTP framework and database client. Configure nothing: hosting sets
-`OTEL_EXPORTER_OTLP_ENDPOINT` (OTLP/HTTP), `OTEL_EXPORTER_OTLP_PROTOCOL`,
-the auth header and `OTEL_SERVICE_NAME` on every workload, and the SDKs read
-them.
-
-| Language | Package | Start it |
-|---|---|---|
-| Node | `@opentelemetry/api`, `@opentelemetry/auto-instrumentations-node` | `node --require @opentelemetry/auto-instrumentations-node/register dist/main.js` |
-| Python | `opentelemetry-distro`, `opentelemetry-exporter-otlp`, then `opentelemetry-bootstrap -a install` | `opentelemetry-instrument gunicorn app:app` |
-| Java / Kotlin | the `opentelemetry-javaagent.jar` | `java -javaagent:opentelemetry-javaagent.jar -jar app.jar` |
-| Ruby | `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-instrumentation-all` | `OpenTelemetry::SDK.configure { \|c\| c.use_all }` in an initializer |
-| .NET | `OpenTelemetry.Extensions.Hosting` + the ASP.NET Core / HttpClient instrumentations | `AddOpenTelemetry().WithTracing(...).UseOtlpExporter()` |
-| Go | `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | wrap the handler in `otelhttp.NewHandler` |
-
-Put the start command in the Dockerfile's `CMD`. Dev exports nothing until
-its Bundle declares `observability` with a local collector (the local
-ClickStack, which needs Docker): `observability` has the declaration.
-
-**Verify.** After a deploy and some traffic: `forge obs status staging` lists
-`api` with a request rate, `forge obs traces staging --service api` shows
-spans, and `forge obs check staging --wait` exits 0 or 1, not 2.
-
-**Stop here when** a bad release shows up as a FAIL you would act on.
-
-## Tier 3: Harden it
-
-**You get:** releases that reach prod only after staging proved them,
-deploys from CI instead of a laptop, and probes that mean "ready".
-
-- **Gated promotion.** In `deploy/kcl/prod/main.k`, `delivery_policy =
-  forge.DeliveryPolicy {health_gate = forge.HealthGate {after = ["staging"]}}`:
-  the control plane refuses a release on prod until staging's verdict for it
-  is PASS (needs Tier 2). `deploy/delivery-policy`.
-- **More environments.** `forge env new preview --from staging`; `forge env
-  diff`. `deploy/model`.
-- **CI.** forge generates no workflow for a project with no Go module; write
-  one job that installs forge (`curl -fsSL
-  https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`),
-  runs `forge lint`, `forge env deploy staging --yes` and `forge obs check
-  staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` from `forge cloud token
-  create --env staging --name ci --scopes deploy:read,deploy:write`. `ci`.
-- **Health endpoints.** Serve a readiness path that checks the database and a
-  cheap liveness path, then `probes = tiers.Probes {readinessPath = "/readyz",
-  livenessPath = "/healthz"}` in `workloads.k`.
-- **Migrations.** Keep the app's tool and the pre-rollout job. If the
-  migrations move to forge's `db/migrations/`, which is the start of Tier 4,
-  `forge lint --migration-safety` gates them (`db/deploy-migrations`).
-
-**Stop here when** nobody deploys by hand and prod only ever runs what
-staging proved.
-
-## Tier 4: Move in
-
-**Only when it pays:** a new service you would write anyway, or a part of the
-app whose hand-written API, data layer or frontend client costs more to keep
-than to regenerate. forge's Go stack generates the Connect API from proto, the
-ORM from SQL migrations, typed frontend hooks and tests (`greenfield`,
-`authoring`).
-
-- **A new piece, beside the app.** Its own forge Go project
-  (`forge project new <name>-api --service <entity>`). It deploys next to the
-  adopted app and is reached through `forge.WorkloadURL`.
-- **A Go server already here.** Adopt it in place with `forge project new
-  --in-place --kind service`, and mark every proto service whose handlers
-  still live elsewhere `// forge:unmanaged`. Then move one service per PR
-  (`migration`, `migration-service`).
-- **Rewriting a non-Go service** is a rewrite, not an adoption: do it one
-  endpoint group at a time behind the same route, never all at once.
-
-**Stop** as soon as the remaining code is cheaper to keep than to move.
+1. **Never rewrite the user's layout.** New forge files go in their own paths;
+   changes to theirs are the smallest diff that works.
+2. **Add, don't replace.** Keep their CI, test command, migration tool and
+   deploy command; add a step beside them.
+3. **One entry point at a time.** Finish, verify, show what they gained, then
+   offer the next. Never bundle pieces into one PR.
+4. **Say the estimate, the split and the undo** before you start.
+5. **Never run or write a Coming-soon item.**
+6. **Never print, log or commit a secret.** The user places tokens and values.
+7. **Report forge's defects** (a command that fails, a skill that disagrees
+   with the binary) with `forge report-bug`; never the user's own bugs.
+8. **Ask forge before guessing:** `forge project capabilities` lists every
+   verb, `forge project libraries <pkg>` prints a package's API.

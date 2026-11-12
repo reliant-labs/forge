@@ -251,6 +251,32 @@ func (m *MockSessionReader) GetSession(ctx context.Context, req GetSessionReques
 // Compile-time check.
 var _ SessionReader = (*MockSessionReader)(nil)
 
+// forge:section MockUserActivityReader
+// forge:hash=5ac79d39d558a6e2935b7d6fca76f7e1b1325e743ab3050612ddf04d0b63481d
+
+// MockUserActivityReader is a test mock for the UserActivityReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments. Set XxxFunc fields to
+// override per-method behaviour; unset methods return the canonical
+// "MockUserActivityReader.<Method>Func not set" error.
+type MockUserActivityReader struct {
+	contractkit.Recorder
+	UserActivityFunc func(context.Context, UserActivityRequest) (UserActivityResult, error)
+}
+
+// UserActivity records the call and delegates to UserActivityFunc when set.
+func (m *MockUserActivityReader) UserActivity(ctx context.Context, req UserActivityRequest) (UserActivityResult, error) {
+	m.Recorder.Record("UserActivity", ctx, req)
+	if m.UserActivityFunc != nil {
+		return m.UserActivityFunc(ctx, req)
+	}
+	return UserActivityResult{}, contractkit.MockNotSet("MockUserActivityReader", "UserActivity")
+}
+
+// Compile-time check.
+var _ UserActivityReader = (*MockUserActivityReader)(nil)
+
 // forge:section MockHealthReader
 // forge:hash=a800afb4b55c4883d596d1b42b98f8848ba9d26c6551f0aedc2f9efd1956c7b9
 

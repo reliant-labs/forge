@@ -31,6 +31,7 @@ import {
   type NodeTelemetryConfig,
   REPORTED_EXCEPTION_BODY,
   resolveNodeIngestUrl,
+  trackAuthEvent,
   unhandledRejectionMode,
 } from "./node.js";
 
@@ -278,6 +279,35 @@ describe("export to the keyed ingest", () => {
       userId: "user_42",
       "window.kind": "main",
       count: "2",
+    });
+  });
+
+  it("records an auth event as the product-event log record observe.TrackAuth writes", async () => {
+    trackAuthEvent("signed_in", { userId: "auth0|abc" }); // before init: a no-op
+    const t = initNodeTelemetry(config({ appClient: undefined }))!;
+    trackAuthEvent("signed_up", {
+      userId: "auth0|abc",
+      method: "social",
+      socialProvider: "GitHub",
+      provider: "auth0",
+      verified: true,
+    });
+    trackAuthEvent("signed_in", { userId: "ada@example.com" }); // refused: an email
+    await t.flush(5000);
+
+    const records = logRecords(fixture);
+    expect(records).toHaveLength(1);
+    expect(records[0].severityText).toBe("INFO");
+    expect(records[0].body).toEqual({ stringValue: "product.auth_signed_up" });
+    expect(attrs(records[0].attributes)).toEqual({
+      "event.name": "product.auth_signed_up",
+      "user.id": "auth0|abc",
+      "app.client": "backend",
+      "app.version": "1.2.3",
+      "product.method": "social",
+      "product.social_provider": "github",
+      "product.provider": "auth0",
+      "product.verified": true,
     });
   });
 

@@ -101,6 +101,17 @@ func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	userID := ""
+	if claims, ok := authn.ClaimsFromContext(ctx); ok && claims != nil {
+		userID = claims.UserID
+	}
+	trackAs(ctx, name, userID, attrs)
+}
+
+// trackAs is Track with the user named by the caller rather than read from
+// ctx: the one record shape every product event shares. TrackAuth uses it,
+// because at sign-in the request is still anonymous.
+func trackAs(ctx context.Context, name, userID string, attrs []slog.Attr) {
 	logger := FromContext(ctx)
 	if !ValidEventName(name) {
 		logger.WarnContext(ctx, "product event dropped: name must be snake_case", slog.String("event", name))
@@ -109,8 +120,13 @@ func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 
 	out := make([]slog.Attr, 0, 4+len(attrs))
 	out = append(out, slog.String(AttrEventName, EventNamePrefix+name))
-	if claims, ok := authn.ClaimsFromContext(ctx); ok && claims != nil && claims.UserID != "" {
-		out = append(out, slog.String(AttrUserID, claims.UserID))
+	if userID != "" {
+		out = append(out, slog.String(AttrUserID, userID))
+	}
+	// The visitor's daily hash, when the trusted edge stamped this request
+	// (edge_context.go): it links a server-side event to the anonymous visit.
+	if vd := EdgeContextFrom(ctx).VisitorDay; vd != "" {
+		out = append(out, slog.String(AttrVisitorDay, vd))
 	}
 	out = append(out, slog.String(AttrAppClient, AppClientBackend))
 	if v := appVersion.Load(); v != nil && *v != "" {

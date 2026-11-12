@@ -39,7 +39,10 @@ import (
 // names the replacement, not a command that quietly still works.
 func TestEnvStatus_AbsorbedVerbsAreDeleted(t *testing.T) {
 	env := newEnvCmd()
-	for _, verb := range []string{"verify", "wait", "rollout", "topology", "history"} {
+	// `verify` is absent from this list on purpose: it was re-added as a
+	// DIFFERENT command (env_verify_cmd.go, a side-effect-free parity check),
+	// pinned by TestEnvVerify_IsTheParityCommand.
+	for _, verb := range []string{"wait", "rollout", "topology", "history"} {
 		found, _, err := env.Find([]string{verb})
 		// cobra's Find falls back to the group itself for an unknown
 		// child, so "resolved to something other than env" is the test.

@@ -31,7 +31,8 @@ Connect RPC hooks — follows the sequence in `greenfield`.
 **An app that already exists, in any language** — Express, Django, Rails,
 Spring, with its own Dockerfile — is adopted as it is: you write `forge.yaml`
 and `deploy/kcl/` declaring its Dockerfile, and none of its files change.
-**Load `adopt`**: copy-paste templates, then tiers you can stop after.
+**Load `adopt`**: every way into forge for an existing repo, with estimates;
+`adopt/deploy` has the copy-paste templates, then tiers you can stop after.
 
 ## The scaffolded frontend is starter code
 
@@ -101,7 +102,7 @@ hand-wrote and then deleted.
 | **see what a generated store offers** | `go doc ./internal/db <Entity>Store` (interfaces render in full), or `forge project shapes --kind store` for the list. Never forge's generator source | `db`, `service-layer` |
 | accept **file uploads** | `forge/pkg/blobstore` presigns them into a `forge.Bucket` (MinIO in dev) | `storage/blobstore` |
 | call an **LLM** from the backend | declare `forge.LLM` + `forge.llm_env()`, use the official anthropic-go / openai-go clients unmodified; agentic work goes to a Reliant workflow instead | `llm`, `deploy/llm` |
-| bring an **existing app in another language** onto forge | nothing to scaffold: `adopt` has the `forge.yaml` + `deploy/kcl` templates (DockerBuild, managed Postgres, migrations job, secrets) and the tiers after them; `forge project new --in-place` refuses such a directory | `adopt` |
+| bring an **existing app in another language** onto forge | nothing to scaffold: `adopt/deploy` has the `forge.yaml` + `deploy/kcl` templates (DockerBuild, managed Postgres, migrations job, secrets) and the tiers after them; `forge project new --in-place` refuses such a directory | `adopt`, `adopt/deploy` |
 | need **dev data** | `forge db seed apply` derives FK-coherent rows from the applied schema; teach it your domain nouns in `db/seeds/vocab.yaml` | `db/seeding` |
 
 `forge scaffold` also births a `worker`, `operator`, `crd`, `binary`, `adapter`,

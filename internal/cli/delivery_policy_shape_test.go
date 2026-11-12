@@ -289,3 +289,26 @@ func TestDeliveryPolicyHealthGateReachesTheShape(t *testing.T) {
 		t.Errorf("a gate KCL accepted must satisfy the shape's validation: %v", err)
 	}
 }
+
+// Declared promotion checks reach the shape the env's ledger enforces: the
+// required gates sorted, the hook as declared. Both are opt-in, so each alone
+// records the policy.
+func TestDeliveryPolicyPromotionChecksReachTheShape(t *testing.T) {
+	e := renderDeliveryPolicy(t, `forge.DeliveryPolicy {
+        required_gates = forge.RequiredGates {names = ["scan", "e2e"]}
+        approval_hook = forge.ApprovalHook {url = "https://approvals.acme.test/forge", timeout_seconds = 15}
+    }`)
+	got := shapeDeliveryPolicyOf(e)
+	if got == nil || got.RequiredGates == nil || got.ApprovalHook == nil {
+		t.Fatalf("declared promotion checks were not recorded: %+v", got)
+	}
+	if want := (release.ShapeRequiredGates{Mode: release.DeliveryEnforce, Names: []string{"e2e", "scan"}}); !reflect.DeepEqual(*got.RequiredGates, want) {
+		t.Errorf("required gates: got %+v want %+v", *got.RequiredGates, want)
+	}
+	if want := (release.ShapeApprovalHook{Mode: release.DeliveryEnforce, URL: "https://approvals.acme.test/forge", TimeoutSeconds: 15}); !reflect.DeepEqual(*got.ApprovalHook, want) {
+		t.Errorf("approval hook: got %+v want %+v", *got.ApprovalHook, want)
+	}
+	if err := (release.Shape{Kind: release.EnvSelfManaged, DeliveryPolicy: got}).Canonical().Validate(); err != nil {
+		t.Errorf("checks KCL accepted must satisfy the shape's validation: %v", err)
+	}
+}

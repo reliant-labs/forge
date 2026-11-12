@@ -154,11 +154,21 @@ with `@opentelemetry/api` as its only peer (Node ≥ 22). It posts OTLP/HTTP
 **JSON** to `${endpoint}/v1/logs` and `/v1/traces`: point it at an
 OpenTelemetry Collector (which accepts JSON) unless the backend documents JSON
 ingest. Logs and traces only, no metrics. It does not instrument Express; this
-middleware is a sketch to adapt and test, not shipped code:
+middleware is a sketch to adapt and test, not shipped code. `initNodeTelemetry`
+installs an AsyncLocalStorage context manager, so the span is active for what
+`next()` runs synchronously and for the async work that code starts (the SDK's
+own test: "exports spans, parents them through async work"). A middleware that
+resumes from a stream or callback (a body parser calling `next()` from the
+request's `end` event) runs in the context the request arrived in, not this
+span's, and everything after it loses the parent. So mount this middleware
+after the body parsers and anything else that resumes that way, directly before
+the routes, and check one request's parentage (Verify, below) before relying on
+the correlation. The `finish` listener is bound to the span's context, so its
+log line carries the span's `trace_id`:
 
 ```js
 import { initNodeTelemetry } from "@reliantlabs/forge-web-runtime/node";
-import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, context } from "@opentelemetry/api";
 import { randomUUID } from "node:crypto";
 
 const telemetry = initNodeTelemetry({
@@ -170,6 +180,7 @@ const telemetry = initNodeTelemetry({
   headers: { authorization: process.env.OTLP_TOKEN ?? "" },
 }); // null when off; the app must not depend on it
 
+app.use(express.json()); // body parsers first: they resume outside any span
 app.use((req, res, next) => {
   const requestId = req.get("x-request-id") ?? randomUUID();
   res.set("x-request-id", requestId);
@@ -177,7 +188,7 @@ app.use((req, res, next) => {
   const route = () => `${req.method} ${req.route?.path ?? "unmatched"}`; // template, not raw path
   telemetry.tracer.startActiveSpan(route(), { kind: SpanKind.SERVER }, (span) => {
     const start = process.hrtime.bigint();
-    res.on("finish", () => {
+    res.on("finish", context.bind(context.active(), () => {
       span.updateName(route());
       span.setAttribute("http.response.status_code", res.statusCode);
       if (res.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
@@ -186,7 +197,7 @@ app.use((req, res, next) => {
         duration: Number(process.hrtime.bigint() - start), request_id: requestId,
       });
       span.end();
-    });
+    }));
     next();
   });
 });

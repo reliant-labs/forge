@@ -19,8 +19,10 @@ package cli
 // refuses nothing on a gate's status (owner deferral, §3.3), because a client
 // that declined to promote on its own evidence would be enforcement a caller
 // can bypass by omitting the flag — a rule that only binds the honest.
-// Gates-as-policy is explicitly deferred (§7); the server is where it would
-// have to live.
+// Gates-as-policy lives where the ledger does: an env that declares
+// delivery_policy.required_gates is refused by its control plane, or by forge
+// for an env with no control plane (promote_policy_checks.go). This flag only
+// carries the evidence those checks judge.
 //
 // What IS refused, before the plan and therefore before any write, is a gate
 // forge cannot record: a status outside the closed set, a missing name, an

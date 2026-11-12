@@ -1961,6 +1961,15 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
         if p.health_gate:
             "health_gate": {"mode": p.health_gate.mode, "after": sorted(p.health_gate.after)}
+        if p.required_gates:
+            "required_gates": {"mode": p.required_gates.mode, "names": sorted(p.required_gates.names)}
+        if p.approval_hook:
+            "approval_hook": {
+                "mode": p.approval_hook.mode
+                "url": p.approval_hook.url if p.approval_hook.url else None
+                "argv": p.approval_hook.argv if p.approval_hook.argv else None
+                "timeout_seconds": p.approval_hook.timeout_seconds
+            }
     }
 }
 

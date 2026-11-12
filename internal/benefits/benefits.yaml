@@ -3349,6 +3349,33 @@ benefits:
       - library: pkg/releasehealth
       - skill: deploy/delivery-policy
 
+  - id: promotion-required-gates-approval-hook
+    category: ship
+    title: Required checks and your approvals
+    claim: >-
+      An env refuses a promotion that does not carry its required checks as
+      passed, or that your own approval system did not approve, enforced where
+      the env's ledger lives so no client can skip it.
+    availability: forge
+    use: >-
+      `delivery_policy = forge.DeliveryPolicy { required_gates =
+      forge.RequiredGates { names = ["e2e"] }, approval_hook =
+      forge.ApprovalHook { url = "https://approvals.example.com/forge" } }`,
+      then `forge env deploy prod <v> --gate name=e2e,status=passed`
+    why: >-
+      A control plane that advertises `enforces-promotion-checks` judges both at
+      promote; for an env without one, forge judges them before its own write
+      and runs an `argv` hook with no shell. The refusals are distinct:
+      `required_gate_missing` (exit 4), `required_gate_failed` (exit 1),
+      `approval_denied` (exit 4; a hook that times out or fails denies) and
+      `approval_pending` (exit 4, retry once approved). `--yes` never answers
+      for the hook, and each verdict is recorded on the promotion. `audit`
+      records what `enforce` would refuse.
+    evidence:
+      - skill: deploy/delivery-policy
+      - path: internal/cli/promote_policy_checks.go
+      - path: pkg/release/promotion_checks.go
+
   - id: shared-env-base
     category: ship
     title: One env base, per-env deltas
@@ -3401,7 +3428,8 @@ benefits:
     claim: >-
       `forge.DeliveryPolicy` declares per env what a release must prove, each
       control `off`, `audit` or `enforce`: `health_gate`, `signing` and
-      `flux_verify` are enforced on a control plane, while `provenance_sbom`,
+      `flux_verify` are enforced on a control plane, `required_gates` and
+      `approval_hook` wherever the env's ledger lives, while `provenance_sbom`,
       `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`,
       `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
     status: recorded

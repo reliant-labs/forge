@@ -68,21 +68,35 @@ func ValidateAssociatedDomains(domains, redirectURIs []string) error {
 		}
 		seen[d] = true
 	}
-	https := 0
-	for _, raw := range redirectURIs {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "https" {
-			continue
-		}
-		https++
-		if !seen[strings.ToLower(u.Hostname())] {
-			return fmt.Errorf("https redirect %q is on host %q, which is not in associated_domains %v: the app is associated only with those hosts", raw, u.Hostname(), domains)
-		}
+	https, err := validateAssociatedHTTPSHosts(domains, redirectURIs)
+	if err != nil {
+		return err
 	}
 	if len(redirectURIs) > 0 && https == 0 {
 		return fmt.Errorf("associated_domains %v are set but no redirect_uris entry is an https URL on one of them: add https://%s%s, or omit redirect_uris to have it derived", domains, domains[0], appLinkRedirectPath)
 	}
 	return nil
+}
+
+// validateAssociatedHTTPSHosts checks membership only: logout callbacks may
+// remain private-use even when sign-in prefers https. Domain syntax/duplicates
+// are validated by ValidateAssociatedDomains before this helper is called.
+func validateAssociatedHTTPSHosts(domains, callbacks []string) (int, error) {
+	if len(domains) == 0 {
+		return 0, nil
+	}
+	https := 0
+	for _, raw := range callbacks {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" {
+			continue
+		}
+		https++
+		if !slices.Contains(domains, strings.ToLower(u.Hostname())) {
+			return 0, fmt.Errorf("https redirect %q is on host %q, which is not in associated_domains %v: the app is associated only with those hosts", raw, u.Hostname(), domains)
+		}
+	}
+	return https, nil
 }
 
 // PrependAppLinkRedirect is the ONE place an https redirect is put ahead of a

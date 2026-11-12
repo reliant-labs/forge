@@ -1,6 +1,6 @@
 ---
 name: observability/product-events/cli
-description: Events from a command-line program — pkg/observe/cliev (an anonymous install id, a one-time notice, DO_NOT_TRACK / <APP>_TELEMETRY=off / CI opt-out, `<app> telemetry on|off|status`, a 300 ms batch at exit), the first-run event, and the native ingest key a CLI sends with.
+description: Events from a command-line program — pkg/observe/cliev (an anonymous install id, a one-time notice, DO_NOT_TRACK / <APP>_TELEMETRY=off opt-out, always off in CI, `<app> telemetry on|off|status`, a 300 ms batch at exit), the first-run event, and the native ingest key a CLI sends with.
 ---
 
 # Events from a CLI: `pkg/observe/cliev`
@@ -36,7 +36,8 @@ What it does for you:
   Nothing is sent until it has been shown once.
 - **Opt-out.** `DO_NOT_TRACK=1` (always wins), `ACME_TELEMETRY=off`, or
   `c.SetEnabled(false)` (wire it to `acme telemetry off`), which is remembered.
-  Off when `CI=true` unless `ACME_TELEMETRY=on`.
+  Always off on a CI runner (`CI=true`, `GITHUB_ACTIONS` and the other CI
+  services' variables; `cliev.InCI`): nothing turns it back on there.
 - **Bounds.** One event per name per run, `cliev.MaxEventsPerDay` per install,
   the batch sent once at exit within 300 ms and dropped on failure. Telemetry
   never slows or fails a command.

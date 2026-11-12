@@ -213,11 +213,24 @@ func credentialArg(argv []string) int {
 	return -1
 }
 
-// envReference is a value that is exactly one environment-variable
-// reference ($NAME or ${NAME}, a ${NAME:-default} included, or compose's
-// escaped $$NAME that it leaves for the container's shell): it is
-// substituted at run time, so the command names no credential.
-var envReference = regexp.MustCompile(`^\$\$?(\{[A-Za-z_][A-Za-z0-9_]*(:?[-=?+][^}]*)?\}|[A-Za-z_][A-Za-z0-9_]*)$`)
+// envReferenceRE matches a value that is exactly one environment-variable
+// reference: $NAME, ${NAME}, or ${NAME<op>word} for the expansion operators
+// that carry a word (:- - := = :+ + :? ?), each optionally in compose's
+// escaped $$ form, which it leaves for the container's shell. Group 2 is the
+// operator, group 3 the word.
+var envReferenceRE = regexp.MustCompile(`^\$\$?(?:\{[A-Za-z_][A-Za-z0-9_]*(?:(:?[-=?+])(.*))?\}|[A-Za-z_][A-Za-z0-9_]*)$`)
+
+// envReference reports whether v names no credential itself: it is exactly
+// one environment reference whose word, if any, is empty or is itself an
+// environment reference. `${PASSWORD:-hunter2}` carries a literal fallback,
+// which is the credential the command would run with.
+func envReference(v string) bool {
+	m := envReferenceRE.FindStringSubmatch(v)
+	if m == nil {
+		return false
+	}
+	return m[1] == "" || m[2] == "" || envReference(m[2])
+}
 
 // secretShaped reports whether v, the value of a credential-named argument,
 // could be the credential itself: not empty, not exactly a reference to one
@@ -225,7 +238,7 @@ var envReference = regexp.MustCompile(`^\$\$?(\{[A-Za-z_][A-Za-z0-9_]*(:?[-=?+][
 // (`--max-tokens 512`). A literal that merely contains '$' is still a
 // credential.
 func secretShaped(v string) bool {
-	if v == "" || envReference.MatchString(v) || strings.ContainsAny(v[:1], "/.~") {
+	if v == "" || envReference(v) || strings.ContainsAny(v[:1], "/.~") {
 		return false
 	}
 	if _, err := strconv.ParseFloat(v, 64); err == nil {

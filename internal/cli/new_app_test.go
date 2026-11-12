@@ -631,7 +631,13 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 		{name: "a literal password containing a dollar", command: "worker --password hunter2$dollar", refused: true},
 		{name: "from the environment", command: "celery -A app worker --broker ${BROKER_URL}"},
 		{name: "shell-wrapped, from the environment", command: `["sh", "-c", "worker --password \"$$WORKER_PASSWORD\""]`},
-		{name: "a default-valued reference", command: "worker --password ${WORKER_PASSWORD:-}"},
+		{name: "an empty default", command: "worker --password ${WORKER_PASSWORD:-}"},
+		{name: "a default that is itself a reference", command: "worker --password ${WORKER_PASSWORD:-${FALLBACK_PASSWORD}}"},
+		{name: "a literal password default", command: "worker --password ${WORKER_PASSWORD:-hunter2default}", refused: true},
+		{name: "a literal default under :=", command: "worker --password=${WORKER_PASSWORD:=hunter2assign}", refused: true},
+		{name: "a literal alternative under :+", command: "worker --password ${WORKER_PASSWORD:+hunter2alt}", refused: true},
+		{name: "a literal default without the colon", command: "worker --password ${WORKER_PASSWORD-hunter2plain}", refused: true},
+		{name: "a shell-wrapped literal default", command: `["sh", "-c", "worker --password $${WORKER_PASSWORD:-hunter2shell}"]`, refused: true},
 		{name: "a secret file", command: "worker --token-file /run/secrets/token"},
 		{name: "a number", command: "worker --max-tokens 512"},
 	} {
@@ -677,6 +683,22 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 	for _, claimable := range []bool{false, true} {
 		if _, err := detectApp(root, "shop", claimable); err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "migrate"`) {
 			t.Errorf("shell-wrapped migration command, claimable=%v: err = %v, want a value-free refusal naming the service", claimable, err)
+		}
+	}
+	// ...and a literal fallback in a migration command, direct or shell-wrapped.
+	for _, command := range []string{
+		"alembic -x db_password=${DB_PASSWORD:-hunter2pgdefault} upgrade head",
+		`["sh", "-c", "alembic -x db_password=$${DB_PASSWORD:-hunter2pgshell} upgrade head"]`,
+	} {
+		root = writeAppTree(t, map[string]string{
+			"requirements.txt":   "flask==3.0.0\ngunicorn==22.0.0\n",
+			"Dockerfile":         "FROM python:3.12-slim\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+			"docker-compose.yml": "services:\n  web:\n    build: .\n    ports:\n      - \"8000:8000\"\n  migrate:\n    build: .\n    command: " + command + "\n",
+		})
+		for _, claimable := range []bool{false, true} {
+			if _, err := detectApp(root, "shop", claimable); err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "migrate"`) {
+				t.Errorf("migration command %q, claimable=%v: err = %v, want a value-free refusal naming the service", command, claimable, err)
+			}
 		}
 	}
 }

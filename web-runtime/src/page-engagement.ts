@@ -1,7 +1,7 @@
 // Part of @reliantlabs/forge-web-runtime — the web twin of forge/pkg.
 //
-// Engaged time as a product event: one `page_engaged {route, engaged_ms,
-// scroll_pct}` per page view, so "how long did people spend on this post"
+// Engaged time as a product event: one `page_engaged {route, view_id,
+// engaged_ms, scroll_pct}` per page view, so "how long did people spend on this post"
 // is a median over product events and needs no code in the app.
 //
 // ── What counts as engaged ───────────────────────────────────────────────
@@ -29,8 +29,10 @@
 //                       only report)
 //
 // The event goes through track()'s product-event path, so it carries the
-// session, the release and the analytics tier like every other event (it
-// carries no identifier of its own and is sent in every tier but `off`).
+// session, the release and the analytics tier like every other event, and is
+// sent in every tier but `off`. Its one identifier, `view_id`, names the page
+// VIEW, not a person: 16 random hex characters minted when the view starts,
+// kept only in memory, and never reused by another view.
 // On hide and unload it then asks the SDK to export at once
 // (flushProductEvents): the exporter posts with `fetch(…, {keepalive: true})`,
 // which the browser completes after the page is gone, as it does
@@ -39,10 +41,12 @@
 //
 // A view the person comes back to (the tab shown again, or the page restored
 // from the back/forward cache) keeps counting, and its next report carries
-// `resumed: "true"` and the view's CUMULATIVE engaged_ms and scroll_pct.
-// A reader of the events takes, per view, the last report: a `resumed` row
-// replaces the row before it for the same route and visitor (the dashboards
-// do; see the product-events skill). A view with less than MIN_ENGAGED_MS of
+// the same `view_id`, `resumed: "true"` and the view's CUMULATIVE engaged_ms
+// and scroll_pct. A reader of the events takes, per view_id, the last (the
+// largest) report (see the product-events skill). The id is what makes that
+// unambiguous: a back/forward-cache restore can resume a view of a route the
+// same visitor has since viewed again, so route and order alone cannot tell
+// which view a resumed row belongs to. A view with less than MIN_ENGAGED_MS of
 // engagement (a redirect, a route replaced at once) is not reported.
 //
 // ── scroll_pct ───────────────────────────────────────────────────────────
@@ -179,6 +183,8 @@ export interface EngagementWatch {
 
 interface PageView {
   route: string;
+  // view_id: random per view, shared by its resumed reports.
+  id: string;
   entry: boolean;
   clock: EngagementClock;
   scroll: number;
@@ -187,6 +193,28 @@ interface PageView {
   // The view's current stretch has been reported; cleared when it resumes.
   reported: boolean;
   settle: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * A page view's id: 16 random hex characters (8 bytes from Web Crypto; Math
+ * random only where there is none, which is fine for an id that only tells
+ * two views apart). Exported for tests.
+ */
+export function newViewId(): string {
+  const buf = new Uint8Array(8);
+  const c = globalThis.crypto;
+  if (c && typeof c.getRandomValues === "function") {
+    c.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < buf.length; i++) {
+      buf[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  let out = "";
+  for (const b of buf) {
+    out += b.toString(16).padStart(2, "0");
+  }
+  return out;
 }
 
 function now(): number {
@@ -240,6 +268,7 @@ export function installPageEngagement(): EngagementWatch {
     }
     const props: Record<string, string | number> = {
       route: view.route,
+      view_id: view.id,
       engaged_ms: ms,
       scroll_pct: view.scroll,
     };
@@ -381,6 +410,7 @@ export function installPageEngagement(): EngagementWatch {
         }
         const view: PageView = {
           route,
+          id: newViewId(),
           entry,
           clock: new EngagementClock(),
           scroll: 0,

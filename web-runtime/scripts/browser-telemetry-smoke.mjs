@@ -899,7 +899,9 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     assert.ok(second.engaged_ms >= 500 && second.engaged_ms < 10000, `second view engaged ${second.engaged_ms} ms`);
     for (const v of views) {
       assert.equal(v.resumed, undefined);
+      assert.match(v.view_id, /^[0-9a-f]{16}$/);
     }
+    assert.notEqual(first.view_id, second.view_id);
   } finally {
     await browser?.close();
     await close(server);

@@ -71,7 +71,7 @@ into every environment it is promoted to.
 | session replay (masked; `full` tier only) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
 | console capture | `CONSOLE_CAPTURE = "false"` | KCL `telemetry.console_capture = False` | **on** |
 | replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
-| `page_viewed {route}` and `page_engaged {route, engaged_ms, scroll_pct}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
+| `page_viewed {route}` and `page_engaged {route, view_id, engaged_ms, scroll_pct}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
 | signed-in user id on every event | `IDENTIFY_USER = "false"` | KCL `telemetry.identify_user = False` | **on** with native sign-in |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
@@ -149,7 +149,7 @@ call `initBrowserTelemetry` yourself):
   scrubbed `referrer_path`; `pageViews: { siteHosts }` names hosts that are
   this site); any view whose URL carries them adds `utm_*`, `ref` and
   `click_id` — the ad network's name, never the click id.
-  Each view also ends in one `page_engaged {route, engaged_ms, scroll_pct}`
+  Each view also ends in one `page_engaged {route, view_id, engaged_ms, scroll_pct}`
   (`pageViews: { engagement: false }` turns that alone off): the time the
   page was visible, focused and in use (a 30 s idle cutoff, capped at 30
   minutes) and the deepest scroll, reported at the next route change, hide or

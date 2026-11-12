@@ -205,12 +205,12 @@ provider?, socialProvider?, verified? })` — the standard auth events, for an
   and its external `referrer_host` / `referrer_path` (`siteHosts` names hosts
   that are this site); a URL's `utm_*`, `ref` and `click_id` (the ad
   network's name, never the click id) ride along when present. Each view
-  also ends in one `page_engaged {route, engaged_ms, scroll_pct}`: the time
+  also ends in one `page_engaged {route, view_id, engaged_ms, scroll_pct}`: the time
   the page was visible, focused and in use (a 30 s idle cutoff, capped at 30
   minutes) and the deepest document scroll, reported once at the next route
   change, hide or `pagehide` and exported at once with `fetch` keepalive; a
-  view the reader returns to reports again with `resumed: "true"` and the
-  cumulative figures (`pageViews: { engagement: false }` turns it off).
+  view the reader returns to reports again, under the same random
+  `view_id`, with `resumed: "true"` and the cumulative figures (`pageViews: { engagement: false }` turns it off).
   `authenticated:
 false`, a 401 or 403, and any answer naming nobody (another non-2xx, a
   foreign body, a network error) clear the user it set, once; before it has

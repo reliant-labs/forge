@@ -261,8 +261,8 @@ export {
 } from "./page-views.js";
 
 /**
- * Engaged time: each page view ends in one `page_engaged {route, engaged_ms,
- * scroll_pct}` — visible, focused, active time (a 30 s idle cutoff, capped
+ * Engaged time: each page view ends in one `page_engaged {route, view_id,
+ * engaged_ms, scroll_pct}` — visible, focused, active time (a 30 s idle cutoff, capped
  * at 30 minutes) and how far down the document the reader got.
  */
 export {

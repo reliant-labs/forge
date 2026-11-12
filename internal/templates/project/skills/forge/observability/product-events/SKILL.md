@@ -160,12 +160,13 @@ in its runtime config). How both work: `frontend-runtime/telemetry`.
 
 ### Engaged time
 
-Each page view also ends in one `page_engaged`, in every tier above `off`. It
-carries no identifier of its own:
+Each page view also ends in one `page_engaged`, in every tier above `off`. Its
+one identifier, `view_id`, names the view, not a person:
 
 | prop | value |
 |---|---|
 | `route` | the view's route, named as its `page_viewed` was |
+| `view_id` | 16 random hex characters minted when the view starts, kept only in memory, shared by the view's `resumed` reports and by no other view |
 | `engaged_ms` | the milliseconds the page was **visible**, the window **focused** (or in use anyway: a wheel over a background window) and the person **active**: a pointer, key, wheel, touch or scroll in the last 30 s. Past that idle cutoff the clock stops until the next input. Capped at 1,800,000 (30 minutes) |
 | `scroll_pct` | the deepest the bottom of the viewport reached in the document during the view, 0-100: `(scrollY + innerHeight) / scrollHeight`. A page that fits the viewport is 100. Content scrolling inside an app's own element is not the document's depth |
 | `entry` | `"true"` when the view was the first of its page load, as on `page_viewed` |
@@ -179,22 +180,19 @@ which the browser completes after the page is gone. A view shorter than 500 ms
 of engagement (a redirect) is not reported.
 
 A reader who comes back to a view (the tab shown again, a back/forward-cache
-restore) keeps adding to it: the next report has `resumed: "true"` and the
-view's **cumulative** `engaged_ms` and `scroll_pct`. So per view, take the
-**last** report: a `resumed` row replaces the row before it for the same
-visitor and route. In SQL, a running count of non-`resumed` rows per
-`(EnvId, DayVisitor, route)` numbers the views (the daily hash alone keys a
-visitor-day; never pair it with the event's date):
+restore) keeps adding to it: the next report has the same `view_id`,
+`resumed: "true"`, and the view's **cumulative** `engaged_ms` and `scroll_pct`.
+So per view, take the **last** report, which is also the largest. Key it on
+`view_id`, never on route and time order: a back/forward-cache restore can
+resume a view of a route the same visitor has since viewed again.
 
 ```sql
-SELECT EnvId, h, route, vix,
+SELECT EnvId, Props['view_id'] AS view, any(Props['route']) AS route,
        max(toFloat64OrZero(Props['engaged_ms'])) AS engaged_ms,
        max(toFloat64OrZero(Props['scroll_pct'])) AS scroll_pct
-FROM (SELECT EnvId, DayVisitor AS h, Props['route'] AS route, Props,
-             sum(Props['resumed'] != 'true') OVER (PARTITION BY EnvId, h, route ORDER BY Timestamp
-                                                   ROWS UNBOUNDED PRECEDING) AS vix
-      FROM product_events WHERE EventName = 'page_engaged' AND DayVisitor != '' AND …)
-GROUP BY EnvId, h, route, vix
+FROM product_events
+WHERE EventName = 'page_engaged' AND Props['view_id'] != '' AND …
+GROUP BY EnvId, view
 ```
 
 `page_engaged` is not an interactive event: it neither starts nor extends a

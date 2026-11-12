@@ -77,7 +77,7 @@
 // ── How long the view held the reader ────────────────────────────────────
 //
 // With `engagement` (on wherever initBrowserTelemetry records page views),
-// each view also ends in one `page_engaged {route, engaged_ms, scroll_pct}`:
+// each view also ends in one `page_engaged {route, view_id, engaged_ms, scroll_pct}`:
 // the visible, focused, active time and the scroll depth of that view,
 // reported at the next route change, hide or unload (page-engagement.ts).
 //
@@ -295,7 +295,7 @@ export interface PageViewOptions {
    */
   siteHosts?: string[];
   /**
-   * Record `page_engaged {route, engaged_ms, scroll_pct}` once per page view
+   * Record `page_engaged {route, view_id, engaged_ms, scroll_pct}` once per page view
    * (page-engagement.ts): visible, focused, active time and scroll depth.
    * Default true wherever page views are recorded; false turns it off alone.
    */

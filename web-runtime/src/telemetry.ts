@@ -147,7 +147,7 @@
 //
 // `pageViews` records a `page_viewed {route}` product event per route
 // (page-views.ts) and, unless `pageViews.engagement` is false, one
-// `page_engaged {route, engaged_ms, scroll_pct}` per page view when it ends
+// `page_engaged {route, view_id, engaged_ms, scroll_pct}` per page view when it ends
 // (page-engagement.ts); `identify` finds the signed-in user from the API's
 // `/auth/session` and stamps their opaque id on every event
 // (session-identity.ts). Both are OFF in this API, so a hand-written caller

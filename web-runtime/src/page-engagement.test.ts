@@ -122,10 +122,15 @@ function stubPage(initial = "/blog/hello") {
   };
 }
 
+// The page_engaged reports, without view_id (random; its own tests pin it).
 function engaged(s: ReturnType<typeof sink>) {
+  return engagedWithIds(s).map(({ view_id: _id, ...rest }) => rest);
+}
+
+function engagedWithIds(s: ReturnType<typeof sink>) {
   return s.track.mock.calls
     .filter(([name]) => name === PAGE_ENGAGED_EVENT)
-    .map(([, attrs]) => attrs);
+    .map(([, attrs]) => attrs as Record<string, unknown>);
 }
 
 // Advance time with input every `every` ms, so the reader never idles.
@@ -299,6 +304,35 @@ describe("installPageEngagement", () => {
       },
     ]);
     expect(s.flush).toHaveBeenCalledTimes(2);
+    watch.stop();
+  });
+
+  it("names each view with its own view_id, kept by its resumed reports", () => {
+    const page = stubPage();
+    const watch = installPageEngagement();
+    watch.view("/blog/hello", true);
+    readFor(page, 2_000);
+    page.hide(); // first view, first report
+    page.show();
+    readFor(page, 1_000);
+    watch.view("/pricing", false); // first view, resumed report
+    readFor(page, 2_000);
+    watch.view("/blog/hello", false); // the same route again: a new view
+    readFor(page, 2_000);
+    page.pagehide();
+    const reports = engagedWithIds(s);
+    expect(reports.map((r) => [r.route, r.resumed])).toEqual([
+      ["/blog/hello", undefined],
+      ["/blog/hello", "true"],
+      ["/pricing", undefined],
+      ["/blog/hello", undefined],
+    ]);
+    const ids = reports.map((r) => r.view_id);
+    for (const id of ids) {
+      expect(id).toMatch(/^[0-9a-f]{16}$/);
+    }
+    expect(ids[1]).toBe(ids[0]);
+    expect(new Set([ids[0], ids[2], ids[3]]).size).toBe(3);
     watch.stop();
   });
 

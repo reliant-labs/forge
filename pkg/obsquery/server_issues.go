@@ -54,7 +54,7 @@ func (b *builder) issueConds(s Scope, service, fingerprint, source string) ([]st
 	conds = append(conds, sc...)
 	switch {
 	case fingerprint != "":
-		conds = append(conds, IssueEventFilterSQL)
+		conds = append(conds, IssueRecordFilterSQL)
 	case source == "":
 		conds = append(conds, ServerFailureFilterSQL, IssueSourceSQL+" = ''")
 	default:

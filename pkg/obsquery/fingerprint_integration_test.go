@@ -411,8 +411,8 @@ func TestServerIssuesIncludeWarnServerFailuresOnClickHouse(t *testing.T) {
 			t.Errorf("ServerFailureFilterSQL selects %s = %v, want %v", p, issues[p], want)
 		}
 	}
-	if events := procedures(obsquery.IssueEventFilterSQL); len(events) != len(issues) {
-		t.Errorf("IssueEventFilterSQL selects %v, want the same failures as ServerFailureFilterSQL %v", events, issues)
+	if events := procedures(obsquery.IssueRecordFilterSQL); len(events) != len(issues) {
+		t.Errorf("IssueRecordFilterSQL selects %v, want the same failures as ServerFailureFilterSQL %v", events, issues)
 	}
 	if errs := procedures(obsquery.ServerErrorFilterSQL); len(errs) != 1 || !errs["/s/ServerDeadline"] {
 		t.Errorf("ServerErrorFilterSQL selects %v, want only the ERROR record", errs)

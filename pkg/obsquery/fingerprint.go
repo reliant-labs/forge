@@ -150,10 +150,17 @@ const ServerFailureFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (Se
 // fingerprints both kinds the same way (error.group is how a source pins its
 // grouping).
 const (
-	// IssueEventFilterSQL selects every record an issue is built from: server
+	// IssueRecordFilterSQL selects every record an issue is built from: server
 	// failures (ServerFailureFilterSQL), and server records of any level that
 	// carry a source. The control plane's ingest view filters on it.
-	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + ` OR LogAttributes['issue.source'] != '')`
+	IssueRecordFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + ` OR LogAttributes['issue.source'] != '')`
+	// IssueEventFilterSQL is the issue filter before WARN server failures
+	// joined it: server errors and sourced records only. Its value is frozen
+	// because a Go constant's value is part of the v1 API.
+	//
+	// Deprecated: use IssueRecordFilterSQL, which also selects WARN server
+	// failures (retryable codes, a server deadline logged at WARN).
+	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR LogAttributes['issue.source'] != '')`
 	// IssueSourceSQL is a record's issue source, "" for an error.
 	IssueSourceSQL = `LogAttributes['issue.source']`
 )
@@ -233,7 +240,7 @@ var (
 	// ServerFingerprintSQL is the server fingerprint (sfp1, refined to sfp2 for
 	// the records RefinedByErrorClass selects) as a ClickHouse String expression
 	// over an otel_logs row (ServiceName, ScopeName, Body, LogAttributes).
-	// Evaluate it only on rows IssueEventFilterSQL selects.
+	// Evaluate it only on rows IssueRecordFilterSQL selects.
 	ServerFingerprintSQL = `lower(hex(substring(SHA256(concat(` +
 		`if(` + sqlRefined + `, 'sfp2', 'sfp1'), '\x1f', ServiceName, '\x1f', ` +
 		`if(LogAttributes['error.group'] != '', LogAttributes['error.group'], ` + sqlGroupKey + `), ` +

@@ -35,7 +35,7 @@ func TestServerIssuesIncludeWarnServerFailures(t *testing.T) {
 		t.Errorf("ServerErrorFilterSQL changed: %s", ServerErrorFilterSQL)
 	}
 	warn := "SeverityNumber >= 13 AND LogAttributes['" + LogKeyErrorClass + "'] = 'server' AND LogAttributes['" + LogKeyDeadline + "'] != 'caller'"
-	for name, filter := range map[string]string{"ServerFailureFilterSQL": ServerFailureFilterSQL, "IssueEventFilterSQL": IssueEventFilterSQL} {
+	for name, filter := range map[string]string{"ServerFailureFilterSQL": ServerFailureFilterSQL, "IssueRecordFilterSQL": IssueRecordFilterSQL} {
 		for _, want := range []string{"SeverityNumber >= 17", warn, "ResourceAttributes['rum.sessionId'] = ''"} {
 			if !strings.Contains(filter, want) {
 				t.Errorf("%s lacks %q: %s", name, want, filter)
@@ -80,7 +80,7 @@ func TestServerIssuesSelectErrorsOrOneSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(one.SQL, IssueEventFilterSQL) {
+	if !strings.Contains(one.SQL, IssueRecordFilterSQL) {
 		t.Errorf("one issue's events are read whatever their source:\n%s", one.SQL)
 	}
 	if _, err := (ServerIssues{Scope: issueScope(), Limit: 5, Source: "Bad Source'"}).Compile(); !isInvalid(err) {
@@ -128,7 +128,7 @@ func TestServerIssueStatementsAreFingerprintScopedAndParameterized(t *testing.T)
 	}
 	for name, st := range map[string]Stmt{"events": events, "versions": versions, "co-occurring": co} {
 		// One issue's records are read whatever their issue source.
-		if !strings.Contains(st.SQL, ServerFingerprintSQL) || !strings.Contains(st.SQL, IssueEventFilterSQL) {
+		if !strings.Contains(st.SQL, ServerFingerprintSQL) || !strings.Contains(st.SQL, IssueRecordFilterSQL) {
 			t.Errorf("%s does not use the shared fingerprint and filter:\n%s", name, st.SQL)
 		}
 		assertParameterized(t, st, fp)

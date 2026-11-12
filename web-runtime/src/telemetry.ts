@@ -56,6 +56,23 @@
 // analytics tier (below): it is per-person recording, which the cookieless
 // tiers never do.
 //
+// ── Withdrawal stops replay now ──────────────────────────────────────────
+//
+// When the tier leaves `full` (revokeAnalyticsConsent, optOutOfAnalytics) or
+// telemetry is disabled, no replay leaves the page from that instant: not a
+// record made afterwards, not one made before it and still buffered, and not
+// a span from stopping the recorder. Stopping the SDK's recorder alone does not
+// do that. It buffers rrweb records and posts them to `${ingest}/v1/logs` on
+// its own 5 s timer (and on unload), so a stopped recorder still sends what it
+// held; and a stop() on an already stopped recorder starts a `record stop`
+// span on its `rum.rr-web` tracer, so stopping twice exported one replay span
+// at the moment of withdrawal. So when replay runs, two gates go in right after
+// init and close for good, BEFORE the one stop: the recorder's record posts
+// are answered locally without the network (gateReplayRecords), and its
+// tracer's spans are never ended (gateReplaySpans). The recorder is stopped
+// once however many paths ask. Replay that already left before the withdrawal
+// stays where it is.
+//
 // ── One session per visit, even where cookies are dropped ────────────────
 //
 // The SDK keeps its session id only in the `__rum_sid` cookie and mints a new
@@ -292,7 +309,8 @@ export interface BrowserTelemetryConfig {
    * It runs only in the `full` analytics tier (`analytics: "full"` and
    * grantAnalyticsConsent() before this call): replay records a person, which
    * the cookieless tiers never do. Consent granted later in the page load
-   * starts it on the next one.
+   * starts it on the next one. Consent withdrawn stops it at once, and what
+   * the recorder had buffered is dropped, not sent.
    */
   replay?: boolean;
   /**
@@ -466,7 +484,13 @@ function applyTier(
   hdx: HyperDXClient,
   config: BrowserTelemetryConfig,
   rum: RumSessionStore | null,
+  stopReplay: () => void,
 ): void {
+  if (tier !== "full") {
+    // First, before anything else moves: replay records a person, and it
+    // never outlives the full tier (see "Withdrawal stops replay now").
+    stopReplay();
+  }
   if (tier === "full" && previous !== "full") {
     rum?.moveToDevice(localStorageOrNull());
     attributionWanted = true;
@@ -484,10 +508,117 @@ function applyTier(
       attributionWanted = false;
       stopAttribution();
       hdx.setGlobalAttributes?.({ "visitor.id": "" });
-      // Replay records a person: it never outlives the full tier.
-      hdx.stopSessionRecorder?.();
     }
   }
+}
+
+/** The scope (name, version) the SDK's session recorder records spans under. */
+const SDK_REPLAY_SCOPE = { name: "rum.rr-web", version: "4.0.0" } as const;
+
+/** Where the SDK's recorder posts its records: `${ingest}${this}`. */
+const SDK_REPLAY_LOGS_PATH = "/v1/logs";
+
+/**
+ * Puts both replay exports behind a gate that closes for good when the
+ * returned stop runs, and stops the recorder then, once. See "Withdrawal stops
+ * replay now" in the header. Call it right after hdx.init, with replay on.
+ */
+function gateReplay(hdx: HyperDXClient, ingest: string): () => void {
+  let open = true;
+  const closed = () => !open;
+  gateReplayRecords(`${ingest}${SDK_REPLAY_LOGS_PATH}`, closed);
+  gateReplaySpans(closed);
+  return () => {
+    if (!open) {
+      return;
+    }
+    // Closed before the stop, so nothing the stop emits gets out.
+    open = false;
+    try {
+      hdx.stopSessionRecorder?.();
+    } catch {
+      // Telemetry must never break the app; the gates hold either way.
+    }
+  };
+}
+
+type FetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
+/**
+ * Answers the recorder's record posts itself, without the network, once
+ * `closed()`: the batch it had buffered when replay stopped is dropped, not
+ * sent. Every other request passes through untouched. The recorder calls the
+ * global fetch when it exports, so this layer is reached whatever wraps fetch
+ * after it.
+ */
+function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
+  const g = globalThis as { fetch?: FetchFn };
+  const inner = g.fetch;
+  if (typeof inner !== "function") {
+    return;
+  }
+  g.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
+    if (closed() && requestUrl(args[0]) === logsUrl) {
+      return Promise.resolve(
+        typeof Response === "function"
+          ? new Response(null, { status: 204 })
+          : (undefined as unknown as Response),
+      );
+    }
+    return inner.apply(this, args);
+  };
+}
+
+function requestUrl(input: unknown): string | undefined {
+  try {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (typeof URL !== "undefined" && input instanceof URL) {
+      return input.href;
+    }
+    const url = (input as { url?: unknown } | null)?.url;
+    return typeof url === "string" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Leaves unended, so unexported, every span the recorder's tracer would end
+ * once `closed()`. The SDK's recorder starts a `record stop` span when it is
+ * stopped a second time; any later stop, from the app or the SDK, is caught
+ * here.
+ */
+function gateReplaySpans(closed: () => boolean): void {
+  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
+  const provider = (proxy.getDelegate?.() ?? proxy) as {
+    getTracer?: (name: string, version?: string) => unknown;
+  };
+  const tracer = provider.getTracer?.(
+    SDK_REPLAY_SCOPE.name,
+    SDK_REPLAY_SCOPE.version,
+  ) as StartSpanTracer | undefined;
+  if (!tracer || typeof tracer.startSpan !== "function") {
+    return;
+  }
+  const original = tracer.startSpan;
+  tracer.startSpan = function (
+    this: unknown,
+    name: string,
+    ...rest: unknown[]
+  ): unknown {
+    const span = original.call(this, name, ...rest) as RecordingSpan;
+    if (typeof span?.end !== "function") {
+      return span;
+    }
+    const end = span.end;
+    span.end = function (this: unknown, ...args: unknown[]) {
+      // Never ended, so never exported.
+      return closed() ? undefined : end.apply(this, args);
+    };
+    return span;
+  };
 }
 
 /**
@@ -564,6 +695,9 @@ async function start(
     // await (a server stream) still opens its span under the context the
     // trace interceptor chose. See interaction-context.ts.
     installFetchContext();
+    // From init on, so the gates hold whatever the recorder does after a
+    // withdrawal (see "Withdrawal stops replay now").
+    const stopReplay = replay ? gateReplay(hdx, ingest) : () => {};
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());
@@ -599,7 +733,7 @@ async function start(
     // session that caused them.
     registerRumSession(() => hdx.getSessionId?.());
     const stopTier = onAnalyticsTierChange((tier, previous) =>
-      applyTier(tier, previous, hdx, config, rum),
+      applyTier(tier, previous, hdx, config, rum, stopReplay),
     );
     let identity: SessionIdentity | null = null;
     let stopRoutes = () => {};
@@ -621,6 +755,7 @@ async function start(
         }
       },
       disable: () => {
+        stopReplay();
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
@@ -629,7 +764,6 @@ async function start(
         stopTier();
         stopRoutes();
         identity?.stop();
-        hdx.stopSessionRecorder?.();
       },
     });
     // After the sink, so the first page view and the user go straight to the

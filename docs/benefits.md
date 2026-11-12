@@ -2892,6 +2892,25 @@ _Enforced · Reliant hosting_
 - library [`pkg/releasehealth`](../pkg/releasehealth)
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
 
+<a id="preview-environments"></a>
+
+### Per-PR preview environments
+
+Every pull request gets its own environment, a copy of a committed template env named for the PR, which deletes itself when it expires.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge env preview create --pr 123 --ttl 72h`, then `forge env deploy preview-pr-123 --yes`; `forge env preview delete --pr 123 --yes` on close, `forge env gc --yes` on a schedule
+
+**Why:** The instance is an ordinary env, so every env verb works on it, and its name depends only on the PR or branch, so the job that creates it and the job that deletes it agree with no shared state. Its expiry is recorded in the release shape (a control plane that advertises `shape-preview` deletes an expired hosted instance) and stamped on its namespaces, so `forge env gc` finds an expired preview on a cluster you operate from the cluster alone. `create` refuses an instance that would deploy into the template env's own namespace.
+
+**Evidence:**
+
+- command `forge env preview create`
+- command `forge env gc`
+- skill `deploy/preview` (`forge skill load deploy/preview`)
+- library [`pkg/release`](../pkg/release)
+
 <a id="promotion-required-gates-approval-hook"></a>
 
 ### Required checks and your approvals

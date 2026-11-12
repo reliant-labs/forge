@@ -434,6 +434,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Units:               split.ShapeUnits(),
 		HostInfra:           len(entities.Infra) > 0,
 		Buckets:             shapeBucketsOf(entities),
+		Preview:             entities.Preview,
 		Store:               store,
 	})
 	if err != nil {

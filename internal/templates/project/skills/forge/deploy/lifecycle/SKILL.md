@@ -47,6 +47,11 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
 
+## Preview environments
+
+Per-PR and per-branch copies of a template env, which expire:
+`forge env preview create|delete`, `forge env gc`. Load `deploy/preview`.
+
 ## Domains
 
 `forge domain add|ls|show|verify|bind|unbind|rm --env <env>` — see

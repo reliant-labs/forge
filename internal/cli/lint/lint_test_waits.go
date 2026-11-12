@@ -29,6 +29,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -70,7 +71,7 @@ func collectTestWaitFindings(root string) ([]finding.Finding, error) {
 		return nil, fmt.Errorf("walk %s: %w", root, err)
 	}
 	res := suppress.ApplyFiles(root, raw, os.ReadFile)
-	out := append(res.Kept, res.Violations...)
+	out := slices.Concat(res.Kept, res.Violations)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].File != out[j].File {
 			return out[i].File < out[j].File

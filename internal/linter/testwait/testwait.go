@@ -417,7 +417,7 @@ func (c *checker) collectConsts(f *ast.File) {
 func (c *checker) collectVars(body *ast.BlockStmt, sc *scope) {
 	record := func(lhs []ast.Expr, rhs []ast.Expr) {
 		if len(rhs) == 1 && len(lhs) == 2 {
-			// ctx, cancel := context.WithTimeout(parent, d)
+			// The ctx and cancel results of a context.WithTimeout call.
 			call, ok := rhs[0].(*ast.CallExpr)
 			if !ok {
 				return
@@ -1244,7 +1244,7 @@ func (c *checker) eval(e ast.Expr, depth int) (int64, bool) {
 			return c.eval(v, depth+1)
 		}
 	case *ast.CallExpr:
-		// time.Duration(x)
+		// A time.Duration conversion of a duration expression.
 		if sel, ok := x.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Duration" && c.isPkg(sel.X, c.imp.time) && len(x.Args) == 1 {
 			return c.eval(x.Args[0], depth+1)
 		}

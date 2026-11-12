@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -688,6 +690,12 @@ func buildHostedGroup(envName string, entities *KCLEntities) (*deploytarget.Serv
 		services []deploytarget.ResolvedService
 		names    []string
 	)
+	// A hosted site serves its mobile app's association files from the host
+	// root, as spec (see hostedStaticSpec). Idempotent, and a no-op for an env
+	// with no associated domains.
+	if err := attachAppLinkFiles(context.Background(), defaultAppLinkSource(envName, projectDirForKCL(), entities, os.Stderr)); err != nil {
+		return nil, err
+	}
 	for _, w := range entities.Workloads {
 		if !w.OnRuntime(RuntimeHosted) {
 			continue
@@ -799,6 +807,12 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 	spec := &v1alpha1.StaticSiteSpec{BasePath: f.BasePath, AssetDir: f.AssetDir, KeepReleases: &keep}
 	if len(f.RuntimeConfigSpec) > 0 {
 		spec.RuntimeConfig = f.RuntimeConfigSpec
+	}
+	// The mobile app's association files (WellKnown on the spec): per-env,
+	// served by the platform at /.well-known/ as application/json with no
+	// redirect. attachAppLinkFiles filled them for this env.
+	if len(f.WellKnown) > 0 {
+		spec.WellKnown = maps.Clone(f.WellKnown)
 	}
 	return spec
 }

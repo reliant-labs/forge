@@ -328,6 +328,11 @@ type ShapeIdentityApplication struct {
 	// is a set and is sorted in the canonical form.
 	RedirectURIs []string `json:"redirect_uris,omitempty"`
 	LogoutURIs   []string `json:"logout_uris,omitempty"`
+	// AssociatedDomains are the bare hostnames a kind-native app is associated
+	// with for https universal-link / App Link callbacks, in order: the first
+	// is the host of the derived https redirect. See applinks.go. Empty for
+	// every other kind, and for an app that keeps the private-use callback.
+	AssociatedDomains []string `json:"associated_domains,omitempty"`
 	// LoginURI is the declared literal override. Empty means the control plane
 	// derives it from the env's frontend.
 	LoginURI string `json:"login_uri,omitempty"`
@@ -433,6 +438,7 @@ func (i ShapeIdentity) canonical() ShapeIdentity {
 			if a.Kind == IdentityAppNative {
 				a.RedirectURIs = orderedNonEmpty(a.RedirectURIs)
 				a.LogoutURIs = orderedNonEmpty(a.LogoutURIs)
+				a.AssociatedDomains = orderedNonEmpty(a.AssociatedDomains)
 			} else {
 				a.RedirectURIs = sortedNonEmpty(a.RedirectURIs)
 				a.LogoutURIs = sortedNonEmpty(a.LogoutURIs)
@@ -990,6 +996,9 @@ func (i ShapeIdentity) validateApplication(a ShapeIdentityApplication) error {
 		if a.Frontend != "" {
 			return bad("frontend applies only to kind %s", IdentityAppNative)
 		}
+		if len(a.AssociatedDomains) > 0 {
+			return bad("associated_domains applies only to kind %s", IdentityAppNative)
+		}
 		return nil
 	}
 	if strings.TrimSpace(a.Frontend) == "" {
@@ -1021,6 +1030,12 @@ func (i ShapeIdentity) validateApplication(a ShapeIdentityApplication) error {
 		if err := ValidateNativeCallbackURI(u, true); err != nil {
 			return bad("logout_uris: %v", err)
 		}
+	}
+	if err := ValidateAssociatedDomains(a.AssociatedDomains, a.RedirectURIs); err != nil {
+		return bad("%v", err)
+	}
+	if _, err := validateAssociatedHTTPSHosts(a.AssociatedDomains, a.LogoutURIs); err != nil {
+		return bad("logout_uris: %v", err)
 	}
 	return nil
 }

@@ -91,6 +91,9 @@ func runSnapshotPromote(ctx context.Context, env string, r release.Release, ledg
 		return fmt.Errorf("release %s has no sealed snapshot for %s", r.Version, env)
 	}
 	s := record.Snapshot
+	if err := requireSnapshotResourceFeatures(ctx, store.client, s.Resources); err != nil {
+		return err
+	}
 	if s.Project != r.Project || s.Environment != env {
 		return fmt.Errorf("sealed snapshot project/environment mismatch")
 	}

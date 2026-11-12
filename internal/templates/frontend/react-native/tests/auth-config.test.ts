@@ -35,6 +35,8 @@ describe("parseOidcConfig", () => {
       ],
       redirectUri: "com.acme.app:/oauthredirect",
       postLogoutRedirectUri: "com.acme.app:/signedout",
+      fallbackRedirectUri: null,
+      fallbackPostLogoutRedirectUri: null,
     });
   });
 
@@ -52,6 +54,31 @@ describe("parseOidcConfig", () => {
     });
     expect(cfg?.redirectUri).toBe("https://app.example.com/oauthredirect");
     expect(cfg?.postLogoutRedirectUri).toBe("https://app.example.com/signedout");
+  });
+
+  it("parses an https redirect with its private-use fallback pair", () => {
+    const cfg = parseOidcConfig({
+      ...base,
+      redirectUri: "https://app.example.com/oauthredirect",
+      postLogoutRedirectUri: "https://app.example.com/signedout",
+      fallbackRedirectUri: "com.acme.app:/oauthredirect",
+      fallbackPostLogoutRedirectUri: "com.acme.app:/signedout",
+    });
+    expect(cfg?.fallbackRedirectUri).toBe("com.acme.app:/oauthredirect");
+    expect(cfg?.fallbackPostLogoutRedirectUri).toBe("com.acme.app:/signedout");
+  });
+
+  it("refuses an https fallback: it is what an https redirect falls back FROM", () => {
+    expect(() =>
+      parseOidcConfig({
+        ...base,
+        redirectUri: "https://app.example.com/oauthredirect",
+        fallbackRedirectUri: "https://other.example.com/oauthredirect",
+      }),
+    ).toThrow(/private-use scheme/);
+    expect(() => parseOidcConfig({ ...base, fallbackRedirectUri: "javascript:1" })).toThrow(
+      OidcConfigError,
+    );
   });
 
   it("allows http only to loopback and only in development", () => {
@@ -169,6 +196,8 @@ describe("readOidcConfig", () => {
     "EXPO_PUBLIC_FORGE_OIDC_SCOPES",
     "EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI",
     "EXPO_PUBLIC_FORGE_OIDC_POST_LOGOUT_REDIRECT_URI",
+    "EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI",
+    "EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI",
   ] as const;
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   afterEach(() => {
@@ -195,7 +224,22 @@ describe("readOidcConfig", () => {
       scopes: ["openid", "offline_access"],
       redirectUri: "com.acme.app:/oauthredirect",
       postLogoutRedirectUri: "com.acme.app:/signedout",
+      fallbackRedirectUri: null,
+      fallbackPostLogoutRedirectUri: null,
     });
+  });
+
+  it("reads the fallback redirect variables", () => {
+    process.env.EXPO_PUBLIC_FORGE_OIDC_ISSUER = "https://idp.example.com";
+    process.env.EXPO_PUBLIC_FORGE_OIDC_CLIENT_ID = "cid";
+    process.env.EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI = "https://app.example.com/oauthredirect";
+    process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI = "com.acme.app:/oauthredirect";
+    process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI =
+      "com.acme.app:/signedout";
+    const cfg = readOidcConfig();
+    expect(cfg?.redirectUri).toBe("https://app.example.com/oauthredirect");
+    expect(cfg?.fallbackRedirectUri).toBe("com.acme.app:/oauthredirect");
+    expect(cfg?.fallbackPostLogoutRedirectUri).toBe("com.acme.app:/signedout");
   });
 
   it("throws on a present-but-invalid value instead of falling back", () => {

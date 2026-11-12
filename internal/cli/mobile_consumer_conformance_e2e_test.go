@@ -358,6 +358,7 @@ export default function GeneratedClient() {
 var nativeAuthSuites = []string{
 	"auth-config", "auth-oidc", "auth-store-session", "auth-provider",
 	"auth-context", "auth-sign-in-error", "connect-transport",
+	"auth-redirect", "with-forge-links",
 }
 
 // assertNativeAuthScaffold fails when a native-auth file is missing, so a
@@ -366,14 +367,17 @@ func assertNativeAuthScaffold(t *testing.T, mobile string) {
 	t.Helper()
 	files := []string{
 		"app/sign-in.tsx", "app/oauthredirect.tsx", "app/signedout.tsx", "tests/auth-fakes.ts",
+		"plugins/with-forge-links.js",
 	}
-	for _, name := range []string{"config", "oidc", "token-store", "oidc-provider", "session", "native", "transport", "sign-in-error"} {
+	for _, name := range []string{"config", "oidc", "token-store", "oidc-provider", "session", "native", "transport", "sign-in-error", "redirect"} {
 		files = append(files, "src/lib/auth/"+name+".ts")
 	}
 	for _, suite := range nativeAuthSuites {
 		ext := ".test.ts"
 		if suite == "auth-context" {
 			ext = ".test.tsx"
+		} else if suite == "with-forge-links" {
+			ext = ".test.js"
 		}
 		files = append(files, "tests/"+suite+ext)
 	}
@@ -383,7 +387,7 @@ func assertNativeAuthScaffold(t *testing.T, mobile string) {
 		}
 	}
 	app := readFileE2E(t, filepath.Join(mobile, "app.json"))
-	for _, want := range []string{"expo-secure-store", "com.consumer.mobile"} {
+	for _, want := range []string{"expo-secure-store", "com.consumer.mobile", "./plugins/with-forge-links"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.json does not mention %q:\n%s", want, app)
 		}

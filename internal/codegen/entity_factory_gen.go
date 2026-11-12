@@ -387,6 +387,11 @@ func renderEntityFactoryFile(dbImportPath string, g factoryGroup) []byte {
 	b.WriteString("// this directory (including the scaffolded CRUD lifecycle test), and to no\n")
 	b.WriteString("// other package. See the forge `testing` skill.\n")
 	b.WriteString("package " + pkgName + "\n\n")
+	if len(g.specs) == 0 && len(g.creates) == 0 {
+		// Every factory may already be supplied by owned code. Retire our
+		// old declarations without leaving unused imports or shared helpers.
+		return []byte(strings.TrimSpace(b.String()) + "\n")
+	}
 
 	needTimestamppb, needTime := createSpecsNeed(g.creates)
 	ownerAware := createSpecsOwnerAware(g.creates)
@@ -400,8 +405,11 @@ func renderEntityFactoryFile(dbImportPath string, g factoryGroup) []byte {
 		b.WriteString("\t\"time\"\n")
 	}
 	b.WriteString("\n")
-	if len(g.specs) > 0 {
-		b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
+	for _, s := range g.specs {
+		if s.failure == "" {
+			b.WriteString("\t\"github.com/oklog/ulid/v2\"\n")
+			break // only successful row factories mint an ID
+		}
 	}
 	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
 	if needTimestamppb {
@@ -540,7 +548,10 @@ func backquoteOrQuote(s string) string {
 // GenerateEntityFactories writes one forge-owned factories_gen_test.go per
 // handler package, holding the typed New<Entity> row factories for the entities
 // that package's CRUD RPCs own, and the New<CreateRequest> request factories
-// for its create RPCs (create_request_factory.go).
+// for its create RPCs (create_request_factory.go). An existing same-package
+// function (production or test) with a factory's name takes precedence: forge
+// emits neither that factory nor its private declarations. Other declaration
+// conflicts are returned as errors rather than writing an uncompilable file.
 //
 // Forge-owned + checksum-tracked, and regenerated on every run from the
 // APPLIED schema. A project with no schema to model writes nothing. A schema
@@ -629,7 +640,14 @@ func GenerateEntityFactories(projectDir, modulePath string, services []ServiceDe
 				fmt.Fprintf(os.Stderr, "Warning: %s: %s cannot build a request its schema accepts; calling it fails the test:\n  %s\n", rel, s.funcName, strings.ReplaceAll(s.failure, "\n", "\n  "))
 			}
 		}
+		group, declared, err := prepareFactoryGroup(dir, group)
+		if err != nil {
+			return fmt.Errorf("prepare %s: %w", rel, err)
+		}
 		content := renderEntityFactoryFile(modulePath+"/"+ProjectORMPackage(projectDir).PackageDir(), group)
+		if err := checkFactoryDeclarations(content, declared); err != nil {
+			return fmt.Errorf("generate %s: %w", rel, err)
+		}
 		if err := writeForgeOwned(projectDir, rel, content, cs); err != nil {
 			return fmt.Errorf("write %s: %w", rel, err)
 		}

@@ -1175,6 +1175,17 @@ func hostedBundleObjects(ctx context.Context, projectDir, envName string, entiti
 	if group == nil {
 		return nil, false, nil
 	}
+	// Required CR features are checked before these records can enter a
+	// published bundle or an immutable seal, not just at the later apply.
+	if required := deploytarget.RequiredHostedResourceFeatures(*group); len(required) > 0 {
+		client, _, err := envDeclarationClient(envName, entities)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := deploytarget.RequireHostedResourceFeatures(ctx, client, required); err != nil {
+			return nil, false, err
+		}
+	}
 	// A COMPOSITION'S RECORDS COME FROM ITS SNAPSHOT. The ledger and the
 	// env's current promotion name what is live, not what the candidate
 	// binds: reading pins there sealed the previous SPA (or a placeholder)

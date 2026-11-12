@@ -9,6 +9,9 @@
 //   EXPO_PUBLIC_FORGE_OIDC_SCOPES                  space-separated (optional)
 //   EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI            where the IdP sends the user back
 //   EXPO_PUBLIC_FORGE_OIDC_POST_LOGOUT_REDIRECT_URI  after end-session (optional)
+//   EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI   the private-use redirect that follows an https
+//                                                  REDIRECT_URI (optional; see redirect.ts)
+//   EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI  its post-logout twin (optional)
 //
 // Absent ISSUER or CLIENT_ID means "native auth is not wired": readOidcConfig()
 // returns null and the app keeps its mock/unwired provider. A value that IS
@@ -19,11 +22,11 @@
 // `process.env.NAME`. Dynamic reads (`process.env[name]`) are undefined on a
 // device, so every variable is read by its literal name below.
 //
-// REDIRECT URIS ARE OPAQUE FULL URIs. Today forge ships a private-use scheme
-// (`com.<project>.<app>:/oauthredirect`, RFC 8252 §7.1); an https universal/app
-// link (`https://host/oauthredirect`) is accepted as-is so moving to one later
-// is a configuration change, not a code change. Nothing in this library assumes
-// a custom scheme.
+// REDIRECT URIS ARE OPAQUE FULL URIs. forge ships a private-use scheme
+// (`com.<project>.<app>:/oauthredirect`, RFC 8252 §7.1) and, when the app is
+// associated with a domain, an https universal/app link
+// (`https://host/oauthredirect`) in front of it. Nothing in this library
+// assumes a custom scheme: redirect.ts picks the one a sign-in attempt uses.
 
 export interface OidcConfig {
   issuer: string;
@@ -31,6 +34,9 @@ export interface OidcConfig {
   scopes: string[];
   redirectUri: string;
   postLogoutRedirectUri: string | null;
+  /** The private-use redirect to use where an https redirectUri cannot complete (iOS < 17.4). */
+  fallbackRedirectUri: string | null;
+  fallbackPostLogoutRedirectUri: string | null;
 }
 
 export interface RawOidcEnv {
@@ -39,6 +45,8 @@ export interface RawOidcEnv {
   scopes?: string;
   redirectUri?: string;
   postLogoutRedirectUri?: string;
+  fallbackRedirectUri?: string;
+  fallbackPostLogoutRedirectUri?: string;
 }
 
 export interface ParseOptions {
@@ -190,6 +198,24 @@ function parseRedirect(name: string, value: string, allowInsecureLoopback: boole
   return value;
 }
 
+// The fallback exists for a platform that cannot complete an https redirect, so
+// it must be a private-use scheme (or a dev loopback); another https link would
+// fail the same way.
+function parseFallbackRedirect(
+  name: string,
+  value: string,
+  allowInsecureLoopback: boolean,
+): string {
+  const checked = parseRedirect(name, value, allowInsecureLoopback);
+  if (parseUri(checked)?.scheme === "https") {
+    throw new OidcConfigError(
+      name,
+      "must be a private-use scheme such as com.example.app:/oauthredirect, not https: it is what an https redirect falls back to",
+    );
+  }
+  return checked;
+}
+
 function present(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -218,6 +244,8 @@ export function parseOidcConfig(raw: RawOidcEnv, options: ParseOptions = {}): Oi
     throw new OidcConfigError("EXPO_PUBLIC_FORGE_OIDC_SCOPES", 'must include "openid"');
   }
   const postLogout = present(raw.postLogoutRedirectUri);
+  const fallback = present(raw.fallbackRedirectUri);
+  const fallbackPostLogout = present(raw.fallbackPostLogoutRedirectUri);
   return {
     issuer: parseIssuer("EXPO_PUBLIC_FORGE_OIDC_ISSUER", issuer, allowInsecureLoopback),
     clientId,
@@ -234,6 +262,20 @@ export function parseOidcConfig(raw: RawOidcEnv, options: ParseOptions = {}): Oi
           allowInsecureLoopback,
         )
       : null,
+    fallbackRedirectUri: fallback
+      ? parseFallbackRedirect(
+          "EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI",
+          fallback,
+          allowInsecureLoopback,
+        )
+      : null,
+    fallbackPostLogoutRedirectUri: fallbackPostLogout
+      ? parseFallbackRedirect(
+          "EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI",
+          fallbackPostLogout,
+          allowInsecureLoopback,
+        )
+      : null,
   };
 }
 
@@ -245,5 +287,8 @@ export function readOidcConfig(): OidcConfig | null {
     scopes: process.env.EXPO_PUBLIC_FORGE_OIDC_SCOPES,
     redirectUri: process.env.EXPO_PUBLIC_FORGE_OIDC_REDIRECT_URI,
     postLogoutRedirectUri: process.env.EXPO_PUBLIC_FORGE_OIDC_POST_LOGOUT_REDIRECT_URI,
+    fallbackRedirectUri: process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_REDIRECT_URI,
+    fallbackPostLogoutRedirectUri:
+      process.env.EXPO_PUBLIC_FORGE_OIDC_FALLBACK_POST_LOGOUT_REDIRECT_URI,
   });
 }

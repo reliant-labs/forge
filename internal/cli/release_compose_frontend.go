@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/gitsource"
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -72,7 +74,10 @@ type snapshotFrontend struct {
 	CodeSubdir      string                 `json:"code_subdir,omitempty"`
 	Entity          snapshotFrontendEntity `json:"entity"`
 	RuntimeConfigJS string                 `json:"runtime_config_js"`
-	Release         string                 `json:"release"`
+	// WellKnown freezes the per-env publication overlay explicitly. Entity's
+	// render-only json:"-" field must never be the serialization contract.
+	WellKnown map[string]string `json:"well_known,omitempty"`
+	Release   string            `json:"release"`
 }
 type snapshotFrontendDeclarations struct {
 	Schema    string             `json:"schema"`
@@ -171,6 +176,9 @@ func validateSnapshotFrontend(s release.Snapshot, f snapshotFrontend) error {
 		return err
 	}
 	e := FrontendEntity(f.Entity)
+	if err := v1alpha1.ValidateWellKnown(f.WellKnown); err != nil {
+		return fmt.Errorf("frozen frontend %s: %w", f.Consumer.Workload, err)
+	}
 	if f.Consumer != compositionFrontendKey(e) || platformPublishedFrontend(f.Consumer) || e.Name != f.Consumer.Workload || f.Source != src || f.Release != version || e.Path != "" || e.SourceOverridden || !snapshotSafeSubdir(src.Subdir) || !snapshotSafeSubdir(f.CodeSubdir) || !snapshotSafeSubdir(e.PublicDir) || !snapshotSafeSubdir(e.AssetDir) || e.EnvFile != "" {
 		return fmt.Errorf("frozen frontend %s does not match source binding", f.Consumer.Workload)
 	}
@@ -218,6 +226,11 @@ func validateSnapshotFrontend(s release.Snapshot, f snapshotFrontend) error {
 
 // Called only while constructing a candidate; never from deploy/preflight.
 func captureSnapshotFrontends(ctx context.Context, s *release.Snapshot, base *release.Snapshot, e *KCLEntities, projectDir, env string) error {
+	// Resolve per-env association bytes while constructing the candidate;
+	// promotion must never re-read the current checkout or debug keystore.
+	if err := attachAppLinkFiles(ctx, defaultAppLinkSource(env, projectDir, e, os.Stderr)); err != nil {
+		return err
+	}
 	return captureSnapshotFrontendsWith(ctx, s, base, e, projectDir, env, renderFrontendRuntimeDocsWith)
 }
 func captureSnapshotFrontendsWith(_ context.Context, s *release.Snapshot, base *release.Snapshot, e *KCLEntities, projectDir, env string, render func(string, string, map[string]map[string]string) (map[string]string, error)) error {
@@ -315,7 +328,7 @@ func captureSnapshotFrontendsWith(_ context.Context, s *release.Snapshot, base *
 			// resolver below ALWAYS fetches the artifact's recorded Commit.
 			f.Source = &copy
 		}
-		entry := snapshotFrontend{Consumer: b.Consumer, Source: src, CodeSubdir: codeSubdir, Entity: snapshotFrontendEntity(f), RuntimeConfigJS: docs[f.Name], Release: version}
+		entry := snapshotFrontend{Consumer: b.Consumer, Source: src, CodeSubdir: codeSubdir, Entity: snapshotFrontendEntity(f), RuntimeConfigJS: docs[f.Name], WellKnown: maps.Clone(f.WellKnown), Release: version}
 		if err := validateSnapshotFrontend(*s, entry); err != nil {
 			return err
 		}
@@ -470,6 +483,7 @@ func snapshotPublishFrontendsWith(ctx context.Context, s release.Snapshot, dryRu
 			return fmt.Errorf("frontend exact Git resolution mismatch")
 		}
 		f := FrontendEntity(entry.Entity)
+		f.WellKnown = maps.Clone(entry.WellKnown)
 		f.Path = filepath.Join(res.Dir, filepath.FromSlash(entry.Source.Subdir), filepath.FromSlash(entry.CodeSubdir))
 		f.SourceCommit = entry.Source.Commit
 		f.Release = entry.Release

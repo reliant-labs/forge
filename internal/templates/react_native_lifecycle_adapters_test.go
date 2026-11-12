@@ -75,10 +75,10 @@ func TestNativeQueryLifecycleAdapters(t *testing.T) {
 		}
 	}
 
-	// expo-network ~58.0.4 is the expo@58.0.23 bundledNativeModules.json pin.
+	// expo-network ~58.0.5 is the published expo@58.0.24 bundledNativeModules.json pin.
 	for _, workspace := range []bool{false, true} {
 		m := nativeLifecycleManifest(t, "react-native", workspace)
-		if got, want := m.Dependencies["expo-network"], "~58.0.4"; got != want {
+		if got, want := m.Dependencies["expo-network"], "~58.0.5"; got != want {
 			t.Errorf("workspace=%v: expo-network = %q, want %q", workspace, got, want)
 		}
 	}

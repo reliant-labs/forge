@@ -1299,7 +1299,7 @@ _render_identity = lambda b: Bundle -> any {
             "redirect_uris": a.redirect_uris if a.redirect_uris else None
             "logout_uris": a.logout_uris if a.logout_uris else None
             "login_uri": a.login_uri if a.login_uri else None
-        } for a in _apps]
+        } | ({"associated_domains": a.associated_domains} if a.associated_domains else {}) for a in _apps]
         "consumers": [{
             "workload": c.workload
             "application": c.application if c.application else None
@@ -2897,7 +2897,18 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "runtime_config_spec": _rc_spec
     } | ({"routes": f.routes} if f.routes else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
-      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
+      | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {}) \
+      | _render_frontend_app_links(f)
+}
+
+# The signing identities of a mobile frontend, which the association files of
+# its https universal links are rendered from (see Frontend.apple_team_id).
+# Absent keys for a frontend that declares none, so every other render is
+# byte-identical to before.
+_render_frontend_app_links = lambda f: Frontend -> any {
+    ({"apple_team_id": f.apple_team_id} if f.apple_team_id else {}) \
+      | ({"android_cert_fingerprints": f.android_cert_fingerprints} if f.android_cert_fingerprints else {}) \
+      | ({"associated_site": f.associated_site} if f.associated_site else {})
 }
 
 # Render an EnvVar to its stable dict form. Unset / empty-string

@@ -2693,6 +2693,14 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 		return err
 	}
 
+	// A mobile app's https universal-link association files, rendered for
+	// THIS env and attached to the site that serves their host: written into
+	// the assembled tree like the runtime config document. A no-op for an env
+	// with no associated domains.
+	if err := attachAppLinkFiles(ctx, defaultAppLinkSource(envName, projectDir, entities, os.Stdout)); err != nil {
+		return err
+	}
+
 	// The release this deploy is bound to (runDeploy's kclrender.WithRelease),
 	// handed to every build below as FORGE_RELEASE.
 	release := kclrender.Release(ctx)
@@ -2720,6 +2728,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			}
 			builtDirs = append(builtDirs, f.Path)
 			fb := frontendToFirebase(f)
+			fb.WellKnown = f.WellKnown
 			fb.RuntimeConfigJS = runtimeConfigs[f.Name]
 			fb.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
 			fes = append(fes, fb)
@@ -2730,6 +2739,7 @@ func dispatchFrontendDeploys(ctx context.Context, entities *KCLEntities, project
 			}
 			builtDirs = append(builtDirs, f.Path)
 			ss := frontendToStaticSite(f)
+			ss.WellKnown = f.WellKnown
 			ss.RuntimeConfigJS = runtimeConfigs[f.Name]
 			ss.SourcemapPublisher = sourcemapPublisherFor(projectDir, envName, entities)
 			sites = append(sites, ss)
@@ -2964,6 +2974,7 @@ func frontendToFirebase(f FrontendEntity) deploytarget.FirebaseFrontend {
 		Path:          f.Path,
 		DevRunner:     f.DevRunner,
 		BuildEnv:      buildEnv,
+		WellKnown:     maps.Clone(f.WellKnown),
 		Project:       f.Project,
 		VersionEnvVar: frontendVersionEnvVar(f.Type),
 		Sourcemaps:    f.Sourcemaps,
@@ -3030,6 +3041,7 @@ func frontendToStaticSite(f FrontendEntity) deploytarget.StaticSiteFrontend {
 		}
 	}
 	return deploytarget.StaticSiteFrontend{
+		WellKnown:     maps.Clone(f.WellKnown),
 		Name:          f.Name,
 		Path:          f.Path,
 		DevRunner:     f.DevRunner,

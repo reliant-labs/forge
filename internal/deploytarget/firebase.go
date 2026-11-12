@@ -116,6 +116,11 @@ type FirebaseFrontend struct {
 	// Sourcemaps* constants.
 	Sourcemaps string
 
+	// WellKnown are this ENVIRONMENT's files for the host root's
+	// /.well-known/ (a mobile app's association files), written into the
+	// assembled tree and served as application/json (firebase.json headers).
+	WellKnown map[string]string
+
 	// RuntimeConfigJS is this ENVIRONMENT's rendered runtime config
 	// document — the `window.__FORGE_CONFIG__ = {...}` script the browser
 	// loads before any bundle code runs, produced from the environment's
@@ -162,6 +167,11 @@ type FirebaseHostingSpec struct {
 	// Next.js export). Empty means the build declares none: no immutable
 	// cache rule and no asset retention.
 	AssetDir string
+
+	// wellKnown names the association files served at /.well-known/, which
+	// get a Content-Type header. Unexported: set from the frontend's
+	// WellKnown by withWellKnown, never declared.
+	wellKnown []string
 
 	// KeepAssetReleases is how many releases' hashed assets the live site
 	// serves, the new one included. Zero means the default (10); the floor
@@ -296,6 +306,7 @@ func (p FirebaseProvider) stageInput(fe FirebaseFrontend) StageInput {
 		BasePath:        fe.Spec.BasePath,
 		Bundle:          fe.Spec.Bundle,
 		RuntimeConfigJS: fe.RuntimeConfigJS,
+		WellKnown:       fe.WellKnown,
 		ProjectDir:      p.ProjectDir,
 		StagingRoot:     staging,
 		Project:         fe.Project,
@@ -312,7 +323,7 @@ func (p FirebaseProvider) buildPlan(fe FirebaseFrontend) (firebasePlan, error) {
 		return firebasePlan{}, fmt.Errorf("firebase %s: %w", fe.Name, err)
 	}
 
-	fbJSON, err := renderFirebaseJSON(stage.StagingDir, fe.Spec)
+	fbJSON, err := renderFirebaseJSON(stage.StagingDir, fe.Spec.withWellKnown(fe.WellKnown))
 	if err != nil {
 		return firebasePlan{}, fmt.Errorf("firebase %s: render firebase.json: %w", fe.Name, err)
 	}
@@ -536,7 +547,7 @@ func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
 func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, error) {
 	hosting := map[string]any{
 		"public": filepath.Base(stagingDir),
-		"ignore": []string{"firebase.json", "**/.*", "**/node_modules/**"},
+		"ignore": firebaseUploadIgnores(spec.wellKnown),
 	}
 	// site and target are MUTUALLY EXCLUSIVE in a firebase.json hosting
 	// config — the firebase CLI errors out ("Cannot have both site and
@@ -555,13 +566,31 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 	if len(rewrites) > 0 {
 		hosting["rewrites"] = rewrites
 	}
-	hosting["headers"] = firebaseHeaders(spec.CacheControl, spec.assetRel())
+	hosting["headers"] = append(firebaseHeaders(spec.CacheControl, spec.assetRel()), firebaseWellKnownHeaders(spec.wellKnown)...)
 	doc := map[string]any{"hosting": hosting}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	return string(b) + "\n", nil
+}
+
+// firebaseUploadIgnores is consumed by firebase-tools listFiles: glob("**/*",
+// {dot:true, ignore:[...]}). Ignore entries are exclusions, not gitignore
+// rules, so a negated entry cannot re-include a child of an ignored directory.
+// Replace the dot-directory rule only for a generated association overlay:
+// exclude other root dot entries, every nested dot entry, and all children of
+// .well-known except the exact generated file names (glob extglob exclusion).
+func firebaseUploadIgnores(wellKnown []string) []string {
+	if len(wellKnown) == 0 {
+		return []string{"firebase.json", "**/.*", "**/node_modules/**"}
+	}
+	return []string{
+		"firebase.json", "**/node_modules/**",
+		".!(well-known)", ".!(well-known)/**", "*/**/.*", "*/**/.*/**",
+		".well-known/!(" + strings.Join(wellKnown, "|") + ")",
+		".well-known/*/*", ".well-known/*/*/**",
+	}
 }
 
 // renderFirebaseRC builds the .firebaserc contents: the default project
@@ -612,4 +641,11 @@ func printFirebasePlan(w io.Writer, plan firebasePlan) {
 	}
 	_, _ = fmt.Fprintf(w, "    [DRY-RUN] would exec (cwd %s): %s\n",
 		plan.DeployWorkdir, strings.Join(plan.DeployCmd, " "))
+}
+
+// withWellKnown returns the spec with the names of the files the deploy writes
+// under /.well-known/, so firebase.json pins their Content-Type.
+func (s FirebaseHostingSpec) withWellKnown(files map[string]string) FirebaseHostingSpec {
+	s.wellKnown = sortedWellKnownNames(files)
+	return s
 }

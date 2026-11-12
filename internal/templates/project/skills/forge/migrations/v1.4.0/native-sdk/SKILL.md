@@ -7,8 +7,8 @@ relevance: migration
 # v1.4.0 — Expo SDK 52 to 58
 
 **Use when** an Expo frontend's `package.json` declares `expo` below `~58`. New
-scaffolds are generated on SDK 58 (`expo ~58.0.23`, React and React DOM 19.3.0,
-React Native 0.88.1, Router `~58.0.30`); forge never rewrites an existing app's
+scaffolds are generated on SDK 58 (`expo ~58.0.24`, React and React DOM 19.3.0,
+React Native 0.88.1, Router `~58.0.31`); forge never rewrites an existing app's
 `package.json`, `app.json`, `metro.config.js`, `tsconfig.json`, Jest or ESLint files.
 The SDK versions below are Expo's `bundledNativeModules.json` (sdk-58 branch), not
 `npm latest`.
@@ -31,7 +31,7 @@ npx expo install --check             # "Dependencies are up to date"
 
 Use `expo install expo@~N.0.0 --fix` rather than `pnpm add expo@^N.0.0` followed by
 `expo install --fix`: it is one command, and it leaves expo on the tilde range the
-scaffold uses (`~58.0.23`). (`expo install --fix` also adds the `expo-asset` (SDK 53) and `expo-status-bar`
+scaffold uses (`~58.0.24`). (`expo install --fix` also adds the `expo-asset` (SDK 53) and `expo-status-bar`
 (SDK 56) plugins to `app.json`; a fresh scaffold has neither, so they are optional:
 keep both or remove both.) Then run `typecheck`, `lint`, `test` and an `expo export` for each platform. Delete
 generated `ios/` and `android/` directories (or run `npx pod-install` and apply the

@@ -89,6 +89,12 @@ type StageInput struct {
 	// hosted release ships. See StaticSiteFrontend.StripRuntimeConfig.
 	StripRuntimeConfig bool
 
+	// WellKnown are files written under the HOST ROOT's .well-known/, by
+	// file name, after every copy (never under BasePath: the platforms fetch
+	// them from the root). Per-environment, like RuntimeConfigJS: a mobile
+	// app's association files. See WellKnownContentType.
+	WellKnown map[string]string
+
 	// ProjectDir is the project root that Path and Bundle[].Src resolve
 	// against. Empty means the current working directory.
 	ProjectDir string
@@ -138,6 +144,10 @@ type StagePlan struct {
 	// StripRuntimeConfig removes RuntimeConfigRel from the tree after the
 	// copies rather than writing it.
 	StripRuntimeConfig bool
+
+	// WellKnown is StageInput.WellKnown, written to
+	// <staging>/.well-known/<name> after the copies.
+	WellKnown map[string]string
 
 	// Project, VersionEnvVar, Sourcemaps and BasePath are the StageInput
 	// fields the build-identity and source map steps need. Sourcemaps is
@@ -248,6 +258,7 @@ func buildStagePlan(in StageInput) (StagePlan, error) {
 		RuntimeConfigJS:    in.RuntimeConfigJS,
 		RuntimeConfigRel:   runtimeConfigRel,
 		StripRuntimeConfig: in.StripRuntimeConfig,
+		WellKnown:          in.WellKnown,
 		Project:            in.Project,
 		VersionEnvVar:      in.VersionEnvVar,
 		Sourcemaps:         sourcemaps,
@@ -361,7 +372,7 @@ func assembleStaging(plan StagePlan) error {
 			return fmt.Errorf("write runtime config %s: %w", dst, err)
 		}
 	}
-	return nil
+	return writeWellKnown(plan.StagingDir, plan.WellKnown)
 }
 
 // printStagePlanBuild renders the build-and-assemble half of a dry-run
@@ -399,6 +410,10 @@ func printStagePlanBuild(w io.Writer, plan StagePlan) {
 	if plan.RuntimeConfigJS != "" {
 		_, _ = fmt.Fprintf(w, "      %-18s -> /%s   (runtime config for this environment)\n",
 			"<rendered KCL>", filepath.ToSlash(plan.RuntimeConfigRel))
+	}
+	for _, name := range sortedWellKnownNames(plan.WellKnown) {
+		_, _ = fmt.Fprintf(w, "      %-18s -> /%s/%s   (app association file for this environment)\n",
+			"<rendered KCL>", WellKnownDir, name)
 	}
 }
 

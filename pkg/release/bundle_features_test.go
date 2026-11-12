@@ -26,7 +26,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureDeclaredEnvs:           {"declared_envs"},
 	BundleFeatureShapePlacement:         {"shape.workloads[].unit", "shape.host_infra"},
 	BundleFeatureExternalDatabases:      {"shape.external_databases"},
-	BundleFeatureIdentityNativeApp:      {"shape.identity.applications[].frontend"},
+	BundleFeatureIdentityNativeApp:      {"shape.identity.applications[].frontend", "shape.identity.applications[].associated_domains"},
 	BundleFeatureExternalDatabaseTLS:    {"shape.external_databases[].ca_secret", "shape.external_databases[].ca_configmap", "shape.external_databases[].ca_key", "shape.external_databases[].tls_server_name"},
 	BundleFeatureIdentitySignIn: {
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",

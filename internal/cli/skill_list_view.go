@@ -64,11 +64,44 @@ type skillSection struct {
 	title  string
 	blurb  string
 	groups []skillGroup
+	// printed marks a section already written above the start-here head (the
+	// APPLIES TO YOUR REPO group); it is counted in the footer, not reprinted.
+	printed bool
 }
 
-// writeGroupedSkills renders the default `skill list` view.
-func writeGroupedSkills(w io.Writer, skills []skillMeta) error {
-	startHere, sections := groupSkills(skills)
+// adoptSkillPath is the skill an agent in a repo that is not a forge project
+// loads first; it leads the APPLIES TO YOUR REPO group.
+const adoptSkillPath = "adopt"
+
+// writeGroupedSkillsFor renders the default `skill list` view. Outside a
+// forge project (inProject false) the skills that declare `applies: any`
+// come first, as APPLIES TO YOUR REPO, and leave the sections below — an
+// agent meeting forge in an existing app sees what it can use there before
+// forge's own architecture. In a forge project the view is unchanged.
+func writeGroupedSkillsFor(w io.Writer, skills []skillMeta, inProject bool) error {
+	var applies []skillGroup
+	rest := skills
+	if !inProject {
+		applies, rest = groupAppliesAny(skills)
+	}
+	startHere, sections := groupSkills(rest)
+
+	if len(applies) > 0 {
+		_, _ = fmt.Fprintf(w, "APPLIES TO YOUR REPO — no forge.yaml here; these work in this repo as it is (start with %s)\n", adoptSkillPath)
+		tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+		for _, g := range applies {
+			marker := ""
+			if n := len(g.children); n > 0 {
+				marker = fmt.Sprintf("+%d", n)
+			}
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\n", g.parent.Path, marker, truncateDesc(g.parent.Description))
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(w)
+		sections = append([]skillSection{{title: "APPLIES TO YOUR REPO", groups: applies, printed: true}}, sections...)
+	}
 
 	if len(startHere) > 0 {
 		_, _ = fmt.Fprintf(w, "START HERE — load these before choosing from the catalog\n")
@@ -82,7 +115,7 @@ func writeGroupedSkills(w io.Writer, skills []skillMeta) error {
 	}
 
 	for _, sec := range sections {
-		if len(sec.groups) == 0 {
+		if len(sec.groups) == 0 || sec.printed {
 			continue
 		}
 		_, _ = fmt.Fprintf(w, "\n%s — %s\n", sec.title, sec.blurb)
@@ -216,6 +249,60 @@ func sectionIndex(s skillMeta) int {
 		return 1
 	}
 	return 0
+}
+
+// groupAppliesAny splits out the skills that declare `applies: any`, grouped
+// for the APPLIES TO YOUR REPO head: adopt first, then by path, a sub-skill
+// collapsing into its top-level skill when that one applies too (adopt/linters
+// under adopt). A sub-skill whose parent needs a forge project
+// (observability/tracing-lint) is a row of its own, by full path. rest is
+// every other skill, for the sections below.
+func groupAppliesAny(skills []skillMeta) (groups []skillGroup, rest []skillMeta) {
+	var applies []skillMeta
+	isApplies := map[string]bool{}
+	for _, s := range skills {
+		if s.Applies == SkillAppliesAny {
+			applies = append(applies, s)
+			isApplies[s.Path] = true
+			continue
+		}
+		rest = append(rest, s)
+	}
+	sort.SliceStable(applies, func(i, j int) bool {
+		ai, aj := applies[i].Path == adoptSkillPath, applies[j].Path == adoptSkillPath
+		if ai != aj {
+			return ai
+		}
+		return applies[i].Path < applies[j].Path
+	})
+	index := map[string]int{}
+	for _, s := range applies {
+		if top, _, nested := strings.Cut(s.Path, "/"); nested && isApplies[top] {
+			if i, ok := index[top]; ok {
+				groups[i].children = append(groups[i].children, s)
+				continue
+			}
+		}
+		index[s.Path] = len(groups)
+		groups = append(groups, skillGroup{parent: s})
+	}
+	// A sub-skill of a group that moved up goes with it, collapsed into its
+	// +N: left behind, it would have no parent below and print as a row of
+	// its own (debug/telemetry orphaned without debug).
+	kept := rest[:0:0]
+	for _, s := range rest {
+		if top, _, nested := strings.Cut(s.Path, "/"); nested {
+			if i, ok := index[top]; ok {
+				groups[i].children = append(groups[i].children, s)
+				continue
+			}
+		}
+		kept = append(kept, s)
+	}
+	for i := range groups {
+		sort.Slice(groups[i].children, func(a, b int) bool { return groups[i].children[a].Path < groups[i].children[b].Path })
+	}
+	return groups, kept
 }
 
 // groupParent returns the path of the skill s collapses into, or "" when s is

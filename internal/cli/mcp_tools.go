@@ -30,6 +30,12 @@ type shapesInput struct {
 	Unimplemented bool   `json:"unimplemented,omitempty" jsonschema:"list declared rpcs that have no handler, or only forge's unwired stub"`
 }
 
+type benefitsInput struct {
+	dirInput
+	All      bool   `json:"all,omitempty" jsonschema:"every shipped benefit, not only the ones that apply to dir"`
+	Category string `json:"category,omitempty" jsonschema:"one category: build, data, test, dev, guardrails, security, ship, host, run or agents"`
+}
+
 type skillListInput struct {
 	dirInput
 	Group             string `json:"group,omitempty" jsonschema:"list this skill group's parent and every sub-skill with full paths, e.g. db or observability"`
@@ -68,11 +74,33 @@ type reportBugInput struct {
 	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands run, their output, file paths"`
 }
 
+// addBenefitsTool registers benefits: what forge does for the repo at dir.
+func addBenefitsTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "benefits",
+		Description: "What forge does for the repo at dir, as JSON. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate), to quote to your user. In a forge project: every shipped benefit. Then skill_load name=adopt.",
+		Annotations: readOnly,
+	}, func(in benefitsInput) cmdSpec {
+		args := []string{"project", "benefits", "--json"}
+		if in.All {
+			args = append(args, "--all")
+		}
+		if in.Category != "" {
+			args = append(args, "--category", in.Category)
+		}
+		return cmdSpec{dir: in.Dir, args: args}
+	})
+}
+
 // addForgeTools registers every tool. Read-only ones come first; lint and
 // generate are the two that touch the project (lint: its caches and slot;
 // generate: the generated files), and are annotated so.
 func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
+
+	// benefits is first: it is the one an agent in a repo that is not a forge
+	// project needs, and the instructions send it here.
+	addBenefitsTool(srv, r, readOnly)
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "capabilities",
@@ -133,7 +161,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_list",
-		Description: "The skill catalog (forge-shipped, project and user skills): playbooks for architecture, proto, db, api, services, testing, frontend, deploy and more. Start with skill_load name=forge.",
+		Description: "The skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge.",
 		Annotations: readOnly,
 	}, func(in skillListInput) cmdSpec {
 		args := []string{"skill", "list"}
@@ -159,7 +187,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_load",
-		Description: "Print one skill, authoritative for the forge version running. Call with name=forge first: it is the entry point and names the rest. Skills quote the forge CLI; each command has the tool of the same name here.",
+		Description: "Print one skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: the entry point that names the rest. Skills quote the forge CLI; each command has the tool of the same name here.",
 		Annotations: readOnly,
 	}, func(in skillLoadInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"skill", "load", in.Name}}
@@ -186,7 +214,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "lint",
-		Description: "Run forge lint --quiet: only what failed, then the verdict as the last line. Report-only (never --fix), but it holds a host slot and refreshes caches. A failing gate is reported in the result. Scope to your slice while iterating, run unscoped before merging.",
+		Description: "Run forge lint --quiet: only what failed, then the verdict as the last line. Works in any repo: with no forge.yaml it runs migration safety (db/migrations/*.up.sql), the Go lanes in a Go module, and skips the lanes that need a forge project. Report-only (never --fix), but it holds a host slot and refreshes caches. A failing gate is reported in the result. Scope to your slice while iterating, run unscoped before merging.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(false)},
 	}, func(in lintInput) cmdSpec {
 		args := []string{"lint", "--quiet"}

@@ -6035,6 +6035,73 @@ schema HealthGate:
             "HealthGate.after ${[e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]} are not env names: name the envs under deploy/kcl/ this one follows, e.g. [\"staging\"]"
         isunique(after), "HealthGate.after names an env twice"
 
+_REQUIRED_GATE_RE = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$"
+_RESERVED_GATE_NAMES = ["health_gate", "required_gates", "approval_hook"]
+
+schema RequiredGates:
+    """The checks a promotion to this env must carry, each passed.
+
+        required_gates = forge.RequiredGates {names = ["e2e", "security-scan"]}
+
+    A promotion carries gates with `forge env deploy <env> <v> --gate
+    name=e2e,status=passed` (or a file holding a check's JSON verdict document). One that
+    does not carry a required name is refused `required_gate_missing` (exit
+    4); one that carries it as failed, error or skipped is refused
+    `required_gate_failed` (exit 1). Every gate of a name must be passed.
+
+    Naming a gate is the opt-in: an empty `names` requires nothing, whatever
+    the mode, so the default mode is `enforce`. `audit` admits and records
+    what enforce would refuse. Enforced where the env's ledger lives: by the
+    control plane at promote, inside the promotion's transaction, for an env
+    with one; by forge before the write, for an env without one.
+    """
+    mode: ControlMode = "enforce"
+    names: [str] = []
+
+    check:
+        len([n for n in names if not regex.match(n, _REQUIRED_GATE_RE)]) == 0, \
+            "RequiredGates.names ${[n for n in names if not regex.match(n, _REQUIRED_GATE_RE)]} are not gate names (letters, digits, . _ : / -, at most 64)"
+        len([n for n in names if n in _RESERVED_GATE_NAMES]) == 0, \
+            "RequiredGates.names ${[n for n in names if n in _RESERVED_GATE_NAMES]}: the ledger records its own verdicts under these names; require a check by its own name"
+        isunique(names), "RequiredGates.names names a gate twice"
+
+schema ApprovalHook:
+    """Your approval system, asked before a promotion to this env is written.
+
+        approval_hook = forge.ApprovalHook {url = "https://approvals.acme.dev/forge"}
+        approval_hook = forge.ApprovalHook {argv = ["./scripts/approve.sh"]}   # no control plane
+
+    The hook is sent a `forge.approval-request/v1` JSON document (env,
+    release, from_env, commit, promoter, the promotion's gates, note): the POST
+    body of a `url`, the stdin of an `argv`. It answers a JSON
+    `{"decision": "approve" | "deny" | "pending", "reason": "...", "url": "..."}`
+    (the response body, or the command's stdout). An argv that exits 0 with
+    no output approves; one that exits non-zero denies.
+
+    In `enforce` (the default) anything but approve refuses the promotion:
+    deny `approval_denied` (exit 4), pending `approval_pending` (exit 4; retry
+    once someone approved), and a hook that times out, fails or answers
+    something unreadable is a deny: it fails closed. `--yes` never answers for
+    the hook. `audit` asks, records the answer, and admits.
+
+    `url` is asked by the env's ledger: the control plane for an env with one
+    (an https URL on the public internet), forge otherwise. `argv` runs on the
+    machine running forge, so it is refused for an env with a control plane,
+    where a client-side answer would be one a caller could skip.
+    """
+    mode: ControlMode = "enforce"
+    url?: str
+    argv?: [str]
+    timeout_seconds: int = 10
+
+    check:
+        (url and not argv) or (argv and not url), \
+            "ApprovalHook: name exactly one of url (an endpoint the env's ledger POSTs to) or argv (a command forge runs)"
+        not url or regex.match(url, r"^https://[^/@\s]+(/\S*)?$") or regex.match(url, r"^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$)"), \
+            "ApprovalHook.url ${url} must be an https URL with no credentials in it (http only to localhost)"
+        not argv or len(argv) > 0 and argv[0] != "", "ApprovalHook.argv: name the command to run"
+        1 <= timeout_seconds <= 60, "ApprovalHook.timeout_seconds ${timeout_seconds} must be 1..60: a promote waits on the answer, so a longer approval answers pending and the pipeline retries"
+
 schema DeliveryPolicy:
     """What an env's releases must prove, per control, per env. Set on
     `Bundle.delivery_policy`. UNSET is the default for every control.
@@ -6061,7 +6128,8 @@ schema DeliveryPolicy:
     The resolved policy is recorded in the release shape (`delivery_policy`)
     when any value differs from the default, so the control plane enforces
     what the env declared. A control plane enforces `signing` and
-    `flux_verify` (bundles) and `health_gate`; every other control is
+    `flux_verify` (bundles), `health_gate`, `required_gates` and
+    `approval_hook`; every other control is
     recorded and blocks nothing yet. Load `deploy/delivery-policy`.
     """
     trusted_builder: TrustedBuilder = TrustedBuilder {}
@@ -6081,6 +6149,12 @@ schema DeliveryPolicy:
     # The promotion health gate. UNSET = no gate: the envs a release must be
     # proven good in first are declared, never inferred. See HealthGate.
     health_gate?: HealthGate
+    # The checks a promotion must carry as passed. UNSET = none. See
+    # RequiredGates.
+    required_gates?: RequiredGates
+    # Your approval system, asked before a promotion is written. UNSET = none.
+    # See ApprovalHook.
+    approval_hook?: ApprovalHook
 
     check:
         # An ENFORCING control cannot be satisfied when what it checks is never
@@ -7633,6 +7707,32 @@ schema FluxDelivery:
         apply_identities or delivery_scope == "namespace", \
             "FluxDelivery.delivery_scope = \"cluster\" scopes the derived apply identity, and apply_identities = False renders none (kustomize-controller applies as cluster-admin). Drop one of the two"
 
+_PREVIEW_ENV_RE = r"^[a-z][a-z0-9-]*$"
+_RFC3339_UTC_RE = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+
+schema Preview:
+    """This env is a preview instance of the env `of`: a per-PR or per-branch
+    copy that is deleted once `expires_at` has passed.
+
+        preview = forge.Preview {of = "preview", expires_at = "2026-11-15T12:00:00Z", source = "pr-123"}
+
+    `forge env preview create --pr 123` writes it (and the whole instance env
+    under deploy/kcl/<name>/) from the committed template env; re-running it
+    for the same PR refreshes the expiry. It is recorded in the release shape
+    (`preview`), so a control plane that advertises `shape-preview` deletes a
+    hosted instance once it expires, data included; `forge env gc` deletes the
+    expired ones of a cluster you operate (each instance's namespace carries
+    `forge.dev/preview-of` and `forge.dev/expires-at`). Load `deploy/preview`.
+    """
+    of: str
+    expires_at: str
+    source?: str
+
+    check:
+        regex.match(of, _PREVIEW_ENV_RE), "Preview.of ${of} is not an env name: name the template env under deploy/kcl/"
+        regex.match(expires_at, _RFC3339_UTC_RE), "Preview.expires_at ${expires_at} must be an RFC 3339 UTC time (2026-11-15T12:00:00Z)"
+        not source or len(source) <= 200, "Preview.source is longer than 200 characters"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -7868,6 +7968,16 @@ schema Bundle:
     # declaring one of the three now is what makes that change a flag flip
     # rather than a migration.
     lifecycle?: "local" | "ephemeral"
+    # This env is a PREVIEW INSTANCE of another env (a per-PR or per-branch
+    # copy) and expires. Never written by hand: `forge env preview create`
+    # marks the instance's directory, and forge binds the marker on every
+    # render of it (`-D forge_preview_*`), so the instance's main.k is a
+    # verbatim copy of the template's. See Preview.
+    preview?: Preview = Preview {
+        of = option("forge_preview_of")
+        expires_at = option("forge_preview_expires_at")
+        source = option("forge_preview_source")
+    } if option("forge_preview_of") else None
     # A REAL environment that FORGE applies, for now: every one of its
     # delivery units is applied by `forge env deploy`, and the hub converges
     # none of them. It is a TRANSITIONAL state, not a destination: every real
@@ -8154,6 +8264,8 @@ schema Bundle:
             "Bundle.hub_converges lists a unit twice: ${hub_converges}"
         len([u for u in (hub_converges or []) if u != "base" and u not in [d.name for d in delivery_units]]) == 0, \
             "Bundle.hub_converges names a unit that is not declared: ${[u for u in (hub_converges or []) if u != 'base' and u not in [d.name for d in delivery_units]]} (declared: ${[d.name for d in delivery_units] + ['base']}). A unit exists only if Bundle.delivery_units declares it, or it is the default unit base"
+        not delivery_policy or not control_plane or not delivery_policy.approval_hook or not delivery_policy.approval_hook.argv, \
+            "Bundle.delivery_policy.approval_hook names an argv, but this env has a control_plane: the control plane cannot run your command, and an answer forge collected on this machine is one a caller could skip. Use approval_hook.url (an https endpoint the control plane asks)"
         not delivery_policy or control_plane or len(_delivery_self_hosted_enforced(delivery_policy)) == 0, \
             "Bundle.delivery_policy sets ${', '.join(_delivery_self_hosted_enforced(delivery_policy))} to enforce, but this env has no control_plane: nothing signs a self-hosted env's bundles yet, so nothing could pass. Use \"audit\" or \"off\" (unset is off without a control plane), or deliver through a control plane"
         not hub_converges or control_plane, \

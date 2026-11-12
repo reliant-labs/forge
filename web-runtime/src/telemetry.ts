@@ -56,6 +56,24 @@
 // analytics tier (below): it is per-person recording, which the cookieless
 // tiers never do.
 //
+// ── Withdrawal stops replay now ──────────────────────────────────────────
+//
+// When the tier leaves `full` (revokeAnalyticsConsent, optOutOfAnalytics) or
+// telemetry is disabled, no replay leaves the page from that instant: not a
+// record made afterwards, not one made before it and still buffered, and not
+// a span from stopping the recorder. Stopping the SDK's recorder alone does not
+// do that. It buffers rrweb records and posts them to `${ingest}/v1/logs` on
+// its own 5 s timer (and on unload), so a stopped recorder still sends what it
+// held; and a stop() on an already stopped recorder starts a `record stop`
+// span on its `rum.rr-web` tracer, so stopping twice exported one replay span
+// at the moment of withdrawal. So when replay runs, two gates go in right after
+// init and close for good, BEFORE the one stop: the recorder's record posts
+// (told from other OTLP logs to the same URL by their `rum.rr-web` scope) are
+// answered locally without the network (gateReplayRecords), and its
+// tracer's spans are never ended (gateReplaySpans). The recorder is stopped
+// once however many paths ask. Replay that already left before the withdrawal
+// stays where it is.
+//
 // ── One session per visit, even where cookies are dropped ────────────────
 //
 // The SDK keeps its session id only in the `__rum_sid` cookie and mints a new
@@ -294,7 +312,8 @@ export interface BrowserTelemetryConfig {
    * It runs only in the `full` analytics tier (`analytics: "full"` and
    * grantAnalyticsConsent() before this call): replay records a person, which
    * the cookieless tiers never do. Consent granted later in the page load
-   * starts it on the next one.
+   * starts it on the next one. Consent withdrawn stops it at once, and what
+   * the recorder had buffered is dropped, not sent.
    */
   replay?: boolean;
   /**
@@ -468,7 +487,13 @@ function applyTier(
   hdx: HyperDXClient,
   config: BrowserTelemetryConfig,
   rum: RumSessionStore | null,
+  stopReplay: () => void,
 ): void {
+  if (tier !== "full") {
+    // First, before anything else moves: replay records a person, and it
+    // never outlives the full tier (see "Withdrawal stops replay now").
+    stopReplay();
+  }
   if (tier === "full" && previous !== "full") {
     rum?.moveToDevice(localStorageOrNull());
     attributionWanted = true;
@@ -486,10 +511,346 @@ function applyTier(
       attributionWanted = false;
       stopAttribution();
       hdx.setGlobalAttributes?.({ "visitor.id": "" });
-      // Replay records a person: it never outlives the full tier.
-      hdx.stopSessionRecorder?.();
     }
   }
+}
+
+/** The scope (name, version) the SDK's session recorder records spans under. */
+const SDK_REPLAY_SCOPE = { name: "rum.rr-web", version: "4.0.0" } as const;
+
+/** Where the SDK's recorder posts its records: `${ingest}${this}`. */
+const SDK_REPLAY_LOGS_PATH = "/v1/logs";
+
+/**
+ * Puts both replay exports behind a gate that closes for good when the
+ * returned stop runs, and stops the recorder then, once. See "Withdrawal stops
+ * replay now" in the header. Call it right after hdx.init, with replay on.
+ */
+function gateReplay(hdx: HyperDXClient, ingest: string): () => void {
+  let open = true;
+  const closed = () => !open;
+  gateReplayRecords(`${ingest}${SDK_REPLAY_LOGS_PATH}`, closed);
+  gateReplaySpans(closed);
+  return () => {
+    if (!open) {
+      return;
+    }
+    // Closed before the stop, so nothing the stop emits gets out.
+    open = false;
+    try {
+      hdx.stopSessionRecorder?.();
+    } catch {
+      // Telemetry must never break the app; the gates hold either way.
+    }
+  };
+}
+
+type FetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
+/**
+ * Answers the recorder's record posts itself, without the network, once
+ * `closed()`: the batch it had buffered when replay stopped is dropped, not
+ * sent. Every other request passes through untouched, including other OTLP
+ * logs posted to the same `${ingest}/v1/logs`: a post is the recorder's only
+ * when its OTLP body names the recorder's scope (isReplayBatch). The recorder
+ * calls the global fetch when it exports, so this layer is reached whatever
+ * wraps fetch after it.
+ */
+function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
+  const g = globalThis as { fetch?: FetchFn };
+  const inner = g.fetch;
+  if (typeof inner !== "function") {
+    return;
+  }
+  const target = canonicalUrl(logsUrl, logsUrl);
+  g.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
+    if (
+      !closed() ||
+      target === undefined ||
+      canonicalUrl(requestUrl(args[0]), logsUrl) !== target
+    ) {
+      return inner.apply(this, args);
+    }
+    return isReplayBatch(args[0], args[1]).then((replay) =>
+      replay
+        ? typeof Response === "function"
+          ? new Response(null, { status: 204 })
+          : (undefined as unknown as Response)
+        : inner.apply(this, args),
+    );
+  };
+}
+
+/**
+ * Whether a request carries the recorder's records: an OTLP logs body
+ * (gzip-compressed, as the recorder sends it, or not) one of whose ScopeLogs
+ * has the recorder's scope name, read at its field path (hasReplayScope), so
+ * the same bytes inside a log body or attribute do not count. A gzip body this
+ * browser cannot decompress counts as the recorder's when it is protobuf, the
+ * recorder's shape: after a withdrawal, dropping an unreadable log batch is
+ * the side to err on.
+ */
+async function isReplayBatch(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<boolean> {
+  try {
+    const headers = requestHeaders(input, init);
+    let bytes = await requestBody(input, init);
+    if (!bytes) {
+      return false;
+    }
+    if (/\bgzip\b/i.test(headers?.get("content-encoding") ?? "")) {
+      const plain = await gunzip(bytes);
+      if (!plain) {
+        return /x-protobuf/i.test(headers?.get("content-type") ?? "");
+      }
+      bytes = plain;
+    }
+    return hasReplayScope(bytes);
+  } catch {
+    // Unreadable: not provably the recorder's, so it goes out as asked.
+    return false;
+  }
+}
+
+/** SDK_REPLAY_SCOPE.name as the UTF-8 bytes protobuf carries. */
+const REPLAY_SCOPE_NAME: readonly number[] = Array.from(
+  SDK_REPLAY_SCOPE.name,
+  (c) => c.charCodeAt(0),
+);
+
+/**
+ * Whether an OTLP ExportLogsServiceRequest, protobuf-encoded, has a ScopeLogs
+ * whose scope is the recorder's: the path resource_logs (1) → scope_logs (2)
+ * → scope (1) → name (1), as opentelemetry-proto's logs.proto defines it.
+ * Every other field, a log record's body and attributes included, is skipped
+ * unread. Throws on a body that is not well-formed protobuf.
+ */
+function hasReplayScope(request: Uint8Array): boolean {
+  let found = false;
+  forEachField(request, 1, (resourceLogs) => {
+    forEachField(resourceLogs, 2, (scopeLogs) => {
+      // A scalar field repeated on the wire: the last one is its value.
+      let name: Uint8Array | undefined;
+      forEachField(scopeLogs, 1, (scope) => {
+        forEachField(scope, 1, (n) => {
+          name = n;
+        });
+      });
+      if (name && sameBytes(name, REPLAY_SCOPE_NAME)) {
+        found = true;
+      }
+    });
+  });
+  return found;
+}
+
+/**
+ * Calls `visit` with the payload of every length-delimited field numbered
+ * `field` in `message`, in order, skipping all others by their wire type.
+ * Throws on a truncated or malformed message.
+ */
+function forEachField(
+  message: Uint8Array,
+  field: number,
+  visit: (payload: Uint8Array) => void,
+): void {
+  let at = 0;
+  const varint = (): number => {
+    let value = 0;
+    for (let shift = 0; shift < 64; shift += 7) {
+      if (at >= message.length) {
+        throw new Error("protobuf: truncated varint");
+      }
+      const b = message[at++] as number;
+      // Lengths and tags fit in 53 bits; higher bits only matter to skip.
+      value += (b & 0x7f) * 2 ** shift;
+      if ((b & 0x80) === 0) {
+        return value;
+      }
+    }
+    throw new Error("protobuf: varint too long");
+  };
+  const skip = (n: number) => {
+    if (at + n > message.length) {
+      throw new Error("protobuf: truncated field");
+    }
+    at += n;
+  };
+  while (at < message.length) {
+    const tag = varint();
+    const wire = tag % 8;
+    const number = Math.floor(tag / 8);
+    switch (wire) {
+      case 0:
+        varint();
+        break;
+      case 1:
+        skip(8);
+        break;
+      case 2: {
+        const length = varint();
+        const start = at;
+        skip(length);
+        if (number === field) {
+          visit(message.subarray(start, start + length));
+        }
+        break;
+      }
+      case 5:
+        skip(4);
+        break;
+      default:
+        // Groups (3, 4) are not in OTLP; anything else is not protobuf.
+        throw new Error(`protobuf: wire type ${wire}`);
+    }
+  }
+}
+
+function sameBytes(a: Uint8Array, b: readonly number[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function requestHeaders(
+  input: unknown,
+  init: RequestInit | undefined,
+): Headers | undefined {
+  if (typeof Headers !== "function") {
+    return undefined;
+  }
+  if (init?.headers) {
+    return new Headers(init.headers);
+  }
+  if (typeof Request === "function" && input instanceof Request) {
+    return input.headers;
+  }
+  return undefined;
+}
+
+async function requestBody(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<Uint8Array | undefined> {
+  const body: unknown = init?.body;
+  if (body == null) {
+    if (typeof Request === "function" && input instanceof Request) {
+      return new Uint8Array(await input.clone().arrayBuffer());
+    }
+    return undefined;
+  }
+  if (body instanceof Uint8Array) {
+    return body;
+  }
+  if (body instanceof ArrayBuffer) {
+    return new Uint8Array(body);
+  }
+  if (ArrayBuffer.isView(body)) {
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (typeof Blob === "function" && body instanceof Blob) {
+    return new Uint8Array(await body.arrayBuffer());
+  }
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body);
+  }
+  return undefined;
+}
+
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
+  if (
+    typeof DecompressionStream !== "function" ||
+    typeof Response !== "function"
+  ) {
+    return undefined;
+  }
+  try {
+    const stream = new Response(bytes as BodyInit).body?.pipeThrough(
+      new DecompressionStream("gzip"),
+    );
+    if (!stream) {
+      return undefined;
+    }
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `url` resolved against `base`, without query, fragment or a trailing slash,
+ * so equivalent spellings of the logs endpoint compare equal.
+ */
+function canonicalUrl(url: string | undefined, base: string) {
+  if (url === undefined || typeof URL === "undefined") {
+    return url;
+  }
+  try {
+    const u = new URL(url, base);
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url;
+  }
+}
+
+function requestUrl(input: unknown): string | undefined {
+  try {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (typeof URL !== "undefined" && input instanceof URL) {
+      return input.href;
+    }
+    const url = (input as { url?: unknown } | null)?.url;
+    return typeof url === "string" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Leaves unended, so unexported, every span the recorder's tracer would end
+ * once `closed()`. The SDK's recorder starts a `record stop` span when it is
+ * stopped a second time; any later stop, from the app or the SDK, is caught
+ * here.
+ */
+function gateReplaySpans(closed: () => boolean): void {
+  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
+  const provider = (proxy.getDelegate?.() ?? proxy) as {
+    getTracer?: (name: string, version?: string) => unknown;
+  };
+  const tracer = provider.getTracer?.(
+    SDK_REPLAY_SCOPE.name,
+    SDK_REPLAY_SCOPE.version,
+  ) as StartSpanTracer | undefined;
+  if (!tracer || typeof tracer.startSpan !== "function") {
+    return;
+  }
+  const original = tracer.startSpan;
+  tracer.startSpan = function (
+    this: unknown,
+    name: string,
+    ...rest: unknown[]
+  ): unknown {
+    const span = original.call(this, name, ...rest) as RecordingSpan;
+    if (typeof span?.end !== "function") {
+      return span;
+    }
+    const end = span.end;
+    span.end = function (this: unknown, ...args: unknown[]) {
+      // Never ended, so never exported.
+      return closed() ? undefined : end.apply(this, args);
+    };
+    return span;
+  };
 }
 
 /**
@@ -509,8 +870,18 @@ export function initBrowserTelemetry(
     return Promise.resolve(false);
   }
   // Before anything is held or replayed: the tier decides what track() and
-  // setTelemetryUser may send.
-  setAnalyticsMode(configuredMode(config));
+  // setTelemetryUser may send. A mode raised before init (enableAttribution,
+  // documented safe to call before init, lifts the default "identified" to
+  // "full") is never lowered back by the default: an app that hands the
+  // landing attribution over and then starts telemetry keeps its visitor id.
+  // An explicit configured mode still wins ("off" and "aggregate" are the
+  // app's choice, as in enableAttribution).
+  const configured = configuredMode(config);
+  setAnalyticsMode(
+    configured === "identified" && currentAnalyticsMode() === "full"
+      ? "full"
+      : configured,
+  );
   if (config.analytics === undefined && config.attribution === true) {
     grantAnalyticsConsent();
   }
@@ -566,6 +937,9 @@ async function start(
     // await (a server stream) still opens its span under the context the
     // trace interceptor chose. See interaction-context.ts.
     installFetchContext();
+    // From init on, so the gates hold whatever the recorder does after a
+    // withdrawal (see "Withdrawal stops replay now").
+    const stopReplay = replay ? gateReplay(hdx, ingest) : () => {};
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());
@@ -601,7 +975,7 @@ async function start(
     // session that caused them.
     registerRumSession(() => hdx.getSessionId?.());
     const stopTier = onAnalyticsTierChange((tier, previous) =>
-      applyTier(tier, previous, hdx, config, rum),
+      applyTier(tier, previous, hdx, config, rum, stopReplay),
     );
     let identity: SessionIdentity | null = null;
     let stopRoutes = () => {};
@@ -626,6 +1000,7 @@ async function start(
       // SDK's exporter posts with fetch keepalive, which outlives the page.
       flush: () => flushSdk(),
       disable: () => {
+        stopReplay();
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
@@ -634,7 +1009,6 @@ async function start(
         stopTier();
         stopRoutes();
         identity?.stop();
-        hdx.stopSessionRecorder?.();
       },
     });
     // After the sink, so the first page view and the user go straight to the

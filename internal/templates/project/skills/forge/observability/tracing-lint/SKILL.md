@@ -1,6 +1,7 @@
 ---
 name: observability/tracing-lint
 description: forge lint --tracing — the four rules that keep a request in one trace (log-without-ctx with its autofix, raw-http-client, raw-sql-open, contract-uninstrumented), lint.tracing.log_wrappers for your own logging helpers, and adopting the rules in a large codebase.
+applies: any
 ---
 
 # Observability: keeping a request in one trace (`forge lint --tracing`)

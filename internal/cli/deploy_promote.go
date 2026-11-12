@@ -80,7 +80,10 @@ type promoteOptions struct {
 	Follow *promoteFollowOptions
 
 	Gates []string
-	From  promoteFromOptions
+	// policyGates are the verdicts the env's promotion checks recorded
+	// (promote_policy_checks.go), frozen onto the promotion beside Gates.
+	policyGates []release.Gate
+	From        promoteFromOptions
 	// Targets is the deploy's scope (deployScopeTargets), recorded on the
 	// promotion as release.Promotion.Targets. Nil for an unscoped deploy.
 	Targets []string
@@ -225,6 +228,25 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if err != nil {
 		return err
 	}
+	// The env's promotion checks (delivery_policy.required_gates and
+	// .approval_hook), for an env whose ledger is not a control plane: the
+	// control plane judges its own in the promotion's transaction
+	// (promote_policy_checks.go). Ahead of both promotion paths, like the
+	// floors; the hook is asked only by a run that will write.
+	checkIn := promotionCheckInput{
+		Env: env, Version: version, FromEnv: source.FromEnv, Note: opts.Note, Gates: gates, Dir: projectDir,
+		Promoter: promoterName(promoteActor(opts.Actor)),
+		Ask:      !opts.DryRun && (opts.Confirm == nil || !opts.Confirm.PlanOnly),
+	}
+	if floorTarget != nil {
+		checkIn.Project, checkIn.Commit = floorTarget.Project, floorTarget.Git.Commit
+	}
+	policyGates, err := checkPromotionPolicy(ctx, progressWriter(opts.JSON), projectDir, ledger, checkIn)
+	if err != nil {
+		return err
+	}
+	gates = append(gates, policyGates...)
+	opts.policyGates = policyGates
 	if handled, err := dispatchSnapshotPromotion(ctx, env, version, ledger, opts); handled || err != nil {
 		return err
 	}

@@ -80,6 +80,12 @@ var Reserved = map[string]string{
 	// would deploy images the release never recorded.
 	"forge_workload_image_digests": "each workload's per-slot image references — bound from the release snapshot",
 	"forge_immutable_release":      "refuses any unpinned workload image — bound when rendering a release snapshot",
+	// A preview instance's marker (.forge-preview.json beside its main.k) binds
+	// these on every render of the instance (kclrender.withPreviewDArgs);
+	// the schema reads them into Bundle.preview.
+	"forge_preview_of":         "the template env a preview instance copies — bound from the instance's preview marker",
+	"forge_preview_expires_at": "a preview instance's expiry — bound from the instance's preview marker",
+	"forge_preview_source":     "the PR or branch a preview instance is for — bound from the instance's preview marker",
 }
 
 // Option is one render option a project's KCL declares. Type/Default/Help are

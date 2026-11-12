@@ -316,7 +316,7 @@ func run(workDir, source string, dArgs []string, enterWorkDir bool) ([]byte, err
 		return c.Run(
 			client.WithRunSourceUrl(kpmSourceURL(source)),
 			client.WithWorkDir(workDir),
-			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(dArgs))),
+			client.WithArguments(withKubeconfigDArg(withDevStackDArgs(withPreviewDArgs(source, dArgs)))),
 			client.WithExternalPkgs(externalPkgs),
 			client.WithLogger(os.Stderr),
 		)

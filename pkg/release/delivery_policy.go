@@ -68,6 +68,47 @@ type ShapeDeliveryPolicy struct {
 	// the field still hashes as it did. A reader that predates it never sees
 	// it: it is the bundle feature [BundleFeatureHealthGate].
 	HealthGate *ShapeHealthGate `json:"health_gate,omitempty"`
+	// RequiredGates is forge.RequiredGates: the checks a promotion to this env
+	// must carry as passed. Nil is its default — enforce, naming nothing, so
+	// no requirement — and how a policy that declares none encodes. A reader
+	// that predates it never sees it: it is the bundle feature
+	// [BundleFeaturePromotionChecks].
+	RequiredGates *ShapeRequiredGates `json:"required_gates,omitempty"`
+	// ApprovalHook is forge.ApprovalHook: the team's own approval system,
+	// asked approve / deny / pending before a promotion to this env is
+	// written. Nil is no hook. Bundle feature [BundleFeaturePromotionChecks].
+	ApprovalHook *ShapeApprovalHook `json:"approval_hook,omitempty"`
+}
+
+// ShapeRequiredGates: a promotion to this env is admitted only when it carries
+// a gate of every name in Names, each with status passed (`forge env deploy
+// --gate name=e2e,status=passed`, or a forge `--gate-json` document). A gate
+// that is missing refuses the promotion `required_gate_missing`; one carried
+// as failed, error or skipped refuses it `required_gate_failed`. An empty
+// Names requires nothing, whatever the mode, so naming a gate is the opt-in.
+// `audit` admits and records what enforce would have refused.
+type ShapeRequiredGates struct {
+	Mode  DeliveryMode `json:"mode"`
+	Names []string     `json:"names"`
+}
+
+// ShapeApprovalHook: before a promotion to this env is written, the hook is
+// asked, with an [ApprovalRequest], and answers an [ApprovalDecision]. Exactly
+// one of URL (an HTTPS endpoint the env's ledger POSTs to: the control plane
+// for an env that has one, forge otherwise) or Argv (a command forge runs,
+// with no shell, for an env without a control plane) is set.
+//
+// In `enforce`, anything but approve refuses: deny `approval_denied`, pending
+// `approval_pending`, and a hook that times out, fails or answers something
+// unreadable is a deny (fail closed). `audit` asks, records the answer, and
+// admits. `--yes` never answers for the hook.
+type ShapeApprovalHook struct {
+	Mode DeliveryMode `json:"mode"`
+	URL  string       `json:"url,omitempty"`
+	Argv []string     `json:"argv,omitempty"`
+	// TimeoutSeconds bounds one ask, 1..60. A hook that has not answered by
+	// then is a deny in enforce.
+	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
 // ShapeHealthGate: a promotion of release R to this env is admitted only
@@ -222,6 +263,21 @@ func (p ShapeDeliveryPolicy) canonical() ShapeDeliveryPolicy {
 		if g.Mode == DeliveryEnforce && len(g.After) == 0 {
 			out.HealthGate = nil
 		}
+	}
+	// Likewise the default requirement (enforce, naming nothing).
+	if p.RequiredGates != nil {
+		g := ShapeRequiredGates{Mode: p.RequiredGates.Mode, Names: sortedNonNil(p.RequiredGates.Names)}
+		out.RequiredGates = &g
+		if g.Mode == DeliveryEnforce && len(g.Names) == 0 {
+			out.RequiredGates = nil
+		}
+	}
+	// A hook's argv is ordered (it is a command line), so it is copied, not
+	// sorted.
+	if p.ApprovalHook != nil {
+		h := *p.ApprovalHook
+		h.Argv = append([]string(nil), p.ApprovalHook.Argv...)
+		out.ApprovalHook = &h
 	}
 	return out
 }
@@ -409,6 +465,27 @@ func (p ShapeDeliveryPolicy) validate() error {
 				return bad("health_gate.after names %q twice", env)
 			}
 			envs[env] = true
+		}
+	}
+
+	if g := p.RequiredGates; g != nil {
+		if !g.Mode.Valid() {
+			return bad("required_gates mode %q (expected off, audit or enforce)", g.Mode)
+		}
+		names := map[string]bool{}
+		for _, name := range g.Names {
+			if err := ValidateRequiredGateName(name); err != nil {
+				return bad("required_gates: %v", err)
+			}
+			if names[name] {
+				return bad("required_gates names %q twice", name)
+			}
+			names[name] = true
+		}
+	}
+	if h := p.ApprovalHook; h != nil {
+		if err := h.validate(); err != nil {
+			return bad("approval_hook: %v", err)
 		}
 	}
 	return nil

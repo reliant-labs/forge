@@ -1029,11 +1029,13 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		doc.State = "claimed"
 	}
 	if jsonOut {
-		return emitJSONDocument(struct {
+		out := struct {
 			jsonEnvelope
 			Env   string           `json:"env"`
 			Claim *deployClaimJSON `json:"claim"`
-		}{Env: env, Claim: doc})
+		}{Env: env, Claim: doc}
+		out.stamp(nil)
+		return emitJSONDocument(out)
 	}
 	if doc.State == "claimed" {
 		fmt.Printf("This deploy was claimed: it belongs to someone's account now.\n"+

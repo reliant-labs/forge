@@ -275,9 +275,20 @@ func createPreview(ctx context.Context, projectDir string, f previewKeyFlags, tt
 	if err := atomicfile.WriteFile(filepath.Join(stage, previewHeaderFileName), []byte(header), 0o644); err != nil {
 		return previewCreateDoc{}, err
 	}
-	if err := swapPreviewDir(stage, dstDir); err != nil {
+	// The instance renders only under its own name, so the new copy goes in
+	// place to be checked; until every check passes the previous instance is
+	// kept aside, and any failure puts it back (or removes a new instance), so
+	// a refused refresh never leaves a deployable instance behind.
+	commit, rollback, err := swapPreviewDir(stage, dstDir)
+	if err != nil {
 		return previewCreateDoc{}, err
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = rollback()
+		}
+	}()
 
 	doc := previewCreateDoc{Name: name, Dir: filepath.Join("deploy", "kcl", name), Of: f.from,
 		ExpiresAt: marker.ExpiresAt, Source: marker.Source, Refreshed: refreshed}
@@ -290,12 +301,13 @@ func createPreview(ctx context.Context, projectDir string, f previewKeyFlags, tt
 		return previewCreateDoc{}, fmt.Errorf("render template env %s: %w", f.from, err)
 	}
 	if clash := sharedNamespaces(inst, tmpl); len(clash) > 0 {
-		if !refreshed {
-			_ = os.RemoveAll(dstDir)
-		}
 		return previewCreateDoc{}, cliutil.UserErr("forge env preview create",
 			fmt.Sprintf("preview %s would deploy into %s, which template env %s deploys into too", name, strings.Join(clash, ", "), f.from), "",
 			fmt.Sprintf("give each preview its own namespace: in deploy/kcl/%s/main.k declare the ClusterTarget's `namespace = \"<project>-\" + option(\"env\")`", f.from))
+	}
+	committed = true
+	if err := commit(); err != nil {
+		return previewCreateDoc{}, err
 	}
 	doc.Hosted = inst.HasHosted() || inst.ControlPlane != nil
 	for _, ns := range inst.ManifestNamespaces {
@@ -350,27 +362,40 @@ func stagePreviewCopy(srcDir, kclDir, name string) (string, error) {
 	return stage, nil
 }
 
-// swapPreviewDir replaces dstDir with the staged copy: the old instance is
-// renamed aside, the stage renamed in, and only then is the old one removed,
-// so a failure part-way leaves either the old instance or the new one.
-func swapPreviewDir(stage, dstDir string) error {
+// swapPreviewDir puts the staged copy in place of dstDir, keeping the old
+// instance renamed aside. commit removes the old instance; rollback removes
+// the new copy and renames the old instance back (when there was none, the
+// new copy is simply removed). A failed swap leaves the old instance as it was.
+func swapPreviewDir(stage, dstDir string) (commit, rollback func() error, err error) {
 	old := ""
 	if _, err := os.Stat(dstDir); err == nil {
 		old = stage + ".old"
 		if err := os.Rename(dstDir, old); err != nil {
-			return err
+			return nil, nil, err
 		}
 	}
 	if err := os.Rename(stage, dstDir); err != nil {
 		if old != "" {
 			_ = os.Rename(old, dstDir)
 		}
-		return err
+		return nil, nil, err
 	}
-	if old != "" {
+	commit = func() error {
+		if old == "" {
+			return nil
+		}
 		return os.RemoveAll(old)
 	}
-	return nil
+	rollback = func() error {
+		if err := os.RemoveAll(dstDir); err != nil {
+			return err
+		}
+		if old == "" {
+			return nil
+		}
+		return os.Rename(old, dstDir)
+	}
+	return commit, rollback, nil
 }
 
 // sharedNamespaces are the "<context>/<namespace>" pairs both renders write.

@@ -139,7 +139,7 @@ func TestPreviewCreate(t *testing.T) {
 // refused, and the copy it made is removed.
 func TestPreviewCreateRefusesTheTemplatesNamespace(t *testing.T) {
 	dir := previewProject(t)
-	installPreviewWorld(t, &fakePreviewWorld{fixedNamespace: "demo-staging"}, time.Now())
+	installPreviewWorld(t, &fakePreviewWorld{fixedNamespace: "demo-staging"}, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
 	_, err := createPreview(context.Background(), dir, previewKeyFlags{pr: 3, from: "preview"}, time.Hour)
 	if err == nil || !strings.Contains(err.Error(), "k3d-demo/demo-staging") || !strings.Contains(err.Error(), `option(\"env\")`) && !strings.Contains(err.Error(), `option("env")`) {
 		t.Fatalf("want a namespace clash refusal, got %v", err)
@@ -149,12 +149,65 @@ func TestPreviewCreateRefusesTheTemplatesNamespace(t *testing.T) {
 	}
 }
 
+// A refresh refused after the copy went in (a namespace clash, or a render
+// that fails) puts the previous instance back exactly, expiry included.
+func TestPreviewCreateRefusedRefreshKeepsThePreviousInstance(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		world func(t *testing.T)
+		want  string
+	}{
+		{"namespace clash", func(t *testing.T) {
+			installPreviewWorld(t, &fakePreviewWorld{fixedNamespace: "demo-staging"}, now.Add(24*time.Hour))
+		}, "demo-staging"},
+		{"render fails", func(t *testing.T) {
+			installPreviewWorld(t, &fakePreviewWorld{}, now.Add(24*time.Hour))
+			previewRender = func(context.Context, string, string) (*KCLEntities, error) {
+				return nil, fmt.Errorf("kcl: boom")
+			}
+		}, "boom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := previewProject(t)
+			installPreviewWorld(t, &fakePreviewWorld{}, now)
+			f := previewKeyFlags{pr: 9, from: "preview"}
+			first, err := createPreview(context.Background(), dir, f, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inst := filepath.Join(dir, "deploy", "kcl", "preview-pr-9")
+			if err := os.WriteFile(filepath.Join(dir, "deploy", "kcl", "preview", "main.k"), []byte("# template v2\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			tc.world(t)
+			if _, err := createPreview(context.Background(), dir, f, time.Hour); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want a refusal mentioning %q", err, tc.want)
+			}
+			m, ok, err := kclrender.ReadPreviewMarker(inst)
+			if err != nil || !ok || m.ExpiresAt != first.ExpiresAt {
+				t.Errorf("marker after a refused refresh: %+v %v %v, want the previous expiry %s", m, ok, err, first.ExpiresAt)
+			}
+			if b, _ := os.ReadFile(filepath.Join(inst, "main.k")); string(b) != "# template main\n" {
+				t.Errorf("main.k = %q, want the previous instance's content", b)
+			}
+			entries, _ := os.ReadDir(filepath.Join(dir, "deploy", "kcl"))
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), ".") {
+					t.Errorf("a staging directory was left behind: %s", e.Name())
+				}
+			}
+		})
+	}
+}
+
 func TestPreviewDelete(t *testing.T) {
 	dir := previewProject(t)
 	w := &fakePreviewWorld{hosted: true, namespaces: map[string]map[string]string{
 		"demo-preview-pr-42": {previewOfLabel: "preview"},
 	}}
-	installPreviewWorld(t, w, time.Now())
+	installPreviewWorld(t, w, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
 	f := previewKeyFlags{pr: 42, from: "preview"}
 	// A fresh checkout: the instance directory does not exist yet.
 	if err := deletePreview(context.Background(), dir, f, "preview-pr-42", io.Discard); err != nil {
@@ -172,7 +225,7 @@ func TestPreviewDelete(t *testing.T) {
 
 	// A namespace the preview label does not mark is left alone.
 	w2 := &fakePreviewWorld{namespaces: map[string]map[string]string{"demo-preview-pr-43": {}}}
-	installPreviewWorld(t, w2, time.Now())
+	installPreviewWorld(t, w2, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
 	if err := deletePreview(context.Background(), dir, previewKeyFlags{pr: 43, from: "preview"}, "preview-pr-43", io.Discard); err != nil {
 		t.Fatal(err)
 	}

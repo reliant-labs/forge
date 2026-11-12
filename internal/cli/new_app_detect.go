@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -187,8 +188,8 @@ func refuseCredentialCommands(composeName string, c *composeFile) error {
 // credentialArg is the index of the first argument of argv that carries a
 // credential, or -1: a value credentialValue recognizes (a URL with userinfo
 // or a credential query parameter), a `--name=value` or `NAME=value` whose
-// name credentialName recognizes, or the value after such a flag. An argument
-// that is itself a script (`sh -c "worker --password x"`: it holds
+// name credentialArgName recognizes, or the value after such a flag. An
+// argument that is itself a script (`sh -c "worker --password x"`: it holds
 // whitespace) is split into words and judged the same way, so a credential
 // wrapped in a shell is found too.
 func credentialArg(argv []string) int {
@@ -200,17 +201,40 @@ func credentialArg(argv []string) int {
 			return i
 		}
 		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if !credentialName.MatchString(name) {
+		if !credentialArgName(name) {
 			continue
 		}
 		if hasValue && secretShaped(name, value) {
 			return i
 		}
-		if !hasValue && strings.HasPrefix(a, "-") && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") && secretShaped(name, argv[i+1]) {
+		if !hasValue && strings.HasPrefix(a, "-") && i+1 < len(argv) && flagValue(name, argv[i+1]) && secretShaped(name, argv[i+1]) {
 			return i + 1
 		}
 	}
 	return -1
+}
+
+// credentialArgName reports an argument name credentialName recognizes,
+// reading a flag's '-' as the '_' an environment variable would spell it
+// with: `--api-key` and `--private-key` are API_KEY and PRIVATE_KEY.
+func credentialArgName(name string) bool {
+	return credentialName.MatchString(strings.ReplaceAll(name, "-", "_"))
+}
+
+// flagValue reports whether next, the argument after the credential-named
+// flag name, is that flag's value rather than the next flag. A literal
+// password may begin with '-', so for a flag that takes the credential itself
+// it always is. Only a setting or a file flag (`--token-ttl`, `--token-file`)
+// is followed by another flag instead, and a lone "-" (stdin) is never a
+// credential.
+func flagValue(name, next string) bool {
+	if next == "-" {
+		return false
+	}
+	if strings.HasPrefix(next, "-") {
+		return !settingQualified(name) && !fileValued(name)
+	}
+	return true
 }
 
 // envReferenceRE matches a value that is exactly one environment-variable
@@ -233,14 +257,20 @@ func envReference(v string) bool {
 }
 
 // secretShaped reports whether v, the value of the credential-named argument
-// name, could be the credential itself: not empty and not exactly a reference
-// to one (an environment variable, a file path). A number or a boolean is a
-// credential too (`--password 123456`, `--api-token=123456`) unless name says
-// the argument is a setting about credentials rather than one
-// (settingQualified: `--max-tokens 512`, `--token-ttl 3600`). A literal that
-// merely contains '$' is still a credential.
+// name, could be the credential itself. Everything is, except: an empty
+// value; exactly a reference to an environment variable; a path, after a
+// flag whose name says it takes a file (fileValued: `--token-file
+// /run/secrets/token`), never inferred from the value's first character alone,
+// since a password may begin with '/'; and a number, boolean or duration
+// after a flag whose name says it is a setting about credentials
+// (settingQualified: `--max-tokens 512`, `--token-ttl 1h`), never after the
+// credential itself (`--password 123456`). A literal that merely contains '$'
+// is still a credential.
 func secretShaped(name, v string) bool {
-	if v == "" || envReference(v) || strings.ContainsAny(v[:1], "/.~") {
+	if v == "" || envReference(v) {
+		return false
+	}
+	if fileValued(name) && strings.ContainsAny(v[:1], "/.~") {
 		return false
 	}
 	if !settingQualified(name) {
@@ -252,7 +282,24 @@ func secretShaped(name, v string) bool {
 	if _, err := strconv.ParseBool(v); err == nil {
 		return false
 	}
+	if _, err := time.ParseDuration(v); err == nil {
+		return false
+	}
 	return true
+}
+
+// fileWords are the words that make a credential-named argument take a file
+// holding the credential rather than the credential: `--token-file`,
+// `--password-path`, `--key-dir`, `--client-cert`.
+var fileWords = map[string]bool{
+	"file": true, "path": true, "dir": true, "location": true,
+	"pem": true, "cert": true, "crt": true,
+}
+
+// fileValued reports whether the argument name holds one of fileWords as a
+// whole word (argWords).
+func fileValued(name string) bool {
+	return hasArgWord(name, fileWords)
 }
 
 // settingWords are the words that make a credential-named argument a setting
@@ -269,9 +316,24 @@ var settingWords = map[string]bool{
 }
 
 // settingQualified reports whether the argument name holds one of
-// settingWords as a whole word, splitting on '-', '_', '.' and camelCase:
-// `--user-password` is not qualified by "use", `--maxTokens` is by "max".
+// settingWords as a whole word (argWords): `--user-password` is not
+// qualified by "use", `--maxTokens` is by "max".
 func settingQualified(name string) bool {
+	return hasArgWord(name, settingWords)
+}
+
+// hasArgWord reports whether one of name's words (argWords) is in words.
+func hasArgWord(name string, words map[string]bool) bool {
+	for _, w := range argWords(name) {
+		if words[strings.ToLower(w)] {
+			return true
+		}
+	}
+	return false
+}
+
+// argWords splits an argument name into words on '-', '_', '.' and camelCase.
+func argWords(name string) []string {
 	var words []string
 	start := 0
 	for i := 1; i <= len(name); i++ {
@@ -280,15 +342,12 @@ func settingQualified(name string) bool {
 		if !boundary {
 			continue
 		}
-		words = append(words, strings.Trim(name[start:i], "-_."))
+		if w := strings.Trim(name[start:i], "-_."); w != "" {
+			words = append(words, w)
+		}
 		start = i
 	}
-	for _, w := range words {
-		if settingWords[strings.ToLower(w)] {
-			return true
-		}
-	}
-	return false
+	return words
 }
 
 // credentialBuildArg reports a build arg that carries a credential, by name
@@ -938,7 +997,7 @@ var credentialName = regexp.MustCompile(`(?i)(SECRET|PASSWORD|PASSWD|TOKEN|API_?
 
 // credentialURL matches a URL carrying userinfo (redis://:pass@cache,
 // amqp://user:pass@mq, https://token@host) or a credential in its query.
-var credentialURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/?#\s@]+@|[?&](password|passwd|pwd|token|secret|api_?key|access_?key|sig|signature)=`)
+var credentialURL = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/?#\s@]+@|[?&](password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|sig|signature)=`)
 
 // credentialValue reports a value that carries a credential whatever its
 // variable is named, so it becomes a secret and never a literal in

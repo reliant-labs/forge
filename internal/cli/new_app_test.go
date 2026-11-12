@@ -644,6 +644,19 @@ func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
 		{name: "a numeric env-style password", command: "worker DB_PASSWORD=20262026", refused: true},
 		{name: "a boolean-looking password", command: "worker --password true", refused: true},
 		{name: "a numeric password under a word containing a setting word", command: "worker --user-password 20262026", refused: true},
+		{name: "a hyphenated API key flag", command: "worker --api-key hunter2key", refused: true},
+		{name: "a hyphenated API key flag=value", command: "worker --api-key=hunter2key", refused: true},
+		{name: "a hyphenated private key flag", command: "worker --private-key hunter2pk", refused: true},
+		{name: "a shell-wrapped hyphenated API key", command: `["sh", "-c", "worker --api-key=hunter2key"]`, refused: true},
+		{name: "a hyphenated query credential", command: `["worker", "--upstream", "https://api.example.com/v1?api-key=hunter2query"]`, refused: true},
+		{name: "a password starting with a slash", command: "worker --password /hunter2slash", refused: true},
+		{name: "a password starting with a dot", command: "worker --password=.hunter2dot", refused: true},
+		{name: "a password starting with a tilde", command: "worker --password ~hunter2tilde", refused: true},
+		{name: "a password starting with a dash", command: "worker --password -hunter2dash", refused: true},
+		{name: "a password file", command: "worker --password-file ./secrets/pw"},
+		{name: "a key from the environment", command: "worker --api-key ${API_KEY}"},
+		{name: "a token lifetime as a duration", command: "worker --token-ttl 1h"},
+		{name: "a setting flag followed by another flag", command: "worker --max-tokens --verbose"},
 		{name: "a number", command: "worker --max-tokens 512"},
 		{name: "a camelCase setting", command: "worker --passwordMinLength=12"},
 		{name: "a token lifetime", command: "worker --token-ttl 3600"},
@@ -761,5 +774,18 @@ func TestDetectApp_SharedImageWorkerIgnoresWebPort(t *testing.T) {
 		if strings.Contains(block, "port") || strings.Contains(strings.ToLower(block), "tcp") {
 			t.Errorf("the worker carries a port or tcp probe:\n%s", block)
 		}
+	}
+}
+
+// A credential in a URL's query is recognized under its hyphenated spelling
+// too, whatever the variable holding the URL is called.
+func TestCredentialValueRecognizesHyphenatedQueryKeys(t *testing.T) {
+	for _, v := range []string{"https://api.example.com/v1?api-key=x", "https://s3.example.com/b?access-key=x", "https://api.example.com/v1?api_key=x"} {
+		if !credentialValue(v) {
+			t.Errorf("credentialValue(%q) = false, want true", v)
+		}
+	}
+	if credentialValue("https://api.example.com/v1?monkey=x") {
+		t.Error("credentialValue: a query parameter that only ends in key is not a credential")
 	}
 }

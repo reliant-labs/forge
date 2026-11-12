@@ -1844,8 +1844,9 @@ describe("app.client, visitor.id and user_identified", () => {
       "app.client": "landing",
     });
     expect(store.size).toBe(0);
+    // This page load's campaign is passed on; no visitor id is.
     expect(index.withAttribution("https://app.example.com/")).toBe(
-      "https://app.example.com/",
+      "https://app.example.com/?utm_source=news",
     );
     k.setTelemetryUser("user-1");
     expect(

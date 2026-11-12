@@ -186,6 +186,7 @@ export { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
  */
 export {
   disableTelemetry,
+  setTelemetryOrg,
   setTelemetryUser,
   track,
   type TrackProps,

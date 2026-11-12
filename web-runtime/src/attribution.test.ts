@@ -248,3 +248,38 @@ describe("detectAppClient", () => {
     expect(a.detectAppClient()).toBe("electron");
   });
 });
+
+describe("referrer host and entry page", () => {
+  it("parses ref and lp from the URL, shaped", async () => {
+    const { a } = await load();
+    expect(a.parseAttribution("?ref=News.YCombinator.com&lp=/products/forge")).toEqual({
+      ref: "news.ycombinator.com",
+      lp: "/products/forge",
+    });
+    expect(a.parseAttribution("?ref=https://evil.example/x&lp=/a?b")).toEqual({});
+  });
+
+  it("takes them from the visit itself: another site's host, this page's path", async () => {
+    const { a } = await load();
+    expect(
+      a.selfVisit("https://news.ycombinator.com/item?id=1", { host: "example.com", pathname: "/pricing" }),
+    ).toEqual({ ref: "news.ycombinator.com", lp: "/pricing" });
+    expect(a.selfVisit("https://example.com/blog", { host: "example.com", pathname: "/" })).toEqual({ lp: "/" });
+    expect(a.selfVisit("not a url", { host: "example.com", pathname: "/x?y" })).toEqual({});
+  });
+});
+
+describe("setTelemetryOrg", () => {
+  it("stamps the org beside the user, only in the identified and full tiers", async () => {
+    const { k } = await load();
+    const orgs: string[] = [];
+    k.setTelemetrySink({ track() {}, setUser() {}, setOrg: (id) => orgs.push(id), disable() {} });
+    k.setTelemetryOrg("org-1");
+    expect(orgs).toEqual(["org-1"]);
+    k.setTelemetryOrg("someone@example.com"); // never an email
+    expect(orgs).toEqual(["org-1", ""]);
+    k.setAnalyticsMode("aggregate");
+    k.setTelemetryOrg("org-2");
+    expect(orgs).toEqual(["org-1", ""]); // aggregate carries no ids
+  });
+});

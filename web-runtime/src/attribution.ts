@@ -6,12 +6,18 @@
 //
 // ── The seam ─────────────────────────────────────────────────────────────
 //
-// A marketing site links to the app with `?rid=<visitor id>&utm_*=…`
+// A marketing site links to the app with `?rid=<visitor id>&utm_*=…&ref=…&lp=…`
 // (withAttribution). The app, on startup, reads those parameters into storage
 // (captureAttribution) and adopts `rid` as its visitor id. When a user signs in
 // (setTelemetryUser) the runtime emits one `user_identified` event carrying
-// `visitor_id` and the stored utm_* values, so a funnel can join "visited the
-// site" to "is user X". Every event also carries `visitor.id` and `app.client`.
+// `visitor_id`, the stored utm_* values, `referrer_host` and `landing_path`, so
+// a funnel can join "visited the site" to "is user X" and say where the visit
+// came from. Every event also carries `visitor.id` and `app.client`.
+//
+// `ref` is the host of the page that sent the visitor to the site (never the
+// URL) and `lp` the site's entry page (a path, never a query). The first page
+// load that captures with neither in its URL takes them from itself: the
+// referrer's host when it is another site, and its own path.
 //
 // ── Consent ──────────────────────────────────────────────────────────────
 //
@@ -33,7 +39,11 @@
 // to the FIRST campaign that brought a visitor passes `attributionTouch:
 // "first"`: once a record is stored, later visits never replace it.
 // Dependency-free apart from track.ts, like it.
-import { isTelemetryDisabled, noteAnalyticsStorageKey } from "./track.js";
+import {
+  analyticsTier,
+  isTelemetryDisabled,
+  noteAnalyticsStorageKey,
+} from "./track.js";
 
 /** localStorage key of the captured `{rid, utm_*}` record. */
 export const ATTRIBUTION_STORAGE_KEY = "forge.attribution";
@@ -54,13 +64,28 @@ export const UTM_PARAMS = [
 /** Longest captured attribution value. */
 export const MAX_ATTRIBUTION_VALUE_CHARS = 128;
 
+/** A referrer host (`ref`): a hostname, never a URL. */
+const REF_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+/** An entry page (`lp`): a path, no query or fragment. */
+const LP_RE = /^\/[A-Za-z0-9/_.~-]{0,127}$/;
+
+function cleanRef(value: string | null | undefined): string | undefined {
+  const v = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return v.length <= 253 && REF_RE.test(v) ? v : undefined;
+}
+
+function cleanPath(value: string | null | undefined): string | undefined {
+  const v = typeof value === "string" ? value.trim() : "";
+  return LP_RE.test(v) ? v : undefined;
+}
+
 /** A visitor id: opaque, URL-safe. Anything else in `rid` is ignored. */
 const RID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 /** Where an event came from. `landing` is for a marketing site; pass any string for another kind. */
 export type AppClient = "web" | "electron" | "landing" | (string & {});
 
-export type Attribution = { rid?: string } & Partial<
+export type Attribution = { rid?: string; ref?: string; lp?: string } & Partial<
   Record<(typeof UTM_PARAMS)[number], string>
 >;
 
@@ -154,7 +179,45 @@ export function parseAttribution(search: string): Attribution {
       out[key] = v;
     }
   }
+  const ref = cleanRef(params.get("ref"));
+  if (ref) {
+    out.ref = ref;
+  }
+  const lp = cleanPath(params.get("lp"));
+  if (lp) {
+    out.lp = lp;
+  }
   return out;
+}
+
+/**
+ * The visit itself, for a page load whose URL names no `ref` or `lp`: the
+ * referrer's host when it is another site, and this page's path. Pure;
+ * exported for tests.
+ */
+export function selfVisit(referrer: string, location: { host: string; pathname: string }): Attribution {
+  const out: Attribution = {};
+  try {
+    const host = referrer ? new URL(referrer).host.toLowerCase() : "";
+    const ref = host && host !== location.host.toLowerCase() ? cleanRef(host.replace(/:\d+$/, "")) : undefined;
+    if (ref) {
+      out.ref = ref;
+    }
+  } catch {
+    // An unparseable referrer is no referrer.
+  }
+  const lp = cleanPath(location.pathname);
+  if (lp) {
+    out.lp = lp;
+  }
+  return out;
+}
+
+function currentVisit(): Attribution {
+  if (typeof window === "undefined" || !window.location) {
+    return {};
+  }
+  return selfVisit(typeof document !== "undefined" ? document.referrer : "", window.location);
 }
 
 function readStoredAttribution(): Attribution {
@@ -177,6 +240,14 @@ function readStoredAttribution(): Attribution {
       if (v) {
         out[key] = v;
       }
+    }
+    const ref = cleanRef((parsed as Record<string, string>).ref);
+    if (ref) {
+      out.ref = ref;
+    }
+    const lp = cleanPath((parsed as Record<string, string>).lp);
+    if (lp) {
+      out.lp = lp;
     }
     return out;
   } catch {
@@ -212,10 +283,18 @@ export function captureAttribution(options?: {
   const search =
     options?.search ??
     (typeof window !== "undefined" ? (window.location?.search ?? "") : "");
-  const incoming = parseAttribution(search);
-  const keep =
-    options?.touch === "first" &&
-    Object.keys(readStoredAttribution()).length > 0;
+  let incoming = parseAttribution(search);
+  const stored = readStoredAttribution();
+  if (incoming.ref === undefined && incoming.lp === undefined) {
+    // Where the visit itself came from, when the URL does not say: a
+    // campaign link's visit, a new external referral, or the first visit
+    // of all. A same-site page load with nothing new keeps what is stored.
+    const self = currentVisit();
+    if (Object.keys(incoming).length > 0 || self.ref || Object.keys(stored).length === 0) {
+      incoming = { ...incoming, ...self };
+    }
+  }
+  const keep = options?.touch === "first" && Object.keys(stored).length > 0;
   if (Object.keys(incoming).length > 0 && !keep) {
     memory = incoming;
     write(ATTRIBUTION_STORAGE_KEY, JSON.stringify(incoming));
@@ -269,15 +348,21 @@ export function visitorId(): string {
 }
 
 /**
- * Append this browser's `rid` and captured `utm_*` to an outbound URL — the
- * link from a marketing site to the app, or to a download. Parameters the URL
- * already carries are kept. Returns the URL unchanged when it is not an
- * absolute http(s) URL, before telemetry has started, and after
- * disableTelemetry() — so it is safe to wrap every outbound link.
+ * Append this browser's `rid`, captured `utm_*`, `ref` and `lp` to an outbound
+ * URL — the link from a marketing site to the app, or to a download.
+ * Parameters the URL already carries are kept. Below the `full` tier nothing
+ * identifying is added and nothing is stored: only this page load's `utm_*`
+ * and the referrer's host (`ref`), which say where the visit came from and not
+ * who made it. Returns the URL unchanged when it is not an absolute http(s)
+ * URL, in the `off` tier and after disableTelemetry() — so it is safe to wrap
+ * every outbound link.
  */
 export function withAttribution(url: string): string {
-  if (!active || isTelemetryDisabled() || typeof url !== "string") {
+  if (isTelemetryDisabled() || typeof url !== "string") {
     return url;
+  }
+  if (!active) {
+    return analyticsTier() === "off" ? url : withVisitOnly(url);
   }
   let parsed: URL;
   try {
@@ -299,6 +384,48 @@ export function withAttribution(url: string): string {
     if (v) {
       add[key] = v;
     }
+  }
+  if (stored.ref) {
+    add.ref = stored.ref;
+  }
+  if (stored.lp) {
+    add.lp = stored.lp;
+  }
+  for (const [key, value] of Object.entries(add)) {
+    if (!parsed.searchParams.has(key)) {
+      parsed.searchParams.set(key, value);
+    }
+  }
+  return parsed.toString();
+}
+
+// withAttribution below the full tier: this page load's utm_* and the
+// referrer's host, from the URL and document, never storage, never an id.
+function withVisitOnly(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return url;
+  }
+  const here =
+    typeof window !== "undefined" ? parseAttribution(window.location?.search ?? "") : {};
+  const add: Record<string, string> = {};
+  for (const key of UTM_PARAMS) {
+    const v = here[key];
+    if (v) {
+      add[key] = v;
+    }
+  }
+  const ref = here.ref ?? currentVisit().ref;
+  if (ref) {
+    add.ref = ref;
+  }
+  if (Object.keys(add).length === 0) {
+    return url;
   }
   for (const [key, value] of Object.entries(add)) {
     if (!parsed.searchParams.has(key)) {
@@ -331,6 +458,12 @@ export function takeIdentifyProps(
     if (v) {
       props[key] = v;
     }
+  }
+  if (stored.ref) {
+    props.referrer_host = stored.ref;
+  }
+  if (stored.lp) {
+    props.landing_path = stored.lp;
   }
   return props;
 }

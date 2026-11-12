@@ -75,6 +75,10 @@ func alertDefaultsInput(projectDir string) (obsdash.AlertInput, bool, error) {
 // project pins it to (composedAlertSources). A composed source whose
 // inventory cannot be read is reported on warn, which may be nil.
 //
+// An env with uptime checks records the uptime defaults over them even when
+// the project has no generated defaults (a static site): they read only the
+// env's render.
+//
 // An env whose observability is off or undeclared evaluates nothing, so it
 // records nothing.
 func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName string, e *KCLEntities) ([]release.ShapeAlert, []release.ShapeAlertRoute, error) {
@@ -96,6 +100,11 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 	if err := obsdash.ValidateAlertTuning(tuning); err != nil {
 		return nil, nil, err
 	}
+	var disabled []string
+	if e.Observability.Policy != nil {
+		disabled = e.Observability.Policy.Disabled
+	}
+	uptimeChecks := uptimeCheckNames(e)
 	var defaults []obsdash.AlertRule
 	if have {
 		sources, notes, err := composedAlertSources(ctx, projectDir, e)
@@ -112,14 +121,14 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 			return nil, nil, err
 		}
 		in.Services = obsdash.ComposeAlertServices(in.Services, composed...)
-		for _, c := range e.UptimeChecks {
-			in.UptimeChecks = append(in.UptimeChecks, c.Name)
-		}
-		var disabled []string
-		if e.Observability.Policy != nil {
-			disabled = e.Observability.Policy.Disabled
-		}
+		in.UptimeChecks = uptimeChecks
 		if defaults, _, err = obsdash.ResolveAlertDefaultsFor(in, envName, tuning, disabled); err != nil {
+			return nil, nil, err
+		}
+	} else if len(uptimeChecks) > 0 {
+		// No generated defaults (a static site writes none), but the uptime
+		// defaults read only the env's own uptime checks.
+		if defaults, _, err = obsdash.ResolveEnvAlertDefaultsFor(obsdash.AlertInput{UptimeChecks: uptimeChecks}, envName, tuning, disabled); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -163,6 +172,16 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		routes = defaultAlertRoutes()
 	}
 	return out, routes, nil
+}
+
+// uptimeCheckNames are the names of the env's uptime checks, in the order
+// the render resolved them.
+func uptimeCheckNames(e *KCLEntities) []string {
+	var out []string
+	for _, c := range e.UptimeChecks {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 // defaultAlertRoutes is where alerts go until the author routes them: in-app

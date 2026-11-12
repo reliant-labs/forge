@@ -66,10 +66,11 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // TestWebRuntimePublishedRangeTracksPackage
 // holds its major.minor to package.json's. Generated service-hooks require
 // createMutationCall/createServiceMutations, first published in 0.13.5, and
-// the auth context imports identifyUser (#2065), first published in 0.13.11;
-// a compatible latest release is insufficient when a lockfile retains the
-// floor.
-const webRuntimePublishedRange = "^0.13.11"
+// the auth context imports identifyUser (#2065), first published in 0.13.11,
+// and 0.13.12 is the first release that exports no session replay after
+// analytics consent is withdrawn (#2159); a compatible latest release is
+// insufficient when a lockfile retains the floor.
+const webRuntimePublishedRange = "^0.13.12"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

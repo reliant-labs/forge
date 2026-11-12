@@ -518,8 +518,8 @@ benefits:
       A migration that a populated table or the previous release cannot survive
       passes every test on a fresh database and fails on the first real one.
     scope: any
-    adopt: 'Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`.'
-    estimate: '~5 min'
+    adopt: "Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`."
+    estimate: "~5 min"
     evidence:
       - command: lint --migration-safety
       - command: ci migration-safety
@@ -811,8 +811,8 @@ benefits:
     headline: true
     use: "`testkit.NewPostgresDB(t)`, or `pkg/pgtest` directly."
     scope: any
-    adopt: '`go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.'
-    estimate: '~15 min'
+    adopt: "`go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker."
+    estimate: "~15 min"
     evidence:
       - library: pkg/pgtest
       - library: pkg/testkit
@@ -867,8 +867,8 @@ benefits:
       a test ever runs, and `go test -short -json ./... | forge ci test-budget`
       after.
     scope: any
-    adopt: 'In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).'
-    estimate: '~15 min'
+    adopt: "In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`)."
+    estimate: "~15 min"
     evidence:
       - command: lint --slow-tests
       - path: internal/linter/slowtest
@@ -899,8 +899,8 @@ benefits:
       tests that blew the fast-tier budget.
     availability: forge
     scope: any
-    adopt: 'In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.'
-    estimate: '~5 min'
+    adopt: "In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`."
+    estimate: "~5 min"
     evidence:
       - command: ci test-budget
       - path: internal/cli/ci_test_budget.go
@@ -913,8 +913,8 @@ benefits:
       their pass proves nothing.
     availability: forge
     scope: any
-    adopt: 'In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.'
-    estimate: '~5 min'
+    adopt: "In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`."
+    estimate: "~5 min"
     evidence:
       - command: ci verify-test-run
 
@@ -1262,8 +1262,8 @@ benefits:
       `off` identically in every output mode. Never pipe `forge lint` through
       `head`: the verdict is the last line.
     scope: any
-    adopt: 'Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.'
-    estimate: '~10 min'
+    adopt: "Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why."
+    estimate: "~10 min"
     evidence:
       - command: lint
       - command: lint --scope
@@ -1504,8 +1504,8 @@ benefits:
     availability: forge
     use: "`date_trunc('day', col, 'UTC')`"
     scope: any
-    adopt: 'Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).'
-    estimate: '~5 min'
+    adopt: "Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them)."
+    estimate: "~5 min"
     evidence:
       - command: lint --time-bucketing
       - skill: db/time-buckets
@@ -2007,8 +2007,8 @@ benefits:
       where the code may already be right; a logging wrapper of your own joins
       through `lint.tracing.log_wrappers`.
     scope: any
-    adopt: 'In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.'
-    estimate: '~10 min'
+    adopt: "In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form."
+    estimate: "~10 min"
     evidence:
       - path: internal/cli/lint/lint_rules.go
       - command: lint --tracing
@@ -2429,8 +2429,8 @@ benefits:
       `canceled`), so ERROR means "we must act" and alerts, forwarders and
       post-deploy checks can trust it.
     scope: any
-    adopt: 'In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.'
-    estimate: '~30 min'
+    adopt: "In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers."
+    estimate: "~30 min"
     evidence:
       - library: pkg/svcerr
       - command: fix connect-errors
@@ -3507,8 +3507,8 @@ benefits:
       `forge project new site --kind site`, or `forge project new --in-place
       --kind site`.
     scope: any
-    adopt: 'In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.'
-    estimate: '~10 min'
+    adopt: "In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone."
+    estimate: "~10 min"
     evidence:
       - command: project new
       - path: internal/codegen/frontend_config_ts.go
@@ -4182,8 +4182,8 @@ benefits:
       OpenTelemetry SDK to configure.
     availability: forge
     scope: any
-    adopt: '`npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.'
-    estimate: '~15 min'
+    adopt: "`npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start."
+    estimate: "~15 min"
     evidence:
       - path: web-runtime/src/node.ts
       - path: web-runtime/README.md
@@ -4296,8 +4296,8 @@ benefits:
     use: "`forge skill load forge`"
     why: "A skill that disagrees with the project is reported as a forge bug."
     scope: any
-    adopt: '`forge skill load adopt`: what forge can do for this repo, with estimates to quote.'
-    estimate: '~2 min'
+    adopt: "`forge skill load adopt`: what forge can do for this repo, with estimates to quote."
+    estimate: "~2 min"
     evidence:
       - command: skill load
       - command: skill search
@@ -4313,8 +4313,8 @@ benefits:
     availability: forge
     headline: true
     scope: any
-    adopt: '`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.'
-    estimate: '~2 min'
+    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool."
+    estimate: "~2 min"
     evidence:
       - command: mcp
       - path: internal/cli/mcp_tools.go
@@ -4330,8 +4330,8 @@ benefits:
       the code.
     availability: forge
     scope: any
-    adopt: '`forge project capabilities` in any directory.'
-    estimate: '~2 min'
+    adopt: "`forge project capabilities` in any directory."
+    estimate: "~2 min"
     evidence:
       - command: project capabilities
       - command: project annotations
@@ -4357,8 +4357,8 @@ benefits:
       existing utility instead of re-implementing it.
     availability: forge
     scope: any
-    adopt: 'In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.'
-    estimate: '~2 min'
+    adopt: "In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`."
+    estimate: "~2 min"
     evidence:
       - command: project libraries
 
@@ -4395,8 +4395,8 @@ benefits:
       what would go.
     availability: forge
     scope: any
-    adopt: '`forge report-bug --dry-run …` prints exactly what would be sent.'
-    estimate: '~2 min'
+    adopt: "`forge report-bug --dry-run …` prints exactly what would be sent."
+    estimate: "~2 min"
     evidence:
       - command: report-bug
       - path: internal/cli/report_bug.go

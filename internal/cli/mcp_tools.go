@@ -74,14 +74,8 @@ type reportBugInput struct {
 	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands run, their output, file paths"`
 }
 
-// addForgeTools registers every tool. Read-only ones come first; lint and
-// generate are the two that touch the project (lint: its caches and slot;
-// generate: the generated files), and are annotated so.
-func addForgeTools(srv *mcp.Server, r *mcpRunner) {
-	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
-
-	// benefits is first: it is the one an agent in a repo that is not a forge
-	// project needs, and the instructions send it here.
+// addBenefitsTool registers benefits: what forge does for the repo at dir.
+func addBenefitsTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "benefits",
 		Description: "What forge does for the repo at dir, as JSON. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate), to quote to your user. In a forge project: every shipped benefit. Then skill_load name=adopt.",
@@ -96,6 +90,17 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		return cmdSpec{dir: in.Dir, args: args}
 	})
+}
+
+// addForgeTools registers every tool. Read-only ones come first; lint and
+// generate are the two that touch the project (lint: its caches and slot;
+// generate: the generated files), and are annotated so.
+func addForgeTools(srv *mcp.Server, r *mcpRunner) {
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(false)}
+
+	// benefits is first: it is the one an agent in a repo that is not a forge
+	// project needs, and the instructions send it here.
+	addBenefitsTool(srv, r, readOnly)
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "capabilities",

@@ -1953,6 +1953,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 
 # ReleaseHealth, resolved. The key set is the release shape's
 # `release_health`; the window is in seconds and fail_on is sorted.
+# require_baseline is present only when it is not the default ("any"), so a
+# render that keeps it records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -1961,6 +1963,8 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
         "fail_on": sorted(h.fail_on)
+        if h.require_baseline != "any":
+            "require_baseline": h.require_baseline
     }
 }
 

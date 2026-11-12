@@ -104,12 +104,13 @@ type Deadline struct {
 	// (ChainDeps.Logger), or slog.Default() outside a chain.
 	Logger *slog.Logger
 
-	// RetryableExpiry logs this slot's own budget expiring at WARN, a
-	// retryable server failure, instead of ERROR. The record still says
-	// deadline=server. It restores how forge logged the expiry before it
-	// became a server error; leave it false unless a service's budget
-	// routinely expires by design and must not page.
-	RetryableExpiry bool
+	// ExpiryIsError logs this slot's own budget expiring at ERROR, a server
+	// error that pages and counts against release health, instead of the
+	// retryable WARN it is by default. Either way the record says
+	// deadline=server, so a query can tell it from a caller's deadline. Set
+	// it when the call needing longer than the server allows it is a fault
+	// someone must fix: retrying it fails the same way.
+	ExpiryIsError bool
 }
 
 // SlowCall is one watchdog report of a unary RPC that ran past SlowAfter.
@@ -205,7 +206,7 @@ func (d Deadline) budget(procedure string, streaming bool) (time.Duration, bool)
 // bound applies the budget to ctx, with this slot's own cause so a layer
 // can tell the server's deadline from the caller's (deadlineOf).
 func (d Deadline) bound(ctx context.Context, b time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeoutCause(ctx, b, serverBudget{retryable: d.RetryableExpiry})
+	return context.WithTimeoutCause(ctx, b, serverBudget{pages: d.ExpiryIsError})
 }
 
 // WrapUnary bounds the call by its budget and watches it.
@@ -245,15 +246,18 @@ func (d Deadline) WrapStreamingHandler(next connect.StreamingHandlerFunc) connec
 
 // Whose deadline a DeadlineExceeded ran into.
 //
-// The server's own budget expiring (this slot's) is a server error: the
-// server could not do the work in the time it allows itself, and a call that
-// always needs longer fails every retry the same way. The caller's deadline
+// The server's own budget expiring (this slot's) and the caller's deadline
 // (Connect-Timeout-Ms, grpc-timeout, applied by connect before any
-// interceptor) expiring first is the caller's choice: a retryable server
-// failure, as before. The two are told apart by the context's cause, which
-// the slot sets on its own budget, and the slot marks the error it returns
-// so the layers outside it — logging, metrics — read the answer from the
-// error alone. Layers inside it (audit, components) read the context.
+// interceptor) expiring first are both retryable server failures (WARN) by
+// default, as they always were; the record's deadline attribute says which.
+// Deadline.ExpiryIsError makes the server's own expiry an ERROR: the server
+// could not do the work in the time it allows itself, and a call that always
+// needs longer fails every retry the same way. A caller's deadline is the
+// caller's choice and stays WARN. The two are told apart by the context's
+// cause, which the slot sets on its own budget, and the slot marks the error
+// it returns so the layers outside it — logging, metrics — read the answer
+// from the error alone. Layers inside it (audit, components) read the
+// context.
 
 // DeadlineKey is the attribute a DeadlineExceeded failure's record carries
 // when its origin is known: DeadlineServer or DeadlineCaller.
@@ -272,14 +276,14 @@ const (
 	deadlineUnknown deadlineOrigin = iota // not a deadline, or not one the call's context bounded
 	deadlineCaller
 	deadlineServer
-	deadlineServerRetryable // the server's, under Deadline.RetryableExpiry
+	deadlineServerError // the server's, under Deadline.ExpiryIsError
 )
 
 func (o deadlineOrigin) String() string {
 	switch o {
 	case deadlineCaller:
 		return DeadlineCaller
-	case deadlineServer, deadlineServerRetryable:
+	case deadlineServer, deadlineServerError:
 		return DeadlineServer
 	}
 	return ""
@@ -287,7 +291,7 @@ func (o deadlineOrigin) String() string {
 
 // serverBudget is the cause a Deadline's budget expires with. It is a
 // context.DeadlineExceeded to everything that asks errors.Is.
-type serverBudget struct{ retryable bool }
+type serverBudget struct{ pages bool }
 
 func (serverBudget) Error() string { return "server deadline exceeded" }
 func (serverBudget) Unwrap() error { return context.DeadlineExceeded }
@@ -321,8 +325,8 @@ func deadlineOf(ctx context.Context, err error) deadlineOrigin {
 	}
 	var budget serverBudget
 	if errors.As(context.Cause(ctx), &budget) {
-		if budget.retryable {
-			return deadlineServerRetryable
+		if budget.pages {
+			return deadlineServerError
 		}
 		return deadlineServer
 	}

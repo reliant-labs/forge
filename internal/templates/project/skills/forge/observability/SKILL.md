@@ -90,21 +90,23 @@ not from how the call site spelled its log line:
 
 | `error_class` | what it means | example | level | pages (ERROR → alerts) |
 |---|---|---|---|---|
-| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error; DeadlineExceeded when **the server's own deadline** expired (`deadline=server`) | ERROR | yes |
-| `server` | server-side, but "retry", not "page" | DeadlineExceeded when **the caller's** deadline expired first (`deadline=caller`) or its origin is unknown, Aborted, Unimplemented | WARN | no |
+| `server` | our system failed, or cannot tell that it did not | Internal, Unknown, DataLoss, Unavailable, any unrecognised error; DeadlineExceeded when **the server's own deadline** expired (`deadline=server`) under `serverkit.Deadline{ExpiryIsError: true}` | ERROR | yes |
+| `server` | server-side, but "retry", not "page" | DeadlineExceeded (`deadline=server` by default, `deadline=caller`, or origin unknown), Aborted, Unimplemented | WARN | no |
 | `user` | the caller or user must act; the system behaved correctly | InvalidArgument, NotFound, AlreadyExists, PermissionDenied, Unauthenticated, FailedPrecondition (InsufficientBalance, Expired), OutOfRange, ResourceExhausted (PlanLimit), or `svcerr.WithClass(err, svcerr.ClassUser)` | INFO (`observe.WithUserErrorLevel`) | no |
 | `canceled` | one end went away: the caller, or this replica draining for a rollout | `context.Canceled`, CodeCanceled, `svcerr.ErrServerDraining` / `svcerr.Draining(…)` | same as `user` | no |
 
 **Whose deadline.** A `DeadlineExceeded` record says whose deadline ran out,
 in `deadline`. `server` means the chain's Deadline slot (`serverkit.Deadline`:
 30s per unary rpc by default, per rpc from `(forge.v1.method).timeout`)
-expired: the server could not finish in the time it allows itself, and a
-call that always needs longer fails every retry the same way, so it is ERROR.
-`caller` means the caller's own deadline (`Connect-Timeout-Ms`,
-`grpc-timeout`) expired first: the caller's choice, WARN. A client that hung
-up is a cancellation, not a deadline. A service whose budget expiring is
-routine and must not page sets `serverkit.Deadline{RetryableExpiry: true}`:
-the record keeps `deadline=server` and goes back to WARN.
+expired: the server could not finish in the time it allows itself. It is
+WARN by default, a retryable server failure, so `forge obs issues` still
+groups it. A service where a call needing longer than its budget is a fault
+someone must fix — it fails every retry the same way — opts in with
+`serverkit.Deadline{ExpiryIsError: true}`: the record keeps
+`deadline=server` and is logged at ERROR, so it pages and counts against
+release health. `caller` means the caller's own deadline
+(`Connect-Timeout-Ms`, `grpc-timeout`) expired first: the caller's choice,
+WARN either way. A client that hung up is a cancellation, not a deadline.
 
 **Issues are wider than ERROR.** `forge obs issues` groups every ERROR record
 and every WARN server failure (`error_class=server`, except `deadline=caller`),

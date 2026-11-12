@@ -132,9 +132,9 @@ const ServerErrorFilterSQL = `SeverityNumber >= 17 AND ResourceAttributes['rum.s
 
 // sqlWarnServerFailure selects a WARN record the error-class policy classed a
 // server failure: a retryable one (Aborted, Unimplemented, a server deadline
-// logged under Deadline.RetryableExpiry), or a hand-written WARN carrying a
-// server-fault error. A caller's own deadline (deadline=caller) is the
-// caller's choice and is not one.
+// logged at WARN, the default without Deadline.ExpiryIsError), or a
+// hand-written WARN carrying a server-fault error. A caller's own deadline
+// (deadline=caller) is the caller's choice and is not one.
 const sqlWarnServerFailure = `(SeverityNumber >= 13 AND LogAttributes['` + LogKeyErrorClass + `'] = 'server' AND LogAttributes['` + LogKeyDeadline + `'] != 'caller')`
 
 // ServerFailureFilterSQL selects the server failures `forge obs issues` groups

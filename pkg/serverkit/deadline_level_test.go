@@ -19,10 +19,11 @@ import (
 	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
-// Whose deadline a DeadlineExceeded ran into decides how loud it is. The
-// server's own budget expiring means the server could not do the work in the
-// time it allows itself — retrying will not help a call that always needs
-// more — so it is an ERROR, with deadline=server. A caller's shorter deadline
+// Whose deadline a DeadlineExceeded ran into is on the record. The server's
+// own budget expiring is a retryable WARN with deadline=server by default, as
+// it always was; under Deadline.ExpiryIsError it is an ERROR — the server
+// could not do the work in the time it allows itself, and retrying will not
+// help a call that always needs more. A caller's shorter deadline
 // (Connect-Timeout-Ms) is the caller's choice and stays WARN, with
 // deadline=caller; a caller that went away stays a cancellation.
 
@@ -125,7 +126,9 @@ func wantRecord(t *testing.T, r map[string]any, level, deadline, class string) {
 }
 
 func TestServerDeadlineExpiryIsAServerError(t *testing.T) {
-	url, logs, _ := stallServer(t, serverkit.ChainDeps{Deadline: serverkit.Deadline{Unary: 50 * time.Millisecond, SlowAfter: -1}})
+	url, logs, _ := stallServer(t, serverkit.ChainDeps{Deadline: serverkit.Deadline{
+		Unary: 50 * time.Millisecond, SlowAfter: -1, ExpiryIsError: true,
+	}})
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+deadlineUnary)
 	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
 	if connect.CodeOf(err) != connect.CodeDeadlineExceeded {
@@ -140,7 +143,7 @@ func TestServerDeadlineExpiryIsAServerError(t *testing.T) {
 
 func TestServerDeadlineExpiryOfAStreamIsAServerError(t *testing.T) {
 	url, logs, _ := stallServer(t, serverkit.ChainDeps{Deadline: serverkit.Deadline{
-		Procedures: map[string]time.Duration{deadlineStream: 50 * time.Millisecond}, SlowAfter: -1,
+		Procedures: map[string]time.Duration{deadlineStream: 50 * time.Millisecond}, SlowAfter: -1, ExpiryIsError: true,
 	}})
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+deadlineStream)
 	st, err := client.CallServerStream(context.Background(), connect.NewRequest(&emptypb.Empty{}))
@@ -152,11 +155,11 @@ func TestServerDeadlineExpiryOfAStreamIsAServerError(t *testing.T) {
 	wantRecord(t, logs.record(t, "stream failed"), "ERROR", "server", "server")
 }
 
-// RetryableExpiry is the opt-out: the record keeps deadline=server but is
-// logged at WARN, as before.
-func TestServerDeadlineExpiryRetryableOptOut(t *testing.T) {
+// Without ExpiryIsError the server's own expiry is logged at WARN, as it
+// always was, and the record says deadline=server.
+func TestServerDeadlineExpiryStaysWarnByDefault(t *testing.T) {
 	url, logs, _ := stallServer(t, serverkit.ChainDeps{Deadline: serverkit.Deadline{
-		Unary: 50 * time.Millisecond, SlowAfter: -1, RetryableExpiry: true,
+		Unary: 50 * time.Millisecond, SlowAfter: -1,
 	}})
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+deadlineUnary)
 	_, _ = client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))

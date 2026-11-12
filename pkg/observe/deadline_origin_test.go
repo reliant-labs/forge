@@ -32,8 +32,8 @@ func TestDeadlineSlotMarksItsOwnExpiry(t *testing.T) {
 		slot Deadline
 		want slog.Level
 	}{
-		"default":           {Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1}, slog.LevelError},
-		"retryable opt-out": {Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1, RetryableExpiry: true}, slog.LevelWarn},
+		"default":        {Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1}, slog.LevelWarn},
+		"error (opt-in)": {Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1, ExpiryIsError: true}, slog.LevelError},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := tc.slot.WrapUnary(stall)(context.Background(), connect.NewRequest(&emptypb.Empty{}))
@@ -83,7 +83,8 @@ func TestInnerTimeoutHasNoDeadlineOrigin(t *testing.T) {
 
 // A layer inside the slot sees the error before the slot marks it, and reads
 // the origin from its context: a component failing under the server's
-// budget is an ERROR with deadline=server, as is LevelForErrorContext.
+// budget (ExpiryIsError) is an ERROR with deadline=server, as is
+// LevelForErrorContext.
 func TestInsideTheSlotTheContextTellsTheOrigin(t *testing.T) {
 	var buf bytes.Buffer
 	mw := LogMiddleware(slog.New(slog.NewJSONHandler(&buf, nil)), slog.LevelDebug)
@@ -96,7 +97,7 @@ func TestInsideTheSlotTheContextTellsTheOrigin(t *testing.T) {
 		levelInside = LevelForErrorContext(ctx, err)
 		return nil, err
 	}
-	_, _ = Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1}.WrapUnary(handler)(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	_, _ = Deadline{Unary: 20 * time.Millisecond, SlowAfter: -1, ExpiryIsError: true}.WrapUnary(handler)(context.Background(), connect.NewRequest(&emptypb.Empty{}))
 	if levelInside != slog.LevelError {
 		t.Errorf("LevelForErrorContext inside the slot = %v, want ERROR", levelInside)
 	}

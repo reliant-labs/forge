@@ -27,7 +27,7 @@ func TestServerIssuesGroupsByTheSfp1FingerprintOverServerErrors(t *testing.T) {
 
 // An error issue is a server failure an agent triages: every ERROR, and a WARN
 // the error-class policy classed server (a retryable failure such as Aborted,
-// or a server deadline logged at WARN by Deadline.RetryableExpiry). A caller's
+// or a server deadline logged at WARN without Deadline.ExpiryIsError). A caller's
 // own deadline is the caller's choice and stays out. ServerErrorFilterSQL is
 // what counts as an error (release health, error counts) and does not widen.
 func TestServerIssuesIncludeWarnServerFailures(t *testing.T) {

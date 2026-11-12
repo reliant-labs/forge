@@ -171,12 +171,10 @@ func requestIDFromCtxOrHeader(ctx context.Context, header interface{ Get(string)
 //
 //   - ERROR: the server failed and someone should be paged. Internal (a
 //     bug or a dependency down), Unavailable (a dependency refused),
-//     DataLoss, Unknown, the server's own deadline (Deadline) expiring,
-//     and any error nothing classified.
-//   - WARN: a server-side failure that says "retry", not "page" — a
-//     caller's deadline expiring (or one whose origin is unknown), Aborted,
-//     Unimplemented, and the server's deadline under
-//     Deadline.RetryableExpiry.
+//     DataLoss, Unknown, the server's own deadline (Deadline) expiring
+//     under Deadline.ExpiryIsError, and any error nothing classified.
+//   - WARN: a server-side failure that says "retry", not "page" —
+//     DeadlineExceeded (otherwise), Aborted, Unimplemented.
 //   - DefaultUserErrorLevel (INFO): the request failed for a reason the
 //     server correctly detected, or the caller went away. NotFound,
 //     InvalidArgument, PermissionDenied, FailedPrecondition,
@@ -197,8 +195,8 @@ func LevelForError(err error) slog.Level {
 
 // LevelForErrorContext is LevelForError for a failure logged under ctx, the
 // context the failed call ran with: it tells the server's own deadline
-// expiring (ERROR) from a caller's (WARN) even before the Deadline slot has
-// marked the error.
+// expiring (ERROR under Deadline.ExpiryIsError) from a caller's (WARN) even
+// before the Deadline slot has marked the error.
 func LevelForErrorContext(ctx context.Context, err error) slog.Level {
 	return defaultPolicy.failureLevel(ctx, err, defaultPolicy.classOf(err))
 }

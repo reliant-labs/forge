@@ -12,9 +12,10 @@
 // svcerr.Classify decides who must act; this file turns that into a level:
 //
 //	class     level                                   reaches Sentry / ERROR alerts
-//	server    ERROR (WARN: Aborted, Unimplemented and  yes, at ERROR
-//	          a CALLER's deadline — retryable, not a
-//	          page; the server's own deadline is ERROR)
+//	server    ERROR (WARN: DeadlineExceeded, Aborted,  yes, at ERROR
+//	          Unimplemented — retryable, not a page;
+//	          the server's own deadline is ERROR under
+//	          Deadline.ExpiryIsError)
 //	user      DefaultUserErrorLevel (INFO), or         no
 //	          WithUserErrorLevel
 //	canceled  the same level as user                  no
@@ -98,17 +99,16 @@ func (p *logPolicy) failureLevel(ctx context.Context, err error, class svcerr.Cl
 	case svcerr.ClassUser, svcerr.ClassCanceled:
 		return p.userLevel
 	}
-	// A server fault. The retryable codes are WARN: a caller's deadline or
-	// a transaction conflict says "try again", and an unimplemented rpc is a
-	// gap in the API, not an outage. The server's own deadline expiring is
-	// not retryable — the call needs more time than the server allows it —
-	// so it pages, unless Deadline.RetryableExpiry says otherwise (see
+	// A server fault. The retryable codes are WARN: a deadline or a
+	// transaction conflict says "try again", and an unimplemented rpc is a
+	// gap in the API, not an outage. The server's own deadline expiring
+	// pages when its Deadline slot opted in (Deadline.ExpiryIsError, see
 	// deadline.go). Everything else — Internal, Unknown, DataLoss,
 	// Unavailable, an unrecognised error, and a 4xx explicitly marked
 	// ClassServer — is a page.
 	switch svcerr.Code(err) {
 	case connect.CodeDeadlineExceeded:
-		if deadlineOf(ctx, err) == deadlineServer {
+		if deadlineOf(ctx, err) == deadlineServerError {
 			return slog.LevelError
 		}
 		return slog.LevelWarn

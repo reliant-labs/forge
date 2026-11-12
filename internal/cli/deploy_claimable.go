@@ -217,9 +217,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err := refuseClaimableFlags(envName, f); err != nil {
 			return err
 		}
-		if err := adoptBeforeClaimableDeploy(ctx, out); err != nil {
+		adopted, err := adoptBeforeClaimableDeploy(ctx, out)
+		if err != nil {
 			return err
 		}
+		ctx = withAdoptedPaths(ctx, adopted)
 		projectDir := projectDirForKCL()
 		entities, err := RenderKCL(ctx, projectDir, envName)
 		if err != nil {

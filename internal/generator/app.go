@@ -159,6 +159,7 @@ func RenderAppScaffold(spec AppSpec, harness Harness) ([]AppFile, error) {
 	files := []AppFile{
 		{"forge.yaml", append([]byte(header), data...)},
 		{"deploy/kcl/kcl.mod", kclMod},
+		{kclModLockPath, nil},
 		{"deploy/kcl/workloads.k", []byte(appWorkloadsK(spec))},
 		{"deploy/kcl/" + codegen.DevEnvName + "/main.k", []byte(appDevMainK(spec))},
 	}

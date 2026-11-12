@@ -14,8 +14,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
@@ -96,28 +98,109 @@ func (p claimableAdoptionPlan) failure(out string, err error) (msg, next string)
 // in a directory that is not yet a forge project adopts the app in place, or
 // refuses with the MCP tool's message. A directory inside a project (forge.yaml
 // in a parent) is left to the ordinary path.
-func adoptBeforeClaimableDeploy(ctx context.Context, out io.Writer) error {
+//
+// It returns the paths (relative to the app's root) it created or changed, for
+// the release decision to name: git has not seen them yet.
+func adoptBeforeClaimableDeploy(ctx context.Context, out io.Writer) ([]string, error) {
 	if _, err := findProjectConfigFile(); !errors.Is(err, ErrProjectConfigNotFound) {
-		return nil
+		return nil, nil
 	}
 	dir, err := cmdutil.ResolutionRoot()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	plan := planClaimableAdoption(dir, "")
 	if plan.refusal != nil {
-		return &claimableRefusal{exit: exitWrong, code: cloud.CodeInvalidArgument, msg: plan.refusal.msg, next: []string{plan.refusal.next}}
+		return nil, &claimableRefusal{exit: exitWrong, code: cloud.CodeInvalidArgument, msg: plan.refusal.msg, next: []string{plan.refusal.next}}
 	}
 	if !plan.adopt {
-		return nil
+		return nil, nil
 	}
+	before := snapshotAppFiles(dir)
 	captured, err := runProjectNewQuietly(ctx, dir, plan.flags)
 	if err != nil {
 		msg, next := plan.failure(captured, err)
-		return &claimableRefusal{exit: exitCodeForError(err), code: cloud.CodeInvalidArgument, msg: msg + "\n  run instead: " + next, next: []string{next}}
+		return nil, &claimableRefusal{exit: exitCodeForError(err), code: cloud.CodeInvalidArgument, msg: msg + "\n  run instead: " + next, next: []string{next}}
 	}
 	_, _ = fmt.Fprintf(out, "  Adopted this app as forge project %q: added forge.yaml and deploy/kcl/ (and forge's .gitignore entries); the app's own files are untouched.\n", plan.name)
-	return nil
+	return changedAppFiles(dir, before), nil
+}
+
+// skipSnapshotDir holds what no adoption touches and a walk should not pay for.
+var skipSnapshotDir = map[string]bool{".git": true, "node_modules": true, "dist": true, "out": true, ".next": true, ".forge": true}
+
+// snapshotAppFiles maps each file under dir to its size and mtime.
+func snapshotAppFiles(dir string) map[string]string {
+	snap := map[string]string{}
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if p != dir && skipSnapshotDir[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		snap[filepath.ToSlash(rel)] = fmt.Sprintf("%d/%d", info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return snap
+}
+
+// changedAppFiles lists what is new or different under dir since before.
+func changedAppFiles(dir string, before map[string]string) []string {
+	var out []string
+	for rel, sig := range snapshotAppFiles(dir) {
+		if prev, ok := before[rel]; !ok || prev != sig {
+			out = append(out, rel)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+type adoptedPathsKey struct{}
+
+// withAdoptedPaths carries the files this run's adoption wrote down to the
+// release decision.
+func withAdoptedPaths(ctx context.Context, paths []string) context.Context {
+	if len(paths) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, adoptedPathsKey{}, paths)
+}
+
+func adoptedPathsFrom(ctx context.Context) []string {
+	paths, _ := ctx.Value(adoptedPathsKey{}).([]string)
+	return paths
+}
+
+// onlyAdoptedPaths reports whether every uncommitted path is one adoption just
+// wrote. changes are relative to the git top, adopted to the app's root, so a
+// project below the top matches by suffix.
+func onlyAdoptedPaths(changes, adopted []string) bool {
+	if len(changes) == 0 || len(adopted) == 0 {
+		return false
+	}
+	for _, c := range changes {
+		found := false
+		for _, a := range adopted {
+			if c == a || strings.HasSuffix(c, "/"+a) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // runProjectNewQuietly runs `forge project new <args>` and returns what it

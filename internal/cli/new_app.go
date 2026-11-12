@@ -109,7 +109,7 @@ func runNewApp(in newAppInput) error {
 		return err
 	}
 	fmt.Printf("✅ App '%s' adopted at %s\n", name, targetPath)
-	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod, deploy/kcl/workloads.k, deploy/kcl/{dev,staging,prod}/main.k — no Go, none of the app's files changed")
+	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod (+ its empty kcl.mod.lock), deploy/kcl/workloads.k, deploy/kcl/{dev,staging,prod}/main.k — no Go, none of the app's files changed")
 	fmt.Println()
 	printAppDetection(det)
 	for _, line := range inPlaceMergeSummary(merged) {
@@ -172,7 +172,7 @@ func appNextSteps(det *appDetection, written bool) []string {
 			lines = append(lines, "  "+c+"   (dev runs the app on the host)")
 		}
 	}
-	step(cli+" env render dev", "what dev runs; the first render writes deploy/kcl/kcl.mod.lock (commit it)")
+	step(cli+" env render dev", "what dev runs (deploy/kcl/kcl.mod.lock was written for you: commit it with the rest)")
 	step(cli+" env up dev", "run it; logs in .forge/logs/dev/")
 	step(cli+" env render staging", "the hosted spec")
 	for _, s := range det.secrets {

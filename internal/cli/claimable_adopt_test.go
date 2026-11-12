@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -153,15 +154,19 @@ func TestAdoptBeforeClaimableDeploy_PrintsOneLine(t *testing.T) {
 	resetCmdRoute(t)
 
 	var out strings.Builder
-	if err := adoptBeforeClaimableDeploy(context.Background(), &out); err != nil {
+	adopted, err := adoptBeforeClaimableDeploy(context.Background(), &out)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Contains(adopted, "forge.yaml") || !slices.Contains(adopted, "deploy/kcl/prod/main.k") || slices.Contains(adopted, "package.json") || slices.Contains(adopted, "index.html") {
+		t.Errorf("the adopted paths name the app's files or miss forge's: %v", adopted)
 	}
 	got := strings.TrimRight(out.String(), "\n")
 	if strings.Count(got, "\n") != 0 || !strings.Contains(got, "forge.yaml and deploy/kcl/") || !strings.Contains(got, "untouched") {
 		t.Errorf("want one line naming forge.yaml and deploy/kcl/ and saying the app is untouched, got:\n%s", got)
 	}
 	var again strings.Builder
-	if err := adoptBeforeClaimableDeploy(context.Background(), &again); err != nil || again.Len() != 0 {
+	if again2, err := adoptBeforeClaimableDeploy(context.Background(), &again); err != nil || again.Len() != 0 || len(again2) != 0 {
 		t.Errorf("a second run adopts nothing and prints nothing: %q, %v", again.String(), err)
 	}
 }

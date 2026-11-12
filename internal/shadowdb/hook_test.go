@@ -195,10 +195,12 @@ func TestShadowExcludesTheToolsLedger(t *testing.T) {
 	}{
 		{name: "default", ledger: "goose_db_version"},
 		{name: "-table", args: []string{"-table", "app_versions"}, ledger: "app_versions"},
+		{name: "schema-qualified -table", args: []string{"-table", "public.app_versions"}, ledger: "public.app_versions"},
+		{name: "quoted, in its own schema", args: []string{"-table", `"Hist"."Goose Versions"`}, ledger: `"Hist"."Goose Versions"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, migDir := hookProjectAs(t, "goose", tc.args, map[string]string{
-				"00000_ledger.sql":  "CREATE TABLE " + tc.ledger + " (id serial PRIMARY KEY, version_id bigint NOT NULL, is_applied boolean NOT NULL)",
+				"00000_ledger.sql":  `CREATE SCHEMA IF NOT EXISTS "Hist"; CREATE TABLE ` + tc.ledger + " (id serial PRIMARY KEY, version_id bigint NOT NULL, is_applied boolean NOT NULL)",
 				"00001_widgets.sql": "CREATE TABLE widgets (id TEXT PRIMARY KEY)",
 			})
 			if got := strings.Join(tableNames(t, dir, migDir), ","); got != "widgets" {

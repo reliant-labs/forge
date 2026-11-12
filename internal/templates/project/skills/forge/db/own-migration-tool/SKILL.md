@@ -118,8 +118,9 @@ is printed as your tool wrote it; forge does not parse it. The tool must be on
 
 Your tool's history table — `goose_db_version`, `flyway_schema_history`,
 `atlas_schema_revisions`, `schema_migrations`, or the one your argv names with
-`-table`, `--migrations-table`, `x-migrations-table` or `--revisions-schema` —
-is its bookkeeping: the ORM never projects it, and `forge db seed` never plans
+`-table`, `--migrations-table`, `x-migrations-table` or `--revisions-schema`,
+schema-qualified and quoted as postgres reads them — is its bookkeeping: the
+ORM never projects it, and `forge db seed` never plans
 or resets it.
 
 The shadow apply is cached per run on a digest of every file in the directory

@@ -67,8 +67,25 @@ func TestPreset_PasswordNeverReachesTheArgv(t *testing.T) {
 	if err != nil || v["GOOSE_DRIVER"] != "postgres" || v["GOOSE_DBSTRING"] != "postgres://u:p@h/db" {
 		t.Errorf("goose's connection must come from GOOSE_DRIVER/GOOSE_DBSTRING: %v %v", v, err)
 	}
-	if v, _ := Vars(Hook{Tool: config.MigrationToolGoose}, Invocation{DSN: "postgres://u@h/db"}); v["PGPASSWORD"] != "" || v["FORGE_DATABASE_URL_NO_PASSWORD"] != "postgres://u@h/db" {
-		t.Errorf("a URL with no password is passed through unchanged: %v", v)
+	if v, _ := Vars(Hook{Tool: config.MigrationToolGoose}, Invocation{DSN: "postgres://u@h/db"}); hasKey(v, "PGPASSWORD") || v["FORGE_DATABASE_URL_NO_PASSWORD"] != "postgres://u@h/db" {
+		t.Errorf("a URL with no password is passed through unchanged, and PGPASSWORD is left to the environment: %v", v)
+	}
+	// libpq's precedence: a password query parameter overrides the userinfo
+	// password, even when it is empty.
+	for dsn, want := range map[string]string{
+		"postgres://u:userinfo-pw@h/db?password=query-pw": "query-pw",
+		"postgres://u:userinfo-pw@h/db?password=":         "",
+	} {
+		v, err := Vars(Hook{Tool: config.MigrationToolGolangMigrate}, Invocation{DSN: dsn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := v["PGPASSWORD"]; !ok || got != want {
+			t.Errorf("%s: PGPASSWORD = %q (set %v), want %q", dsn, got, ok, want)
+		}
+		if got := v["FORGE_DATABASE_URL_NO_PASSWORD"]; got != "postgres://u@h/db" {
+			t.Errorf("%s: FORGE_DATABASE_URL_NO_PASSWORD = %q, want postgres://u@h/db", dsn, got)
+		}
 	}
 }
 
@@ -193,6 +210,10 @@ func TestLedgerTables(t *testing.T) {
 		{tool: config.MigrationToolGoose, schema: "public", table: "goose_db_version", want: true},
 		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", "app_versions", "up"}, schema: "public", table: "app_versions", want: true},
 		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table=app_versions", "up"}, schema: "public", table: "app_versions", want: true},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", "public.app_versions", "up"}, schema: "public", table: "app_versions", want: true},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", "public.app_versions", "up"}, schema: "other", table: "app_versions"},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", "Hist.App_Versions", "up"}, schema: "hist", table: "app_versions", want: true},
+		{tool: config.MigrationToolGoose, apply: []string{"goose", "-table", `"Hist"."Goose ""v"" .table"`, "up"}, schema: "Hist", table: `Goose "v" .table`, want: true},
 		{tool: config.MigrationToolGoose, schema: "public", table: "widgets"},
 		{tool: config.MigrationToolFlyway, schema: "public", table: "flyway_schema_history", want: true},
 		{tool: config.MigrationToolFlyway, apply: []string{"flyway", "-table=history", "migrate"}, schema: "public", table: "history", want: true},
@@ -208,4 +229,9 @@ func TestLedgerTables(t *testing.T) {
 			t.Errorf("%s %v: IsLedgerTable(%s.%s) = %v, want %v", tc.tool, tc.apply, tc.schema, tc.table, got, tc.want)
 		}
 	}
+}
+
+func hasKey(m map[string]string, k string) bool {
+	_, ok := m[k]
+	return ok
 }

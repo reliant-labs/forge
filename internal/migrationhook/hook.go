@@ -225,7 +225,7 @@ func run(ctx context.Context, h Hook, what string, argv []string, inv Invocation
 // password, for a tool that must be handed the URL as an argument: the argv
 // then names the database without the credential (Preset).
 func Vars(h Hook, inv Invocation) (map[string]string, error) {
-	noPassword, password := splitDSNPassword(inv.DSN)
+	noPassword, password, named := splitDSNPassword(inv.DSN)
 	vars := map[string]string{
 		"DATABASE_URL":                   inv.DSN,
 		"FORGE_DATABASE_URL_NO_PASSWORD": noPassword,
@@ -233,7 +233,10 @@ func Vars(h Hook, inv Invocation) (map[string]string, error) {
 		"FORGE_PROJECT_DIR":              h.ProjectDir,
 		"FORGE_PHASE":                    inv.Phase,
 	}
-	if password != "" {
+	// Set whenever the URL names a password, even an empty one: the
+	// stripped URL must authenticate exactly as the original did, never with
+	// a PGPASSWORD the caller's environment happens to hold.
+	if named {
 		vars["PGPASSWORD"] = password
 	}
 	switch h.Tool {
@@ -258,30 +261,30 @@ func Vars(h Hook, inv Invocation) (map[string]string, error) {
 }
 
 // splitDSNPassword returns dsn without its password (the userinfo password
-// and a `password` query parameter) and the password. A dsn that is not a URL,
-// or carries no password, is returned unchanged with "".
-func splitDSNPassword(dsn string) (noPassword, password string) {
+// and a `password` query parameter), the password the driver would use, and
+// whether the dsn names one at all. The precedence is libpq's: a `password`
+// query parameter overrides the userinfo password, even when it is empty. A
+// dsn that is not a URL, or names no password, is returned unchanged.
+func splitDSNPassword(dsn string) (noPassword, password string, named bool) {
 	u, err := url.Parse(dsn)
 	if err != nil || u.Scheme == "" {
-		return dsn, ""
+		return dsn, "", false
 	}
 	if u.User != nil {
 		if pw, ok := u.User.Password(); ok {
-			password = pw
+			password, named = pw, true
 			u.User = url.User(u.User.Username())
 		}
 	}
 	if q := u.Query(); q.Has("password") {
-		if password == "" {
-			password = q.Get("password")
-		}
+		password, named = q.Get("password"), true
 		q.Del("password")
 		u.RawQuery = q.Encode()
 	}
-	if password == "" {
-		return dsn, ""
+	if !named {
+		return dsn, "", false
 	}
-	return u.String(), password
+	return u.String(), password, true
 }
 
 // JDBC converts a postgres:// URL into the JDBC URL, user and password flyway
@@ -423,7 +426,7 @@ func (h Hook) LedgerTables() []LedgerTable {
 			if i := strings.Index(a, "x-migrations-table="); i >= 0 {
 				v, _, _ := strings.Cut(a[i+len("x-migrations-table="):], "&")
 				if v, err := url.QueryUnescape(v); err == nil && v != "" {
-					out = append(out, LedgerTable{Name: strings.Trim(v, `"`)})
+					out = append(out, parseIdent(v))
 				}
 			}
 		}
@@ -448,17 +451,55 @@ func (h Hook) IsLedgerTable(schema, name string) bool {
 }
 
 // ledgerFlag is the table a flag in argv names (`-table x` or `-table=x`),
-// else def.
+// else def. The value may be schema-qualified and quoted (parseIdent).
 func ledgerFlag(argv []string, def string, flags ...string) LedgerTable {
 	for i, a := range argv {
 		for _, f := range flags {
 			if a == f && i+1 < len(argv) {
-				return LedgerTable{Name: argv[i+1]}
+				return parseIdent(argv[i+1])
 			}
 			if v, ok := strings.CutPrefix(a, f+"="); ok && v != "" {
-				return LedgerTable{Name: v}
+				return parseIdent(v)
 			}
 		}
 	}
 	return LedgerTable{Name: def}
+}
+
+// parseIdent reads a postgres table identifier, `table` or `schema.table`,
+// as postgres resolves it: a double-quoted part is taken verbatim ("" is a
+// literal quote, and a '.' inside quotes is part of the name), an unquoted
+// part is folded to lower case.
+func parseIdent(s string) LedgerTable {
+	var parts []string
+	var cur strings.Builder
+	quoted, inQuotes := false, false
+	flush := func() {
+		p := cur.String()
+		if !quoted {
+			p = strings.ToLower(p)
+		}
+		parts = append(parts, p)
+		cur.Reset()
+		quoted = false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inQuotes && c == '"' && i+1 < len(s) && s[i+1] == '"':
+			cur.WriteByte('"')
+			i++
+		case c == '"':
+			inQuotes, quoted = !inQuotes, true
+		case c == '.' && !inQuotes:
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	if len(parts) >= 2 {
+		return LedgerTable{Schema: parts[len(parts)-2], Name: parts[len(parts)-1]}
+	}
+	return LedgerTable{Name: parts[0]}
 }

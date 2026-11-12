@@ -2806,7 +2806,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`, and the check's document says where each effective value came from. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 

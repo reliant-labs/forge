@@ -6197,6 +6197,17 @@ schema ReleaseHealth:
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
+    Error rate, latency and the browser findings compare the after window
+    with the before window, so they also need `min_requests` before the
+    promotion: a thinner before window is no baseline. `require_baseline`
+    says how many services need one. "any" (the default): any comparable
+    service can prove the release good, a service with a thin baseline is
+    listed in `not_evaluated`, and with none comparable the release is
+    inconclusive. "every": a thin baseline on any service with enough
+    after-window traffic holds the release inconclusive. "none": compare
+    against whatever the before window held, however thin. Issues, alerts
+    and restarts need no baseline and fail a release under every setting.
+
     Findings: error_rate (the error rate rose by more than
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
@@ -6221,6 +6232,7 @@ schema ReleaseHealth:
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    require_baseline: str = "any"
 
     check:
         60 <= _release_health_seconds(window) <= 21600, \
@@ -6233,6 +6245,8 @@ schema ReleaseHealth:
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        require_baseline in ["any", "every", "none"], \
+            "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 
 # ---------------------------------------------------------------------------
 # Uptime checks: outside-in HTTP probes the control plane runs on a schedule.

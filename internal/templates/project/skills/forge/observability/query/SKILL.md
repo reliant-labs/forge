@@ -113,11 +113,12 @@ The env's KCL declares the thresholds and which findings fail (`forge.ReleaseHea
 ```
 release_health = forge.ReleaseHealth {
     window = "15m"                      # 1m to 6h
-    min_requests = 50                   # below this a service is not judged
+    min_requests = 50                   # below this, in either window, a service is not compared
     max_error_rate_increase = 0.01      # a fraction: one percentage point
     max_p95_ratio = 1.5
     new_issue_min_events = 3
     fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]   # latency, workload_restarts warn
+    require_baseline = "any"            # or "every", "none" (observability/release-health)
 }
 ```
 
@@ -125,10 +126,10 @@ release_health = forge.ReleaseHealth {
 |---|---|
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |
 | 1 | FAIL: a `fail_on` finding fired |
-| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests`), or forge could not look |
+| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
 | 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
 
-An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
+An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
 
 **Signals: spans, then ingress, plus the browser** (`observability/release-health`): a service with no server spans is judged on the platform ingress's figures; a frontend also on its browser telemetry (`browser_*` findings, warn by default). Each service says which (`signal`).
 

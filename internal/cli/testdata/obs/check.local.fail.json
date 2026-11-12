@@ -104,6 +104,11 @@
       "name": "fail_on",
       "value": "alert_firing,error_rate,new_issue,probe_failed,regressed_issue",
       "source": "default"
+    },
+    {
+      "name": "require_baseline",
+      "value": "any",
+      "source": "default"
     }
   ],
   "not_evaluated": [

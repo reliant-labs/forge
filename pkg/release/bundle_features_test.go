@@ -19,6 +19,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureFrontendTelemetry:      {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 	BundleFeatureStoreSecrets:           {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
 	BundleFeatureReleaseHealth:          {"shape.release_health"},
+	BundleFeatureReleaseHealthBaseline:  {"shape.release_health.require_baseline"},
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
 	BundleFeatureReleaseProbes:          {"shape.release_probes"},
 	BundleFeatureDataAccess:             {"shape.data_access"},

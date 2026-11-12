@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -139,7 +141,7 @@ func (s appLinkSource) appLinkFiles(ctx context.Context) (map[string]applinks.Fi
 				"Set apple_team_id (iOS, with ios.bundleIdentifier in app.json) and/or android_cert_fingerprints[%q] (Android, with android.package)",
 				f.Name, a.Name, a.AssociatedDomains, s.Env, s.Env)
 		}
-		key := strings.Join(a.AssociatedDomains, ",")
+		key := appLinkDomainSetKey(a.AssociatedDomains)
 		byDomains[key] = append(byDomains[key], app)
 	}
 	out := map[string]applinks.Files{}
@@ -212,20 +214,35 @@ func attachAppLinkFiles(ctx context.Context, s appLinkSource) error {
 	if err != nil {
 		return err
 	}
-	// The files of one domain set go to one site.
+	// A site serves ONE overlay on every hostname bound to it. Therefore
+	// every app on that site must claim the same domain set; combining subsets
+	// would silently associate an app with hosts it never declared. Check
+	// host ownership separately: overlapping sets on different sites are also
+	// impossible. Domain order remains untouched on the application (it picks
+	// callback precedence); only the file-group key is canonicalized.
 	siteOf := map[string]string{}
+	domainsOfSite := map[string]string{}
+	siteOfHost := map[string]string{}
 	for _, pair := range s.associatedApps() {
 		site, err := associatedSiteFor(s.Entities, pair.Frontend)
 		if err != nil {
 			return err
 		}
-		key := strings.Join(pair.App.AssociatedDomains, ",")
-		if prev, ok := siteOf[key]; ok && prev != site.Name {
-			return fmt.Errorf("associated domains %s are served by two sites (%s and %s); name one with associated_site", key, prev, site.Name)
+		key := appLinkDomainSetKey(pair.App.AssociatedDomains)
+		for _, host := range pair.App.AssociatedDomains {
+			if prev, ok := siteOfHost[host]; ok && prev != site.Name {
+				return fmt.Errorf("associated host %s is served by two sites (%s and %s); name one with associated_site", host, prev, site.Name)
+			}
+			siteOfHost[host] = site.Name
 		}
+		if prev, ok := domainsOfSite[site.Name]; ok && prev != key {
+			return fmt.Errorf("site %s has incompatible associated domain sets (%s and %s): one site serves the same association files on every host; use separate sites or declare the same domain set", site.Name, prev, key)
+		}
+		domainsOfSite[site.Name] = key
 		siteOf[key] = site.Name
 	}
-	for key, site := range siteOf {
+	for _, key := range slices.Sorted(maps.Keys(siteOf)) {
+		site := siteOf[key]
 		for i := range s.Entities.Frontends {
 			if s.Entities.Frontends[i].Name != site {
 				continue
@@ -240,6 +257,13 @@ func attachAppLinkFiles(ctx context.Context, s appLinkSource) error {
 		}
 	}
 	return nil
+}
+
+// Canonicalize only file grouping, never the ordered callback declaration.
+func appLinkDomainSetKey(domains []string) string {
+	set := slices.Clone(domains)
+	slices.Sort(set)
+	return strings.Join(slices.Compact(set), ",")
 }
 
 const applinksWellKnownPrefix = ".well-known/"

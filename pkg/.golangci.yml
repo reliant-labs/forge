@@ -170,3 +170,12 @@ linters:
       - path: ^observe/headers_file_smoke_integration_test\.go$
         linters:
           - forbidigo
+
+      # The built-in dashboards' ClickHouse harness is opt-in the way
+      # internal/obsdash's ClickHouse tests are: FORGE_ALERT_CLICKHOUSE names
+      # the container to run against, and without it the tests skip. A test
+      # file that never compiles into a shipped binary and changes nothing
+      # about how the library behaves; scoped to that one file.
+      - path: ^obsbuiltin/clickhouse_harness_test\.go$
+        linters:
+          - forbidigo

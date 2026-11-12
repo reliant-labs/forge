@@ -580,21 +580,13 @@ function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
 }
 
 /**
- * The recorder's OTLP scope, as protobuf encodes it inside every batch it
- * posts: InstrumentationScope.name (field 1, length-delimited) = "rum.rr-web".
- */
-const REPLAY_SCOPE_MARKER: readonly number[] = [
-  0x0a,
-  SDK_REPLAY_SCOPE.name.length,
-  ...Array.from(SDK_REPLAY_SCOPE.name, (c) => c.charCodeAt(0)),
-];
-
-/**
  * Whether a request carries the recorder's records: an OTLP logs body
- * (gzip-compressed, as the recorder sends it, or not) whose scope is the
- * recorder's. A gzip body this browser cannot decompress counts as the
- * recorder's when it is protobuf, the recorder's shape: after a withdrawal,
- * dropping an unreadable log batch is the side to err on.
+ * (gzip-compressed, as the recorder sends it, or not) one of whose ScopeLogs
+ * has the recorder's scope name, read at its field path (hasReplayScope), so
+ * the same bytes inside a log body or attribute do not count. A gzip body this
+ * browser cannot decompress counts as the recorder's when it is protobuf, the
+ * recorder's shape: after a withdrawal, dropping an unreadable log batch is
+ * the side to err on.
  */
 async function isReplayBatch(
   input: unknown,
@@ -613,11 +605,117 @@ async function isReplayBatch(
       }
       bytes = plain;
     }
-    return containsBytes(bytes, REPLAY_SCOPE_MARKER);
+    return hasReplayScope(bytes);
   } catch {
     // Unreadable: not provably the recorder's, so it goes out as asked.
     return false;
   }
+}
+
+/** SDK_REPLAY_SCOPE.name as the UTF-8 bytes protobuf carries. */
+const REPLAY_SCOPE_NAME: readonly number[] = Array.from(
+  SDK_REPLAY_SCOPE.name,
+  (c) => c.charCodeAt(0),
+);
+
+/**
+ * Whether an OTLP ExportLogsServiceRequest, protobuf-encoded, has a ScopeLogs
+ * whose scope is the recorder's: the path resource_logs (1) → scope_logs (2)
+ * → scope (1) → name (1), as opentelemetry-proto's logs.proto defines it.
+ * Every other field, a log record's body and attributes included, is skipped
+ * unread. Throws on a body that is not well-formed protobuf.
+ */
+function hasReplayScope(request: Uint8Array): boolean {
+  let found = false;
+  forEachField(request, 1, (resourceLogs) => {
+    forEachField(resourceLogs, 2, (scopeLogs) => {
+      // A scalar field repeated on the wire: the last one is its value.
+      let name: Uint8Array | undefined;
+      forEachField(scopeLogs, 1, (scope) => {
+        forEachField(scope, 1, (n) => {
+          name = n;
+        });
+      });
+      if (name && sameBytes(name, REPLAY_SCOPE_NAME)) {
+        found = true;
+      }
+    });
+  });
+  return found;
+}
+
+/**
+ * Calls `visit` with the payload of every length-delimited field numbered
+ * `field` in `message`, in order, skipping all others by their wire type.
+ * Throws on a truncated or malformed message.
+ */
+function forEachField(
+  message: Uint8Array,
+  field: number,
+  visit: (payload: Uint8Array) => void,
+): void {
+  let at = 0;
+  const varint = (): number => {
+    let value = 0;
+    for (let shift = 0; shift < 64; shift += 7) {
+      if (at >= message.length) {
+        throw new Error("protobuf: truncated varint");
+      }
+      const b = message[at++] as number;
+      // Lengths and tags fit in 53 bits; higher bits only matter to skip.
+      value += (b & 0x7f) * 2 ** shift;
+      if ((b & 0x80) === 0) {
+        return value;
+      }
+    }
+    throw new Error("protobuf: varint too long");
+  };
+  const skip = (n: number) => {
+    if (at + n > message.length) {
+      throw new Error("protobuf: truncated field");
+    }
+    at += n;
+  };
+  while (at < message.length) {
+    const tag = varint();
+    const wire = tag % 8;
+    const number = Math.floor(tag / 8);
+    switch (wire) {
+      case 0:
+        varint();
+        break;
+      case 1:
+        skip(8);
+        break;
+      case 2: {
+        const length = varint();
+        const start = at;
+        skip(length);
+        if (number === field) {
+          visit(message.subarray(start, start + length));
+        }
+        break;
+      }
+      case 5:
+        skip(4);
+        break;
+      default:
+        // Groups (3, 4) are not in OTLP; anything else is not protobuf.
+        throw new Error(`protobuf: wire type ${wire}`);
+    }
+  }
+}
+
+function sameBytes(a: Uint8Array, b: readonly number[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function requestHeaders(
@@ -683,18 +781,6 @@ async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function containsBytes(haystack: Uint8Array, needle: readonly number[]) {
-  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        continue outer;
-      }
-    }
-    return true;
-  }
-  return false;
 }
 
 /**

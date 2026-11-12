@@ -112,19 +112,39 @@ const recorder = {
   },
 };
 
+/** A length-delimited protobuf field: tag, varint length, payload. */
+function ld(field: number, payload: Buffer | string): Buffer {
+  const bytes = Buffer.from(payload);
+  const length: number[] = [];
+  let n = bytes.length;
+  do {
+    length.push((n & 0x7f) | (n >= 0x80 ? 0x80 : 0));
+    n >>>= 7;
+  } while (n > 0);
+  return Buffer.concat([Buffer.from([(field << 3) | 2, ...length]), bytes]);
+}
+
 /**
- * An OTLP logs post as the SDK's recorder makes it: a gzipped protobuf body
- * carrying InstrumentationScope.name (field 1) = `scope`, then the records.
+ * An OTLP logs post as the SDK's recorder makes it: a gzipped protobuf
+ * ExportLogsServiceRequest, one ResourceLogs with one ScopeLogs whose
+ * InstrumentationScope.name is `scope`, holding one LogRecord whose body is
+ * `records` and which carries `attribute` as a string attribute value.
  */
-function otlpLogsPost(scope: string, records: string): RequestInit {
-  const name = Buffer.from(scope);
-  const body = gzipSync(
-    Buffer.concat([
-      Buffer.from([0x0a, name.length]),
-      name,
-      Buffer.from(records),
-    ]),
-  );
+function otlpLogsPost(
+  scope: string,
+  records: string,
+  attribute = "",
+): RequestInit {
+  // LogRecord: body (5) AnyValue{string_value (1)}, attributes (6)
+  // KeyValue{key (1), value (2) AnyValue{string_value (1)}}.
+  const record = Buffer.concat([
+    ld(5, ld(1, records)),
+    ld(6, Buffer.concat([ld(1, "note"), ld(2, ld(1, attribute))])),
+  ]);
+  // ScopeLogs: scope (1) InstrumentationScope{name (1)}, log_records (2).
+  const scopeLogs = Buffer.concat([ld(1, ld(1, scope)), ld(2, record)]);
+  // ExportLogsServiceRequest: resource_logs (1) ResourceLogs{scope_logs (2)}.
+  const body = gzipSync(ld(1, ld(2, scopeLogs)));
   return {
     method: "POST",
     body: new Uint8Array(body),
@@ -364,6 +384,44 @@ describe("session replay after consent is withdrawn", () => {
     expect(sent.map((e) => e.url)).toEqual([LOGS_URL, LOGS_URL]);
     expect(sent[0]?.body).toContain("app-log-protobuf");
     expect(sent[1]?.body).toContain("app-log-json");
+  });
+
+  it("an app log whose body or attributes hold the recorder's scope bytes still goes out", async () => {
+    const k = await startRecording();
+    k.disableTelemetry();
+    const since = tick();
+
+    // The exact bytes of InstrumentationScope.name = "rum.rr-web", but in a
+    // log record's body and in an attribute value, not at the scope's path.
+    const scopeBytes = ld(1, "rum.rr-web").toString("latin1");
+    await fetch(
+      LOGS_URL,
+      otlpLogsPost("app.logs", `body ${scopeBytes}`, scopeBytes),
+    );
+
+    const sent = exported.filter((e) => e.kind === "fetch" && e.at > since);
+    expect(sent.map((e) => e.url)).toEqual([LOGS_URL]);
+    expect(sent[0]?.body).toContain("rum.rr-web");
+  });
+
+  it("a malformed protobuf log batch goes out as asked", async () => {
+    const k = await startRecording();
+    k.disableTelemetry();
+    const since = tick();
+
+    // Truncated: a length longer than what follows.
+    await fetch(LOGS_URL, {
+      method: "POST",
+      body: new Uint8Array(gzipSync(Buffer.from([0x0a, 0x7f, 0x12]))),
+      headers: {
+        "Content-Type": "application/x-protobuf",
+        "Content-Encoding": "gzip",
+      },
+    });
+
+    expect(
+      exported.filter((e) => e.kind === "fetch" && e.at > since),
+    ).toHaveLength(1);
   });
 
   it.each([

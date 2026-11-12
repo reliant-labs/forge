@@ -80,7 +80,8 @@ export COPYFILE_DISABLE=1
 # control-plane (deploy/kcl/lib/env.k forge_cli_ingest_keys) for the
 # Reliant-owned telemetry org. Publishable, like a browser key: it can only
 # write logs into that environment. A person opts out with DO_NOT_TRACK=1,
-# FORGE_TELEMETRY=off or `forge telemetry off`; CI is off by default.
+# FORGE_TELEMETRY=off or `forge telemetry off`; on a CI runner telemetry is always off
+# and nothing is sent.
 DEFAULT_TELEMETRY_ENDPOINT="https://ingest.reliantlabs.dev/k/rbk_il4pm2x44f2isoi34dwxj4dut3/v1/logs"
 TELEMETRY_ENDPOINT="${FORGE_TELEMETRY_ENDPOINT-$DEFAULT_TELEMETRY_ENDPOINT}"
 

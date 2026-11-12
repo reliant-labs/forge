@@ -394,7 +394,8 @@ function idsAllowed(): boolean {
 
 /**
  * Turn browser telemetry off for the rest of this page load: stop the replay
- * recorder, drop anything held, and make track(), setTelemetryUser() and
+ * recorder (dropping what it buffered), drop anything held, and make
+ * track(), setTelemetryUser() and
  * reportException() no-ops. For when the user withdraws consent mid-session.
  * See the module header for what it cannot undo.
  */

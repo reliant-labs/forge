@@ -1588,11 +1588,16 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
   it("disableTelemetry stops the recorder and silences track, setTelemetryUser and reportException", async () => {
     stubDom();
     const { t, r, k } = await load();
+    // Replay runs only in the full tier.
+    k.grantAnalyticsConsent();
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
+      analytics: "full",
       replay: true,
     });
+    expect(init.mock.calls[0]?.[0]).toMatchObject({ disableReplay: false });
+    addAction.mockReset();
 
     k.disableTelemetry();
     k.track("after_consent_withdrawn", { a: 1 });

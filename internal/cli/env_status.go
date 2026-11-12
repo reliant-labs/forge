@@ -329,7 +329,7 @@ func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) erro
 			Timeout:    m.timeout,
 			ProjectDir: projectDirForKCL(),
 			Lister:     kubectlImageLister{},
-			Resolver:   kclTargetResolver{},
+			Resolver:   kclTargetResolver{memo: &envStatusRenderMemo{}},
 		})
 	}
 
@@ -369,7 +369,7 @@ func dispatchEnvStatus(cmd *cobra.Command, args []string, m envStatusModes) erro
 		Signal:   m.signal,
 		Verbose:  m.verbose,
 		Lister:   kubectlImageLister{},
-		Resolver: kclTargetResolver{},
+		Resolver: kclTargetResolver{memo: &envStatusRenderMemo{}},
 	})
 }
 

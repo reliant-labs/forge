@@ -275,6 +275,33 @@ func TestShape_DeliveryPolicyRefusals(t *testing.T) {
 		"health gate env twice": {mut(func(p *ShapeDeliveryPolicy) {
 			p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging", "staging"}}
 		}), "twice"},
+		"required gates mode": {mut(func(p *ShapeDeliveryPolicy) {
+			p.RequiredGates = &ShapeRequiredGates{Mode: "strict", Names: []string{"e2e"}}
+		}), "required_gates mode"},
+		"required gate not a name": {mut(func(p *ShapeDeliveryPolicy) {
+			p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{"e2e suite"}}
+		}), "not a gate name"},
+		"required gate reserved": {mut(func(p *ShapeDeliveryPolicy) {
+			p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{ApprovalHookGateName}}
+		}), "records its own verdict"},
+		"required gate twice": {mut(func(p *ShapeDeliveryPolicy) {
+			p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{"e2e", "e2e"}}
+		}), "twice"},
+		"hook with url and argv": {mut(func(p *ShapeDeliveryPolicy) {
+			p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "https://a.test", Argv: []string{"x"}, TimeoutSeconds: 5}
+		}), "both url and argv"},
+		"hook with neither": {mut(func(p *ShapeDeliveryPolicy) {
+			p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, TimeoutSeconds: 5}
+		}), "neither url nor argv"},
+		"hook over http": {mut(func(p *ShapeDeliveryPolicy) {
+			p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "http://a.test/hook", TimeoutSeconds: 5}
+		}), "must be https"},
+		"hook url with credentials": {mut(func(p *ShapeDeliveryPolicy) {
+			p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "https://u:p@a.test/hook", TimeoutSeconds: 5}
+		}), "carries credentials"},
+		"hook timeout": {mut(func(p *ShapeDeliveryPolicy) {
+			p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "https://a.test", TimeoutSeconds: 61}
+		}), "timeout_seconds"},
 	} {
 		err := Shape{Kind: EnvLocal, DeliveryPolicy: tc.p}.Canonical().Validate()
 		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), tc.want) {
@@ -345,5 +372,27 @@ func TestShape_DeliveryPolicyHealthGate(t *testing.T) {
 	off.HealthGate = &ShapeHealthGate{Mode: DeliveryOff, After: []string{}}
 	if off.IsDefault() {
 		t.Error("an explicitly off health gate is a declaration, not the default")
+	}
+}
+
+// The default requirement (enforce, naming nothing) is the absence of one, and
+// an approval hook's argv keeps its order (it is a command line).
+func TestShape_DeliveryPolicyPromotionChecksCanonical(t *testing.T) {
+	p := DefaultDeliveryPolicy()
+	p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce}
+	if !(&p).IsDefault() {
+		t.Error("an enforce requirement naming nothing must be the default")
+	}
+	p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{"sec", "e2e"}}
+	p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryAudit, Argv: []string{"./approve", "--env", "prod"}, TimeoutSeconds: 10}
+	got := (&p).Resolved()
+	if !reflect.DeepEqual(got.RequiredGates.Names, []string{"e2e", "sec"}) {
+		t.Errorf("names not sorted: %v", got.RequiredGates.Names)
+	}
+	if !reflect.DeepEqual(got.ApprovalHook.Argv, []string{"./approve", "--env", "prod"}) {
+		t.Errorf("argv reordered: %v", got.ApprovalHook.Argv)
+	}
+	if err := (Shape{Kind: EnvLocal, DeliveryPolicy: &p}.Canonical().Validate()); err != nil {
+		t.Fatalf("valid checks refused: %v", err)
 	}
 }

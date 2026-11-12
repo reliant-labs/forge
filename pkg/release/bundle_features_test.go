@@ -19,6 +19,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureFrontendTelemetry:      {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 	BundleFeatureStoreSecrets:           {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
 	BundleFeatureReleaseHealth:          {"shape.release_health"},
+	BundleFeatureReleaseHealthBaseline:  {"shape.release_health.require_baseline"},
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
 	BundleFeatureReleaseProbes:          {"shape.release_probes"},
 	BundleFeatureDataAccess:             {"shape.data_access"},
@@ -32,8 +33,9 @@ var bundleFeatureKeys = map[string][]string{
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
 	},
-	BundleFeatureStorage: {"shape.buckets", "shape.data_access.storage"},
-	BundleFeaturePreview: {"shape.preview"},
+	BundleFeatureStorage:         {"shape.buckets", "shape.data_access.storage"},
+	BundleFeaturePromotionChecks: {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
+	BundleFeaturePreview:         {"shape.preview"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -238,7 +240,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Buckets = nil
 	wantShape.Preview = nil
 	gateless := *full.Shape.DeliveryPolicy
-	gateless.HealthGate = nil
+	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil
 	wantShape.DeliveryPolicy = &gateless
 	wantShape.Identity = &ShapeIdentity{Name: full.Shape.Identity.Name, Runtime: full.Shape.Identity.Runtime, Login: full.Shape.Identity.Login, Roles: full.Shape.Identity.Roles}
 	wantShape.ControlPlaneSecrets = []ShapeControlPlaneSecret{full.Shape.ControlPlaneSecrets[0]}
@@ -349,5 +351,48 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 func healthGatedPolicy() *ShapeDeliveryPolicy {
 	p := DefaultDeliveryPolicy()
 	p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging"}}
+	p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{"e2e"}}
+	p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "https://approvals.acme.test/forge", TimeoutSeconds: 10}
 	return &p
+}
+
+// TestPromotionChecksAreAFeature: the required gates and the approval hook
+// reach only a reader that enforces them, and an ENFORCING one is named by
+// UnenforcedChecks for any other, so the declaration can refuse rather than
+// let a declared refusal silently become nothing.
+func TestPromotionChecksAreAFeature(t *testing.T) {
+	full := fullBundleDoc()
+	with := (&BundleReader{Features: []string{BundleFeaturePromotionChecks}}).Limit(full)
+	if with.Shape.DeliveryPolicy.RequiredGates == nil || with.Shape.DeliveryPolicy.ApprovalHook == nil || with.Shape.DeliveryPolicy.HealthGate != nil {
+		t.Errorf("a reader of promotion checks only: %+v", with.Shape.DeliveryPolicy)
+	}
+	old := &BundleReader{Features: []string{BundleFeatureHealthGate}}
+	without := old.Limit(full)
+	if without.Shape.DeliveryPolicy.RequiredGates != nil || without.Shape.DeliveryPolicy.ApprovalHook != nil {
+		t.Errorf("a reader without the feature was sent the checks: %+v", without.Shape.DeliveryPolicy)
+	}
+	if got := old.UnenforcedChecks(full.Shape); !reflect.DeepEqual(got, []string{"required_gates", "approval_hook"}) {
+		t.Errorf("UnenforcedChecks = %v, want both", got)
+	}
+	// Decoding every feature is not enforcing: a control plane advertises
+	// BundleDocFeatures verbatim on a pin bump, whether or not its promote
+	// judges the checks.
+	if slices.Contains(BundleDocFeatures(), CapabilityEnforcesPromotionChecks) {
+		t.Errorf("BundleDocFeatures claims %s; a control plane adds enforcement by hand", CapabilityEnforcesPromotionChecks)
+	}
+	if got := (&BundleReader{Features: BundleDocFeatures()}).UnenforcedChecks(full.Shape); !reflect.DeepEqual(got, []string{"required_gates", "approval_hook"}) {
+		t.Errorf("a reader that only decodes them: UnenforcedChecks = %v, want both", got)
+	}
+	enforcer := &BundleReader{Features: append(BundleDocFeatures(), CapabilityEnforcesPromotionChecks)}
+	if got := enforcer.UnenforcedChecks(full.Shape); got != nil {
+		t.Errorf("a reader that enforces them: UnenforcedChecks = %v", got)
+	}
+	audit := full.Shape
+	pol := *audit.DeliveryPolicy
+	pol.RequiredGates = &ShapeRequiredGates{Mode: DeliveryAudit, Names: []string{"e2e"}}
+	pol.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryAudit, URL: "https://a.test", TimeoutSeconds: 5}
+	audit.DeliveryPolicy = &pol
+	if got := old.UnenforcedChecks(audit); got != nil {
+		t.Errorf("audit refuses nothing, so nothing is unenforced: %v", got)
+	}
 }

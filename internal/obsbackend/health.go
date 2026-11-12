@@ -68,6 +68,9 @@ type Change struct {
 	Target      string    `json:"target,omitempty"`
 	Actor       string    `json:"actor,omitempty"`
 	Via         string    `json:"via,omitempty"`
+	// Recorded marks a deploy an outside pipeline did and `forge release
+	// record` wrote down: a marker, with nothing applied by forge.
+	Recorded bool `json:"recorded,omitempty"`
 }
 
 // ChangesResult is the feed, newest first.

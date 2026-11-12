@@ -67,12 +67,6 @@ func (b *BrowserHealth) seen() bool {
 		b.Before.JSErrors > 0 || b.After.JSErrors > 0
 }
 
-// judged reports whether the after window holds enough traffic to judge the
-// service on: min_requests server requests, or min_requests page views.
-func (s ServiceHealth) judged(minRequests int) bool {
-	return s.After.Requests >= int64(minRequests) || (s.Browser != nil && s.Browser.After.PageViews >= int64(minRequests))
-}
-
 // Combine builds the services a release is judged on from each signal, in
 // precedence order:
 //
@@ -138,13 +132,14 @@ func Combine(spans, ingress []ServiceHealth, browser map[string]BrowserHealth) [
 	return out
 }
 
-// browserFindings judges a frontend's browser figures: the after window needs
-// min_requests page views. The JavaScript error rate (per page view) and the
+// browserFindings judges a frontend's browser figures: both windows need
+// min_requests page views (a thinner before window is no baseline;
+// baseline.go). The JavaScript error rate (per page view) and the
 // failed-request rate are held to max_error_rate_increase, the p95 page load
 // to max_p95_ratio. They warn unless fail_on names them.
 func browserFindings(s ServiceHealth, t Thresholds) []Finding {
 	b := s.Browser
-	if b == nil || b.After.PageViews < int64(t.MinRequests) {
+	if !t.gauge().browserComparable(s) {
 		return nil
 	}
 	var out []Finding

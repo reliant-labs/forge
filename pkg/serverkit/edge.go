@@ -3,6 +3,8 @@ package serverkit
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Edge is the HTTP layers a listener puts in front of its routes: CORS,
@@ -38,6 +40,9 @@ func (e Edge) Wrap(cfg Config) (func(http.Handler) http.Handler, error) {
 		if cfg.SecurityHeaders {
 			handler = e.SecurityHeaders(!cfg.IsDevelopment())(handler)
 		}
+		// The trusted edge's visitor context (observe.EdgeContextMiddleware), for
+		// every route the listener serves; a no-op unless FORGE_TRUSTED_EDGE=reliant.
+		handler = observe.EdgeContextMiddleware(handler)
 		// Outermost of serverkit's own layers, so CORS, security headers and
 		// logging all see the correlation id.
 		if e.RequestID != nil {

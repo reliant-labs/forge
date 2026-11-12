@@ -19,7 +19,8 @@ anyway and prints a live URL plus a claim link for your user (see
 Everything that runs is a `fw.Workload`, declared ONCE in
 `deploy/kcl/workloads.k`. Each env's `deploy/kcl/<env>/main.k` BINDS every
 workload to one runtime — `forge.OnHost`, `forge.OnCluster`, `forge.OnHosted`,
-`forge.OnCompose` or `forge.BuildOnly` — and states only its own values; one
+`forge.OnCompose`, `forge.BuildOnly`, or `forge.OnExternal` (your own deploy
+tool, driven by forge: `deploy/external`) — and states only its own values; one
 env may mix runtimes, and a workload with no runtime is a render error.
 `output = forge.render(bundle)` is the ONE entrypoint, so always go through
 `forge env render` / `forge env deploy`. The scaffolded `dev` runs on the
@@ -41,6 +42,7 @@ forge env deploy prod --yes       # the same, in CI: "I read the plan" (no TTY t
 forge env deploy prod v1.7.1      # deploy a release that already exists; builds nothing
 forge env deploy prod --dry-run   # render/print without applying
 forge env status prod             # verify: bound release, running digests, rollout, health
+forge env verify prod             # would a deploy change anything? read-only parity, per workload
 ```
 
 Nothing is written until the plan is confirmed: with no terminal and no
@@ -55,6 +57,7 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | pre-flight checks, `forge env build <env> --push` and `forge build <env>` with their flags, the project image, registry login, the config check, Docker build contexts | `deploy/build` |
 | the two deploy forms, the confirm gate, scoped deploys, the ledger, preflight, pre-rollout migrations, verify + recover | `deploy/release` |
 | an existing app in any language, deployed from its own Dockerfile (templates, then tiers) | `adopt` |
+| keep Helm / Fly.io / Cloud Run / ECS / Argo CD and let forge drive it; prove parity first with `forge env verify` | `deploy/external` |
 | the local loop: `forge env up` flags, host runners, `--target` | `dev` |
 | Reliant hosting: what it wires, refuses, bills; `--claimable` | `deploy/hosting`, `deploy/hosted-capacity`, `deploy/hosted-registry`, `deploy/lifecycle` |
 | a frontend's runtime (`OnHost`, `OnHosted`, `OnBucket`, `OnFirebase`), runtime config; a site alone | `deploy/frontends`, `deploy/static-site` |
@@ -72,6 +75,7 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | several repos, any language: a shared infra/envs repo, or one deploy repo building N app repos at pinned refs | `deploy/polyrepo` |
 | "never deploy older than X"; a `below_rollback_floor` refusal; declaring an API/feature/data change that cannot be rolled back past | `deploy/rollback-floor` |
 | a cut that died mid-push; control plane unreachable; the k3d registry mirror | `deploy/interrupted-cut`, `deploy/offline-ledger`, `deploy/k3d-registry` |
+| your own CI deploys; forge only records each deploy (`forge release record`) for monitoring | `deploy/record` |
 
 ## Rules
 

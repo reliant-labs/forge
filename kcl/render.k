@@ -29,7 +29,7 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
                     included ("" when it builds none): the build-state /
                     release-ledger key, and where a push goes
           build   — the typed build, or null (forge builds nothing)
-          runtime — {type: host|compose|cluster|hosted|build-only, ...}
+          runtime — {type: host|compose|cluster|hosted|build-only|external, ...}
           spec    — v1alpha1.WorkloadSpec JSON (the generated
                     tiers.workload_json), identical to the record's spec
     infra[], frontends[], databases[]
@@ -505,7 +505,7 @@ _bucket_minio_endpoint = lambda b: any, name: str, where: str, rt: any, bundle: 
 # forge.GoBuild.
 DEFAULT_GO_MEMORY_LIMIT_PERCENT: int = 90
 
-_RUNS_A_PROCESS = ["host", "cluster", "hosted"]
+_RUNS_A_PROCESS = ["host", "cluster", "hosted", "external"]
 _HAS_MEMORY_LIMIT = ["cluster", "hosted"]
 _MIB = 1048576
 
@@ -1424,8 +1424,8 @@ _check_built_digest = lambda w: any -> bool {
 # workload, or a cluster workload forge builds nothing for); there is no
 # reference to check, so both asserts stay inert.
 _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
-    assert not (image and rt.type == "cluster" and not img_lib.has_registry_host(image)), \
-        "workload '${w.name}': image '${image}' names no registry host, and it is bound to a cluster runtime " \
+    assert not (image and rt.type in ["cluster", "external"] and not img_lib.has_registry_host(image)), \
+        "workload '${w.name}': image '${image}' names no registry host, and it is bound to a ${rt.type} runtime " \
         + "that must pull it. The registry is part of the image: declare the full reference on the workload, e.g. " \
         + "`image = \"ghcr.io/<owner>/${image}\"` (or `localhost:5051/${image}` for a k3d-local registry). " \
         + "There is no env-level registry — a ClusterTarget declares the cluster, namespace and platform; " \
@@ -1453,7 +1453,7 @@ _check_image_names_registry = lambda w: any, rt: any, image: str -> bool {
 _spec_image = lambda w: any, rt: any, bundle: Bundle -> str {
     _name = w.image if w.image else _artifact(w)
     assert _check_image_names_registry(w, rt, _name)
-    workload_image_ref_for(w.name, "container:" + w.name, _name, bundle.image_tag) if rt.type == "cluster" and _name \
+    workload_image_ref_for(w.name, "container:" + w.name, _name, bundle.image_tag) if rt.type in ["cluster", "external"] and _name \
         else (_name if rt.type == "hosted" else "")
 }
 
@@ -1548,10 +1548,23 @@ _render_runtime = lambda w: any, rt: any, bundle: Bundle -> any {
     } if rt.type == "cluster" else ({
         "type": "hosted"
         "platform": rt.platform
-    } if rt.type == "hosted" else {
+    } if rt.type == "hosted" else ({
+        # The hooks are argv, rendered verbatim; an unset hook is null so Go
+        # tells "no hook" from an empty list (which the schema refuses).
+        "type": "external"
+        "status": rt.status if rt.status else None
+        "plan": rt.plan if rt.plan else None
+        "deploy": rt.deploy if rt.deploy else None
+        "health": rt.health if rt.health else None
+        "env": rt.env
+        "pass_env": rt.pass_env
+        "working_dir": rt.working_dir if rt.working_dir else None
+        "timeout": rt.timeout
+        "platform": rt.platform
+    } if rt.type == "external" else {
         "type": "build-only"
         "build_variants": [_render_build_variant(bv) for bv in rt.build_variants]
-    })))
+    }))))
 }
 
 # One output.workloads[] entry. Runs the runtime mask first.
@@ -1948,11 +1961,22 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
         "approvals": {"mode": p.approvals.mode, "required": p.approvals.required, "approvers": sorted(p.approvals.approvers)}
         if p.health_gate:
             "health_gate": {"mode": p.health_gate.mode, "after": sorted(p.health_gate.after)}
+        if p.required_gates:
+            "required_gates": {"mode": p.required_gates.mode, "names": sorted(p.required_gates.names)}
+        if p.approval_hook:
+            "approval_hook": {
+                "mode": p.approval_hook.mode
+                "url": p.approval_hook.url if p.approval_hook.url else None
+                "argv": p.approval_hook.argv if p.approval_hook.argv else None
+                "timeout_seconds": p.approval_hook.timeout_seconds
+            }
     }
 }
 
 # ReleaseHealth, resolved. The key set is the release shape's
 # `release_health`; the window is in seconds and fail_on is sorted.
+# require_baseline is present only when it is not the default ("any"), so a
+# render that keeps it records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -1961,6 +1985,8 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
         "fail_on": sorted(h.fail_on)
+        if h.require_baseline != "any":
+            "require_baseline": h.require_baseline
     }
 }
 
@@ -2782,6 +2808,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #                        it is this frontend's choice in this env, which is
 #                        what the platform reads back live.
 #   REPLAY_SAMPLE_RATE   only when it is not every session
+#   PAGE_VIEWS           "false" only; unset means page_viewed events
+#   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
 #                        default "identified" and browser telemetry is not
 #                        off; unset means identified
@@ -2793,6 +2821,8 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({CONSOLE_CAPTURE = "false"} if _t and not _t.console_capture else {}) \
         | ({OTEL_REPLAY = "true"} if _frontend_replay_on(f) and not _obs_browser_off(bundle) else {}) \
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
+        | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
+        | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {}) \
         | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 

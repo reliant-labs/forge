@@ -671,6 +671,16 @@ type FrontendTemplateData struct {
 	// Handing the browser those values is what would let a browser-side
 	// PKCE flow — and a script-readable token — come back.
 	HasMockAPI bool
+	// IdentifySession reports that this frontend signs in natively AND can
+	// resolve the session URL the way sign-in does: it has
+	// src/lib/auth/native-login.ts (whose fetchIdentity asks the API's
+	// /auth/session at load) and src/lib/api-base.ts (which native-login.ts
+	// resolves that URL through). src/lib/otel_gen.ts then hands the runtime
+	// the same URL (`identify`), so browser telemetry carries the signed-in
+	// user's id. False for an adopted frontend, one whose app deleted either
+	// module, or one scaffolded before api-base.ts existed: its own auth
+	// decides who the user is (identifyUser / setTelemetryUser).
+	IdentifySession bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

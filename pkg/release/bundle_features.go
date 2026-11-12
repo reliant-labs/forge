@@ -78,6 +78,11 @@ const (
 	// env's promotions are judged by (forge.ReleaseHealth). A control plane
 	// that predates it judges with the defaults.
 	BundleFeatureReleaseHealth = "shape-release-health"
+	// BundleFeatureReleaseHealthBaseline is ShapeReleaseHealth.RequireBaseline:
+	// how many services a release needs a before window to compare against
+	// (forge.ReleaseHealth.require_baseline). A control plane that predates it
+	// is sent the policy without it, and judges by the default (any).
+	BundleFeatureReleaseHealthBaseline = "shape-release-health-baseline"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -151,6 +156,15 @@ const (
 	// not delete the env when it expires — `forge env gc` still does — so a
 	// shape carrying it is written only to one that names the feature.
 	BundleFeaturePreview = "shape-preview"
+	// BundleFeaturePromotionChecks is ShapeDeliveryPolicy.RequiredGates and
+	// ShapeDeliveryPolicy.ApprovalHook: the gates a promotion must carry as
+	// passed, and the team's approval hook asked before one is written. A
+	// control plane that predates it enforces neither, so a shape carrying
+	// them is written only to one that names the feature, which is the control
+	// plane that enforces them — and forge refuses to declare an ENFORCING
+	// one to a control plane that ENFORCES them
+	// ([CapabilityEnforcesPromotionChecks], [BundleReader.UnenforcedChecks]).
+	BundleFeaturePromotionChecks = "shape-promotion-checks"
 	// BundleFeatureReleaseProbes is Shape.ReleaseProbes, and the release-probe
 	// finding codes (HealthProbeFailed, HealthProbeLatency) in
 	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
@@ -159,12 +173,21 @@ const (
 	BundleFeatureReleaseProbes = "shape-release-probes"
 )
 
+// CapabilityEnforcesPromotionChecks is advertised beside the bundle features
+// by a control plane whose promote transaction JUDGES the required gates and
+// the approval hook. It is deliberately not in [BundleDocFeatures]: that list
+// means "decodes", and a control plane advertises it verbatim on every forge
+// pin bump, so a pin bump alone would claim enforcement its promote does not
+// perform, and an enforcing check would admit every promotion. A control
+// plane adds this by hand, in the change that makes its promote judge both.
+const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeaturePreview}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -222,6 +245,26 @@ func (s Shape) HasOptionalParts() bool {
 	return !bytes.Equal(limited, full)
 }
 
+// UnenforcedChecks names the promotion checks s declares in enforce mode that
+// this reader does not enforce: one that does not advertise
+// [CapabilityEnforcesPromotionChecks] (decoding the fields is not judging
+// them) would admit every promotion they were declared to refuse. The
+// environment declaration refuses to send such a shape rather than let an
+// enforcing check silently become nothing.
+func (r *BundleReader) UnenforcedChecks(s Shape) []string {
+	if r.Supports(CapabilityEnforcesPromotionChecks) || s.DeliveryPolicy == nil {
+		return nil
+	}
+	var out []string
+	if g := s.DeliveryPolicy.RequiredGates; g != nil && g.Mode == DeliveryEnforce && len(g.Names) > 0 {
+		out = append(out, "required_gates")
+	}
+	if h := s.DeliveryPolicy.ApprovalHook; h != nil && h.Mode == DeliveryEnforce {
+		out = append(out, "approval_hook")
+	}
+	return out
+}
+
 // LimitShape returns s without every optional part the reader does not decode.
 // Limit applies it to a bundle document's shape; the environment declaration,
 // which a control plane strict-decodes into the same Shape, applies it to the
@@ -239,6 +282,14 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureReleaseHealth) {
 		s.ReleaseHealth = nil
+	} else if !r.Supports(BundleFeatureReleaseHealthBaseline) && s.ReleaseHealth != nil && s.ReleaseHealth.RequireBaseline != "" {
+		h := *s.ReleaseHealth
+		h.RequireBaseline = ""
+		if h.IsDefault() {
+			s.ReleaseHealth = nil // all that differed from the default was the baseline
+		} else {
+			s.ReleaseHealth = &h
+		}
 	}
 	if !r.Supports(BundleFeatureDataAccess) {
 		s.DataAccess = nil
@@ -296,6 +347,12 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil
+	}
+	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
+		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {
+		pol := *s.DeliveryPolicy
+		pol.RequiredGates, pol.ApprovalHook = nil, nil
+		s.DeliveryPolicy = &pol
 	}
 	if !r.Supports(BundleFeatureStorage) {
 		s.Buckets = nil

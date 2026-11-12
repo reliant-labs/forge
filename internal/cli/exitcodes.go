@@ -56,6 +56,8 @@ package cli
 // internal/cli/exitcodes.go is the only place either number is written.
 // Known consumer: reliant's internal/toolexec/daemonruntime/cmd_forge_deploy.go
 // carries forge's exit code as DATA and branches on no specific value.
+import "github.com/reliant-labs/forge/pkg/release"
+
 const (
 	// exitOK is success, or an idempotent no-op. A re-run of a promote
 	// that already landed exits 0: reaching the requested end state is
@@ -198,6 +200,24 @@ const (
 	// lower or lift the floor on purpose. A forge that predates the reason
 	// maps it to 1 through the default branch, so old and new CLIs agree.
 	reasonBelowRollbackFloor = "below_rollback_floor"
+
+	// The env's promotion checks (delivery_policy.required_gates and
+	// .approval_hook), refused by the env's ledger: the control plane, or
+	// forge for an env without one.
+	//
+	// reasonRequiredGateFailed: a required gate is on the promotion, not
+	// passed. exitWrong: we looked, and the release failed a check.
+	reasonRequiredGateFailed = release.RefusalRequiredGateFailed
+	// reasonRequiredGateMissing: a required gate is not on the promotion.
+	// exitRefused: nothing is wrong with the release yet; run the check and
+	// pass its result with --gate.
+	reasonRequiredGateMissing = release.RefusalRequiredGateMissing
+	// reasonApprovalDenied: the approval hook denied (or could not be asked,
+	// which denies). exitRefused: declined, nothing lost.
+	reasonApprovalDenied = release.RefusalApprovalDenied
+	// reasonApprovalPending: the approval hook has not decided. exitRefused:
+	// the one of these that waiting (and a retry) fixes.
+	reasonApprovalPending = release.RefusalApprovalPending
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -221,9 +241,10 @@ func exitCodeForRefusal(reason string) int {
 	case reasonPromotionConflict, reasonSourceMoved, reasonPlanStale:
 		return exitConflict
 	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged,
-		reasonHealthGateUnproven, reasonHealthGatePending:
+		reasonHealthGateUnproven, reasonHealthGatePending,
+		reasonRequiredGateMissing, reasonApprovalDenied, reasonApprovalPending:
 		return exitRefused
-	case reasonBundleMissing, reasonHealthGateRegressed, reasonBelowRollbackFloor:
+	case reasonBundleMissing, reasonHealthGateRegressed, reasonBelowRollbackFloor, reasonRequiredGateFailed:
 		return exitWrong
 	default:
 		return exitWrong

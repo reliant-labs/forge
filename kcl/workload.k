@@ -4,6 +4,7 @@ binds to.
 
     fw.Workload  (== forge.Workload)   everything that runs
     forge.OnHost | forge.OnCompose | forge.OnCluster | forge.OnHosted | forge.BuildOnly
+    | forge.OnExternal
                                        where it runs, chosen per workload
 
 A workload is declared ONCE (deploy/kcl/workloads.k) and every env binds it
@@ -344,7 +345,112 @@ schema BuildOnly:
     type: "build-only" = "build-only"
     build_variants: [BuildVariant] = []
 
-type Runtime = OnHost | OnCompose | OnCluster | OnHosted | BuildOnly
+# The env-var names forge sets for an OnExternal hook. A hook's own `env`
+# may not redefine one: forge's value would win anyway, so a redefinition
+# could only ever be a silently ignored line.
+EXTERNAL_HOOK_ENV: [str] = [
+    "FORGE_ENV", "FORGE_WORKLOAD", "FORGE_PROJECT", "FORGE_PROJECT_DIR",
+    "FORGE_IMAGE", "FORGE_DIGEST", "FORGE_VERSION", "FORGE_RELEASE",
+    "FORGE_PREVIOUS_DIGEST", "FORGE_HOOK",
+]
+
+_hook_problems = lambda name: str, argv: any -> [str] {
+    _given = argv is not Undefined and argv is not None
+    _empty = _given and len(argv) == 0
+    _blank = _given and not _empty and not argv[0]
+    (["OnExternal.${name} is an empty argv: drop the field (no hook), or name the program to run"] if _empty else []) \
+        + (["OnExternal.${name}[0] is empty: the first element is the program forge execs"] if _blank else [])
+}
+
+schema OnExternal:
+    """Your own deploy tooling runs the workload (Helm, Fly.io, Cloud Run,
+    ECS, Argo CD, a script); forge records the release, builds and pushes
+    the image when the workload declares a build, and hands the frozen
+    digest to YOUR tool.
+
+    Four optional hooks, each an ARGV list exec'd with no shell (so nothing
+    is quoted or word-split for you). A `$FORGE_IMAGE`-style token inside an
+    element is replaced by forge's value for that variable; only forge's own
+    FORGE_* names are substituted, and the element stays ONE argument
+    whatever the value holds. Write the unbraced `$FORGE_X`: KCL
+    interpolates a dollar-brace in a string literal itself.
+
+      * `status` — read-only. Prints ONE JSON object on stdout:
+          {"digest": "sha256:…", "version": "…", "image": "…", "health": "…"}
+        `digest` is what is RUNNING (the same field `forge env status`
+        reads off a cluster); the others are optional. `health` is one of
+        healthy | degraded | absent | unknown. `forge env verify` compares
+        `digest` to the env's promoted pin; `forge env deploy` reads it
+        first and passes it on as FORGE_PREVIOUS_DIGEST.
+      * `plan` — read-only dry run of a deploy. Exit 0 = no change, 2 =
+        changes (the `helm diff --detailed-exitcode` / `terraform plan
+        -detailed-exitcode` convention); any other exit is an error. Its
+        output is YOUR diff: forge shows it and never parses it.
+      * `deploy` — `forge env deploy` runs it for this workload; exit 0 =
+        shipped.
+      * `health` — run after `deploy` succeeds; exit 0 = healthy.
+
+    Every hook is optional. With NO hooks the binding is RECORD-ONLY: forge
+    builds (when there is a build), records the release and the promotion,
+    and leaves running it to whatever already does — your CI, Argo, a
+    person. A missing `status` or `plan` makes `forge env verify` report
+    the workload UNVERIFIED, never "no diff".
+
+    Hook environment, beside the inherited process environment: `env`
+    below, then (when `pass_env`) the workload's own env, then forge's
+    FORGE_* set, which wins:
+
+      FORGE_ENV              the env name
+      FORGE_WORKLOAD         the workload's name
+      FORGE_PROJECT          the forge project name
+      FORGE_PROJECT_DIR      the project root (hooks run there by default)
+      FORGE_IMAGE            the image to run: repo@sha256:… when pinned
+      FORGE_DIGEST           sha256:… alone; "" when not pinned
+      FORGE_VERSION          the image's version tag (the deploy's tag)
+      FORGE_RELEASE          the release the env is promoted to ("" unbound)
+      FORGE_PREVIOUS_DIGEST  what `status` reported running before this
+                             deploy; "" without a status hook
+      FORGE_HOOK             status | plan | deploy | health
+
+    `pass_env = True` also hands the hooks the workload's literal env values
+    and every secret-backed entry the env's secret provider resolves by
+    name (a secret it cannot resolve is named on stderr, never passed
+    empty). Off by default: deploy tooling rarely needs the app's env, and
+    secrets should not reach a process that did not ask for them.
+
+    It is a runtime BINDING, like OnCluster: the workload stays declared
+    once in workloads.k, and staging may bind it OnCluster while prod binds
+    it OnExternal. forge renders no manifests for it.
+    """
+    type: "external" = "external"
+    status?: [str]
+    plan?: [str]
+    deploy?: [str]
+    health?: [str]
+    # Extra environment for every hook. FORGE_* names are forge's.
+    env: {str:str} = {}
+    # Pass the workload's resolved env (literals + provider-resolved
+    # secrets) to the hooks. See above.
+    pass_env: bool = False
+    # Where the hooks run. Relative to the project root; default the root.
+    working_dir?: str
+    # Per-hook ceiling in seconds. A hook still running is killed and the
+    # step fails (status/plan: the workload reads as an error, not a match).
+    timeout: int = 900
+    # The CPU architecture the image runs on, which forge needs at BUILD time
+    # when it builds the image (the same fact as OnHosted.platform): an arm64
+    # laptop building for an amd64 Cloud Run must still produce amd64.
+    platform: str = "amd64"
+
+    check:
+        len(_hook_problems("status", status) + _hook_problems("plan", plan) + _hook_problems("deploy", deploy) + _hook_problems("health", health)) == 0, \
+            "; ".join(_hook_problems("status", status) + _hook_problems("plan", plan) + _hook_problems("deploy", deploy) + _hook_problems("health", health))
+        all k in env { k not in EXTERNAL_HOOK_ENV }, \
+            "OnExternal.env may not set ${[k for k in env if k in EXTERNAL_HOOK_ENV]}: forge sets FORGE_* itself and its value wins"
+        timeout > 0, "OnExternal.timeout must be > 0 seconds — got ${timeout}"
+        platform in ["amd64", "arm64"], "OnExternal.platform must be 'amd64' or 'arm64' (the GOARCH the image runs on) — got '${platform}'"
+
+type Runtime = OnHost | OnCompose | OnCluster | OnHosted | BuildOnly | OnExternal
 
 _invalid_annotation_keys = lambda a: any -> [str] {
     annotations_lib.invalid_keys(a) if a else []

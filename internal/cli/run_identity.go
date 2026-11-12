@@ -39,12 +39,19 @@ const (
 	envGitLabPipelineID  = "CI_PIPELINE_ID"
 	envGitLabProjectPath = "CI_PROJECT_PATH"
 	envGitLabPipelineURL = "CI_PIPELINE_URL"
+
+	envBuildkitePipelineSlug = "BUILDKITE_PIPELINE_SLUG"
+	envBuildkiteBuildNumber  = "BUILDKITE_BUILD_NUMBER"
+	envBuildkiteBuildURL     = "BUILDKITE_BUILD_URL"
 )
 
 // The provider labels a defaulted run carries. DISPLAY ONLY (release.Run).
 const (
 	runProviderGitHub = "github"
 	runProviderGitLab = "gitlab"
+	// runProviderBuildkite is a Buildkite build. Its id is the pipeline and
+	// build number, which a job retry within the build keeps.
+	runProviderBuildkite = "buildkite"
 	// runProviderManual is what an explicitly-supplied id with no
 	// recognised CI environment gets: a human at a terminal, or an
 	// unrecognised runner.
@@ -121,7 +128,26 @@ func runFromEnvironment(getenv func(string) string) release.Run {
 	if run, ok := gitLabRun(getenv); ok {
 		return run
 	}
+	if run, ok := buildkiteRun(getenv); ok {
+		return run
+	}
 	return release.Run{}
+}
+
+func buildkiteRun(getenv func(string) string) (release.Run, bool) {
+	number := strings.TrimSpace(getenv(envBuildkiteBuildNumber))
+	if number == "" {
+		return release.Run{}, false
+	}
+	runID := runProviderBuildkite + ":" + number
+	if slug := strings.TrimSpace(getenv(envBuildkitePipelineSlug)); slug != "" {
+		runID = fmt.Sprintf("%s:%s/%s", runProviderBuildkite, slug, number)
+	}
+	return release.Run{
+		ID:       runID,
+		URL:      strings.TrimSpace(getenv(envBuildkiteBuildURL)),
+		Provider: runProviderBuildkite,
+	}, true
 }
 
 // gitHubRun builds "github:<owner/repo>/<run id>/<attempt>".

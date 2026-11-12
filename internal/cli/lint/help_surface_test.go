@@ -193,6 +193,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// production quietly lacking what dev had.
 		"static-export",
 		"strict",
+		// Gating, and about the user's own tests: a fixed sleep or a
+		// one-second deadline is how a suite that passes on a laptop
+		// flakes on a loaded CI machine. The lane runs in every forge
+		// lint; the flag is how to run it alone while cleaning up.
+		"test-waits",
 		"tests",
 		// The read-only-fields twin for REPORTING queries, and silent in
 		// the same way: a two-argument date_trunc over a TIMESTAMPTZ

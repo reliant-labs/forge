@@ -97,6 +97,11 @@ import {
   TraceparentPropagator,
 } from "./node-trace.js";
 import { redactSecrets } from "./track.js";
+import {
+  authEventRecord,
+  type AuthEventKind,
+  type AuthEventProps,
+} from "./auth-events.js";
 
 export { frontendServiceName } from "./service-name.js";
 export {
@@ -221,6 +226,10 @@ export interface NodeTelemetry {
 }
 
 let current: NodeTelemetry | null = null;
+/** Writes one product event through the running instance; null when stopped. */
+let productEventSink:
+  | ((name: string, userId: string, props: Attributes) => void)
+  | null = null;
 
 /** The running instance, or null before init / after shutdown. */
 export function getNodeTelemetry(): NodeTelemetry | null {
@@ -430,16 +439,22 @@ export function initNodeTelemetry(
     return current;
   }
   try {
-    const instance = start(config);
-    current = instance;
-    return instance;
+    const started = start(config);
+    if (started) {
+      current = started.instance;
+      productEventSink = started.writeProductEvent;
+    }
+    return current;
   } catch {
     // Telemetry must never break the app.
     return null;
   }
 }
 
-function start(config: NodeTelemetryConfig): NodeTelemetry | null {
+function start(config: NodeTelemetryConfig): {
+  instance: NodeTelemetry;
+  writeProductEvent: (name: string, userId: string, props: Attributes) => void;
+} | null {
   if (typeof process === "undefined" || !process.versions?.node) {
     return null;
   }
@@ -600,6 +615,27 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
     }
   }
 
+  // A product event: the record forge/pkg/observe.Track writes, so the
+  // product_events view reads both the same way.
+  const writeProductEvent = (
+    name: string,
+    eventUserId: string,
+    props: Attributes,
+  ): void => {
+    const attributes: Attributes = {
+      "event.name": `product.${name}`,
+      "user.id": eventUserId,
+      "app.client": config.appClient || "backend",
+    };
+    if (config.serviceVersion) {
+      attributes["app.version"] = config.serviceVersion;
+    }
+    for (const [key, value] of Object.entries(props)) {
+      attributes[`product.${key}`] = value;
+    }
+    emit("INFO", `product.${name}`, attributes);
+  };
+
   // ── Process errors ──────────────────────────────────────────────────────
   const recorded = new WeakSet<object>();
   const repeats = new Map<string, { since: number; count: number }>();
@@ -741,13 +777,16 @@ function start(config: NodeTelemetryConfig): NodeTelemetry | null {
       if (ownsTrace) trace.disable();
       if (ownsPropagation) propagation.disable();
       if (ownsContext) contextApi.disable();
-      if (current === instance) current = null;
+      if (current === instance) {
+        current = null;
+        productEventSink = null;
+      }
     },
     get dropped() {
       return logs.dropped + spans.dropped;
     },
   };
-  return instance;
+  return { instance, writeProductEvent };
 }
 
 function safeHomedir(): string | undefined {
@@ -755,6 +794,41 @@ function safeHomedir(): string | undefined {
     return homedir() || undefined;
   } catch {
     return undefined;
+  }
+}
+
+export type { AuthEventKind, AuthEventProps } from "./auth-events.js";
+
+/**
+ * Record a standard auth event (`auth_signed_up`, `auth_signed_in`,
+ * `auth_signed_out`) from a Node server: a Next.js route handler or an
+ * Express backend completing an Auth0 or Clerk callback. It is one INFO log
+ * record in the shape forge/pkg/observe.TrackAuth writes (event.name
+ * `product.auth_<kind>`, `user.id`, `app.client` — `backend` unless
+ * `appClient` says otherwise — and `product.kind|method|provider|…`), so the
+ * console counts it with the server's own events.
+ *
+ *   trackAuthEvent("signed_in", { userId: session.user.sub, method: "password", provider: "auth0" });
+ *
+ * `userId` is the provider's opaque subject; an id that is empty, longer than
+ * 128 characters or contains '@' is refused (one console warning). A no-op
+ * before initNodeTelemetry and after shutdown. Never throws.
+ */
+export function trackAuthEvent(
+  kind: AuthEventKind,
+  props: AuthEventProps,
+): void {
+  try {
+    const sink = productEventSink;
+    if (!sink) {
+      return;
+    }
+    const record = authEventRecord(kind, props);
+    if (record) {
+      sink(record.name, record.userId, record.attributes);
+    }
+  } catch {
+    // Telemetry must never break the app.
   }
 }
 

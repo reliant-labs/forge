@@ -31,6 +31,7 @@ const (
 	placementCompose   = topology.PlacementCompose
 	placementHost      = topology.PlacementHost
 	placementBuildOnly = topology.PlacementBuildOnly
+	placementExternal  = topology.PlacementExternal
 )
 
 // The actuator vocabulary: WHO applies a part.
@@ -40,6 +41,7 @@ const (
 	actuatorForge    = topology.ActuatorForge
 	actuatorMachine  = topology.ActuatorMachine
 	actuatorNone     = topology.ActuatorNone
+	actuatorExternal = topology.ActuatorExternal
 )
 
 // partPlacement is one deployable part of an env and where it runs.
@@ -83,6 +85,8 @@ func placementsOf(e *KCLEntities) []partPlacement {
 			p.Placement, p.Actuator = placementCompose, actuatorMachine
 		case RuntimeHost:
 			p.Placement, p.Actuator = placementHost, actuatorMachine
+		case RuntimeExternal:
+			p.Placement, p.Actuator = placementExternal, actuatorExternal
 		default:
 			p.Placement, p.Actuator = placementBuildOnly, actuatorNone
 		}

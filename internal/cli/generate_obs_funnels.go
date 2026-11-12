@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
 // declaredFunnels is the product funnels the project's frontends declare
@@ -97,5 +98,19 @@ func declaredCounts(analytics []renderedEnvAnalytics) ([]obsdash.EventCount, err
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// declaredActivity is the project's user-activity rules: the union of every
+// env's Observability.analytics not_activity and exclude_users_with, so an
+// event any environment declares is a rule for the project's dashboards.
+func declaredActivity(analytics []renderedEnvAnalytics) (obsquery.Activity, error) {
+	var out obsquery.Activity
+	for _, a := range analytics {
+		out = out.Merge(obsquery.Activity{NotActivity: a.Analytics.NotActivity, ExcludeUsersWith: a.Analytics.ExcludeUsersWith})
+	}
+	if err := out.Validate(); err != nil {
+		return obsquery.Activity{}, fmt.Errorf("observability.analytics: %w", err)
+	}
 	return out, nil
 }

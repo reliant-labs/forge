@@ -1442,6 +1442,10 @@ type FunnelStepEntity struct {
 type ProjectAnalyticsEntity struct {
 	Funnels []FunnelEntity `json:"funnels,omitempty"`
 	Counts  []CountEntity  `json:"counts,omitempty"`
+	// NotActivity and ExcludeUsersWith are the user-activity rules
+	// (obsquery.Activity).
+	NotActivity      []string `json:"not_activity,omitempty"`
+	ExcludeUsersWith []string `json:"exclude_users_with,omitempty"`
 }
 
 // CountEntity mirrors kcl/schema.k Count.

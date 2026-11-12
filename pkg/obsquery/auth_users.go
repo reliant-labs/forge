@@ -21,7 +21,11 @@ import (
 //     user-attributed product event: the standard auth events (a sign-in, the
 //     auth middleware's daily resumed heartbeat), the automatic CRUD events,
 //     the app's own. "Signed in during the range" is the meaning; every
-//     event a signed-in user caused is the evidence.
+//     event a signed-in user caused is the evidence. An event that is a
+//     fact about the user rather than something they did
+//     (observe.TrackState) is not, and a project's declared rules
+//     (Activity: events that are not activity, markers whose users are left
+//     out) narrow it further through ActiveEvidenceFor.
 //   - NewUsersSource: each user's "new" moment. An environment that reports
 //     sign-ups (an auth_signed_up in the NewUsersWindowDays before the end
 //     of the range) counts the users who signed up; one that does not counts
@@ -54,8 +58,12 @@ const EventAuthAccounts = "auth_accounts"
 
 // ActiveEvidence is the predicate on product_events rows that count their
 // UserId as active: any user-attributed event except a sign-out (which ends a
-// session) and the platform's account snapshot.
-const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')"
+// session), the platform's account snapshot, and an event that is a fact
+// about the user rather than something they did (observe.TrackState's
+// observe.PropKind = observe.KindState: a billing snapshot, a staff marker).
+// A project's own rules extend it (ActiveEvidenceFor).
+const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')" +
+	" AND Props['" + observe.PropKind + "'] != '" + observe.KindState + "'"
 
 // NewUsersSource is a subquery over table with one row per new user of the
 // window that ends at to (a DateTime64(9) SQL expression):
@@ -69,6 +77,12 @@ const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.A
 // an extra predicate on the rows ("" for none): the environments and
 // services of the read. A caller counts the users with NewAt in its range.
 func NewUsersSource(table, to, scope string) string {
+	return newUsersSource(table, to, scope, ActiveEvidence)
+}
+
+// newUsersSource is NewUsersSource with evidence as the rows that count a user
+// (ActiveEvidence, or ActiveEvidenceFor a project's rules).
+func newUsersSource(table, to, scope, evidence string) string {
 	if scope != "" {
 		scope = " AND " + scope
 	}
@@ -80,7 +94,7 @@ func NewUsersSource(table, to, scope string) string {
 		"    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, " + signup + ") AS signed_up_at,\n" +
 		"           toUInt8(countIf(" + signup + ") > 0) AS has_signup\n" +
 		"    FROM " + table + "\n" +
-		"    WHERE " + ActiveEvidence + " AND Timestamp >= " + to + " - INTERVAL " + strconv.Itoa(NewUsersWindowDays) + " DAY AND Timestamp < " + to + scope + "\n" +
+		"    WHERE " + evidence + " AND Timestamp >= " + to + " - INTERVAL " + strconv.Itoa(NewUsersWindowDays) + " DAY AND Timestamp < " + to + scope + "\n" +
 		"    GROUP BY EnvId, UserId))\n" +
 		"WHERE has_signup = 1 OR reports = 0"
 }
@@ -140,6 +154,9 @@ type UserActivityQuery struct {
 	SeriesDays uint32
 	// WantSeenTotal adds SeenTotal, the one read over the whole retention.
 	WantSeenTotal bool
+	// Activity is the project's declared rules (ActiveEvidenceFor); zero is
+	// ActiveEvidence alone.
+	Activity Activity
 }
 
 // window is the query's derived time bounds.
@@ -176,6 +193,9 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 	if q.SeriesDays > MaxUserActivitySeriesDays {
 		return Stmt{}, invalid("series_days must be at most %d", MaxUserActivitySeriesDays)
 	}
+	if err := q.Activity.Validate(); err != nil {
+		return Stmt{}, err
+	}
 	s := q.Scope
 	w := q.window()
 	b := newBuilder(s)
@@ -197,6 +217,7 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 		return " AND " + c
 	}
 	table := b.table(s, tblProduct)
+	evidence := ActiveEvidenceFor(table, q.Activity)
 	to, curFrom, prevFrom, readFrom := b.nanoTime(w.to), b.nanoTime(w.curFrom), b.nanoTime(w.prevFrom), b.nanoTime(w.readFrom)
 
 	const zeros = "toUInt64(0), toUInt64(0), toUInt64(0)"
@@ -246,16 +267,16 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 			"       toUInt64(uniqExact(UserId)) AS active_users, toUInt64(0), toUInt64(0),\n"+
 			"       CAST([] AS Array(String)), min(Timestamp) AS first_at, toUInt32(max(RetentionDays)) AS retention_days, toUInt8(0)\n"+
 			"FROM "+table+"\n"+
-			"WHERE "+ActiveEvidence+" AND Timestamp >= "+seenFrom+" AND Timestamp < "+to+and(scopeSQL)+"\n"+
+			"WHERE "+evidence+" AND Timestamp >= "+seenFrom+" AND Timestamp < "+to+and(scopeSQL)+"\n"+
 			"GROUP BY EnvId")
 	}
 	sql := "WITH\n" +
 		"act AS (\n" +
 		"  SELECT EnvId, UserId, Timestamp, Client, RetentionDays\n" +
 		"  FROM " + table + "\n" +
-		"  WHERE " + ActiveEvidence + " AND Timestamp >= " + readFrom + " AND Timestamp < " + to + and(scopeSQL) + "),\n" +
-		"nu_cur AS (\n" + NewUsersSource(table, to, scopeSQL) + "),\n" +
-		"nu_prev AS (\n" + NewUsersSource(table, curFrom, scopeSQL) + ")\n" +
+		"  WHERE " + evidence + " AND Timestamp >= " + readFrom + " AND Timestamp < " + to + and(scopeSQL) + "),\n" +
+		"nu_cur AS (\n" + NewUsersSourceFor(table, to, scopeSQL, q.Activity) + "),\n" +
+		"nu_prev AS (\n" + NewUsersSourceFor(table, curFrom, scopeSQL, q.Activity) + ")\n" +
 		strings.Join(parts, "\nUNION ALL\n")
 	return b.stmt(sql), nil
 }

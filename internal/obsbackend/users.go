@@ -24,6 +24,10 @@ type UserActivityRequest struct {
 	SeriesDays int
 	// WantSeenTotal asks for the retention-wide distinct users.
 	WantSeenTotal bool
+	// Activity is the project's declared user-activity rules (the ones forge
+	// generate compiled into its dashboards). The local reader compiles them
+	// into its statement; a hosted env's answer is the control plane's.
+	Activity obsquery.Activity
 }
 
 // UserCounts are the distinct users of one window.
@@ -81,7 +85,7 @@ func (l Local) UserActivity(ctx context.Context, req UserActivityRequest) (UserA
 	}
 	sc := obsquery.Scope{Database: obsquery.LocalDatabase, Local: true, Services: req.Services, Start: req.Range.From, End: req.Range.To}
 	l.Instances.apply(&sc)
-	q := obsquery.UserActivityQuery{Scope: sc, SeriesDays: uint32(req.SeriesDays), WantSeenTotal: req.WantSeenTotal}
+	q := obsquery.UserActivityQuery{Scope: sc, SeriesDays: uint32(req.SeriesDays), WantSeenTotal: req.WantSeenTotal, Activity: req.Activity}
 	st, err := q.Compile()
 	if err != nil {
 		return UserActivityResult{}, compileErr(err)

@@ -114,7 +114,7 @@ func Users(in Input) dashspec.Dashboard {
 			"Signed-in users by product events in the range, with the days they were active and when they were last seen. `forge obs sessions <env> --user <id>` lists a user's sessions.",
 			mostActiveUsersSQL, 24, 9),
 	}
-	return d
+	return in.withActivity(d)
 }
 
 // rollingUsers is one row per UTC day of the range over each user's active

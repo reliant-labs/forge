@@ -49,6 +49,11 @@ a warning. Property values become strings; keep them low-cardinality and
 never put secrets or personal data in them. A `slog.Group` flattens to
 `group.key`.
 
+`observe.TrackState` emits a fact about a user that is not activity (a
+snapshot, a marker); the user counts skip it. Load
+`observability/product-events/user-counts` for it and for the project's own
+rules (`not_activity`, `exclude_users_with`).
+
 ## Automatic events from generated CRUD
 
 Every generated Create, Update and Delete rpc records a product event once its

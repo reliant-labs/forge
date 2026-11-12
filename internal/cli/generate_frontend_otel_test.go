@@ -144,17 +144,17 @@ func TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn(t *testing.T) {
 				t.Errorf("no native-login.ts, so no identify:\n%s", s)
 			}
 
-			write := func(rel string) {
+			write := func(rel, body string) {
 				t.Helper()
 				p := filepath.Join(lib, filepath.FromSlash(rel))
 				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(p, []byte("export {};\n"), 0o644); err != nil {
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			write("auth/native-login.ts")
+			write("auth/native-login.ts", "export {};\n")
 			s = read()
 			for _, absent := range []string{"identify: identify(cfg)", `from "./api-base"`, "/auth/session`"} {
 				if strings.Contains(s, absent) {
@@ -165,7 +165,13 @@ func TestGenerateFrontendNav_OtelIdentifiesOnlyWithNativeSignIn(t *testing.T) {
 				t.Errorf("page views stay on without identity:\n%s", s)
 			}
 
-			write("api-base.ts")
+			// An api-base.ts that does not export apiBase (an older scaffold's
+			// apiBaseUrl) is not something otel_gen.ts can import from.
+			write("api-base.ts", "export function apiBaseUrl(): string { return \"/api\"; }\n")
+			if s = read(); strings.Contains(s, `from "./api-base"`) {
+				t.Errorf("an api-base.ts without an apiBase export must not be imported from:\n%s", s)
+			}
+			write("api-base.ts", "export function apiBase(configured: string): string { return configured; }\n")
 			s = read()
 			if !strings.Contains(s, "identify: identify(cfg)") ||
 				!strings.Contains(s, `import { apiBase } from "./api-base";`) ||

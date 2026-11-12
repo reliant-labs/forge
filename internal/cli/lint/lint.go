@@ -64,6 +64,7 @@ type lintFlags struct {
 	configReach       bool
 	graph             bool
 	slowTests         bool
+	testWaits         bool
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
@@ -240,6 +241,16 @@ Examples:
 The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
 
+forge.yaml switches a whole lane off for the project (the frontend linted by
+its own toolchain, migrations owned by another tool):
+
+  lint:
+    lanes: {frontend: off, migration-safety: off, db-grants: off}
+
+An off lane does not run and is never silently missing: it is listed as
+"off (forge.yaml lint.lanes)" in the report and the verdict. Naming the lane
+on the command line (forge lint --migration-safety) still runs it.
+
 Additional maintainer/debug flags exist (forge-repo internals, wiring
 audits, suggest-* helpers); run 'forge lint --help-dev' to list them.`
 
@@ -364,6 +375,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.graph, "graph", false, "Check the composition graph (internal/app) as a whole: every component and provider is reached by some root, and every listener serves only services of its chain's audience. FAILS the build on an error (graph mode only)")
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
+	cmd.Flags().BoolVar(&flags.testWaits, "test-waits", false, "Fail on a Go test that waits on the wall clock where it should wait on an event — a time.Sleep before the test goes on, an event wait that fails the test after a deadline under 5s (select on time.After, testify Eventually, a poll bounded by time.Now().Add), or an upper bound asserted on real elapsed time — the shapes that flake on a loaded machine. Runs in every forge lint; the fix is testkit.Eventually / testkit.Receive")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, contract refusals in a tree with no forge.yaml, and an advisory lane's own could-not-run report (the typed-config guardrail when golangci-lint never reported). Not needed for a gating lane that could NOT run: that always fails, unless --allow-skip accepts it")
 	// No backticks (see --optional-deps-guard): cobra would take the quoted
 	// span as the argument placeholder.
@@ -412,10 +424,16 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
+	// formatSkipFrontends keeps the format lane off the frontends without
+	// dropping their typecheck: a frontend whose lint lane is off
+	// (frontendSkips).
+	formatSkipFrontends bool
 	// allowSkip is the parsed --allow-skip + lint.allow_skip (lint_skip.go).
 	allowSkip skipAllowances
-	paths     []string
-	cfg       *config.ProjectConfig
+	// lanesOff is the resolved lint.lanes (lint_lanes.go).
+	lanesOff map[string]bool
+	paths    []string
+	cfg      *config.ProjectConfig
 	// scope restricts findings to files under the --scope paths; nil is
 	// the whole project (lint_structured.go).
 	scope *lintScope
@@ -844,7 +862,7 @@ func frontendDirsForLint() []string {
 func featureTurnOn(feature string) string {
 	switch feature {
 	case "migrations":
-		return "migrations turn on when db/migrations/ exists in a service project"
+		return "migrations turn on when the migrations directory (database.migrations_dir, default db/migrations/) exists in a service project"
 	case "contracts":
 		return "contracts are on for every project kind; this config forced them off"
 	}
@@ -938,6 +956,9 @@ type lintVerdict struct {
 	failed []string
 	// unscoped are whole-project lanes a --scope run did not run.
 	unscoped []string
+	// off are the lanes forge.yaml's lint.lanes switched off: named, never
+	// counted as passed.
+	off []string
 	// scope is the --scope value, "" for a whole-project run.
 	scope string
 	// hiddenWarnings counts findings --quiet did not print.
@@ -988,6 +1009,9 @@ func (v lintVerdict) render(w io.Writer) error {
 		if len(v.skipped) > 0 {
 			detail = append(detail, "skipped: "+strings.Join(v.skipped, ", "))
 		}
+		if len(v.off) > 0 {
+			detail = append(detail, laneOffNote+": "+strings.Join(v.off, ", "))
+		}
 		if len(detail) == 0 {
 			detail = append(detail, "no gating linter was applicable here")
 		}
@@ -1010,6 +1034,9 @@ func (v lintVerdict) render(w io.Writer) error {
 	}
 	if len(v.skipped) > 0 {
 		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
+	}
+	if len(v.off) > 0 {
+		extras = append(extras, fmt.Sprintf("%d %s: %s", len(v.off), laneOffNote, strings.Join(v.off, ", ")))
 	}
 	if len(v.graced) > 0 {
 		extras = append(extras, describeGraced(v.graced))

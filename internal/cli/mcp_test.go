@@ -88,7 +88,10 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	if init.ServerInfo.Name != "forge" {
 		t.Errorf("server name = %q, want forge", init.ServerInfo.Name)
 	}
-	for _, want := range []string{"Reliant Forge", "reliant-labs/forge", "Atlassian Forge", "skill_load"} {
+	// The front door: what forge does for a repo that is not a forge
+	// project comes first, and routes to benefits and the adopt skill.
+	for _, want := range []string{"Reliant Forge", "reliant-labs/forge", "Atlassian Forge", "skill_load",
+		"any language", "Start with benefits", "name=adopt", "https://forge.reliantlabs.io", "sign-in required"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("instructions missing %q:\n%s", want, init.Instructions)
 		}
@@ -102,7 +105,7 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = tool
 	}
-	readOnly := []string{"capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
+	readOnly := []string{"benefits", "capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
 		"deploy_status", "explain_error"}
 	mutating := []string{"lint", "generate", "report_bug", "deploy_claimable"}
 	if len(got) != len(readOnly)+len(mutating) {
@@ -309,8 +312,8 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 14 {
-		t.Fatalf("tools/list response = %s (err %v), want 14 tools", got[2], err)
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 15 {
+		t.Fatalf("tools/list response = %s (err %v), want 15 tools", got[2], err)
 	}
 }
 

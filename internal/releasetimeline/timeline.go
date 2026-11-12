@@ -160,11 +160,15 @@ type Entry struct {
 	RunURL           string `json:"run_url,omitempty"`
 	Note             string `json:"note,omitempty"`
 	// Targets is set when a scoped deploy moved only some components.
-	Targets    []string     `json:"targets,omitempty"`
-	Superseded bool         `json:"superseded_in_flight,omitempty"`
-	Range      *CommitRange `json:"commit_range,omitempty"`
-	Rollout    *Rollout     `json:"rollout,omitempty"`
-	Gates      []GateResult `json:"gates,omitempty"`
+	Targets    []string `json:"targets,omitempty"`
+	Superseded bool     `json:"superseded_in_flight,omitempty"`
+	// Recorded marks a promotion of a record-only release: an outside
+	// pipeline deployed it and `forge release record` wrote it down, so
+	// forge applied nothing. Readers label it "recorded by CI".
+	Recorded bool         `json:"recorded,omitempty"`
+	Range    *CommitRange `json:"commit_range,omitempty"`
+	Rollout  *Rollout     `json:"rollout,omitempty"`
+	Gates    []GateResult `json:"gates,omitempty"`
 	// GateVerdict is the worst gate result: failed, error, passed or
 	// skipped; empty when no gate was recorded.
 	GateVerdict string  `json:"gate_verdict,omitempty"`
@@ -211,6 +215,7 @@ func Assemble(d Data, since time.Time, limit int) Timeline {
 			Note:        p.Note,
 			Targets:     p.Targets,
 			Superseded:  p.SupersededInFlight,
+			Recorded:    p.RecordOnly,
 		}
 		if ev, ok := activity[i]; ok {
 			e.Actor = firstNonEmpty(ev.ActorName, e.Actor)

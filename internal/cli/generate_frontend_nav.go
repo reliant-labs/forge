@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -316,7 +317,7 @@ func emitNextjsTier1Gen(projectDir, feDir string, fe config.FrontendConfig, data
 	// `tsc --noEmit` failed and no amount of `forge generate` brought it
 	// back. Emitting it here makes the banner true.
 	otelContent, err := templates.FrontendTemplates().Render(
-		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"), data)
+		filepath.Join("nextjs", "src", "lib", "otel_gen.ts.tmpl"), withSessionIdentity(projectDir, feDir, data))
 	if err != nil {
 		return fmt.Errorf("render otel_gen.ts for %s: %w", fe.Name, err)
 	}
@@ -378,7 +379,7 @@ func generateViteFrontend(cfg *config.ProjectConfig, projectDir string, fe confi
 	// inlines at build time, handed to the HyperDX SDK wiring in
 	// @reliantlabs/forge-web-runtime/telemetry. Same module the Next.js
 	// loop emits, with the Vite spelling of the env reads.
-	if err := emitOtelGen(projectDir, feDir, "vite-spa", data, cs); err != nil {
+	if err := emitOtelGen(projectDir, feDir, "vite-spa", withSessionIdentity(projectDir, feDir, data), cs); err != nil {
 		return fmt.Errorf("emit otel_gen.ts for %s: %w", fe.Name, err)
 	}
 	// use-query-resource.ts pairs with <Resource>. It ships in the Vite
@@ -488,6 +489,47 @@ func printDependencyNotices(feName, feDir string, notices []string) {
 		fmt.Printf("  ℹ️  frontend %s (%s is disowned, so forge leaves it as is): %s\n",
 			feName, filepath.ToSlash(filepath.Join(feDir, "package.json")), n)
 	}
+}
+
+// withSessionIdentity sets the fields otel_gen.ts gates its `identify`
+// option on, from the frontend's own owned modules. Identity is on only when
+// the frontend signs in natively (src/lib/auth/native-login.ts, which asks
+// /auth/session at load) AND has src/lib/api-base.ts, the module
+// native-login.ts resolves that URL through: telemetry then asks exactly the
+// origin sign-in asks, dev proxy and runtime config included. Without
+// api-base.ts there is no resolution to share, so the page asks nothing
+// rather than guess an origin that may miss the session cookie. Also sets
+// the typed-config facts its mock-mode check follows. Read from disk because
+// these are the app's files: an adopted frontend never had them, and an app
+// that deleted native-login.ts decides its user itself.
+func withSessionIdentity(projectDir, feDir string, data templates.FrontendTemplateData) templates.FrontendTemplateData {
+	exists := func(rel string) bool {
+		info, err := os.Stat(filepath.Join(projectDir, feDir, filepath.FromSlash(rel)))
+		return err == nil && !info.IsDir()
+	}
+	data.IdentifySession = exists("src/lib/auth/native-login.ts") && exportsAPIBase(filepath.Join(projectDir, feDir, "src", "lib", "api-base.ts"))
+	// Mock mode is read where session-provider.ts reads it: the typed
+	// config module when the frontend has one.
+	typed := frontendTypedConfig(projectDir, data.FrontendName)
+	data.HasTypedConfig, data.HasMockAPI = typed.Bound, typed.HasMockAPI
+	return data
+}
+
+// apiBaseExport matches the declaration otel_gen.ts imports from
+// api-base.ts: `export function apiBase(` (async or not) or an exported
+// const/let of that name.
+var apiBaseExport = regexp.MustCompile(`(?m)^\s*export\s+(?:(?:async\s+)?function\s+apiBase\s*[(<]|(?:const|let)\s+apiBase\b)`)
+
+// exportsAPIBase reports whether the frontend's api-base.ts exports the
+// `apiBase` otel_gen.ts imports. The file is the APP's (scaffolded once,
+// never rewritten): one scaffolded before forge's current template exports
+// `apiBaseUrl()` instead, and gating identity on the file's mere presence made
+// the always-regenerated otel_gen.ts import a name that module does not have,
+// which fails the frontend's typecheck. Such a frontend gets no session
+// identity, as one without api-base.ts does, until it exports apiBase.
+func exportsAPIBase(path string) bool {
+	src, err := os.ReadFile(path)
+	return err == nil && apiBaseExport.Match(src)
 }
 
 // emitOtelGen renders <tmplSubdir>/src/lib/otel_gen.ts.tmpl into the

@@ -41,6 +41,19 @@ const close = (server) => new Promise((done) => {
   server.closeAllConnections();
   server.close(done);
 });
+// Poll until `condition()` holds; fails with `what` after `ms`.
+const until = async (condition, ms, what) => {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((done) => setTimeout(done, 100));
+  }
+};
+// The rrweb records in decoded OTLP log batches.
+const replayRecords = (logs) => logs.flatMap((batch) => batch.resourceLogs ?? [])
+  .flatMap((resource) => resource.scopeLogs ?? [])
+  .filter((scope) => scope.scope?.name === "rum.rr-web")
+  .flatMap((scope) => scope.logRecords ?? []);
 
 // URLs select only files in these package roots, never the host filesystem.
 async function moduleFile(url) {
@@ -106,10 +119,12 @@ test("raw interactions stay in masked replay; explicit action and RPC share real
 <script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
-import { disableTelemetry } from '/runtime/track.js';
+import { disableTelemetry, grantAnalyticsConsent } from '/runtime/track.js';
 window.withdrawConsent = disableTelemetry;
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
-window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
+// Replay records a person: it runs only in the full analytics tier.
+grantAnalyticsConsent();
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
 for (const type of ['mousedown','mouseup','click']) document.querySelector('#idle').addEventListener(type, () => {});
 document.querySelector('#action').addEventListener('click', () => {
@@ -155,15 +170,19 @@ document.querySelector('#action').addEventListener('click', () => {
         processor._finishedSpans?.some(span => span.name === 'HTTP POST'));
     }, undefined, { timeout: 5000 });
     await page.evaluate(async () => {
-      // Both are the REAL SDK's providers, not a test substitute.
+      // The REAL SDK's provider, not a test substitute.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
-      window.withdrawConsent();
     });
-    // Let the real recorder deliver its batch, independently of trace export.
-    const replayResponse = page.waitForResponse(response => response.url().endsWith('/_otel/v1/logs') && response.ok(), { timeout: 10000 });
-    // Wait on actual replay export (the SDK batches every 5s), not a sleep
-    // or an unload handler modern browsers are allowed to suppress.
-    await replayResponse;
+    // Let the real recorder deliver the clicks, independently of trace
+    // export: wait on its actual export (it batches every 5s), not a sleep or
+    // an unload handler modern browsers are allowed to suppress. Withdrawal
+    // drops whatever it still holds, so this must arrive before it.
+    await until(() => replayRecords(logs).some((record) => {
+      const event = JSON.parse(record.body.stringValue);
+      return event.type === 3 && event.data.source === 2;
+    }), 15000, "a replay batch carrying the clicks");
+    await page.evaluate(() => window.withdrawConsent());
+    const logsAtWithdrawal = logs.length;
     const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
       .flatMap((resource) => resource.scopeSpans ?? [])
       .flatMap((scope) => scope.spans ?? []);
@@ -181,16 +200,14 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.equal(fetch.parentSpanId, action.spanId, "fetch is a child, not just the same trace");
     assert.deepEqual(requests, [`00-${fetch.traceId}-${fetch.spanId}-01`], "wire parent is the exported fetch span, not the interceptor's synthetic fallback");
     assert.ok(spans.some((span) => span.name === "documentLoad"), "document-load tracing remains enabled");
-    const replay = logs.flatMap((batch) => batch.resourceLogs ?? [])
-      .flatMap((resource) => resource.scopeLogs ?? [])
-      .filter((scope) => scope.scope?.name === "rum.rr-web")
-      .flatMap((scope) => scope.logRecords ?? []);
+    const replay = replayRecords(logs);
     assert.ok(replay.length > 0, "session replay still exports records");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
     // Withdrawal goes through the public runtime API, not an SDK-only test
-    // substitute. Prior queued records may flush, but no post-withdrawal DOM
-    // mutation can become a new replay event.
+    // substitute. No post-withdrawal DOM mutation becomes a replay event, and
+    // nothing at all is posted after it (the dedicated test below covers
+    // what was buffered before it).
     await page.evaluate(() => {
       const marker = document.createElement('div');
       marker.id = 'after-consent-withdrawn';
@@ -199,6 +216,7 @@ document.querySelector('#action').addEventListener('click', () => {
     await new Promise(resolve => setTimeout(resolve, 5500));
     assert.equal(JSON.stringify(logs).includes('after-consent-withdrawn'), false,
       'consent withdrawal stops the real recorder');
+    assert.equal(logs.length, logsAtWithdrawal, "no replay batch is posted after consent is withdrawn");
     const exported = JSON.stringify([...traces, ...logs]);
     for (const secret of ["PRIVATE_TEXT_SENTINEL", "PRIVATE_INPUT_SENTINEL", "PRIVATE_EDIT_SENTINEL"]) {
       assert.equal(exported.includes(secret), false, "private text never leaves the browser");
@@ -210,6 +228,118 @@ document.querySelector('#action').addEventListener('click', () => {
     await close(collector);
   }
 });
+
+// Withdrawal means stop now (telemetry.ts, "Withdrawal stops replay now"),
+// proven against the real recorder: it buffers records for 5s and still posts
+// them once stopped, and a second stop() starts a `record stop` span on its
+// `rum.rr-web` tracer. After the withdrawal no replay batch is posted, not even
+// one holding what was recorded before it, and no replay span is exported, even
+// when the SDK's recorder is stopped again directly.
+for (const withdraw of ["disableTelemetry", "revokeAnalyticsConsent"]) {
+test(`${withdraw}(): no replay record or replay span leaves the page after it, not even one recorded before it`, { timeout: 45000 }, async () => {
+  const traces = [];
+  const logs = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("logs")) logs.push(LogsData.decode(decoded));
+        else traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+import { disableTelemetry, grantAnalyticsConsent, revokeAnalyticsConsent } from '/runtime/track.js';
+window.tracing = trace;
+window.withdraw = { disableTelemetry, revokeAnalyticsConsent }[${JSON.stringify(withdraw)}];
+// Replay records a person: it runs only in the full analytics tier.
+grantAnalyticsConsent();
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, consoleCapture: false });
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    // Replay runs while consented: the recorder's first batch (the page's
+    // snapshot) is posted. Right after a batch went, the next is due 5s after
+    // the recorder's next record, so the record below stays buffered.
+    await until(() => replayRecords(logs).length > 0, 15000, "the first replay batch");
+    await page.evaluate(async () => {
+      const marker = document.createElement("p");
+      marker.id = "recorded-before-withdrawal";
+      document.body.append(marker);
+      // The recorder sees the mutation once the observer runs.
+      await new Promise((done) => setTimeout(done, 200));
+    });
+    const logsAtWithdrawal = logs.length;
+    await page.evaluate(async () => {
+      // Every span made before the withdrawal leaves before it.
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+      window.withdraw();
+      // Anything else that stops the recorder again: the app, or the SDK.
+      globalThis.HyperDX.stopSessionRecorder();
+      const marker = document.createElement("p");
+      marker.id = "recorded-after-withdrawal";
+      document.body.append(marker);
+    });
+    const tracesAtWithdrawal = traces.length;
+    // Past the recorder's 5s batch timer, then everything still queued leaves:
+    // the trace provider is flushed and the page unloads (the recorder flushes
+    // on unload too).
+    await new Promise((done) => setTimeout(done, 6000));
+    await page.evaluate(async () => {
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+    });
+    await page.goto("about:blank");
+    await new Promise((done) => setTimeout(done, 500));
+
+    assert.deepEqual(errors, []);
+    assert.equal(logs.length, logsAtWithdrawal, "no replay batch is posted after the withdrawal");
+    const posted = JSON.stringify(logs);
+    assert.equal(posted.includes("recorded-before-withdrawal"), false, "what the recorder buffered before the withdrawal is dropped, not sent");
+    assert.equal(posted.includes("recorded-after-withdrawal"), false, "nothing is recorded after the withdrawal");
+    const replaySpans = (batches) => batches.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .filter((scope) => scope.scope?.name === "rum.rr-web")
+      .flatMap((scope) => scope.spans ?? []);
+    assert.ok(replaySpans(traces.slice(0, tracesAtWithdrawal)).some((span) => span.name === "record init"), "the recorder's own spans are exported while it runs");
+    assert.deepEqual(replaySpans(traces.slice(tracesAtWithdrawal)).map((span) => span.name), [], "no replay span is exported after the withdrawal");
+    assert.equal(JSON.stringify([...traces, ...logs]).includes("PRIVATE_TEXT_SENTINEL"), false, "private text never leaves the browser");
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});
+}
 
 // The benign-error filter (src/benign-errors.ts) acts on what the REAL SDK
 // records (its `errors` tracer's spans), never on the events the app sees:
@@ -425,6 +555,118 @@ window.mark = (name) => trace.getTracer('viewport-proof').startSpan(name).end();
     await close(server);
   }
 });
+
+// The cookieless analytics modes (identified, the default, and aggregate)
+// store NOTHING on the device, proven with the real SDK in a real browser: after every emitter the runtime has has run,
+// the cookie jar, localStorage and sessionStorage are empty, and the product
+// events still went out, on one session, with no persistent id.
+for (const [mode, tier] of [[undefined, "identified"], ["aggregate", "aggregate"]]) {
+test(`analytics mode ${mode ?? "unset (identified)"} stores nothing on the device and still measures`, { timeout: 30000 }, async () => {
+  const traces = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html>
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+import { analyticsTier, track } from '/runtime/track.js';
+import { identifyUser, trackAuthEvent } from '/runtime/auth-events.js';
+import { trackExposure } from '/runtime/exposure.js';
+window.tracing = trace;
+const mode = new URLSearchParams(location.search).get('mode') || undefined;
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false, pageViews: true, replay: true, analytics: mode });
+track('checkout_started', { plan: 'pro' });
+history.pushState({}, '', '/orders/17');
+identifyUser('u-1', { provider: 'clerk' });
+trackAuthEvent('signed_in', { userId: 'u-1', method: 'password' });
+trackExposure('new-checkout', 'treatment');
+window.tier = analyticsTier();
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${origin}/?utm_source=news&gclid=SECRET-CLICK-ID${mode ? `&mode=${mode}` : ""}`);
+    await page.waitForFunction((want) => window.ready === true && window.tier === want, tier, { timeout: 5000 });
+    await page.evaluate(async () => {
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+    });
+    const device = await page.evaluate(() => ({
+      localStorage: localStorage.length,
+      sessionStorage: sessionStorage.length,
+    }));
+
+    assert.deepEqual(errors, []);
+    assert.deepEqual(await context.cookies(), [], "no cookie in the browser's jar");
+    assert.deepEqual(device, { localStorage: 0, sessionStorage: 0 }, "no web storage");
+
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const attrs = (span) => Object.fromEntries((span.attributes ?? []).map((a) => [a.key, a.value?.stringValue ?? a.value?.boolValue]));
+    const actions = spans.map((s) => ({ name: s.name, attrs: attrs(s) }));
+    assert.equal(actions.some((a) => a.attrs["visitor.id"]), false, "no persistent visitor id");
+    const views = actions.filter((a) => a.name === "page_viewed");
+    assert.equal(views.length, 2, `two page views: ${JSON.stringify(actions.map((a) => a.name))}`);
+    const entry = views.find((v) => v.attrs.entry === "true");
+    assert.ok(entry, "the first view is the entry");
+    assert.equal(entry.attrs.utm_source, "news");
+    assert.equal(entry.attrs.click_id, "google");
+    for (const name of ["checkout_started", "flag_evaluated", "auth_signed_in"]) {
+      assert.ok(actions.some((a) => a.name === name), `${name} is exported`);
+    }
+    // The SDK stamps its session on the resource of every batch.
+    const sessions = new Set(traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .map((r) => r.resource?.attributes?.find((a) => a.key === "rum.sessionId")?.value?.stringValue)
+      .filter(Boolean));
+    assert.equal(sessions.size, 1, `one in-memory session: ${[...sessions]}`);
+    // The product events never carry the click id. (The SDK's own
+    // location.href span attribute is the page URL, query included; the
+    // ingest side scrubs it, see "Network URLs" in telemetry.ts.)
+    const productAttrs = actions
+      .filter((a) => ["page_viewed", "checkout_started", "flag_evaluated", "auth_signed_in"].includes(a.name))
+      .map((a) => Object.fromEntries(Object.entries(a.attrs).filter(([k]) => k !== "location.href")));
+    assert.equal(JSON.stringify(productAttrs).includes("SECRET-CLICK-ID"), false, "the click id is never a product-event prop");
+    // identified carries the signed-in subject; aggregate never does.
+    const users = new Set(actions.map((a) => a.attrs.userId).filter(Boolean));
+    assert.deepEqual([...users], tier === "identified" ? ["u-1"] : []);
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});
+}
 
 // interaction(): RPCs made while it is open — after the click handler has
 // returned, with no span active, as an effect or a stream hook makes them —

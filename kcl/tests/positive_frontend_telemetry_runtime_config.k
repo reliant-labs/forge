@@ -8,6 +8,8 @@ browser through the runtime config document:
   * console_capture = False renders CONSOLE_CAPTURE = "false", and a
     replay_sample_rate below 1 renders REPLAY_SAMPLE_RATE; the defaults render
     nothing;
+  * page_views = False renders PAGE_VIEWS = "false" and identify_user = False
+    renders IDENTIFY_USER = "false"; the defaults (both on) render nothing;
   * an author's own runtime_config entry for either key wins;
   * sourcemaps renders only when it is not the default "publish".
 """
@@ -60,6 +62,11 @@ _default_telemetry = forge.Frontend {
     runtime = forge.OnHosted {}
     telemetry = forge.BrowserTelemetry {}
 }
+_analytics_off = forge.Frontend {
+    name = "quiet", image = "ghcr.io/acme/quiet", path = "quiet", type = "nextjs"
+    runtime = forge.OnHosted {}
+    telemetry = forge.BrowserTelemetry {page_views = False, identify_user = False}
+}
 _on_host = forge.Frontend {
     name = "dev", path = "dev", type = "vite", port = 5173
     runtime = forge.OnHost {}
@@ -69,7 +76,7 @@ _on_host = forge.Frontend {
 _all = forge.render(forge.Bundle {
     project = "demo", env = "prod"
     control_plane = forge.ControlPlane {endpoint = "https://cp.example"}
-    frontends = [_plain, _tuned, _own, _via_config, _default_telemetry, _on_host]
+    frontends = [_plain, _tuned, _own, _via_config, _default_telemetry, _analytics_off, _on_host]
 })
 _off = forge.render(forge.Bundle {
     project = "demo", env = "prod"
@@ -100,3 +107,6 @@ assert_dev_resolved_config_carries_console_capture = _by.dev.runtime_config.CONS
 assert_dev_gets_no_ingest_default = "OTEL_ENDPOINT" not in _by.dev.runtime_config
 assert_sourcemaps_off_renders = _by.tuned.sourcemaps == "off"
 assert_sourcemaps_default_renders_nothing = "sourcemaps" not in _by.plain and "sourcemaps" not in _by.dflt
+assert_page_views_off_renders = _spec("quiet").PAGE_VIEWS.value == "false"
+assert_identify_user_off_renders = _spec("quiet").IDENTIFY_USER.value == "false"
+assert_analytics_defaults_render_nothing = "PAGE_VIEWS" not in _spec("tuned") and "IDENTIFY_USER" not in _spec("tuned")

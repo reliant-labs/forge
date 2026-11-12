@@ -509,6 +509,29 @@ func EnsureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 	return env.ID, created, err
 }
 
+// limitDeclaredShape is the declared shape as this control plane can take it.
+// The control plane strict-decodes a shape, so a part it predates would be
+// refused whole: it is asked what it reads only when there is something to
+// withhold, so every other declaration costs no call. An ENFORCING promotion
+// check it does not enforce would be withheld and so enforce nothing: that is
+// refused rather than let a declared refusal silently become an admission.
+func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declared release.Shape) (release.Shape, error) {
+	if !declared.HasOptionalParts() {
+		return declared, nil
+	}
+	reader, err := HostedBundleReader(ctx, c)
+	if err != nil {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
+	}
+	if missing := reader.UnenforcedChecks(declared); len(missing) > 0 {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: delivery_policy.%s is \"enforce\", but this control plane "+
+			"does not enforce it yet (it does not advertise %q), so it would admit every promotion the policy refuses. "+
+			"Set its mode to \"audit\" until the control plane is upgraded, or remove it",
+			env, strings.Join(missing, " and delivery_policy."), release.CapabilityEnforcesPromotionChecks)
+	}
+	return reader.LimitShape(declared), nil
+}
+
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess
@@ -530,16 +553,9 @@ func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvR
 		// through Shape.Encode is what guarantees the server stores the
 		// same bytes `forge env shape` printed, rather than whatever
 		// Go's marshaller happened to emit for the struct.
-		declared := *ref.Shape
-		if declared.HasOptionalParts() {
-			// The control plane strict-decodes this shape, so a part it
-			// predates would be refused whole. Asked only when there is
-			// something to withhold: every other declaration costs no call.
-			reader, rerr := HostedBundleReader(ctx, c)
-			if rerr != nil {
-				return wireEnvironment{}, false, fmt.Errorf("ensure environment %q: %w", ref.Name, rerr)
-			}
-			declared = reader.LimitShape(declared)
+		declared, err := limitDeclaredShape(ctx, c, ref.Name, *ref.Shape)
+		if err != nil {
+			return wireEnvironment{}, false, err
 		}
 		shape, err := shapeWireFields(declared)
 		if err != nil {

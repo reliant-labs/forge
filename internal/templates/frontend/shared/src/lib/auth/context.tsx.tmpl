@@ -73,7 +73,8 @@
 // The context object and useAuth() live in ./use-auth, so React Fast Refresh
 // can hot-swap this provider when you edit it. Import the hook from there.
 
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+{{if ne .Platform "react-native"}}import { identifyUser } from "@reliantlabs/forge-web-runtime";
+{{end}}import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { EventBusContext } from "../use-event";
 
@@ -93,6 +94,17 @@ import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{
 import { createSessionAuthProvider, isMockMode } from "./session-provider";
 import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 
+{{- if ne .Platform "react-native"}}
+// The runtime config's IDENTIFY_USER (config.js, window.__FORGE_CONFIG__):
+// anything but "false" lets the signed-in user be named to telemetry.
+function identifyUserAllowed(): boolean {
+  if (typeof window === "undefined") return false;
+  const cfg = (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> })
+    .__FORGE_CONFIG__;
+  return cfg?.IDENTIFY_USER !== "false";
+}
+
+{{- end}}
 export function AuthContextProvider({ children }: { children: ReactNode }) {
   const [identity, setIdentity] = useState<Identity>({ authenticated: false });
   const [isLoading, setIsLoading] = useState(true);
@@ -159,6 +171,25 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
     })();
   }, [refresh]);
 
+{{- if ne .Platform "react-native"}}
+  // Tell telemetry who is signed in: identifyUser attaches the opaque
+  // subject to every span and replay (the Sessions view, `forge obs sessions
+  // --user`) and sends one daily `auth_signed_in {kind: "resumed"}`. The
+  // server already counted the sign-in itself; this joins sessions to users.
+  // Not in mock mode, whose user is a fixture, and not when the runtime
+  // config says IDENTIFY_USER = "false" (telemetry.identify_user = False),
+  // which turns off this path as it does otel_gen.ts's session watcher: then
+  // any id attached earlier is cleared and no auth event is sent.
+  useEffect(() => {
+    if (mockSession || isLoading) return;
+    if (!identifyUserAllowed()) {
+      identifyUser(null);
+      return;
+    }
+    identifyUser(identity.authenticated ? (identity.subject ?? null) : null);
+  }, [mockSession, isLoading, identity.authenticated, identity.subject]);
+
+{{- end}}
   // A session can lapse mid-use: the cookie expires, or the server revokes it.
   // The transport emits `auth:expired` when an RPC fails Unauthenticated (HTTP
   // 401; see src/lib/connect.ts). Re-ask the server who is signed in rather

@@ -62,6 +62,21 @@ const (
 	AvailabilityReliant Availability = "reliant"
 )
 
+// Scope says what a repository needs before the benefit applies to it. It is
+// the adoption axis: what an agent working in a repo that has never seen
+// forge can use today, and what waits until the repo is a forge project.
+type Scope string
+
+const (
+	// ScopeAny means the benefit works in any repository, in any language,
+	// with no forge.yaml: a lint lane, a library, a command. Such an entry
+	// carries Adopt and Estimate, so an agent can quote the user a cost.
+	ScopeAny Scope = "any"
+	// ScopeForgeProject means the benefit needs a forge project (forge.yaml,
+	// and usually the code forge generates). The default.
+	ScopeForgeProject Scope = "forge-project"
+)
+
 // externalRepos are the sibling repositories an `external:` evidence item may
 // name. Their files are not in this checkout, so the item is format-checked
 // only.
@@ -97,9 +112,19 @@ type Benefit struct {
 	Headline bool `yaml:"headline" json:"headline"`
 	// Use is the one-line how-to, Why the incident or rationale, Docs the
 	// user-guide page. All optional; rendered verbatim (they are markdown).
-	Use      string     `yaml:"use,omitempty" json:"use,omitempty"`
-	Why      string     `yaml:"why,omitempty" json:"why,omitempty"`
-	Docs     string     `yaml:"docs,omitempty" json:"docs,omitempty"`
+	Use  string `yaml:"use,omitempty" json:"use,omitempty"`
+	Why  string `yaml:"why,omitempty" json:"why,omitempty"`
+	Docs string `yaml:"docs,omitempty" json:"docs,omitempty"`
+	// Scope is what a repository needs before the benefit applies (any |
+	// forge-project). Parse fills forge-project when it is unset.
+	Scope Scope `yaml:"scope,omitempty" json:"scope"`
+	// Adopt is the one-line entry recipe for a repo that is not yet a forge
+	// project: the first command or edit, verbatim enough to act on.
+	// Estimate is the agent's time from that first step to the first value
+	// the user sees ("~5 min", "~1 hour"). Both are set exactly when Scope
+	// is any. Markdown, rendered verbatim.
+	Adopt    string     `yaml:"adopt,omitempty" json:"adopt,omitempty"`
+	Estimate string     `yaml:"estimate,omitempty" json:"estimate,omitempty"`
 	Evidence []Evidence `yaml:"evidence" json:"evidence"`
 	// Rules lists the gradable lint rule ids a lint family covers.
 	Rules []Rule `yaml:"rules,omitempty" json:"rules,omitempty"`
@@ -191,6 +216,9 @@ func Parse(data []byte) (*Registry, error) {
 		if r.Benefits[i].Status == "" {
 			r.Benefits[i].Status = StatusEnforced
 		}
+		if r.Benefits[i].Scope == "" {
+			r.Benefits[i].Scope = ScopeForgeProject
+		}
 	}
 	if err := r.Validate(); err != nil {
 		return nil, err
@@ -202,7 +230,7 @@ var kebabID = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // reservedAnchors are the ids docs/benefits.md already uses for its own
 // headings; an entry anchored at one would make two targets of one link.
-var reservedAnchors = map[string]bool{"contents": true}
+var reservedAnchors = map[string]bool{"contents": true, AnyRepoAnchor: true}
 
 // Validate checks the schema: unique kebab-case ids, known categories,
 // non-empty prose, the status and availability enums, no in-progress
@@ -278,6 +306,7 @@ func (r *Registry) Validate() error {
 		if b.Docs != "" && !strings.HasPrefix(b.Docs, "https://") {
 			fail("%s: docs %q is not an https:// URL", where, b.Docs)
 		}
+		validateScope(b, func(format string, args ...any) { fail("%s: "+format, append([]any{where}, args...)...) })
 		if len(b.Evidence) == 0 {
 			fail("%s: no evidence; every claim names at least one thing that backs it", where)
 		}
@@ -307,6 +336,61 @@ func (r *Registry) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// estimateShape is "~" then a number then a unit: "~5 min", "~1 hour",
+// "~2-3 hours". The tilde is the point: it is an estimate an agent quotes.
+var estimateShape = regexp.MustCompile(`^~\d+(-\d+)? (min|mins|hour|hours|day|days)$`)
+
+// validateScope checks the adoption axis: the scope enum, and that adopt and
+// estimate are set exactly when the benefit works in any repo — an any-scope
+// entry an agent cannot start or cost is a claim without a recipe, and a
+// forge-project one with a recipe would read as working standalone. An
+// in-progress entry is never any-scope: the front door sells what ships.
+func validateScope(b Benefit, fail func(format string, args ...any)) {
+	switch b.Scope {
+	case ScopeAny, ScopeForgeProject:
+	default:
+		fail("scope %q is not one of any, forge-project", b.Scope)
+		return
+	}
+	if b.Scope != ScopeAny {
+		if b.Adopt != "" || b.Estimate != "" {
+			fail("adopt and estimate are only for scope: any (the recipe for a repo that is not a forge project)")
+		}
+		return
+	}
+	if b.Status == StatusInProgress {
+		fail("an in-progress entry may not be scope: any (the front door offers only what ships)")
+	}
+	if strings.TrimSpace(b.Adopt) == "" {
+		fail("scope: any needs adopt: the one-line entry recipe for a repo with no forge.yaml")
+	}
+	if b.Estimate == "" {
+		fail("scope: any needs estimate: the agent's time to first value, e.g. \"~5 min\"")
+	} else if !estimateShape.MatchString(b.Estimate) {
+		fail("estimate %q is not \"~<n> <unit>\" (min, hour or day; e.g. \"~10 min\", \"~1-2 hours\")", b.Estimate)
+	}
+	if strings.ContainsAny(b.Adopt, "|\n") {
+		fail("adopt may not contain '|' or a newline (it is a table cell)")
+	}
+}
+
+// AppliesTo returns the benefits a repository can use: every shipped one in
+// a forge project, and only the scope: any ones elsewhere. In-progress
+// entries are never offered.
+func (r *Registry) AppliesTo(forgeProject bool) []Benefit {
+	var out []Benefit
+	for _, b := range r.Benefits {
+		if b.Status == StatusInProgress {
+			continue
+		}
+		if !forgeProject && b.Scope != ScopeAny {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // validateEvidence returns what is wrong with one evidence item, or "".

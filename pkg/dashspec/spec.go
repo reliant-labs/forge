@@ -244,6 +244,11 @@ type Display struct {
 	// It is a pointer so Display stays comparable, as it was before Colors
 	// existed: == compares which map two Displays point at, not its entries.
 	Colors *SeriesColors `json:"colors,omitempty"`
+	// Exact draws a figure's values in full, never abbreviated: 1,284, not
+	// 1.3k. For a count a reader compares with another page that states it
+	// exactly (accounts, users). A number panel or a sql panel drawn as
+	// figures; a renderer that never abbreviates ignores it.
+	Exact bool `json:"exact,omitempty"`
 }
 
 // SeriesColors maps a series name to its palette colour (Display.Colors).
@@ -444,7 +449,11 @@ type Panel struct {
 	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
 	// {step} parameter. A range shorter than two buckets can draw only one
 	// point, so a renderer widens such a panel's range to hold two, and says
-	// so. Only a sql panel takes it.
+	// so. It is also the panel's bucket: a renderer that names a sql panel's
+	// bucket ("7-day buckets") names MinStep when it is set, rather than
+	// guessing from the result's first column (a Date column is a day, a
+	// toMonday one a week, and both read back as a Date). Only a sql panel
+	// takes it.
 	MinStep string `json:"minStep,omitempty"`
 	// Where narrows every series of the panel.
 	Where   []Predicate `json:"where,omitempty"`

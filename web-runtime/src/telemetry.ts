@@ -4,7 +4,9 @@
 //
 // Captures errors (uncaught, unhandled rejections, boundary-caught), console
 // output, fetch/XHR spans, document load, long tasks and web vitals, and
-// ships them to ClickStack through a SAME-ORIGIN `/_otel` route.
+// ships them to ClickStack through a SAME-ORIGIN `/_otel` route. Product
+// analytics ride on it in a tier the app and the person choose, cookieless
+// by default (see "Analytics tiers" below).
 //
 // ── Why HyperDX REPLACES the old OTel web wiring, not joins it ───────────
 //
@@ -50,13 +52,34 @@
 //
 // `replaySampleRate` (0..1, default 1) records only that share of SESSIONS. The
 // SDK has no session sampler, so the decision is made here, once, and held in
-// sessionStorage for the tab's session.
+// sessionStorage for the tab's session. Replay runs only in the `full`
+// analytics tier (below): it is per-person recording, which the cookieless
+// tiers never do.
+//
+// ── Withdrawal stops replay now ──────────────────────────────────────────
+//
+// When the tier leaves `full` (revokeAnalyticsConsent, optOutOfAnalytics) or
+// telemetry is disabled, no replay leaves the page from that instant: not a
+// record made afterwards, not one made before it and still buffered, and not
+// a span from stopping the recorder. Stopping the SDK's recorder alone does not
+// do that. It buffers rrweb records and posts them to `${ingest}/v1/logs` on
+// its own 5 s timer (and on unload), so a stopped recorder still sends what it
+// held; and a stop() on an already stopped recorder starts a `record stop`
+// span on its `rum.rr-web` tracer, so stopping twice exported one replay span
+// at the moment of withdrawal. So when replay runs, two gates go in right after
+// init and close for good, BEFORE the one stop: the recorder's record posts
+// (told from other OTLP logs to the same URL by their `rum.rr-web` scope) are
+// answered locally without the network (gateReplayRecords), and its
+// tracer's spans are never ended (gateReplaySpans). The recorder is stopped
+// once however many paths ask. Replay that already left before the withdrawal
+// stays where it is.
 //
 // ── One session per visit, even where cookies are dropped ────────────────
 //
 // The SDK keeps its session id only in the `__rum_sid` cookie and mints a new
 // one whenever it cannot read that cookie back, which it checks every minute.
-// An origin that drops cookies (an Electron renderer on a custom scheme such
+// Below the `full` analytics tier the cookie is answered from memory instead
+// (see "Analytics tiers"); in `full`, an origin that drops cookies (an Electron renderer on a custom scheme such
 // as `app://`) therefore got a new session every minute. Before init, the
 // runtime probes whether cookies persist and, when they do not, keeps that one
 // cookie in localStorage with the same 15-minute inactivity and 4-hour limits
@@ -105,6 +128,31 @@
 // URL keeps `HTTP <METHOD>`: a free-form path can carry ids and tokens, and
 // the span name is exported unscrubbed.
 //
+// ── Analytics tiers: cookieless by default ───────────────────────────────
+//
+// `analytics` is the app's ceiling: "off", "aggregate", "identified" (the
+// default) or "full". The tier the browser actually runs in is decided in track.ts
+// ("Analytics tiers"): below `full` NOTHING is stored on the device. The SDK's
+// `__rum_sid` session cookie is answered from memory
+// (session-cookie-fallback.ts, installRumSessionStore), there is no visitor
+// id, no campaign is stored, no replay runs and no sampling decision is kept.
+// Visitors are counted by the platform's ingest edge (a daily-salted hash it
+// computes and forgets), never by anything the page computes. `full` needs
+// mode "full" AND grantAnalyticsConsent(): then the session cookie, the
+// visitor id, attribution and (from the next page load) replay come back,
+// and revokeAnalyticsConsent() / optOutOfAnalytics() take them away again
+// and erase what was stored. GPC / DNT cap the browser at `aggregate`.
+//
+// ── Page views and the signed-in user, when asked ────────────────────────
+//
+// `pageViews` records a `page_viewed {route}` product event per route
+// (page-views.ts); `identify` finds the signed-in user from the API's
+// `/auth/session` and stamps their opaque id on every event
+// (session-identity.ts). Both are OFF in this API, so a hand-written caller
+// sees no change; forge's generated otel_gen.ts turns them on, and an env
+// turns them off with PAGE_VIEWS / IDENTIFY_USER = "false" in its runtime
+// config. Both start only once the SDK runs and stop on disableTelemetry().
+//
 // ── Client context ───────────────────────────────────────────────────────
 //
 // The page reports what only it can know about its client — client hints
@@ -130,6 +178,7 @@ import {
   captureAttribution,
   type AttributionTouch,
   detectAppClient,
+  stopAttribution,
   takeIdentifyProps,
 } from "./attribution.js";
 import {
@@ -144,15 +193,33 @@ import {
 } from "./client-context.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installFetchContext } from "./interaction-context.js";
-import { installSessionCookieFallback } from "./session-cookie-fallback.js";
+import { installPageViews, type PageViewOptions } from "./page-views.js";
+import {
+  type IdentifyOptions,
+  type SessionIdentity,
+  watchSessionIdentity,
+} from "./session-identity.js";
+import {
+  installRumSessionStore,
+  type RumSessionStore,
+} from "./session-cookie-fallback.js";
 import {
   registerRumSession,
   registerTelemetryStartup,
   rumSessionId,
 } from "./telemetry-gate.js";
 import {
+  type AnalyticsMode,
+  analyticsTier,
+  browserPrivacyOptOut,
+  currentAnalyticsMode,
+  eraseAnalyticsDeviceState,
+  grantAnalyticsConsent,
   isTelemetryDisabled,
+  onAnalyticsTierChange,
+  setAnalyticsMode,
   setTelemetrySink,
+  stampedTelemetryUser,
   type TrackValue,
 } from "./track.js";
 
@@ -164,10 +231,16 @@ export {
 
 export {
   cookiesPersist,
+  installRumSessionStore,
   installSessionCookieFallback,
   RUM_SESSION_COOKIE,
   RUM_SESSION_STORAGE_KEY,
+  type RumSessionBackend,
+  type RumSessionStore,
 } from "./session-cookie-fallback.js";
+
+export { type PageViewOptions } from "./page-views.js";
+export { type IdentifyOptions } from "./session-identity.js";
 
 export {
   type BenignErrorClassifier,
@@ -234,6 +307,11 @@ export interface BrowserTelemetryConfig {
   /**
    * Session replay (rrweb). Default false. When true, all text and inputs are
    * masked, media is blocked and canvas is not recorded (see the header).
+   * It runs only in the `full` analytics tier (`analytics: "full"` and
+   * grantAnalyticsConsent() before this call): replay records a person, which
+   * the cookieless tiers never do. Consent granted later in the page load
+   * starts it on the next one. Consent withdrawn stops it at once, and what
+   * the recorder had buffered is dropped, not sent.
    */
   replay?: boolean;
   /**
@@ -253,19 +331,41 @@ export interface BrowserTelemetryConfig {
    */
   appClient?: string;
   /**
+   * The app's analytics ceiling (track.ts, "Analytics tiers"), ordered
+   * off < aggregate < identified < full:
+   *
+   *   "identified" (default) cookieless: product events with no persistent
+   *                          id and nothing stored on the device; the
+   *                          signed-in user's opaque id rides along once one
+   *                          is named.
+   *   "aggregate"            as identified, but strictly anonymous: no user
+   *                          id on browser events, even when signed in.
+   *   "full"                 as identified until the app calls
+   *                          grantAnalyticsConsent(); then a persistent
+   *                          visitor id, the RUM session cookie, campaign
+   *                          attribution across days and replay.
+   *   "off"                  no product events and no user id; errors and
+   *                          traces still flow.
+   *
+   * GPC / DNT cap any mode at aggregate, with no user id. forge's generated
+   * otel_gen.ts passes the runtime config's ANALYTICS_MODE (absent means
+   * "identified").
+   */
+  analytics?: AnalyticsMode;
+  /**
    * localStorage key holding this browser's anonymous visitor id (stamped as
-   * `visitor.id`). Set it to adopt an id a site already keeps, e.g. a landing
-   * page's `reliant.visitor_id`. Default `forge.visitor_id`. A `rid` in the
-   * landing URL wins over it.
+   * `visitor.id`) in the `full` tier. Set it to adopt an id a site already
+   * keeps, e.g. a landing page's `reliant.visitor_id`. Default
+   * `forge.visitor_id`. A `rid` in the landing URL wins over it.
    */
   visitorIdStorageKey?: string;
   /**
-   * Start visitor attribution with the SDK. Default true. Pass false when the
-   * visitor id needs a consent the page does not have yet (error telemetry for
-   * everyone, a visitor id only with analytics consent): no visitor id is
-   * created, read or stamped, nothing is captured from the URL, withAttribution
-   * returns URLs untouched and `user_identified` never fires, until the app
-   * calls enableAttribution().
+   * @deprecated Use `analytics` and grantAnalyticsConsent(). Kept working:
+   * with `analytics` unset, passing `attribution` at all sets the mode to
+   * "full" (it was always a choice about a persistent visitor id); `true`
+   * also grants consent at start, as `attribution: true` started attribution
+   * before; `false` waits for enableAttribution() / grantAnalyticsConsent().
+   * Unset, there is no visitor id below the `full` tier.
    */
   attribution?: boolean;
   /**
@@ -286,6 +386,26 @@ export interface BrowserTelemetryConfig {
    * value. Pass `() => null` to record everything.
    */
   classifyBenignError?: BenignErrorClassifier;
+  /**
+   * Record a `page_viewed {route}` product event for each route the user
+   * lands on (page-views.ts): the pathname only, basePath stripped, ids
+   * replaced by `:id`, consecutive repeats dropped. Default false; forge's
+   * generated src/lib/otel_gen.ts turns it on unless the env's runtime
+   * config says `PAGE_VIEWS = "false"`. Pass options to strip a basePath or
+   * name routes yourself.
+   */
+  pageViews?: boolean | PageViewOptions;
+  /**
+   * Find the signed-in user by asking `sessionUrl` (the API's
+   * `/auth/session`, with the cookie) and pass its `subject` to
+   * setTelemetryUser, again on a move into or out of `/auth/*` and when the
+   * tab becomes visible (session-identity.ts). Unset (the default), nothing
+   * is asked; forge's generated src/lib/otel_gen.ts sets it for a frontend
+   * with native sign-in unless the runtime config says
+   * `IDENTIFY_USER = "false"`. An app that calls setTelemetryUser from its
+   * own IdP leaves it unset.
+   */
+  identify?: IdentifyOptions;
 }
 
 /** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
@@ -316,13 +436,16 @@ function captureVisitor(config: BrowserTelemetryConfig): string {
 }
 
 /**
- * Turn on visitor attribution for a page that started telemetry with
- * `attribution: false`, once the consent it needs is granted: from here on
- * every event carries `visitor.id`, withAttribution stamps links and the first
- * sign-in emits `user_identified`. Pass `search` (the landing URL's query
- * string, kept from page load) when a client-side navigation may have dropped
- * it since. Safe to call before init resolves, more than once, and on the
- * server; a no-op after disableTelemetry().
+ * @deprecated Use grantAnalyticsConsent(). Kept working: it raises the
+ * default "identified" mode to "full" (a caller asking for attribution has said it
+ * wants the persistent visitor id) and grants consent, so from here on every
+ * event carries `visitor.id`, withAttribution stamps links and the first
+ * sign-in emits `user_identified`. A mode of "off" or "aggregate" (an app's
+ * explicit choice) stays as it is, and GPC / DNT
+ * still cap the browser at aggregate. Pass `search` (the landing URL's query
+ * string, kept from page load) when a client-side navigation may have
+ * dropped it since. Safe to call before init resolves, more than once, and
+ * on the server; a no-op after disableTelemetry().
  */
 export function enableAttribution(options?: { search?: string }): void {
   if (typeof window === "undefined" || isTelemetryDisabled()) {
@@ -331,19 +454,401 @@ export function enableAttribution(options?: { search?: string }): void {
   if (options?.search !== undefined) {
     attributionOptions = { search: options.search };
   }
-  if (attributionWanted) {
+  if (currentAnalyticsMode() === "identified") {
+    setAnalyticsMode("full");
+  }
+  grantAnalyticsConsent();
+}
+
+// The mode a config asks for: `analytics`, else the legacy `attribution`
+// (any explicit value meant a persistent visitor id: "full"), else the
+// cookieless default, "identified".
+function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
+  const mode = config.analytics;
+  if (
+    mode === "off" ||
+    mode === "aggregate" ||
+    mode === "identified" ||
+    mode === "full"
+  ) {
+    return mode;
+  }
+  return config.attribution === undefined ? "identified" : "full";
+}
+
+// Start or stop the full tier's device state on a running SDK as the tier
+// moves: the session moves to the device and back, the visitor id is
+// stamped or blanked, and the first sign-in is identified.
+function applyTier(
+  tier: string,
+  previous: string,
+  hdx: HyperDXClient,
+  config: BrowserTelemetryConfig,
+  rum: RumSessionStore | null,
+  stopReplay: () => void,
+): void {
+  if (tier !== "full") {
+    // First, before anything else moves: replay records a person, and it
+    // never outlives the full tier (see "Withdrawal stops replay now").
+    stopReplay();
+  }
+  if (tier === "full" && previous !== "full") {
+    rum?.moveToDevice(localStorageOrNull());
+    attributionWanted = true;
+    hdx.setGlobalAttributes?.({ "visitor.id": captureVisitor(config) });
+    const user = stampedTelemetryUser();
+    const identify = user ? takeIdentifyProps(user) : null;
+    if (identify) {
+      hdx.addAction?.("user_identified", identify);
+    }
     return;
   }
-  attributionWanted = true;
-  if (runningClient && runningConfig) {
-    try {
-      runningClient.setGlobalAttributes?.({
-        "visitor.id": captureVisitor(runningConfig),
-      });
-    } catch {
-      // Telemetry must never break the app.
+  if (tier !== "full") {
+    rum?.moveToMemory();
+    if (attributionWanted || previous === "full") {
+      attributionWanted = false;
+      stopAttribution();
+      hdx.setGlobalAttributes?.({ "visitor.id": "" });
     }
   }
+}
+
+/** The scope (name, version) the SDK's session recorder records spans under. */
+const SDK_REPLAY_SCOPE = { name: "rum.rr-web", version: "4.0.0" } as const;
+
+/** Where the SDK's recorder posts its records: `${ingest}${this}`. */
+const SDK_REPLAY_LOGS_PATH = "/v1/logs";
+
+/**
+ * Puts both replay exports behind a gate that closes for good when the
+ * returned stop runs, and stops the recorder then, once. See "Withdrawal stops
+ * replay now" in the header. Call it right after hdx.init, with replay on.
+ */
+function gateReplay(hdx: HyperDXClient, ingest: string): () => void {
+  let open = true;
+  const closed = () => !open;
+  gateReplayRecords(`${ingest}${SDK_REPLAY_LOGS_PATH}`, closed);
+  gateReplaySpans(closed);
+  return () => {
+    if (!open) {
+      return;
+    }
+    // Closed before the stop, so nothing the stop emits gets out.
+    open = false;
+    try {
+      hdx.stopSessionRecorder?.();
+    } catch {
+      // Telemetry must never break the app; the gates hold either way.
+    }
+  };
+}
+
+type FetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
+
+/**
+ * Answers the recorder's record posts itself, without the network, once
+ * `closed()`: the batch it had buffered when replay stopped is dropped, not
+ * sent. Every other request passes through untouched, including other OTLP
+ * logs posted to the same `${ingest}/v1/logs`: a post is the recorder's only
+ * when its OTLP body names the recorder's scope (isReplayBatch). The recorder
+ * calls the global fetch when it exports, so this layer is reached whatever
+ * wraps fetch after it.
+ */
+function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
+  const g = globalThis as { fetch?: FetchFn };
+  const inner = g.fetch;
+  if (typeof inner !== "function") {
+    return;
+  }
+  const target = canonicalUrl(logsUrl, logsUrl);
+  g.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
+    if (
+      !closed() ||
+      target === undefined ||
+      canonicalUrl(requestUrl(args[0]), logsUrl) !== target
+    ) {
+      return inner.apply(this, args);
+    }
+    return isReplayBatch(args[0], args[1]).then((replay) =>
+      replay
+        ? typeof Response === "function"
+          ? new Response(null, { status: 204 })
+          : (undefined as unknown as Response)
+        : inner.apply(this, args),
+    );
+  };
+}
+
+/**
+ * Whether a request carries the recorder's records: an OTLP logs body
+ * (gzip-compressed, as the recorder sends it, or not) one of whose ScopeLogs
+ * has the recorder's scope name, read at its field path (hasReplayScope), so
+ * the same bytes inside a log body or attribute do not count. A gzip body this
+ * browser cannot decompress counts as the recorder's when it is protobuf, the
+ * recorder's shape: after a withdrawal, dropping an unreadable log batch is
+ * the side to err on.
+ */
+async function isReplayBatch(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<boolean> {
+  try {
+    const headers = requestHeaders(input, init);
+    let bytes = await requestBody(input, init);
+    if (!bytes) {
+      return false;
+    }
+    if (/\bgzip\b/i.test(headers?.get("content-encoding") ?? "")) {
+      const plain = await gunzip(bytes);
+      if (!plain) {
+        return /x-protobuf/i.test(headers?.get("content-type") ?? "");
+      }
+      bytes = plain;
+    }
+    return hasReplayScope(bytes);
+  } catch {
+    // Unreadable: not provably the recorder's, so it goes out as asked.
+    return false;
+  }
+}
+
+/** SDK_REPLAY_SCOPE.name as the UTF-8 bytes protobuf carries. */
+const REPLAY_SCOPE_NAME: readonly number[] = Array.from(
+  SDK_REPLAY_SCOPE.name,
+  (c) => c.charCodeAt(0),
+);
+
+/**
+ * Whether an OTLP ExportLogsServiceRequest, protobuf-encoded, has a ScopeLogs
+ * whose scope is the recorder's: the path resource_logs (1) → scope_logs (2)
+ * → scope (1) → name (1), as opentelemetry-proto's logs.proto defines it.
+ * Every other field, a log record's body and attributes included, is skipped
+ * unread. Throws on a body that is not well-formed protobuf.
+ */
+function hasReplayScope(request: Uint8Array): boolean {
+  let found = false;
+  forEachField(request, 1, (resourceLogs) => {
+    forEachField(resourceLogs, 2, (scopeLogs) => {
+      // A scalar field repeated on the wire: the last one is its value.
+      let name: Uint8Array | undefined;
+      forEachField(scopeLogs, 1, (scope) => {
+        forEachField(scope, 1, (n) => {
+          name = n;
+        });
+      });
+      if (name && sameBytes(name, REPLAY_SCOPE_NAME)) {
+        found = true;
+      }
+    });
+  });
+  return found;
+}
+
+/**
+ * Calls `visit` with the payload of every length-delimited field numbered
+ * `field` in `message`, in order, skipping all others by their wire type.
+ * Throws on a truncated or malformed message.
+ */
+function forEachField(
+  message: Uint8Array,
+  field: number,
+  visit: (payload: Uint8Array) => void,
+): void {
+  let at = 0;
+  const varint = (): number => {
+    let value = 0;
+    for (let shift = 0; shift < 64; shift += 7) {
+      if (at >= message.length) {
+        throw new Error("protobuf: truncated varint");
+      }
+      const b = message[at++] as number;
+      // Lengths and tags fit in 53 bits; higher bits only matter to skip.
+      value += (b & 0x7f) * 2 ** shift;
+      if ((b & 0x80) === 0) {
+        return value;
+      }
+    }
+    throw new Error("protobuf: varint too long");
+  };
+  const skip = (n: number) => {
+    if (at + n > message.length) {
+      throw new Error("protobuf: truncated field");
+    }
+    at += n;
+  };
+  while (at < message.length) {
+    const tag = varint();
+    const wire = tag % 8;
+    const number = Math.floor(tag / 8);
+    switch (wire) {
+      case 0:
+        varint();
+        break;
+      case 1:
+        skip(8);
+        break;
+      case 2: {
+        const length = varint();
+        const start = at;
+        skip(length);
+        if (number === field) {
+          visit(message.subarray(start, start + length));
+        }
+        break;
+      }
+      case 5:
+        skip(4);
+        break;
+      default:
+        // Groups (3, 4) are not in OTLP; anything else is not protobuf.
+        throw new Error(`protobuf: wire type ${wire}`);
+    }
+  }
+}
+
+function sameBytes(a: Uint8Array, b: readonly number[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function requestHeaders(
+  input: unknown,
+  init: RequestInit | undefined,
+): Headers | undefined {
+  if (typeof Headers !== "function") {
+    return undefined;
+  }
+  if (init?.headers) {
+    return new Headers(init.headers);
+  }
+  if (typeof Request === "function" && input instanceof Request) {
+    return input.headers;
+  }
+  return undefined;
+}
+
+async function requestBody(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<Uint8Array | undefined> {
+  const body: unknown = init?.body;
+  if (body == null) {
+    if (typeof Request === "function" && input instanceof Request) {
+      return new Uint8Array(await input.clone().arrayBuffer());
+    }
+    return undefined;
+  }
+  if (body instanceof Uint8Array) {
+    return body;
+  }
+  if (body instanceof ArrayBuffer) {
+    return new Uint8Array(body);
+  }
+  if (ArrayBuffer.isView(body)) {
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (typeof Blob === "function" && body instanceof Blob) {
+    return new Uint8Array(await body.arrayBuffer());
+  }
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body);
+  }
+  return undefined;
+}
+
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
+  if (
+    typeof DecompressionStream !== "function" ||
+    typeof Response !== "function"
+  ) {
+    return undefined;
+  }
+  try {
+    const stream = new Response(bytes as BodyInit).body?.pipeThrough(
+      new DecompressionStream("gzip"),
+    );
+    if (!stream) {
+      return undefined;
+    }
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `url` resolved against `base`, without query, fragment or a trailing slash,
+ * so equivalent spellings of the logs endpoint compare equal.
+ */
+function canonicalUrl(url: string | undefined, base: string) {
+  if (url === undefined || typeof URL === "undefined") {
+    return url;
+  }
+  try {
+    const u = new URL(url, base);
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url;
+  }
+}
+
+function requestUrl(input: unknown): string | undefined {
+  try {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (typeof URL !== "undefined" && input instanceof URL) {
+      return input.href;
+    }
+    const url = (input as { url?: unknown } | null)?.url;
+    return typeof url === "string" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Leaves unended, so unexported, every span the recorder's tracer would end
+ * once `closed()`. The SDK's recorder starts a `record stop` span when it is
+ * stopped a second time; any later stop, from the app or the SDK, is caught
+ * here.
+ */
+function gateReplaySpans(closed: () => boolean): void {
+  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
+  const provider = (proxy.getDelegate?.() ?? proxy) as {
+    getTracer?: (name: string, version?: string) => unknown;
+  };
+  const tracer = provider.getTracer?.(
+    SDK_REPLAY_SCOPE.name,
+    SDK_REPLAY_SCOPE.version,
+  ) as StartSpanTracer | undefined;
+  if (!tracer || typeof tracer.startSpan !== "function") {
+    return;
+  }
+  const original = tracer.startSpan;
+  tracer.startSpan = function (
+    this: unknown,
+    name: string,
+    ...rest: unknown[]
+  ): unknown {
+    const span = original.call(this, name, ...rest) as RecordingSpan;
+    if (typeof span?.end !== "function") {
+      return span;
+    }
+    const end = span.end;
+    span.end = function (this: unknown, ...args: unknown[]) {
+      // Never ended, so never exported.
+      return closed() ? undefined : end.apply(this, args);
+    };
+    return span;
+  };
 }
 
 /**
@@ -361,6 +866,28 @@ export function initBrowserTelemetry(
   }
   if (isTelemetryDisabled()) {
     return Promise.resolve(false);
+  }
+  // Before anything is held or replayed: the tier decides what track() and
+  // setTelemetryUser may send. A mode raised before init (enableAttribution,
+  // documented safe to call before init, lifts the default "identified" to
+  // "full") is never lowered back by the default: an app that hands the
+  // landing attribution over and then starts telemetry keeps its visitor id.
+  // An explicit configured mode still wins ("off" and "aggregate" are the
+  // app's choice, as in enableAttribution).
+  const configured = configuredMode(config);
+  setAnalyticsMode(
+    configured === "identified" && currentAnalyticsMode() === "full"
+      ? "full"
+      : configured,
+  );
+  if (config.analytics === undefined && config.attribution === true) {
+    grantAnalyticsConsent();
+  }
+  if (currentAnalyticsMode() !== "full") {
+    // Ids an earlier page load stored (before analytics were cookieless by
+    // default, or under a mode since lowered) are not kept by a mode that
+    // can never reach `full`.
+    eraseAnalyticsDeviceState();
   }
   const ingest = resolveIngestUrl(config.endpoint, window.location.origin);
   if (!ingest) {
@@ -388,9 +915,14 @@ async function start(
       setTelemetrySink(null);
       return false;
     }
-    const replay = decideReplay(config, sessionStorageOrNull(), Math.random);
-    // Before init: the SDK reads its session cookie as it starts.
-    keepSessionWithoutCookies();
+    // Replay records a person: only in the full tier, which is also the only
+    // one allowed to keep the sampling decision in sessionStorage.
+    const replay =
+      analyticsTier() === "full" &&
+      decideReplay(config, sessionStorageOrNull(), Math.random);
+    // Before init: the SDK reads its session cookie as it starts. In memory
+    // below the full tier; on the device in it.
+    const rum = keepRumSession();
     hdx.init(
       buildSdkOptions(
         { ...config, replay },
@@ -403,6 +935,9 @@ async function start(
     // await (a server stream) still opens its span under the context the
     // trace interceptor chose. See interaction-context.ts.
     installFetchContext();
+    // From init on, so the gates hold whatever the recorder does after a
+    // withdrawal (see "Withdrawal stops replay now").
+    const stopReplay = replay ? gateReplay(hdx, ingest) : () => {};
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());
@@ -410,13 +945,11 @@ async function start(
     const benign = benignFilter(config, hdx);
     filterSdkErrorSpans(benign);
     tapSdkInputs(benign);
-    // Every span carries where it came from and which visitor made it; the
-    // product-event view reads these as app.client and visitor.id.
-    // With attribution deferred (attribution: false), visitor.id joins them
-    // when enableAttribution() runs.
-    if (config.attribution !== false) {
-      attributionWanted = true;
-    }
+    // Every span carries where it came from and, in the full tier, which
+    // visitor made it; the product-event view reads these as app.client and
+    // visitor.id. Below the full tier there is no visitor id: visitor.id
+    // joins when grantAnalyticsConsent() raises the tier.
+    attributionWanted = analyticsTier() === "full";
     const globals: Record<string, string> = {
       "app.client": detectAppClient(config.appClient),
     };
@@ -439,6 +972,11 @@ async function start(
     // every fetch/XHR span (sessionAttribute), joining backend traces to the
     // session that caused them.
     registerRumSession(() => hdx.getSessionId?.());
+    const stopTier = onAnalyticsTierChange((tier, previous) =>
+      applyTier(tier, previous, hdx, config, rum, stopReplay),
+    );
+    let identity: SessionIdentity | null = null;
+    let stopRoutes = () => {};
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -457,14 +995,21 @@ async function start(
         }
       },
       disable: () => {
+        stopReplay();
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);
         registerRumSession(null);
         stopViewport();
-        hdx.stopSessionRecorder?.();
+        stopTier();
+        stopRoutes();
+        identity?.stop();
       },
     });
+    // After the sink, so the first page view and the user go straight to the
+    // SDK. Both are off unless the caller asked (otel_gen.ts does).
+    identity = startIdentity(config);
+    stopRoutes = startRouteWatch(config, identity);
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
@@ -474,6 +1019,43 @@ async function start(
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
+  }
+}
+
+// The session watch, when `identify` names a session endpoint.
+function startIdentity(config: BrowserTelemetryConfig): SessionIdentity | null {
+  const url = config.identify?.sessionUrl;
+  if (typeof url !== "string" || url.trim() === "") {
+    return null;
+  }
+  try {
+    return watchSessionIdentity({ sessionUrl: url });
+  } catch {
+    return null;
+  }
+}
+
+// The route watch, when there are page views to record or a session watch
+// that re-asks on leaving the sign-in screens. Returns its teardown.
+function startRouteWatch(
+  config: BrowserTelemetryConfig,
+  identity: SessionIdentity | null,
+): () => void {
+  const pageViews = config.pageViews ?? false;
+  if (pageViews === false && !identity) {
+    return () => {};
+  }
+  const options = typeof pageViews === "object" ? pageViews : {};
+  try {
+    return installPageViews({
+      basePath: options.basePath,
+      routeName: options.routeName,
+      siteHosts: options.siteHosts,
+      pageViews: pageViews !== false,
+      onRoute: identity ? identity.onRoute : undefined,
+    });
+  } catch {
+    return () => {};
   }
 }
 
@@ -1109,28 +1691,12 @@ export function decideReplay(
   return sampled;
 }
 
-// Replay is sensitive even when masked. These browser preferences outrank
-// the author's opt-in AND a previously stored sampling decision. They do not
-// change ordinary error/trace telemetry. An unreadable preference fails closed.
+// Replay is sensitive even when masked. The browser's DNT/GPC preferences
+// (browserPrivacyOptOut, shared with the auth events) outrank the author's
+// opt-in AND a previously stored sampling decision. They do not change
+// ordinary error/trace telemetry. An unreadable preference fails closed.
 function replayPrivacyOptOut(): boolean {
-  try {
-    if (typeof navigator === "undefined") return false;
-    const nav = navigator as Navigator & {
-      globalPrivacyControl?: boolean;
-      msDoNotTrack?: string;
-    };
-    const legacy =
-      typeof window === "undefined"
-        ? undefined
-        : (window as Window & { doNotTrack?: string }).doNotTrack;
-    const dnt = [nav.doNotTrack, nav.msDoNotTrack, legacy];
-    return (
-      nav.globalPrivacyControl === true ||
-      dnt.some((value) => value === "1" || value === "yes")
-    );
-  } catch {
-    return true;
-  }
+  return browserPrivacyOptOut();
 }
 
 // Unset is "every session"; anything that is not a number is a bug, and a bug
@@ -1145,15 +1711,37 @@ function clampRate(rate: number | undefined): number {
   return Math.min(1, Math.max(0, rate));
 }
 
-/** See "One session per visit" in the header. Never throws. */
-function keepSessionWithoutCookies(): void {
+/**
+ * See "One session per visit" and "Analytics tiers" in the header: the SDK's
+ * session cookie, answered from memory below the full tier and kept on the
+ * device (cookie, else localStorage) in it. Never throws.
+ */
+function keepRumSession(): RumSessionStore | null {
   try {
     if (typeof document === "undefined") {
-      return;
+      return null;
     }
-    installSessionCookieFallback(document, window.localStorage ?? null);
+    // In the full tier the session an earlier load kept on the device
+    // continues; below it, any such session is erased at install.
+    const full = analyticsTier() === "full";
+    const rum = installRumSessionStore(document, Date.now, {
+      keepDeviceSession: full,
+    });
+    if (full) {
+      rum?.moveToDevice(localStorageOrNull());
+    }
+    return rum;
   } catch {
-    // localStorage access can throw (blocked storage): keep the SDK default.
+    return null;
+  }
+}
+
+function localStorageOrNull(): Storage | null {
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    // Blocked storage throws on access.
+    return null;
   }
 }
 

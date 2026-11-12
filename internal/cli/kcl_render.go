@@ -42,10 +42,12 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/secrets"
@@ -57,7 +59,7 @@ import (
 // emits: `output = forge.render(bundle)` (P2 map §9 is normative).
 //
 // Every runnable thing is a Workload (ADR 0002). Each one carries its
-// RESOLVED runtime — host, compose, cluster, hosted or build-only — so the
+// RESOLVED runtime — host, compose, cluster, hosted, build-only or external — so the
 // placement question "where does this run" is answered per workload, never
 // env-wide. Callers (`forge build`, `forge env deploy`, `forge env up`,
 // `forge env up`) read this rather than reaching back into forge.yaml,
@@ -108,6 +110,10 @@ type KCLEntities struct {
 	// DirectApplyAllowed rather than comparing strings, so the
 	// no-cluster case stays in one place.
 	Lifecycle string `json:"lifecycle,omitempty"`
+
+	// Preview is Bundle.preview: the env is a preview instance of another
+	// env, and when it expires (forge env preview). Nil for every other env.
+	Preview *release.ShapePreview `json:"preview,omitempty"`
 
 	// Applier is "forge" when the env DECLARES that forge applies it
 	// (Bundle.applier): a real environment, not a scratch one, none of whose
@@ -863,6 +869,9 @@ const (
 	RuntimeCluster   = "cluster"
 	RuntimeHosted    = "hosted"
 	RuntimeBuildOnly = "build-only"
+	// RuntimeExternal is forge.OnExternal: the author's own deploy tooling,
+	// driven through argv hooks (deploytarget/external.go).
+	RuntimeExternal = "external"
 )
 
 // FlowCheckEntity mirrors the kcl/workload.k FlowCheck: one app-flow health
@@ -884,6 +893,7 @@ type RuntimeEntity struct {
 	Cluster   *ClusterRuntime
 	Hosted    *HostedRuntime
 	BuildOnly *BuildOnlyDeploy
+	External  *deploytarget.ExternalRuntime
 }
 
 // DefaultHostedPlatform is the GOARCH of the reliant platform's nodes,
@@ -1066,6 +1076,22 @@ type DockerBuild struct {
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
 	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
+
+	// ContextSource and DockerfileSource are the GitSource members of the
+	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
+	// code, or a Dockerfile, that lives in ANOTHER repository. At most one
+	// of Context / ContextSource is set, and likewise for the Dockerfile.
+	// DockerBuild's JSON methods (build_docker_source.go) carry the union,
+	// so every reader of the string fields keeps working unchanged.
+	ContextSource    *config.GitSource `json:"-"`
+	DockerfileSource *config.GitSource `json:"-"`
+	// Invocation-local, set by resolveDockerBuildSources; never serialized:
+	// ContextDir is the directory ContextSource resolved to, DockerfilePath
+	// the Dockerfile a pin resolved to, and Built the checkout the context
+	// was resolved to — the build state and release ledger record it.
+	ContextDir     string              `json:"-"`
+	DockerfilePath string              `json:"-"`
+	Built          *buildtarget.Source `json:"-"`
 }
 
 // ShellBuild mirrors the kcl/schema.k ShellBuild — the SINGLE shell
@@ -1576,6 +1602,7 @@ type kclRenderRaw struct {
 	Env                      string                                    `json:"env,omitempty"`
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
 	Lifecycle                string                                    `json:"lifecycle,omitempty"`
+	Preview                  *release.ShapePreview                     `json:"preview,omitempty"`
 	Applier                  string                                    `json:"applier,omitempty"`
 	FluxDelivery             *FluxDeliveryEntity                       `json:"flux_delivery,omitempty"`
 	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
@@ -1956,6 +1983,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Env:                      raw.Env,
 		ImageTag:                 raw.ImageTag,
 		Lifecycle:                raw.Lifecycle,
+		Preview:                  raw.Preview,
 		Applier:                  raw.Applier,
 		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
@@ -2126,10 +2154,21 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 	case RuntimeBuildOnly:
 		var b BuildOnlyDeploy
 		return RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &b}, decode(&b)
+	case RuntimeExternal:
+		var x deploytarget.ExternalRuntime
+		if err := decode(&x); err != nil {
+			return RuntimeEntity{}, err
+		}
+		// The KCL schema checks the same rules; this is the Go half, for a
+		// render that reached forge some other way.
+		if err := x.Validate(); err != nil {
+			return RuntimeEntity{}, fmt.Errorf("workload %q: %w", name, err)
+		}
+		return RuntimeEntity{Type: RuntimeExternal, External: &x}, nil
 	case "":
-		return RuntimeEntity{}, fmt.Errorf("workload %q: runtime.type missing (expected host/compose/cluster/hosted/build-only)", name)
+		return RuntimeEntity{}, fmt.Errorf("workload %q: runtime.type missing (expected host/compose/cluster/hosted/build-only/external)", name)
 	default:
-		return RuntimeEntity{}, fmt.Errorf("workload %q: unrecognised runtime.type %q (expected host/compose/cluster/hosted/build-only)", name, probe.Type)
+		return RuntimeEntity{}, fmt.Errorf("workload %q: unrecognised runtime.type %q (expected host/compose/cluster/hosted/build-only/external)", name, probe.Type)
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // Email proofs: magic links, address verification, invitations.
@@ -158,6 +160,16 @@ func (c *Client) CreateUser(ctx context.Context, u NewUser) (string, error) {
 	}
 	if out.UserID == "" {
 		return "", fmt.Errorf("the issuer created an account but returned no user id")
+	}
+	if u.SelfSignup {
+		method := observe.AuthMethodOther
+		switch {
+		case u.Password != "":
+			method = observe.AuthMethodPassword
+		case len(u.IDPLinks) > 0:
+			method = observe.AuthMethodSocial
+		}
+		reportSignUp(ctx, out.UserID, method, u.EmailVerified)
 	}
 	return out.UserID, nil
 }

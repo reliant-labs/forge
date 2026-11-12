@@ -19,7 +19,9 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureFrontendTelemetry:      {"shape.frontend_telemetry", "shape.observability_policy.retention"},
 	BundleFeatureStoreSecrets:           {"shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery"},
 	BundleFeatureReleaseHealth:          {"shape.release_health"},
+	BundleFeatureReleaseHealthBaseline:  {"shape.release_health.require_baseline"},
 	BundleFeatureUptimeChecks:           {"shape.uptime_checks"},
+	BundleFeatureReleaseProbes:          {"shape.release_probes"},
 	BundleFeatureDataAccess:             {"shape.data_access"},
 	BundleFeatureDatabaseDashboards:     {"shape.databases"},
 	BundleFeatureHealthGate:             {"shape.delivery_policy.health_gate"},
@@ -31,7 +33,9 @@ var bundleFeatureKeys = map[string][]string{
 		"shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods",
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
 	},
-	BundleFeatureStorage: {"shape.buckets", "shape.data_access.storage"},
+	BundleFeatureStorage:         {"shape.buckets", "shape.data_access.storage"},
+	BundleFeaturePromotionChecks: {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
+	BundleFeaturePreview:         {"shape.preview"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -148,11 +152,13 @@ func fullBundleDoc() BundleDoc {
 			DataAccess:               &ShapeDataAccess{DBQuery: DBQueryDeny, Storage: StorageAudited},
 			ReleaseHealth:            &ShapeReleaseHealth{WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2, NewIssueMinEvents: 5, FailOn: []string{HealthErrorRate}},
 			UptimeChecks:             []ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceDefault}},
+			ReleaseProbes:            []ShapeReleaseProbe{{Target: "web", Kind: ReleaseProbeKindFrontend, Paths: []string{"/"}, Method: "GET", RatePerMin: 4, TimeoutSeconds: 10, Source: ReleaseProbeSourceDefault}},
 			Databases:                []ShapeDatabase{{Name: "orders", Dashboards: &ShapeDatabaseDashboards{Enabled: true, RowCap: 500, TimeoutMs: 3000, MaxConcurrency: 1}}},
 			ExternalDatabases:        []ShapeExternalDatabase{{Name: "ledger", Cluster: "ctx", Namespace: "app", Service: "pgbouncer", Database: "ledger", Username: "ledger_ro", PasswordSecret: "ledger-ro", PasswordKey: "password", SSLMode: ExternalDatabaseSSLRequire}},
 			DeliveryPolicy:           healthGatedPolicy(),
 			Identity:                 signInIdentity(),
 			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
+			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		DeclaredEnvs: []DeclaredEnv{
@@ -184,7 +190,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.release_probes", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -224,6 +230,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.StoreSecrets, wantShape.GeneratedSecrets, wantShape.OpenBao, wantShape.ExternalSecretsOperators = nil, nil, nil, nil
 	wantShape.ReleaseHealth = nil
 	wantShape.UptimeChecks = nil
+	wantShape.ReleaseProbes = nil
 	wantShape.DataAccess = nil
 	wantShape.Databases = nil
 	wantShape.ExternalDatabases = nil
@@ -231,8 +238,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Workloads = []ShapeWorkload{full.Shape.Workloads[0]}
 	wantShape.Workloads[0].Unit = ""
 	wantShape.Buckets = nil
+	wantShape.Preview = nil
 	gateless := *full.Shape.DeliveryPolicy
-	gateless.HealthGate = nil
+	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil
 	wantShape.DeliveryPolicy = &gateless
 	wantShape.Identity = &ShapeIdentity{Name: full.Shape.Identity.Name, Runtime: full.Shape.Identity.Runtime, Login: full.Shape.Identity.Login, Roles: full.Shape.Identity.Roles}
 	wantShape.ControlPlaneSecrets = []ShapeControlPlaneSecret{full.Shape.ControlPlaneSecrets[0]}
@@ -280,8 +288,12 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	if len(uptime.Shape.UptimeChecks) != 1 || uptime.Shape.ReleaseHealth != nil || uptime.Shape.StoreSecrets != nil || uptime.Shape.FrontendTelemetry != nil {
 		t.Errorf("a reader of uptime checks only: %+v", uptime)
 	}
+	probes := (&BundleReader{Features: []string{BundleFeatureReleaseProbes}}).Limit(full)
+	if len(probes.Shape.ReleaseProbes) != 1 || probes.Shape.UptimeChecks != nil || probes.Shape.ReleaseHealth != nil {
+		t.Errorf("a reader of release probes only: %+v", probes.Shape)
+	}
 	dashboards := (&BundleReader{Features: []string{BundleFeatureDatabaseDashboards}}).Limit(full)
-	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
+	if len(dashboards.Shape.Databases) != 1 || dashboards.Shape.UptimeChecks != nil || dashboards.Shape.ReleaseProbes != nil || dashboards.Shape.StoreSecrets != nil || dashboards.Shape.DataAccess != nil {
 		t.Errorf("a reader of database dashboards only: %+v", dashboards)
 	}
 	external := (&BundleReader{Features: []string{BundleFeatureExternalDatabases}}).Limit(full)
@@ -339,5 +351,48 @@ func TestANewReaderGetsTheFullDocument(t *testing.T) {
 func healthGatedPolicy() *ShapeDeliveryPolicy {
 	p := DefaultDeliveryPolicy()
 	p.HealthGate = &ShapeHealthGate{Mode: DeliveryEnforce, After: []string{"staging"}}
+	p.RequiredGates = &ShapeRequiredGates{Mode: DeliveryEnforce, Names: []string{"e2e"}}
+	p.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryEnforce, URL: "https://approvals.acme.test/forge", TimeoutSeconds: 10}
 	return &p
+}
+
+// TestPromotionChecksAreAFeature: the required gates and the approval hook
+// reach only a reader that enforces them, and an ENFORCING one is named by
+// UnenforcedChecks for any other, so the declaration can refuse rather than
+// let a declared refusal silently become nothing.
+func TestPromotionChecksAreAFeature(t *testing.T) {
+	full := fullBundleDoc()
+	with := (&BundleReader{Features: []string{BundleFeaturePromotionChecks}}).Limit(full)
+	if with.Shape.DeliveryPolicy.RequiredGates == nil || with.Shape.DeliveryPolicy.ApprovalHook == nil || with.Shape.DeliveryPolicy.HealthGate != nil {
+		t.Errorf("a reader of promotion checks only: %+v", with.Shape.DeliveryPolicy)
+	}
+	old := &BundleReader{Features: []string{BundleFeatureHealthGate}}
+	without := old.Limit(full)
+	if without.Shape.DeliveryPolicy.RequiredGates != nil || without.Shape.DeliveryPolicy.ApprovalHook != nil {
+		t.Errorf("a reader without the feature was sent the checks: %+v", without.Shape.DeliveryPolicy)
+	}
+	if got := old.UnenforcedChecks(full.Shape); !reflect.DeepEqual(got, []string{"required_gates", "approval_hook"}) {
+		t.Errorf("UnenforcedChecks = %v, want both", got)
+	}
+	// Decoding every feature is not enforcing: a control plane advertises
+	// BundleDocFeatures verbatim on a pin bump, whether or not its promote
+	// judges the checks.
+	if slices.Contains(BundleDocFeatures(), CapabilityEnforcesPromotionChecks) {
+		t.Errorf("BundleDocFeatures claims %s; a control plane adds enforcement by hand", CapabilityEnforcesPromotionChecks)
+	}
+	if got := (&BundleReader{Features: BundleDocFeatures()}).UnenforcedChecks(full.Shape); !reflect.DeepEqual(got, []string{"required_gates", "approval_hook"}) {
+		t.Errorf("a reader that only decodes them: UnenforcedChecks = %v, want both", got)
+	}
+	enforcer := &BundleReader{Features: append(BundleDocFeatures(), CapabilityEnforcesPromotionChecks)}
+	if got := enforcer.UnenforcedChecks(full.Shape); got != nil {
+		t.Errorf("a reader that enforces them: UnenforcedChecks = %v", got)
+	}
+	audit := full.Shape
+	pol := *audit.DeliveryPolicy
+	pol.RequiredGates = &ShapeRequiredGates{Mode: DeliveryAudit, Names: []string{"e2e"}}
+	pol.ApprovalHook = &ShapeApprovalHook{Mode: DeliveryAudit, URL: "https://a.test", TimeoutSeconds: 5}
+	audit.DeliveryPolicy = &pol
+	if got := old.UnenforcedChecks(audit); got != nil {
+		t.Errorf("audit refuses nothing, so nothing is unenforced: %v", got)
+	}
 }

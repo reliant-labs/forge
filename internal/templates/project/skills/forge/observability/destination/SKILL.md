@@ -111,6 +111,17 @@ Retention is declared on the same `retention` block: `traces_days`, `metrics_day
 
 Database spans never record bind values: the driver tracer (`pkg/observe/dbtrace`) replaces every literal with `?`, and the ORM's own spans record the statement with `?` placeholders. A literal you write into SQL text by hand reaches an ORM span on a pool that is not driver-traced. Anything your code logs is sent as is, scrubbed for credential shapes at the gateway.
 
+## Rotating a credential without a restart
+
+`OTEL_EXPORTER_OTLP_HEADERS` is read once, so a token that gets renewed would need a pod restart. Point `OTEL_EXPORTER_OTLP_HEADERS_FILE` at a mounted Secret instead (a Secret **volume**, never `subPath`, which the kubelet never refreshes; the file holds e.g. `authorization=Bearer <token>`). All four signals (traces, metrics, logs, profiles; HTTP and gRPC) take their headers from it **per request**:
+
+- The file is re-stat'ed at most every 5s (one stat per interval per process, shared by all signals) and re-read only when it changed. There is no watcher goroutine.
+- **Precedence:** a header named in `OTEL_EXPORTER_OTLP_HEADERS` (or the signal's own `…_<SIGNAL>_HEADERS`, which replaces the general one for that signal) is never overridden by the file; the file supplies the rest. Pick one place for the credential.
+- A missing, unreadable or empty file means the export goes out **without** the file's headers (the collector decides whether that is acceptable) and logs one `WARN` per minute. It never fails a call, blocks the app or crashes. A removed file stops sending its last token. A file that appears later is picked up.
+- Rotate with overlap: have the receiver accept old and new, swap the file, then drop the old. The kubelet needs about a minute to refresh a Secret volume.
+
+On a cluster, the node agent does the same for the **destination** with `destination.token_secret` (above): `bearertokenauth{filename}` reads the mounted token and re-reads it on change (verified against contrib 0.162 with a kubelet-style symlink swap, in `pkg/observe`'s `RUN_HEADERS_FILE_SMOKE=1` integration test).
+
 ## Recipes
 
 - **Local only (the scaffold default):** `observability = forge.Observability {local_port = _otlp_http_port}`.

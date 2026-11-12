@@ -149,6 +149,12 @@ type Promotion struct {
 	// PromotedAt is when the entry was written. It is PROMOTE time, not
 	// deploy time: a promotion moves no bytes.
 	PromotedAt time.Time `json:"promoted_at"`
+	// RecordOnly says the promoted release was recorded, not built, by
+	// forge ([Release.RecordOnly]): an outside pipeline applied it and this
+	// entry is the deploy marker it left. Copied from the release by
+	// [NewPromotion], so readers (obs changes, the console) can label it
+	// "recorded by CI" without a second lookup.
+	RecordOnly bool `json:"record_only,omitempty"`
 }
 
 // Validate checks a promotion before it is appended, and every entry read
@@ -227,11 +233,12 @@ func (p Promotion) AllGates() []Gate {
 // cannot change what this promotion ships.
 func NewPromotion(env string, r Release, kind PromotionKind) Promotion {
 	return Promotion{
-		Env:      env,
-		Release:  r.Version,
-		Kind:     kind,
-		Resolved: r.SharedDigests(),
-		Sources:  r.Sources(),
+		Env:        env,
+		Release:    r.Version,
+		Kind:       kind,
+		Resolved:   r.SharedDigests(),
+		Sources:    r.Sources(),
+		RecordOnly: r.RecordOnly,
 	}
 }
 

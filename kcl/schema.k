@@ -14,7 +14,7 @@ What lives where:
 
   * kcl/workload.k — the ONE workload declaration (`fw.Workload`), its env
     references, and the runtimes it binds to (`forge.OnHost | OnCompose |
-    OnCluster | OnHosted | BuildOnly`).
+    OnCluster | OnHosted | BuildOnly | OnExternal`).
   * this file     — everything else an env declares: the Bundle, the
     cluster target, infra, frontends, databases, secrets, gateways and
     routes, clusters, builds.
@@ -2947,7 +2947,12 @@ schema DockerBuild(Build):
     pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
     wanted."""
     type: str = "docker"
-    dockerfile: str = "Dockerfile"
+    # The Dockerfile: a path relative to the project root — or, when
+    # `context` is a GitSource, relative to that resolved context, so a
+    # deploy repo builds another repo's own Dockerfile by default. A
+    # GitSource here pins a Dockerfile in any repository; its `subdir` names
+    # the FILE (`subdir = "docker/api.Dockerfile"`).
+    dockerfile: str | GitSource = "Dockerfile"
     # The MAIN build context — the directory `docker build` sends as its
     # context, relative to the project root. Empty is the project root, so
     # an unset context builds exactly as before. Set it when the Dockerfile
@@ -2957,7 +2962,18 @@ schema DockerBuild(Build):
     # `--build-context name=value` entries a `COPY --from=name` consumes.
     # `dockerfile` need not live under `context` — docker allows `-f`
     # outside the context.
-    context: str = ""
+    #
+    # A GitSource builds code that lives in ANOTHER repository — the polyrepo
+    # deploy repo that declares workloads from N app repos:
+    #
+    #     build = forge.DockerBuild {
+    #         context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
+    #     }
+    #
+    # It resolves through the same repo+ref cache and local overrides
+    # (.forge/source-overrides.yaml) as a frontend, and the build state and
+    # release ledger record the repo and commit the image was built from.
+    context: str | GitSource = ""
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
@@ -3979,15 +3995,25 @@ schema BrowserTelemetry:
             }
         }
 
-    `console_capture`, `replay`, `replay_sample_rate` and `analytics.mode`
-    reach the browser through the runtime config document (config.js), so one
-    build promotes across environments and each environment sets its own.
-    `replay` is the per-frontend switch for session replay (masked, off by
-    default).
+    `console_capture`, `replay`, `replay_sample_rate`, `page_views`,
+    `identify_user` and `analytics.mode` reach the browser through the
+    runtime config document (config.js), so one build promotes across
+    environments and each environment sets its own. `replay` is the
+    per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
     # noisy or carries data that must not leave the browser.
     console_capture: bool = True
+    # Record a `page_viewed {route}` product event for every route the user
+    # lands on: the pathname only (no query or fragment, the base path
+    # stripped, id-looking segments as `:id`). False renders
+    # PAGE_VIEWS = "false" and the browser records none.
+    page_views: bool = True
+    # Stamp the signed-in user's opaque id (the `subject` the API's
+    # /auth/session answers for a frontend with native sign-in) on every
+    # browser event, so browser and backend events join on one user. False
+    # renders IDENTIFY_USER = "false" and the browser never asks.
+    identify_user: bool = True
     # Session replay for THIS frontend in THIS environment: OFF by default.
     # True renders OTEL_REPLAY = "true" into the frontend's runtime config
     # (config.js, so a promoted build needs no rebuild) and opts the env's
@@ -6009,6 +6035,73 @@ schema HealthGate:
             "HealthGate.after ${[e for e in after if not regex.match(e, _HEALTH_GATE_ENV_RE)]} are not env names: name the envs under deploy/kcl/ this one follows, e.g. [\"staging\"]"
         isunique(after), "HealthGate.after names an env twice"
 
+_REQUIRED_GATE_RE = r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$"
+_RESERVED_GATE_NAMES = ["health_gate", "required_gates", "approval_hook"]
+
+schema RequiredGates:
+    """The checks a promotion to this env must carry, each passed.
+
+        required_gates = forge.RequiredGates {names = ["e2e", "security-scan"]}
+
+    A promotion carries gates with `forge env deploy <env> <v> --gate
+    name=e2e,status=passed` (or a file holding a check's JSON verdict document). One that
+    does not carry a required name is refused `required_gate_missing` (exit
+    4); one that carries it as failed, error or skipped is refused
+    `required_gate_failed` (exit 1). Every gate of a name must be passed.
+
+    Naming a gate is the opt-in: an empty `names` requires nothing, whatever
+    the mode, so the default mode is `enforce`. `audit` admits and records
+    what enforce would refuse. Enforced where the env's ledger lives: by the
+    control plane at promote, inside the promotion's transaction, for an env
+    with one; by forge before the write, for an env without one.
+    """
+    mode: ControlMode = "enforce"
+    names: [str] = []
+
+    check:
+        len([n for n in names if not regex.match(n, _REQUIRED_GATE_RE)]) == 0, \
+            "RequiredGates.names ${[n for n in names if not regex.match(n, _REQUIRED_GATE_RE)]} are not gate names (letters, digits, . _ : / -, at most 64)"
+        len([n for n in names if n in _RESERVED_GATE_NAMES]) == 0, \
+            "RequiredGates.names ${[n for n in names if n in _RESERVED_GATE_NAMES]}: the ledger records its own verdicts under these names; require a check by its own name"
+        isunique(names), "RequiredGates.names names a gate twice"
+
+schema ApprovalHook:
+    """Your approval system, asked before a promotion to this env is written.
+
+        approval_hook = forge.ApprovalHook {url = "https://approvals.acme.dev/forge"}
+        approval_hook = forge.ApprovalHook {argv = ["./scripts/approve.sh"]}   # no control plane
+
+    The hook is sent a `forge.approval-request/v1` JSON document (env,
+    release, from_env, commit, promoter, the promotion's gates, note): the POST
+    body of a `url`, the stdin of an `argv`. It answers a JSON
+    `{"decision": "approve" | "deny" | "pending", "reason": "...", "url": "..."}`
+    (the response body, or the command's stdout). An argv that exits 0 with
+    no output approves; one that exits non-zero denies.
+
+    In `enforce` (the default) anything but approve refuses the promotion:
+    deny `approval_denied` (exit 4), pending `approval_pending` (exit 4; retry
+    once someone approved), and a hook that times out, fails or answers
+    something unreadable is a deny: it fails closed. `--yes` never answers for
+    the hook. `audit` asks, records the answer, and admits.
+
+    `url` is asked by the env's ledger: the control plane for an env with one
+    (an https URL on the public internet), forge otherwise. `argv` runs on the
+    machine running forge, so it is refused for an env with a control plane,
+    where a client-side answer would be one a caller could skip.
+    """
+    mode: ControlMode = "enforce"
+    url?: str
+    argv?: [str]
+    timeout_seconds: int = 10
+
+    check:
+        (url and not argv) or (argv and not url), \
+            "ApprovalHook: name exactly one of url (an endpoint the env's ledger POSTs to) or argv (a command forge runs)"
+        not url or regex.match(url, r"^https://[^/@\s]+(/\S*)?$") or regex.match(url, r"^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$)"), \
+            "ApprovalHook.url ${url} must be an https URL with no credentials in it (http only to localhost)"
+        not argv or len(argv) > 0 and argv[0] != "", "ApprovalHook.argv: name the command to run"
+        1 <= timeout_seconds <= 60, "ApprovalHook.timeout_seconds ${timeout_seconds} must be 1..60: a promote waits on the answer, so a longer approval answers pending and the pipeline retries"
+
 schema DeliveryPolicy:
     """What an env's releases must prove, per control, per env. Set on
     `Bundle.delivery_policy`. UNSET is the default for every control.
@@ -6035,7 +6128,8 @@ schema DeliveryPolicy:
     The resolved policy is recorded in the release shape (`delivery_policy`)
     when any value differs from the default, so the control plane enforces
     what the env declared. A control plane enforces `signing` and
-    `flux_verify` (bundles) and `health_gate`; every other control is
+    `flux_verify` (bundles), `health_gate`, `required_gates` and
+    `approval_hook`; every other control is
     recorded and blocks nothing yet. Load `deploy/delivery-policy`.
     """
     trusted_builder: TrustedBuilder = TrustedBuilder {}
@@ -6055,6 +6149,12 @@ schema DeliveryPolicy:
     # The promotion health gate. UNSET = no gate: the envs a release must be
     # proven good in first are declared, never inferred. See HealthGate.
     health_gate?: HealthGate
+    # The checks a promotion must carry as passed. UNSET = none. See
+    # RequiredGates.
+    required_gates?: RequiredGates
+    # Your approval system, asked before a promotion is written. UNSET = none.
+    # See ApprovalHook.
+    approval_hook?: ApprovalHook
 
     check:
         # An ENFORCING control cannot be satisfied when what it checks is never
@@ -6160,7 +6260,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6181,6 +6281,17 @@ schema ReleaseHealth:
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
+    Error rate, latency and the browser findings compare the after window
+    with the before window, so they also need `min_requests` before the
+    promotion: a thinner before window is no baseline. `require_baseline`
+    says how many services need one. "any" (the default): any comparable
+    service can prove the release good, a service with a thin baseline is
+    listed in `not_evaluated`, and with none comparable the release is
+    inconclusive. "every": a thin baseline on any service with enough
+    after-window traffic holds the release inconclusive. "none": compare
+    against whatever the before window held, however thin. Issues, alerts
+    and restarts need no baseline and fail a release under every setting.
+
     Findings: error_rate (the error rate rose by more than
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
@@ -6191,7 +6302,10 @@ schema ReleaseHealth:
     `max_error_rate_increase`), browser_failed_requests (the share of its
     fetch/XHR requests that failed rose by as much) and browser_page_load (p95
     page load grew by more than `max_p95_ratio`). The browser findings warn
-    unless listed in `fail_on`.
+    unless listed in `fail_on`. For an env with release probes (forge.Probe),
+    probe_failed (a probe failed after the promotion; fails by default) and
+    probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
+    default, as latency does).
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -6201,7 +6315,8 @@ schema ReleaseHealth:
     max_error_rate_increase: float = 0.01
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    require_baseline: str = "any"
 
     check:
         60 <= _release_health_seconds(window) <= 21600, \
@@ -6214,6 +6329,8 @@ schema ReleaseHealth:
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        require_baseline in ["any", "every", "none"], \
+            "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 
 # ---------------------------------------------------------------------------
 # Uptime checks: outside-in HTTP probes the control plane runs on a schedule.
@@ -7590,6 +7707,32 @@ schema FluxDelivery:
         apply_identities or delivery_scope == "namespace", \
             "FluxDelivery.delivery_scope = \"cluster\" scopes the derived apply identity, and apply_identities = False renders none (kustomize-controller applies as cluster-admin). Drop one of the two"
 
+_PREVIEW_ENV_RE = r"^[a-z][a-z0-9-]*$"
+_RFC3339_UTC_RE = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+
+schema Preview:
+    """This env is a preview instance of the env `of`: a per-PR or per-branch
+    copy that is deleted once `expires_at` has passed.
+
+        preview = forge.Preview {of = "preview", expires_at = "2026-11-15T12:00:00Z", source = "pr-123"}
+
+    `forge env preview create --pr 123` writes it (and the whole instance env
+    under deploy/kcl/<name>/) from the committed template env; re-running it
+    for the same PR refreshes the expiry. It is recorded in the release shape
+    (`preview`), so a control plane that advertises `shape-preview` deletes a
+    hosted instance once it expires, data included; `forge env gc` deletes the
+    expired ones of a cluster you operate (each instance's namespace carries
+    `forge.dev/preview-of` and `forge.dev/expires-at`). Load `deploy/preview`.
+    """
+    of: str
+    expires_at: str
+    source?: str
+
+    check:
+        regex.match(of, _PREVIEW_ENV_RE), "Preview.of ${of} is not an env name: name the template env under deploy/kcl/"
+        regex.match(expires_at, _RFC3339_UTC_RE), "Preview.expires_at ${expires_at} must be an RFC 3339 UTC time (2026-11-15T12:00:00Z)"
+        not source or len(source) <= 200, "Preview.source is longer than 200 characters"
+
 schema Bundle:
     """Everything one environment runs and declares.
 
@@ -7825,6 +7968,16 @@ schema Bundle:
     # declaring one of the three now is what makes that change a flag flip
     # rather than a migration.
     lifecycle?: "local" | "ephemeral"
+    # This env is a PREVIEW INSTANCE of another env (a per-PR or per-branch
+    # copy) and expires. Never written by hand: `forge env preview create`
+    # marks the instance's directory, and forge binds the marker on every
+    # render of it (`-D forge_preview_*`), so the instance's main.k is a
+    # verbatim copy of the template's. See Preview.
+    preview?: Preview = Preview {
+        of = option("forge_preview_of")
+        expires_at = option("forge_preview_expires_at")
+        source = option("forge_preview_source")
+    } if option("forge_preview_of") else None
     # A REAL environment that FORGE applies, for now: every one of its
     # delivery units is applied by `forge env deploy`, and the hub converges
     # none of them. It is a TRANSITIONAL state, not a destination: every real
@@ -8002,7 +8155,7 @@ schema Bundle:
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"
         # EVERY WORKLOAD STATES ITS RUNTIME. There is no env default.
         all w in workloads { _bound_runtime(w) }, \
-            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {}}`"
+            "Bundle.workloads ${[w.name for w in workloads if not _bound_runtime(w)]} bind no runtime: every workload states where it runs — bind it in this env, e.g. `wl.<name> | {runtime = forge.OnHost {} | forge.OnCompose {} | forge.OnCluster {target = ...} | forge.OnHosted {} | forge.BuildOnly {} | forge.OnExternal {}}`"
         # One name per env: the name is the WorkloadURL namespace, the
         # `--target` group and every rendered object's name.
         len(_duplicates(_env_names(workloads, infra, frontends))) == 0, \
@@ -8111,6 +8264,8 @@ schema Bundle:
             "Bundle.hub_converges lists a unit twice: ${hub_converges}"
         len([u for u in (hub_converges or []) if u != "base" and u not in [d.name for d in delivery_units]]) == 0, \
             "Bundle.hub_converges names a unit that is not declared: ${[u for u in (hub_converges or []) if u != 'base' and u not in [d.name for d in delivery_units]]} (declared: ${[d.name for d in delivery_units] + ['base']}). A unit exists only if Bundle.delivery_units declares it, or it is the default unit base"
+        not delivery_policy or not control_plane or not delivery_policy.approval_hook or not delivery_policy.approval_hook.argv, \
+            "Bundle.delivery_policy.approval_hook names an argv, but this env has a control_plane: the control plane cannot run your command, and an answer forge collected on this machine is one a caller could skip. Use approval_hook.url (an https endpoint the control plane asks)"
         not delivery_policy or control_plane or len(_delivery_self_hosted_enforced(delivery_policy)) == 0, \
             "Bundle.delivery_policy sets ${', '.join(_delivery_self_hosted_enforced(delivery_policy))} to enforce, but this env has no control_plane: nothing signs a self-hosted env's bundles yet, so nothing could pass. Use \"audit\" or \"off\" (unset is off without a control plane), or deliver through a control plane"
         not hub_converges or control_plane, \

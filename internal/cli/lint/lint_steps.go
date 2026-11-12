@@ -76,6 +76,10 @@ type lintRunCtx struct {
 	// forge.yaml lint.allow_skip), lane name → reason. See lint_skip.go.
 	allowSkip skipAllowances
 
+	// lanesOff are the lanes forge.yaml's lint.lanes switches off
+	// (lint_lanes.go).
+	lanesOff map[string]bool
+
 	// targeted reports that the lane was named on the command line
 	// (`forge lint --tracing`) rather than run by the full sweep. The
 	// tracing lane fixes its warnings too when it was named.
@@ -713,6 +717,27 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectGoMarkersJSON(rc.cwd)
+			},
+		},
+
+		// 13d-ter-bis. Test waits — a Go test that waits on the wall clock
+		// where it should wait on an event (a fixed sleep, a deadline under
+		// 5s that fails the test, an elapsed-time upper bound): the shapes
+		// that flake on a loaded machine. Syntactic, a parse per _test.go
+		// file, so it runs in the full sweep. GATES, through the warn-first
+		// rollout (lint_test_waits.go).
+		{
+			name:  "test-waits lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectTestWaitsJSON(rc.cwd)
 			},
 		},
 

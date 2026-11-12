@@ -83,6 +83,8 @@ type ShapeInput struct {
 	ReleaseHealth *release.ShapeReleaseHealth
 	// UptimeChecks are the env's uptime checks, or nil when it has none.
 	UptimeChecks []release.ShapeUptimeCheck
+	// ReleaseProbes are the env's release probes, or nil when it has none.
+	ReleaseProbes []release.ShapeReleaseProbe
 	// Identity is the env's managed identity declaration, or nil when it
 	// declares none.
 	Identity *release.ShapeIdentity
@@ -104,6 +106,8 @@ type ShapeInput struct {
 	// Buckets are every bucket the env declares, in shape vocabulary, or nil
 	// when it declares none.
 	Buckets []release.ShapeBucket
+	// Preview marks the env a preview instance (forge.Preview).
+	Preview *release.ShapePreview
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -155,6 +159,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		DataAccess:          in.DataAccess,
 		ReleaseHealth:       in.ReleaseHealth,
 		UptimeChecks:        in.UptimeChecks,
+		ReleaseProbes:       in.ReleaseProbes,
 		Identity:            in.Identity,
 		Databases:           in.Databases,
 		ExternalDatabases:   in.ExternalDatabases,
@@ -162,6 +167,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,
 		Buckets:             in.Buckets,
+		Preview:             in.Preview,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

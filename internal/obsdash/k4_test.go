@@ -177,7 +177,7 @@ func TestBuildAddsTheProjectDashboards(t *testing.T) {
 	for _, d := range Build(fixture()).Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,usage"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 }
@@ -255,7 +255,9 @@ func TestBundleSetCarriesEveryGeneratedDashboard(t *testing.T) {
 		"observability/dashboards/shop-workloads_gen.json",
 		"observability/dashboards/shop-releases_gen.json",
 		"observability/dashboards/shop-frontend_gen.json",
-		"observability/dashboards/shop-usage_gen.json",
+		"observability/dashboards/shop-users_gen.json",
+		"observability/dashboards/shop-product_gen.json",
+		"observability/dashboards/shop-acquisition_gen.json",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("bundle lacks %s; has:\n%s", want, got)
@@ -412,7 +414,7 @@ func TestAnAnnotatedUserDashboardRoundTrips(t *testing.T) {
 
 func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
 	dir := writeProject(t)
-	for _, name := range []string{"shop-workloads_gen.json", "shop-releases_gen.json", "shop-usage_gen.json"} {
+	for _, name := range []string{"shop-workloads_gen.json", "shop-releases_gen.json", "shop-users_gen.json", "shop-product_gen.json", "shop-acquisition_gen.json"} {
 		if _, err := os.Stat(filepath.Join(dir, DashboardsDir, name)); err == nil {
 			t.Errorf("%s was written to the project: it has nothing to draw under forge env up and is constant library text", name)
 		}
@@ -427,7 +429,7 @@ func TestHostedOnlyDashboardsAreNotWrittenLocally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{`"id": "workloads"`, `"id": "releases"`, `"id": "usage"`} {
+	for _, id := range []string{`"id": "workloads"`, `"id": "releases"`, `"id": "users"`, `"id": "product"`, `"id": "acquisition"`} {
 		if !strings.Contains(string(raw), id) {
 			t.Errorf("%s is not in %s", id, ProjectSpecFile)
 		}

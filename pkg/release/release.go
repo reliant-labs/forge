@@ -368,6 +368,22 @@ type Release struct {
 	// [Release.SameContent] ignores it, so a CI retry that re-cuts the
 	// same bytes under a new run id is still an idempotent re-cut.
 	Run Run `json:"run,omitempty"`
+	// RecordOnly marks a release forge RECORDED rather than built: a
+	// pipeline forge does not run built and deployed it, and `forge release
+	// record` wrote down what it shipped. Such a release may name no
+	// artifacts at all — a version (and usually a commit) is then its whole
+	// content — and never carries forge composition (Catalog,
+	// SnapshotIntents). Nothing forge applies may be bound to one: there is
+	// no bundle to converge. Like Run it is evidence about the release, not
+	// part of its identity; see [Release.SameContent] for what identifies a
+	// version-only release.
+	RecordOnly bool `json:"record_only,omitempty"`
+}
+
+// VersionOnly reports whether the release names no artifacts at all: a
+// record-only release whose identity is its version and commit.
+func (r Release) VersionOnly() bool {
+	return len(r.Artifacts) == 0 && len(r.Catalog) == 0
 }
 
 // SetProvenance records where the release was built from, and keeps the
@@ -425,7 +441,13 @@ func (r Release) Validate() error {
 			}
 		}
 	}
-	if len(r.Artifacts) == 0 && len(r.Catalog) == 0 {
+	if r.RecordOnly && (len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0) {
+		return fmt.Errorf("%w: release %q is record-only and cannot carry forge composition (catalog, snapshot intents)", ErrInvalid, r.Version)
+	}
+	// A FORGE-BUILT release that names nothing is a build that lost its
+	// outputs, and stays refused. Only a release explicitly recorded from an
+	// outside pipeline may be version-only.
+	if r.VersionOnly() && !r.RecordOnly {
 		return fmt.Errorf("%w: release %q names no artifacts — a release that names nothing cannot be promoted", ErrInvalid, r.Version)
 	}
 	for _, name := range r.ArtifactNames() {
@@ -456,6 +478,12 @@ func (r Release) SameContent(other Release) bool {
 	}
 	if len(r.Artifacts) != len(other.Artifacts) {
 		return false
+	}
+	// A VERSION-ONLY release names no bytes, so the commit it was recorded
+	// at is its content: re-recording v1.4.0 at the same commit is a retry,
+	// at another commit a conflict.
+	if r.VersionOnly() && other.VersionOnly() {
+		return r.Git.Commit == other.Git.Commit
 	}
 	for name, a := range r.Artifacts {
 		b, ok := other.Artifacts[name]

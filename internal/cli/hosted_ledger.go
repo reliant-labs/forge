@@ -152,6 +152,12 @@ type wireRelease struct {
 	// field drops it on write and never returns it; the guard then notes
 	// "records no migrations" rather than refusing.
 	Migrations *release.MigrationManifest `json:"migrations,omitempty"`
+	// RecordOnly is DeployRelease.record_only (tag 16): an outside pipeline
+	// built and deployed this release and `forge release record` wrote it
+	// down (release.Release.RecordOnly). A control plane that predates the
+	// field never sends it, which reads as a release forge built — true of
+	// every release such a server could hold.
+	RecordOnly bool `json:"recordOnly,omitempty"`
 }
 
 // migrationsFromWire is the manifest a control plane returned, or nil when it
@@ -290,6 +296,10 @@ type wirePromotion struct {
 	FromPromotionID string `json:"fromPromotionId,omitempty"`
 	// Run is the CI run that performed this promotion.
 	Run *wireRun `json:"run,omitempty"`
+	// RecordOnly is DeployPromotion.record_only (tag 31): the promoted
+	// release was recorded from an outside pipeline, so this row is the
+	// deploy marker that pipeline left. Derived server-side from the release.
+	RecordOnly bool `json:"recordOnly,omitempty"`
 
 	// PlanDigest, ApprovedBy and AcknowledgedFindings are O-13's record of
 	// the review this promotion was written under (tags 23–25): which plan,
@@ -697,6 +707,9 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 		CreatedBy: w.CreatedByUserID,
 		Artifacts: map[string]release.Artifact{},
 		Run:       runFromWire(w.Run),
+		// A version-only record names no artifacts and is valid only with
+		// the flag, so it is read before anything validates the release.
+		RecordOnly: w.RecordOnly,
 	}
 	// A provenance that does not validate is DROPPED, not fatal. The control
 	// plane validates provenance with forge's own rule before storing it, so
@@ -859,6 +872,7 @@ func (s *hostedStore) promotionFromWire(env string, w wirePromotion) (release.Pr
 	p.Targets = release.NormalizeTargets(w.Targets)
 	p.SupersededInFlight = w.SupersededInFlight
 	p.Run = runFromWire(w.Run)
+	p.RecordOnly = w.RecordOnly
 	if p.Resolved == nil {
 		p.Resolved = map[string]string{}
 	}
@@ -1112,6 +1126,15 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	if r.Project != "" {
 		req["project"] = r.Project
 	}
+	// A release forge RECORDED, not built (`forge release record`): it may
+	// name no artifacts. Sent only when set, so every forge-built cut is
+	// byte-for-byte the request it was. A control plane that predates the
+	// field ignores it (Connect's JSON codec drops unknown fields) and then
+	// refuses a version-only record as naming nothing — which
+	// recordOnlyUnsupported turns into an upgrade hint rather than a puzzle.
+	if r.RecordOnly {
+		req["recordOnly"] = true
+	}
 	if len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0 {
 		if err := requireSnapshotCapabilities(ctx, s.client); err != nil {
 			return false, err
@@ -1144,9 +1167,21 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		if hostedErrorHasCode(err, cloud.CodeAlreadyExists) {
 			return false, fmt.Errorf("release %q: %w: %v", r.Version, release.ErrReleaseConflict, err)
 		}
+		if r.RecordOnly && r.VersionOnly() && hostedErrorHasCode(err, cloud.CodeInvalidArgument) {
+			return false, recordOnlyUnsupported(s.endpoint, err)
+		}
 		return false, err
 	}
 	return resp.Created, nil
+}
+
+// recordOnlyUnsupported explains the one way a version-only record fails on a
+// control plane that predates record-only releases: it never saw the flag, so
+// it judged a release that names nothing. The cause stays wrapped.
+func recordOnlyUnsupported(endpoint string, err error) error {
+	return fmt.Errorf("the control plane at %s refused a version-only record: it may predate record-only releases. "+
+		"Pass the image digests your pipeline deployed (--workload <name> --image <ref@sha256:…>), "+
+		"or record to this machine's ledger with FORGE_LEDGER=machine: %w", endpoint, err)
 }
 
 // Get calls GetRelease; a NotFound answer is (nil, nil), matching the file

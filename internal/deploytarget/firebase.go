@@ -596,7 +596,7 @@ func renderFirebaseRC(spec FirebaseHostingSpec) (string, error) {
 // printFirebasePlan renders the dry-run plan for one frontend. Output is
 // stable + greppable: the build command, the assembled layout (one line
 // per copy, with the destination mount), and the exact firebase deploy
-// command. Mirrors the External provider's "[DRY-RUN] would exec" style.
+// command, in the "[DRY-RUN] would exec" style every provider's dry run uses.
 func printFirebasePlan(w io.Writer, plan firebasePlan) {
 	_, _ = fmt.Fprintf(w, "  [DRY-RUN] firebase deploy plan for frontend %q:\n", plan.Stage.Name)
 	printStagePlanBuild(w, plan.Stage)

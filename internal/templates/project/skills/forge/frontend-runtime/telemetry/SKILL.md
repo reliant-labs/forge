@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime/telemetry
-description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, source maps extracted to a registry sidecar and never served, new-project replay on and always masked, reportException for caught errors, and interaction() spans timing a user operation from click to usable.
+description: Browser telemetry in forge frontends — the HyperDX SDK forge scaffolds and initialises (otel_gen.ts, SERVICE_NAME), the same-origin /_otel route and who forwards it, the env knobs, the cookieless analytics tiers (off < aggregate < identified < full; identified by default: nothing stored on the device, the signed-in user's opaque id on events; full only with mode full + grantAnalyticsConsent; optOutOfAnalytics; GPC/DNT caps at aggregate), automatic page views with referrer/utm/click_id, flag exposures, source maps extracted to a registry sidecar and never served, new-project replay on and always masked, reportException for caught errors, and interaction() spans timing a user operation from click to usable.
 ---
 
 # Browser telemetry (HyperDX SDK)
@@ -67,8 +67,12 @@ into every environment it is promoted to.
 |---|---|---|---|
 | ingest path (`off` or empty disables) | `OTEL_ENDPOINT` | KCL `config.otel_endpoint` or `runtime_config` | `/_otel` in dev and on `forge.OnHosted`, **empty elsewhere** |
 | `deployment.environment` | `ENVIRONMENT` | KCL `config.environment` or `runtime_config` | the forge env name |
-| session replay (masked) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
-| product analytics mode (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-events`) |
+| product analytics mode, the tier ceiling (`off` / `aggregate` / `identified` / `full`) | `ANALYTICS_MODE` | KCL `telemetry = forge.BrowserTelemetry {analytics = forge.Analytics {mode = "full"}}` (per frontend, per env), or `runtime_config`; forced to `off` when the env switches browser telemetry off | `identified`: cookieless, a signed-in user's events carry their opaque id (rendered only when it differs; see `observability/product-events`) |
+| session replay (masked; `full` tier only) | `OTEL_REPLAY = "true"` | KCL `telemetry = forge.BrowserTelemetry {replay = True}` (per frontend, per env), or `runtime_config` | **on in new projects**, off in existing implicit-off envs |
+| console capture | `CONSOLE_CAPTURE = "false"` | KCL `telemetry.console_capture = False` | **on** |
+| replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
+| `page_viewed {route}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
+| signed-in user id on every event | `IDENTIFY_USER = "false"` | KCL `telemetry.identify_user = False` | **on** with native sign-in |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
@@ -85,6 +89,86 @@ The API origin (`API_URL`) feeds `tracePropagationTargets`, resolved as
 `connect.ts` resolves it, so a cross-origin API still gets a `traceparent`.
 `environment` is emitted as both `deployment.environment.name` and the legacy
 `deployment.environment` that HyperDX's default sources key on.
+
+## Analytics tiers: cookieless by default
+
+Product analytics run in a **tier**, ordered `off` < `aggregate` <
+`identified` < `full`: the lowest of the app's `analytics` mode
+(`ANALYTICS_MODE` from the runtime config in a generated frontend; absent
+means `identified`), the consent the app has signalled, and the browser's
+GPC / DNT:
+
+- **`identified`** (the default): product events and page views flow with
+  **no persistent id, and nothing is stored on the device** — no cookie, no
+  localStorage, no sessionStorage — and a signed-in user's events carry their
+  opaque id. The HyperDX SDK's `__rum_sid` session cookie is answered from
+  memory (`installRumSessionStore`), so spans still group into one session
+  while the page is open. Visitors are counted by the platform's ingest edge
+  with a daily-salted hash it forgets; the page sends no fingerprinting input.
+- **`aggregate`** (mode `aggregate`, and always under GPC / DNT): as
+  identified, but strictly anonymous: no user id on browser events, even when
+  signed in.
+- **`full`**: `analytics: "full"` **and** `grantAnalyticsConsent()`. The
+  session cookie, a persistent `visitor.id`, stored campaign attribution
+  (`user_identified`, `withAttribution`) and session replay.
+- **`off`**: `analytics: "off"` or `optOutOfAnalytics()` (remembered in
+  `forge.analytics_opt_out`, the one thing stored below `full`). No product
+  events and no user id; errors and traces still flow.
+
+```ts
+import { grantAnalyticsConsent, revokeAnalyticsConsent, optOutOfAnalytics } from "@reliantlabs/forge-web-runtime";
+```
+
+Call `grantAnalyticsConsent()` on every page load once your consent manager
+says yes (the runtime does not remember consent); `revokeAnalyticsConsent()`
+erases what `full` stored and keeps the running session in memory;
+`optOutOfAnalytics()` is the person's objection to analytics at all. A start
+in a mode that can never reach `full` erases ids an earlier page load stored.
+Under GPC / DNT the browser's events carry **no user id** (not even from
+`setTelemetryUser`), and no auth event is sent. `attribution` /
+`enableAttribution()` are deprecated spellings of mode `full` + consent and
+keep working. The contract, and what each tier sends:
+`observability/product-events`.
+
+## Page views and the signed-in user, automatically
+
+The generated `otel_gen.ts` turns on two runtime options (both **off** when you
+call `initBrowserTelemetry` yourself):
+
+- `pageViews` — one `page_viewed {route}` product event per route the user
+  lands on (Navigation API where the browser has it, else wrapped
+  `history.pushState`/`replaceState` plus `popstate`). `route` is the pathname
+  only: no query or fragment, the basePath stripped, and every segment that
+  is not a plain route word (lowercase letters joined by `-`/`_`, or `v2`) as
+  `:id`, so no id format leaves the browser; consecutive repeats are one view.
+  `normalizeRoute(pathname, basePath)` from the barrel names your own events'
+  routes the same way. `pageViews: { routeName }` replaces the naming (for an
+  all-letters value like `/users/jane`); its result is scrubbed the same way,
+  with `:param` / `[param]` placeholders allowed. The first view of a page
+  load carries `entry: "true"` and its external referrer (`referrer_host`,
+  scrubbed `referrer_path`; `pageViews: { siteHosts }` names hosts that are
+  this site); any view whose URL carries them adds `utm_*`, `ref` and
+  `click_id` — the ad network's name, never the click id.
+- `identify: { sessionUrl }` — for a frontend with native sign-in
+  (`src/lib/auth/native-login.ts` and `src/lib/api-base.ts`), the runtime asks
+  the same `/auth/session` `fetchIdentity` asks, resolved through `apiBase` as
+  sign-in resolves it (dev proxy and runtime config included), with the
+  cookie, and passes its `subject` — never `email` or `name`, and never an
+  `@`-shaped subject — to `setTelemetryUser`, so browser events carry the
+  backend's `user.id`. A frontend without `api-base.ts` gets no `identify`:
+  there is no shared resolution, and guessing the origin can miss the cookie. It asks again on a move into or out of `/auth/*` and
+  when the tab becomes visible, never per navigation. Signed out (a 401/403
+  included) or an answer naming nobody (404, error, foreign body) clears the
+  user it set, so no event is tied to the wrong account; before it has set
+  one, such answers change nothing. Mock mode never asks. An app with its own IdP calls
+  `setTelemetryUser` and turns this off (`identify_user = False`).
+
+Both start only once the SDK runs and stop on `disableTelemetry()`. The events
+land in `product_events` like any `track()` call (`observability/product-events`).
+
+`trackExposure(flag, variant)` and the OpenFeature hook `forgeExposureHook`
+(`OpenFeature.addHooks(forgeExposureHook)`) record `flag_evaluated` once per
+person, flag and variant per day.
 
 ## Source maps are extracted, never served
 
@@ -126,6 +210,13 @@ opt-in that keeps working but switches no frontend on, and a
 `{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable is a deprecated fallback.
 Envs scaffolded before v1.4.0 declare both: `migrations/v1.4.0` moves them.
 With observability or browser telemetry off, nothing records.
+
+Replay records a person, so it runs only in the **`full` analytics tier**:
+`ANALYTICS_MODE = "full"` in the frontend's runtime config and
+`grantAnalyticsConsent()` before `initTelemetry()` runs (consent given later
+starts it on the next page load; revoking it stops the recorder). In the
+cookieless modes `replay = True` records nothing. An internal tool whose
+users have agreed to recording grants consent at startup.
 
 Pin upgrades do not enable replay in existing projects: the SDK and KCL schema
 retain their off default. Adding a frontend to an existing project does not
@@ -182,6 +273,35 @@ try {
   throw err;
 }
 ```
+
+## Who is signed in
+
+Call `identifyUser(subject)` from the barrel wherever the app learns who is
+signed in (the scaffolded auth context, Clerk's `useUser`, Auth0's
+`useAuth0`), and `identifyUser(null)` on sign-out. It attaches the opaque id to
+every span and replay (so the Sessions view and `forge obs sessions --user`
+work) and sends one `auth_signed_in {kind: "resumed"}` per user per UTC day,
+which is how the console counts active users. `trackAuthEvent("signed_in" |
+"signed_up" | "signed_out", { userId, … })` reports the auth outcome itself, for
+an app whose auth never touches a forge server. Both refuse an email-shaped id;
+under GPC or DNT they send no auth event and attach no id. Below the `full`
+tier the daily marker is kept in memory, never stored. The contract and the server-side
+emitters: `observability/product-events/auth-events`.
+
+**On Supabase, Clerk, Auth0 or Firebase**, one line does it: the provider's
+adapter subpath maps its callbacks onto `identifyUser` and the sign-out event,
+with the provider named on each event (structurally typed, no dependency):
+
+```ts
+import { createSupabaseAuthTelemetry } from "@reliantlabs/forge-web-runtime/auth/supabase";
+createSupabaseAuthTelemetry(supabase); // next to createClient
+// /auth/clerk: createClerkAuthTelemetry(clerk)    /auth/auth0: syncAuth0(client), reportAuth0SignOut(client)
+// /auth/firebase: createFirebaseAuthTelemetry((cb) => onIdTokenChanged(auth, cb)), reportFirebaseSignIn(user, info)
+```
+
+Anonymous sessions (Supabase `signInAnonymously`, Firebase anonymous auth) are
+never identified or counted. An app with its own `onAuthStateChange` passes
+`supabaseAuthTelemetryListener()` its `(event, session)` instead.
 
 ## Interactions: click to usable
 

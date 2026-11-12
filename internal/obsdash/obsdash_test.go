@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/pkg/obsbuiltin"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
@@ -68,7 +69,7 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,usage"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 
@@ -147,6 +148,15 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 		if d.ID == JobsID {
 			if !got[FieldService] || got[FieldEnv] {
 				t.Errorf("jobs: filters %v, want only service.name", d.Filters)
+			}
+			continue
+		}
+		// The built-in product dashboards count visitors and users across a
+		// project's frontend and backend, so a service filter would split
+		// one visit or one user in two: they filter on the environment only.
+		if obsbuiltin.IsDashboard(d.ID) {
+			if got[FieldService] || !got[FieldEnv] {
+				t.Errorf("%s: filters %v, want only deployment.environment.name", d.ID, d.Filters)
 			}
 			continue
 		}

@@ -39,6 +39,9 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newAnnotationsCmd())
 	cmd.AddCommand(newCapabilitiesCmd())
 	cmd.AddCommand(newLibrariesCmd())
+	// `benefits` is the front door's list: what forge does for the repo you
+	// are in, including one that is not a forge project (benefits_cmd.go).
+	cmd.AddCommand(newBenefitsCmd())
 	cmd.AddCommand(newProjectFrontendsCmd())
 	// `checkouts` is a project-STRUCTURE read: which copies of this
 	// project exist on this machine, plus the remote main they are

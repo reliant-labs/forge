@@ -2,6 +2,7 @@
 name: debug
 description: Debug methodology — triage running-system evidence, guarded data reads, parallel investigation, and synthesis.
 emit: both
+applies: any
 ---
 
 # Debug Methodology
@@ -281,6 +282,18 @@ tail -f .forge/logs/dev/frontend_web.log                 # follow while reproduc
 The uncaught-error capture is the part worth internalizing: a `TypeError` that
 crashes a render, or a rejected promise, produces **no `console` call at all**
 and is invisible to a code search. It still lands in this file, with its stack.
+
+**Every failed RPC is an error line too** (the runtime's interceptors write it,
+whatever the page did with the error), naming the procedure, the Connect code
+and the trace — the server's `traceresponse`, else the browser's `traceparent`:
+
+```
+[browser:error] rpc failed procedure=/shop.v1.OrdersService/ArchiveOrder code=deadline_exceeded message="deadline exceeded" trace_id=6cdcc2b8d409e05528b82b2687a58af2
+```
+
+`grep -r <trace_id> .forge/logs/dev/` finds it beside the server's `rpc
+failed` line. Cancelled calls are left out. No such line? The frontend's
+runtime predates it (needs the release after 0.13.10).
 
 Three caveats that will otherwise mislead you:
 

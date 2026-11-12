@@ -285,13 +285,57 @@ func composeDependsOn(n yaml.Node) []string {
 
 func composeCommand(n yaml.Node) ([]string, string) {
 	if n.Kind == yaml.ScalarNode {
-		return []string{"sh", "-c", n.Value}, n.Value
+		return splitComposeCommand(n.Value), n.Value
 	}
 	var argv []string
 	for _, item := range n.Content {
 		argv = append(argv, item.Value)
 	}
 	return argv, strings.Join(argv, " ")
+}
+
+// splitComposeCommand splits a compose string `command` into argv the way
+// compose does: shell-style words and quotes, but no shell runs it, so `&&`,
+// pipes and `$VAR` stay literal arguments to the image's entrypoint. An
+// unterminated quote (which compose itself refuses) falls back to whitespace
+// fields.
+func splitComposeCommand(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inWord, quote, escaped := false, rune(0), false
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped, inWord = true, true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote, inWord = r, true
+		case r == ' ' || r == '\t' || r == '\n':
+			if inWord {
+				out = append(out, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteRune(r)
+			inWord = true
+		}
+	}
+	if quote != 0 || escaped {
+		return strings.Fields(s)
+	}
+	if inWord {
+		out = append(out, cur.String())
+	}
+	return out
 }
 
 // imageRepo is an image reference's repository, lowercase, with no tag,

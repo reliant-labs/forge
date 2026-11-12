@@ -227,21 +227,14 @@ func appWorkloadsK(spec AppSpec) string {
 			fmt.Fprintf(&b, "    image = %s\n", kclStr(w.Image))
 		}
 		if len(w.Command) > 0 {
-			fmt.Fprintf(&b, "    command = %s  # check: %s\n", kclList(w.Command), w.CommandSource)
+			// args, not command: compose's `command` replaces the image's CMD
+			// and keeps its ENTRYPOINT, and so does a workload's args.
+			fmt.Fprintf(&b, "    args = %s  # check: %s\n", kclList(w.Command), w.CommandSource)
 		}
 		if w.Port > 0 {
 			fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = %s}]  # %s\n", w.Port, kclBool(w.Expose), w.PortSource)
 		}
-		env := map[string]string{}
-		for k, v := range w.Env {
-			env[k] = v
-		}
-		if w.Port > 0 && w.Build != nil {
-			if _, ok := env["PORT"]; !ok {
-				env["PORT"] = fmt.Sprint(w.Port)
-			}
-		}
-		if len(env) > 0 {
+		if env := w.declaredEnv(); len(env) > 0 {
 			fmt.Fprintf(&b, "    env = %s\n", kclEnvDict(env, "    "))
 		}
 		if w.Port > 0 {
@@ -259,6 +252,11 @@ func appWorkloadsK(spec AppSpec) string {
 		b.WriteString("migrate = fw.Workload {\n    name = \"migrate\"\n    kind = \"job\"\n")
 		fmt.Fprintf(&b, "    image = %s.image\n    build = %s.build\n", owner.Ident, owner.Ident)
 		fmt.Fprintf(&b, "    command = %s  # check: %s\n", kclList(m.Command), m.Source)
+		if len(owner.declaredEnv()) > 0 {
+			// The job runs the owner's image with the owner's configuration
+			// (FLASK_APP, DJANGO_SETTINGS_MODULE, APP_ENV, ...).
+			fmt.Fprintf(&b, "    env = %s.env\n", owner.Ident)
+		}
 		b.WriteString("    before = [fw.BEFORE_ALL]\n}\n")
 	}
 	return b.String()
@@ -289,6 +287,21 @@ func migrateEnvAdds(spec AppSpec, secrets bool) []string {
 		}
 	}
 	return adds
+}
+
+// declaredEnv is the literal env workloads.k declares for w: its own, plus
+// PORT for a built service that listens.
+func (w AppWorkload) declaredEnv() map[string]string {
+	env := map[string]string{}
+	for k, v := range w.Env {
+		env[k] = v
+	}
+	if w.Port > 0 && w.Build != nil {
+		if _, ok := env["PORT"]; !ok {
+			env["PORT"] = fmt.Sprint(w.Port)
+		}
+	}
+	return env
 }
 
 // databaseEnv is where w reads the database's URL.

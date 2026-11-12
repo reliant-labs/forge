@@ -437,6 +437,7 @@ func TestNewApp_ComposeCommandAndMigrationEnvReachHosting(t *testing.T) {
     environment:
       SQLALCHEMY_DATABASE_URI: postgresql://app:app@db:5432/shop
       SECRET_KEY: dev-secret
+      FLASK_APP: app.main
   migrate:
     build: .
     command: alembic upgrade head
@@ -461,11 +462,15 @@ func TestNewApp_ComposeCommandAndMigrationEnvReachHosting(t *testing.T) {
 		got[f.Path] = string(f.Content)
 	}
 	wk := got["deploy/kcl/workloads.k"]
-	if !strings.Contains(wk, `command = ["sh", "-c", "celery -A app.tasks worker"]`) || !strings.Contains(wk, "name = \"jobs\"\n    kind = \"worker\"") {
+	if !strings.Contains(wk, `args = ["celery", "-A", "app.tasks", "worker"]`) || !strings.Contains(wk, "name = \"jobs\"\n    kind = \"worker\"") {
 		t.Errorf("the jobs worker lost its compose command:\n%s", wk)
 	}
-	if strings.Count(wk, "\n    command = ") != 2 { // jobs, and the migrate job
-		t.Errorf("only the overridden worker and the migrate job carry a command:\n%s", wk)
+	// args, not command: compose's command replaces CMD and keeps ENTRYPOINT.
+	if strings.Count(wk, "\n    args = ") != 1 || strings.Count(wk, "\n    command = ") != 1 { // jobs; the migrate job
+		t.Errorf("only the overridden worker carries args, and only the migrate job a command:\n%s", wk)
+	}
+	if !strings.Contains(wk, "    env = jobs.env\n") {
+		t.Errorf("the migrate job must carry its owner's literal env:\n%s", wk)
 	}
 	prod := got["deploy/kcl/prod/main.k"]
 	var migrate string
@@ -477,6 +482,23 @@ func TestNewApp_ComposeCommandAndMigrationEnvReachHosting(t *testing.T) {
 	for _, want := range []string{"env.DATABASE_URL = _database_url", "env.SQLALCHEMY_DATABASE_URI = _database_url", `env.SECRET_KEY = forge.ManagedSecret {name = "SECRET_KEY"}`} {
 		if !strings.Contains(migrate, want) {
 			t.Errorf("prod's migrate job lacks %s: %q", want, migrate)
+		}
+	}
+}
+
+// A compose string command is argv, not a shell script: words and quotes
+// split, `&&` and `$VAR` stay literal, as compose passes them to the
+// entrypoint.
+func TestSplitComposeCommand(t *testing.T) {
+	for in, want := range map[string][]string{
+		`celery -A app.tasks worker`:            {"celery", "-A", "app.tasks", "worker"},
+		`sh -c "migrate && serve --port $PORT"`: {"sh", "-c", "migrate && serve --port $PORT"},
+		`echo 'a b' c\ d`:                       {"echo", "a b", "c d"},
+		`  spaced   out `:                       {"spaced", "out"},
+		`unterminated "quote`:                   {"unterminated", `"quote`},
+	} {
+		if got := splitComposeCommand(in); strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("splitComposeCommand(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

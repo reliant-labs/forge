@@ -41,9 +41,11 @@ const (
 	MetaProofLock = "forge.proof_lock"
 	// MetaProofWindowPrefix starts the key a proof writes before it takes
 	// an unverified account's credentials back ahead of its proof: one key
-	// per proof (the prefix and a nonce), its value the window's start in
-	// unix milliseconds. A successful proof waits out every such window
-	// before it hands the account back. See proveAddress.
+	// per proof (the prefix and a nonce), its value unix milliseconds read
+	// as a start that lasts the default 15s window (a longer window is
+	// written as its end minus 15s; see announceWindow). A successful proof
+	// waits out every such window before it hands the account back. See
+	// proveAddress.
 	MetaProofWindowPrefix = "forge.proof_window."
 )
 

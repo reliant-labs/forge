@@ -224,6 +224,28 @@ line names it.
     `b.sessionCookie()` wherever the session cookie is set, read or cleared.
     Signed-in users sign in once more after the deploy.
 
+12. **One address proof at a time across replicas.** A proof that fails
+    still takes an unverified account's credentials back first. With more
+    than one replica, and nothing shared between them but a time fence, a
+    failed proof whose revocation the issuer serves late can remove a
+    credential the owner just set through another replica (forge#2121). Give
+    every replica one lock, on the app's own database. Copy
+    `proofLockerFor` from the scratch project's broker, with its
+    `"database/sql"` and `_ "github.com/jackc/pgx/v5/stdlib"` imports, and
+    add to the `devidp.SignInRoutesConfig` in `mountSignInMethods`:
+
+    ```go
+    ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger),
+    ```
+
+    It needs no table, migration or new setting: Postgres advisory locks on
+    `database_url`, released when a replica's connection ends. While that
+    database is down, proofs, verification and passkey enrolment answer
+    "unavailable"; sign-in with an existing credential carries on. A config
+    with no `database_url` keeps the in-process lock, which is enough for ONE
+    replica only: run one, or point `devidp.NewPostgresProofLocker` at a
+    database every replica shares.
+
 ## 3. Add the frontend pages
 
 From the scratch project's frontend (same kind), copy:
@@ -296,6 +318,12 @@ declaration turns on, in that environment, right after the deploy:
      `forge.proof_window.*` key.
 6. **Alerts.** The server logs no `alert=identity.revoke_failed` line. Each
    one names a `user_id` left locked (below).
+7. **The proof lock (step 2.12).** No `the proof lock's database` errors at
+   start-up or during the flows above. `waiting for another proof of this
+   account` with its `wait` appears only when two proofs of one account
+   overlap; `gave up waiting for another proof` (after 30s) or `lost before
+   its release` points at a stalled issuer call or a dropped database
+   connection.
 
 ### Rolling back
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -60,8 +61,14 @@ type SignInRoutes struct {
 	registerByIP    *limiter
 	socialStartByIP *limiter
 
-	// proofs runs address proofs of one account one at a time (proveAddress).
+	// proofs runs address proofs of one account one at a time (proveAddress)
+	// in this process: the locker unless the config supplies one.
 	proofs keyedMutex
+	// locker serialises an account's proofs and the installs after one
+	// (ProofLocker). sharedLock: it is the config's, shared by every
+	// replica, so the pre-proof window is lockedPreProofWindow.
+	locker     ProofLocker
+	sharedLock bool
 }
 
 // The routes. The scaffolded broker mounts each with
@@ -164,6 +171,17 @@ type SignInRoutesConfig struct {
 	// issuer is asked (nil: none). RejectPassword answers a rejected one.
 	PasswordPolicy func(context.Context) (PasswordPolicy, error)
 	RejectPassword func(ctx context.Context, w http.ResponseWriter, password string, err *PasswordPolicyError)
+
+	// ProofLocker serialises an account's address proofs and the credential
+	// installs after one across every replica of the broker
+	// (NewPostgresProofLocker, on the app's database). nil keeps the
+	// in-process lock, which is enough for one replica; with more, the
+	// #2098 time fence is then all that keeps a failed proof on one replica
+	// from revoking a credential the owner just set on another (forge#2121).
+	// While the shared lock cannot be taken (its database is down), proofs,
+	// verification and passkey enrolment answer "unavailable"; sign-in with
+	// an existing credential does not take it.
+	ProofLocker ProofLocker
 }
 
 // NewSignInRoutes validates the configuration. It refuses a policy-bearing
@@ -223,7 +241,23 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 		registerByIP:    newLimiter(20, time.Hour),
 		socialStartByIP: newLimiter(60, 15*time.Minute),
 	}
+	r.locker, r.sharedLock = cfg.ProofLocker, cfg.ProofLocker != nil
+	if r.locker == nil {
+		r.locker = &r.proofs
+	}
 	return r, nil
+}
+
+// lockAccount takes the account's proof lock (see ProofLocker). Its release
+// may be called more than once. An error is the caller's refusal: the work
+// it guards is not run without the lock.
+func (r *SignInRoutes) lockAccount(ctx context.Context, userID string) (func(), error) {
+	release, err := r.locker.LockAccount(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("the account's proof lock: %w", err)
+	}
+	var once sync.Once
+	return func() { once.Do(release) }, nil
 }
 
 // RPID is the passkey relying-party id in use.
@@ -690,6 +724,15 @@ func (r *SignInRoutes) HandlePasskeyRegisterFinish(w http.ResponseWriter, req *h
 		writeErr(w, http.StatusBadRequest, CodePasskeyFailed, "That passkey could not be registered.")
 		return
 	}
+	// A passkey is a credential install: no proof of this account, on any
+	// replica, may run beside it (forge#2121). Without the lock the binding
+	// is kept, so the browser can finish once the lock can be taken.
+	release, err := r.lockAccount(ctx, userID)
+	if err != nil {
+		r.unavailable(ctx, w, "passkey registration: the account's proof lock could not be taken", err)
+		return
+	}
+	defer release()
 	r.clearBinding(w, registerCookie)
 	if err := r.cfg.Client.VerifyPasskeyRegistration(ctx, userID, b.PasskeyID, body.Credential, body.Name); err != nil {
 		r.cfg.Logger.WarnContext(ctx, "passkey registration rejected", "user_id", userID, "error", err)
@@ -1388,7 +1431,20 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	// before it (nothing proves who set it) with the account locked
 	// throughout (proveAddress), THEN this browser's pending social link and
 	// password are attached.
-	reset, err := r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
+	//
+	// One hold of the account's proof lock covers both: no other proof of
+	// this account, on any replica, runs between this proof and the
+	// credentials it installs (forge#2121). Taken before the proof, so a
+	// lock that cannot be had refuses the code rather than spending it on
+	// an address whose password then cannot be set.
+	release, err := r.lockAccount(ctx, userID)
+	if err != nil {
+		r.codeByUser.refund(userID)
+		r.unavailable(ctx, w, "verification: the account's proof lock could not be taken", err)
+		return
+	}
+	defer release()
+	reset, err := r.proveAddressHeld(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
 	if err != nil {
 		if errors.Is(err, ErrInvalidCode) {
 			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
@@ -1404,6 +1460,7 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
 	r.attachPendingLink(w, req, userID)
 	pw := r.setPendingPassword(w, req, userID)
+	release()
 	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
 	if pw.set {
 		reset = false

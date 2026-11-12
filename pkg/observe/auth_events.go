@@ -180,7 +180,9 @@ func TrackAuth(ctx context.Context, ev AuthEvent, userID string, opts ...AuthOpt
 			o(&p)
 		}
 	}
-	trackAs(ctx, string(ev), userID, authEventAttrs(ev, p))
+	actor := ActorFrom(ctx)
+	actor.UserID = userID
+	trackAs(ctx, string(ev), actor, AppClientBackend, authEventAttrs(ev, p))
 }
 
 // authEventAttrs bounds p to the vocabulary and drops the props that do not

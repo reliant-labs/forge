@@ -20,9 +20,10 @@ table; all of them follow it.
 |---|---|
 | `event.name` | `product.<snake_name>`; required, and the only thing the table selects on |
 | `user.id` | the authenticated user id (the auth subject); empty when anonymous |
-| `visitor.id` | the anonymous visitor id, when known |
+| `org.id` | the org the event is about (`Claims.OrgID`, or `observe.WithActor`); stored in `OrgId` |
+| `visitor.id` | the anonymous visitor id, when known (a consented browser visitor, or a CLI's install id) |
 | `session.id` | the client session id, when known |
-| `app.client` | `backend`, `web`, `electron` or `landing` |
+| `app.client` | `backend`, `cli`, `web`, `electron` or `landing` |
 | `app.version` | the emitting app's version |
 | `product.<key>` | one property per key; stored in `Props` with the `product.` prefix stripped |
 
@@ -42,12 +43,51 @@ observe.Track(ctx, "project_created", slog.String("template", "go"), slog.Int("r
 `observe.Track(ctx, name, attrs...)` writes the record through the context's
 logger (`observe.FromContext`), sets `app.client="backend"` and `app.version`
 (from `observe.Config.ServiceVersion`, or `observe.SetAppVersion`), and takes
-`user.id` from the claims forge's auth interceptor put in `ctx`: a handler
-needs no extra step, a background job has no user and so emits an anonymous
-event. A name that is not snake_case (`^[a-z][a-z0-9_]{0,63}$`) is dropped with
-a warning. Property values become strings; keep them low-cardinality and
-never put secrets or personal data in them. A `slog.Group` flattens to
-`group.key`.
+`user.id` and `org.id` from the claims forge's auth interceptor put in `ctx`: a
+handler needs no extra step. A name that is not snake_case
+(`^[a-z][a-z0-9_]{0,63}$`) is dropped with a warning. Property values become
+strings; keep them low-cardinality. A `slog.Group` flattens to `group.key`.
+
+### Who the event is about: `observe.WithActor`
+
+Code with no request claims (a webhook, a reaper, a queue consumer) names the
+actor itself:
+
+```go
+ctx = observe.WithActor(ctx, observe.Actor{OrgID: d.OrgID, UserID: d.CreatedBy, AnonymousID: installID})
+observe.Track(ctx, "deploy_succeeded", slog.String("mode", "account"), slog.Bool("first_for_org", first))
+```
+
+A non-empty `Actor` field wins over the claims; an empty one falls back to
+them. Ids must be opaque (an auth subject, an org id, a random install id):
+an id with an `@`, an IP address or a JWT is dropped (the event is kept),
+with one warning per process.
+
+### No personal data in properties
+
+Properties are tags: enums, booleans, counts, buckets. Never free text, emails,
+names, hostnames, paths, URLs or error text. Enforced three ways:
+
+- `observe.Track` (and the CLI emitter) drop a property whose value looks like
+  an email, an IP, a JWT, a bearer token, a provider key, URL userinfo or a
+  long opaque run (`observe.LooksLikePII`), with one warning per key that names
+  the key and never the value.
+- On Reliant hosting the ingest gateway scrubs `product.*` attributes with the
+  same patterns.
+- `forge lint` (`forgeconv-product-event-pii`) flags a property key with an
+  `email`, `name`, `ip`, `url`, `path` or `token` part.
+
+### Consent: `observe.SetConsentSource`
+
+An app whose users can opt out of product analytics registers its lookup once
+at startup. It is asked about every server-side event's actor, and it fails
+closed: an error or a panic drops the event.
+
+```go
+observe.SetConsentSource(observe.ConsentFunc(func(ctx context.Context, a observe.Actor) (bool, error) {
+	return !optOuts.Has(a.UserID), nil // answer from memory or a cache: it runs on every event
+}))
+```
 
 ## Automatic events from generated CRUD
 

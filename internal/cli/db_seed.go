@@ -18,6 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/internal/migrationhook"
 	"github.com/reliant-labs/forge/internal/shadowdb"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -348,7 +349,7 @@ func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending 
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 	if checkPending {
-		block, perr := seedplan.MigrationsPending(ctx, db, migDir)
+		block, perr := seedMigrationsPending(ctx, db, dbProjectRoot(), migDir)
 		if perr != nil {
 			_ = db.Close()
 			return nil, perr
@@ -359,6 +360,68 @@ func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending 
 		}
 	}
 	return db, nil
+}
+
+// seedMigrationsPending is seedplan.MigrationsPending, except in a project
+// that keeps its own migration tool (the `database.migrations` hook). There
+// the tool keeps its own ledger, under its own name (goose_db_version, a
+// custom x-migrations-table, ...), and forge's schema_migrations may not exist
+// at all on a fully migrated database, so reading it would refuse forever.
+// Instead the target is judged against the schema the tool's migrations
+// produce (shadowdb.Tables, the same schema the seed plan is built from):
+// every table and column they create must be there, or a migration is
+// pending and seeding is refused as before.
+func seedMigrationsPending(ctx context.Context, db *sql.DB, projectDir, migDir string) (*seedplan.MigrationBlock, error) {
+	if _, hooked := migrationhook.ResolveIn(projectDir); !hooked {
+		return seedplan.MigrationsPending(ctx, db, migDir)
+	}
+	tables, err := shadowdb.Tables(projectDir, migDir)
+	if err != nil {
+		return nil, fmt.Errorf("introspect applied schema: %w", err)
+	}
+	missing, err := schemaMissing(ctx, db, tables)
+	if err != nil || missing == "" {
+		return nil, err
+	}
+	return &seedplan.MigrationBlock{Reason: "the database is behind its migrations: " + missing + " is missing"}, nil
+}
+
+// schemaMissing names the first table or column of want that db lacks
+// ("table s.t" or "column s.t.c"), or "" when db has every one.
+func schemaMissing(ctx context.Context, db *sql.DB, want []schemadef.Table) (string, error) {
+	have := map[string]bool{}
+	rows, err := db.QueryContext(ctx, `SELECT table_schema, table_name, column_name FROM information_schema.columns
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema')`)
+	if err != nil {
+		return "", fmt.Errorf("read the database's columns: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var schema, table, column string
+		if err := rows.Scan(&schema, &table, &column); err != nil {
+			return "", err
+		}
+		have[schema+"."+table] = true
+		have[schema+"."+table+"."+column] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	for _, t := range want {
+		schema := t.Schema
+		if schema == "" {
+			schema = "public"
+		}
+		if !have[schema+"."+t.Name] {
+			return "table " + schema + "." + t.Name, nil
+		}
+		for _, c := range t.Columns {
+			if !have[schema+"."+t.Name+"."+c.Name] {
+				return "column " + schema + "." + t.Name + "." + c.Name, nil
+			}
+		}
+	}
+	return "", nil
 }
 
 // resolveSeedTargetDSN resolves the DSN a seed command will write through.

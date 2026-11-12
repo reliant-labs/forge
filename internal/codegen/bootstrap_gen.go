@@ -1069,21 +1069,27 @@ type componentTestHelperData struct {
 	NeedsTime       bool
 
 	// ConfigImport is the import path of the config the component's Deps
-	// takes (`Config *config.Config`), read from its source by
-	// DetectDepsConfigImport. Empty means it takes none, and the harness
-	// then has no config to default, no WithConfig option, and no config
-	// import: it imports only what the component itself does.
+	// takes (`Config *config.Config`, or its own block `Config
+	// *config.TraderConfig`), read from its source by DetectDepsConfig.
+	// Empty means it takes none, and the harness then has no config to
+	// default, no WithConfig option, and no config import: it imports only
+	// what the component itself does.
 	ConfigImport string
 	// ConfigImportAlias is "config" when ConfigImport's last segment is not
-	// already config, so the harness can always spell the type config.Config.
+	// already config, so the harness can always spell the type config.<T>.
 	ConfigImportAlias string
-	// ConfigDefaults is true when ConfigImport's package declares
-	// `func Defaults()` — the generated pkg/config does — and the harness
-	// then defaults to config.Defaults(): the config Load yields with no
-	// file, env or flag, nested blocks allocated and proto defaults applied.
-	// A config package without it (a hand-written one, a CLI's stub) keeps
-	// the zero &config.Config{}, the only value the harness can build there.
-	ConfigDefaults bool
+	// ConfigType is the type Deps.Config points to: "Config", or the
+	// component's own config block or per-process message. testConfig.cfg
+	// and WithConfig are typed *config.<ConfigType>.
+	ConfigType string
+	// ConfigDefaults is the constructor the harness defaults the config to:
+	// "Defaults" for Config, "Defaults<ConfigType>" for a block, both
+	// generated into pkg/config — the config Load yields with no file, env
+	// or flag, nested blocks allocated and proto defaults applied. Empty
+	// when the config package declares none (a hand-written one, a CLI's
+	// stub): the harness then keeps the zero &config.<ConfigType>{}, the
+	// only value it can build there.
+	ConfigDefaults string
 	NeedsULID      bool
 
 	ConnectServiceGoName   string
@@ -1204,12 +1210,12 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 // setConfigImport records the config the component in dir takes, if any (see
 // componentTestHelperData.ConfigImport).
 func (d *componentTestHelperData) setConfigImport(dir, projectDir string) {
-	d.ConfigImport = DetectDepsConfigImport(dir)
+	dc := DetectDepsConfig(dir, projectDir, d.Module)
+	d.ConfigImport, d.ConfigType, d.ConfigDefaults = dc.ImportPath, dc.TypeName, dc.DefaultsFunc
 	d.ConfigImportAlias = ""
 	if d.ConfigImport != "" && path.Base(d.ConfigImport) != "config" {
 		d.ConfigImportAlias = "config"
 	}
-	d.ConfigDefaults = d.ConfigImport != "" && ConfigPackageDeclaresDefaults(projectDir, d.Module, d.ConfigImport)
 }
 
 // renderComponentTestHelpers renders one component's helper file into dir.

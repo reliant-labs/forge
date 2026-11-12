@@ -69,7 +69,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 {{- /* The config the component's Deps takes, when it takes one: never a
        guess at <module>/pkg/config, which a project without typed config
-       does not have (codegen.DetectDepsConfigImport). */}}
+       does not have (codegen.DetectDepsConfig). */}}
 {{- if .ConfigImport}}
 
 	{{with .ConfigImportAlias}}{{.}} {{end}}"{{.ConfigImport}}"
@@ -103,7 +103,7 @@ type TestOption func(*testConfig)
 type testConfig struct {
 	logger *slog.Logger
 {{- if .ConfigImport}}
-	cfg    *config.Config
+	cfg    *config.{{.ConfigType}}
 {{- end}}
 {{- if .HasDB}}
 	db     orm.Context
@@ -127,7 +127,7 @@ func WithLogger(l *slog.Logger) TestOption {
 {{- if .ConfigImport}}
 
 // WithConfig overrides the default test config.
-func WithConfig(cfg *config.Config) TestOption {
+func WithConfig(cfg *config.{{.ConfigType}}) TestOption {
 	return func(c *testConfig) { c.cfg = cfg }
 }
 {{- end}}
@@ -451,7 +451,7 @@ func defaultTestConfig(t *testing.T) *testConfig {
 	return &testConfig{
 		logger: testkit.DiscardLogger(),
 {{- if .ConfigImport}}
-		cfg:    {{if .ConfigDefaults}}config.Defaults(){{else}}&config.Config{}{{end}},
+		cfg:    {{with .ConfigDefaults}}config.{{.}}(){{else}}&config.{{.ConfigType}}{}{{end}},
 {{- end}}
 {{- if .HasDB}}
 		// Bare real postgres — no schema (a fresh isolated database on the

@@ -19,7 +19,7 @@ func TestWebhook{{.Name | pascalCase}}RejectsNonPOST(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
 {{- if .ConfigImport}}
-		Config: &config.Config{},
+		Config: &config.{{or .ConfigType "Config"}}{},
 {{- end}}
 	})
 	if err != nil {
@@ -38,7 +38,7 @@ func TestWebhook{{.Name | pascalCase}}RejectsMissingEventID(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
 {{- if .ConfigImport}}
-		Config: &config.Config{},
+		Config: &config.{{or .ConfigType "Config"}}{},
 {{- end}}
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestWebhook{{.Name | pascalCase}}DeduplicatesEvents(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
 {{- if .ConfigImport}}
-		Config: &config.Config{},
+		Config: &config.{{or .ConfigType "Config"}}{},
 {{- end}}
 	})
 	if err != nil {
@@ -89,7 +89,7 @@ func TestWebhook{{.Name | pascalCase}}IdempotencyRoundTrip(t *testing.T) {
 	svc, err := New(Deps{
 		Logger: slog.Default(),
 {{- if .ConfigImport}}
-		Config: &config.Config{},
+		Config: &config.{{or .ConfigType "Config"}}{},
 {{- end}}
 	})
 	if err != nil {

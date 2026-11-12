@@ -214,6 +214,7 @@ The `pkg/tdd` library exports:
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
 | `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (migrations apply verbatim; a migration postgres rejects fails loudly) |
+| `<pkg>.WithConfig(cfg)` | the config `NewTest<X>` hands the component, typed as its `Deps.Config`: the root `*config.Config` (default `config.Defaults()`) or its own block or per-process config `*config.<Block>` (default `config.Defaults<Block>()`), each the config Load yields with nothing set |
 | `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
 | `seedplan.SeedGraph(t, db, "<table>")` | populate a migrated DB: seeds the table + its FK ancestors as one connected spine, every value already satisfying the schema's CHECK/enum/length constraints (`testing/flow`) |
 

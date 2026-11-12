@@ -166,6 +166,11 @@ func TestGenerateConfigLoader_ComponentBlock(t *testing.T) {
 	if !strings.Contains(content, "type TraderConfig = configv1.TraderConfig") {
 		t.Errorf("config.go must alias the composed block type\n%s", content)
 	}
+	// ...with its own defaults constructor, which the generated test
+	// helpers default a component that takes the block to.
+	if !strings.Contains(content, "func DefaultsTraderConfig() *TraderConfig {\n\tcfg, err := forgeconfig.DefaultsTyped[*configv1.TraderConfig]()") {
+		t.Errorf("config.go must declare DefaultsTraderConfig over forgeconfig.DefaultsTyped\n%s", content)
+	}
 	for _, banned := range []string{"type TraderConfig struct", "Trader TraderConfig", "loadField("} {
 		if strings.Contains(content, banned) {
 			t.Errorf("config.go must NOT re-declare the block struct or per-field loader (%q)\n%s", banned, content)

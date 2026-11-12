@@ -168,6 +168,62 @@ func parseComposeFile(path string) (*composeFile, error) {
 	return out, nil
 }
 
+// refuseCredentialCommands refuses to adopt a compose file whose service
+// command carries a credential. Adoption copies a command into workloads.k
+// (a workload's args, the migrate job) and prints it in the summary, both of
+// which are source-controlled or shared, and dropping the argument instead
+// would change what the command does. So adoption stops and names the
+// service and the argument by position only, never by value.
+func refuseCredentialCommands(composeName string, c *composeFile) error {
+	for _, s := range c.services {
+		if i := credentialArg(s.command); i >= 0 {
+			return fmt.Errorf("compose service %q in %s: argument %d of its command carries a credential, so forge will not copy it into workloads.k or print it: "+
+				"have the command read it from an environment variable compose sets (for example ${BROKER_URL}, set from a secret), then adopt again", s.name, composeName, i+1)
+		}
+	}
+	return nil
+}
+
+// credentialArg is the index of the first argument of argv that carries a
+// credential, or -1: a value credentialValue recognizes (a URL with userinfo
+// or a credential query parameter), a `--name=value` or `NAME=value` whose
+// name credentialName recognizes, or the value after such a flag.
+func credentialArg(argv []string) int {
+	for i, a := range argv {
+		if credentialValue(a) {
+			return i
+		}
+		name, value, hasValue := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !credentialName.MatchString(name) {
+			continue
+		}
+		if hasValue && secretShaped(value) {
+			return i
+		}
+		if !hasValue && strings.HasPrefix(a, "-") && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "-") && secretShaped(argv[i+1]) {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// secretShaped reports whether v, the value of a credential-named argument,
+// could be the credential itself: not empty, not a reference to one (an
+// environment variable, a file path) and not a number or a boolean
+// (`--max-tokens 512`).
+func secretShaped(v string) bool {
+	if v == "" || strings.ContainsRune(v, '$') || strings.ContainsAny(v[:1], "/.~") {
+		return false
+	}
+	if _, err := strconv.ParseFloat(v, 64); err == nil {
+		return false
+	}
+	if _, err := strconv.ParseBool(v); err == nil {
+		return false
+	}
+	return true
+}
+
 // credentialBuildArg reports a build arg that carries a credential, by name
 // or by value. A build arg is baked into the image and its history, and
 // workloads.k is source-controlled, so such an arg is never copied: it
@@ -858,6 +914,9 @@ func detectApp(root, project string, claimable bool) (*appDetection, error) {
 	if composeName != "" {
 		c, err := parseComposeFile(filepath.Join(root, composeName))
 		if err != nil {
+			return nil, err
+		}
+		if err := refuseCredentialCommands(composeName, c); err != nil {
 			return nil, err
 		}
 		compose = c

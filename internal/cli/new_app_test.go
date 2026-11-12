@@ -597,6 +597,74 @@ func TestDetectApp_CredentialBuildArgsAreWithheld(t *testing.T) {
 	}
 }
 
+// A compose command carrying a credential is not adopted: its argv would be
+// copied into workloads.k (a workload's args or the migrate job) and printed,
+// and dropping the argument would change the command. Adoption refuses,
+// naming the service and the argument's position, never its value, for
+// adoption and for a claimable deploy alike. A command that reads the
+// credential from the environment, or names a file, is adopted.
+func TestDetectApp_CredentialCommandsAreRefused(t *testing.T) {
+	compose := func(command string) string {
+		return `services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+  jobs:
+    build: .
+    command: ` + command + `
+  migrate:
+    build: .
+    command: alembic upgrade head
+`
+	}
+	for _, tc := range []struct {
+		name, command string
+		refused       bool
+	}{
+		{name: "broker URL with userinfo", command: "celery -A app worker --broker amqp://guest:hunter2amqp@mq:5672//", refused: true},
+		{name: "token flag value", command: "worker --api-token hunter2token", refused: true},
+		{name: "token flag=value", command: "worker --api-token=hunter2token", refused: true},
+		{name: "query credential", command: `["worker", "--upstream", "https://api.example.com/v1?api_key=hunter2query"]`, refused: true},
+		{name: "from the environment", command: "celery -A app worker --broker ${BROKER_URL}"},
+		{name: "a secret file", command: "worker --token-file /run/secrets/token"},
+		{name: "a number", command: "worker --max-tokens 512"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := writeAppTree(t, map[string]string{
+				"requirements.txt":   "flask==3.0.0\ngunicorn==22.0.0\ncelery==5.4.0\n",
+				"Dockerfile":         "FROM python:3.12-slim\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+				"docker-compose.yml": compose(tc.command),
+			})
+			for _, claimable := range []bool{false, true} {
+				det, err := detectApp(root, "shop", claimable)
+				if !tc.refused {
+					if err != nil {
+						t.Fatalf("claimable=%v: %v", claimable, err)
+					}
+					continue
+				}
+				if err == nil {
+					files, _ := generator.RenderAppScaffold(det.spec, "")
+					t.Fatalf("claimable=%v: adopted a credential-bearing command (%d files)", claimable, len(files))
+				}
+				if strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "jobs"`) {
+					t.Errorf("claimable=%v: error %q must name the service and never the value", claimable, err)
+				}
+			}
+		})
+	}
+	// A migration service's command is refused the same way.
+	root := writeAppTree(t, map[string]string{
+		"requirements.txt":   "flask==3.0.0\ngunicorn==22.0.0\n",
+		"Dockerfile":         "FROM python:3.12-slim\nCOPY . .\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:8000\", \"app:app\"]\n",
+		"docker-compose.yml": "services:\n  web:\n    build: .\n    ports:\n      - \"8000:8000\"\n  migrate:\n    build: .\n    command: alembic -x dburl=postgres://app:hunter2pg@db/app upgrade head\n",
+	})
+	if _, err := detectApp(root, "shop", false); err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `compose service "migrate"`) {
+		t.Errorf("migration command: err = %v, want a value-free refusal naming the service", err)
+	}
+}
+
 // A worker sharing the web Dockerfile inherits its EXPOSE and ENV PORT, but
 // its compose command serves neither: it is a worker, with no public port
 // and no TCP probe.

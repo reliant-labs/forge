@@ -11,6 +11,8 @@
 // tracer (version 4.0.0), and a stop() on an already stopped recorder starts
 // and ends a `record stop` span. scripts/browser-telemetry-smoke.mjs proves
 // the same against the real SDK in Chromium.
+import { gunzipSync, gzipSync } from "node:zlib";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGIN = "https://shop.example.com";
@@ -101,13 +103,37 @@ const recorder = {
   flush() {
     const batch = this.buffer.splice(0, this.buffer.length);
     if (batch.length === 0) return;
-    // A bare global lookup at export time, as the SDK's exporter does.
-    void fetch(this.url, {
-      method: "POST",
-      body: JSON.stringify(batch),
-    }).catch(() => {});
+    // A bare global lookup at export time, as the SDK's exporter does, with
+    // its request shape: gzipped OTLP protobuf under the rum.rr-web scope.
+    void fetch(
+      this.url,
+      otlpLogsPost("rum.rr-web", JSON.stringify(batch)),
+    ).catch(() => {});
   },
 };
+
+/**
+ * An OTLP logs post as the SDK's recorder makes it: a gzipped protobuf body
+ * carrying InstrumentationScope.name (field 1) = `scope`, then the records.
+ */
+function otlpLogsPost(scope: string, records: string): RequestInit {
+  const name = Buffer.from(scope);
+  const body = gzipSync(
+    Buffer.concat([
+      Buffer.from([0x0a, name.length]),
+      name,
+      Buffer.from(records),
+    ]),
+  );
+  return {
+    method: "POST",
+    body: new Uint8Array(body),
+    headers: {
+      "Content-Type": "application/x-protobuf",
+      "Content-Encoding": "gzip",
+    },
+  };
+}
 
 const client = {
   init(options: Record<string, unknown>) {
@@ -179,7 +205,12 @@ const network = vi.fn(async (input: unknown, init?: { body?: unknown }) => {
   exported.push({
     kind: "fetch",
     url: String(input),
-    body: typeof init?.body === "string" ? init.body : undefined,
+    body:
+      typeof init?.body === "string"
+        ? init.body
+        : init?.body instanceof Uint8Array
+          ? gunzipSync(init.body).toString("latin1")
+          : undefined,
     at: tick(),
   });
   return new Response(null, { status: 200 });
@@ -315,6 +346,44 @@ describe("session replay after consent is withdrawn", () => {
       "https://api.example.com/v1/orders",
     ]);
   });
+
+  it("other OTLP logs to the same logs URL still go out after it", async () => {
+    const k = await startRecording();
+    k.disableTelemetry();
+    const since = tick();
+
+    // The app's own OTLP logs: protobuf under another scope, and JSON.
+    await fetch(LOGS_URL, otlpLogsPost("app.logs", "app-log-protobuf"));
+    await fetch(LOGS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resourceLogs: [], note: "app-log-json" }),
+    });
+
+    const sent = exported.filter((e) => e.kind === "fetch" && e.at > since);
+    expect(sent.map((e) => e.url)).toEqual([LOGS_URL, LOGS_URL]);
+    expect(sent[0]?.body).toContain("app-log-protobuf");
+    expect(sent[1]?.body).toContain("app-log-json");
+  });
+
+  it.each([
+    ["a trailing slash", `${LOGS_URL}/`],
+    ["a relative URL", "/_otel/v1/logs"],
+    ["a query string", `${LOGS_URL}?x=1`],
+  ])(
+    "a replay batch to the logs URL spelled with %s is dropped too",
+    async (_name, url) => {
+      const k = await startRecording();
+      k.disableTelemetry();
+      const since = tick();
+
+      await fetch(url, otlpLogsPost("rum.rr-web", "spelled-differently"));
+
+      expect(
+        exported.filter((e) => e.kind === "fetch" && e.at > since),
+      ).toEqual([]);
+    },
+  );
 
   it("the recorder is stopped exactly once however consent is withdrawn", async () => {
     const k = await startRecording();

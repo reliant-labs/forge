@@ -68,7 +68,8 @@
 // span on its `rum.rr-web` tracer, so stopping twice exported one replay span
 // at the moment of withdrawal. So when replay runs, two gates go in right after
 // init and close for good, BEFORE the one stop: the recorder's record posts
-// are answered locally without the network (gateReplayRecords), and its
+// (told from other OTLP logs to the same URL by their `rum.rr-web` scope) are
+// answered locally without the network (gateReplayRecords), and its
 // tracer's spans are never ended (gateReplaySpans). The recorder is stopped
 // once however many paths ask. Replay that already left before the withdrawal
 // stays where it is.
@@ -547,9 +548,11 @@ type FetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 /**
  * Answers the recorder's record posts itself, without the network, once
  * `closed()`: the batch it had buffered when replay stopped is dropped, not
- * sent. Every other request passes through untouched. The recorder calls the
- * global fetch when it exports, so this layer is reached whatever wraps fetch
- * after it.
+ * sent. Every other request passes through untouched, including other OTLP
+ * logs posted to the same `${ingest}/v1/logs`: a post is the recorder's only
+ * when its OTLP body names the recorder's scope (isReplayBatch). The recorder
+ * calls the global fetch when it exports, so this layer is reached whatever
+ * wraps fetch after it.
  */
 function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
   const g = globalThis as { fetch?: FetchFn };
@@ -557,16 +560,157 @@ function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
   if (typeof inner !== "function") {
     return;
   }
+  const target = canonicalUrl(logsUrl, logsUrl);
   g.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
-    if (closed() && requestUrl(args[0]) === logsUrl) {
-      return Promise.resolve(
-        typeof Response === "function"
-          ? new Response(null, { status: 204 })
-          : (undefined as unknown as Response),
-      );
+    if (
+      !closed() ||
+      target === undefined ||
+      canonicalUrl(requestUrl(args[0]), logsUrl) !== target
+    ) {
+      return inner.apply(this, args);
     }
-    return inner.apply(this, args);
+    return isReplayBatch(args[0], args[1]).then((replay) =>
+      replay
+        ? typeof Response === "function"
+          ? new Response(null, { status: 204 })
+          : (undefined as unknown as Response)
+        : inner.apply(this, args),
+    );
   };
+}
+
+/**
+ * The recorder's OTLP scope, as protobuf encodes it inside every batch it
+ * posts: InstrumentationScope.name (field 1, length-delimited) = "rum.rr-web".
+ */
+const REPLAY_SCOPE_MARKER: readonly number[] = [
+  0x0a,
+  SDK_REPLAY_SCOPE.name.length,
+  ...Array.from(SDK_REPLAY_SCOPE.name, (c) => c.charCodeAt(0)),
+];
+
+/**
+ * Whether a request carries the recorder's records: an OTLP logs body
+ * (gzip-compressed, as the recorder sends it, or not) whose scope is the
+ * recorder's. A gzip body this browser cannot decompress counts as the
+ * recorder's when it is protobuf, the recorder's shape: after a withdrawal,
+ * dropping an unreadable log batch is the side to err on.
+ */
+async function isReplayBatch(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<boolean> {
+  try {
+    const headers = requestHeaders(input, init);
+    let bytes = await requestBody(input, init);
+    if (!bytes) {
+      return false;
+    }
+    if (/\bgzip\b/i.test(headers?.get("content-encoding") ?? "")) {
+      const plain = await gunzip(bytes);
+      if (!plain) {
+        return /x-protobuf/i.test(headers?.get("content-type") ?? "");
+      }
+      bytes = plain;
+    }
+    return containsBytes(bytes, REPLAY_SCOPE_MARKER);
+  } catch {
+    // Unreadable: not provably the recorder's, so it goes out as asked.
+    return false;
+  }
+}
+
+function requestHeaders(
+  input: unknown,
+  init: RequestInit | undefined,
+): Headers | undefined {
+  if (typeof Headers !== "function") {
+    return undefined;
+  }
+  if (init?.headers) {
+    return new Headers(init.headers);
+  }
+  if (typeof Request === "function" && input instanceof Request) {
+    return input.headers;
+  }
+  return undefined;
+}
+
+async function requestBody(
+  input: unknown,
+  init: RequestInit | undefined,
+): Promise<Uint8Array | undefined> {
+  const body: unknown = init?.body;
+  if (body == null) {
+    if (typeof Request === "function" && input instanceof Request) {
+      return new Uint8Array(await input.clone().arrayBuffer());
+    }
+    return undefined;
+  }
+  if (body instanceof Uint8Array) {
+    return body;
+  }
+  if (body instanceof ArrayBuffer) {
+    return new Uint8Array(body);
+  }
+  if (ArrayBuffer.isView(body)) {
+    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (typeof Blob === "function" && body instanceof Blob) {
+    return new Uint8Array(await body.arrayBuffer());
+  }
+  if (typeof body === "string") {
+    return new TextEncoder().encode(body);
+  }
+  return undefined;
+}
+
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
+  if (
+    typeof DecompressionStream !== "function" ||
+    typeof Response !== "function"
+  ) {
+    return undefined;
+  }
+  try {
+    const stream = new Response(bytes as BodyInit).body?.pipeThrough(
+      new DecompressionStream("gzip"),
+    );
+    if (!stream) {
+      return undefined;
+    }
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return undefined;
+  }
+}
+
+function containsBytes(haystack: Uint8Array, needle: readonly number[]) {
+  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        continue outer;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * `url` resolved against `base`, without query, fragment or a trailing slash,
+ * so equivalent spellings of the logs endpoint compare equal.
+ */
+function canonicalUrl(url: string | undefined, base: string) {
+  if (url === undefined || typeof URL === "undefined") {
+    return url;
+  }
+  try {
+    const u = new URL(url, base);
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url;
+  }
 }
 
 function requestUrl(input: unknown): string | undefined {

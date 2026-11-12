@@ -14,8 +14,9 @@
 //     that asked for machine output (Config.Quiet). Nothing is sent until the
 //     notice has been shown once.
 //   - Opt-out: DO_NOT_TRACK=1, <APP>_TELEMETRY=off, or `<app> telemetry
-//     off` (SetEnabled), which is remembered. It is off automatically when
-//     CI=true, unless <APP>_TELEMETRY=on says otherwise.
+//     off` (SetEnabled), which is remembered. It is always off on a CI
+//     runner (InCI: CI=true or a CI service's own variable); nothing turns
+//     it back on there.
 //   - A batch sent at exit (Flush), capped at 300 ms and dropped on any
 //     failure, so telemetry never slows or fails a command.
 //   - Volume bounds: one event per name per run, and at most MaxEventsPerDay
@@ -161,7 +162,8 @@ func (c *Client) resolve() Status {
 		st.Reason = "do_not_track"
 	case falsy(c.cfg.Getenv(st.EnvVar)):
 		st.Reason = "env_off"
-	case truthy(c.cfg.Getenv("CI")) && !truthy(c.cfg.Getenv(st.EnvVar)):
+	case InCI(c.cfg.Getenv):
+		// Owner decision 2: nothing is sent from CI, whatever else says so.
 		st.Reason = "ci"
 	case doc.Enabled != nil && !*doc.Enabled:
 		st.Reason = "opted_out"
@@ -333,16 +335,43 @@ func FirstRunEvent(app string) string {
 	return strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(app)) + "_cli_first_run"
 }
 
-// FirstRunAttrs are the standard first-run tags: version, os, arch, harness
-// (the coding agent running the command, "" when none) and ci.
+// FirstRunAttrs are the standard first-run tags: version, os, arch and
+// harness (the coding agent running the command, "" when none). There is no
+// ci tag: a CI runner sends nothing (InCI).
 func (c *Client) FirstRunAttrs(harness string) []slog.Attr {
 	return []slog.Attr{
 		slog.String("version", c.cfg.Version),
 		slog.String("os", runtime.GOOS),
 		slog.String("arch", runtime.GOARCH),
 		slog.String("harness", harness),
-		slog.Bool("ci", truthy(c.cfg.Getenv("CI"))),
 	}
+}
+
+// ciFlagVars are set to "true" (or "1") by CI services generally.
+var ciFlagVars = []string{"CI", "CONTINUOUS_INTEGRATION"}
+
+// ciServiceVars are set, to any value, by one CI service each.
+var ciServiceVars = []string{
+	"GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "CIRCLECI", "TRAVIS", "TF_BUILD",
+	"JENKINS_URL", "TEAMCITY_VERSION", "BITBUCKET_BUILD_NUMBER", "CODEBUILD_BUILD_ID",
+	"DRONE", "APPVEYOR", "SEMAPHORE", "BUDDY", "CIRRUS_CI", "WOODPECKER", "HARNESS_BUILD_ID",
+}
+
+// InCI reports whether the process runs on a CI runner: CI or
+// CONTINUOUS_INTEGRATION set to anything but a false value, or a CI
+// service's own variable set at all. Telemetry is always off there.
+func InCI(getenv func(string) string) bool {
+	for _, v := range ciFlagVars {
+		if truthy(getenv(v)) {
+			return true
+		}
+	}
+	for _, v := range ciServiceVars {
+		if getenv(v) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasKey(attrs []slog.Attr, key string) bool {

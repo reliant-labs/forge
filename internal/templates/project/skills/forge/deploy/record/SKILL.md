@@ -55,19 +55,32 @@ That is the whole integration. forge builds nothing and applies nothing.
   `promoted` are false in `--json`). The same version with other digests — or,
   version-only, at another commit — is refused as a conflict, never an
   overwrite: a version names one release.
-- **Never posing as forge's own deploy.** The control plane refuses to bind a record-only
-  release to an env forge itself deploys (a hosted env, or one bound to a
-  cluster forge reconciles): reason `record_only_release`. The command refuses
-  an env that has `deploy/kcl/<env>/main.k` the same way, before it cuts
-  anything, on every ledger. When forge takes
-  over deploying an env, its own `forge env deploy` releases follow the
-  recorded ones in the same history.
+- **Never a bundle the platform applies.** A record-only release has no
+  bundle, so it is refused for an env the **platform** deploys: reason
+  `record_only_release`. The command refuses it before it cuts anything, on
+  every ledger, when the env's `deploy/kcl/<env>/main.k` binds a part to
+  Reliant hosting (`forge.OnHosted`, a hosted database or frontend), hands a
+  unit to the control plane's hub, or declares `applier = "flux"`; the control
+  plane refuses it again as the final check. An env the **forge CLI** applies
+  takes a record: one bound to `forge.OnExternal` (your own tooling deploys
+  it), a cluster forge applies from CI, compose, host. When forge takes over
+  deploying an env, its own `forge env deploy` releases follow the recorded
+  ones in the same history.
+- **Nothing saved means it says so.** A control plane that has not enabled
+  recorded deploys yet declines the record (reason
+  `record_only_releases_disabled`). The command says the record was NOT saved
+  and exits **4**; it never falls back to this machine's ledger. Re-run the
+  same step once it is enabled: a retry records once. `forge ledger import` of
+  a ledger holding recorded releases is declined the same way. If a failed record must
+  not fail the deploy job, branch on that code (`|| [ $? -eq 4 ]`) rather than
+  ignoring every failure.
 
 ## Where it records
 
 | Situation | Ledger |
 |---|---|
-| `deploy/kcl/<env>/main.k` exists | none: refused (`record_only_release`), forge deploys that env |
+| `deploy/kcl/<env>/main.k` binds hosted parts, hub units or `applier = "flux"` | none: refused (`record_only_release`), the platform deploys that env |
+| `deploy/kcl/<env>/main.k` exists otherwise (e.g. `forge.OnExternal`) | the ledger its KCL selects: its `forge.ControlPlane`, or this machine's (with a note) when it declares none |
 | signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
 | `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
 

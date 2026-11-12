@@ -36,6 +36,7 @@ type fakeRecordCP struct {
 	envs       map[string]map[string]any
 	promotions []map[string]any
 	promoteErr error
+	cutErr     error
 }
 
 type fakeRecordCall struct {
@@ -59,6 +60,9 @@ func (f *fakeRecordCP) Call(_ context.Context, proc string, req, out any) error 
 	var reply any
 	switch short {
 	case "CutRelease":
+		if f.cutErr != nil {
+			return f.cutErr
+		}
 		version, _ := body["version"].(string)
 		content := func(b map[string]any) string {
 			c, _ := json.Marshal([]any{b["artifacts"], b["gitCommit"]})
@@ -139,15 +143,15 @@ func (f *fakeRecordCP) called(short string) []map[string]any {
 }
 
 // useRecordLedger points openRecordLedger at l for the test.
-func useRecordLedger(t *testing.T, open func(ctx context.Context, projectDir, project, env, token string) (recordLedger, error)) {
+func useRecordLedger(t *testing.T, open func(ctx context.Context, projectDir, project, env, token string, entities *KCLEntities) (recordLedger, error)) {
 	t.Helper()
 	prev := openRecordLedger
 	openRecordLedger = open
 	t.Cleanup(func() { openRecordLedger = prev })
 }
 
-func hostedRecordTarget(cp *fakeRecordCP) func(context.Context, string, string, string, string) (recordLedger, error) {
-	return func(_ context.Context, _, project, _, _ string) (recordLedger, error) {
+func hostedRecordTarget(cp *fakeRecordCP) func(context.Context, string, string, string, string, *KCLEntities) (recordLedger, error) {
+	return func(_ context.Context, _, project, _, _ string, _ *KCLEntities) (recordLedger, error) {
 		return recordLedger{
 			ledger:   hostedLedger(cp, cloud.DefaultEndpoint, project, deploytarget.HostedEnvSelfManaged),
 			endpoint: cloud.DefaultEndpoint,
@@ -282,10 +286,11 @@ func TestReleaseRecord_RefusalOnAForgeDeployedEnv(t *testing.T) {
 	}
 }
 
-// An env forge's KCL declares is one forge deploys: a record into it is
-// refused before anything is cut, on the machine ledger too, where no control
-// plane would refuse it.
-func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
+// declaredRecordProject is a project whose deploy/kcl/<env>/main.k renders to
+// entities (through the renderRecordEnv seam, so no KCL runs), with a
+// temporary machine ledger. Not parallel: it swaps package-level seams.
+func declaredRecordProject(t *testing.T, env string, entities *KCLEntities) recordScope {
+	t.Helper()
 	home := t.TempDir()
 	prevHome := ledgerHome
 	ledgerHome = func() (string, error) { return home, nil }
@@ -294,20 +299,27 @@ func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(projectDir, "deploy", "kcl", "dev"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectDir, "deploy", "kcl", env), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projectDir, "deploy", "kcl", "dev", "main.k"), []byte("# dev\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projectDir, "deploy", "kcl", env, "main.k"), []byte("# "+env+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
-	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
-	_, err := recordReleaseIn(context.Background(),
-		releaseRecordOptions{env: "dev", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})
-	var refused *promoteRefusedError
-	if !errors.As(err, &refused) || refused.Reason != reasonRecordOnlyRelease {
-		t.Fatalf("err = %v, want the record_only_release refusal", err)
+	prevRender := renderRecordEnv
+	renderRecordEnv = func(_ context.Context, _, got string) (*KCLEntities, error) {
+		if got != env {
+			return nil, fmt.Errorf("rendered env %q, want %q", got, env)
+		}
+		return entities, nil
 	}
+	t.Cleanup(func() { renderRecordEnv = prevRender })
+	return recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
+}
+
+// recordedNothing fails unless the machine ledger holds no release v1 and no
+// binding of env.
+func recordedNothing(t *testing.T, projectDir, env string) {
+	t.Helper()
 	l, err := machineLedger(projectDir)
 	if err != nil {
 		t.Fatal(err)
@@ -315,14 +327,174 @@ func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
 	if rel, err := l.Releases.Get(context.Background(), "v1"); err == nil && rel != nil {
 		t.Fatalf("a refused record cut release %+v", rel)
 	}
-	if _, bound, err := l.Bindings.Current(context.Background(), "dev"); err != nil || bound {
-		t.Fatalf("a refused record bound dev (bound=%v err=%v)", bound, err)
+	if _, bound, err := l.Bindings.Current(context.Background(), env); err != nil || bound {
+		t.Fatalf("a refused record bound %s (bound=%v err=%v)", env, bound, err)
 	}
+}
 
-	// An env with no declaration still records.
-	if _, err := recordReleaseIn(context.Background(),
-		releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{}); err != nil {
-		t.Fatalf("an undeclared env: %v", err)
+func recordExternalWorkload(name string) WorkloadEntity {
+	return WorkloadEntity{Name: name, Runtime: RuntimeEntity{Type: RuntimeExternal, External: &deploytarget.ExternalRuntime{}}}
+}
+
+// An env whose deploys the PLATFORM applies — a hosted part, a unit the hub
+// converges, a Flux applier — is refused before anything is cut, on the
+// machine ledger too, where no control plane would refuse it.
+func TestReleaseRecord_RefusesPlatformAppliedEnvs(t *testing.T) {
+	cases := []struct {
+		name     string
+		entities func() *KCLEntities
+		want     string
+	}{
+		{"a hosted workload", func() *KCLEntities {
+			return &KCLEntities{
+				ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.example"},
+				Workloads:    []WorkloadEntity{{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHosted, Hosted: &HostedRuntime{}}}},
+			}
+		}, "Reliant hosting"},
+		{"a hosted frontend beside an OnExternal workload", func() *KCLEntities {
+			return &KCLEntities{
+				ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.example"},
+				Workloads:    []WorkloadEntity{recordExternalWorkload("api")},
+				Frontends:    []FrontendEntity{{Name: "web", Runtime: FrontendRuntime{Type: FrontendRuntimeHosted}}},
+			}
+		}, "Reliant hosting"},
+		{"a cluster the hub converges", prodShaped, "hub"},
+		{"an applier = flux env", func() *KCLEntities {
+			e := prodShaped()
+			e.Applier, e.FluxDelivery = applierForge, &FluxDeliveryEntity{}
+			return e
+		}, "flux"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := declaredRecordProject(t, "prod", tc.entities())
+			t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+			_, err := recordReleaseIn(context.Background(),
+				releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})
+			var refused *promoteRefusedError
+			if !errors.As(err, &refused) || refused.Reason != reasonRecordOnlyRelease {
+				t.Fatalf("err = %v, want the record_only_release refusal", err)
+			}
+			if !strings.Contains(refused.Detail, tc.want) {
+				t.Errorf("detail %q does not say why (%q)", refused.Detail, tc.want)
+			}
+			recordedNothing(t, sc.projectDir, "prod")
+		})
+	}
+}
+
+// An env the forge CLI applies takes a record: forge.OnExternal (the team's
+// own tooling deploys it), and a cluster forge applies from CI. The control
+// plane's own refusal stays the final check on a hosted ledger.
+func TestReleaseRecord_AllowsCLIAppliedEnvs(t *testing.T) {
+	t.Run("OnExternal, no control plane: the machine ledger its KCL selects, and a note", func(t *testing.T) {
+		sc := declaredRecordProject(t, "prod", &KCLEntities{Workloads: []WorkloadEntity{recordExternalWorkload("api")}})
+		t.Setenv(ledgerSelectionEnv, "")
+		var notes bytes.Buffer
+		res, err := recordReleaseIn(context.Background(),
+			releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &notes)
+		if err != nil {
+			t.Fatalf("record into an OnExternal env: %v", err)
+		}
+		if res.Ledger != "machine" || !res.ReleaseCreated || !res.Promoted {
+			t.Errorf("result %+v, want a new record on the machine ledger", res)
+		}
+		if !strings.Contains(notes.String(), "declares no forge.ControlPlane") {
+			t.Errorf("notes %q do not say why monitoring cannot see it", notes.String())
+		}
+	})
+	t.Run("OnExternal with a control plane: recorded there, as the env forge deploys", func(t *testing.T) {
+		entities := &KCLEntities{
+			ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.example"},
+			Workloads:    []WorkloadEntity{recordExternalWorkload("api")},
+		}
+		sc := declaredRecordProject(t, "prod", entities)
+		cp := newFakeRecordCP()
+		var gotEntities *KCLEntities
+		useRecordLedger(t, func(ctx context.Context, projectDir, project, env, token string, e *KCLEntities) (recordLedger, error) {
+			gotEntities = e
+			return hostedRecordTarget(cp)(ctx, projectDir, project, env, token, e)
+		})
+		if _, err := recordReleaseIn(context.Background(),
+			releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		if gotEntities != entities {
+			t.Errorf("the ledger was chosen without the env's render (%v)", gotEntities)
+		}
+		if len(cp.called("Promote")) != 1 {
+			t.Errorf("want one Promote, got %v", cp.called("Promote"))
+		}
+	})
+	t.Run("a cluster forge applies", func(t *testing.T) {
+		e := prodShaped()
+		e.Applier = applierForge
+		sc := declaredRecordProject(t, "prod", e)
+		t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+		if _, err := recordReleaseIn(context.Background(),
+			releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{}); err != nil {
+			t.Fatalf("record into a forge-applied cluster env: %v", err)
+		}
+	})
+	t.Run("an undeclared env", func(t *testing.T) {
+		sc := declaredRecordProject(t, "prod", nil)
+		t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+		if _, err := recordReleaseIn(context.Background(),
+			releaseRecordOptions{env: "staging", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{}); err != nil {
+			t.Fatalf("an undeclared env: %v", err)
+		}
+	})
+}
+
+// A declared env whose render fails is an error, never "undeclared": that
+// would skip the refusal for an env the platform may apply.
+func TestReleaseRecord_ARenderFailureIsAnError(t *testing.T) {
+	sc := declaredRecordProject(t, "prod", nil)
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) { return nil, errors.New("kcl: boom") }
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	_, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "prod", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "kcl: boom") {
+		t.Fatalf("err = %v, want the render failure", err)
+	}
+	recordedNothing(t, sc.projectDir, "prod")
+}
+
+// A control plane whose record-only rollout switch is off declines the cut.
+// The record says exactly that — nothing was saved — exits exitRefused, and
+// never falls back to the machine ledger or reaches Promote.
+func TestReleaseRecord_RecordOnlyDisabledOnTheControlPlane(t *testing.T) {
+	cp := newFakeRecordCP()
+	cp.cutErr = &cloud.Error{Code: "failed_precondition", Reason: reasonRecordOnlyReleasesDisabled,
+		Message: "record-only releases are not enabled on this control plane"}
+	useRecordLedger(t, hostedRecordTarget(cp))
+	_, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "prod", version: "v1.4.0"}, recordScopeFor(t, githubEnv), &bytes.Buffer{})
+	var disabled *recordOnlyDisabledError
+	if !errors.As(err, &disabled) {
+		t.Fatalf("err = %v, want recordOnlyDisabledError", err)
+	}
+	if disabled.ExitCode() != exitRefused {
+		t.Errorf("exit %d, want exitRefused (%d)", disabled.ExitCode(), exitRefused)
+	}
+	for _, want := range []string{"has not enabled recorded deploys yet", "v1.4.0 deployed to prod was NOT saved", cloud.DefaultEndpoint} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q lacks %q", err.Error(), want)
+		}
+	}
+	if got := cp.called("Promote"); len(got) != 0 {
+		t.Errorf("a declined cut promoted: %v", got)
+	}
+	// The same switch declines a ledger import that carries a recorded
+	// release, and the import says so the same way.
+	_, err = hostedImportClient{client: callerFunc(func(context.Context, string, any, any) error {
+		return cp.cutErr
+	})}.ImportLedger(context.Background(), &ledgerImport{project: "shop"})
+	if !errors.As(err, &disabled) || disabled.ExitCode() != exitRefused || !strings.Contains(err.Error(), "this import") {
+		t.Errorf("import err = %v, want the record_only_releases_disabled refusal naming the import", err)
+	}
+	if exitCodeForRefusal(reasonRecordOnlyReleasesDisabled) != exitRefused {
+		t.Errorf("the refusal table maps %s to %d, want exitRefused", reasonRecordOnlyReleasesDisabled, exitCodeForRefusal(reasonRecordOnlyReleasesDisabled))
 	}
 }
 

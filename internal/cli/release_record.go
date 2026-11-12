@@ -12,20 +12,32 @@ package cli
 // `obs check` judges. forge builds nothing and applies nothing here. The
 // release is RECORD-ONLY (release.Release.RecordOnly): it may name no
 // artifacts at all (a version and a commit), and it never binds to an env
-// forge itself deploys, so a record can never pose as forge's own deploy. That is
-// enforced twice: the control plane refuses the promotion, and before any cut
-// this command refuses an env declared in deploy/kcl/<env>/main.k — an env
-// forge's KCL declares is one forge applies, and the machine ledger (or a
-// control plane that predates record-only) has nothing else to refuse it.
+// whose deploys the PLATFORM applies, so a record can never become a bundle a
+// converger tries to apply. That is enforced twice: the control plane refuses
+// the promotion (the final check), and before any cut this command refuses an
+// env whose deploy/kcl/<env>/main.k binds anything the platform or the hub
+// applies — a forge.OnHosted workload, frontend or database, a unit the hub
+// converges, or an `applier = "flux"` env (refusePlatformAppliedEnv). An env
+// the forge CLI applies — forge.OnExternal (the author's own tooling), a
+// cluster forge applies from CI, compose, host — may take a record: recording
+// what the team's own pipeline deployed there is the team's call, exactly as
+// `forge env deploy` to it is.
 //
 // IT NEEDS NO deploy/kcl. forge.yaml `name:` is the project; the env is
 // ensured on the control plane as SELF_MANAGED (forge keeps its ledger, the
 // team's pipeline deploys it). Where the record goes:
 //
+//   - the env is declared in deploy/kcl: the ledger its KCL selects (its
+//     forge.ControlPlane, or this machine's when it declares none);
 //   - signed in (forge login, FORGE_CONTROL_PLANE_TOKEN, a credential
 //     helper), and FORGE_LEDGER is not machine: Reliant cloud;
 //   - otherwise: this machine's ledger, with a note saying monitoring cannot
 //     see it until it is recorded signed in (`forge ledger import`).
+//
+// A control plane that has not switched record-only writes on refuses the cut
+// (reason record_only_releases_disabled). That is reported as exactly that —
+// nothing was saved — and exits exitRefused; it never falls back to this
+// machine's ledger, which would pass for a record monitoring can see.
 //
 // IDEMPOTENT. A CI retry of the same step re-cuts an identical release
 // (created=false) and re-promotes the env's current release (a no-op), so it
@@ -122,8 +134,18 @@ Otherwise, signed in (forge login, or a CI token in FORGE_CONTROL_PLANE_TOKEN
 from ` + "`forge cloud token create --scopes deploy:write`" + `) it records on Reliant cloud;
 not signed in, on this machine's ledger, which monitoring cannot see.
 
+An env declared in deploy/kcl may take a record when the forge CLI applies it
+(forge.OnExternal, a cluster forge applies, compose, host). One the platform
+applies is refused (record_only_release): forge.OnHosted parts, units the hub
+converges, or applier = "flux".
+
 Idempotent: a CI retry records once. The same version with different digests
 (or, version-only, a different commit) is refused as a conflict.
+
+Exit codes: 0 recorded (or already recorded); 1 invalid input, a conflict, or
+a refusal; 4 the control plane has not enabled recorded deploys yet
+(record_only_releases_disabled) — nothing was saved, and a re-run once it is
+enabled records it.
 
 Examples:
   ` + Name() + ` release record --env prod --version v1.4.0
@@ -163,11 +185,12 @@ type recordLedger struct {
 	note string
 }
 
-// openRecordLedger selects the ledger a record goes to. A seam: tests point it
-// at a fake control plane or a temporary machine ledger.
+// openRecordLedger selects the ledger a record goes to. entities is the env's
+// render when deploy/kcl declares it, nil otherwise. A seam: tests point it at
+// a fake control plane or a temporary machine ledger.
 var openRecordLedger = defaultRecordLedger
 
-func defaultRecordLedger(ctx context.Context, projectDir, project, env, token string) (recordLedger, error) {
+func defaultRecordLedger(_ context.Context, projectDir, project, env, token string, entities *KCLEntities) (recordLedger, error) {
 	selection, err := ledgerSelectionFromEnv()
 	if err != nil {
 		return recordLedger{}, err
@@ -175,6 +198,9 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 	if selection == ledgerSelectMachine {
 		l, err := machineLedger(projectDir)
 		return recordLedger{ledger: l}, err
+	}
+	if entities != nil {
+		return declaredRecordLedger(projectDir, project, env, token, entities)
 	}
 	ep, err := cloud.ResolveEndpoint(env, &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
 	if err != nil {
@@ -199,26 +225,147 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 	}, nil
 }
 
+// declaredRecordLedger is the ledger a DECLARED env's KCL selects, by
+// ledgerForEntities' rule: its forge.ControlPlane, or this machine's ledger
+// when it declares none. It differs from that rule in two ways a record needs:
+// --token is honoured ahead of the declared token env var, and the project is
+// the one the record is filed under. The env kind is the one `forge env
+// deploy` ensures (hostedEnvKindOf), so a record and a deploy never disagree
+// about what the env is.
+func declaredRecordLedger(projectDir, project, env, token string, entities *KCLEntities) (recordLedger, error) {
+	decl := declarationFromEntities(entities)
+	if decl == nil {
+		l, err := machineLedger(projectDir)
+		return recordLedger{ledger: l, note: fmt.Sprintf(
+			"note: deploy/kcl/%s declares no forge.ControlPlane, so its ledger is this machine's and monitoring cannot see this record. "+
+				"Declare one in deploy/kcl/%s/main.k to record on Reliant cloud.", env, env)}, err
+	}
+	ep, err := projectEndpoint(env, decl)
+	if err != nil {
+		return recordLedger{}, err
+	}
+	cred, err := cloud.ResolveCredential(token, ep)
+	if err != nil {
+		return recordLedger{}, fmt.Errorf("env %q keeps its release ledger on the control plane at %s: %w", env, ep.URL, err)
+	}
+	return recordLedger{
+		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, hostedEnvKindOf(entities)),
+		endpoint: ep.URL,
+	}, nil
+}
+
 // reasonRecordOnlyRelease is the control plane's refusal of a record-only
-// release bound to an env forge deploys; the client uses the same reason.
+// release bound to an env the platform deploys; the client uses the same
+// reason.
 const reasonRecordOnlyRelease = "record_only_release"
 
-// refuseForgeDeclaredEnv refuses, before anything is cut, a record into an env
-// forge's own KCL declares: forge applies that env, so a record-only release
-// must not become its current promotion, on any ledger. The control plane
-// refuses it too, but the machine ledger has no such check, and a control
-// plane that predates record-only would accept it.
-func refuseForgeDeclaredEnv(projectDir, env string) error {
+// recordOnlyDisabledError is a control plane declining every record-only
+// write because its rollout switch is off (reason
+// reasonRecordOnlyReleasesDisabled). Nothing was saved anywhere: the command
+// does not fall back to this machine's ledger, which monitoring cannot see,
+// so a pipeline that reads 0 can trust the record exists. exitRefused: the
+// write was declined, and the same step re-run once the control plane enables
+// recorded deploys records it.
+type recordOnlyDisabledError struct {
+	// Endpoint is the control plane's URL, "" when the caller does not know
+	// it.
+	Endpoint string
+	// What names the write that was declined ("the record of v1 deployed to
+	// prod"); "" reads as "this record".
+	What  string
+	cause error
+}
+
+// recordOnlyDisabled is err as a recordOnlyDisabledError when the control
+// plane declined it because record-only writes are switched off, nil
+// otherwise.
+func recordOnlyDisabled(endpoint string, err error) *recordOnlyDisabledError {
+	if hostedErrorReason(err) != reasonRecordOnlyReleasesDisabled {
+		return nil
+	}
+	return &recordOnlyDisabledError{Endpoint: endpoint, cause: err}
+}
+
+func (e *recordOnlyDisabledError) Error() string {
+	who := "the control plane"
+	if e.Endpoint != "" {
+		who += " at " + e.Endpoint
+	}
+	what := e.What
+	if what == "" {
+		what = "this record"
+	}
+	return fmt.Sprintf("%s has not enabled recorded deploys yet (%s), so %s was NOT saved; "+
+		"nothing was written to any ledger. Re-run it once recorded deploys are enabled — a retry records once",
+		who, reasonRecordOnlyReleasesDisabled, what)
+}
+
+func (e *recordOnlyDisabledError) ExitCode() int { return exitRefused }
+
+func (e *recordOnlyDisabledError) Unwrap() error { return e.cause }
+
+// renderRecordEnv renders an env's declaration. A seam: tests hand in literal
+// entities instead of evaluating KCL.
+var renderRecordEnv = RenderKCL
+
+// recordEnvRender is env's render when deploy/kcl/<env>/main.k exists,
+// nil when it does not (an env only the command line names). A render failure
+// is an error, never "undeclared": it would skip the refusal below for an env
+// the platform may well apply.
+func recordEnvRender(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
 	decl := filepath.Join("deploy", "kcl", env, "main.k")
 	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil {
-		return nil //nolint:nilerr // no declaration: an env forge does not deploy
+		return nil, nil //nolint:nilerr // no declaration: an env forge does not deploy
 	}
-	return &promoteRefusedError{
-		Reason: reasonRecordOnlyRelease,
-		Detail: fmt.Sprintf("environment %q is declared in %s, so forge deploys it; `%s release record` records "+
-			"deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, or record into an env forge does not declare",
-			env, decl, Name(), Name(), env),
+	entities, err := renderRecordEnv(ctx, projectDir, env)
+	if err != nil {
+		return nil, fmt.Errorf("render %s to see who applies env %q: %w", decl, env, err)
 	}
+	return entities, nil
+}
+
+// refusePlatformAppliedEnv refuses, before anything is cut, a record into a
+// declared env whose deploys the PLATFORM applies from forge's bundle: a
+// hosted part (forge.OnHosted workload or frontend, a hosted database), a unit
+// the control plane's hub converges, or an `applier = "flux"` env, whose
+// in-cluster Flux applies each release. A record-only release has no bundle,
+// so it must not become such an env's current promotion, on any ledger.
+//
+// Everything else is allowed — forge.OnExternal, a cluster forge applies from
+// CI, compose, host: the forge CLI applies those, nothing server-side acts on
+// the row, and recording what the team's own pipeline deployed there is the
+// team's call. The control plane's refusal (reason record_only_release, from
+// its own who-applies rule) is the final check on a hosted ledger; this one is
+// the only check on the machine ledger, and the earlier one everywhere.
+//
+// nil entities (an undeclared env) is never refused.
+func refusePlatformAppliedEnv(env string, entities *KCLEntities) error {
+	if entities == nil {
+		return nil
+	}
+	refuse := func(why string) error {
+		return &promoteRefusedError{
+			Reason: reasonRecordOnlyRelease,
+			Detail: fmt.Sprintf("environment %q %s, so the platform deploys it from the bundle forge builds, and a recorded "+
+				"release has none; `%s release record` records deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, "+
+				"or record into an env your pipeline (or the forge CLI) applies, such as one bound to forge.OnExternal",
+				env, why, Name(), Name(), env),
+		}
+	}
+	if tiers := hostedTiersOf(entities); len(tiers) > 0 {
+		return refuse("binds " + joinTiers(tiers) + " to Reliant hosting")
+	}
+	if entities.FluxDelivery != nil {
+		return refuse(`declares applier = "flux"`)
+	}
+	split, err := unitSplitOf(entities)
+	if err != nil {
+		return fmt.Errorf("env %q: %w", env, err)
+	}
+	if split.AnyHub() {
+		return refuse("hands " + strings.Join(split.Hub, ", ") + " to the control plane's hub to converge")
+	}
+	return nil
 }
 
 func runReleaseRecord(ctx context.Context, o releaseRecordOptions, out, errOut io.Writer) error {
@@ -279,11 +426,15 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 		return releaseRecordResult{}, err
 	}
 	project := sc.project
-	if err := refuseForgeDeclaredEnv(sc.projectDir, env); err != nil {
+	entities, err := recordEnvRender(ctx, sc.projectDir, env)
+	if err != nil {
+		return releaseRecordResult{}, err
+	}
+	if err := refusePlatformAppliedEnv(env, entities); err != nil {
 		return releaseRecordResult{}, err
 	}
 
-	target, err := openRecordLedger(ctx, sc.projectDir, project, env, o.token)
+	target, err := openRecordLedger(ctx, sc.projectDir, project, env, o.token, entities)
 	if err != nil {
 		return releaseRecordResult{}, err
 	}
@@ -305,6 +456,11 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	}
 	created, err := target.ledger.Releases.Cut(ctx, rel)
 	if err != nil {
+		var disabled *recordOnlyDisabledError
+		if errors.As(err, &disabled) {
+			disabled.What = fmt.Sprintf("the record of %s deployed to %s", version, env)
+			return releaseRecordResult{}, disabled
+		}
 		if errors.Is(err, release.ErrReleaseConflict) {
 			return releaseRecordResult{}, fmt.Errorf("version %s is already recorded with different content "+
 				"(other digests, or — version-only — another commit); a version names one release, so record this one under a new version: %w",

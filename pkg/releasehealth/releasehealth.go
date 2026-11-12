@@ -496,14 +496,19 @@ type Subject struct {
 	// weaker marker than a recorded promotion — a canary or a slow rollout
 	// moves it — so every rendering of a report says so.
 	Inferred bool `json:"inferred,omitempty"`
-	// MarkerSource is where PromotedAt came from: MarkerPromotion or
-	// MarkerFirstSeen; "" from a source that does not say (a promotion).
+	// MarkerSource is where PromotedAt came from: MarkerPromotion,
+	// MarkerRecorded or MarkerFirstSeen; "" from a source that does not say
+	// (a promotion).
 	MarkerSource string `json:"marker_source,omitempty"`
 }
 
-// Where a Subject's PromotedAt came from.
+// Where a Subject's PromotedAt came from: a promotion forge applied, a deploy
+// an outside pipeline recorded (`forge release record`; a control plane that
+// predates this label says MarkerPromotion for it), or the first time
+// telemetry showed the version (inferred).
 const (
 	MarkerPromotion = "promotion"
+	MarkerRecorded  = "recorded"
 	MarkerFirstSeen = "telemetry_first_seen"
 )
 

@@ -2688,7 +2688,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
 
-**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as forge's own deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
+**Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and it is refused for an env the platform applies (hosted parts, units the hub converges, a Flux applier), so a record never becomes a bundle a converger tries to apply. An env the forge CLI applies, such as one bound to forge.OnExternal, takes it. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger; a control plane that has not enabled recorded deploys says so and saves nothing.
 
 **Evidence:**
 

@@ -3137,10 +3137,13 @@ benefits:
     why: >-
       The release is record-only: it may name no artifacts (a version and a
       commit), it is labelled "recorded by CI" in `forge obs changes` and the
-      console, and the control plane refuses to bind one to an env forge itself
-      deploys, so a record never poses as forge's own deploy. A retried CI step
-      records once, and the same version with other digests is a conflict, not
-      an overwrite. Not signed in, it records on this machine's ledger.
+      console, and it is refused for an env the platform applies (hosted parts,
+      units the hub converges, a Flux applier), so a record never becomes a
+      bundle a converger tries to apply. An env the forge CLI applies, such as
+      one bound to forge.OnExternal, takes it. A retried CI step records once,
+      and the same version with other digests is a conflict, not an
+      overwrite. Not signed in, it records on this machine's ledger; a control
+      plane that has not enabled recorded deploys says so and saves nothing.
     evidence:
       - command: release record
       - skill: deploy/record

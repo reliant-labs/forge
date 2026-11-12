@@ -1167,6 +1167,11 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		if hostedErrorHasCode(err, cloud.CodeAlreadyExists) {
 			return false, fmt.Errorf("release %q: %w: %v", r.Version, release.ErrReleaseConflict, err)
 		}
+		// A control plane whose record-only rollout switch is off declines
+		// every record-only cut, whatever it carries: say exactly that.
+		if disabled := recordOnlyDisabled(s.endpoint, err); r.RecordOnly && disabled != nil {
+			return false, disabled
+		}
 		if r.RecordOnly && r.VersionOnly() && hostedErrorHasCode(err, cloud.CodeInvalidArgument) {
 			return false, recordOnlyUnsupported(s.endpoint, err)
 		}

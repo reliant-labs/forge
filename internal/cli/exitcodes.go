@@ -218,6 +218,14 @@ const (
 	// reasonApprovalPending: the approval hook has not decided. exitRefused:
 	// the one of these that waiting (and a retry) fixes.
 	reasonApprovalPending = release.RefusalApprovalPending
+
+	// reasonRecordOnlyReleasesDisabled: the control plane has not switched
+	// record-only writes on yet (its rollout switch), so it declined a
+	// `forge release record` cut, or the import of a recorded release.
+	// exitRefused: declined, nothing written and nothing wrong with the
+	// record; the same step re-run once the control plane enables recorded
+	// deploys records it.
+	reasonRecordOnlyReleasesDisabled = "record_only_releases_disabled"
 )
 
 // exitCodeForRefusal maps a refusal REASON to its exit code — the one table
@@ -242,7 +250,8 @@ func exitCodeForRefusal(reason string) int {
 		return exitConflict
 	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged,
 		reasonHealthGateUnproven, reasonHealthGatePending,
-		reasonRequiredGateMissing, reasonApprovalDenied, reasonApprovalPending:
+		reasonRequiredGateMissing, reasonApprovalDenied, reasonApprovalPending,
+		reasonRecordOnlyReleasesDisabled:
 		return exitRefused
 	case reasonBundleMissing, reasonHealthGateRegressed, reasonBelowRollbackFloor, reasonRequiredGateFailed:
 		return exitWrong

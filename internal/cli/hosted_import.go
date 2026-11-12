@@ -241,6 +241,13 @@ func (c hostedImportClient) ImportLedger(ctx context.Context, in *ledgerImport) 
 		Conflicts []string       `json:"conflicts"`
 	}
 	if err := c.client.Call(ctx, procImportLedger, req, &resp); err != nil {
+		// The ledger carries releases recorded by CI, and this control
+		// plane has record-only writes switched off: the whole import is
+		// declined (a dry run too), and says so.
+		if disabled := recordOnlyDisabled("", err); disabled != nil {
+			disabled.What = "this import (it carries releases recorded by CI, `forge release record`)"
+			return ledgerImportResult{}, disabled
+		}
 		return ledgerImportResult{}, bundlesUnsupported(err)
 	}
 	out := ledgerImportResult{Conflicts: resp.Conflicts}

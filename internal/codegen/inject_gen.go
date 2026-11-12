@@ -1382,6 +1382,12 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 	case "Logger":
 		return "infra.Log", "", nil
 	case "Config":
+		// Unless it is typed as a config block (`Config *config.TraderConfig`,
+		// a component taking its own block, K3): that is the block, by type
+		// (3b), not the root config, which would not compile there.
+		if expr, ok := blocks.resolve(df.Type, c.compImports); ok {
+			return expr, "", nil
+		}
 		return "infra.Cfg", "", nil
 	}
 

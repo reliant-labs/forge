@@ -149,7 +149,8 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 
 			ConfigImport      string
 			ConfigImportAlias string
-			ConfigDefaults    bool
+			ConfigType        string
+			ConfigDefaults    string
 
 			// The template ranges over these stub/func-seam slices. They
 			// are always empty at initial-scaffold time (the service has no
@@ -186,14 +187,15 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			// The config the scaffolded service.go's Deps takes
 			// (`Config *config.Config`, from the project's pkg/config).
 			// forge generate reads the same field back from the source
-			// (codegen.DetectDepsConfigImport), so the two renders agree.
+			// (codegen.DetectDepsConfig), so the two renders agree.
 			ConfigImport: g.ModulePath + "/pkg/config",
+			ConfigType:   "Config",
 			// That pkg/config is generated from the scaffolded
 			// proto/<project>/config/v1 (an AppConfig root), so it declares Defaults():
 			// the harness builds the config production loads with nothing
 			// set, not an empty one. forge generate reads it back
 			// (codegen.ConfigPackageDeclaresDefaults) to the same answer.
-			ConfigDefaults: true,
+			ConfigDefaults: "Defaults",
 
 			ExtraImports: nil, // No cross-package auto-stubs at initial scaffold time
 		}

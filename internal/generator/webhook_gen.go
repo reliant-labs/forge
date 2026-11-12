@@ -35,9 +35,11 @@ func GenerateWebhookFiles(root, modulePath, serviceName, webhookName string) err
 		ServiceName:    serviceName,
 		ServicePackage: svcPkg,
 		Module:         modulePath,
-		// The test builds the SERVICE's Deps, so it passes a Config exactly
-		// when that Deps takes one, from the package it names.
-		ConfigImport: codegen.DetectDepsConfigImport(svcDir),
+	}
+	// The test builds the SERVICE's Deps, so it passes a Config exactly
+	// when that Deps takes one, of the type and from the package it names.
+	if dc := codegen.DetectDepsConfig(svcDir, root, modulePath); dc.ImportPath != "" {
+		data.ConfigImport, data.ConfigType = dc.ImportPath, dc.TypeName
 	}
 	if data.ConfigImport != "" && path.Base(data.ConfigImport) != "config" {
 		data.ConfigImportAlias = "config"

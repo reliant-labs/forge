@@ -224,27 +224,34 @@ line names it.
     `b.sessionCookie()` wherever the session cookie is set, read or cleared.
     Signed-in users sign in once more after the deploy.
 
-12. **One address proof at a time across replicas.** A proof that fails
-    still takes an unverified account's credentials back first. With more
-    than one replica, and nothing shared between them but a time fence, a
-    failed proof whose revocation the issuer serves late can remove a
-    credential the owner just set through another replica (forge#2121). Give
-    every replica one lock, on the app's own database. Copy
-    `proofLockerFor` from the scratch project's broker, with its
-    `"database/sql"` and `_ "github.com/jackc/pgx/v5/stdlib"` imports, and
-    add to the `devidp.SignInRoutesConfig` in `mountSignInMethods`:
+12. **Sign-up proves the address before anything is set (forge#2121).**
+    Since this release no credential is ever put on an unverified account,
+    and a proof never verifies an account that holds one. That is
+    `devidp.SignInRoutes`' job, so a broker that mounts them gets it with the
+    forge bump. Three things to re-wire by hand:
 
-    ```go
-    ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger),
-    ```
+    - **Drop the proof lock** if you applied it from an earlier version of
+      this step: delete `proofLockerFor` (with its `pgx` imports) and the
+      `ProofLocker:` line in `mountSignInMethods`. `ProofLocker` and
+      `devidp.NewPostgresProofLocker` still compile, deprecated, and do
+      nothing: an address proof has nothing left to serialise.
+    - **Serve sign-up through the LOGIN_POLICY, with mail.** The legacy
+      sign-up (`auth_self_signup` outside development) and a policy whose
+      `email` is `delivery = "none"` create the account WITH its password,
+      because no mail can prove the address. Its email is then a contact
+      field: no later proof claims that account (`forge.contact_only`), and
+      once mail is on, the address's owner gets a fresh account instead.
+      `forge lint` names each such environment (`forgeconv-unproven-signup`).
+      Declare `signup = "open"` (or `"domain"`) on `forge.ManagedIdentity`
+      with mail delivered (the default), and leave `auth_self_signup` unset.
+    - **Show the two new refusals.** `POST /auth/verify` answers
+      `new_link_required` (409) for a link that names an account holding
+      credentials nobody proved — a fresh link is mailed in the same request
+      — and `POST /auth/invite/accept` answers `account_needs_admin` (409)
+      for an invitation naming such an account. Both carry a `message` the
+      scaffolded forms already display; a hand-written form must show it.
 
-    It needs no table, migration or new setting: Postgres advisory locks on
-    `database_url`, released when a replica's connection ends. While that
-    database is down, proofs, verification and passkey enrolment answer
-    "unavailable"; sign-in with an existing credential carries on. A config
-    with no `database_url` keeps the in-process lock, which is enough for ONE
-    replica only: run one, or point `devidp.NewPostgresProofLocker` at a
-    database every replica shares.
+    No database, table or setting is involved.
 
 ## 3. Add the frontend pages
 
@@ -293,9 +300,9 @@ declaration turns on, in that environment, right after the deploy:
 2. **Broker permissions.** Search the server's logs for `PERMISSION_DENIED`
    or a 403 from the issuer while you run the flows below. The broker's
    account must create users, verify email and invite codes, set passwords,
-   read, set and delete user metadata, lock and unlock users, list and delete
-   identity-provider links, passkeys and second factors, and search and delete
-   sessions. Any refusal here is a missing grant on that account, not a code
+   read, set and delete user metadata, change a user's username and email (a
+   fresh account taking an address over), list identity-provider links and
+   passkeys, and search and delete sessions. Any refusal here is a missing grant on that account, not a code
    defect.
 3. **Each method, with a throwaway address:** a passkey enrols and signs in
    again in a fresh browser; a magic link signs in and is refused on a second
@@ -307,23 +314,20 @@ declaration turns on, in that environment, right after the deploy:
    (Zitadel console → the user → Authorizations); an invited account does not.
 5. **Planted credentials never authenticate.** In the Zitadel console create
    an UNVERIFIED user for a throwaway address and give it a password, as an
-   attacker's pre-registration would. Then prove the address from its inbox
-   (a magic link or the verification mail):
-   - the planted password no longer signs in;
-   - the user's History lists the password change BEFORE "email verified":
-     the broker takes unproven credentials back before the proof as well as
-     after it, so no moment exists in which the address is verified and the
-     planted password still holds;
-   - the user ends unlocked, with no `forge.proof_lock` metadata and no
-     `forge.proof_window.*` key.
-6. **Alerts.** The server logs no `alert=identity.revoke_failed` line. Each
-   one names a `user_id` left locked (below).
-7. **The proof lock (step 2.12).** No `the proof lock's database` errors at
-   start-up or during the flows above. `waiting for another proof of this
-   account` with its `wait` appears only when two proofs of one account
-   overlap; `gave up waiting for another proof` (after 30s) or `lost before
-   its release` points at a stalled issuer call or a dropped database
-   connection.
+   attacker's pre-registration (or an older broker) would. Then, from the
+   address's inbox, sign up or ask for a magic link:
+   - the mail links to a NEW user (username `forge-fresh-…`) with no
+     credential, and the planted user is untouched until that link is used;
+   - after it is used, the new user has the address as its username and is
+     verified; the planted user is renamed (`forge-superseded-<id>`, email
+     `superseded-<id>@forge.invalid`, metadata `forge.superseded_by` and
+     `forge.superseded_email`), keeps every credential, and is still
+     unverified, so it cannot sign in;
+   - the planted password does not sign in by the address.
+6. **Counting what is left.** `devidp.Client.UnprovenAccounts` lists every
+   unverified account holding a credential (read-only): those an older
+   broker left, and contact-only ones. Nothing deletes them; decide case by
+   case.
 
 ### Rolling back
 
@@ -335,14 +339,13 @@ declaration turns on, in that environment, right after the deploy:
   document (an empty `IDP_LOGIN_POLICY`).
 - **Revert the broker:** redeploy the previous release. The new code wrote
   only account metadata (`forge.self_signup`, `forge.signup_role_granted`,
-  `forge.proof_lock`, `forge.proof_window.*`), which the old broker ignores. Signed-in users sign in
-  once more, because the session cookie name changed (step 2.11).
-- **Recover an account left locked.** An `identity.revoke_failed` alert means
-  a proof could not finish taking credentials back, so the account was left
-  locked on purpose. In the Zitadel console, for that `user_id`: remove every
-  password, identity-provider link, passkey and second factor the owner did
-  not set; delete the `forge.proof_lock` metadata (and any `forge.proof_window.*`
-  key: a successful proof waits out a live one); unlock the user. The owner
-  then signs in with a magic link or resets the password. A lock no proof
-  owns (no fresh `forge.proof_lock`) is never lifted by the broker, so it
-  stays until someone does this.
+  `forge.contact_only`, `forge.supersedes`, `forge.superseded_by`,
+  `forge.superseded_email`), which the old broker ignores, and renamed the
+  users a fresh account superseded. Signed-in users sign in once more,
+  because the session cookie name changed (step 2.11).
+- **Accounts an older broker left locked.** A broker before forge#2121's fix
+  locked an account whose credentials it could not take back
+  (`alert=identity.revoke_failed`). This one never locks or revokes. Such an
+  account is unverified and holds credentials: its owner proves into a fresh
+  account as above, and the locked one is moved aside. Its `forge.proof_lock`
+  and `forge.proof_window.*` metadata are inert; delete them at will.

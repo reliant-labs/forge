@@ -994,6 +994,23 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 14a-quater. Unproven sign-up — a deployed sign-up that creates
+		// accounts whose address nobody proves (email delivery "none", or
+		// auth_self_signup outside development; see
+		// lint_unproven_signup.go). Errors, graded by the rollout table.
+		{
+			name:  "unproven-signup lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "deploy", "kcl")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectUnprovenSignupJSON(rc.cwd)
+				return fs, len(fs) > 0, err
+			},
+		},
+
 		// 14b. No-dotenv — forge projects declare config in KCL and keep
 		// secret VALUES in the secret store. A .env file bypasses
 		// both (it is injected wholesale, so nothing has to be

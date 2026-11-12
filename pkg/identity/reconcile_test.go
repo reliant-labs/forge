@@ -529,3 +529,50 @@ func TestReadinessNeedsTheManagementGatewayToo(t *testing.T) {
 		t.Errorf("the pass started after %d gateway probes; it must wait for the gateway", healthz)
 	}
 }
+
+// forge#2121: a declared member's address that someone registered first —
+// an UNVERIFIED account holding a password nobody proved — is never adopted.
+// Granting it the declared role would hand the role to whoever registered.
+// It is renamed out of the address's way with its credentials intact, and
+// the declared account is created beside it, verified; an unverified account
+// holding nothing is adopted as before.
+func TestDeclaredMembersNeverAdoptAnAccountHoldingUnprovenCredentials(t *testing.T) {
+	f := newFake(t)
+	r, _ := newRec(t, f, nil)
+	spec := Spec{Project: ProjectSpec{Name: "p"}, Roles: []Role{{Key: "admin", Declared: true,
+		Members: []string{"owner@example.com", "pending@example.com"}}}}
+	f.mu.Lock()
+	f.users["700"] = &fUser{ID: "700", UserName: "owner@example.com", Email: "owner@example.com", Unverified: true,
+		AuthMethods: []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}, PasswordSetBy: "squatter-password"}
+	f.users["701"] = &fUser{ID: "701", UserName: "pending@example.com", Email: "pending@example.com", Unverified: true}
+	f.mu.Unlock()
+	if _, err := r.Reconcile(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	squatter := f.users["700"]
+	if squatter.UserName != "forge-superseded-700" || squatter.Email != "superseded-700@forge.invalid" ||
+		squatter.Metadata["forge.superseded_email"] != "owner@example.com" || squatter.PasswordSetBy != "squatter-password" {
+		t.Fatalf("the squatted account was not moved aside intact: %+v", squatter)
+	}
+	granted := map[string]bool{}
+	for _, g := range f.grants {
+		granted[g.UserID] = true
+	}
+	if granted["700"] {
+		t.Fatal("TAKEOVER: the declared role was granted to the account holding unproven credentials")
+	}
+	if !granted["701"] {
+		t.Fatal("an unverified account holding nothing was not adopted")
+	}
+	var declared *fUser
+	for _, u := range f.users {
+		if u.Email == "owner@example.com" {
+			declared = u
+		}
+	}
+	if declared == nil || declared.Unverified || declared.UserName != "owner@example.com" || !granted[declared.ID] {
+		t.Fatalf("the declared owner account: %+v", declared)
+	}
+}

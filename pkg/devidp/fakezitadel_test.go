@@ -54,6 +54,9 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// failUsernameChanges makes that many username changes fail (500): a
+	// broker that stops part-way through a takeover.
+	failUsernameChanges int
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
@@ -74,6 +77,17 @@ type fakeUser struct {
 	metadata             map[string]string
 	locked               bool
 	totp                 bool
+	otpSMS               bool
+	// username is what loginName derives from; "" reads as loginName.
+	username string
+}
+
+// name is the account's username.
+func (u *fakeUser) name() string {
+	if u.username != "" {
+		return u.username
+	}
+	return u.loginName
 }
 
 type fakeSession struct {
@@ -292,7 +306,7 @@ func humanJSON(u *fakeUser) map[string]any {
 	if u.locked {
 		state = "USER_STATE_LOCKED"
 	}
-	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "state": state,
+	return map[string]any{"userId": u.id, "preferredLoginName": u.name(), "username": u.name(), "state": state,
 		"human": map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}}
 }
 
@@ -337,7 +351,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		defer f.mu.Unlock()
 		var u *fakeUser
 		for _, cand := range f.users {
-			if cand.id == str(uc, "userId") || (str(uc, "loginName") != "" && cand.loginName == str(uc, "loginName")) {
+			if cand.id == str(uc, "userId") || (str(uc, "loginName") != "" && cand.name() == str(uc, "loginName")) {
 				u = cand
 			}
 		}
@@ -460,13 +474,18 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		ids := make([]string, 0, len(f.users))
+		for id := range f.users {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
 		res := []any{}
-		for _, u := range f.users {
-			if email != "" && strings.EqualFold(u.email, email) {
+		for _, id := range ids {
+			if u := f.users[id]; email == "" || strings.EqualFold(u.email, email) {
 				res = append(res, humanJSON(u))
 			}
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, f.page(b, "result", res))
 	})
 	mux.HandleFunc("GET /v2/users/{id}", func(w http.ResponseWriter, r *http.Request) {
 		u := f.user(r.PathValue("id"))
@@ -488,7 +507,17 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw}
+		username := str(b, "username")
+		if username == "" {
+			username = str(em, "email")
+		}
+		for _, o := range f.users {
+			if strings.EqualFold(o.name(), username) {
+				zerr(w, 409, "COMMAND-CtWB9", "Errors.User.AlreadyExists")
+				return
+			}
+		}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")
@@ -532,6 +561,32 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			return
 		}
 		u.otpEmail = true
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("PUT /v2/users/human/{id}", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failUsernameChanges > 0 {
+			f.failUsernameChanges--
+			zerr(w, 500, "COMMAND-fake", "username change failed")
+			return
+		}
+		if name := str(b, "username"); name != "" {
+			for _, o := range f.users {
+				if o != u && strings.EqualFold(o.name(), name) {
+					zerr(w, 409, "COMMAND-CtWB9", "Errors.User.AlreadyExists")
+					return
+				}
+			}
+			u.username, u.loginName = name, name
+		}
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/email", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		u.email, u.verified, u.emailCode = str(b, "email"), false, f.id("ev")
+		if sub(b, "returnCode") != nil {
+			ok(w, map[string]any{"verificationCode": u.emailCode})
+			return
+		}
+		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode})
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/verify", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
@@ -583,8 +638,18 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v2/users/{id}/authentication_methods", func(w http.ResponseWriter, r *http.Request) {
 		u := f.user(r.PathValue("id"))
 		types := []string{}
-		if u != nil && u.password != "" {
-			types = append(types, "AUTHENTICATION_METHOD_TYPE_PASSWORD")
+		if u != nil {
+			f.mu.Lock()
+			for _, m := range []struct {
+				has  bool
+				kind string
+			}{{u.password != "", "PASSWORD"}, {len(u.passkeys) > 0, "PASSKEY"}, {len(u.links) > 0, "IDP"},
+				{u.totp, "TOTP"}, {u.otpSMS, "OTP_SMS"}, {u.otpEmail, "OTP_EMAIL"}} {
+				if m.has {
+					types = append(types, "AUTHENTICATION_METHOD_TYPE_"+m.kind)
+				}
+			}
+			f.mu.Unlock()
 		}
 		ok(w, map[string]any{"authMethodTypes": types})
 	})
@@ -787,4 +852,34 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		ok(w, res)
 	})
+}
+
+// snapshot is everything the issuer holds about an account — its fields,
+// credentials, codes, metadata and sessions — as one comparable string.
+func (f *fakeZitadel) snapshot(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[id]
+	if u == nil {
+		return "<none>"
+	}
+	keys := make([]string, 0, len(u.metadata))
+	for k := range u.metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	md := make([]string, 0, len(keys))
+	for _, k := range keys {
+		md = append(md, k+"="+u.metadata[k])
+	}
+	var sessions []string
+	for sid, sess := range f.sessions {
+		if sess.userID == id {
+			sessions = append(sessions, fmt.Sprintf("%s:%v", sid, sess.deleted))
+		}
+	}
+	sort.Strings(sessions)
+	return fmt.Sprintf("email=%s name=%s verified=%v locked=%v password=%q otpEmail=%v otpSMS=%v totp=%v passkeys=%v pending=%q links=%v invite=%q emailCode=%q reset=%q md=%v sessions=%v",
+		u.email, u.name(), u.verified, u.locked, u.password, u.otpEmail, u.otpSMS, u.totp, u.passkeys, u.pendingPasskey, u.links,
+		u.inviteCode, u.emailCode, u.resetCode, md, sessions)
 }

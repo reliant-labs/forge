@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -223,9 +224,26 @@ func (p *run) grantRoles(ctx context.Context, label, uid string, cur grantObj, w
 
 // humanUser is a v2 user search hit.
 type humanUser struct {
-	UserID string `json:"userId"`
+	UserID   string `json:"userId"`
+	Username string `json:"username"`
+	Human    *struct {
+		Email struct {
+			Email      string `json:"email"`
+			IsVerified bool   `json:"isVerified"`
+		} `json:"email"`
+	} `json:"human"`
 }
 
+func (h humanUser) verified() bool { return h.Human != nil && h.Human.Email.IsVerified }
+
+// findHuman returns the account a declared address adopts: the one whose
+// address is verified, else one holding no credential (a sign-up still
+// waiting for its proof: nothing on it to inherit). An UNVERIFIED account
+// holding a credential is never adopted. Nobody proved who set that
+// credential — whoever registered the address first — so granting it a
+// declared role would hand the role to them (forge#2121). It is moved out of
+// the address's way instead (supersedeUnproven), nothing on it deleted, and
+// the declared account is created beside it.
 func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 	hits, err := pageAll[humanUser](ctx, p.c, "/v2/users", map[string]any{
 		"queries": []any{map[string]any{"emailQuery": map[string]any{
@@ -235,10 +253,65 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("search users: %w", err)
 	}
-	if len(hits) == 0 {
-		return "", nil
+	for _, h := range hits {
+		if h.verified() {
+			return h.UserID, nil
+		}
 	}
-	return hits[0].UserID, nil
+	adopt := ""
+	for _, h := range hits {
+		var methods struct {
+			AuthMethodTypes []string `json:"authMethodTypes"`
+		}
+		if err := p.c.call(ctx, http.MethodGet, "/v2/users/"+url.PathEscape(h.UserID)+"/authentication_methods", nil, &methods, idem); err != nil {
+			return "", fmt.Errorf("read the sign-in methods of user %s: %w", h.UserID, err)
+		}
+		if len(methods.AuthMethodTypes) == 0 {
+			if adopt == "" {
+				adopt = h.UserID
+			}
+			continue
+		}
+		if err := p.supersedeUnproven(ctx, email, h); err != nil {
+			return "", err
+		}
+	}
+	return adopt, nil
+}
+
+// supersedeUnproven moves an unverified account holding unproven credentials
+// out of a declared address's way, as the login broker does when an
+// address's owner proves into a fresh account (devidp's fresh_account.go):
+// record what it was (forge.superseded_email, forge.superseded_by), then
+// rename its username and email so the address names it nowhere. Nothing on
+// it is deleted; it keeps its credentials, under a name nobody types, and it
+// still cannot sign in where a verified address is required.
+func (p *run) supersedeUnproven(ctx context.Context, email string, h humanUser) error {
+	p.rep.change(Updated, "user", h.UserID, "unverified, holding credentials nobody proved: renamed out of "+email+"'s way, nothing deleted")
+	if p.dry() {
+		return nil
+	}
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	base := "/v2/users/" + url.PathEscape(h.UserID)
+	if err := p.c.call(ctx, http.MethodPost, base+"/metadata", map[string]any{"metadata": []any{
+		map[string]any{"key": "forge.superseded_email", "value": b64(email)},
+		map[string]any{"key": "forge.superseded_by", "value": b64("declared:" + email)},
+	}}, nil, idem); err != nil {
+		return objErr("user", h.UserID, fmt.Errorf("record the superseded address: %w", err))
+	}
+	if strings.EqualFold(h.Username, email) {
+		if err := p.c.call(ctx, http.MethodPut, "/v2/users/human/"+url.PathEscape(h.UserID),
+			map[string]any{"username": "forge-superseded-" + h.UserID}, nil, idem); err != nil {
+			return objErr("user", h.UserID, fmt.Errorf("rename the superseded account: %w", err))
+		}
+	}
+	if err := p.c.call(ctx, http.MethodPost, base+"/email", map[string]any{
+		"email": "superseded-" + h.UserID + "@forge.invalid", "returnCode": map[string]any{},
+	}, nil, idem); err != nil {
+		return objErr("user", h.UserID, fmt.Errorf("move the superseded account's address: %w", err))
+	}
+	p.logf("superseded an unverified account holding unproven credentials", "user_id", h.UserID)
+	return nil
 }
 
 // ensureHuman finds a user by email, creating a credential-less account when

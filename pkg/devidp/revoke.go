@@ -12,19 +12,33 @@ import (
 	"strings"
 )
 
-// Taking back credentials nobody proved, and the account markers that say
-// how an account came to be.
+// The account markers that say how an account came to be, and the account
+// administration calls (sessions, locks, metadata) the broker and an
+// operator use.
 //
-// An unverified account's credentials were set by whoever TYPED the address
-// — which need not be its owner. Someone can register victim@example.com
-// with a password of their own; when the owner later proves the inbox (a
-// magic link, a verification link, an invitation), that password must not
-// become valid with it. RevokeCredentials is the undo: it is called after the
-// proof, for credentials the proving browser cannot vouch for (see
-// SignInRoutes.proveAddress).
+// Nothing in forge takes credentials back any more. An unverified account
+// never gains a credential (ErrUnverifiedAccount), and a proof never verifies
+// an account that holds one: its owner proves into a fresh account instead
+// (fresh_account.go). RevokeCredentials stays for callers of its own.
 
 // Account metadata keys this package writes.
 const (
+	// MetaContactOnly marks an account created where no mail can prove an
+	// address (a LOGIN_POLICY with mail "none", or the legacy sign-up): its
+	// email is a contact field the holder typed, and no later proof ever
+	// claims it. Such an account holds a password from its creation; under a
+	// mail-delivering policy, proving its address gives the owner a fresh
+	// account instead (see proveAddress).
+	MetaContactOnly = "forge.contact_only"
+	// MetaSupersedes, on a fresh account, names the account whose address
+	// it is taking over: an unverified account holding credentials nobody
+	// proved. Cleared once the takeover of the address is complete.
+	MetaSupersedes = "forge.supersedes"
+	// MetaSupersededBy, on an account moved out of the way, names the fresh
+	// account that took its address over; MetaSupersededEmail keeps the
+	// address it had. Nothing on it is deleted.
+	MetaSupersededBy    = "forge.superseded_by"
+	MetaSupersededEmail = "forge.superseded_email"
 	// MetaSelfSignup marks an account created by public sign-up (register,
 	// a magic link, a social sign-in), as opposed to one an owner invited
 	// or the identity declares. Only such an account gets signup_role.
@@ -33,19 +47,15 @@ const (
 	// re-verification (an address change) does not grant it again after an
 	// owner revoked it.
 	MetaSignupRoleGranted = "forge.signup_role_granted"
-	// MetaProofLock names the proof that holds an account locked across
-	// its address proof: a random nonce, written before the lock. Only
-	// the proof whose nonce is still current may lift a lock after a
-	// failed proof; a lock with no marker (the issuer's, or one a failed
-	// revocation left) is never lifted by a proof. See proveAddress.
+	// MetaProofLock was the mark of a proof that held an account locked.
+	//
+	// Deprecated: no longer written or read. A key a broker older than
+	// forge#2121's fix left behind is inert; delete it at will.
 	MetaProofLock = "forge.proof_lock"
-	// MetaProofWindowPrefix starts the key a proof writes before it takes
-	// an unverified account's credentials back ahead of its proof: one key
-	// per proof (the prefix and a nonce), its value unix milliseconds read
-	// as a start that lasts the default 15s window (a longer window is
-	// written as its end minus 15s; see announceWindow). A successful proof
-	// waits out every such window before it hands the account back. See
-	// proveAddress.
+	// MetaProofWindowPrefix started the key of a pre-proof cleanup window.
+	//
+	// Deprecated: no longer written or read (there is no pre-proof
+	// cleanup). Keys an older broker left behind are inert.
 	MetaProofWindowPrefix = "forge.proof_window."
 )
 
@@ -53,6 +63,10 @@ const (
 // replaced by a random one nobody holds (when it has one), and every identity
 // provider link and passkey is removed. The account itself, its address and
 // its grants stay. It returns how many credentials it took back.
+//
+// Nothing in forge calls it. Mind what it cannot do safely: the issuer's
+// TOTP and OTP-SMS removals name no factor, so a removal served late takes
+// whatever factor the account holds by then.
 func (c *Client) RevokeCredentials(ctx context.Context, userID string) (int, error) {
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
@@ -187,6 +201,10 @@ func unguessablePassword() string {
 // itself. CALL ONLY AFTER A PROOF for this user in the same request: the
 // broker's credential needs no code from the person to do this.
 func (c *Client) SetPassword(ctx context.Context, userID, password string) error {
+	// Checked before the code is minted, so a refusal writes nothing.
+	if err := c.mayAddPassword(ctx, strings.TrimSpace(userID)); err != nil {
+		return err
+	}
 	code, err := c.MintPasswordResetCode(ctx, userID)
 	if err != nil {
 		return err

@@ -81,7 +81,10 @@ type User struct {
 	// address people actually type. Resolve through FindUserByEmail
 	// rather than passing a typed email to CreateSession.
 	LoginName string
-	Email     string
+	// Username is the account's username, which its login name derives
+	// from. Accounts the broker creates take the address as their username.
+	Username string
+	Email    string
 	// EmailVerified is the issuer's own verdict on Email
 	// (human.email.isVerified): true only once the address was proven
 	// reachable, by a verification code or by whoever created the account
@@ -102,6 +105,7 @@ type humanUser struct {
 	UserID             string `json:"userId"`
 	State              string `json:"state"`
 	PreferredLoginName string `json:"preferredLoginName"`
+	Username           string `json:"username"`
 	Human              *struct {
 		Email struct {
 			Email      string `json:"email"`
@@ -119,6 +123,7 @@ func (h humanUser) user() (User, bool) {
 	return User{
 		ID:            h.UserID,
 		LoginName:     h.PreferredLoginName,
+		Username:      h.Username,
 		Email:         h.Human.Email.Email,
 		EmailVerified: h.Human.Email.IsVerified,
 		Locked:        h.State == "USER_STATE_LOCKED",
@@ -126,7 +131,11 @@ func (h humanUser) user() (User, bool) {
 }
 
 // FindUserByEmail resolves an email address to the one human user that has
-// it, case-insensitively.
+// it, case-insensitively. Where several share it, the one whose address is
+// VERIFIED is that user — a proven owner — and with none or several verified
+// there is no single account (ErrUserNotFound). Several share an address
+// while a fresh account takes it over from one holding unproven credentials
+// (see fresh_account.go); the proven one is the one to act on.
 //
 // The broker's login-client credential may search users, so this works with
 // the same token SignIn uses.
@@ -163,12 +172,21 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 		}
 		matches = append(matches, u)
 	}
-	if len(matches) != 1 {
-		// Zitadel does not enforce email uniqueness by default. Zero and
-		// "more than one" are both "no single account to act on".
-		return User{}, ErrUserNotFound
+	if len(matches) == 1 {
+		return matches[0], nil
 	}
-	return matches[0], nil
+	// Zitadel does not enforce email uniqueness by default. Zero, or
+	// several with no single verified one, is "no single account to act on".
+	var verified []User
+	for _, u := range matches {
+		if u.EmailVerified {
+			verified = append(verified, u)
+		}
+	}
+	if len(verified) == 1 {
+		return verified[0], nil
+	}
+	return User{}, ErrUserNotFound
 }
 
 // FindUserByID resolves a user id to the human user it names. ErrUserNotFound
@@ -320,6 +338,9 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	case r.NewPassword == "":
 		return fmt.Errorf("a new password is required")
 	}
+	if err := c.mayAddPassword(ctx, userID); err != nil {
+		return err
+	}
 
 	_, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
 		"newPassword": map[string]any{
@@ -332,6 +353,27 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 		return nil
 	}
 	return classifyResetError(err)
+}
+
+// mayAddPassword refuses (ErrUnverifiedAccount) to give a password to an
+// unverified account that has none: that is a credential added. Replacing
+// the password a contact-only account was created with is its holder's own
+// recovery, and stays allowed. An account that cannot be read is left to the
+// issuer: the reset code is the authority there, and an unknown id answers
+// like a wrong code.
+func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
+	u, err := c.FindUserByID(ctx, userID)
+	if err != nil || u.EmailVerified {
+		return nil
+	}
+	has, err := c.HasPassword(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return ErrUnverifiedAccount
+	}
+	return nil
 }
 
 // Zitadel's stable ids for the two rejections a reset form must tell apart.

@@ -97,6 +97,10 @@ type fUser struct {
 	AuthMethods     []string
 	PasswordSetBy   string
 	Given, Family   string
+	// Unverified is the email's isVerified, negated: an account a test
+	// seeds is verified unless it says otherwise.
+	Unverified bool
+	Metadata   map[string]string
 }
 
 type fCred struct {
@@ -1089,7 +1093,8 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 			sort.Strings(ids)
 			for _, id := range ids {
 				if u := f.users[id]; !u.Machine && strings.ToLower(u.Email) == want {
-					hits = append(hits, map[string]any{"userId": u.ID})
+					hits = append(hits, map[string]any{"userId": u.ID, "username": u.UserName,
+						"human": map[string]any{"email": map[string]any{"email": u.Email, "isVerified": !u.Unverified}}})
 				}
 			}
 		}
@@ -1098,6 +1103,10 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 	case path == "/human" && r.Method == "POST":
 		email, _ := body["username"].(string)
 		u := &fUser{ID: f.id(), UserName: email, Email: email}
+		if em, ok := body["email"].(map[string]any); ok {
+			verified, _ := em["isVerified"].(bool)
+			u.Unverified = !verified
+		}
 		if prof, ok := body["profile"].(map[string]any); ok {
 			u.Given, _ = prof["givenName"].(string)
 			u.Family, _ = prof["familyName"].(string)
@@ -1123,6 +1132,46 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(w, 200, map[string]any{"authMethodTypes": u.AuthMethods})
+	case strings.HasPrefix(path, "/human/") && r.Method == "PUT":
+		u := f.users[strings.TrimPrefix(path, "/human/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		if name, _ := body["username"].(string); name != "" {
+			u.UserName = name
+		}
+		f.mutate("rename user " + u.ID)
+		return200(w)
+	case strings.HasSuffix(path, "/email") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/email"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		u.Email, _ = body["email"].(string)
+		u.Unverified = true
+		f.mutate("change email " + u.ID)
+		reply(w, 200, map[string]any{"verificationCode": "EV1", "details": details()})
+	case strings.HasSuffix(path, "/metadata") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/metadata"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		if u.Metadata == nil {
+			u.Metadata = map[string]string{}
+		}
+		md, _ := body["metadata"].([]any)
+		for _, e := range md {
+			m, _ := e.(map[string]any)
+			k, _ := m["key"].(string)
+			v, _ := m["value"].(string)
+			raw, _ := base64.StdEncoding.DecodeString(v)
+			u.Metadata[k] = string(raw)
+		}
+		f.mutate("metadata " + u.ID)
+		return200(w)
 	case strings.HasSuffix(path, "/password_reset"):
 		f.mutate("password reset")
 		reply(w, 200, map[string]any{"verificationCode": "ABC123"})

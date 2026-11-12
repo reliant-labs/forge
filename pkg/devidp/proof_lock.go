@@ -11,29 +11,27 @@ import (
 	"time"
 )
 
-// ── One proof of an account at a time, across every replica ─────────────
+// ── The proof lock: deprecated, still working ──────────────────────────
 //
-// An address proof (proveAddress) and the credential installs that follow
-// one — HandleVerify's pending password and social link, a passkey
-// enrolment — must not interleave for one account. Inside one process the
-// in-process keyedMutex has always kept proofs apart. Across replicas the
-// broker relied on the #2098 time fence alone, which holds only while every
-// request is served within proofFenceSlack of its deadline (forge#2121). A
-// ProofLocker that every replica shares removes that bound for every request
-// the broker is still waiting on: a stale proof holds the lock until its
-// calls have returned, so the owner's proof and install cannot start until
-// it is done, however slow the issuer, the network or the replica's clock.
+// forge#2166 serialised an account's address proofs across broker replicas
+// with these lockers, because a proof that FAILED still took an unverified
+// account's credentials back, and a stale revocation could land on a
+// credential the owner had just set (forge#2121). That eviction no longer
+// exists: no credential is put on an unverified account and a proof never
+// verifies an account holding one (see proveAddress), so SignInRoutes has
+// nothing to serialise and ignores SignInRoutesConfig.ProofLocker.
 //
-// What a lock cannot cover is a request the broker has GIVEN UP on (its
-// deadline passed) and the issuer serves later. No broker-side lock can,
-// because the issuer offers no compare-and-swap to check a fencing token
-// against. The fence stays for that case, and under a shared lock the
-// window that bounds those calls is long (lockedPreProofWindow), which costs
-// nothing in the common case: a competing proof waits for the lock, not for
-// the window.
+// The lockers themselves keep every guarantee they had (forge is semver v1):
+// a PostgresProofLocker still excludes across replicas, and
+// UnavailableProofLocker still refuses. Callers of their own may keep using
+// them; a broker can drop them (`forge skill load
+// migrations/v1.1.0/identity-v2`, step 2.12).
 
 // ProofLocker serialises, per account, an address proof and the credential
-// installs that follow one. Set SignInRoutesConfig.ProofLocker only to a
+// installs that follow one.
+//
+// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker since
+// forge#2121's fix; the interface and its implementations still work. Set SignInRoutesConfig.ProofLocker only to a
 // lock every replica of the broker shares (NewPostgresProofLocker); nil keeps
 // the in-process lock, which is enough for a single replica.
 type ProofLocker interface {
@@ -44,11 +42,6 @@ type ProofLocker interface {
 	LockAccount(ctx context.Context, userID string) (release func(), err error)
 }
 
-// LockAccount makes the in-process keyedMutex the default ProofLocker.
-func (k *keyedMutex) LockAccount(ctx context.Context, userID string) (func(), error) {
-	return k.lock(ctx, userID)
-}
-
 // UnavailableProofLocker returns a ProofLocker that refuses every
 // acquisition with err. A broker configured for a shared lock whose store
 // cannot even be set up (a malformed DSN) uses it rather than nil: nil would
@@ -57,6 +50,8 @@ func (k *keyedMutex) LockAccount(ctx context.Context, userID string) (func(), er
 // verification and passkey enrolment answer "unavailable" (fail closed), as
 // during a lock-store outage; signing in with an existing credential does
 // not take the lock and keeps working.
+// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker; the
+// locker still refuses every acquisition.
 func UnavailableProofLocker(err error) ProofLocker {
 	if err == nil {
 		err = errors.New("the shared proof lock is not configured")
@@ -120,6 +115,8 @@ type PostgresProofLocker struct {
 }
 
 // NewPostgresProofLocker returns a ProofLocker on db.
+// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker; the
+// locker still excludes across replicas for callers of its own.
 func NewPostgresProofLocker(db *sql.DB, opt PostgresProofLockerOptions) *PostgresProofLocker {
 	if opt.MaxWait <= 0 {
 		opt.MaxWait = DefaultProofLockWait

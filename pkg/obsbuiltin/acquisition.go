@@ -155,13 +155,15 @@ type breakdown struct{ in Input }
 
 // breakdownMetrics are the columns a breakdown can show, over v (visitor-day
 // counts per key) and s (sign-up counts per key).
+// The side a row lacks counts 0 (ifNull: a session with join_use_nulls gives
+// NULL for it).
 var breakdownMetrics = map[string]string{
-	"Visitors":     "v.visitors",
-	"Visits":       "v.visits",
-	"Bounce %":     "round(100 * v.bounces / nullIf(v.visits, 0), 1)",
-	"Sign-ups":     "s.signups",
-	"Conversion %": "round(100 * s.signups / nullIf(v.visitors, 0), 2)",
-	"Activated %":  "round(100 * s.activated / nullIf(s.signups, 0), 1)",
+	"Visitors":     "ifNull(v.visitors, 0)",
+	"Visits":       "ifNull(v.visits, 0)",
+	"Bounce %":     "round(100 * v.bounces / nullIf(ifNull(v.visits, 0), 0), 1)",
+	"Sign-ups":     "ifNull(s.signups, 0)",
+	"Conversion %": "round(100 * ifNull(s.signups, 0) / nullIf(ifNull(v.visitors, 0), 0), 2)",
+	"Activated %":  "round(100 * s.activated / nullIf(ifNull(s.signups, 0), 0), 1)",
 }
 
 func (b breakdown) sql(dims []dim, metrics []string, where string, limit int) string {
@@ -174,11 +176,16 @@ func (b breakdown) sql(dims []dim, metrics []string, where string, limit int) st
 		if i == 0 {
 			unattributed = "'Unattributed'"
 		}
-		vk = append(vk, d.expr+" AS "+k)
-		sk = append(sk, fmt.Sprintf("if(f.h = '', %s, %s) AS %s", unattributed, d.expr, k))
+		// Keys are normalized to non-NULL strings on both sides, so an empty
+		// or absent dimension joins as '' whatever the session's
+		// join_use_nulls; a sign-up with no visit is Unattributed on the first
+		// key. The output key is the side that has the row.
+		key := fmt.Sprintf("ifNull(toString(%s), '')", d.expr)
+		vk = append(vk, key+" AS "+k)
+		sk = append(sk, fmt.Sprintf("if(ifNull(f.h, '') = '', %s, %s) AS %s", unattributed, key, k))
 		keys = append(keys, k)
 		on = append(on, "v."+k+" = s."+k)
-		sel = append(sel, fmt.Sprintf("if(v.visitors > 0, v.%s, s.%s) AS %q", k, k, d.label))
+		sel = append(sel, fmt.Sprintf("if(ifNull(v.visitors, 0) > 0, v.%s, s.%s) AS %q", k, k, d.label))
 	}
 	for _, m := range metrics {
 		sel = append(sel, fmt.Sprintf("%s AS %q", breakdownMetrics[m], m))

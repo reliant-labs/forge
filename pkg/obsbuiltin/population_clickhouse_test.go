@@ -216,6 +216,15 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 		"2026-02-16 · 1 user\t1\t0\t1\t1\t0"+nulls(7),
 		"2026-02-23 · 2 users\t1\t0.5\t1\t0"+nulls(8),
 		"2026-03-16 · 2 users\t1"+nulls(11)))
+	// A range ending on a Monday midnight (exclusive): the week starting at
+	// the end has not begun, so its cells are NULL, never 0.
+	if got, err := ch.try(panel(t, byID["users"], "retention-cohorts").SQL, start, time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC), "e1"); err != nil {
+		t.Errorf("retention-cohorts ending 03-16 00:00: %v", err)
+	} else if want := rows(
+		"2026-02-16 · 1 user\t1\t0\t1\t1"+nulls(8),
+		"2026-02-23 · 2 users\t1\t0.5\t1"+nulls(9)); got != want {
+		t.Errorf("retention-cohorts ending on a Monday midnight =\n%s\nwant\n%s", got, want)
+	}
 	// order_created is the declared activation: u2 in 30 minutes, u4 in 8,
 	// u6 after 4 days; u3 and u5 not yet.
 	check("users", "time-to-activation", false, "e1", rows("< 1 hour\t2", "3-7 days\t1", "Not yet\t2"))
@@ -298,6 +307,19 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 		"/\tOrganic social\t1\t0", "/\tPaid search\t1\t1", "/\tPartners\t1\t1", "/orders\tDirect\t1\t0", "Unattributed\t\t0\t2"))
 	check("acquisition", "countries", false, "e1", rows("US\t5\t2\t40", "CA\t1\t1\t100", "DE\t1\t0\t0", "FR\t1\t0\t0", "GB\t1\t0\t0", "Unattributed\t0\t2\t\\N"))
 	check("acquisition", "devices", false, "e1", rows("desktop\t6\t2\t33.33", "mobile\t2\t0\t0", "tablet\t1\t1\t100", "Unattributed\t0\t2\t\\N"))
+	// The breakdowns join visitor-days to sign-ups on normalized keys, so a
+	// session with join_use_nulls (NULL for an unmatched side) answers the
+	// same: empty dimensions (Content, Term) still join, and Unattributed
+	// sign-ups keep their own row.
+	nullJoin := ch.with("--join_use_nulls=1")
+	for _, id := range []string{"channels", "campaigns", "landing-pages", "countries", "sources"} {
+		p := panel(t, byID["acquisition"], id)
+		def, err1 := ch.try(p.SQL, start, end, "e1")
+		nul, err2 := nullJoin.try(p.SQL, start, end, "e1")
+		if err1 != nil || err2 != nil || def != nul {
+			t.Errorf("acquisition/%s with join_use_nulls=1 =\n%s (%v)\nwant the default session's\n%s (%v)", id, nul, err2, def, err1)
+		}
+	}
 	check("acquisition", "browsers", false, "e1", rows("Chrome\t5", "Safari\t2", "Edge\t1", "Firefox\t1"))
 	check("acquisition", "os", false, "e1", rows("Windows\t3", "macOS\t2", "Android\t1", "Linux\t1", "iOS\t1", "iPadOS\t1"))
 	// Week-4 retention reads the sign-ups of 35-90 days before: none in e1;

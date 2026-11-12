@@ -48,6 +48,16 @@ type clickhouse struct {
 	t         *testing.T
 	container string
 	db        string
+	// settings are extra clickhouse-client flags (query settings) for every
+	// statement, e.g. "--join_use_nulls=1".
+	settings []string
+}
+
+// with is c running every statement with the extra query settings.
+func (c *clickhouse) with(settings ...string) *clickhouse {
+	d := *c
+	d.settings = append(append([]string(nil), c.settings...), settings...)
+	return &d
 }
 
 // newClickHouse seeds db with seed (after the tenant tables), or skips the
@@ -91,6 +101,7 @@ func (c *clickhouse) try(sql string, start, end time.Time, envs ...string) (stri
 	}
 	args := []string{"exec", "-i", c.container, "clickhouse-client", "--password", "pw",
 		"--database", c.db, "--format", "TSV"}
+	args = append(args, c.settings...)
 	for k, v := range st.Params {
 		args = append(args, "--param_"+k+"="+v)
 	}

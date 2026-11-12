@@ -226,7 +226,10 @@ GROUP BY week ORDER BY week`
 func retentionCohortsSQL() string {
 	var weeks strings.Builder
 	for w := 0; w < cohortWeeks; w++ {
-		fmt.Fprintf(&weeks, ",\n       if(cohort + INTERVAL %d WEEK <= toMonday(%s), round(countIf(has(weeks, cohort + INTERVAL %d WEEK)) / count(), 4), NULL) AS \"W%d\"", w, to, w, w)
+		// A week is shown once it has begun inside the range: its Monday is
+		// before the range's (exclusive) end. toMonday(end) would also show
+		// the week starting AT end when the range ends on a Monday midnight.
+		fmt.Fprintf(&weeks, ",\n       if(toDateTime(cohort + INTERVAL %d WEEK) < %s, round(countIf(has(weeks, cohort + INTERVAL %d WEEK)) / count(), 4), NULL) AS \"W%d\"", w, to, w, w)
 	}
 	return `SELECT concat(toString(cohort), ' · ', toString(count()), if(count() = 1, ' user', ' users')) AS "Cohort (week of)"` + weeks.String() + `
 FROM (

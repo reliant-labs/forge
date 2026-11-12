@@ -1,6 +1,6 @@
 ---
 name: adopt/monitoring
-description: Instrument an existing app, in any language, to the telemetry shape forge reads — resource attributes, one JSON log line per request, request id, one server span, RED metrics, recovery, /healthz and /readyz — with forge's own Go code as the reference to translate and initNodeTelemetry for Node. Where the data can go today, how to verify it, and when the hosted dashboards light up.
+description: Instrument an existing app, in any language, to the telemetry shape forge reads — resource attributes, one JSON log line per request, request id, one server span, RED metrics, recovery, /healthz and /readyz — with forge's own Go code as the reference to translate and initNodeTelemetry for Node. Where the data can go — the user's own backend, or Reliant's hosted store for any app via forge obs init — and how to verify it.
 emit: both
 applies: any
 ---
@@ -22,14 +22,14 @@ there. ~5 min of the user's time to set env vars. Verify ~10 min.
 | Destination | Status | Notes |
 |---|---|---|
 | The user's backend or an OpenTelemetry Collector (Datadog, Grafana, Honeycomb, …) | **today** | standard `OTEL_*` environment; nothing forge-specific |
-| Reliant's hosted store and the dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` | **today, once forge deploys the app** | hosting injects the endpoint, token and `OTEL_SERVICE_NAME` into every workload it runs; sign-in required. That is Tier 2 of `adopt/deploy` |
+| Reliant's hosted store and the dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` | **today, for any app: `forge obs init`** | sign in (`forge login`), then `forge obs init prod` registers the env and prints the variables; set three where the app runs: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` (the ingest token, shown once: a secret) and `OTEL_RESOURCE_ATTRIBUTES`, beside `OTEL_SERVICE_NAME`. forge need not build or deploy the app (`observability/monitoring-only`). An app forge deploys gets them injected instead (`adopt/deploy` Tier 2) |
 | forge's local ClickStack | **today, in a forge dev env** | `forge env up dev` with the env's Bundle declaring `observability` (`observability` skill) |
 
-**Coming soon** (do not run or promise): an `obs init` command, user-minted ingest
-tokens and a public OTLP endpoint, so an app forge does **not** deploy reaches
-the hosted dashboards; `obs check` on an inferred deploy marker. Until then,
-for such an app: instrument now to the shape below, send it where the user
-already looks, and repointing later is three environment variables.
+Instrumenting to the shape below is the same work whichever destination the
+user picks, and moving between them is those environment variables. With the
+hosted store, `forge obs check` judges each new `service.version` even when no
+deploy is recorded (an **inferred** marker, labelled so); `forge release
+record` after their deploy job (`deploy/record`) makes the marker exact.
 
 ## The contract: keep these names
 
@@ -223,7 +223,9 @@ names.
    token; you never read or print it.
 4. **Verify**, then repeat for the next service with the same code.
 5. **Offer the next piece**: `forge lint --tracing` (Go; `adopt/linters`) finds
-   where a trace is still cut; `adopt/deploy` brings the hosted dashboards.
+   where a trace is still cut; `forge obs init` (`observability/monitoring-only`)
+   brings the hosted dashboards; `forge release record` (`deploy/record`) adds
+   a deploy marker per release.
 
 ## Verify
 
@@ -240,8 +242,9 @@ in whatever receives the data:
 - `/healthz` 200, and `/readyz` 503 naming the dependency, with no error text,
   when you make that dependency unreachable.
 
-For an app forge deploys: `forge obs status <env>` lists the service with a
-request rate, and `forge obs check <env> --wait` exits 0 or 1, not 2.
+In the hosted store (after `forge obs init`, or for an app forge deploys):
+`forge obs status <env>` lists the service with a request rate, and
+`forge obs check <env> --wait` exits 0 or 1, not 2.
 
 ## Leaving
 

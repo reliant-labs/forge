@@ -1407,7 +1407,7 @@ func (d *appDetection) findMigration(root string, compose *composeFile) {
 	src := readAppSource(root, owner.Build.Context)
 	cmd, why := src.migrationCommand(root)
 	if cmd == nil {
-		d.assumed = append(d.assumed, "no migration command found: if the app migrates its schema, add a `migrate` job (forge skill load adopt shows it)")
+		d.assumed = append(d.assumed, "no migration command found: if the app migrates its schema, add a `migrate` job (forge skill load adopt/deploy shows it)")
 		return
 	}
 	d.spec.Migrate = &generator.AppMigration{Workload: owner.Name, Command: cmd, Source: why}

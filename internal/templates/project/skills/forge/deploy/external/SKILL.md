@@ -1,6 +1,7 @@
 ---
 name: deploy/external
 description: Keep your own deploy tooling (Helm, Fly.io, Cloud Run, ECS, Argo CD, a script) and let forge drive it — forge.OnExternal's four argv hooks (status, plan, deploy, health), worked recipes for each tool, and the shadow-mode path that proves parity with `forge env verify` before forge deploys anything.
+applies: any
 ---
 
 # Your deploy tooling, driven by forge: `forge.OnExternal`

@@ -1,6 +1,7 @@
 ---
 name: observability/monitoring-only
 description: Monitoring for an app forge did not build and does not deploy — any language, any CI. forge obs init, ingest tokens, the OTEL_* variables per language, the attribute contract forge's own apps follow, alert receivers, and an estimate to quote.
+applies: any
 ---
 
 # Monitoring only, any language

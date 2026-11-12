@@ -1,6 +1,6 @@
 ---
 name: adopt/deploy
-description: Forge deploys an existing app in any language (Express, Django, Rails, Spring, …) from its own Dockerfile, without rewriting it, in tiers you can stop after — 1 ship it (forge.yaml + deploy/kcl by hand from copy-paste templates, DockerBuild, managed Postgres, migrations job, secrets, dev loop, deploy), 2 see it (OpenTelemetry → dashboards, alerts, obs check verdicts), 3 harden it (promotion, CI, health endpoints), 4 move in (port to forge's Go stack only when it pays).
+description: Forge deploys an existing app in any language (Express, Django, Rails, Spring, …) from its own Dockerfile, without rewriting it, in tiers you can stop after — 1 ship it (`forge project new --in-place --kind app` writes forge.yaml + deploy/kcl from its Dockerfile and compose file — DockerBuild, managed Postgres, migrations job, secrets — then the dev loop and deploy; the templates it writes are here to review or write by hand), 2 see it (OpenTelemetry → dashboards, alerts, obs check verdicts), 3 harden it (promotion, CI, health endpoints), 4 move in (port to forge's Go stack only when it pays).
 emit: both
 applies: any
 ---

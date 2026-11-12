@@ -12,14 +12,31 @@ binary to shell out to and nothing to keep in sync with the CLI.
 
 ## In any repo
 
-Most of what forge offers needs no `forge.yaml`. In an existing app, in any
-language, the server leads with:
+Most of what forge offers works on the app as it is: forge need not build or
+deploy it. In an existing app, in any language, the server leads with:
 
+- **Monitoring.** After `forge login`, `forge obs init <env>` registers the
+  env, mints an ingest token and prints the `OTEL_*` variables. Set them where
+  the app runs and any OpenTelemetry SDK sends its traces, logs and metrics to
+  dashboards, issues and alerts at
+  `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in
+  required).
+- **A deploy history from the CI the repo already has.** One
+  `forge release record` step after the deploy job records each release, so
+  `forge obs changes` shows a deploy marker and `forge obs check` gives each
+  release a verdict.
+- **Proof before forge deploys anything.** `forge env verify` compares what
+  forge would ship against what runs, read-only, for a workload bound to
+  `forge.OnExternal` (the repo's own Helm, Fly, Cloud Run or script), and
+  `forge project new --in-place --kind app` declares an app's Dockerfile so
+  forge can deploy it.
 - **Linters that run standalone.** `lint` runs migration safety over
   `db/migrations/*.up.sql` (a destructive `DROP COLUMN`, a `NOT NULL` column
-  with no default, `CREATE INDEX CONCURRENTLY` beside other statements), and in
-  a Go module golangci-lint, the tracing lane and timezone-safe date bucketing.
-  Lanes that need a forge project skip and say why.
+  with no default, `CREATE INDEX CONCURRENTLY` beside other statements), or
+  over the directory of the goose, atlas, flyway, dbmate or golang-migrate
+  setup `database.migrations` names, and in a Go module golangci-lint, the
+  tracing lane and timezone-safe date bucketing. Lanes that need a forge
+  project skip and say why.
 - **Playbooks.** `skill_load` serves the skills built into the forge you run:
   debugging, testing tiers, migrations, observability, deploys.
 - **Runtime libraries.** `forge/pkg` for Go (`svcerr`, `observe`, `pgtest`,
@@ -28,9 +45,9 @@ language, the server leads with:
   OTLP. `libraries` prints any package's API.
 - **A deploy with no account.** `deploy_claimable` puts an existing Vite or
   Next.js app live and returns a URL plus a claim link (below).
-- **Monitoring and a deploy history**, once forge deploys the app: dashboards
-  at `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in
-  required). The `adopt` skill walks it without rewriting the app.
+
+Monitoring, recording and verifying are CLI commands the agent runs in the
+user's terminal; the server's job is to say they exist and what they cost.
 
 `benefits` lists exactly what applies to the directory, each with its first
 step and the agent's time to first value, worded so the agent can quote it to

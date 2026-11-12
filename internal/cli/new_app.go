@@ -70,7 +70,7 @@ func runNewApp(in newAppInput) error {
 	det, err := detectApp(targetPath, name, in.claimable)
 	if err != nil {
 		return cliutil.WrapUserErr("forge project new --kind app", "could not read the app in "+targetPath, "",
-			"fix what the error names, or write the files by hand from "+Name()+" skill load adopt", err)
+			"fix what the error names, or write the files by hand from "+Name()+" skill load adopt/deploy", err)
 	}
 	var harness generator.Harness
 	if newHarnessExplicit && in.harness != "" {
@@ -189,6 +189,6 @@ func appNextSteps(det *appDetection, written bool) []string {
 	} else {
 		step(cli+" env deploy prod <release>", "the same bytes, promoted by digest")
 	}
-	step(cli+" skill load adopt", "what each file says, and the next tiers: telemetry, gated promotion, CI")
+	step(cli+" skill load adopt/deploy", "what each file says, and the next tiers: telemetry, gated promotion, CI")
 	return lines
 }

@@ -110,7 +110,7 @@ func (q Overview) probeRED(byPath bool) (Stmt, error) {
 	outcome := func(o string) string {
 		return "toUInt64(sumIf(Value, " + probeOutcomeCol + " = '" + o + "')) AS " + o
 	}
-	return b.stmt("SELECT " + outKeys + ", c.ok AS ok, c.failed AS failed, c.throttled AS throttled, c.degraded AS degraded, h.q AS q, " + source + " AS source\n" +
+	return b.stmt("SELECT " + outKeys + ", c.ok AS ok, c.failed AS failed, c.throttled AS throttled, c.degraded AS degraded, ifNull(h.q, CAST([], 'Array(Float64)')) AS q, " + source + " AS source\n" +
 		"FROM (\n" +
 		"  SELECT ServiceName" + keySel + ", " + outcome(release.ProbeOutcomeOK) + ", " + outcome(release.ProbeOutcomeFailed) + ",\n" +
 		"         " + outcome(release.ProbeOutcomeThrottled) + ", " + outcome(release.ProbeOutcomeDegraded) + "\n" +

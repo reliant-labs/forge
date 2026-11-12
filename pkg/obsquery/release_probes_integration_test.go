@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -73,6 +75,10 @@ func TestReleaseSignalProbeRED(t *testing.T) {
 		count("web", "env-prod", probe, r, attrs("/", degraded, "5xx", ""), "2026-10-19 10:04:00", 4),
 		// api: clean.
 		count("api", "env-prod", probe, r, attrs("/ok", ok, "2xx", ""), "2026-10-19 10:00:10", 50),
+		// batch: probed but never timed (no histogram at all): counts with
+		// no quantiles, never a failed scan.
+		count("batch", "env-prod", probe, r, attrs("/health", ok, "2xx", ""), "2026-10-19 10:00:10", 8),
+		count("batch", "env-prod", probe, r, attrs("/health", failed, "", "timeout"), "2026-10-19 10:01:00", 1),
 		// Another env, out of range, a tenant writing the metric name under
 		// its own source: none counts.
 		count("web", "env-dev", probe, r, attrs("/", failed, "5xx", ""), "2026-10-19 10:01:00", 1000),
@@ -129,7 +135,10 @@ func TestReleaseSignalProbeRED(t *testing.T) {
 		t.Fatal(err)
 	}
 	web, api := byTarget["web"], byTarget["api"]
-	if len(byTarget) != 2 || web.Samples != 235 || web.Failures != 5 || web.Throttled != 2 || web.Degraded != 4 ||
+	if batch := byTarget["batch"]; batch != (obsquery.ProbeFigures{Samples: 9, Failures: 1}) {
+		t.Errorf("ProbeRED of an untimed target = %+v, want its counts and no quantiles", batch)
+	}
+	if len(byTarget) != 3 || web.Samples != 235 || web.Failures != 5 || web.Throttled != 2 || web.Degraded != 4 ||
 		api.Samples != 50 || api.Failures != 0 || api.Throttled != 0 || api.Degraded != 0 {
 		t.Fatalf("ProbeRED = %+v", byTarget)
 	}
@@ -143,9 +152,10 @@ func TestReleaseSignalProbeRED(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantPaths := map[obsquery.ProbePath]obsquery.ProbeFigures{
-		{Target: "web", Path: "/"}:      {Samples: 223, Failures: 3, Throttled: 2, Degraded: 4, P50Ms: 30, P95Ms: 300},
-		{Target: "web", Path: "/about"}: {Samples: 12, Failures: 2}, // never timed: no quantiles
-		{Target: "api", Path: "/ok"}:    {Samples: 50, P50Ms: 5, P95Ms: 5},
+		{Target: "web", Path: "/"}:         {Samples: 223, Failures: 3, Throttled: 2, Degraded: 4, P50Ms: 30, P95Ms: 300},
+		{Target: "web", Path: "/about"}:    {Samples: 12, Failures: 2}, // never timed: no quantiles
+		{Target: "api", Path: "/ok"}:       {Samples: 50, P50Ms: 5, P95Ms: 5},
+		{Target: "batch", Path: "/health"}: {Samples: 9, Failures: 1},
 	}
 	for k, f := range byPath { // bucket midpoints in float: compare to the microsecond
 		f.P50Ms, f.P95Ms = math.Round(f.P50Ms*1000)/1000, math.Round(f.P95Ms*1000)/1000
@@ -153,6 +163,29 @@ func TestReleaseSignalProbeRED(t *testing.T) {
 	}
 	if !reflect.DeepEqual(byPath, wantPaths) {
 		t.Errorf("ProbeREDByPath = %+v\nwant %+v", byPath, wantPaths)
+	}
+
+	// A server whose profile sets join_use_nulls fills an unmatched LEFT JOIN
+	// with NULL where it can: the untimed rows must still scan.
+	for name, compile := range map[string]func() (obsquery.Stmt, error){"ProbeRED": ov.ProbeRED, "ProbeREDByPath": ov.ProbeREDByPath} {
+		st, err := compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := c.Query(clickhouse.Context(ctx, clickhouse.WithParameters(clickhouse.Parameters(st.Params)),
+			clickhouse.WithSettings(clickhouse.Settings{"join_use_nulls": 1})), st.SQL)
+		if err != nil {
+			t.Fatalf("%s with join_use_nulls=1: %v", name, err)
+		}
+		if name == "ProbeRED" {
+			got, err := obsquery.ScanProbeRED(rows)
+			if err != nil || got["batch"] != (obsquery.ProbeFigures{Samples: 9, Failures: 1}) {
+				t.Errorf("ProbeRED with join_use_nulls=1: batch %+v, err %v", got["batch"], err)
+			}
+		} else if got, err := obsquery.ScanProbeREDByPath(rows); err != nil || got[obsquery.ProbePath{Target: "batch", Path: "/health"}] != (obsquery.ProbeFigures{Samples: 9, Failures: 1}) {
+			t.Errorf("ProbeREDByPath with join_use_nulls=1: %+v, err %v", got, err)
+		}
+		_ = rows.Close()
 	}
 
 	failures, err := obsquery.ScanProbeFailures(query(ov.ProbeFailures))
@@ -166,6 +199,8 @@ func TestReleaseSignalProbeRED(t *testing.T) {
 	wantFailures := map[string][]obsquery.ProbeFailure{"web": {
 		{Path: "/", StatusClass: "5xx", First: at("10:01"), Last: at("10:01"), Count: 3},
 		{Path: "/about", ErrorType: "timeout", First: at("10:02"), Last: at("10:05"), Count: 2},
+	}, "batch": {
+		{Path: "/health", ErrorType: "timeout", First: at("10:01"), Last: at("10:01"), Count: 1},
 	}}
 	if !reflect.DeepEqual(failures, wantFailures) {
 		t.Errorf("ProbeFailures = %+v\nwant %+v", failures, wantFailures)

@@ -547,7 +547,7 @@ func printBuildOnlyPlan(w io.Writer, plan buildOnlyPlan) {
 func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, error) {
 	hosting := map[string]any{
 		"public": filepath.Base(stagingDir),
-		"ignore": []string{"firebase.json", "**/.*", "**/node_modules/**"},
+		"ignore": firebaseUploadIgnores(spec.wellKnown),
 	}
 	// site and target are MUTUALLY EXCLUSIVE in a firebase.json hosting
 	// config — the firebase CLI errors out ("Cannot have both site and
@@ -573,6 +573,24 @@ func renderFirebaseJSON(stagingDir string, spec FirebaseHostingSpec) (string, er
 		return "", err
 	}
 	return string(b) + "\n", nil
+}
+
+// firebaseUploadIgnores is consumed by firebase-tools listFiles: glob("**/*",
+// {dot:true, ignore:[...]}). Ignore entries are exclusions, not gitignore
+// rules, so a negated entry cannot re-include a child of an ignored directory.
+// Replace the dot-directory rule only for a generated association overlay:
+// exclude other root dot entries, every nested dot entry, and all children of
+// .well-known except the exact generated file names (glob extglob exclusion).
+func firebaseUploadIgnores(wellKnown []string) []string {
+	if len(wellKnown) == 0 {
+		return []string{"firebase.json", "**/.*", "**/node_modules/**"}
+	}
+	return []string{
+		"firebase.json", "**/node_modules/**",
+		".!(well-known)", ".!(well-known)/**", "*/**/.*", "*/**/.*/**",
+		".well-known/!(" + strings.Join(wellKnown, "|") + ")",
+		".well-known/*/*", ".well-known/*/*/**",
+	}
 }
 
 // renderFirebaseRC builds the .firebaserc contents: the default project

@@ -261,6 +261,17 @@ export {
 } from "./page-views.js";
 
 /**
+ * Engaged time: each page view ends in one `page_engaged {route, view_id,
+ * engaged_ms, scroll_pct}` — visible, focused, active time (a 30 s idle cutoff, capped
+ * at 30 minutes) and how far down the document the reader got.
+ */
+export {
+  ENGAGEMENT_IDLE_MS,
+  MAX_ENGAGED_MS,
+  PAGE_ENGAGED_EVENT,
+} from "./page-engagement.js";
+
+/**
  * Visitor identity and campaign attribution: `withAttribution(url)` appends
  * this browser's `rid` and captured `utm_*` to an outbound link (a marketing
  * site pointing at the app); the runtime reads them on arrival and emits one

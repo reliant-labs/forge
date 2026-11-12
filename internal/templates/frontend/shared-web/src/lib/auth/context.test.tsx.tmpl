@@ -52,10 +52,13 @@ function setMockMode(mode: string) {
 function stubServer(server: "unreachable" | "signed-in") {
   const fetchMock = vi.fn(async () => {
     if (server === "unreachable") throw new TypeError("Failed to fetch");
-    return new Response(JSON.stringify({ authenticated: true, email: "real@example.com", subject: "sub_real" }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ authenticated: true, email: "real@example.com", subject: "sub_real" }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -147,10 +150,12 @@ describe("AuthContextProvider", () => {
     expect(telemetry.identifyUser).toHaveBeenLastCalledWith("sub_real");
   });
 
-  it("names nobody to telemetry when the runtime config says IDENTIFY_USER = \"false\"", async () => {
+  it('names nobody to telemetry when the runtime config says IDENTIFY_USER = "false"', async () => {
     setMockMode("");
     stubServer("signed-in");
-    (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> }).__FORGE_CONFIG__ = { IDENTIFY_USER: "false" };
+    (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> }).__FORGE_CONFIG__ = {
+      IDENTIFY_USER: "false",
+    };
 
     render(
       <AuthContextProvider>

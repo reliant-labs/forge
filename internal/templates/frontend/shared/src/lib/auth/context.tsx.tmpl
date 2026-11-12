@@ -99,7 +99,8 @@ import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 // anything but "false" lets the signed-in user be named to telemetry.
 function identifyUserAllowed(): boolean {
   if (typeof window === "undefined") return false;
-  const cfg = (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> }).__FORGE_CONFIG__;
+  const cfg = (window as unknown as { __FORGE_CONFIG__?: Record<string, unknown> })
+    .__FORGE_CONFIG__;
   return cfg?.IDENTIFY_USER !== "false";
 }
 

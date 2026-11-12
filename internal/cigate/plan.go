@@ -389,8 +389,8 @@ func (p planner) checksLane() []Check {
 			Group: GroupStatic,
 			Argv:  p.forge("ci", "migration-safety"),
 		}
-		if !dirExists(p.path("db", "migrations")) {
-			c.NotApplicable = "no db/migrations/ directory"
+		if !dirExists(config.MigrationsPathIn(p.Root)) {
+			c.NotApplicable = "no " + config.MigrationsDirIn(p.Root) + "/ directory"
 		}
 		out = append(out, c)
 	}

@@ -3025,6 +3025,35 @@ benefits:
       - path: internal/cli/deploy_confirm.go
       - skill: deploy/plan
 
+  - id: polyrepo-pinned-sources
+    category: ship
+    title: Polyrepo, pinned, any language
+    claim: >-
+      Teams outside a monorepo, in any language, share an infra repo's KCL by a
+      git pin in kcl.mod and build other repos' images from a pinned
+      `DockerBuild.context`, with no go.mod and no CI checkout step; a release
+      records each image's source repo and commit.
+    availability: forge
+    use: >-
+      `[forge_projects] infra = { repo = "github.com/acme/infra", ref =
+      "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`;
+      `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`;
+      `forge kcl imports [--refresh]`.
+    why: >-
+      A sibling path (`../billing`) builds whatever is checked out there and is
+      absent in CI. A pin resolves to the same bytes on every machine through
+      one shared cache, renders offline once fetched, and a `commit` lock
+      refuses a moved tag as a pin mismatch. A gitignored
+      `.forge/source-overrides.yaml` points a repo at a working copy while you
+      develop both, and a release refuses to cut while one is in use.
+    evidence:
+      - command: kcl imports --refresh
+      - path: internal/kclprojects/gitimport.go
+      - path: internal/cli/build_docker_source.go
+      - path: docs/cross-repo-sources.md
+      - skill: deploy/polyrepo
+      - skill: deploy/kcl-imports
+
   - id: hosted-deploy-plan
     category: ship
     title: Server-side deploy plan

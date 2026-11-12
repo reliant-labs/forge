@@ -862,7 +862,7 @@ func frontendDirsForLint() []string {
 func featureTurnOn(feature string) string {
 	switch feature {
 	case "migrations":
-		return "migrations turn on when db/migrations/ exists in a service project"
+		return "migrations turn on when the migrations directory (database.migrations_dir, default db/migrations/) exists in a service project"
 	case "contracts":
 		return "contracts are on for every project kind; this config forced them off"
 	}

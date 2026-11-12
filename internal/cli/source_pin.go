@@ -12,6 +12,7 @@ import (
 	"golang.org/x/mod/module"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/kclprojects"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -105,12 +106,55 @@ func preflightReleaseSources(ctx context.Context, projectDir string, entities *K
 	if version == "" || entities == nil {
 		return nil
 	}
+	check := newReleaseSourceCheck(projectDir, opts.env, version, false, entities)
+	if err := check.refuseDockerOverrides(ctx, entities); err != nil {
+		return err
+	}
+	if err := refuseKCLImportOverrides(ctx, projectDir, version); err != nil {
+		return err
+	}
 	uses, err := liveShellSources(ctx, projectDir, entities)
 	if err != nil {
 		return fmt.Errorf("--release %s: %w", version, err)
 	}
-	_, err = newReleaseSourceCheck(projectDir, opts.env, version, false, entities).judge(ctx, uses)
+	_, err = check.judge(ctx, uses)
 	return err
+}
+
+// refuseKCLImportOverrides refuses a release while a git-pinned KCL import
+// ([forge_projects] repo + ref) is served by .forge/source-overrides.yaml:
+// the bundle the release seals would describe a working copy of the shared
+// KCL rather than its pin. Resolution is a cache hit after the render.
+func refuseKCLImportOverrides(ctx context.Context, projectDir, version string) error {
+	imports, err := kclprojects.ResolveWith(ctx, kclprojects.FindKCLRoot(filepath.Join(projectDir, "deploy", "kcl")), kclprojects.Options{Log: func(string) {}})
+	if err != nil {
+		return fmt.Errorf("--release %s: %w", version, err)
+	}
+	var refusals []string
+	for _, r := range imports {
+		if r.Overridden {
+			refusals = append(refusals, fmt.Sprintf("  [%s] %s: %s → %s (local override)", kclprojects.TableName, r.Name, r.Pin(), r.ModuleDir))
+		}
+	}
+	if len(refusals) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--release %s: refusing to cut — a KCL import is served by a LOCAL SOURCE OVERRIDE, not its pin:\n%s\n"+
+		"  A release must be renderable from its pins on any machine. Remove the entries from %s and run this command again",
+		version, strings.Join(refusals, "\n"), filepath.Join(".forge", "source-overrides.yaml"))
+}
+
+// refuseDockerOverrides is refuseDockerSourceOverrides through the check's
+// lazily built resolver, so a project with no DockerBuild pin builds none.
+func (c releaseSourceCheck) refuseDockerOverrides(ctx context.Context, entities *KCLEntities) error {
+	if len(dockerPinnedWorkloads(entities)) == 0 {
+		return nil
+	}
+	r, err := c.resolver()
+	if err != nil {
+		return err
+	}
+	return refuseDockerSourceOverrides(ctx, r, c.version, entities)
 }
 
 // checkRecordedReleaseSources is the guard at the cut: the checkouts the
@@ -119,6 +163,12 @@ func preflightReleaseSources(ctx context.Context, projectDir string, entities *K
 // cut says so, because the release then records a commit it could not check.
 func checkRecordedReleaseSources(ctx context.Context, projectDir, env, version string, entities *KCLEntities) error {
 	check := newReleaseSourceCheck(projectDir, env, version, true, entities)
+	if err := check.refuseDockerOverrides(ctx, entities); err != nil {
+		return err
+	}
+	if err := refuseKCLImportOverrides(ctx, projectDir, version); err != nil {
+		return err
+	}
 	uses, unrecorded := recordedShellSources(projectDir, env, entities)
 	notes, err := check.judge(ctx, uses)
 	for _, svc := range unrecorded {
@@ -154,6 +204,24 @@ func liveShellSources(ctx context.Context, projectDir string, entities *KCLEntit
 		}
 		uses = addSourceUse(uses, src, svc.Name)
 	}
+	// A DockerBuild whose context is a GitSource builds another repository's
+	// checkout too: the cached pin (at its commit by construction) or a local
+	// override (at whatever the working copy holds), judged by the same rule.
+	for _, w := range dockerSourceWorkloads(entities) {
+		dir := w.Build.Docker.ContextDir
+		if dir == "" {
+			continue // unresolved: the build refuses it with the pin
+		}
+		src, seen := captured[dir]
+		if !seen {
+			var err error
+			if src, err = buildtarget.CaptureSource(ctx, dir, projectDir); err != nil {
+				return nil, err
+			}
+			captured[dir] = src
+		}
+		uses = addSourceUse(uses, src, w.Name)
+	}
 	return uses, nil
 }
 
@@ -178,6 +246,17 @@ func recordedShellSources(projectDir, env string, entities *KCLEntities) (uses [
 			continue
 		}
 		uses = addSourceUse(uses, st.Source, svc.Name)
+	}
+	for _, w := range dockerSourceWorkloads(entities) {
+		st, err := buildtarget.ReadState(projectDir, env, w.Name)
+		if err != nil || st == nil || !buildtarget.StateBelongsTo(st, env, w.Name) {
+			continue
+		}
+		if st.Source == nil {
+			unrecorded = append(unrecorded, w.Name)
+			continue
+		}
+		uses = addSourceUse(uses, st.Source, w.Name)
 	}
 	return uses, unrecorded
 }

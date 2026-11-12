@@ -264,6 +264,11 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 		}
 
 		hooksDir := filepath.Join(projectDir, feDir, "src", "hooks")
+		// scaffold.exclude over the hooks directory: this frontend's hooks
+		// are the project's (generate_exclude.go).
+		if skipExcludedDir(projectDir, filepath.Join(feDir, "src", "hooks")) {
+			continue
+		}
 		if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 			return fmt.Errorf("create hooks directory: %w", err)
 		}

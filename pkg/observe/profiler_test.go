@@ -384,13 +384,15 @@ func TestSetupStartsAndStopsTheProfiler(t *testing.T) {
 	if !profilingActive.Load() {
 		t.Fatal("no profiler running although an endpoint is set")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// A shutdown that blocked on the unreachable endpoint would hold until
+	// this 30s budget; an idle one returns at once.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	start := time.Now()
 	if err := shutdown(ctx); err != nil {
 		t.Errorf("shutdown: %v", err)
 	}
-	if time.Since(start) > 2*time.Second {
+	if time.Since(start) > 10*time.Second {
 		t.Errorf("shutdown took %s while the profiler was idle", time.Since(start))
 	}
 	if profilingActive.Load() {

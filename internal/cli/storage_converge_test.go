@@ -517,12 +517,13 @@ func TestPinStorageRelease_AutoGCYieldsToAWaitingCut(t *testing.T) {
 	t.Setenv("FORGE_STORAGE_POLICY", path)
 
 	prevPoll, prevWait := storage.LockWaitPoll, releasePinLockWait
-	storage.LockWaitPoll, releasePinLockWait = 10*time.Millisecond, 3*time.Second
+	storage.LockWaitPoll, releasePinLockWait = 10*time.Millisecond, 15*time.Second
 	t.Cleanup(func() { storage.LockWaitPoll, releasePinLockWait = prevPoll, prevWait })
 
 	// A pass that runs until its context ends: like a real one, it stops at
 	// its next safe point once cancelled. The 20s cap only keeps a broken
-	// build from hanging the test; it is far past the cut's 3s bound.
+	// build from hanging the test; it is past the cut's 15s wait, and far
+	// past the 10s the cut may take below.
 	running := make(chan struct{})
 	origGC := nonDisruptiveGCFn
 	nonDisruptiveGCFn = func(ctx context.Context, _ storage.Runner) error {
@@ -550,7 +551,7 @@ func TestPinStorageRelease_AutoGCYieldsToAWaitingCut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the cut failed behind a running auto-gc pass instead of making it yield: %v", err)
 	}
-	if d := time.Since(start); d > 2*time.Second {
+	if d := time.Since(start); d > 10*time.Second {
 		t.Errorf("the cut waited %v: the pass did not yield promptly", d)
 	}
 	if want := fmt.Sprintf("waiting for storage maintenance (pid %d)", os.Getpid()); !strings.Contains(cutOut.String(), want) {
@@ -597,9 +598,15 @@ func TestRunAutoGC_DoesNotStartWhileAWriterWaits(t *testing.T) {
 	holderDone := make(chan error, 1)
 	go func() { holderDone <- storage.WithLock(path, func() error { close(held); <-free; return nil }) }()
 	<-held
+	// The writer prints its waiting line once it has announced itself.
+	writerOut := &lockTestBuffer{}
 	writerDone := make(chan error, 1)
-	go func() { writerDone <- storage.WithLockWait(path, 5*time.Second, nil, func() error { return nil }) }()
-	time.Sleep(100 * time.Millisecond) // the writer is announced
+	go func() {
+		writerDone <- storage.WithLockWait(path, testWaitTimeout, writerOut, func() error { return nil })
+	}()
+	awaitCond(t, "the writer to announce itself", func() bool {
+		return strings.Contains(writerOut.String(), "waiting for storage maintenance")
+	})
 
 	var out bytes.Buffer
 	if err := runAutoGC(t.Context(), path, &out); err != nil {

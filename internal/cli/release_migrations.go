@@ -74,10 +74,10 @@ func migrationSourceID(repo, fallback, relDir string) string {
 }
 
 // projectMigrationsDir is the project's own migrations directory, absolute,
-// and whether it exists. forge.yaml cannot move it (config.DefaultMigrationsDir
-// is derived), so neither does this.
+// and whether it exists: forge.yaml's database.migrations_dir, else
+// db/migrations.
 func projectMigrationsDir(projectDir string) (string, bool) {
-	abs, err := filepath.Abs(filepath.Join(projectDir, config.DefaultMigrationsDir))
+	abs, err := filepath.Abs(config.MigrationsPathIn(projectDir))
 	if err != nil {
 		return "", false
 	}
@@ -106,7 +106,7 @@ func projectMigrationSet(projectDir string, prov release.Provenance) (*release.M
 	root := migrationgit.RepoRoot(projectDir)
 	rel, ok := migrationgit.RepoRelative(root, dir)
 	if !ok {
-		rel = config.DefaultMigrationsDir
+		rel = config.MigrationsDirIn(projectDir)
 	}
 	commit := prov.Commit
 	if prov.Dirty || !release.ValidObjectID(commit) {
@@ -127,7 +127,7 @@ func siblingMigrationSet(src *buildtarget.Source) (*release.MigrationSet, string
 	if _, err := os.Stat(filepath.Join(src.Dir, "forge.yaml")); err != nil {
 		return nil, ""
 	}
-	dir := filepath.Join(src.Dir, config.DefaultMigrationsDir)
+	dir := config.MigrationsPathIn(src.Dir)
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return nil, ""
 	}
@@ -140,7 +140,7 @@ func siblingMigrationSet(src *buildtarget.Source) (*release.MigrationSet, string
 	}
 	rel, ok := migrationgit.RepoRelative(src.Dir, dir)
 	if !ok {
-		rel = config.DefaultMigrationsDir
+		rel = config.MigrationsDirIn(src.Dir)
 	}
 	s := release.NewMigrationSet(migrationSourceID(src.Repo, filepath.Base(src.Dir), rel), src.Commit, names)
 	return &s, ""
@@ -197,7 +197,7 @@ var captureReleaseMigrations = func(projectDir string, prov release.Provenance, 
 		if s == nil || seen[s.Source] {
 			continue
 		}
-		sd, err := siblingSchemaDeclarations(s, use.src, filepath.Join(use.src.Dir, config.DefaultMigrationsDir))
+		sd, err := siblingSchemaDeclarations(s, use.src, config.MigrationsPathIn(use.src.Dir))
 		if err != nil {
 			return nil, nil, err
 		}

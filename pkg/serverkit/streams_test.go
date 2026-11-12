@@ -11,14 +11,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
-// awaitDone fails the test unless ctx is done within a second.
+// awaitDone fails the test unless ctx is done within waitTimeout.
 func awaitDone(t *testing.T, ctx context.Context, what string) {
 	t.Helper()
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatalf("%s: the bound context was not ended", what)
-	}
+	receive(t, what+": the bound context to be ended", ctx.Done())
 }
 
 func TestStreams_BeginDrainEndsUnclaimedStreamsWithTheDrainCause(t *testing.T) {
@@ -67,11 +63,7 @@ func TestStreams_ClaimedStreamGetsTheSoftSignalAndRunsUntilEnd(t *testing.T) {
 	if ended, left := streams.BeginDrain(); ended != 0 || left != 1 {
 		t.Fatalf("BeginDrain = (%d ended, %d left), want (0, 1)", ended, left)
 	}
-	select {
-	case <-soft:
-	case <-time.After(time.Second):
-		t.Fatal("BeginDrain did not close the claimed stream's Draining channel")
-	}
+	receive(t, "BeginDrain to close the claimed stream's Draining channel", soft)
 	if ctx.Err() != nil {
 		t.Fatal("the soft phase must leave a claimed stream running")
 	}
@@ -174,8 +166,11 @@ func TestStreams_DrainEndsHeldStreamsAtTheReserve(t *testing.T) {
 	if err := streams.Drain(budget); err != nil {
 		t.Fatalf("Drain = %v, want nil: the stream returned once it was ended", err)
 	}
-	elapsed := time.Since(start)
-	if elapsed < 1900*time.Millisecond || elapsed >= 3*time.Second {
+	// Not ended early: it waited out budget − reserve. Not ended late: a
+	// stream still running at the budget's deadline makes Drain return an
+	// error (TestStreams_DrainReportsAStreamThatIgnoresItsContext), so the nil
+	// above already bounds it from above without timing this machine.
+	if elapsed := time.Since(start); elapsed < 1900*time.Millisecond {
 		t.Fatalf("Drain ended the held stream after %s, want about 2s (3s budget − 1s reserve)", elapsed)
 	}
 	if !serverkit.Ended(ctx) {
@@ -298,19 +293,21 @@ func TestDrainDeadline_FalseWithoutABudget(t *testing.T) {
 // begins, so Drain returns as soon as its handler does.
 func TestStreams_DrainDoesNotWaitOnUnclaimedStreams(t *testing.T) {
 	t.Parallel()
-	streams := serverkit.NewStreams()
+	// A 30s reserve of a 60s budget: a drain that wrongly held the unclaimed
+	// stream for the reserve would take 30s, far past the bound below.
+	streams := &serverkit.Streams{DrainReserve: 30 * time.Second}
 	ctx, release := streams.Bind(context.Background())
 	go func() {
 		<-ctx.Done()
 		release()
 	}()
-	budget, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	budget, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	start := time.Now()
 	if err := streams.Drain(budget); err != nil {
 		t.Fatalf("Drain = %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("Drain took %s for a stream that ended at once", elapsed)
 	}
 }
@@ -347,17 +344,9 @@ func TestLongLived_BindsToTheInstalledRegistry(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for streams.Active() != 1 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	eventually(t, "the LongLived handler to bind its stream", func() bool { return streams.Active() == 1 })
 	streams.BeginDrain()
-	select {
-	case drained := <-ended:
-		if !drained {
-			t.Fatal("the handler's request context must end with the drain cause")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the drain did not reach the LongLived handler's request context")
+	if drained := receive(t, "the drain to reach the LongLived handler's request context", ended); !drained {
+		t.Fatal("the handler's request context must end with the drain cause")
 	}
 }

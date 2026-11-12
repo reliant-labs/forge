@@ -29,6 +29,17 @@ var (
 // MaxDomains bounds a port's custom domains.
 const MaxDomains = 8
 
+// MaxPreStopSeconds bounds PreStopSeconds. Endpoint removal reaches kube-proxy
+// and an ingress in seconds, and a cloud load balancer's deregistration in
+// well under a minute; a pause longer than this holds every rollout (and, on
+// hosted, shared node capacity) for nothing.
+const MaxPreStopSeconds = 120
+
+// PreStopShutdownSeconds is the least an explicit grace period leaves after
+// the preStop pause: the kubelet counts the pause against the grace, and a
+// process sent SIGTERM with no time left is SIGKILLed mid-drain.
+const PreStopShutdownSeconds = 5
+
 // kindCapabilities is which kinds may set each kind-specific field. It is
 // the Go statement of kcl/workloads/capabilities.k's KIND_CAPABILITIES, for
 // the fields that matrix gated. An absent kind is a deliberate claim that
@@ -61,6 +72,7 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"enableServiceLinks":            scheduledKinds,
 	"strategy":                      deploymentKinds,
 	"terminationGracePeriodSeconds": scheduledKinds,
+	"preStopSeconds":                deploymentKinds,
 	"activeDeadlineSeconds":         {KindJob: true, KindCron: true},
 	"successfulJobsHistoryLimit":    {KindCron: true},
 	"failedJobsHistoryLimit":        {KindCron: true},
@@ -103,6 +115,7 @@ var kindCapabilityReasons = map[string]string{
 	"enableServiceLinks":            "a tool is never scheduled, so there is no pod to inject service links into",
 	"strategy":                      "only a Deployment rolls its pods out; a batch kind (job/cron) replaces them by creating a new Job, and a tool is never scheduled",
 	"terminationGracePeriodSeconds": "a tool is never scheduled, so there is no pod to stop",
+	"preStopSeconds":                "the pause keeps a long-running pod routed while load balancers drop it; a batch pod (job/cron) runs to completion with nothing routed to it, and a tool is never scheduled",
 	"activeDeadlineSeconds":         "a deadline bounds a run to completion; a long-running kind never completes, so use probes, and a tool is never scheduled",
 	"successfulJobsHistoryLimit":    "only a cron keeps a history of finished Jobs",
 	"failedJobsHistoryLimit":        "only a cron keeps a history of finished Jobs",
@@ -150,8 +163,8 @@ func (s WorkloadSpec) Validate(p Profile) error {
 			"ports", "replicas", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
 			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
-			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "activeDeadlineSeconds",
-			"successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished", "securityContext",
+			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "preStopSeconds",
+			"activeDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished", "securityContext",
 		} {
 			if s.declares(field) && !kindCapabilities[field][kind] {
 				errs = append(errs, fmt.Errorf("%s is not supported for kind %q: %s", field, kind, kindCapabilityReasons[field]))
@@ -295,6 +308,15 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if g := s.TerminationGracePeriodSeconds; g != nil && (*g < 0 || *g > 3600) {
 		errs = append(errs, fmt.Errorf("terminationGracePeriodSeconds must be 0-3600 (got %d)", *g))
 	}
+	if p := s.PreStopSeconds; p != nil {
+		switch {
+		case *p < 0 || *p > MaxPreStopSeconds:
+			errs = append(errs, fmt.Errorf("preStopSeconds must be 0-%d (got %d)", MaxPreStopSeconds, *p))
+		case s.TerminationGracePeriodSeconds != nil && *s.TerminationGracePeriodSeconds < *p+PreStopShutdownSeconds:
+			errs = append(errs, fmt.Errorf("terminationGracePeriodSeconds (%d) must be at least preStopSeconds + %d (%d): the kubelet counts the preStop pause against the grace period, so the process would be SIGKILLed before it could drain; raise it, or drop it to have forge derive one",
+				*s.TerminationGracePeriodSeconds, PreStopShutdownSeconds, *p+PreStopShutdownSeconds))
+		}
+	}
 	if d := s.ActiveDeadlineSeconds; d != nil && *d < 1 {
 		errs = append(errs, fmt.Errorf("activeDeadlineSeconds must be positive (got %d): omit it for no deadline", *d))
 	}
@@ -403,6 +425,8 @@ func (s WorkloadSpec) declares(field string) bool {
 		return s.Strategy != ""
 	case "terminationGracePeriodSeconds":
 		return s.TerminationGracePeriodSeconds != nil
+	case "preStopSeconds":
+		return s.PreStopSeconds != nil
 	case "activeDeadlineSeconds":
 		return s.ActiveDeadlineSeconds != nil
 	case "successfulJobsHistoryLimit":

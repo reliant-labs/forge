@@ -174,9 +174,10 @@ func (g *goModules) locate(imp Import) (location, error) {
 		return location{}, fmt.Errorf("%s imports forge project %q (%s), but %s does not require that module.\n"+
 			"  A [%s] import is read at the version go.mod pins the module to, so go.mod must pin it:\n"+
 			"    go get %s@<version>\n"+
-			"  (If your Go code does not depend on %s, there is no Go pin to share: declare a kpm git dependency in\n"+
-			"  [dependencies] instead, with its own ref.)",
-			imp.DeclaredIn, imp.Name, imp.Module, g.gomod, TableName, imp.Module, imp.Module)
+			"  (If your Go code does not depend on %s, there is no Go pin to share: pin it by git instead,\n"+
+			"    %s = { repo = \"<host/owner/name>\", ref = \"<tag, branch or sha>\" }\n"+
+			"  in the same [%s] table.)",
+			imp.DeclaredIn, imp.Name, imp.Module, g.gomod, TableName, imp.Module, imp.Module, imp.Name, TableName)
 	}
 
 	// go.work's replaces override go.mod's.

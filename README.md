@@ -98,8 +98,9 @@ commands, so there is nothing an agent can do that you can't check by hand.
   `forge skill load <name>` print the playbook for an area, about 150 of them,
   matched to the installed version. Nothing to paste into a prompt, nothing to
   drift.
-- **It explains itself.** `forge start` prints the path from an empty directory
-  to authored protos. `forge project capabilities --json` lists every verb, lint
+- **It explains itself.** `forge start` prints the one command for the
+  directory you are in (deploy the app already there, or create one), and
+  `forge start app` the path from an empty directory to authored protos. `forge project capabilities --json` lists every verb, lint
   analyzer and marker, enumerated from the binary, so it can't go stale.
 - **Scaffolding and lints are guardrails against AI slop.** `forge scaffold`
   lands each service, rpc, worker or entity in the right place, already wired.

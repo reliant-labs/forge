@@ -104,6 +104,17 @@ func TestRunNewSiteRefusals(t *testing.T) {
 			t.Error("the refusal must come before anything is written")
 		}
 	})
+	t.Run("in place, only an agent's instruction files: not a refusal", func(t *testing.T) {
+		root := t.TempDir()
+		for _, name := range []string{"CLAUDE.md", "AGENTS.md", "reliant.md"} {
+			if err := os.WriteFile(filepath.Join(root, name), []byte("# mine\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if empty, blocking := emptyForSite(root); !empty {
+			t.Fatalf("a folder holding only agent instruction files must count as empty, blocked by %v", blocking)
+		}
+	})
 	t.Run("a Go module", func(t *testing.T) {
 		root := viteApp(t, "export default {}\n")
 		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module x\n"), 0o600); err != nil {

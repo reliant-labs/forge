@@ -217,6 +217,11 @@ type ProjectConfig struct {
 	// codemods and playbooks: today, how to re-vendor a contract copied from
 	// another repository. See [UpgradeConfig]; read by upgrade_converge.go.
 	Upgrade UpgradeConfig `yaml:"upgrade,omitempty"`
+	// Envs names the environments this project declares WITHOUT a deploy/kcl
+	// tree, and Monitoring switches forge's observability on for them: the
+	// brownfield seam (monitoring.go).
+	Envs       []string          `yaml:"envs,omitempty"`
+	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty"`
 }
 
 // DevStackConfig bounds the parallel-dev-stack port allocator

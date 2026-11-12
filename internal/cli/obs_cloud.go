@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -33,19 +34,38 @@ func openObsCloud(ctx context.Context, env string) (obsbackend.Cloud, error) {
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s: cannot reach its control plane", env).Cause(err)
 	}
+	project := obsProjectName()
+	if project != "" {
+		ep.ProjectName = project
+	}
 	client := cloud.NewClient(ep, cred)
 	obsbackend.DeclareCloudScopes(client)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.MapCloudError(err)
 	}
-	id, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
+	id, err := deploytarget.LookupHostedEnvironment(ctx, client, project, env)
 	if errors.Is(err, deploytarget.ErrHostedEnvironmentNotFound) {
-		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s does not exist on its control plane yet: nothing has been deployed to it", env).
-			With(obsbackend.Cmd("forge", "env", "deploy", env))
+		if t.Facts.HasHosted || t.Facts.HasCluster || t.Facts.HasLocal {
+			return obsbackend.Cloud{}, obsbackend.Undetermined("env %s does not exist on its control plane yet: nothing has been deployed to it", env).
+				With(obsbackend.Cmd("forge", "env", "deploy", env))
+		}
+		// Nothing forge deploys: a monitoring-only env is registered by
+		// `forge obs init`, which also mints the token its app sends with.
+		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s does not exist on its control plane yet: register it and mint its ingest token", env).
+			With(obsbackend.Cmd("forge", "obs", "init", env))
 	}
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.MapCloudError(err)
 	}
 	return obsbackend.Cloud{Env: env, EnvID: id, OrgID: org, Caller: client}, nil
+}
+
+// obsProjectName is the forge project the obs verbs read: `forge obs
+// --project`, else forge.yaml `name`.
+func obsProjectName() string {
+	if p := strings.TrimSpace(obsProjectFlag); p != "" {
+		return p
+	}
+	return hostedProjectName()
 }

@@ -489,7 +489,23 @@ type Subject struct {
 	// ([LiveAt]), when its deploy gates say so: later than PromotedAt for a
 	// promotion whose first attempt failed.
 	LiveAt time.Time `json:"live_at,omitzero"`
+	// Inferred is true when no deploy was recorded and PromotedAt is the
+	// first time the environment's telemetry showed service.version =
+	// Release (a control plane's GetReleaseHealth for an app whose deploys
+	// nothing records). PromotionID and GitCommit are empty then. It is a
+	// weaker marker than a recorded promotion — a canary or a slow rollout
+	// moves it — so every rendering of a report says so.
+	Inferred bool `json:"inferred,omitempty"`
+	// MarkerSource is where PromotedAt came from: MarkerPromotion or
+	// MarkerFirstSeen; "" from a source that does not say (a promotion).
+	MarkerSource string `json:"marker_source,omitempty"`
 }
+
+// Where a Subject's PromotedAt came from.
+const (
+	MarkerPromotion = "promotion"
+	MarkerFirstSeen = "telemetry_first_seen"
+)
 
 // Input is everything [Evaluate] reads, already fetched.
 type Input struct {

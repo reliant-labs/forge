@@ -207,7 +207,7 @@ forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:str
 forge fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge frontend	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps	group	allow-version-skew:bool project-dir/C:string
-forge frontend sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string project-dir/C:string project:string
+forge frontend sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string org:string project-dir/C:string project:string
 forge gate	group	allow-version-skew:bool project-dir/C:string
 forge gate list	cmd	allow-version-skew:bool json:bool project-dir/C:string promotion:string
 forge gate record	cmd	allow-version-skew:bool from:string json:bool name:string no-run:bool project-dir/C:string promotion:string release:string run-id:string run-url:string status:string summary:string url:string
@@ -250,39 +250,50 @@ forge machine tools	group	allow-version-skew:bool project-dir/C:string
 forge machine tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
 forge machine tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge mcp	cmd	project-dir/C:string
-forge obs	group	allow-version-skew:bool project-dir/C:string
-forge obs alerts	group	allow-version-skew:bool project-dir/C:string
-forge obs alerts check	cmd	allow-version-skew:bool env:string json:bool max-rows:int project-dir/C:string rule:string sql:bool timeout:duration
-forge obs alerts run	cmd	alertmanager:string allow-version-skew:bool env:string listen:string max-rows:int project-dir/C:string timeout:duration
-forge obs changes	cmd	allow-version-skew:bool backend:string fields:string from:string json:bool limit:int project-dir/C:string since:duration to:string
-forge obs check	cmd	allow-inconclusive:bool allow-version-skew:bool backend:string early-pass:duration explain:bool fail-on:string fields:string gate-json:string json:bool limit:int project-dir/C:string promotion:string release:string since:string threshold:stringArray timeout:duration wait:bool window:duration
-forge obs dashboards	group	allow-version-skew:bool project-dir/C:string
-forge obs dashboards add-panel	cmd	allow-version-skew:bool id:string panel:string project-dir/C:string replace:bool title:string
-forge obs dashboards audit	cmd	all:bool allow-version-skew:bool backend:string dashboard:string fields:string json:bool no-probe:bool panel:string probe-window:duration project-dir/C:string since:duration
-forge obs dashboards check	cmd	against:string allow-version-skew:bool backend:string output/o:string project-dir/C:string since:duration strict:bool
-forge obs endpoints	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string service:stringArray since:duration sort:string to:string top:int user:string
-forge obs issue	group	all-instances:bool allow-version-skew:bool backend:string events:int explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string service:stringArray since:duration timeline-limit:int to:string user:string
-forge obs issue assign	cmd	allow-version-skew:bool backend:string fields:string json:bool project-dir/C:string
-forge obs issue comment	cmd	allow-version-skew:bool backend:string fields:string json:bool project-dir/C:string
-forge obs issue ignore	cmd	allow-version-skew:bool backend:string fields:string json:bool project-dir/C:string until:string
-forge obs issue resolve	cmd	allow-version-skew:bool backend:string fields:string in:string json:bool project-dir/C:string
-forge obs issue unresolve	cmd	allow-version-skew:bool backend:string fields:string json:bool project-dir/C:string
-forge obs issues	cmd	all-instances:bool allow-version-skew:bool assignee:string backend:string expand-incidents:bool explain:bool fields:string filter:stringArray from:string incident-window:duration instance:string json:bool limit:int page-token:string platform:string print-sql:bool project-dir/C:string service:stringArray since-deploy:string since-release:string since:duration sort:string source:string status:stringArray to:string user:string
-forge obs logs	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray follow:bool from:string instance:string interval:duration json:bool limit:int oldest:bool page-token:string print-sql:bool project-dir/C:string service:stringArray severity:stringArray since:duration to:string trace:string user:string
-forge obs metrics	group	allow-version-skew:bool project-dir/C:string
-forge obs metrics declared	cmd	allow-version-skew:bool binary:string dashboard:bool json:bool project-dir/C:string timeout:duration url:string
-forge obs metrics describe	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs metrics exemplars	cmd	all-instances:bool allow-version-skew:bool around:duration at:string backend:string explain:bool fields:string filter:stringArray from:string group:stringArray instance:string json:bool limit:int min-value:float64 print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string where:stringArray
-forge obs metrics list	cmd	all-instances:bool allow-version-skew:bool backend:string contains:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs metrics query	cmd	agg:string all-instances:bool allow-version-skew:bool backend:string compare:string explain:bool fields:string filter:stringArray formula:string from:string group-by:stringArray instance:string json:bool kind:string limit:int panel-out:string print-sql:bool project-dir/C:string quantile:float64 query:stringArray service:stringArray since:duration step:duration to:string top:int user:string where:stringArray
-forge obs profile	cmd	allow-version-skew:bool env:string format:string from:string list:bool output/o:string project-dir/C:string service:string since:duration span:string sql:bool to:string trace:string type:string
-forge obs query	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int panel:string param:stringArray print-sql:bool project-dir/C:string service:stringArray since:duration sql-file:string sql:string step:duration to:string user:string
-forge obs session	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int page-token:string print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs sessions	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string has-error:bool has-replay:bool instance-user:string instance:string json:bool limit:int page-token:string path:string print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs status	cmd	all-instances:bool allow-version-skew:bool backend:string fields:string from:string instance:string json:bool limit:int project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs trace	cmd	all-instances:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string full:bool instance:string json:bool limit:int logs:int print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
-forge obs traces	cmd	all-instances:bool allow-version-skew:bool backend:string errors:bool explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int min-duration:duration page-token:string print-sql:bool project-dir/C:string route:string service:stringArray since:duration slow:bool to:string user:string
-forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string service:stringArray since:duration to:string user:string
+forge obs	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs alerts	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs alerts check	cmd	allow-version-skew:bool control-plane:string env:string json:bool max-rows:int project-dir/C:string project:string rule:string sql:bool timeout:duration
+forge obs alerts run	cmd	alertmanager:string allow-version-skew:bool control-plane:string env:string listen:string max-rows:int project-dir/C:string project:string timeout:duration
+forge obs changes	cmd	allow-version-skew:bool backend:string control-plane:string fields:string from:string json:bool limit:int project-dir/C:string project:string since:duration to:string
+forge obs check	cmd	allow-inconclusive:bool allow-version-skew:bool backend:string control-plane:string early-pass:duration explain:bool fail-on:string fields:string gate-json:string json:bool limit:int project-dir/C:string project:string promotion:string release:string since:string threshold:stringArray timeout:duration wait:bool window:duration
+forge obs dashboards	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs dashboards add-panel	cmd	allow-version-skew:bool control-plane:string id:string panel:string project-dir/C:string project:string replace:bool title:string
+forge obs dashboards audit	cmd	all:bool allow-version-skew:bool backend:string control-plane:string dashboard:string fields:string json:bool no-probe:bool panel:string probe-window:duration project-dir/C:string project:string since:duration
+forge obs dashboards check	cmd	against:string allow-version-skew:bool backend:string control-plane:string output/o:string project-dir/C:string project:string since:duration strict:bool
+forge obs endpoints	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration sort:string to:string top:int user:string
+forge obs init	cmd	allow-version-skew:bool control-plane:string json:bool no-write:bool org:string project-dir/C:string project:string service:string token-name:string ttl:duration write-config:bool
+forge obs issue	group	all-instances:bool allow-version-skew:bool backend:string control-plane:string events:int explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration timeline-limit:int to:string user:string
+forge obs issue assign	cmd	allow-version-skew:bool backend:string control-plane:string fields:string json:bool project-dir/C:string project:string
+forge obs issue comment	cmd	allow-version-skew:bool backend:string control-plane:string fields:string json:bool project-dir/C:string project:string
+forge obs issue ignore	cmd	allow-version-skew:bool backend:string control-plane:string fields:string json:bool project-dir/C:string project:string until:string
+forge obs issue resolve	cmd	allow-version-skew:bool backend:string control-plane:string fields:string in:string json:bool project-dir/C:string project:string
+forge obs issue unresolve	cmd	allow-version-skew:bool backend:string control-plane:string fields:string json:bool project-dir/C:string project:string
+forge obs issues	cmd	all-instances:bool allow-version-skew:bool assignee:string backend:string control-plane:string expand-incidents:bool explain:bool fields:string filter:stringArray from:string incident-window:duration instance:string json:bool limit:int page-token:string platform:string print-sql:bool project-dir/C:string project:string service:stringArray since-deploy:string since-release:string since:duration sort:string source:string status:stringArray to:string user:string
+forge obs logs	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray follow:bool from:string instance:string interval:duration json:bool limit:int oldest:bool page-token:string print-sql:bool project-dir/C:string project:string service:stringArray severity:stringArray since:duration to:string trace:string user:string
+forge obs metrics	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs metrics declared	cmd	allow-version-skew:bool binary:string control-plane:string dashboard:bool json:bool project-dir/C:string project:string timeout:duration url:string
+forge obs metrics describe	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs metrics exemplars	cmd	all-instances:bool allow-version-skew:bool around:duration at:string backend:string control-plane:string explain:bool fields:string filter:stringArray from:string group:stringArray instance:string json:bool limit:int min-value:float64 print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string where:stringArray
+forge obs metrics list	cmd	all-instances:bool allow-version-skew:bool backend:string contains:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs metrics query	cmd	agg:string all-instances:bool allow-version-skew:bool backend:string compare:string control-plane:string explain:bool fields:string filter:stringArray formula:string from:string group-by:stringArray instance:string json:bool kind:string limit:int panel-out:string print-sql:bool project-dir/C:string project:string quantile:float64 query:stringArray service:stringArray since:duration step:duration to:string top:int user:string where:stringArray
+forge obs profile	cmd	allow-version-skew:bool control-plane:string env:string format:string from:string list:bool output/o:string project-dir/C:string project:string service:string since:duration span:string sql:bool to:string trace:string type:string
+forge obs query	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int panel:string param:stringArray print-sql:bool project-dir/C:string project:string service:stringArray since:duration sql-file:string sql:string step:duration to:string user:string
+forge obs receivers	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs receivers create	cmd	allow-version-skew:bool control-plane:string json:bool project-dir/C:string project:string secret:string setting:stringArray type:string
+forge obs receivers delete	cmd	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs receivers list	cmd	allow-version-skew:bool control-plane:string json:bool project-dir/C:string project:string
+forge obs receivers test	cmd	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs session	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int page-token:string print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs sessions	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string has-error:bool has-replay:bool instance-user:string instance:string json:bool limit:int page-token:string path:string print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs status	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string fields:string from:string instance:string json:bool limit:int project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs tokens	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
+forge obs tokens create	cmd	allow-version-skew:bool control-plane:string json:bool name:string project-dir/C:string project:string ttl:duration
+forge obs tokens list	cmd	all:bool allow-version-skew:bool control-plane:string json:bool project-dir/C:string project:string
+forge obs tokens revoke	cmd	allow-version-skew:bool control-plane:string project-dir/C:string project:string reason:string
+forge obs tokens rotate	cmd	allow-version-skew:bool control-plane:string grace:duration json:bool project-dir/C:string project:string ttl:duration
+forge obs trace	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string full:bool instance:string json:bool limit:int logs:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs traces	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string errors:bool explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int min-duration:duration page-token:string print-sql:bool project-dir/C:string project:string route:string service:stringArray since:duration slow:bool to:string user:string
+forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge package	group	allow-version-skew:bool project-dir/C:string
 forge package new	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
 forge project	group	allow-version-skew:bool project-dir/C:string
@@ -388,5 +399,5 @@ forge ui component install	cmd	allow-version-skew:bool dir/d:string project-dir/
 forge ui component list	cmd	allow-version-skew:bool category/c:string project-dir/C:string
 forge ui component search	cmd	allow-version-skew:bool project-dir/C:string
 forge ui sourcemaps	group	allow-version-skew:bool project-dir/C:string
-forge ui sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string project-dir/C:string project:string
+forge ui sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string org:string project-dir/C:string project:string
 forge version	cmd	project-dir/C:string

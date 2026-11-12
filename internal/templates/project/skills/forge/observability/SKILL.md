@@ -21,6 +21,8 @@ A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge en
 
 **To turn it off**, set `_observability = False` in `deploy/kcl/dev/main.k`: no container starts and no endpoint is exported. Trace context still propagates. Profiles go with it (see *Continuous profiles*).
 
+An app forge does not deploy, any language: `observability/monitoring-only`.
+
 **To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
 
 ## forge env status — the runtime checks

@@ -94,7 +94,7 @@ func runObsChanges(ctx context.Context, d obsDeps, env string, o obsChangesOpts)
 	if !ok {
 		return fail(obsbackend.Undetermined("the %s backend cannot list changes", b.Info().Backend))
 	}
-	res, err := reader.Changes(ctx, obsbackend.ChangesRequest{Env: env, Range: rng, Limit: o.out.Limit, Project: hostedProjectName()})
+	res, err := reader.Changes(ctx, obsbackend.ChangesRequest{Env: env, Range: rng, Limit: o.out.Limit, Project: obsProjectName()})
 	if err != nil {
 		return fail(err)
 	}

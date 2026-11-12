@@ -48,6 +48,10 @@ type wireReleaseHealth struct {
 		GitCommit              string    `json:"gitCommit"`
 		PromotedAt             time.Time `json:"promotedAt"`
 		PreviousReleaseVersion string    `json:"previousReleaseVersion"`
+		// Inferred and MarkerSource: a control plane that judged a version
+		// no promotion carried, from its first sighting in telemetry.
+		Inferred     bool   `json:"inferred"`
+		MarkerSource string `json:"markerSource"`
 	} `json:"promotion"`
 	Before        wireTimeRange `json:"before"`
 	After         wireTimeRange `json:"after"`
@@ -132,6 +136,7 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		Subject: releasehealth.Subject{
 			PromotionID: w.Promotion.ID, Release: w.Promotion.ReleaseVersion, GitCommit: w.Promotion.GitCommit,
 			PromotedAt: w.Promotion.PromotedAt.UTC(), PreviousRelease: w.Promotion.PreviousReleaseVersion,
+			Inferred: w.Promotion.Inferred, MarkerSource: w.Promotion.MarkerSource,
 		},
 		Before:        releasehealth.Range{From: w.Before.Start.UTC(), To: w.Before.End.UTC()},
 		After:         releasehealth.Range{From: w.After.Start.UTC(), To: w.After.End.UTC()},

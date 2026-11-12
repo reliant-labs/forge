@@ -1,8 +1,36 @@
 # Proposal: product events as a forge feature (typed, consent-aware, declarative retention)
 
-**Status:** proposal, not implemented. Needs an owner decision: the retention design was due "before launch", and launch has happened.
+**Status:** superseded on 2026-11-12 by the Events design (reliant-labs/growth
+`docs/product/forge-events-design-2026-11-12.md`, approved by the owner). Kept
+for its history; read the section below for where each point landed.
 **Date:** 2026-10-21
-**Origin:** forge#1013, moved here on 2026-11-04 and closed. Nothing below has changed since then.
+**Origin:** forge#1013, moved here on 2026-11-04 and closed.
+
+## Where this proposal landed (2026-11-12)
+
+Product events are a forge feature, called **Events** in the docs (the code
+keeps `Track`/`track` and "product events"). One generic primitive, an INFO OTel
+log record `event.name = product.<name>` (`pkg/observe/track.go`), with these
+emitters: Go `observe.Track`, the browser's `track`, generated CRUD, auth
+events, and CLIs (`pkg/observe/cliev`).
+
+| This proposal                            | Now                                                                                                                                                                                                           |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Long-term retention (option 2)           | Built: the per-org `product_events` table, retention stamped per row (default 90 days, plan cap 90 or 400; `Observability.retention.product_events_days`).                                                    |
+| Consent in the primitive, failing closed | Browser: the analytics tiers (`off < aggregate < identified < full`, GPC/DNT). Server: `observe.SetConsentSource`, fail-closed (forge#2169).                                                                  |
+| The pipe is the app's telemetry          | Yes: logs over OTLP or stdout, browser spans or logs through `/_otel` or the keyed ingest; CLIs through a native ingest key.                                                                                  |
+| Retention declared                       | `Observability.retention.product_events_days`.                                                                                                                                                                |
+| Deletion: a per-subject purge            | Approved for v1; the mechanism is with the owner.                                                                                                                                                             |
+| Queries for funnels and cohorts          | Built-in Users/Product/Acquisition dashboards; `forge.Funnel` (by session, user, visitor, person, org; `forge.Step` where/within) and `forge.Count`, project-level on `Observability.analytics` (forge#2176). |
+| Declared, typed events in proto          | Not built: events stay `Track(ctx, name, attrs...)`, and a forge lint (`forgeconv-product-event-pii`) plus the emitter's PII guard keep props to tags.                                                        |
+| Pseudonymous ids                         | Ids are opaque only (auth subject, org id, random install or visitor id); the edge's daily visitor hash counts anonymous visitors.                                                                            |
+
+Also added by the Events design: an org actor (`org.id`, `observe.WithActor`;
+control-plane tenant schema v29 `OrgId`) and the forge CLI's own anonymous
+`forge_cli_first_run` (on by default with a notice; `DO_NOT_TRACK`,
+`FORGE_TELEMETRY=off`, off in CI).
+
+The rest of this file is the proposal as it stood on 2026-10-21.
 
 ## Summary
 

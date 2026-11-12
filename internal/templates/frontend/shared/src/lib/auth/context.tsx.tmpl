@@ -73,7 +73,8 @@
 // The context object and useAuth() live in ./use-auth, so React Fast Refresh
 // can hot-swap this provider when you edit it. Import the hook from there.
 
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+{{if ne .Platform "react-native"}}import { identifyUser } from "@reliantlabs/forge-web-runtime";
+{{end}}import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { EventBusContext } from "../use-event";
 
@@ -89,9 +90,7 @@ import { EventBusContext } from "../use-event";
 // token you store yourself. Nothing else in the app changes: the context
 // value under it is the same on every platform.
 import { createSessionAuthProvider } from "./session-provider";
-import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{{else}}import { identifyUser } from "@reliantlabs/forge-web-runtime";
-
-import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
+import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";{{else}}import { fetchIdentity, signOut as apiSignOut, type Identity } from "./native-login";
 import { createSessionAuthProvider, isMockMode } from "./session-provider";
 import { AuthContext, type AuthContextValue } from "./use-auth";{{end}}
 

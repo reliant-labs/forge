@@ -868,8 +868,18 @@ export function initBrowserTelemetry(
     return Promise.resolve(false);
   }
   // Before anything is held or replayed: the tier decides what track() and
-  // setTelemetryUser may send.
-  setAnalyticsMode(configuredMode(config));
+  // setTelemetryUser may send. A mode raised before init (enableAttribution,
+  // documented safe to call before init, lifts the default "identified" to
+  // "full") is never lowered back by the default: an app that hands the
+  // landing attribution over and then starts telemetry keeps its visitor id.
+  // An explicit configured mode still wins ("off" and "aggregate" are the
+  // app's choice, as in enableAttribution).
+  const configured = configuredMode(config);
+  setAnalyticsMode(
+    configured === "identified" && currentAnalyticsMode() === "full"
+      ? "full"
+      : configured,
+  );
   if (config.analytics === undefined && config.attribution === true) {
     grantAnalyticsConsent();
   }

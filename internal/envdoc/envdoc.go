@@ -228,9 +228,12 @@ func Check(doc map[string]any, env string) error {
 	return nil
 }
 
+// rel is p relative to the project, with forward slashes on every OS, for
+// messages: they name a path the same way (deploy/envs/prod.yaml) on Windows
+// as everywhere else, and as the fix hints beside them spell it.
 func rel(projectDir, p string) string {
 	if r, err := filepath.Rel(projectDir, p); err == nil {
-		return r
+		return filepath.ToSlash(r)
 	}
 	return p
 }

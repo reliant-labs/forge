@@ -3831,6 +3831,25 @@ _In progress · Reliant hosting_
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
+<a id="builtin-ai-hub"></a>
+
+### Built-in LLM and workflow monitoring
+
+A hosted app's model calls, agent turns, tool calls and workflow runs get dashboards with no code: runs and their success and duration, tokens, latency, errors and retries by workflow, node, agent, model, provider, user and tool, read from OpenTelemetry GenAI spans.
+
+_In progress · Reliant hosting_
+
+**Use:** Wrap model calls in `pkg/observe/genai` spans (`StartChat`, and `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
+
+**Why:** No price table yet: a cost is shown only where the gateway reported one. The console lists the new AI group under Custom until it knows it.
+
+**Evidence:**
+
+- library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
+- library [`pkg/observe/genai`](../pkg/observe/genai)
+- source [`pkg/obsbuiltin/ai_clickhouse_test.go`](../pkg/obsbuiltin/ai_clickhouse_test.go)
+- skill `observability/ai` (`forge skill load observability/ai`)
+
 <a id="release-markers"></a>
 
 ### Release markers on dashboards

@@ -321,7 +321,7 @@ benefits:
       and where their specs live, so a later feature reads one declaration
       instead of guessing; a Swagger 2 spec is caught the day it is declared.
     scope: any
-    adopt: "Add `apis = [forge.API {name = \"api\", kind = \"openapi\", spec = \"openapi.yaml\"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`."
+    adopt: 'Add `apis = [forge.API {name = "api", kind = "openapi", spec = "openapi.yaml"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`.'
     estimate: "~10 min"
     evidence:
       - path: internal/cli/api_declarations.go
@@ -4342,6 +4342,29 @@ benefits:
       - library: pkg/obsbuiltin
       - path: pkg/obsbuiltin/population_clickhouse_test.go
       - skill: observability/product-analytics
+
+  - id: builtin-ai-hub
+    category: run
+    title: Built-in LLM and workflow monitoring
+    claim: >-
+      A hosted app's model calls, agent turns, tool calls and workflow runs get
+      dashboards with no code: runs and their success and duration, tokens,
+      latency, errors and retries by workflow, node, agent, model, provider,
+      user and tool, read from OpenTelemetry GenAI spans.
+    status: in-progress
+    availability: hosted
+    use: >-
+      Wrap model calls in `pkg/observe/genai` spans (`StartChat`, and
+      `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans
+      are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
+    why: >-
+      No price table yet: a cost is shown only where the gateway reported one.
+      The console lists the new AI group under Custom until it knows it.
+    evidence:
+      - library: pkg/obsbuiltin
+      - library: pkg/observe/genai
+      - path: pkg/obsbuiltin/ai_clickhouse_test.go
+      - skill: observability/ai
 
   - id: release-markers
     category: run

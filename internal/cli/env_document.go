@@ -160,15 +160,15 @@ func envsWithDocs(envs, without []string) []string {
 	return out
 }
 
-// envDocumentRel is env's document path relative to the project, for
-// messages ("" when there is none).
+// envDocumentRel is env's document path relative to the project, with forward
+// slashes on every OS, for messages ("" when there is none).
 func envDocumentRel(projectDir, env string) string {
 	p, err := envdoc.Path(projectDir, env)
 	if err != nil || p == "" {
 		return ""
 	}
 	if r, rerr := filepath.Rel(projectDir, p); rerr == nil {
-		return r
+		return filepath.ToSlash(r)
 	}
 	return p
 }

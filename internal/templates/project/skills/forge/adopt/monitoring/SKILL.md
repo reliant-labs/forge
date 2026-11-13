@@ -22,7 +22,7 @@ there. ~5 min of the user's time to set env vars. Verify ~10 min.
 | Destination | Status | Notes |
 |---|---|---|
 | The user's backend or an OpenTelemetry Collector (Datadog, Grafana, Honeycomb, …) | **today** | standard `OTEL_*` environment; nothing forge-specific |
-| Reliant's hosted store and the dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` | **today, for any app: `forge obs init`** | sign in (`forge login`), then `forge obs init prod` registers the env and prints the variables; set three where the app runs: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` (the ingest token, shown once: a secret) and `OTEL_RESOURCE_ATTRIBUTES`, beside `OTEL_SERVICE_NAME`. forge need not build or deploy the app (`observability/monitoring-only`). An app forge deploys gets them injected instead (`adopt/deploy` Tier 2) |
+| Reliant's hosted store and the dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` | **today, for any app: `forge obs init`** | sign in (`forge login`), then `forge obs init prod` declares the env in `deploy/envs/prod.yaml` (commit it; no forge.yaml needed), registers it and prints the variables; set three where the app runs: `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` (the ingest token, shown once: a secret) and `OTEL_RESOURCE_ATTRIBUTES`, beside `OTEL_SERVICE_NAME`. forge need not build or deploy the app (`observability/monitoring-only`). An app forge deploys gets them injected instead (`adopt/deploy` Tier 2) |
 | forge's local ClickStack | **today, in a forge dev env** | `forge env up dev` with the env's Bundle declaring `observability` (`observability` skill) |
 
 Instrumenting to the shape below is the same work whichever destination the

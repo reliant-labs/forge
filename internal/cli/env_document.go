@@ -13,10 +13,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/envdoc"
@@ -89,75 +87,6 @@ func readEnvDocumentDeclaration(projectDir, env string) (envDocumentDeclaration,
 		d.Monitoring = m
 	}
 	return d, true, nil
-}
-
-// envDocumentsFor reads the documents declaring envs: all of them, or none.
-// An init over a mix would have to record some envs in forge.yaml and leave
-// the rest to their documents, which is two declarations of one project's
-// monitoring.
-func envDocumentsFor(projectDir string, envs []string) ([]envDocumentDeclaration, error) {
-	var out []envDocumentDeclaration
-	var without []string
-	for _, env := range envs {
-		d, ok, err := readEnvDocumentDeclaration(projectDir, env)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			without = append(without, env)
-			continue
-		}
-		out = append(out, d)
-	}
-	if len(out) > 0 && len(without) > 0 {
-		return nil, fmt.Errorf("envs %s have env documents (%s/) and %s do not: declare every env one way — add a document for each (forge project schema env), or init them separately",
-			strings.Join(envsWithDocs(envs, without), ", "), envdoc.Dir, strings.Join(without, ", "))
-	}
-	if err := sameMonitoringDestination(envs, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// sameMonitoringDestination refuses documents (docs[i] declares envs[i]) that
-// send telemetry to different places: one init resolves a single monitoring
-// block, so a self-hosted prod beside a cloud-backed staging, or two control
-// planes, would register or print every env against the first one. It runs
-// before anything is connected to or written.
-func sameMonitoringDestination(envs []string, docs []envDocumentDeclaration) error {
-	dest := func(m *config.MonitoringConfig) string {
-		if m == nil {
-			return "no observability"
-		}
-		if ep := strings.TrimSpace(m.Endpoint); ep != "" {
-			return "self-hosted endpoint " + ep
-		}
-		cp := strings.TrimSpace(m.ControlPlane)
-		if cp == "" {
-			cp = "Reliant's control plane"
-		}
-		return "control plane " + cp
-	}
-	for i := 1; i < len(docs); i++ {
-		if a, b := dest(docs[0].Monitoring), dest(docs[i].Monitoring); a != b {
-			return fmt.Errorf("env %s's document sends telemetry to %s and env %s's to %s: one `forge obs init` sets up one destination — init them separately", envs[0], a, envs[i], b)
-		}
-	}
-	return nil
-}
-
-func envsWithDocs(envs, without []string) []string {
-	skip := map[string]bool{}
-	for _, e := range without {
-		skip[e] = true
-	}
-	var out []string
-	for _, e := range envs {
-		if !skip[e] {
-			out = append(out, e)
-		}
-	}
-	return out
 }
 
 // envDocumentRel is env's document path relative to the project, with forward

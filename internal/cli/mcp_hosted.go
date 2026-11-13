@@ -773,7 +773,7 @@ func (h *hostedTools) obsInit(ctx context.Context, req *mcp.CallToolRequest, inf
 	if len(in.Envs) == 0 {
 		return hostedRefused(errors.New("envs is required: the environments to monitor, e.g. [\"prod\"]"))
 	}
-	envNames, err := initEnvs(in.Envs, nil)
+	envNames, err := initEnvs(in.Envs, nil, "")
 	if err != nil {
 		return hostedRefused(err)
 	}

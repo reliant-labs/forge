@@ -270,23 +270,50 @@ func TestDeclareEnv_DocumentAndForgeYAMLEnvsIsALoadError(t *testing.T) {
 	}
 }
 
-// Documents that send telemetry to different places cannot share one init
-// (review B1 on #2216), in either argument order; agreeing ones can.
-func TestSameMonitoringDestination(t *testing.T) {
+// Envs that send telemetry to different places cannot share one init
+// (review B1 on #2216), in either argument order; agreeing ones can. A
+// self-hosted endpoint is the destination whenever one is named, so one
+// endpoint agrees with itself whatever control planes the declarations name
+// (review B2 on #2217): a legacy forge.yaml monitoring block with an endpoint
+// and a custom control plane, beside the endpoint-only document init writes
+// for a fresh env.
+func TestInitMonitoringNeedsOneDestination(t *testing.T) {
 	cloudA := &config.MonitoringConfig{Enabled: true}
 	cloudA2 := &config.MonitoringConfig{Enabled: true, ControlPlane: " "}
 	cloudB := &config.MonitoringConfig{Enabled: true, ControlPlane: "https://cp.example"}
 	self := &config.MonitoringConfig{Enabled: true, Endpoint: "https://otel.example"}
-	doc := func(m *config.MonitoringConfig) envDocumentDeclaration {
-		return envDocumentDeclaration{Project: "x", Monitoring: m}
+	selfOnCP := &config.MonitoringConfig{Enabled: true, Endpoint: "https://otel.example/", ControlPlane: "https://cp.example"}
+	selfOther := &config.MonitoringConfig{Enabled: true, Endpoint: "https://otel2.example"}
+	docs := func(a, b *config.MonitoringConfig) []initDecl {
+		return []initDecl{
+			{env: "prod", source: envDeclDocument, document: envDocumentDeclaration{Project: "x", Monitoring: a}},
+			{env: "staging", source: envDeclDocument, document: envDocumentDeclaration{Project: "x", Monitoring: b}},
+		}
 	}
-	if err := sameMonitoringDestination([]string{"prod", "staging"}, []envDocumentDeclaration{doc(cloudA), doc(cloudA2)}); err != nil {
-		t.Errorf("one destination refused: %v", err)
+	for _, pair := range [][2]*config.MonitoringConfig{{cloudA, cloudA2}, {self, selfOnCP}, {selfOnCP, self}} {
+		if _, err := initMonitoring(nil, docs(pair[0], pair[1])); err != nil {
+			t.Errorf("%+v / %+v: one destination refused: %v", pair[0], pair[1], err)
+		}
 	}
-	for _, pair := range [][2]*config.MonitoringConfig{{self, cloudA}, {cloudA, self}, {cloudA, cloudB}, {cloudB, cloudA}, {cloudA, nil}} {
-		err := sameMonitoringDestination([]string{"prod", "staging"}, []envDocumentDeclaration{doc(pair[0]), doc(pair[1])})
+	for _, pair := range [][2]*config.MonitoringConfig{{self, cloudA}, {cloudA, self}, {cloudA, cloudB}, {cloudB, cloudA}, {self, selfOther}, {selfOnCP, cloudB}} {
+		_, err := initMonitoring(nil, docs(pair[0], pair[1]))
 		if err == nil || !strings.Contains(err.Error(), "init them separately") || !strings.Contains(err.Error(), "staging") {
 			t.Errorf("%+v / %+v: err = %v, want a refusal naming staging", pair[0], pair[1], err)
 		}
+	}
+
+	// The legacy env reads forge.yaml's monitoring; the fresh env, the
+	// endpoint-only document init wrote from it.
+	legacy := &config.ProjectConfig{Monitoring: selfOnCP}
+	mixed := []initDecl{
+		{env: "prod", source: envDeclYAML},
+		{env: "staging", source: envDeclDocument, document: envDocumentDeclaration{Project: "x", Monitoring: self}},
+	}
+	mon, err := initMonitoring(legacy, mixed)
+	if err != nil {
+		t.Fatalf("legacy endpoint + control plane beside a fresh endpoint-only document: %v", err)
+	}
+	if monitoringEndpoint(mon) != "https://otel.example" {
+		t.Errorf("endpoint = %q", monitoringEndpoint(mon))
 	}
 }

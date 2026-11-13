@@ -3096,7 +3096,7 @@ benefits:
       Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1`
       (`forge project schema env` prints the schema), then use any `forge env`
       or `forge obs` verb on `prod`.
-    adopt: "write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`"
+    adopt: "`forge obs init prod` writes the monitoring-only `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability`); grow it by hand from there"
     estimate: "~5 min"
     why: >-
       A team adopting one piece of forge should not have to learn a
@@ -4462,7 +4462,7 @@ benefits:
       variables, and `forge obs` reads its issues, logs and release health.
     availability: hosted
     scope: any
-    use: "`forge login`, then `forge obs init prod`: it registers the env, mints an ingest token and prints the `OTEL_*` variables."
+    use: "`forge login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables."
     adopt: "`forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment"
     estimate: "~15 min"
     why: >-

@@ -172,14 +172,14 @@ FROM product_events
 WHERE ` + active + ` AND ` + scope + `
 GROUP BY day ORDER BY day`
 
-	newSQL = `SELECT ` + unlessUndecided(to, `(SELECT count() FROM (`+newUsers(to)+`) WHERE NewAt >= `+from+`)`) + ` AS "New users"`
+	newSQL = `SELECT ` + unlessUndecided(from, to, `(SELECT count() FROM (`+newUsers(to)+`) WHERE NewAt >= `+from+`)`) + ` AS "New users"`
 
 	newTrendSQL = `SELECT toDate(NewAt) AS day, count() AS "New users"
 FROM (` + newUsers(to) + `)
 WHERE NewAt >= ` + from + `
 GROUP BY day ORDER BY day`
 
-	returningSQL = `SELECT ` + unlessUndecided(to, `uniqExact(`+user+`)`) + ` AS "Returning users"
+	returningSQL = `SELECT ` + unlessUndecided(from, to, `uniqExact(`+user+`)`) + ` AS "Returning users"
 FROM product_events
 WHERE ` + active + ` AND ` + scope + `
   AND ` + user + ` NOT IN (SELECT EnvId, UserId FROM (` + newUsers(to) + `) WHERE NewAt >= ` + from + `)`

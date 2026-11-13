@@ -111,10 +111,10 @@ func overviewUserPanels() []dashspec.Panel {
 		return `SELECT uniqExact(` + user + `) FROM product_events WHERE ` + active + ` AND ` + envScope + ` AND ` + lastDays(7, end)
 	}
 	newIn := func(end string) string {
-		return `SELECT ` + unlessUndecided(end, `(SELECT count() FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY)`)
+		return `SELECT ` + unlessUndecided(end+` - INTERVAL 7 DAY`, end, `(SELECT count() FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY)`)
 	}
 	returningIn := func(end string) string {
-		return `SELECT ` + unlessUndecided(end, `(`+activeIn(end)+` AND `+user+` NOT IN (SELECT EnvId, UserId FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY))`)
+		return `SELECT ` + unlessUndecided(end+` - INTERVAL 7 DAY`, end, `(`+activeIn(end)+` AND `+user+` NOT IN (SELECT EnvId, UserId FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY))`)
 	}
 	twoWeeks := func(title string, q func(string) string) string {
 		return `SELECT (` + q(to) + `) AS "` + title + `",

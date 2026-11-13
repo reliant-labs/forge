@@ -25,6 +25,7 @@ import (
 //	brandnew  reports no sign-ups; its data begins 11-10, so nothing in the
 //	          range is decided.
 //	empty     no events.
+//	signedout only a sign-out: rows in scope, none of them ActiveEvidence.
 const newUsersSeed = `
 INSERT INTO forge_obsbuiltin_newusers.product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Props, Client) VALUES
     ('2026-10-24 14:03:00', 'api', 'fresh', 'f1', 'task_created', {}, 'backend'),
@@ -42,7 +43,8 @@ INSERT INTO forge_obsbuiltin_newusers.product_events (Timestamp, ServiceName, En
     ('2026-09-01 09:00:00', 'api', 'signups', 'g3', 'auth_signed_up', {'method': 'password'}, 'backend'),
     ('2026-11-01 09:00:00', 'api', 'signups', 'g3', 'task_created', {}, 'backend'),
     ('2026-11-10 09:00:00', 'api', 'brandnew', 'b1', 'task_created', {}, 'backend'),
-    ('2026-11-11 09:00:00', 'api', 'brandnew', 'b2', 'task_created', {}, 'backend');
+    ('2026-11-11 09:00:00', 'api', 'brandnew', 'b2', 'task_created', {}, 'backend'),
+    ('2026-11-10 09:00:00', 'api', 'signedout', 's1', 'auth_signed_out', {}, 'backend');
 `
 
 // TestNewUsersPanelsDecideNewFromFirstSeen runs the new and returning panels
@@ -131,6 +133,50 @@ func TestNewUsersPanelsDecideNewFromFirstSeen(t *testing.T) {
 				if got != want {
 					t.Errorf("%s (%s) =\n%s\nwant\n%s", key, tc.env, got, want)
 				}
+			}
+		})
+	}
+}
+
+// TestNewUsersUndecidedGuardIsScopedToTheRangesActivity pins when New and
+// Returning have no figure: only when no environment active in the range
+// decides any of it. An undecided environment nobody was active in during the
+// range contributes a determinate 0, and with several environments in scope
+// one that decides the range keeps the figure, each environment contributing
+// its own count.
+func TestNewUsersUndecidedGuardIsScopedToTheRangesActivity(t *testing.T) {
+	ch := newClickHouse(t, "forge_obsbuiltin_newusers", newUsersSeed)
+	end := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	month := end.Add(-30 * 24 * time.Hour)
+	users := Users(fullInput())
+	newP, retP := panel(t, users, "new"), panel(t, users, "returning")
+
+	for _, tc := range []struct {
+		name       string
+		start      time.Time
+		envs       []string
+		new, retur string
+	}{
+		// brandnew's users were first seen 11-10 and 11-11, so it decides
+		// nothing before 11-17; on 11-12 nobody was active there, so that
+		// day's answer is a determinate nothing, not a missing figure.
+		{"undecided env, nobody active in the range", end.Add(-24 * time.Hour), []string{"brandnew"}, "0", "0"},
+		{"undecided env, active in the range", end.Add(-3 * 24 * time.Hour), []string{"brandnew"}, `\N`, `\N`},
+		// Rows in scope, but no ActiveEvidence row in the 90-day window.
+		{"only a sign-out in scope", month, []string{"signedout"}, "0", "0"},
+		// One environment that decides the range keeps the figure; the
+		// undecided one counts its users returning (b1, b2).
+		{"decided and undecided env together", month, []string{"mature", "brandnew"}, "1", "4"},
+		{"partly decided and undecided env together", month, []string{"fresh", "brandnew"}, "2", "4"},
+		// An env with no events does not decide anything for the other.
+		{"undecided env beside an empty one", month, []string{"brandnew", "empty"}, `\N`, `\N`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ch.run(newP.SQL, tc.start, end, tc.envs...); got != tc.new {
+				t.Errorf("users/new over %v from %s = %q, want %q", tc.envs, tc.start.Format(time.DateOnly), got, tc.new)
+			}
+			if got := ch.run(retP.SQL, tc.start, end, tc.envs...); got != tc.retur {
+				t.Errorf("users/returning over %v from %s = %q, want %q", tc.envs, tc.start.Format(time.DateOnly), got, tc.retur)
 			}
 		})
 	}

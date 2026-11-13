@@ -56,13 +56,20 @@ func newDecided(end string) string {
 	return obsquery.NewUsersDecidedFrom("product_events", end, envScope)
 }
 
-// unlessUndecided is the figure expression fig, or NULL when no environment
-// of the read can tell a new user from a returning one before end: each one
-// with rows reports no sign-ups and its DecidedFrom is at or after end. A
-// new or returning figure there would be a guess (every user returning), so
-// the panel shows no figure; a read with no rows at all still answers 0.
-func unlessUndecided(end, fig string) string {
-	return "if((SELECT count() > 0 AND countIf(DecidedFrom < " + end + ") = 0 FROM (" + newDecided(end) + ")), NULL, " + fig + ")"
+// unlessUndecided is the figure expression fig over the range [from, end), or
+// NULL when no environment ACTIVE in the range can tell a new user from a
+// returning one there: each one with ActiveEvidence rows in the range reports
+// no sign-ups and its DecidedFrom is at or after end. A new or returning
+// figure there would be a guess (every user returning), so the panel shows no
+// figure. An environment with no activity in the range contributes a
+// determinate nothing, so it neither nulls the figure nor needs deciding: a
+// range nobody was active in answers 0. With several environments in scope,
+// one that decides any part of the range (DecidedFrom before end) keeps the
+// figure, and each environment's own contribution is NewUsersSource's for it.
+func unlessUndecided(from, end, fig string) string {
+	return "if((SELECT count() > 0 AND countIf(DecidedFrom < " + end + ") = 0 FROM (" + newDecided(end) + ")" +
+		" WHERE EnvId IN (SELECT EnvId FROM product_events WHERE " + active + " AND " + envScope +
+		" AND Timestamp >= " + from + " AND Timestamp < " + end + ")), NULL, " + fig + ")"
 }
 
 // lastDays is the predicate on Timestamp for the n days before end.

@@ -36,7 +36,9 @@ package generator
 import (
 	"context"
 	"encoding/json"
+
 	"fmt"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -321,6 +323,7 @@ func ensureWebRuntimeDependency(projectDir, relDir, label string) bool {
 			WebRuntimePackage, pkgPath)
 		return false
 	}
+	checksums.RecordPreWriteAbs(pkgPath)
 	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return false
@@ -423,6 +426,7 @@ func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
 		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n", browserSDKPackage, pkgPath)
 		return
 	}
+	checksums.RecordPreWriteAbs(pkgPath)
 	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
 		return
@@ -512,6 +516,16 @@ func SyncFrontendLock(projectDir, feRelDir string) error {
 		return nil
 	}
 	fmt.Printf("  ↻ %s: refreshing %s for the dependency ranges forge changed in package.json\n", feRelDir, lock.File)
+	// Package managers can write these sidefiles even when the command
+	// fails. Capture immediately before execution, not the whole frontend:
+	// unrelated user files must never become this generate run's writes.
+	var paths []string
+	for _, base := range []string{"package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock"} {
+		if rel, err := filepath.Rel(projectDir, filepath.Join(lock.Dir, base)); err == nil {
+			paths = append(paths, rel)
+		}
+	}
+	checksums.CaptureExternalWrites(projectDir, paths...)
 	if err := frontenddeps.RefreshLock(context.Background(), lock, manifestDir); err != nil {
 		if devWebRuntimeBridged(projectDir) && frontenddeps.UnpublishedVersion(err, WebRuntimePackage) {
 			// A dev build of forge raised the range to the runtime its own

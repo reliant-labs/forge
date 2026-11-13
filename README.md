@@ -44,6 +44,32 @@ into files you own and can change.
 
 **Try it in the browser first: [the live demo](https://demo.reliantlabs.io/forge/demo?section=built).**
 
+## See what happened after deployment
+
+Forge deploys and operates your app without requiring Reliant's coding harness.
+Keep your editor or agent; follow an issue into its trace and logs.
+
+These are screenshots of the [public demo](https://demo.reliantlabs.io/forge):
+**read-only sample data, not live production telemetry**. The `prod` label is the
+sample app's environment, not a claim about customer traffic.
+
+![Demo issue attributes and stack: HTTP 504, two payment attempts and the chargeWithRetry frame](docs/images/forge-demo-issue.png)
+
+**1. Inspect the issue.** The demo's [payment timeout](https://demo.reliantlabs.io/forge/p/shop/observability/errors?env=prod&issue=iss-orders-deadline)
+shows the failed request's attributes and stack, including the retry path.
+
+![Demo trace waterfall with the failed payments.Charge span selected and its retry event visible](docs/images/forge-demo-trace.png)
+
+**2. Follow its trace.** [Open the linked request](https://demo.reliantlabs.io/forge/p/shop/observability/traces?env=prod&trace=4bf92f3577b34da6a3ce929d0e0e4736&span=b3)
+to inspect the payment attempts alongside the database and worker spans.
+
+![Demo API logs filtered to that trace: request started, payment retry warning and timeout error](docs/images/forge-demo-logs.png)
+
+**3. Read the matching logs.** [Filter to the same trace and API service](https://demo.reliantlabs.io/forge/p/shop/observability/logs?env=prod&trace=4bf92f3577b34da6a3ce929d0e0e4736&service=api)
+to see the retry warning and timeout error in context.
+
+[Capture sources and cropping notes](docs/images/README.md).
+
 ## Quick start
 
 ```bash

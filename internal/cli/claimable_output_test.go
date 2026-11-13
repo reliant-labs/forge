@@ -261,6 +261,7 @@ func TestIsolateDockerConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
 	t.Setenv("DOCKER_CONFIG", "")
 	os.Unsetenv("DOCKER_CONFIG")
 
@@ -284,9 +285,15 @@ func TestIsolateDockerConfig(t *testing.T) {
 	if !bytes.Contains(raw, []byte("colima")) {
 		t.Errorf("the throwaway config lost the user's docker context: %s", raw)
 	}
-	for _, d := range []string{"contexts", "cli-plugins", "buildx"} {
-		if _, err := os.Stat(filepath.Join(dir, d)); err != nil {
-			t.Errorf("the user's docker %s are not reachable: %v", d, err)
+	// The links need symlink support: Windows without Developer Mode or the
+	// privilege refuses them, and isolation then goes on without them.
+	if probe := filepath.Join(t.TempDir(), "link"); os.Symlink(t.TempDir(), probe) != nil {
+		t.Log("this host cannot create symlinks: the linked-entry assertions are skipped")
+	} else {
+		for _, d := range []string{"contexts", "cli-plugins", "buildx"} {
+			if _, err := os.Stat(filepath.Join(dir, d)); err != nil {
+				t.Errorf("the user's docker %s are not reachable: %v", d, err)
+			}
 		}
 	}
 	for _, f := range unknown {
@@ -368,6 +375,7 @@ func TestIsolateDockerConfigFailsClosed(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", "")
 	os.Unsetenv("DOCKER_CONFIG")
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // os.UserHomeDir on Windows
 	restore, err = isolateDockerConfig(true, "registry.example.com")
 	if err != nil {
 		t.Fatalf("isolation with no user config: %v", err)

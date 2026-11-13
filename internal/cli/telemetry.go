@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bugreport"
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/pkg/observe/cliev"
 )
 
@@ -153,7 +154,7 @@ It is off when DO_NOT_TRACK=1 or FORGE_TELEMETRY=off, always on a CI runner
 			},
 		})
 	}
-	return cmd
+	return cmdutil.StrictGroup(cmd)
 }
 
 // telemetryClient is the run's client: the one Execute started, or a fresh

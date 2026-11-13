@@ -119,21 +119,41 @@ func TestObsInit_InARepoWithANameOnlyForgeYAML(t *testing.T) {
 		t.Errorf("CreateIngestToken body = %s", minted)
 	}
 
-	// forge.yaml now declares the env for every obs verb, comments kept.
-	raw, _ := os.ReadFile(filepath.Join(dir, "forge.yaml"))
-	if !strings.Contains(string(raw), "# our app") {
-		t.Errorf("the author's comment was lost:\n%s", raw)
+	// The env is declared by its env document, and forge.yaml is untouched:
+	// it is project and tooling config, not a list of envs.
+	if raw := mustRead(t, filepath.Join(dir, "forge.yaml")); raw != "# our app\nname: shop\n" {
+		t.Errorf("forge.yaml was rewritten:\n%s", raw)
+	}
+	docPath := filepath.Join(dir, "deploy", "envs", "prod.yaml")
+	if doc.ConfigPath != docPath || len(doc.WroteFiles) != 1 || e.Declaration != filepath.Join("deploy", "envs", "prod.yaml") {
+		t.Errorf("config_path = %q, wrote_files = %v, declaration = %q; want the env document", doc.ConfigPath, doc.WroteFiles, e.Declaration)
 	}
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.DeclaresEnv("prod") || !cfg.MonitoringOn() {
-		t.Fatalf("forge.yaml after init:\n%s", raw)
+	assertMonitoringDocument(t, dir, cfg, "shop", "prod")
+}
+
+// assertMonitoringDocument checks that env's document init wrote is what the
+// seam reads: the document source, loaded through the render seam into an
+// obs target on Reliant's control plane, naming project.
+func assertMonitoringDocument(t *testing.T, dir string, cfg *config.ProjectConfig, project, env string) {
+	t.Helper()
+	d, err := declareEnv(dir, cfg, env)
+	if err != nil || d.Source != envDeclDocument {
+		t.Fatalf("the seam does not see the env document init wrote: %+v %v", d, err)
 	}
-	d, err := declareEnv(dir, cfg, "prod")
-	if err != nil || d.Source != envDeclYAML {
-		t.Fatalf("the seam does not see the env init declared: %+v %v", d, err)
+	if cfg.DeclaresEnv(env) {
+		t.Errorf("forge.yaml declares %s too", env)
+	}
+	e, err := RenderKCL(context.Background(), dir, env)
+	if err != nil {
+		t.Fatalf("the document does not load: %v\n%s", err, mustRead(t, filepath.Join(dir, "deploy", "envs", env+".yaml")))
+	}
+	f := obsTargetFromEntities(env, e).Facts
+	if e.Project != project || e.Env != env || !f.Declared || !f.Enabled || f.Destination == nil || !f.Destination.TokenFromControlPlane {
+		t.Fatalf("entities %+v, facts %+v", e, f)
 	}
 }
 
@@ -147,11 +167,11 @@ func TestObsInit_NoForgeYAML(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--write-config") {
 			t.Fatalf("err = %v, want a refusal naming --write-config", err)
 		}
-		if _, statErr := os.Stat(filepath.Join(dir, "forge.yaml")); statErr == nil {
-			t.Fatal("wrote forge.yaml nobody agreed to")
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("wrote what nobody agreed to: %v", entries)
 		}
 	})
-	t.Run("--write-config writes a minimal one named after the directory", func(t *testing.T) {
+	t.Run("--write-config writes the env document, named after the directory", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "My Shop")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -160,12 +180,15 @@ func TestObsInit_NoForgeYAML(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
 		}
-		cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
-		if err != nil {
-			t.Fatal(err)
+		if _, err := os.Stat(filepath.Join(dir, "forge.yaml")); err == nil {
+			t.Fatal("wrote a forge.yaml: the env document stands alone")
 		}
-		if cfg.Name != "my-shop" || !cfg.DeclaresEnv("prod") || !cfg.MonitoringOn() {
-			t.Fatalf("forge.yaml = %+v", cfg)
+		assertMonitoringDocument(t, dir, nil, "my-shop", "prod")
+		if got := envDocumentsProject(dir); got != "my-shop" {
+			t.Errorf("the project the verbs read = %q, want my-shop", got)
+		}
+		if !strings.Contains(out, "wrote "+filepath.Join(dir, "deploy", "envs", "prod.yaml")) {
+			t.Errorf("text output does not say what it wrote:\n%s", out)
 		}
 		if !strings.Contains(out, "export OTEL_EXPORTER_OTLP_HEADERS='authorization=Bearer eyJ.a.b'") {
 			t.Errorf("text output lacks the header export:\n%s", out)
@@ -188,12 +211,10 @@ func TestObsInit_NoForgeYAML(t *testing.T) {
 		if _, err := runInit(t, dir, fakeInitControlPlane(), yes, nil, "prod", "--project", "shop"); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(asked, "forge.yaml") {
+		if !strings.Contains(asked, filepath.Join("deploy", "envs", "prod.yaml")) {
 			t.Fatalf("asked %q", asked)
 		}
-		if _, err := os.Stat(filepath.Join(dir, "forge.yaml")); err != nil {
-			t.Fatal("did not write forge.yaml after a yes")
-		}
+		assertMonitoringDocument(t, dir, nil, "shop", "prod")
 	})
 }
 
@@ -249,6 +270,9 @@ func TestObsInit_RefusesAKCLEnv(t *testing.T) {
 	if len(cp.calls) != 0 {
 		t.Fatal("registered a KCL env as self-managed")
 	}
+	if _, err := os.Stat(filepath.Join(dir, "deploy", "envs")); err == nil {
+		t.Fatal("wrote an env document for a KCL env")
+	}
 }
 
 func TestObsInit_SelfHostedEndpointMintsNothing(t *testing.T) {
@@ -276,6 +300,9 @@ func TestObsInit_SelfHostedEndpointMintsNothing(t *testing.T) {
 	}
 	if len(cp.calls) != 0 {
 		t.Fatal("reached Reliant's control plane for a self-hosted backend")
+	}
+	if doc.WroteConfig || doc.Envs[0].Declaration != "forge.yaml" {
+		t.Errorf("wrote_config = %v, declaration = %q; a legacy env stays in forge.yaml", doc.WroteConfig, doc.Envs[0].Declaration)
 	}
 }
 
@@ -328,9 +355,10 @@ func TestObsInit_GoRepoWithANameOnlyForgeYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ModulePath != "github.com/acme/shop" || !cfg.DeclaresEnv("prod") {
+	if cfg.ModulePath != "github.com/acme/shop" {
 		t.Fatalf("forge.yaml = %+v", cfg)
 	}
+	assertMonitoringDocument(t, dir, cfg, "shop", "prod")
 }
 
 // The control plane caps an ingest token at 90 days and nothing renews it, so
@@ -386,12 +414,147 @@ func TestObsInit_SeveralEnvsInOneCall(t *testing.T) {
 	if len(minted) != 2 {
 		t.Errorf("CreateIngestToken calls = %d, want one per env", len(minted))
 	}
-	raw, _ := os.ReadFile(filepath.Join(dir, "forge.yaml"))
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.DeclaresEnv("prod") || !cfg.DeclaresEnv("staging") {
-		t.Fatalf("forge.yaml after init does not declare both envs:\n%s", raw)
+	assertMonitoringDocument(t, dir, cfg, "shop", "prod")
+	assertMonitoringDocument(t, dir, cfg, "shop", "staging")
+}
+
+// An env forge.yaml `envs:` already declares (the legacy shorthand) keeps
+// working and is not moved: a re-run leaves forge.yaml byte-identical and
+// writes no env document.
+func TestObsInit_LegacyForgeYAMLEnvIsLeftWhereItIs(t *testing.T) {
+	dir := t.TempDir()
+	const legacy = "# ours\nname: shop\nenvs: [prod]\nmonitoring: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp := fakeInitControlPlane()
+	out, err := runInit(t, dir, cp, noTTY, nil, "prod", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var doc obsInitDoc
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.WroteConfig || len(doc.WroteFiles) != 0 || len(doc.Envs) != 1 || doc.Envs[0].Declaration != "forge.yaml" || doc.Envs[0].Token == nil {
+		t.Fatalf("doc = %+v", doc)
+	}
+	if got := mustRead(t, filepath.Join(dir, "forge.yaml")); got != legacy {
+		t.Errorf("forge.yaml was rewritten:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "deploy", "envs")); err == nil {
+		t.Error("wrote an env document for an env forge.yaml declares")
+	}
+}
+
+// A new env beside a legacy one gets its document, and the document says
+// where forge.yaml's `monitoring:` sends telemetry, so the project's envs
+// agree; the legacy env stays in forge.yaml.
+func TestObsInit_NewEnvBesideALegacyOneTakesItsMonitoring(t *testing.T) {
+	dir := t.TempDir()
+	const legacy = "name: shop\nenvs: [prod]\nmonitoring:\n  control_plane: https://cp.example.test\n"
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runInit(t, dir, fakeInitControlPlane(), noTTY, nil, "prod", "staging", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	var doc obsInitDoc
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ControlPlane != "https://cp.example.test" || len(doc.Envs) != 2 {
+		t.Fatalf("doc = %+v", doc)
+	}
+	if got := mustRead(t, filepath.Join(dir, "forge.yaml")); got != legacy {
+		t.Errorf("forge.yaml was rewritten:\n%s", got)
+	}
+	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := declareEnv(dir, cfg, "staging")
+	if err != nil || d.Source != envDeclDocument {
+		t.Fatalf("staging = %+v, %v", d, err)
+	}
+	staging, ok, err := readEnvDocumentDeclaration(dir, "staging")
+	if err != nil || !ok || staging.Monitoring == nil || staging.Monitoring.ControlPlane != "https://cp.example.test" {
+		t.Fatalf("staging's document = %+v, %v, %v; want forge.yaml's control plane", staging, ok, err)
+	}
+}
+
+// A self-hosted endpoint in forge.yaml's `monitoring:` is what a new env's
+// document declares as its destination, and nothing is minted.
+func TestObsInit_NewDocumentKeepsASelfHostedEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
+		[]byte("name: shop\nmonitoring:\n  endpoint: https://otel.example.com:4318\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp := fakeInitControlPlane()
+	out, err := runInit(t, dir, cp, noTTY, nil, "prod", "--json")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(cp.calls) != 0 {
+		t.Fatal("reached Reliant's control plane for a self-hosted backend")
+	}
+	d, ok, err := readEnvDocumentDeclaration(dir, "prod")
+	if err != nil || !ok || d.Monitoring == nil || d.Monitoring.Endpoint != "https://otel.example.com:4318" {
+		t.Fatalf("prod's document = %+v, %v, %v", d, ok, err)
+	}
+}
+
+// An env document init wrote is read, never rewritten: a re-run registers the
+// env and mints a token again, and writes nothing.
+func TestObsInit_DocumentEnvRerunIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, fakeInitControlPlane(), noTTY, nil, "prod", "--project", "shop", "--write-config"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "deploy", "envs", "prod.yaml")
+	first := mustRead(t, path)
+	for _, args := range [][]string{{"prod", "--json"}, {"--json"}} {
+		cp := fakeInitControlPlane()
+		out, err := runInit(t, dir, cp, noTTY, nil, args...)
+		if err != nil {
+			t.Fatalf("re-run %v: %v\n%s", args, err, out)
+		}
+		var doc obsInitDoc
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.WroteConfig || doc.Project != "shop" || len(doc.Envs) != 1 || doc.Envs[0].Env != "prod" || doc.Envs[0].Token == nil {
+			t.Fatalf("re-run %v: doc = %+v", args, doc)
+		}
+		if got := mustRead(t, path); got != first {
+			t.Fatalf("re-run %v rewrote the document:\n%s", args, got)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("the directory holds more than deploy/: %v", entries)
+	}
+}
+
+// One init signs in to one control plane: envs whose declarations send
+// telemetry to different places are refused before anything is registered.
+func TestObsInit_EnvsOnDifferentControlPlanesAreRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeEnvDocument(t, dir, "prod.yaml", minimalMonitoringDocument)
+	writeEnvDocument(t, dir, "staging.yaml", strings.ReplaceAll(
+		strings.Replace(minimalMonitoringDocument, "control_plane: {}", "control_plane: {endpoint: https://cp.example.test}", 1),
+		"env: prod", "env: staging"))
+	cp := fakeInitControlPlane()
+	_, err := runInit(t, dir, cp, noTTY, nil, "prod", "staging")
+	if err == nil || !strings.Contains(err.Error(), "init them separately") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(cp.calls) != 0 {
+		t.Fatalf("registered envs before refusing: %+v", cp.calls)
 	}
 }

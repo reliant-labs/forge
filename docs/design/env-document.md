@@ -222,8 +222,13 @@ unchanged, because it already reads the parsed entities.
 - `declareEnv` has the fourth source, `document`; a document plus a KCL tree, or plus forge.yaml `envs:`,
   for one env is a load error naming both.
 - `forge obs init` with document envs registers them and mints tokens, taking the project and control plane
-  from the documents, and writes no forge.yaml (its `envs:` would declare them twice). A mix of document and
-  undeclared envs in one init is refused.
+  from the documents, and writes no forge.yaml (its `envs:` would declare them twice).
+- `forge obs init` on an env nothing declares writes its env document, `deploy/envs/<env>.yaml` (the minimal
+  monitoring-only one in §4, its destination copied from forge.yaml's legacy `monitoring:` when there is one,
+  or `--control-plane`), never forge.yaml `envs:`. It writes no forge.yaml at all: the document names the
+  project. An env forge.yaml `envs:` already declares stays there (init only switches a missing
+  `monitoring:` on). A KCL env is refused as before. One init signs in once, so envs whose declarations
+  send telemetry to different places are refused together.
 - With no forge.yaml, the project name the control-plane verbs use (`hostedProjectName`) is the one the
   env documents agree on.
 - Readers that gate on the KCL tree alone (for example the parallel `databases[]` declarer, which

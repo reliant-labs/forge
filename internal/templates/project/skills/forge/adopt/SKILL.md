@@ -98,7 +98,8 @@ to trust, and the user can stop after any of them.
 
 ```bash
 forge project benefits                                   # what applies to this repo, with estimates
-forge login && forge obs init prod staging               # hosted monitoring (`obs init [env…]`: one or more envs): registers each env,
+forge login && forge obs init prod staging               # hosted monitoring (`obs init [env…]`: one or more envs): writes each env's
+                                                         #   document (deploy/envs/<env>.yaml; commit it), registers the env,
                                                          #   mints a token per env, prints its OTEL_* variables: endpoint,
                                                          #   headers (the token, shown once), attributes
 forge cloud token create --name ci --scopes deploy:write # record deploys: the CI secret FORGE_CONTROL_PLANE_TOKEN, then after the deploy job:

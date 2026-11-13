@@ -82,7 +82,7 @@ prints this list for the directory you run it in.
 | [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                                                                                                     | ~5 min     |
 | [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                        | ~10 min    |
 | [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                                                                                                  | ~30 min    |
-| [Declare an env in YAML](#env-document)                       | write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`                                       | ~5 min     |
+| [Declare an env in YAML](#env-document)                       | `forge obs init prod` writes the monitoring-only `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability`); grow it by hand from there                                             | ~5 min     |
 | [Prove parity before deploying](#env-verify-parity)           | `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`.                                   | ~1 hour    |
 | [Record deploys from existing CI](#record-deploys)            | Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.                                              | ~15 min    |
 | [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                                                                                           | ~10 min    |
@@ -2589,7 +2589,7 @@ An environment is declared in KCL or in a plain YAML/JSON env document (`deploy/
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`. **Agent time:** ~5 min.
+**Works in any repo** (no forge.yaml). **Start:** `forge obs init prod` writes the monitoring-only `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability`); grow it by hand from there. **Agent time:** ~5 min.
 
 **Use:** Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1` (`forge project schema env` prints the schema), then use any `forge env` or `forge obs` verb on `prod`.
 
@@ -3888,7 +3888,7 @@ _Enforced · Reliant hosting_
 
 **Works in any repo** (no forge.yaml). **Start:** `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment. **Agent time:** ~15 min.
 
-**Use:** `forge login`, then `forge obs init prod`: it registers the env, mints an ingest token and prints the `OTEL_*` variables.
+**Use:** `forge login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables.
 
 **Why:** Adopting a platform usually starts with a rewrite. Monitoring needs none: one command, three environment variables, and the app's errors and deploy regressions are in front of the team and its agents.
 

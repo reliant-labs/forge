@@ -13,10 +13,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/envdoc"
@@ -89,45 +87,6 @@ func readEnvDocumentDeclaration(projectDir, env string) (envDocumentDeclaration,
 		d.Monitoring = m
 	}
 	return d, true, nil
-}
-
-// envDocumentsFor reads the documents declaring envs: all of them, or none.
-// An init over a mix would have to record some envs in forge.yaml and leave
-// the rest to their documents, which is two declarations of one project's
-// monitoring.
-func envDocumentsFor(projectDir string, envs []string) ([]envDocumentDeclaration, error) {
-	var out []envDocumentDeclaration
-	var without []string
-	for _, env := range envs {
-		d, ok, err := readEnvDocumentDeclaration(projectDir, env)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			without = append(without, env)
-			continue
-		}
-		out = append(out, d)
-	}
-	if len(out) > 0 && len(without) > 0 {
-		return nil, fmt.Errorf("envs %s have env documents (%s/) and %s do not: declare every env one way — add a document for each (forge project schema env), or init them separately",
-			strings.Join(envsWithDocs(envs, without), ", "), envdoc.Dir, strings.Join(without, ", "))
-	}
-	return out, nil
-}
-
-func envsWithDocs(envs, without []string) []string {
-	skip := map[string]bool{}
-	for _, e := range without {
-		skip[e] = true
-	}
-	var out []string
-	for _, e := range envs {
-		if !skip[e] {
-			out = append(out, e)
-		}
-	}
-	return out
 }
 
 // envDocumentRel is env's document path relative to the project, for

@@ -161,6 +161,11 @@ func TestUserActivityOverAPopulation(t *testing.T) {
 		t.Errorf("an env with no rows must be zero-filled: %+v", empty)
 	}
 
+	// stage's data begins 10-01 (s2), so s1 (11-08) is past the grace and new.
+	if want := time.Date(2026, 10, 8, 10, 0, 0, 0, time.UTC); !stage.NewDecidedFrom.Equal(want) {
+		t.Errorf("stage decided from %v, want %v", stage.NewDecidedFrom, want)
+	}
+
 	// The invariants the console relies on.
 	for _, e := range got {
 		for _, w := range []obsquery.UserActivityCounts{e.Current, e.Previous} {
@@ -168,5 +173,75 @@ func TestUserActivityOverAPopulation(t *testing.T) {
 				t.Errorf("%s breaks returning <= active, active-returning <= new: %+v", e.EnvID, w)
 			}
 		}
+	}
+}
+
+// TestUserActivityNewUsersFirstSeenGrace: where New falls back to first-seen,
+// the users of the data's first FirstSeenGraceDays are not new, and the read
+// says from when New is decided. The range is the 30 days ending 11-13.
+func TestUserActivityNewUsersFirstSeenGrace(t *testing.T) {
+	c := startClickHouse(t)
+	const db = "t_users_grace"
+	seedProductEvents(t, c, db, []productEvent{
+		// fresh: data begins inside the range.
+		{at: "2026-10-24T14:03:00Z", env: "fresh", user: "f1", event: "task_created"},
+		{at: "2026-11-10T09:00:00Z", env: "fresh", user: "f1", event: "task_created"},
+		{at: "2026-10-27T09:00:00Z", env: "fresh", user: "f2", event: "task_created"},
+		{at: "2026-11-05T09:00:00Z", env: "fresh", user: "f3", event: "task_created"},
+		{at: "2026-11-12T09:00:00Z", env: "fresh", user: "f4", event: "task_created"},
+		// mature: data begins before the range.
+		{at: "2026-09-01T09:00:00Z", env: "mature", user: "m1", event: "task_created"},
+		{at: "2026-11-10T09:00:00Z", env: "mature", user: "m1", event: "task_created"},
+		{at: "2026-10-20T09:00:00Z", env: "mature", user: "m2", event: "task_created"},
+		{at: "2026-10-10T09:00:00Z", env: "mature", user: "m3", event: "task_created"},
+		{at: "2026-11-01T09:00:00Z", env: "mature", user: "m3", event: "task_created"},
+		// signups: sign-ups decide, even one at the very start of the data.
+		{at: "2026-10-24T14:03:00Z", env: "signups", user: "g1", event: "auth_signed_up"},
+		{at: "2026-10-30T09:00:00Z", env: "signups", user: "g2", event: "task_created"},
+		{at: "2026-09-01T09:00:00Z", env: "signups", user: "g3", event: "auth_signed_up"},
+		{at: "2026-11-01T09:00:00Z", env: "signups", user: "g3", event: "task_created"},
+		// brandnew: data begins too late for any of the range to be decided.
+		{at: "2026-11-10T09:00:00Z", env: "brandnew", user: "b1", event: "task_created"},
+		{at: "2026-11-11T09:00:00Z", env: "brandnew", user: "b2", event: "task_created"},
+	})
+	end := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	start := end.Add(-30 * 24 * time.Hour)
+	counts := func(a, n, r int64) obsquery.UserActivityCounts {
+		return obsquery.UserActivityCounts{Active: a, New: n, Returning: r}
+	}
+	cases := []struct {
+		name, env string
+		rule      obsquery.NewUsersRule
+		current   obsquery.UserActivityCounts
+		decided   time.Time
+		decision  obsquery.NewDecision
+	}{
+		{"data start inside the range", "fresh", obsquery.NewUsersFirstSeen, counts(4, 2, 2),
+			time.Date(2026, 10, 31, 14, 3, 0, 0, time.UTC), obsquery.NewDecidedPart},
+		{"data start before the range", "mature", obsquery.NewUsersFirstSeen, counts(3, 1, 2),
+			time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedAll},
+		{"sign-up event present", "signups", obsquery.NewUsersSignups, counts(3, 1, 2), time.Time{}, obsquery.NewDecidedAll},
+		{"no part of the range decided", "brandnew", obsquery.NewUsersFirstSeen, counts(2, 0, 2),
+			time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedNone},
+		{"no events", "empty", obsquery.NewUsersFirstSeen, counts(0, 0, 0), time.Time{}, obsquery.NewDecidedAll},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := obsquery.UserActivityQuery{Scope: obsquery.Scope{Database: db, EnvRestricted: true, EnvIDs: []string{tc.env}, Start: start, End: end}}
+			got, err := obsquery.ReadUserActivity(context.Background(), rumRunner(c), q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("envs = %+v", got)
+			}
+			e := got[0]
+			if e.NewRule != tc.rule || e.Current != tc.current || !e.NewDecidedFrom.Equal(tc.decided) {
+				t.Errorf("rule %s current %+v decided from %v; want %s %+v %v", e.NewRule, e.Current, e.NewDecidedFrom, tc.rule, tc.current, tc.decided)
+			}
+			if d := obsquery.NewDecided(e.NewDecidedFrom, start, end); d != tc.decision {
+				t.Errorf("decision = %s, want %s", d, tc.decision)
+			}
+		})
 	}
 }

@@ -116,16 +116,20 @@ var hostedProjectName = func() string {
 //     ManagedDatabase, an OnHosted frontend) → PERSISTENT: the platform
 //     runs it, and its secrets are write-only.
 //   - nothing hosted, something on a cluster the author operates (a
-//     workload bound to OnCluster, or a cluster ManagedDatabase) →
-//     SELF_MANAGED: the control plane keeps its ledger, forge applies it,
-//     and its secrets are write-only.
+//     workload bound to OnCluster, or a cluster ManagedDatabase), or a
+//     workload bound to OnExternal → SELF_MANAGED: the control plane keeps
+//     its ledger, forge's CLI applies it (kubectl, or the author's own
+//     deploy hooks), and its secrets are write-only.
 //   - otherwise → LOCAL: every workload runs on a developer machine, and
 //     the control plane is only its secret store (pullable).
 //
 // The SELF_MANAGED split is what keeps "runs on my laptop" and "runs on my
 // own cluster" apart. Before it, a cluster env with a control plane was
 // classified LOCAL, which made its production secrets readable back through
-// the local-secret pull.
+// the local-secret pull. An OnExternal env was the same defect again: its
+// workloads run wherever the author's tooling puts them, never on this
+// machine, yet it was classified LOCAL, so the control plane refused its
+// promotions (it never deploys to a LOCAL env) and its secrets were pullable.
 //
 // An env-wide cluster_target alone does not make an env self-managed: it
 // carries support objects (a Namespace, gateways) for workloads that still
@@ -140,10 +144,18 @@ func hostedEnvKindOf(e *KCLEntities) deploytarget.HostedEnvKind {
 	if e.HasHosted() {
 		return deploytarget.HostedEnvPersistent
 	}
-	if runsOnOwnCluster(e) {
+	if runsOnOwnCluster(e) || appliedThroughExternalHooks(e) {
 		return deploytarget.HostedEnvSelfManaged
 	}
 	return deploytarget.HostedEnvLocal
+}
+
+// appliedThroughExternalHooks reports whether any workload is bound to
+// forge.OnExternal: the author's own tooling runs it, and `forge env deploy`
+// applies it through the binding's hooks. Like a cluster binding, that is a
+// CLI-applied workload that does not run on this machine.
+func appliedThroughExternalHooks(e *KCLEntities) bool {
+	return len(e.WorkloadsOn(RuntimeExternal)) > 0
 }
 
 // runsOnOwnCluster reports whether anything in the env runs on a cluster the
@@ -190,5 +202,5 @@ func refuseLocalEnvDeploy(envName string) error {
 	return fmt.Errorf("env %q is LOCAL: it declares control_plane but binds nothing to it (no forge.OnHosted workload, hosted database or OnHosted frontend), "+
 		"so the control plane is only its secret store, and its workloads run on this machine.\n"+
 		"There is nothing for `forge env deploy` to publish or apply.\n"+
-		"fix: run it with `forge env up %s`, or bind a workload to forge.OnHosted / forge.OnCluster", envName, envName)
+		"fix: run it with `forge env up %s`, or bind a workload to forge.OnHosted / forge.OnCluster / forge.OnExternal", envName, envName)
 }

@@ -139,15 +139,15 @@ func (f *fakeRecordCP) called(short string) []map[string]any {
 }
 
 // useRecordLedger points openRecordLedger at l for the test.
-func useRecordLedger(t *testing.T, open func(ctx context.Context, projectDir, project, env, token string) (recordLedger, error)) {
+func useRecordLedger(t *testing.T, open recordLedgerOpener) {
 	t.Helper()
 	prev := openRecordLedger
 	openRecordLedger = open
 	t.Cleanup(func() { openRecordLedger = prev })
 }
 
-func hostedRecordTarget(cp *fakeRecordCP) func(context.Context, string, string, string, string) (recordLedger, error) {
-	return func(_ context.Context, _, project, _, _ string) (recordLedger, error) {
+func hostedRecordTarget(cp *fakeRecordCP) recordLedgerOpener {
+	return func(_ context.Context, _, project, _, _ string, _ *KCLEntities) (recordLedger, error) {
 		return recordLedger{
 			ledger:   hostedLedger(cp, cloud.DefaultEndpoint, project, deploytarget.HostedEnvSelfManaged),
 			endpoint: cloud.DefaultEndpoint,
@@ -301,6 +301,11 @@ func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	prevRender := renderRecordEnv
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) {
+		return &KCLEntities{Workloads: []WorkloadEntity{hostWL("api")}}, nil
+	}
+	t.Cleanup(func() { renderRecordEnv = prevRender })
 	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
 	_, err := recordReleaseIn(context.Background(),
 		releaseRecordOptions{env: "dev", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})

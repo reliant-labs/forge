@@ -2561,12 +2561,13 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
 
-**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook. Declare a `forge.ControlPlane` and the env is self-managed: the control plane records every promotion (and your CI's `forge release record`), and its hosted secrets stay write-only.
 
 **Evidence:**
 
 - source [`kcl/workload.k`](../kcl/workload.k)
 - source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- source [`internal/cli/hosted_env_resolver.go`](../internal/cli/hosted_env_resolver.go)
 - command `forge env deploy`
 - command `forge env status`
 - skill `deploy/external` (`forge skill load deploy/external`)

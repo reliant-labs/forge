@@ -54,18 +54,23 @@ func TestDeclaredFunnelsAndCountsFromProjectAnalytics(t *testing.T) {
 func TestDeclaredActivityIsTheUnionOfEveryEnv(t *testing.T) {
 	analytics := []renderedEnvAnalytics{
 		{Env: "prod", Analytics: ProjectAnalyticsEntity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"}}},
-		{Env: "staging", Analytics: ProjectAnalyticsEntity{NotActivity: []string{"claimable_account_created", "billing_subscription_state"}}},
+		{Env: "staging", Analytics: ProjectAnalyticsEntity{NotActivity: []string{"claimable_account_created", "billing_subscription_state"},
+			ExcludeUserIDs: []string{"canary-subject"}}},
 	}
 	got, err := declaredActivity(analytics)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := obsquery.Activity{NotActivity: []string{"billing_subscription_state", "claimable_account_created"}, ExcludeUsersWith: []string{"internal_user"}}
+	want := obsquery.Activity{NotActivity: []string{"billing_subscription_state", "claimable_account_created"}, ExcludeUsersWith: []string{"internal_user"},
+		ExcludeUserIDs: []string{"canary-subject"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("declaredActivity = %+v, want %+v", got, want)
 	}
 	if _, err := declaredActivity([]renderedEnvAnalytics{{Env: "dev", Analytics: ProjectAnalyticsEntity{ExcludeUsersWith: []string{"bad name"}}}}); err == nil {
 		t.Error("a rule that names no event must be refused")
+	}
+	if _, err := declaredActivity([]renderedEnvAnalytics{{Env: "dev", Analytics: ProjectAnalyticsEntity{ExcludeUserIDs: []string{"staff@example.com"}}}}); err == nil {
+		t.Error("an email as an excluded user id must be refused")
 	}
 
 	dir := t.TempDir()

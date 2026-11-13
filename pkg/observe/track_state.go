@@ -36,6 +36,47 @@ func TrackState(ctx context.Context, name string, attrs ...slog.Attr) {
 	Track(ctx, name, StateAttrs(attrs)...)
 }
 
+// TrackStateAs is TrackState for a caller with no signed-in user to read: it
+// names the user itself (a worker emitting a daily marker per staff member,
+// a job writing a snapshot). "" attributes the event to no one.
+//
+//	observe.TrackStateAs(ctx, member.UserID, "internal_user", slog.String("reason", "email_domain"))
+func TrackStateAs(ctx context.Context, userID, name string, attrs ...slog.Attr) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	trackAs(ctx, name, userID, StateAttrs(attrs))
+}
+
+type stateEventsKey struct{}
+
+// WithStateEvents marks every product event recorded under the returned
+// context as a state event (PropKind = KindState): not the user's activity.
+// It is how a caller marks events it does not emit itself, per call: Track
+// and TrackAuth, and the ones forge records on the app's behalf (the login
+// broker's sign-ins and sign-ups in pkg/devidp, the generated CRUD events).
+// Use it for a synthetic monitor's sign-in, or a job that writes through the
+// generated handlers on a user's behalf. The events are still recorded and
+// counted as events; only the user counts skip them.
+//
+//	ctx = observe.WithStateEvents(ctx) // the identity canary's login
+func WithStateEvents(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, stateEventsKey{}, true)
+}
+
+// StateEventsFrom reports whether ctx marks its product events as state
+// events (WithStateEvents).
+func StateEventsFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	marked, _ := ctx.Value(stateEventsKey{}).(bool)
+	return marked
+}
+
 // StateAttrs is attrs with PropKind = KindState in front, for an emitter that
 // writes the record through its own wrapper (one that names the user itself)
 // rather than through TrackState. The marker comes first, so the

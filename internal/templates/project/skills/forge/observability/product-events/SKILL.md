@@ -50,9 +50,10 @@ never put secrets or personal data in them. A `slog.Group` flattens to
 `group.key`.
 
 `observe.TrackState` emits a fact about a user that is not activity (a
-snapshot, a marker); the user counts skip it. Load
-`observability/product-events/user-counts` for it and for the project's own
-rules (`not_activity`, `exclude_users_with`).
+snapshot, a marker); the user counts skip it. `observe.WithStateEvents(ctx)`
+marks every event recorded under ctx the same way (a synthetic monitor's
+sign-in). Load `observability/product-events/user-counts` for them and for the
+project's own rules (`not_activity`, `exclude_users_with`, `exclude_user_ids`).
 
 ## Automatic events from generated CRUD
 

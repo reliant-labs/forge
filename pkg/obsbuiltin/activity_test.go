@@ -13,7 +13,8 @@ import (
 // the Overview's Users card included, and a project with no rules is drawn
 // exactly as before.
 func TestActivityRulesReachEveryUserCount(t *testing.T) {
-	rules := obsquery.Activity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"}}
+	rules := obsquery.Activity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"},
+		ExcludeUserIDs: []string{"canary-subject"}}
 	evidence, err := obsquery.ActiveEvidenceFor("product_events", rules)
 	if err != nil {
 		t.Fatal(err)
@@ -122,5 +123,21 @@ func TestSignupCohortsHonourActivityRules(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no panel builds a sign-up cohort; the scan is broken")
+	}
+}
+
+// The panels that name users read the rules: Most active users and Sign-ins
+// by method (events, but a person's sign-ins: a monitor's state-marked
+// sign-in and an excluded user's are not).
+func TestUserPanelsReadTheRules(t *testing.T) {
+	in := fullInput()
+	in.Activity = obsquery.Activity{ExcludeUserIDs: []string{"canary-subject"}}
+	for _, id := range []string{"most-active-users", "signins-by-method", "active", "new"} {
+		if sql := panel(t, Users(in), id).SQL; !strings.Contains(sql, "UserId NOT IN ('canary-subject')") {
+			t.Errorf("users/%s does not leave an excluded user out:\n%s", id, sql)
+		}
+	}
+	if sql := panel(t, Users(fullInput()), "signins-by-method").SQL; !strings.Contains(sql, obsquery.UserActivityEvidence) {
+		t.Errorf("users/signins-by-method counts state-marked sign-ins:\n%s", sql)
 	}
 }

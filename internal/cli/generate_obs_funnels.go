@@ -102,12 +102,14 @@ func declaredCounts(analytics []renderedEnvAnalytics) ([]obsdash.EventCount, err
 }
 
 // declaredActivity is the project's user-activity rules: the union of every
-// env's Observability.analytics not_activity and exclude_users_with, so an
-// event any environment declares is a rule for the project's dashboards.
+// env's Observability.analytics not_activity, exclude_users_with and
+// exclude_user_ids, so an event or user any environment declares is a rule
+// for the project's dashboards.
 func declaredActivity(analytics []renderedEnvAnalytics) (obsquery.Activity, error) {
 	var out obsquery.Activity
 	for _, a := range analytics {
-		out = out.Merge(obsquery.Activity{NotActivity: a.Analytics.NotActivity, ExcludeUsersWith: a.Analytics.ExcludeUsersWith})
+		out = out.Merge(obsquery.Activity{NotActivity: a.Analytics.NotActivity, ExcludeUsersWith: a.Analytics.ExcludeUsersWith,
+			ExcludeUserIDs: a.Analytics.ExcludeUserIDs})
 	}
 	if err := out.Validate(); err != nil {
 		return obsquery.Activity{}, fmt.Errorf("observability.analytics: %w", err)

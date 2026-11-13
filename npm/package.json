@@ -1,6 +1,6 @@
 {
   "name": "@reliantlabs/forge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "The forge CLI and MCP server via npm, for any repo: migration-safety lint, agent playbooks, runtime libraries, no-account deploys, and adopting forge without a rewrite. A thin shim that downloads the matching prebuilt forge binary from the GitHub release and runs it. No Go toolchain, no postinstall script.",
   "keywords": [
     "forge",

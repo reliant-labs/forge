@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/pkg/devidp"
 )
 
 type grantObj struct {
@@ -294,28 +296,22 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 // from reviewed config, not from a sign-up form. Without it the account's
 // first sign-in code could not set a password: the login broker adds no
 // credential to an unverified account (devidp ProvenCredentialsOnly,
-// forge#2121). Only a CREDENTIAL-LESS account is ever verified here; one
-// holding credentials is superseded instead (supersedeUnproven).
+// forge#2121). It is devidp.Client.AdoptPendingAccount, the step every
+// administrator's flow shares: only a CREDENTIAL-LESS account is ever
+// verified, and one holding credentials is refused (here it is superseded
+// instead, by supersedeUnproven).
 func (p *run) adoptPending(ctx context.Context, email string, h humanUser) error {
 	p.rep.change(Updated, "user", email, "adopted an unverified account holding no credential: address marked verified (declared)")
 	if p.dry() {
 		return nil
 	}
-	// The issuer's own verification, with a code minted for it and redeemed
-	// at once: SetEmail to the same address with isVerified is refused
-	// ("Email not changed", COMMAND-Uch5e, Zitadel v4.19.5).
-	base := "/v2/users/" + url.PathEscape(h.UserID) + "/email"
-	var minted struct {
-		VerificationCode string `json:"verificationCode"`
+	token, err := p.c.cred.bearer(ctx, p.c)
+	if err != nil {
+		return objErr("user", email, fmt.Errorf("a token to adopt the account: %w", err))
 	}
-	if err := p.c.call(ctx, http.MethodPost, base+"/resend", map[string]any{"returnCode": map[string]any{}}, &minted, mint); err != nil {
-		return objErr("user", email, fmt.Errorf("mint a code to verify the declared address: %w", err))
-	}
-	if minted.VerificationCode == "" {
-		return objErr("user", email, errors.New("the instance returned no code to verify the declared address"))
-	}
-	if err := p.c.call(ctx, http.MethodPost, base+"/verify", map[string]any{"verificationCode": minted.VerificationCode}, nil, mint); err != nil {
-		return objErr("user", email, fmt.Errorf("mark the declared address verified: %w", err))
+	dc := &devidp.Client{Base: p.c.base, Host: p.c.host, Token: token}
+	if _, err := dc.AdoptPendingAccount(ctx, h.UserID); err != nil {
+		return objErr("user", email, fmt.Errorf("adopt the pending account: %w", err))
 	}
 	p.logf("adopted an unverified, credential-less account for a declared address; marked it verified", "user_id", h.UserID)
 	return nil

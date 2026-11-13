@@ -620,6 +620,10 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/resend", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		u.emailCode = f.id("ev")
+		if sub(b, "returnCode") != nil {
+			ok(w, map[string]any{"verificationCode": u.emailCode})
+			return
+		}
 		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode, link: f.render(str(sub(b, "sendCode"), "urlTemplate"), u, u.emailCode, "")})
 		ok(w, map[string]any{})
 	}))

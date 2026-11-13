@@ -248,6 +248,19 @@ line names it.
       still answers like a wrong reset code). It is OFF by default, so code
       of your own that relies on the old behaviour is unchanged until you
       opt in. A contact-only account's own password reset still works.
+    - **Adopt before you invite.** Code of your own that hands an EXISTING
+      account its first sign-in path — an invitation or console flow that
+      reuses a user found by email and then issues a password-reset or
+      return code — must call `devidp.Client.AdoptPendingAccount(ctx,
+      userID)` first. It marks an unverified, credential-less account's
+      address verified (the administrator asserts it, as when creating the
+      account verified) and refuses, unchanged, one that holds credentials
+      (`devidp.ErrAccountHoldsCredentials`: a squatter; move it aside). Skip
+      it and that first-password link stops working once the broker's
+      client is `ProvenCredentialsOnly`: the broker sets no password on an
+      unverified account. Known caller: control-plane's
+      `identityapi` Invite. forge's own identity converge already does this
+      for declared members.
     - **Drop the proof lock** if you applied it from an earlier version of
       this step: delete `proofLockerFor` (with its `pgx` and `dbtrace`
       imports) and the `ProofLocker:` line in `mountSignInMethods`.

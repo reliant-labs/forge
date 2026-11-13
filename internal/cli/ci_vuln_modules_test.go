@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -105,8 +106,8 @@ func TestDiscoverGoModules_SinglePackageAtTheRoot(t *testing.T) {
 // or the root module's packages, and a scan that skipped it would pass
 // without having looked (forge#2192 review).
 func TestDiscoverGoModules_FailsClosedOnAnUnreadableSubtree(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-000 directory, so there is nothing unreadable to walk")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("mode 000 does not stop this user reading a directory (root, or Windows, where chmod sets only the read-only bit), so there is nothing unreadable to walk")
 	}
 	root := writeGoModuleTree(t)
 	locked := filepath.Join(root, "internal", "svc") // the root module's own package

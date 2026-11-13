@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -287,8 +288,8 @@ func TestReleaseRecord_RefusalOnAForgeDeployedEnv(t *testing.T) {
 // directory it may not search) is never taken for no declaration: the record
 // is refused with the error, and nothing is cut.
 func TestAdmitDeclaredEnv_AnUnreadableDeclarationIsNotAbsent(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root searches a mode-000 directory, so its stat cannot fail")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("mode 000 does not stop this user searching a directory (root, or Windows, where chmod sets only the read-only bit), so its stat cannot fail")
 	}
 	projectDir := t.TempDir()
 	envDir := filepath.Join(projectDir, "deploy", "kcl", "prod")

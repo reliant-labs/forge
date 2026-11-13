@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -25,8 +26,29 @@ import (
 // projectDir is the project root (the directory containing
 // forge.yaml). Callers can pass either projectDir or kclDir directly
 // — see ListEnvsFromKCLDir for the lower-level variant.
+//
+// An env declared by an env document (deploy/envs/<env>.yaml) is listed too:
+// it is as much an environment as a KCL one.
 func ListEnvs(projectDir string) ([]string, error) {
-	return ListEnvsFromKCLDir(filepath.Join(projectDir, "deploy", "kcl"))
+	envs, err := ListEnvsFromKCLDir(filepath.Join(projectDir, "deploy", "kcl"))
+	if err != nil {
+		return nil, err
+	}
+	docs, err := envdoc.List(projectDir)
+	if err != nil {
+		return nil, fmt.Errorf("list env documents in %s: %w", envdoc.Dir, err)
+	}
+	seen := map[string]bool{}
+	for _, e := range envs {
+		seen[e] = true
+	}
+	for _, e := range docs {
+		if !seen[e] {
+			envs = append(envs, e)
+		}
+	}
+	sort.Strings(envs)
+	return envs, nil
 }
 
 // ListEnvsFromKCLDir is the lower-level discovery walker. It exists
@@ -56,7 +78,8 @@ func ListEnvsFromKCLDir(kclDir string) ([]string, error) {
 	return envs, nil
 }
 
-// EnvExists reports whether `deploy/kcl/<env>/main.k` exists. Returns
+// EnvExists reports whether `deploy/kcl/<env>/main.k` or an env document
+// (deploy/envs/<env>.yaml) declares env. Returns
 // false (with no error) for the absent-env / missing-kcl-dir cases —
 // callers typically convert that into a friendly "env not configured"
 // error themselves.
@@ -65,7 +88,8 @@ func EnvExists(projectDir, env string) (bool, error) {
 	if _, err := os.Stat(mainK); err == nil {
 		return true, nil
 	} else if os.IsNotExist(err) {
-		return false, nil
+		p, derr := envdoc.Path(projectDir, env)
+		return p != "", derr
 	} else {
 		return false, fmt.Errorf("stat %s: %w", mainK, err)
 	}

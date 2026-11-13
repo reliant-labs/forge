@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -99,11 +100,16 @@ func hostedEnvRefFor(envName string, e *KCLEntities) deploytarget.HostedEnvRef {
 }
 
 // hostedProjectName is the forge project name (forge.yaml `name`) — the
-// project dimension of a control-plane environment's identity. A seam so
-// tests without a forge.yaml on disk state it.
+// project dimension of a control-plane environment's identity. In a repo with
+// no forge.yaml it is the project its env documents name (deploy/envs/), so a
+// monitoring-only or record-only env needs no forge.yaml. A seam so tests
+// without a forge.yaml on disk state it.
 var hostedProjectName = func() string {
 	cfg, err := loadProjectConfig()
 	if err != nil || cfg == nil {
+		if _, ferr := findProjectConfigFile(); errors.Is(ferr, ErrProjectConfigNotFound) {
+			return envDocumentsProject(".")
+		}
 		return ""
 	}
 	return cfg.Name

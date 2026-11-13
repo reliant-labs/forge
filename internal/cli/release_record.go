@@ -244,7 +244,7 @@ var renderRecordEnv = RenderKCL
 // check for an env the platform or the hub applies.
 func admitDeclaredEnv(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
 	decl := filepath.Join("deploy", "kcl", env, "main.k")
-	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil {
+	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil && !envHasDeclaration(projectDir, env, "") {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil // no declaration: an env forge does not deploy
 		}

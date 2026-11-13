@@ -24,8 +24,8 @@ import (
 //	FORGE_ALERT_CLICKHOUSE=ch task test -- ./pkg/obsbuiltin/...
 
 // tenantTables creates db's product_events (with the v28 edge columns and
-// v29's OrgId) and
-// error_events.
+// v29's OrgId), error_events, and otel_traces (the OTel exporter's schema the
+// tenant uses, which the AI hub reads).
 func tenantTables(db string) string {
 	return `
 DROP DATABASE IF EXISTS ` + db + `;
@@ -42,6 +42,15 @@ CREATE TABLE ` + db + `.product_events (
 CREATE TABLE ` + db + `.error_events (
     Timestamp DateTime64(9), ServiceName LowCardinality(String), EnvId LowCardinality(String), SessionId String
 ) ENGINE = MergeTree ORDER BY (ServiceName, Timestamp);
+CREATE TABLE ` + db + `.otel_traces (
+    Timestamp DateTime64(9), TraceId String, SpanId String, ParentSpanId String, TraceState String DEFAULT '',
+    SpanName LowCardinality(String), SpanKind LowCardinality(String), ServiceName LowCardinality(String),
+    ResourceAttributes Map(LowCardinality(String), String), ScopeName String DEFAULT '', ScopeVersion String DEFAULT '',
+    SpanAttributes Map(LowCardinality(String), String), Duration UInt64,
+    StatusCode LowCardinality(String), StatusMessage String DEFAULT '',
+    Events Nested (Timestamp DateTime64(9), Name LowCardinality(String), Attributes Map(LowCardinality(String), String)),
+    Links Nested (TraceId String, SpanId String, TraceState String, Attributes Map(LowCardinality(String), String))
+) ENGINE = MergeTree PARTITION BY toDate(Timestamp) ORDER BY (ServiceName, SpanName, toDateTime(Timestamp));
 `
 }
 

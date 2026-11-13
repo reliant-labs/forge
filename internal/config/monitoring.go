@@ -23,6 +23,11 @@ import (
 //
 // Both lower into the same model the KCL render fills (obsbackend.Facts), so
 // every `forge obs` verb reads one thing whichever file declared it.
+//
+// DEPRECATED (legacy shorthand): an env document, deploy/envs/<env>.yaml
+// (`forge project schema env`), declares the same env without KCL and without
+// making forge.yaml a list of resources. These keys keep working (semver 1);
+// declaring one env in both is a load error. docs/design/env-document.md.
 
 // EnvNameMax bounds an env name: a DNS label, because it names a namespace
 // and a control-plane environment.

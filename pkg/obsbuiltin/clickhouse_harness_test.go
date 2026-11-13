@@ -23,7 +23,8 @@ import (
 //	docker run -d --name ch -e CLICKHOUSE_PASSWORD=pw clickhouse/clickhouse-server
 //	FORGE_ALERT_CLICKHOUSE=ch task test -- ./pkg/obsbuiltin/...
 
-// tenantTables creates db's product_events (with the v28 edge columns) and
+// tenantTables creates db's product_events (with the v28 edge columns and
+// v29's OrgId) and
 // error_events.
 func tenantTables(db string) string {
 	return `
@@ -35,7 +36,8 @@ CREATE TABLE ` + db + `.product_events (
     Client LowCardinality(String), VisitorId String,
     DayVisitor String DEFAULT '', Country LowCardinality(String) DEFAULT '', Region LowCardinality(String) DEFAULT '',
     DeviceType LowCardinality(String) DEFAULT '', Browser LowCardinality(String) DEFAULT '', OS LowCardinality(String) DEFAULT '',
-    Privacy LowCardinality(String) DEFAULT '', SaltScope LowCardinality(String) DEFAULT ''
+    Privacy LowCardinality(String) DEFAULT '', SaltScope LowCardinality(String) DEFAULT '',
+    OrgId String DEFAULT ''
 ) ENGINE = MergeTree ORDER BY (ServiceName, EventName, Timestamp);
 CREATE TABLE ` + db + `.error_events (
     Timestamp DateTime64(9), ServiceName LowCardinality(String), EnvId LowCardinality(String), SessionId String

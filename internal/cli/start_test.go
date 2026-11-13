@@ -1,4 +1,5 @@
-// Tests for `forge start` — the one-call greenfield brief.
+// Tests for `forge start app` — the one-call greenfield brief. (`forge
+// start` itself, the router, is pinned in start_router_test.go.)
 //
 // The brief exists to collapse an agent's orientation from six
 // documentation calls to one, so both halves of that promise are pinned
@@ -47,7 +48,7 @@ func findSubcommand(root *cobra.Command, name string) *cobra.Command {
 	return nil
 }
 
-// runStartCmd executes `forge start` through the real root command tree
+// runStartCmd executes `forge start app` through the real root command tree
 // and returns its stdout, normalized to the standalone `forge` spelling.
 //
 // The brief rewrites bare `forge ` command references to however this
@@ -68,9 +69,9 @@ func rawStartOutput(t *testing.T) string {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"start"})
+	root.SetArgs([]string{"start", "app"})
 	if err := root.Execute(); err != nil {
-		t.Fatalf("forge start: unexpected error: %v\noutput:\n%s", err, out.String())
+		t.Fatalf("forge start app: unexpected error: %v\noutput:\n%s", err, out.String())
 	}
 	return out.String()
 }

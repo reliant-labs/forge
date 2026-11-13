@@ -48,14 +48,10 @@ const claimableLimitsSummary = "An unclaimed deploy is live for 72 hours, then o
 	"unless someone claims it. It may be one static site, or one service (one replica) with its migration job and " +
 	"one Postgres database (no backups). An unclaimed service has no outbound internet. Claiming it (free) lifts all of this."
 
-// reliantLLMProviderDocURL is where next_steps sends an agent whose code calls
-// an LLM vendor's API directly: the Reliant provider (LLM gateway) path, which
-// is how an app on Reliant hosting reaches models without its own egress or a
-// key shipped to the browser.
-//
-// TODO(llm-provider): the provider mechanism is being confirmed; replace this
-// with its documentation page once it is published.
-const reliantLLMProviderDocURL = "https://docs.reliantlabs.io/forge/llm-provider"
+// reliantLLMProviderDocURL points to the published claim-first recovery flow.
+// An unclaimed gateway route is not guaranteed; never promise it as an egress
+// workaround. The linked page also explains the billing needed for a backend.
+const reliantLLMProviderDocURL = "https://docs.reliantlabs.io/forge/deploy-without-an-account#what-claiming-gives-you"
 
 // directLLMHosts are the vendor endpoints whose direct use the deploy warns
 // about, with the SDK packages that call them by default.
@@ -92,8 +88,9 @@ type claimableDeployResult struct {
 	OK  bool   `json:"ok"`
 	Env string `json:"env"`
 	// Adopted is true when this call added the forge files to an app that
-	// had none (forge.yaml, deploy/kcl/).
-	Adopted bool `json:"adopted,omitempty"`
+	// had none; AdoptedFiles says exactly what it wrote.
+	Adopted      bool   `json:"adopted,omitempty"`
+	AdoptedFiles string `json:"adopted_files,omitempty"`
 	// The claim, as `forge env deploy --claimable --json` reports it. State
 	// is the claim's lifetime (live, suspended, claimed, expired), not the
 	// rollout's: "live" means the unclaimed window is open.
@@ -111,7 +108,7 @@ type claimableDeployResult struct {
 	Limits             string `json:"limits"`
 	NoOutboundInternet bool   `json:"no_outbound_internet,omitempty"`
 	// DirectLLMCalls are files that call an LLM vendor's API directly
-	// ("path: host"), which next_steps routes through the Reliant provider.
+	// ("path: host"), which next_steps warns require a server-side recovery.
 	DirectLLMCalls []string `json:"direct_llm_calls,omitempty"`
 	// On failure: forge's exit code, its error, and the commands that move
 	// past it, best first.
@@ -221,6 +218,7 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 	if err != nil {
 		return failedResult(res, exitWrong, err.Error(), "", nil), nil
 	}
+	before := snapshotAppFiles(abs)
 	adopted, refusal, err := r.adoptForClaimable(ctx, abs, in.Name, progress)
 	if err != nil {
 		return nil, err
@@ -229,6 +227,9 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 		return refusal(res), nil
 	}
 	res.Adopted = adopted
+	if adopted {
+		res.AdoptedFiles = describeAdoption(before, changedAppFiles(abs, before))
+	}
 	res.DirectLLMCalls = findDirectLLMCalls(abs)
 
 	args := []string{"env", "deploy", env, "--claimable", "--json"}
@@ -290,7 +291,7 @@ func (r *mcpRunner) adoptForClaimable(ctx context.Context, dir, name string, pro
 	if !plan.adopt {
 		return false, nil, nil
 	}
-	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (adds forge.yaml and deploy/kcl/; your files are kept)", dir, plan.name))
+	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (your own files are kept)", dir, plan.name))
 	args := plan.command()
 	out, err := r.execStreamsCombined(ctx, dir, progress.line, args...)
 	if err != nil {
@@ -424,8 +425,12 @@ func claimNextSteps(res *claimableDeployResult) string {
 // directLLMNote is the next step for code that calls an LLM vendor directly.
 func directLLMNote(calls []string) string {
 	return fmt.Sprintf("This code calls an LLM vendor's API directly (%s). An unclaimed backend cannot reach it (no outbound "+
-		"internet), and a static site would have to ship the API key to every visitor. Route those calls through "+
-		"Reliant's LLM provider instead: %s", strings.Join(calls, "; "), reliantLLMProviderDocURL)
+		"internet). Keep provider keys on a backend, never in a static site's browser bundle. Ask your user to claim "+
+		"the deploy and set up backend billing, then sign in with forge login, store their provider key as a managed "+
+		"secret, wire it into the backend and redeploy without --claimable. Verify an actual model request server-side; "+
+		"a healthy rollout alone does not prove LLM access. Alternatively configure the hosted gateway with forge.LLM "+
+		"and forge.llm_env(), but do not assume an unclaimed gateway route is enabled: missing credentials must "+
+		"disable the feature, not crash startup. Recovery: %s", strings.Join(calls, "; "), reliantLLMProviderDocURL)
 }
 
 // claimableToolResult renders a result as the tool's text (what the agent
@@ -449,7 +454,7 @@ func claimableToolResult(res *claimableDeployResult) *mcp.CallToolResult {
 				res.ClaimURL, res.State, res.ExpiresAt, res.PurgeAfter)
 		}
 		if res.Adopted {
-			b.WriteString("Adopted:    added forge.yaml and deploy/kcl/ to the app (its own files were not changed)\n")
+			fmt.Fprintf(&b, "Adopted:    %s\n", emptyAs(res.AdoptedFiles, "forge's files were added to the app"))
 		}
 	} else {
 		fmt.Fprintf(&b, "Deploy failed (exit %d", res.ExitCode)

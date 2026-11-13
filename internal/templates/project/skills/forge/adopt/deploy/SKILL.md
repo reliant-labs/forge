@@ -1,6 +1,6 @@
 ---
 name: adopt/deploy
-description: Forge deploys an existing app in any language (Express, Django, Rails, Spring, …) from its own Dockerfile, without rewriting it, in tiers you can stop after — 1 ship it (forge.yaml + deploy/kcl by hand from copy-paste templates, DockerBuild, managed Postgres, migrations job, secrets, dev loop, deploy), 2 see it (OpenTelemetry → dashboards, alerts, obs check verdicts), 3 harden it (promotion, CI, health endpoints), 4 move in (port to forge's Go stack only when it pays).
+description: Forge deploys an existing app in any language (Express, Django, Rails, Spring, …) from its own Dockerfile, without rewriting it, in tiers you can stop after — 1 ship it (`forge project new --in-place --kind app` writes forge.yaml + deploy/kcl from its Dockerfile and compose file — DockerBuild, managed Postgres, migrations job, secrets — then the dev loop and deploy; the templates it writes are here to review or write by hand), 2 see it (OpenTelemetry → dashboards, alerts, obs check verdicts), 3 harden it (promotion, CI, health endpoints), 4 move in (port to forge's Go stack only when it pays).
 emit: both
 applies: any
 ---
@@ -356,8 +356,9 @@ deploys from CI instead of a laptop, and probes that mean "ready".
   one job that installs forge (`curl -fsSL
   https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`),
   runs `forge lint`, `forge env deploy staging --yes` and `forge obs check
-  staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` from `forge cloud token
-  create --env staging --name ci --scopes deploy:read,deploy:write`. `ci`.
+  staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` a token with
+  deploy:read,deploy:write that a person mints in the web app
+  (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens). `ci`.
 - **Health endpoints.** Serve a readiness path that checks the database and a
   cheap liveness path, then `probes = tiers.Probes {readinessPath = "/readyz",
   livenessPath = "/healthz"}` in `workloads.k`.

@@ -1,6 +1,7 @@
 ---
 name: deploy/polyrepo
 description: forge across several repositories, in any language — (a) each repo its own forge project sharing an envs/infra repo's KCL by git pin (`[forge_projects] x = { repo, ref, commit }`, no go.mod), or (b) one deploy repo building N app repos' images (`DockerBuild.context = forge.GitSource`). Pins, the shared source cache, the local override file, offline renders, the provenance a release records, and what each step costs.
+applies: any
 ---
 
 # forge across repositories

@@ -17,6 +17,11 @@ package cli
 // this command refuses an env declared in deploy/kcl/<env>/main.k — an env
 // forge's KCL declares is one forge applies, and the machine ledger (or a
 // control plane that predates record-only) has nothing else to refuse it.
+// The one declared env it admits is one whose every workload is bound to
+// forge.OnExternal: the team's own tooling deploys it (through the binding's
+// hooks, or with none at all), so a record from that tooling's pipeline is
+// exactly what the binding is for. It is recorded on the control plane the
+// env declares, under the kind its render derives (SELF_MANAGED).
 //
 // IT NEEDS NO deploy/kcl. forge.yaml `name:` is the project; the env is
 // ensured on the control plane as SELF_MANAGED (forge keeps its ledger, the
@@ -37,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -118,8 +124,8 @@ enough (--version, with the commit detected from CI); pass --workload/--image
 pairs to record the digests your pipeline shipped.
 
 Where it records: an env with deploy/kcl uses the ledger its KCL selects.
-Otherwise, signed in (forge login, or a CI token in FORGE_CONTROL_PLANE_TOKEN
-from ` + "`forge cloud token create --scopes deploy:write`" + `) it records on Reliant cloud;
+Otherwise, signed in (forge login, or a CI token with deploy:write in
+FORGE_CONTROL_PLANE_TOKEN, minted in the web app's Settings → API tokens) it records on Reliant cloud;
 not signed in, on this machine's ledger, which monitoring cannot see.
 
 Idempotent: a CI retry records once. The same version with different digests
@@ -163,11 +169,16 @@ type recordLedger struct {
 	note string
 }
 
-// openRecordLedger selects the ledger a record goes to. A seam: tests point it
-// at a fake control plane or a temporary machine ledger.
-var openRecordLedger = defaultRecordLedger
+// recordLedgerOpener selects the ledger a record goes to. declared is the
+// env's render when deploy/kcl declares it (admitDeclaredEnv admitted it), nil
+// for an env forge does not declare.
+type recordLedgerOpener func(ctx context.Context, projectDir, project, env, token string, declared *KCLEntities) (recordLedger, error)
 
-func defaultRecordLedger(ctx context.Context, projectDir, project, env, token string) (recordLedger, error) {
+// openRecordLedger is the opener in use. A seam: tests point it at a fake
+// control plane or a temporary machine ledger.
+var openRecordLedger recordLedgerOpener = defaultRecordLedger
+
+func defaultRecordLedger(ctx context.Context, projectDir, project, env, token string, declared *KCLEntities) (recordLedger, error) {
 	selection, err := ledgerSelectionFromEnv()
 	if err != nil {
 		return recordLedger{}, err
@@ -176,7 +187,16 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 		l, err := machineLedger(projectDir)
 		return recordLedger{ledger: l}, err
 	}
-	ep, err := cloud.ResolveEndpoint(env, &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
+	// A declared env records on the control plane it declares, as the kind
+	// its render derives; an undeclared one on Reliant cloud, SELF_MANAGED.
+	decl, kind := &cloud.Declaration{Endpoint: cloud.DefaultEndpoint}, deploytarget.HostedEnvSelfManaged
+	if d := declarationFromEntities(declared); d != nil {
+		decl = d
+	}
+	if k := hostedEnvKindOf(declared); k != "" {
+		kind = k
+	}
+	ep, err := cloud.ResolveEndpoint(env, decl)
 	if err != nil {
 		return recordLedger{}, err
 	}
@@ -189,12 +209,12 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 		l, err := machineLedger(projectDir)
 		return recordLedger{ledger: l, note: fmt.Sprintf(
 			"note: not signed in to %s (%v), so this is recorded on this machine only and monitoring cannot see it. "+
-				"Sign in with `%s login`, or set %s to a token from `%s cloud token create --scopes deploy:write`, "+
+				"Sign in with `%s login`, or set %s to a token with deploy:write minted in the web app (%s), "+
 				"then re-run, or move this machine's records with `%s ledger import --from-file-ledger`.",
-			ep.URL, cerr, Name(), ep.TokenEnv, Name(), Name())}, err
+			ep.URL, cerr, Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL), Name())}, err
 	}
 	return recordLedger{
-		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, deploytarget.HostedEnvSelfManaged),
+		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, kind),
 		endpoint: ep.URL,
 	}, nil
 }
@@ -203,22 +223,57 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 // release bound to an env forge deploys; the client uses the same reason.
 const reasonRecordOnlyRelease = "record_only_release"
 
-// refuseForgeDeclaredEnv refuses, before anything is cut, a record into an env
-// forge's own KCL declares: forge applies that env, so a record-only release
-// must not become its current promotion, on any ledger. The control plane
-// refuses it too, but the machine ledger has no such check, and a control
-// plane that predates record-only would accept it.
-func refuseForgeDeclaredEnv(projectDir, env string) error {
+// renderRecordEnv renders a declared env for admitDeclaredEnv. A seam: tests
+// state the render instead of evaluating KCL.
+var renderRecordEnv = RenderKCL
+
+// admitDeclaredEnv decides, before anything is cut, whether a record may go
+// into an env forge's own KCL declares, and returns that env's render (nil for
+// an env with no declaration, which always records).
+//
+// A declared env is one forge applies, so a record-only release must not
+// become its current promotion, on any ledger. The control plane refuses it
+// too, but the machine ledger has no such check, and a control plane that
+// predates record-only would accept it.
+//
+// The exception is an env whose every workload is bound to forge.OnExternal
+// and which declares nothing forge applies itself: the team's own tooling
+// deploys it, so recording what that tooling shipped is what the binding is
+// for. A render that fails is refused, never guessed at: it cannot show that
+// every workload is external. The control plane's refusal stays the final
+// check for an env the platform or the hub applies.
+func admitDeclaredEnv(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
 	decl := filepath.Join("deploy", "kcl", env, "main.k")
 	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil {
-		return nil //nolint:nilerr // no declaration: an env forge does not deploy
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil // no declaration: an env forge does not deploy
+		}
+		// A declaration forge cannot read may still be one it deploys: refuse
+		// rather than treat it as absent.
+		return nil, fmt.Errorf("cannot tell whether forge deploys environment %q: %w", env, err)
 	}
-	return &promoteRefusedError{
-		Reason: reasonRecordOnlyRelease,
-		Detail: fmt.Sprintf("environment %q is declared in %s, so forge deploys it; `%s release record` records "+
-			"deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, or record into an env forge does not declare",
-			env, decl, Name(), Name(), env),
+	entities, err := renderRecordEnv(ctx, projectDir, env)
+	if err == nil && externalOnlyEnv(entities) {
+		return entities, nil
 	}
+	detail := fmt.Sprintf("environment %q is declared in %s, so forge deploys it; `%s release record` records "+
+		"deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, record into an env forge does not declare, "+
+		"or bind every workload of %s to forge.OnExternal so your own tooling deploys it (deploy/external)",
+		env, decl, Name(), Name(), env, env)
+	if err != nil {
+		detail += fmt.Sprintf(". It does not render, so forge cannot tell whether it is all OnExternal: %v", err)
+	}
+	return nil, &promoteRefusedError{Reason: reasonRecordOnlyRelease, Detail: detail}
+}
+
+// externalOnlyEnv reports an env whose every workload is bound to
+// forge.OnExternal and which declares nothing forge applies itself or the
+// platform hosts: its own tooling deploys all of it.
+func externalOnlyEnv(e *KCLEntities) bool {
+	if e == nil || len(e.Workloads) == 0 || len(e.WorkloadsOn(RuntimeExternal)) != len(e.Workloads) {
+		return false
+	}
+	return !e.HasHosted() && !forgeAppliesItselfLocally(e)
 }
 
 func runReleaseRecord(ctx context.Context, o releaseRecordOptions, out, errOut io.Writer) error {
@@ -279,11 +334,12 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 		return releaseRecordResult{}, err
 	}
 	project := sc.project
-	if err := refuseForgeDeclaredEnv(sc.projectDir, env); err != nil {
+	declared, err := admitDeclaredEnv(ctx, sc.projectDir, env)
+	if err != nil {
 		return releaseRecordResult{}, err
 	}
 
-	target, err := openRecordLedger(ctx, sc.projectDir, project, env, o.token)
+	target, err := openRecordLedger(ctx, sc.projectDir, project, env, o.token, declared)
 	if err != nil {
 		return releaseRecordResult{}, err
 	}

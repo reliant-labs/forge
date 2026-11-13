@@ -1,6 +1,7 @@
 ---
 name: migration/ownership
 description: Telling forge which parts of a repository are yours — one file (`forge project disown`, `--absent`), whole areas forge must never write (`scaffold.exclude` in forge.yaml), and the files a feature pinned off leaves behind (`forge generate`'s orphan report, `forge project prune --orphans`). Use when adopting forge in an existing repo, when forge writes somewhere it should not, or after switching a feature off.
+applies: any
 ---
 
 # Ownership: what forge may write

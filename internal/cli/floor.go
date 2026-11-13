@@ -653,6 +653,12 @@ func renderFloorVerdict(out io.Writer, v *promoteFloorVerdict) {
 		for _, f := range v.Raises {
 			fmt.Fprintf(out, "  floor     raises a %s floor: %s\n", f.Source, describeFloor(f))
 		}
+	case "unsupported":
+		// Rollback floors are the control plane's to offer; an anonymous
+		// deploy has no way to act on "upgrade the control plane".
+		if !cloud.ClaimableActive() {
+			fmt.Fprintf(out, "  floor     %s — %s\n", v.Verdict, v.Note)
+		}
 	default:
 		fmt.Fprintf(out, "  floor     %s — %s\n", v.Verdict, v.Note)
 	}

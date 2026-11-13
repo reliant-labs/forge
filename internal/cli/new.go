@@ -611,7 +611,7 @@ func refuseNonGoInPlaceTarget(targetPath string) error {
 				fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
 				"",
 				"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched: "+Name()+" project new --in-place --kind app "+
-					"(--dry-run first to see the files; "+Name()+" skill load adopt explains them). "+
+					"(--dry-run first to see the files; "+Name()+" skill load adopt/deploy explains them). "+
 					"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
 		}
 	}

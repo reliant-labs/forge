@@ -65,8 +65,10 @@ const (
 // so this package stays vendor-neutral about how config gets sourced.
 //
 // WorkingDir + ProjectDir control the subprocess's working directory.
-// When WorkingDir is empty, the subprocess inherits the parent's cwd
-// (the project root, where forge was invoked). When WorkingDir is set:
+// When WorkingDir is empty, the subprocess runs in ProjectDir (the forge
+// project root) — NOT the parent's cwd, which differs from the project
+// root whenever forge was pointed at the project with `-C <dir>`. When
+// WorkingDir is set:
 //
 //   - absolute paths are used as-is;
 //   - relative paths resolve against ProjectDir (which the CLI sets to
@@ -103,14 +105,14 @@ type RunnerSpec struct {
 	// (the project binary's subcommand). Stated once for every runtime.
 	Args []string
 
-	// WorkingDir is the subprocess cwd override. Empty = inherit parent.
+	// WorkingDir is the subprocess cwd override. Empty = ProjectDir.
 	// Relative paths resolve against ProjectDir; absolute paths are
 	// used verbatim.
 	WorkingDir string
-	// ProjectDir is the forge project root used to resolve a relative
-	// WorkingDir. Ignored when WorkingDir is empty or absolute. Empty
-	// ProjectDir + relative WorkingDir falls through to the parent's
-	// cwd interpretation (exec.Cmd default).
+	// ProjectDir is the forge project root: the subprocess cwd when
+	// WorkingDir is empty, and the base a relative WorkingDir resolves
+	// against. Empty ProjectDir falls through to the parent's cwd
+	// interpretation (exec.Cmd default).
 	ProjectDir string
 }
 
@@ -369,16 +371,21 @@ func runnerOrDefault(r string) string {
 }
 
 // resolveWorkingDir returns the effective cmd.Dir for the given spec.
-// Empty workingDir = empty result (inherit parent cwd). Absolute
+// Empty workingDir = projectDir: the process runs in the project root,
+// which is where every relative path a host workload declares (its air
+// config, ./bin/<name>, its GoBuild package) is written from. Inheriting
+// the parent's cwd instead was right only while forge always ran FROM the
+// project root; `forge -C <dir> env up` runs it from elsewhere, and air
+// then failed to open .air.<svc>.toml that sat in <dir>. Absolute
 // workingDir = workingDir verbatim. Relative workingDir + non-empty
 // projectDir = filepath.Join(projectDir, workingDir) so cross-repo
 // configs (e.g. WorkingDir="../sibling") resolve against the forge
 // project root rather than wherever the parent shell happens to live.
-// Relative workingDir + empty projectDir falls through to workingDir
-// verbatim (the exec.Cmd default — interpret against caller cwd).
+// Empty projectDir falls through to workingDir verbatim (the exec.Cmd
+// default — interpret against caller cwd).
 func resolveWorkingDir(workingDir, projectDir string) string {
 	if workingDir == "" {
-		return ""
+		return projectDir
 	}
 	if filepath.IsAbs(workingDir) || projectDir == "" {
 		return workingDir

@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/goexec"
@@ -155,9 +156,9 @@ type buildOptions struct {
 	pushPlan pushPlan
 	// targetArch overrides the GOARCH used for the Go binary build
 	// AND the docker buildx --platform when --docker / --push is set.
-	// Empty means "use host arch for plain go build; use forge.yaml
-	// deploy.target_arch (default amd64) for docker builds". See
-	// resolveBuildArch.
+	// Empty means "use host arch for plain go build; use the env's declared
+	// platform, else forge.yaml deploy.target_arch, else the host arch for
+	// docker builds". See resolveBuildArch.
 	targetArch string
 	// rebuild is --rebuild: run every ShellBuild's command even when its
 	// declared inputs are unchanged since its last successful build.
@@ -338,7 +339,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	// --help as things this command can do.
 	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
 	_ = cmd.Flags().MarkHidden("push")
-	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64 for docker builds)")
+	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: the env's declared platform, then forge.yaml deploy.target_arch, then the host arch)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
@@ -403,34 +404,39 @@ func validateReleaseFlags(opts buildOptions) error {
 		"them, then deploy the release to all envs with `forge env deploy <env> <version>`")
 }
 
-// resolveBuildArch chooses the GOARCH for `go build`. The arg-shaped
-// signature decouples the three knobs that compose the answer:
+// resolveBuildArch chooses the GOARCH for `go build`, or the --platform of a
+// docker build. The arg-shaped signature decouples the three knobs that
+// compose the answer:
 //
-//   - cfgArch: forge.yaml deploy.target_arch (project-level pin)
+//   - cfgArch: the env's declared platform (ClusterTarget.platform, a
+//     workload's runtime platform, the hosted platform), else forge.yaml
+//     deploy.target_arch
 //   - flagArch: --target-arch (per-invocation override)
-//   - dockerCtx: whether the caller is building a docker image (in
-//     which case we always cross-compile to the deploy-target arch
-//     since the image is destined for a k8s node, not the dev host)
+//   - dockerCtx: whether the caller is building a docker image (in which
+//     case the declared platform applies even to the plain-go-build
+//     caller's cfgArch, since the image is destined for a node)
 //
 // Returns the empty string when no cross-compile is needed (i.e.
-// the resolved target equals runtime.GOARCH). The empty return is
+// the resolved target equals the host arch). The empty return is
 // the signal buildGoBinary uses to skip the GOOS/GOARCH/CGO_ENABLED
-// env override.
+// env override, and a docker build uses to pass no --platform.
 //
-// Rule of thumb: a plain `forge build` (no docker) defaults to host
-// arch — the user wants a runnable local binary. `forge build
-// --docker` (or --push) defaults to forge.yaml deploy.target_arch
-// (or "amd64" when unset) since the resulting image will be pulled
-// by kubelet on a node whose arch is fixed at cluster-build time.
+// With nothing declared, every lane builds for the HOST arch — a plain
+// `forge build` because the user wants a runnable local binary, and a docker
+// build because ClusterTarget.platform documents "unset => host arch" and the
+// local k3d nodes such an env runs on share the host's arch. A docker build
+// used to default to amd64 instead, while the project image and ShellBuilds
+// (resolveBuildArchForImage, target_arch) followed the host: on an arm64 host
+// one env built an arm64 project image beside amd64 per-service DockerBuild
+// and frontend images. An image pushed for ANOTHER machine never reaches this
+// default: requireDeclaredImageArch refuses a remote-cluster push with no
+// declared arch, and a hosted env declares DefaultHostedPlatform.
 func resolveBuildArch(cfgArch, flagArch string, dockerCtx bool) string {
 	target := flagArch
 	if target == "" && dockerCtx {
 		target = cfgArch
-		if target == "" {
-			target = "amd64"
-		}
 	}
-	if target == "" || target == runtime.GOARCH {
+	if target == "" || target == hostArch {
 		return ""
 	}
 	return target
@@ -814,7 +820,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	budget := detectBuildMemoryBudget()
 	parallel, memCaps := resolveBuildConcurrency(opts.parallelSet, opts.parallel, budget)
 	opts.parallel = parallel
-	fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+	printBuildMemory(budget, memCaps)
 
 	plan := buildPlan{
 		cfg:               cfg,
@@ -908,9 +914,28 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
 	}
 
-	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
-	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	printBuildSuccess(len(results), opts.outputDir)
 	return nil
+}
+
+// printBuildMemory reports the build's memory budget, except on an anonymous
+// deploy, whose output keeps to what its user can act on. Extracted, like
+// printBuildHeader, to hold runBuild under its statement budget.
+func printBuildMemory(budget buildMemoryBudget, memCaps buildMemoryCaps) {
+	if !cloud.ClaimableActive() {
+		fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+	}
+}
+
+// printBuildSuccess closes a build in which every target succeeded. A build
+// that had no targets to run says nothing, rather than "All 0 builds
+// succeeded".
+func printBuildSuccess(n int, outputDir string) {
+	if n == 0 {
+		return
+	}
+	fmt.Printf("\n[build] All %d builds succeeded.\n", n)
+	fmt.Printf("[build] Binaries available in %s/\n", outputDir)
 }
 
 // builtSet is what runBuild's builds produced, as recordBuild needs it.
@@ -1012,6 +1037,12 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 // Extracted for the same reason as printBuildSummary: it is pure rendering,
 // and inline it held runBuild over its statement budget.
 func printBuildHeader(projectName string, opts buildOptions, resolvedTag, tagSource string, push pushPlan, entities *KCLEntities) {
+	if cloud.ClaimableActive() {
+		// One line: the output dir, target and docker switch are the
+		// defaults, and the KCL plan is summarised by the lines below it.
+		fmt.Printf("[build] Building %s (env %s, release %s)\n", projectName, opts.env, resolvedTag)
+		return
+	}
 	fmt.Printf("[build] Building project: %s\n", projectName)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
 	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
@@ -1050,6 +1081,9 @@ func partitionBuildResults(results []buildResult) (succeeded, failed []buildResu
 // person to add a step there had to choose between their change and a lint
 // failure that is not about their change.
 func printBuildSummary(succeeded, failed []buildResult, start time.Time) {
+	if len(succeeded) == 0 && len(failed) == 0 {
+		return
+	}
 	fmt.Println()
 	fmt.Println(strings.Repeat("-", 50))
 	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
@@ -1834,8 +1868,10 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 	}
 	fmt.Fprintf(out, "\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
 		verb, cut.Release.Version, cut.Images, cut.Packages, cut.Files, strings.Join(releaseImageNames(cut.Release), ", "))
-	fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
-	fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
+	if !cloud.ClaimableActive() {
+		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
+		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
+	}
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build

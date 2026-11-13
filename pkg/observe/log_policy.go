@@ -146,8 +146,9 @@ func WithSuccessLevel(name string, level slog.Level) LogOption {
 //
 // Nothing is expected unless declared — forge cannot tell an answer from a
 // fault, so an undeclared not-found stays a failure — except a drain
-// (svcerr.ErrServerDraining), which every layer treats as expected without
-// being told. Declarations accumulate across options. The declaration scopes to the layer it is passed to — the
+// (svcerr.ErrServerDraining) and an ending the handler marked
+// svcerr.ExpectedClose, which every layer treats as expected without being
+// told. Declarations accumulate across options. The declaration scopes to the layer it is passed to — the
 // error itself is not marked, so a caller that turns the answer into a
 // failure ("the bundle this deploy needs is gone") still logs a failure.
 func WithExpectedErrors(targets ...error) LogOption {
@@ -203,8 +204,9 @@ func newLogPolicy(level slog.Level, opts []LogOption) *logPolicy {
 		slow:      DefaultSlowThreshold,
 		now:       time.Now,
 		userLevel: DefaultUserErrorLevel,
-		// A drain is expected everywhere; see "Expected errors" above.
-		expected: []func(error) bool{svcerr.IsServerDraining},
+		// A drain and an expected close are expected everywhere; see
+		// "Expected errors" above.
+		expected: []func(error) bool{svcerr.IsServerDraining, svcerr.IsExpectedClose},
 	}
 	for _, opt := range opts {
 		if opt != nil {

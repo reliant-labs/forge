@@ -102,13 +102,18 @@ count persons.
 **User.** A user id per environment, the way the Users card counts it, so a
 dashboard over several environments equals the sum of their cards.
 
-- **Active**: any user-attributed product event except `auth_signed_out` and
-  `auth_accounts` (`obsquery.ActiveEvidence`): a sign-in, the daily session
-  heartbeat, a CRUD write, an app event.
+- **Active**: any user-attributed product event except `auth_signed_out`,
+  `auth_accounts` and an `observe.TrackState` fact (`obsquery.UserActivityEvidence`):
+  a sign-in, the daily session heartbeat, a CRUD write, an app event. The
+  project's `forge.ProjectAnalytics.not_activity` and `exclude_users_with`
+  narrow it (`obsquery.ActiveEvidenceFor`).
 - **New**: a user whose first `auth_signed_up` is in the range. An environment
   that reported no sign-up in the 90 days before the end of the range counts the
-  users first seen in the range instead (`obsquery.NewUsersSource`); the Users
-  dashboard's _Where auth events come from_ table says when.
+  users first seen in the range instead (`obsquery.NewUsersSource`), except the
+  users first seen within 7 days of the earliest event retained: the data, not
+  the user, begins there, so they count as returning. A range with nothing
+  past those 7 days shows no New or Returning figure. The Users dashboard's
+  _Where auth events come from_ table says when, and from which moment.
 - **Returning**: active and not new.
 
 **Sign-up attribution.** A sign-up (a user's first `auth_signed_up`) is credited
@@ -187,7 +192,8 @@ the end of the range; a channel with fewer than 20 shows none.
 The fragments are Go in `forge/pkg/obsbuiltin` (`fragments.go`); `reliant forge
 project libraries obsbuiltin` prints the package's API. A panel of your own
 reaches the same answer by keying visitors on `(EnvId, DayVisitor)`, users on
-`(EnvId, UserId)`, and active users on `obsquery.ActiveEvidence`:
+`(EnvId, UserId)`, and active users on `obsquery.UserActivityEvidence` (or
+`obsquery.ActiveEvidenceFor` the project's declared rules):
 
 ```sql
 SELECT Props['route'] AS route, uniqExact((EnvId, DayVisitor)) AS visitors

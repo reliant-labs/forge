@@ -33,20 +33,26 @@ import (
 // come last, as what codegen adds. Every claim here ships: the benefits
 // registry (scope: any) is where each is checked.
 const mcpInstructions = "This is Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge and not " +
-	"Foundry's forge. Forge helps the repo you are in today, in any language, without a rewrite or a forge.yaml: " +
-	"lint catches unsafe SQL migrations (db/migrations/*.up.sql) and, in a Go module, runs golangci-lint and flags " +
-	"cut traces and timezone-dependent date buckets; skills are playbooks for debugging, testing, migrations, " +
-	"observability and deploys; forge/pkg (Go) and @reliantlabs/forge-web-runtime (its /node entry ships a Node " +
-	"process's logs, errors and spans over OTLP) are runtime libraries you can import as they are; deploy_claimable " +
-	"puts an existing Vite or Next.js app live with no account and returns a URL plus a claim link for your user. " +
-	"Monitoring (dashboards at https://forge.reliantlabs.io, sign-in required) and a recorded history of every " +
-	"deploy come once forge deploys the app, which the adopt skill walks without rewriting it. Start with benefits: " +
-	"what applies to this repo, each with its first step and the agent time to first value to quote to your user. " +
-	"Then skill_load name=adopt: the survey, the estimate rubric and every entry point. Once the repo adopts " +
-	"forge's codegen (a forge.yaml with services), skill_load name=forge is the entry point, and capabilities, " +
-	"annotations, libraries, audit, shapes and generate work on the project. deploy_status shows a claimable " +
-	"deploy again and explain_error turns any forge failure into the next command. Every tool takes an optional " +
-	"dir: the repo to act on (default: the directory the server was started in)."
+	"Foundry's forge. Forge helps the repo you are in today, in any language, without a rewrite, and it need not " +
+	"build or deploy the app. Monitoring: after forge login, the CLI's `forge obs init <env>…` mints an ingest token per env " +
+	"and prints the OTEL_* variables that send any app's traces, logs and metrics to dashboards, issues and alerts " +
+	"at https://forge.reliantlabs.io (sign-in required). Deploy history: one `forge release record` step after the " +
+	"deploy job the repo's CI already runs gives each release a deploy marker and a `forge obs check` verdict. " +
+	"From there, `forge env verify` shows forge would change nothing about what runs before it drives the repo's " +
+	"own deploy tooling, and `forge project new --in-place --kind app` declares its Dockerfile so forge can deploy " +
+	"it. With no account at all: lint catches unsafe SQL migrations (db/migrations/*.up.sql, or the directory of " +
+	"the goose, atlas, flyway, dbmate or golang-migrate setup forge.yaml names) and, in a Go module, runs " +
+	"golangci-lint and flags cut traces and timezone-dependent date buckets; skills are playbooks for debugging, " +
+	"testing, migrations, observability and deploys; forge/pkg (Go) and @reliantlabs/forge-web-runtime (its /node " +
+	"entry ships a Node process's logs, errors and spans over OTLP) are runtime libraries you can import as they " +
+	"are; deploy_claimable puts an existing Vite or Next.js app live and returns a URL plus a claim link for your " +
+	"user. Start with benefits: what applies to this repo, each with its first step and the agent time to first " +
+	"value to quote to your user. Then skill_load name=adopt: the survey, the estimate rubric and every entry " +
+	"point. Once the repo adopts forge's codegen (a forge.yaml with services), skill_load name=forge is the entry " +
+	"point, and capabilities, annotations, libraries, audit, shapes and generate work on the project. " +
+	"deploy_status shows a claimable deploy again and explain_error turns any forge failure into the next " +
+	"command. Every tool takes an optional dir: the repo to act on (default: the directory the server was " +
+	"started in)."
 
 // maxMCPOutput bounds one tool result. Head and tail are both kept because
 // the verdict of lint and generate is the last line.

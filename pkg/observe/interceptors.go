@@ -255,7 +255,8 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 // OpenTelemetry metrics per RPC:
 //
 //   - rpc.server.calls    (counter, attribute: procedure)
-//   - rpc.server.errors   (counter, attribute: procedure)
+//   - rpc.server.errors   (counter, attributes: procedure, code, error_class;
+//     an expected close — svcerr.ExpectedClose — is not counted)
 //   - rpc.server.duration (histogram seconds, attribute: procedure)
 //
 // Streaming handlers record one duration sample per stream end. A nil
@@ -294,11 +295,20 @@ func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 		if i.duration != nil {
 			i.duration.Record(ctx, time.Since(start).Seconds(), attr)
 		}
-		if err != nil && i.errs != nil {
+		if countsAsError(err) && i.errs != nil {
 			i.errs.Add(ctx, 1, errorMetricAttrs(req.Spec().Procedure, err))
 		}
 		return resp, err
 	})
+}
+
+// countsAsError reports whether a call that ended with err is counted in
+// rpc.server.errors. An expected close (svcerr.ExpectedClose) is not: the
+// server ended the call on purpose — a stream cut by its own idle policy so
+// the peer redials — however the wire code reads. Its duration and its call
+// are still recorded.
+func countsAsError(err error) bool {
+	return err != nil && !svcerr.IsExpectedClose(err)
 }
 
 // errorMetricAttrs labels one failed RPC: its procedure, the code the client
@@ -329,7 +339,7 @@ func (i *metricsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 		if i.duration != nil {
 			i.duration.Record(ctx, time.Since(start).Seconds(), attr)
 		}
-		if err != nil && i.errs != nil {
+		if countsAsError(err) && i.errs != nil {
 			i.errs.Add(ctx, 1, errorMetricAttrs(conn.Spec().Procedure, err))
 		}
 		return err

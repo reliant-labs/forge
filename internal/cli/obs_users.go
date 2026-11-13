@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
+	"github.com/reliant-labs/forge/internal/obsdash"
 	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
@@ -115,6 +116,22 @@ func (o obsUsersOpts) validate() error {
 	return nil
 }
 
+// declaredUserActivity is the user-activity rules forge generate last wrote
+// into the project's dashboard spec (forge.ProjectAnalytics.not_activity and
+// .exclude_users_with), so `forge obs users` counts the users the Users
+// dashboard and the Overview's Users card count. Outside a generated project
+// it is the convention alone.
+func declaredUserActivity(projectDir string) obsquery.Activity {
+	if projectDir == "" {
+		return obsquery.Activity{}
+	}
+	in, ok, err := obsdash.ReadFragments(projectDir)
+	if err != nil || !ok {
+		return obsquery.Activity{}
+	}
+	return in.Activity
+}
+
 // usersReader is the backend's user side; a backend without one cannot look.
 func usersReader(b obsbackend.Backend) (obsbackend.UserActivityReader, error) {
 	r, ok := b.(obsbackend.UserActivityReader)
@@ -151,7 +168,8 @@ func runObsUsers(ctx context.Context, d obsDeps, env string, o obsUsersOpts) err
 	if err != nil {
 		return fail(err)
 	}
-	res, err := r.UserActivity(ctx, obsbackend.UserActivityRequest{Narrow: n, SeriesDays: o.series, WantSeenTotal: o.seenTotal})
+	res, err := r.UserActivity(ctx, obsbackend.UserActivityRequest{Narrow: n, SeriesDays: o.series, WantSeenTotal: o.seenTotal,
+		Activity: declaredUserActivity(projectDirForKCL())})
 	if err != nil {
 		return fail(err)
 	}

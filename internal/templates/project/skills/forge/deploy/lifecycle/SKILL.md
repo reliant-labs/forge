@@ -63,15 +63,15 @@ A 403 naming a scope (e.g. `domain:read`): the credential lacks it. Under
 Reliant, the Reliant session it was minted from lacks it — grant it in Reliant
 (Settings → Access Tokens) or sign in again with `reliant auth login`; standalone,
 re-run `forge login`. If a fresh token still lacks it, your role has no grant —
-ask an org admin, who can mint
-`forge cloud token create --env <env> --name <n> --scopes <scope>`; export it as
-the env's declared token variable.
+ask an org admin, who can mint a token with the scope in the web app (Settings →
+API tokens, https://forge.reliantlabs.io/settings/tokens); export it as the env's
+declared token variable.
 
 ### Scopes for reading what a deployed app is doing
 
 These scopes belong to the feedback loop (observe, then query). Each is its own
-authority: none implies another product's, and `forge cloud token create
---scopes` accepts them like any other.
+authority: none implies another product's, and a token is minted with them like
+any other scope.
 
 | Scope | Allows | Notes |
 |---|---|---|
@@ -90,7 +90,10 @@ push`) and does nothing else. The registry grants it push and pull on
 refuses it on every RPC. It is a whole credential: a token carrying it carries
 no other scope, acts as no person, is bound to nothing, and no wildcard resolves
 to it. Because it cannot ask the control plane for its org, the push names the
-org itself:
+org itself. A person mints the token in the web app (Settings → API tokens,
+https://forge.reliantlabs.io/settings/tokens); `forge cloud token create` does
+it from the CLI only on a control plane that admits a CLI login for token
+administration (Reliant cloud refuses one: exit 9, `person_session_required`):
 
     forge cloud token create --env prod --name desktop-sourcemaps --scopes sourcemaps:write --expires-in 2160h
     forge frontend sourcemaps push dist --frontend desktop --build-id "$VERSION" --env <env> --org <org id>

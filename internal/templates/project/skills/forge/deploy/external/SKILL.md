@@ -1,6 +1,7 @@
 ---
 name: deploy/external
 description: Keep your own deploy tooling (Helm, Fly.io, Cloud Run, ECS, Argo CD, a script) and let forge drive it — forge.OnExternal's four argv hooks (status, plan, deploy, health), worked recipes for each tool, and the shadow-mode path that proves parity with `forge env verify` before forge deploys anything.
+applies: any
 ---
 
 # Your deploy tooling, driven by forge: `forge.OnExternal`
@@ -52,7 +53,29 @@ output = forge.render(forge.Bundle {
 
 Every field is optional. **No hooks at all is record-only**: forge builds,
 cuts and promotes; your CI (or a person) deploys. That is the passive end of
-the same binding — start there and add hooks one at a time.
+the same binding — start there and add hooks one at a time. Your CI can then
+record what it shipped with `forge release record --env prod …` (`deploy/record`):
+it is refused for any other env `deploy/kcl` declares, and admitted for one
+whose every workload is `forge.OnExternal`.
+
+### With a control plane: a self-managed env
+
+Declare `control_plane = forge.ControlPlane {…}` on the env and its ledger
+lives there, so monitoring and the forge console see every promotion. An env
+with an `OnExternal` workload and nothing hosted is **self-managed**, like an
+`OnCluster` one: the control plane records its promotions, and
+`forge env deploy` applies them from wherever it runs, through your hooks.
+Two consequences:
+
+- **Its hosted secrets are write-only** (`forge.HostedSecrets`): `forge secret
+  set` writes them, nothing reads them back. Your tooling gets its secrets
+  its own way; `pass_env` hands a hook only what this machine's provider
+  resolves.
+- **An env an older forge created as LOCAL** (forge v1.5.0 classified an
+  `OnExternal` env with a control plane LOCAL, and the control plane refused
+  its promotions) is sealed on its next `forge env deploy` or
+  `forge release record`: the control plane turns it self-managed and its
+  secrets stop being pullable. Nothing to run by hand.
 
 | hook | when | contract |
 |---|---|---|

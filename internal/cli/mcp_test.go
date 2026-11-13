@@ -91,7 +91,8 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	// The front door: what forge does for a repo that is not a forge
 	// project comes first, and routes to benefits and the adopt skill.
 	for _, want := range []string{"Reliant Forge", "reliant-labs/forge", "Atlassian Forge", "skill_load",
-		"any language", "Start with benefits", "name=adopt", "https://forge.reliantlabs.io", "sign-in required"} {
+		"any language", "Start with benefits", "name=adopt", "https://forge.reliantlabs.io", "sign-in required",
+		"forge obs init", "forge release record", "forge env verify", "--kind app"} {
 		if !strings.Contains(init.Instructions, want) {
 			t.Errorf("instructions missing %q:\n%s", want, init.Instructions)
 		}

@@ -350,3 +350,48 @@ func TestObsInit_HumanViewSaysHowToRotateBeforeExpiry(t *testing.T) {
 		}
 	}
 }
+
+// TestObsInit_SeveralEnvsInOneCall pins the form the adopt and
+// observability/monitoring-only skills tell agents to copy:
+// `forge obs init prod staging` registers each env and mints one token per env.
+func TestObsInit_SeveralEnvsInOneCall(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp := fakeInitControlPlane()
+	out, err := runInit(t, dir, cp, noTTY, nil, "prod", "staging", "--json")
+	if err != nil {
+		t.Fatalf("obs init prod staging: %v\n%s", err, out)
+	}
+	var doc obsInitDoc
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not a document: %v\n%s", err, out)
+	}
+	if len(doc.Envs) != 2 {
+		t.Fatalf("envs in the document = %d, want 2 (prod, staging)\n%s", len(doc.Envs), out)
+	}
+	var ensured, minted []string
+	for _, c := range cp.calls {
+		switch c.procedure {
+		case "controlplane.v1.DeployService/EnsureEnvironment":
+			ensured = append(ensured, c.body)
+		case procCreateIngestToken:
+			minted = append(minted, c.body)
+		}
+	}
+	if len(ensured) != 2 || !strings.Contains(ensured[0], `"name":"prod"`) || !strings.Contains(ensured[1], `"name":"staging"`) {
+		t.Errorf("EnsureEnvironment calls = %v, want prod then staging", ensured)
+	}
+	if len(minted) != 2 {
+		t.Errorf("CreateIngestToken calls = %d, want one per env", len(minted))
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DeclaresEnv("prod") || !cfg.DeclaresEnv("staging") {
+		t.Fatalf("forge.yaml after init does not declare both envs:\n%s", raw)
+	}
+}

@@ -2647,11 +2647,17 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	return ctx.warnOrFail("observability dashboards", func() error {
-		funnels, err := declaredFunnels(ctx.renderedFrontends())
+		funnels, err := declaredFunnels(ctx.renderedFrontends(), ctx.renderedEnvs().analytics...)
 		if err != nil {
 			return err
 		}
 		in.Funnels = funnels
+		if in.Counts, err = declaredCounts(ctx.renderedEnvs().analytics); err != nil {
+			return err
+		}
+		if in.Activity, err = declaredActivity(ctx.renderedEnvs().analytics); err != nil {
+			return err
+		}
 		if in.Analytics, err = declaredAnalytics(ctx.renderedFrontends()); err != nil {
 			return err
 		}

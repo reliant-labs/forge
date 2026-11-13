@@ -96,9 +96,20 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 // it on the span's exception event as exception.stacktrace; a client-class
 // error never does.
 //
+// An expected close (svcerr.ExpectedClose) is not a failure at all: the
+// server ended the call on purpose. The span gets error_class=canceled and
+// rpc.close_reason, an rpc.close event carrying the message instead of an
+// exception, and status OK — which also holds against a tracing layer that
+// sets Error from the wire code AFTER this call (otelconnect does), because
+// an OK status is final.
+//
 // nil-safe on both span and err (a nil err is the no-op success path).
 func RecordSpanError(span trace.Span, err error) {
 	if span == nil || err == nil {
+		return
+	}
+	if reason, ok := svcerr.CloseReason(err); ok {
+		recordSpanClose(span, err, reason)
 		return
 	}
 	class := svcerr.Classify(err)
@@ -115,6 +126,28 @@ func RecordSpanError(span trace.Span, err error) {
 		return
 	}
 	span.SetStatus(codes.Error, err.Error())
+}
+
+// AttrCloseReason is the span attribute naming why the server ended a call it
+// chose to end (svcerr.ExpectedClose): "peer_idle", "handover", …
+const AttrCloseReason = "rpc.close_reason"
+
+// spanCloseEvent is the span event an expected close records in place of an
+// exception: the ending is worth seeing on the trace, but it is not an error.
+const spanCloseEvent = "rpc.close"
+
+// recordSpanClose records an expected close on span; see RecordSpanError.
+func recordSpanClose(span trace.Span, err error, reason string) {
+	span.SetAttributes(
+		attribute.String(ErrorClassKey, svcerr.ClassCanceled.String()),
+		attribute.String(AttrCloseReason, reason),
+	)
+	span.AddEvent(spanCloseEvent, trace.WithAttributes(
+		attribute.String(AttrCloseReason, reason),
+		attribute.String("rpc.close_message", err.Error()),
+		attribute.String("rpc.close_code", svcerr.Code(err).String()),
+	))
+	span.SetStatus(codes.Ok, "")
 }
 
 // CallMetrics is a triple of OpenTelemetry instruments for opt-in
@@ -178,7 +211,9 @@ func (m *CallMetrics) RecordCall(ctx context.Context, method string, start time.
 	if m.duration != nil {
 		m.duration.Record(ctx, time.Since(start).Seconds(), attr)
 	}
-	if err != nil && m.errs != nil {
+	// An expected close (svcerr.ExpectedClose) is not an error: the call
+	// ended because the server chose to end it.
+	if err != nil && m.errs != nil && !svcerr.IsExpectedClose(err) {
 		// error_class keeps user errors countable now that they no longer
 		// log at ERROR; see error_class.go.
 		m.errs.Add(ctx, 1, metric.WithAttributes(

@@ -118,8 +118,9 @@ The real Chromium SDK contract test is a separate slow tier:
 `npm run build && npx playwright install chromium && npm run test:browser`.
 It verifies exact action → fetch parent IDs and wire `traceparent`, that the
 fetch spans of unary and stream calls made while an `interaction()` is open
-are its children, retains mouse events in replay, and checks private
-text/input sentinels are masked.
+are its children, retains mouse events in replay, checks private
+text/input sentinels are masked, and that no exported span carries the page
+URL's query string or fragment.
 
 `initBrowserTelemetry` starts the HyperDX browser SDK once per page load
 (errors, console, fetch/XHR, page loads, web vitals, optional replay) and ships
@@ -254,7 +255,8 @@ process.versions.chrome })`), which init stamps as `app.desktop.version`,
   its `serviceVersion`).
 
 - Benign browser errors (`classifyBenignError`, `forge.errors_filtered`): an
-  `AbortError` (a cancelled request, an unmounted component, a navigation) and
+  `AbortError` (a cancelled request, an unmounted component, a navigation), a
+  `TimeoutError` (`AbortSignal.timeout()` elapsing) and
   the browser's generic fetch failure (a `TypeError` reading exactly `Failed to
 fetch`, `Load failed` or `NetworkError when attempting to fetch resource.`)
   are kept out of the error pipeline, whether they arrive as an unhandled
@@ -272,8 +274,29 @@ fetch`, `Load failed` or `NetworkError when attempting to fetch resource.`)
 Privacy is forced, not configurable: when replay records, all text and inputs
 are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.
-fetch/XHR spans have their `http.url` / `url.full` stripped of query string and
-fragment; request and response bodies and headers are not captured.
+Request and response bodies and headers are not captured.
+
+No URL leaves the browser with its query string or fragment, which is where
+emails, tokens, OAuth codes and search terms live. The SDK stamps the page URL
+on every span (`location.href`) and on documentLoad spans (`http.url`,
+`document.referrer`), the request URL on fetch/XHR and resource spans
+(`http.url`, `url.full`), and, when its interaction instrumentation is on, the
+page URL on click spans (`http.url`) and the previous one on routeChange spans
+(`prev.href`). Right after init the runtime wraps the SDK's span
+exporter, so every URL-valued attribute of a span, a span event, a link or the
+resource is exported without them, whichever instrumentation recorded it:
+attributes named by the conventions and the SDK (`url.full`, `http.url`,
+`http.target`, `location.href`, `prev.href`, `page.url`, `document.referrer`,
+`target_src`, …) or ending in `href`, `url`, `uri`, `src` or `referrer`.
+`url.query` and `url.fragment` are dropped. Free text that merely contains a URL
+(a console message, a stack) is not rewritten, and the recorded spans are not
+modified; only what is serialized changes. Nothing is kept by default;
+`keepUrlQueryParams: ["utm_*", "ref"]` keeps the named parameters (exact names,
+or prefixes ending in `*`; case-sensitive) and never the fragment. An app that
+runs its own OTel SDK gets the same with
+`new BatchSpanProcessor(scrubbingSpanExporter(exporter))`, and `scrubUrl` /
+`scrubUrlAttributes` for its own attributes. The platform's ingest scrubs the
+same attributes again, as defence in depth.
 
 ## Auth-provider adapters (`/auth/<provider>`)
 

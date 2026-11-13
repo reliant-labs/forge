@@ -101,6 +101,38 @@ func TestLoginBrokerScaffoldMountsEachMethodOnlyWhenOffered(t *testing.T) {
 	}
 }
 
+// forge#2121: with database_url declared, the broker serialises an account's
+// address proofs across replicas on the app's own database; without it, it
+// says how to, and reads no field it lacks.
+func TestLoginBrokerScaffoldSharesTheProofLockOnTheAppsDatabase(t *testing.T) {
+	src := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "DatabaseURLField": true}))
+	for _, want := range []string{
+		"ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger)",
+		"pc, err := pgx.ParseConfig(dsn)",
+		"return devidp.UnavailableProofLocker(err)",
+		"db := dbtrace.OpenDB(stdlib.GetConnector(*pc))",
+		`"github.com/reliant-labs/forge/pkg/observe/dbtrace"`,
+		"return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})",
+		`"github.com/jackc/pgx/v5/stdlib"`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the broker lacks %q", want)
+		}
+	}
+	// forge-tracing-raw-sql-open: an untraced pool fails the project's own
+	// lint the moment it is scaffolded (TestE2EProjectUpgradeConvergesAcrossARange).
+	if strings.Contains(src, "stdlib.OpenDB(") {
+		t.Error("the broker opens the proof lock's pool untraced (stdlib.OpenDB); use dbtrace.OpenDB")
+	}
+	without := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true}))
+	if strings.Contains(without, "cfg.DatabaseUrl") || strings.Contains(without, `"github.com/jackc/pgx/v5"`) {
+		t.Error("a broker whose config declares no database_url reads it")
+	}
+	if !strings.Contains(without, "ProofLocker: devidp.NewPostgresProofLocker") {
+		t.Error("a broker without database_url does not say how to share the proof lock")
+	}
+}
+
 func TestLoginBrokerScaffoldWithoutLoginPolicyFieldServesTheLegacyPolicy(t *testing.T) {
 	src := renderBroker(t, brokerData(nil))
 	if strings.Contains(src, "cfg.IdpLoginPolicy") || strings.Contains(src, "cfg.JwtAudience") {
@@ -147,13 +179,14 @@ func TestLoginBrokerScaffoldCompilesAndMountsPerPolicy(t *testing.T) {
 type Config struct {
 	Environment, IdpBase, IdpHost, IdpBrokerToken, IdpBrokerTokenFile string
 	OidcClientId, OidcRedirectUri, IdpLoginUri, IdpLoginPolicy, JwtAudience string
+	DatabaseUrl string
 	AuthSelfSignup bool
 	TrustedProxyHops int32
 }
 `)
 	write("pkg/middleware/middleware.go", "package middleware\n\nconst SessionCookieName = \"app_session\"\n\nconst SecureSessionCookieName = \"__Host-\" + SessionCookieName\n")
 	write("internal/app/login_broker.go", renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "AudienceField": true, "TrustedProxyHopsField": true,
-		"MiddlewareDeclaresSecureSessionCookie": true})))
+		"MiddlewareDeclaresSecureSessionCookie": true, "DatabaseURLField": true})))
 	write("internal/app/login_broker_mount_test.go", `package app
 
 import (

@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -309,6 +312,8 @@ func newCIVulnScanCmd() *cobra.Command {
 		flagGo  bool
 		flagNPM bool
 		flagAll bool
+		// flagRootModule restricts the Go scan to the project root's module.
+		flagRootModule bool
 	)
 
 	cmd := &cobra.Command{
@@ -326,7 +331,12 @@ func newCIVulnScanCmd() *cobra.Command {
 			"in forge.yaml — by its GO-… id (govulncheck) or GHSA-… id (npm audit), with a\n" +
 			"reason and an expiry date. Each entry accepts that one advisory and nothing else; an\n" +
 			"expired or incomplete entry fails the gate, and one that matches nothing is reported\n" +
-			"so it can be removed.",
+			"so it can be removed.\n\n" +
+			"The Go scan covers EVERY Go module of the project, not only the one at its root:\n" +
+			"`govulncheck ./...` stops at a nested go.mod, so a tools/ or a sibling module would\n" +
+			"otherwise never be scanned. Modules under vendor/, testdata/, node_modules/ and\n" +
+			"directories whose name starts with . or _ are skipped, as is a module with no Go\n" +
+			"packages; each module's result is printed, and --root-module scans the root alone.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := requireFeature(config.FeatureCI)
 			if err != nil {
@@ -378,7 +388,7 @@ func newCIVulnScanCmd() *cobra.Command {
 			}
 
 			if runGo {
-				what, err := ciRunGovulncheck(cmd.Context(), exemptions[ecosystemGo])
+				what, err := ciRunGovulncheck(cmd.Context(), projectDirForKCL(), flagRootModule, exemptions[ecosystemGo])
 				switch {
 				case err != nil && errors.Is(err, errScannerUnavailable):
 					// Cannot verify ⇒ cannot pass. Hard-fail with the
@@ -439,6 +449,7 @@ func newCIVulnScanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&flagGo, "go", false, "Run govulncheck only")
 	cmd.Flags().BoolVar(&flagNPM, "npm", false, "Run npm audit only")
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Run all scanners enabled in forge.yaml (default)")
+	cmd.Flags().BoolVar(&flagRootModule, "root-module", false, "Scan only the Go module at the project root, not the nested ones")
 
 	return cmd
 }
@@ -460,7 +471,8 @@ func (u unavailable) Error() string        { return u.err.Error() }
 func (u unavailable) Is(target error) bool { return target == errScannerUnavailable }
 func (u unavailable) Unwrap() error        { return u.err }
 
-// ciRunGovulncheck runs govulncheck and returns a short description of
+// ciRunGovulncheck runs govulncheck over every Go module of the project at
+// root (only the root's, when rootOnly) and returns a short description of
 // what it scanned (for the caller's success line), or an error.
 //
 // It runs in JSON mode rather than text mode, which moves the pass/fail
@@ -474,33 +486,103 @@ func (u unavailable) Unwrap() error        { return u.err }
 // as a pass. Everything that could go wrong — the scanner missing, the
 // process failing, output that will not parse — is therefore an explicit
 // error below, never a fall-through.
-func ciRunGovulncheck(ctx context.Context, exemptions []config.CIVulnExemption) (string, error) {
+func ciRunGovulncheck(ctx context.Context, root string, rootOnly bool, exemptions []config.CIVulnExemption) (string, error) {
 	if _, err := exec.LookPath("govulncheck"); err != nil {
 		return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
 			"govulncheck is not on PATH, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
 			"",
 			"install it with `go install golang.org/x/vuln/cmd/govulncheck@latest` (forge's generated .github/workflows/ci.yml installs a pinned version in the vuln-scan job, and scripts/bootstrap.sh installs it locally), then re-run")}
 	}
+	return scanGoModules(ctx, root, rootOnly, exemptions, runGovulncheckJSON, os.Stdout, time.Now())
+}
 
-	fmt.Println("Running govulncheck ./...")
+// runGovulncheckJSON runs `govulncheck -format json ./...` in one module.
+func runGovulncheckJSON(ctx context.Context, dir string) ([]byte, error) {
 	var stdout bytes.Buffer
 	cmd := exec.CommandContext(ctx, "govulncheck", "-format", "json", "./...")
+	cmd.Dir = dir
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		// In JSON mode a non-zero exit is a scanner failure (bad flags,
 		// a build error in the module, a panic), NOT a findings report.
-		return "", fmt.Errorf("govulncheck did not complete: %w", err)
+		return nil, err
 	}
+	return stdout.Bytes(), nil
+}
 
-	findings, err := parseGovulncheckJSON(&stdout)
+// scanGoModules is the Go gate over a project's modules, with the scanner
+// injected (run) so it is testable without govulncheck.
+//
+// One verdict over every module, not one per module: findings are merged
+// by advisory ID (In names the modules that call it, as the npm side names
+// frontends), and the exemptions are applied ONCE, so an exemption that
+// matches in one module is not reported stale by every other. A module the
+// scanner could not complete is named and fails the gate after the others
+// have run, so one broken module does not hide the rest's results.
+func scanGoModules(ctx context.Context, root string, rootOnly bool, exemptions []config.CIVulnExemption,
+	run func(ctx context.Context, dir string) ([]byte, error), out io.Writer, now time.Time,
+) (string, error) {
+	modules, skipped, err := discoverGoModules(root, rootOnly)
 	if err != nil {
 		return "", err
 	}
+	for _, rel := range skipped {
+		fmt.Fprintf(out, "⏭️  govulncheck: %s is a Go module with no Go packages — nothing to scan\n", rel)
+	}
+	if len(modules) == 0 {
+		what := "a go.mod"
+		if rootOnly {
+			what = "a go.mod at the project root"
+		}
+		return "", fmt.Errorf("found no Go module with packages to scan under %s (want %s)", root, what)
+	}
 
-	res := evaluateVulnFindings(findings, exemptions, time.Now())
-	res.report(os.Stdout)
+	merged := map[string]*vulnFinding{}
+	var failedModules []string
+	for _, rel := range modules {
+		fmt.Fprintf(out, "Running govulncheck ./... in %s\n", rel)
+		raw, rerr := run(ctx, filepath.Join(root, filepath.FromSlash(rel)))
+		if rerr != nil {
+			fmt.Fprintf(out, "  ❌ %s: govulncheck did not complete: %v\n", rel, rerr)
+			failedModules = append(failedModules, rel)
+			continue
+		}
+		findings, perr := parseGovulncheckJSON(bytes.NewReader(raw))
+		if perr != nil {
+			fmt.Fprintf(out, "  ❌ %s: %v\n", rel, perr)
+			failedModules = append(failedModules, rel)
+			continue
+		}
+		if len(findings) == 0 {
+			fmt.Fprintf(out, "  ✓ %s: no called vulnerabilities\n", rel)
+		} else {
+			fmt.Fprintf(out, "  %s: %d called vulnerabilit(ies)\n", rel, len(findings))
+		}
+		for _, f := range findings {
+			if existing, ok := merged[f.ID]; ok {
+				existing.In = append(existing.In, rel)
+				continue
+			}
+			f := f
+			if len(modules) > 1 {
+				f.In = []string{rel}
+			}
+			merged[f.ID] = &f
+		}
+	}
 
+	all := make([]vulnFinding, 0, len(merged))
+	for _, f := range merged {
+		all = append(all, *f)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	res := evaluateVulnFindings(all, exemptions, now)
+	res.report(out)
+
+	if len(failedModules) > 0 {
+		return "", fmt.Errorf("govulncheck did not complete in %d module(s): %s", len(failedModules), strings.Join(failedModules, ", "))
+	}
 	if len(res.Blocking) > 0 {
 		return "", fmt.Errorf("govulncheck found %d vulnerability/ies your code calls", len(res.Blocking))
 	}
@@ -512,11 +594,103 @@ func ciRunGovulncheck(ctx context.Context, exemptions []config.CIVulnExemption) 
 		return "", fmt.Errorf("%d vulnerability exemption(s) in forge.yaml could not be honored", len(res.Malformed))
 	}
 
-	what := "govulncheck (Go modules + stdlib)"
+	what := "govulncheck (Go modules + stdlib"
+	if len(modules) > 1 {
+		what += fmt.Sprintf(", %d modules: %s", len(modules), strings.Join(modules, ", "))
+	}
+	what += ")"
 	if len(res.Accepted) > 0 {
 		what += fmt.Sprintf(", %d accepted exemption(s)", len(res.Accepted))
 	}
 	return what, nil
+}
+
+// discoverGoModules lists the project's Go modules, as slash paths relative
+// to root ("." for the root's own), in walk order, and separately the
+// modules that hold no Go package (a go.mod that only bounds a directory —
+// govulncheck has nothing to load there).
+//
+// The walk skips what `go` itself never builds from a parent module and what
+// is not the project's own code: vendor/, testdata/, node_modules/, and any
+// directory whose name starts with . or _ (.git, .forge, .tools, _scratch).
+// A module nested inside another is its own module; its packages do not count
+// toward the outer one.
+func discoverGoModules(root string, rootOnly bool) (modules, empty []string, err error) {
+	moduleOf := map[string]string{} // dir → the rel path of the module it is in ("" when none)
+	hasGo := map[string]bool{}
+	var order []string
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			// Fail closed: a subtree the walk cannot read may hold a module, or
+			// packages of one, and a scan that skipped it would pass without
+			// having looked.
+			return werr
+		}
+		if d.IsDir() {
+			if path != root && skipModuleWalkDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			mod := moduleOf[filepath.Dir(path)]
+			isModule, serr := hasGoMod(path)
+			if serr != nil {
+				return serr
+			}
+			if isModule {
+				rel, rerr := filepath.Rel(root, path)
+				if rerr != nil {
+					return rerr
+				}
+				rel = filepath.ToSlash(rel)
+				if rootOnly && rel != "." {
+					return filepath.SkipDir
+				}
+				mod = rel
+				order = append(order, rel)
+			}
+			// Every directory is recorded, root included (its rel is "."), so
+			// a .go file directly in the root counts toward the root module.
+			moduleOf[path] = mod
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".go") {
+			if mod := moduleOf[filepath.Dir(path)]; mod != "" {
+				hasGo[mod] = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("find the project's Go modules under %s: %w", root, err)
+	}
+	for _, rel := range order {
+		if hasGo[rel] {
+			modules = append(modules, rel)
+		} else {
+			empty = append(empty, rel)
+		}
+	}
+	return modules, empty, nil
+}
+
+// skipModuleWalkDir reports whether discoverGoModules skips a directory by
+// name: what go never builds from a parent module, and what is not the
+// project's own code.
+func skipModuleWalkDir(name string) bool {
+	return name == "vendor" || name == "testdata" || name == "node_modules" ||
+		strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+// hasGoMod reports whether dir holds a go.mod. A stat that fails for any
+// reason but absence is an error: the walk fails closed rather than guess.
+func hasGoMod(dir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
 }
 
 // countSelfCertifiedFiles reports how many forge-owned files carry a

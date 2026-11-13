@@ -171,9 +171,20 @@ _bundle = forge.Bundle {
     into each host service, job, compose/external service and frontend that
     declares them. A failed pull fails `env up` before anything starts.
     `forge env deploy` refuses a local env: there is nothing to publish.
+  - **self-managed** — the env declares control_plane, NO hosted tier, and
+    something that runs off this machine: a `forge.OnCluster` workload or
+    cluster database, or a `forge.OnExternal` workload (your own deploy
+    tooling). The control plane keeps its ledger and records its promotions;
+    `forge env deploy` applies it from the CLI. Its store is write-only, like a
+    persistent env's: `forge env up` never pulls it, and `forge env exec` (or
+    `forge env config --strict`) on a host workload that declares one of its
+    secrets refuses with "only LOCAL environments' secrets can be pulled; this
+    environment's secrets are write-only" rather than start it without them.
 
-  The kind is immutable on the control plane: flipping a persistent env to
-  local (to make its values readable) is refused, not silently applied.
+  A local env that gains a cluster or `forge.OnExternal` workload becomes
+  self-managed on its next deploy: the control plane seals it, and its values
+  stop being pullable. Nothing goes the other way: flipping a persistent or
+  self-managed env to local (to make its values readable) is never applied.
 - `forge.DotenvSecrets { path = ... }` — **DEPRECATED**. Still resolved
   so existing projects run; `forge lint` fails on the file and
   `forge secret migrate --env <env>` converts it.

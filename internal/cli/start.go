@@ -1,4 +1,5 @@
-// Package cli — `forge start`: the greenfield brief, in one call.
+// Package cli — `forge start app`: the greenfield brief, in one call.
+// (`forge start` itself prints the short router in start_router.go.)
 //
 // WHY THIS EXISTS. A measured dogfood run spent six documentation calls
 // (`forge --help`, `forge project --help`, `forge skill --help`,
@@ -78,12 +79,39 @@ var briefNewFlags = []struct {
 	{"name", "Name an `--in-place` project whose directory is a worktree or branch name rather than the product."},
 }
 
-// newStartCmd builds `forge start`. The brief is forge's own vocabulary
-// plus forge's own prose, so it reads no project files and runs anywhere —
-// including in the empty directory it tells you how to fill.
+// newStartCmd builds `forge start`: the router (start_router.go), which
+// sends an agent to the one next command for the directory it is in, and
+// `forge start app`, the greenfield brief below.
 func newStartCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "start",
+		Short: "Print where to start: deploy the app in this directory, or create one (no account needed)",
+		Long: `Print where to start, in about 60 lines.
+
+One table for a directory that already holds an app (a Vite or Next.js static
+app, or anything with a Dockerfile, deploys with no account via
+'forge env deploy prod --claimable') and one for an empty directory (a site
+with 'forge project new --in-place --kind site', an app with an API with
+'forge start app'). Depth is named, never inlined.
+
+This command PRINTS. It creates nothing and changes nothing.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := cmd.OutOrStdout().Write(rewriteForgeCommands([]byte(startRouter), cmdutil.Name()))
+			return err
+		},
+	}
+	cmd.AddCommand(newStartAppCmd())
+	return cmd
+}
+
+// newStartAppCmd builds `forge start app`, the greenfield brief. The brief
+// is forge's own vocabulary plus forge's own prose, so it reads no project
+// files and runs anywhere — including in the empty directory it tells you
+// how to fill.
+func newStartAppCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "app",
 		Short: "Print the greenfield brief: empty directory to authored protos, in one call",
 		Long: `Print the greenfield brief.
 
@@ -137,7 +165,7 @@ func buildStartBrief() (string, error) {
 		body, ok := extractMarkdownSection(doc, s.heading)
 		if !ok {
 			return "", fmt.Errorf(
-				"the %q skill no longer has a %q section, so `forge start` cannot compose the brief from it "+
+				"the %q skill no longer has a %q section, so `forge start app` cannot compose the brief from it "+
 					"(fix: restore the heading, or update briefSections in internal/cli/start.go to the new one)",
 				s.skill, s.heading)
 		}
@@ -251,7 +279,7 @@ func newProjectFlagLines() (string, error) {
 	for _, f := range briefNewFlags {
 		if cmd.Flags().Lookup(f.name) == nil {
 			return "", fmt.Errorf(
-				"`forge project new` has no --%s flag, so `forge start` would advertise a flag that does not parse "+
+				"`forge project new` has no --%s flag, so `forge start app` would advertise a flag that does not parse "+
 					"(fix: update briefNewFlags in internal/cli/start.go)", f.name)
 		}
 		b.WriteString(fmt.Sprintf("| `--%s` | %s |\n", f.name, f.gloss))

@@ -1,6 +1,7 @@
 ---
 name: deploy/record
 description: Record deploys your OWN CI does — one `forge release record` step after the existing deploy job, in any repo and any language, no deploy/kcl, forge builds and applies nothing. Monitoring then gets deploy markers (`forge obs changes`), per-release verdicts (`forge obs check --wait`) and a Releases page labelled "recorded by CI". Copy-paste recipes for GitHub Actions (step and vendored composite action), GitLab CI and Buildkite. Use when a team keeps its pipeline and wants forge's release tracking or monitoring, or asks "can forge see my deploys?".
+applies: any
 ---
 
 # Record deploys from your existing CI
@@ -34,7 +35,7 @@ That is the whole integration. forge builds nothing and applies nothing.
 | Step | Time |
 |---|---|
 | `forge.yaml` with `name: <project>` at the repo root (if there is none) | 1 min |
-| `forge cloud token create --name ci --scopes deploy:write` (a human signed in with `forge login`; no deploy/kcl needed), stored as the CI secret `FORGE_CONTROL_PLANE_TOKEN` | 5 min |
+| A token with `deploy:write`, minted by a person in the web app (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens; no deploy/kcl needed), stored as the CI secret `FORGE_CONTROL_PLANE_TOKEN` | 5 min |
 | Paste the recipe below after the deploy job | 5 min |
 | Run the pipeline once; `forge obs changes prod` shows the marker | 4 min |
 
@@ -59,7 +60,9 @@ That is the whole integration. forge builds nothing and applies nothing.
   release to an env forge itself deploys (a hosted env, or one bound to a
   cluster forge reconciles): reason `record_only_release`. The command refuses
   an env that has `deploy/kcl/<env>/main.k` the same way, before it cuts
-  anything, on every ledger. When forge takes
+  anything, on every ledger — unless every workload in it is bound to
+  `forge.OnExternal` (`deploy/external`): your own tooling deploys that env,
+  so recording what it shipped is the point. When forge takes
   over deploying an env, its own `forge env deploy` releases follow the
   recorded ones in the same history.
 
@@ -67,11 +70,17 @@ That is the whole integration. forge builds nothing and applies nothing.
 
 | Situation | Ledger |
 |---|---|
-| `deploy/kcl/<env>/main.k` exists | none: refused (`record_only_release`), forge deploys that env |
+| `deploy/kcl/<env>/main.k` exists, and some workload is not `forge.OnExternal` (or it does not render) | none: refused (`record_only_release`), forge deploys that env |
+| `deploy/kcl/<env>/main.k` binds every workload to `forge.OnExternal` | the control plane the env declares (`forge.ControlPlane`), where it is **self-managed**; Reliant cloud when it declares none. Not signed in, or `FORGE_LEDGER=machine`: this machine, as below |
 | signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
 | `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
 
 Monitoring needs sign-in: a record on this machine is history, not a marker.
+
+A control plane that predates record-only releases refuses a **version-only**
+record with an upgrade hint, and accepts one with image digests as an ordinary
+release, without the "recorded by CI" label. The machine ledger takes both.
+Record digests whenever you have them: they are what ran.
 
 ## Recipes
 

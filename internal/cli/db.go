@@ -49,6 +49,10 @@ Forge uses a migration-first database model:
 To read an environment's data: 'forge db query <env> "<sql>"' runs one
 read-only statement and prints the rows.
 
+To see what pending migrations do on a real postgres — locks, rewrites,
+validation scans — 'forge db analyze' measures them in a rolled-back
+transaction.
+
 When something is wedged:
 
   A migration failed part-way and the state is marked dirty
@@ -82,6 +86,7 @@ When something is wedged:
 	cmd.AddCommand(newDBSeedCommand())
 	cmd.AddCommand(newDBResetCommand())
 	cmd.AddCommand(newDBQueryCommand())
+	cmd.AddCommand(newDBAnalyzeCommand())
 
 	// Every db subcommand reads its project's files from the -C project
 	// root, never the CWD — see db_paths.go.

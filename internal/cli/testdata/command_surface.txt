@@ -80,6 +80,7 @@ forge component install	cmd	allow-version-skew:bool dir/d:string project-dir/C:s
 forge component list	cmd	allow-version-skew:bool category/c:string project-dir/C:string
 forge component search	cmd	allow-version-skew:bool project-dir/C:string
 forge db	group	allow-version-skew:bool project-dir/C:string
+forge db analyze	cmd	allow-version-skew:bool base:string dir:string dsn-env:string json:bool project-dir/C:string target:string
 forge db introspect	cmd	allow-version-skew:bool dsn:string format:string project-dir/C:string table:string
 forge db migrate	group	allow-version-skew:bool project-dir/C:string
 forge db migrate force	cmd	allow-version-skew:bool dir:string dsn:string project-dir/C:string

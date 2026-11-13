@@ -91,9 +91,21 @@ func TestGraphConstructorValidationScopesHelpersWithoutChangingOperatorCatalogue
 			t.Errorf("unconstructible helper %s must be left out, got %v", name, model.unbuilt)
 		}
 	}
+	if err := model.validateReachedConstructors(root); err != nil {
+		t.Fatalf("final validation of the wired fleet root: %v", err)
+	}
 	root[0].Fields[0].Type = "*broken.Controller"
 	if err := model.checkConstructorReach(root, "package app\n"); err == nil {
 		t.Fatal("reached malformed operator must fail")
+	}
+	// The final check measures reach again over the final compose.go, not the
+	// unbuilt set an earlier draft decided: Broken is still marked left out,
+	// but a root now reaches it.
+	if _, out := model.unbuilt["Broken"]; !out {
+		t.Fatalf("fixture: Broken must still be marked unbuilt, got %v", model.unbuilt)
+	}
+	if err := model.validateReachedConstructors(root); err == nil {
+		t.Fatal("a malformed component left out by an earlier draft but reached in the final graph must fail")
 	}
 	if err := model.checkConstructorReach(nil, "package app\n"); err == nil {
 		t.Fatal("default root must keep validating every catalogue component")

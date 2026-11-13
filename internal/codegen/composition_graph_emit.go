@@ -338,7 +338,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if err := m.wire(in, resolver, roots); err != nil {
 		return nil, err
 	}
-	if err := m.validateReachedConstructors(constructorProblems); err != nil {
+	if err := m.validateReachedConstructors(roots); err != nil {
 		return nil, err
 	}
 	return m, nil

@@ -53,9 +53,16 @@ func (m *graphModel) checkConstructorReach(declared []graphRoot, draft string) e
 	return nil
 }
 
-func (m *graphModel) validateReachedConstructors(problems []unconstructibleComponent) error {
+// validateReachedConstructors is the final constructor check, over the graph
+// as generated: a component with no callable constructor may be neither built
+// (generated code would call a constructor that does not exist) nor reached
+// by a root through the FINAL compose.go. The unbuilt set was decided against
+// a reconcile draft, and the draft the nodes left out produce can draw
+// different edges, so reach is measured again here rather than trusted from
+// that set.
+func (m *graphModel) validateReachedConstructors(roots []graphRoot) error {
 	var bad []unconstructibleComponent
-	for _, p := range problems {
+	for _, p := range m.constructorProblems {
 		if n := m.constructorNode(p); n != nil {
 			if _, out := m.unbuilt[n.Name]; !out {
 				bad = append(bad, p)
@@ -65,5 +72,5 @@ func (m *graphModel) validateReachedConstructors(problems []unconstructibleCompo
 	if len(bad) > 0 {
 		return unconstructibleError(bad)
 	}
-	return nil
+	return m.checkConstructorReach(roots, m.compose)
 }

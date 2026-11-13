@@ -102,7 +102,10 @@ func (in Input) withActivity(d dashspec.Dashboard) dashspec.Dashboard {
 	if in.Activity.IsZero() {
 		return d
 	}
-	evidence := obsquery.ActiveEvidenceFor("product_events", in.Activity)
+	evidence, err := obsquery.ActiveEvidenceFor("product_events", in.Activity)
+	if err != nil { // the table is a constant: unreachable
+		return d
+	}
 	panels := make([]dashspec.Panel, len(d.Panels))
 	for i, p := range d.Panels {
 		p.SQL = strings.ReplaceAll(p.SQL, obsquery.ActiveEvidence, evidence)

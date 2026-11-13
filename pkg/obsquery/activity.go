@@ -76,9 +76,14 @@ func union(a, b []string) []string {
 }
 
 // ActiveEvidenceFor is ActiveEvidence under a's rules, over table (the
-// product_events table the statement reads, for the exclusion's subquery).
-// With no rule it is ActiveEvidence itself. a must be valid (Validate).
-func ActiveEvidenceFor(table string, a Activity) string {
+// product_events table the statement reads, for the exclusion's subquery:
+// "product_events" or "<database>.product_events", each part an identifier,
+// else ErrInvalid). With no rule it is ActiveEvidence itself. A name in a
+// that is not an event name never reaches the SQL (Validate reports it).
+func ActiveEvidenceFor(table string, a Activity) (string, error) {
+	if !validTable(table) {
+		return "", invalid("table %q is not an identifier or database.identifier", table)
+	}
 	out := ActiveEvidence
 	if l := sqlList(a.NotActivity); l != "" {
 		out += " AND EventName NOT IN (" + l + ")"
@@ -87,13 +92,26 @@ func ActiveEvidenceFor(table string, a Activity) string {
 		out += " AND (EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM " + table +
 			" WHERE EventName IN (" + l + ") AND UserId != '')"
 	}
-	return out
+	return out, nil
 }
 
 // NewUsersSourceFor is NewUsersSource under a's rules: its users are first
 // seen, and their sign-ups counted, only on rows ActiveEvidenceFor keeps.
-func NewUsersSourceFor(table, to, scope string, a Activity) string {
-	return newUsersSource(table, to, scope, ActiveEvidenceFor(table, a))
+func NewUsersSourceFor(table, to, scope string, a Activity) (string, error) {
+	evidence, err := ActiveEvidenceFor(table, a)
+	if err != nil {
+		return "", err
+	}
+	return newUsersSource(table, to, scope, evidence), nil
+}
+
+// validTable reports whether table is an identifier, or two joined by a dot.
+func validTable(table string) bool {
+	db, name, qualified := strings.Cut(table, ".")
+	if !qualified {
+		return IsIdentifier(table)
+	}
+	return IsIdentifier(db) && IsIdentifier(name)
 }
 
 // sqlList is names as SQL string literals, comma-separated. A name that is

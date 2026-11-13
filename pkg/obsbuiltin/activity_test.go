@@ -14,7 +14,10 @@ import (
 // exactly as before.
 func TestActivityRulesReachEveryUserCount(t *testing.T) {
 	rules := obsquery.Activity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"}}
-	evidence := obsquery.ActiveEvidenceFor("product_events", rules)
+	evidence, err := obsquery.ActiveEvidenceFor("product_events", rules)
+	if err != nil {
+		t.Fatal(err)
+	}
 	in := fullInput()
 	in.Activity = rules
 	plain := map[string]dashspec.Dashboard{}

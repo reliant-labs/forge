@@ -217,8 +217,19 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 		return " AND " + c
 	}
 	table := b.table(s, tblProduct)
-	evidence := ActiveEvidenceFor(table, q.Activity)
+	evidence, err := ActiveEvidenceFor(table, q.Activity)
+	if err != nil {
+		return Stmt{}, err
+	}
 	to, curFrom, prevFrom, readFrom := b.nanoTime(w.to), b.nanoTime(w.curFrom), b.nanoTime(w.prevFrom), b.nanoTime(w.readFrom)
+	nuCur, err := NewUsersSourceFor(table, to, scopeSQL, q.Activity)
+	if err != nil {
+		return Stmt{}, err
+	}
+	nuPrev, err := NewUsersSourceFor(table, curFrom, scopeSQL, q.Activity)
+	if err != nil {
+		return Stmt{}, err
+	}
 
 	const zeros = "toUInt64(0), toUInt64(0), toUInt64(0)"
 	const noMeta = "CAST([] AS Array(String)), toDateTime64(0, 9), toUInt32(0), toUInt8(0)"
@@ -275,8 +286,8 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 		"  SELECT EnvId, UserId, Timestamp, Client, RetentionDays\n" +
 		"  FROM " + table + "\n" +
 		"  WHERE " + evidence + " AND Timestamp >= " + readFrom + " AND Timestamp < " + to + and(scopeSQL) + "),\n" +
-		"nu_cur AS (\n" + NewUsersSourceFor(table, to, scopeSQL, q.Activity) + "),\n" +
-		"nu_prev AS (\n" + NewUsersSourceFor(table, curFrom, scopeSQL, q.Activity) + ")\n" +
+		"nu_cur AS (\n" + nuCur + "),\n" +
+		"nu_prev AS (\n" + nuPrev + ")\n" +
 		strings.Join(parts, "\nUNION ALL\n")
 	return b.stmt(sql), nil
 }

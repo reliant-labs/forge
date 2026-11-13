@@ -7,21 +7,39 @@ import (
 	"testing"
 )
 
+func mustEvidence(t *testing.T, table string, a Activity) string {
+	t.Helper()
+	got, err := ActiveEvidenceFor(table, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func mustNewUsers(t *testing.T, table, to, scope string, a Activity) string {
+	t.Helper()
+	got, err := NewUsersSourceFor(table, to, scope, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
 func TestActiveEvidenceForWithoutRulesIsTheConvention(t *testing.T) {
-	if got := ActiveEvidenceFor("product_events", Activity{}); got != ActiveEvidence {
+	if got := mustEvidence(t, "product_events", Activity{}); got != ActiveEvidence {
 		t.Errorf("ActiveEvidenceFor(zero) = %q, want ActiveEvidence", got)
 	}
 	if !strings.Contains(ActiveEvidence, "Props['forge.kind'] != 'state'") {
 		t.Errorf("ActiveEvidence %q does not leave observe.TrackState events out", ActiveEvidence)
 	}
-	if got := NewUsersSourceFor("product_events", "{to:DateTime64(9)}", "", Activity{}); got != NewUsersSource("product_events", "{to:DateTime64(9)}", "") {
+	if got := mustNewUsers(t, "product_events", "{to:DateTime64(9)}", "", Activity{}); got != NewUsersSource("product_events", "{to:DateTime64(9)}", "") {
 		t.Error("NewUsersSourceFor(zero) differs from NewUsersSource")
 	}
 }
 
 func TestActiveEvidenceForCompilesTheRules(t *testing.T) {
 	a := Activity{NotActivity: []string{"billing_subscription_state", "claimable_account_created"}, ExcludeUsersWith: []string{"internal_user"}}
-	got := ActiveEvidenceFor("t_org.product_events", a)
+	got := mustEvidence(t, "t_org.product_events", a)
 	for _, want := range []string{
 		ActiveEvidence + " AND ",
 		"EventName NOT IN ('billing_subscription_state', 'claimable_account_created')",
@@ -31,7 +49,7 @@ func TestActiveEvidenceForCompilesTheRules(t *testing.T) {
 			t.Errorf("ActiveEvidenceFor = %q, want it to contain %q", got, want)
 		}
 	}
-	src := NewUsersSourceFor("t_org.product_events", "{to:DateTime64(9)}", "", a)
+	src := mustNewUsers(t, "t_org.product_events", "{to:DateTime64(9)}", "", a)
 	if !strings.Contains(src, "WHERE "+got+" AND Timestamp") {
 		t.Errorf("NewUsersSourceFor does not read the rules' evidence:\n%s", src)
 	}
@@ -43,10 +61,10 @@ func TestActivityRefusesNamesThatAreNotEvents(t *testing.T) {
 		t.Errorf("Validate(%v) = %v, want ErrInvalid", bad, err)
 	}
 	// Unvalidated, the bad name never reaches the SQL.
-	if got := ActiveEvidenceFor("product_events", bad); strings.Contains(got, "1=1") || !strings.Contains(got, "'ok_event'") {
+	if got := mustEvidence(t, "product_events", bad); strings.Contains(got, "1=1") || !strings.Contains(got, "'ok_event'") {
 		t.Errorf("ActiveEvidenceFor(unvalidated) = %q", got)
 	}
-	if got := ActiveEvidenceFor("product_events", Activity{ExcludeUsersWith: []string{"'"}}); got != ActiveEvidence {
+	if got := mustEvidence(t, "product_events", Activity{ExcludeUsersWith: []string{"'"}}); got != ActiveEvidence {
 		t.Errorf("a rule with no valid name must add no clause: %q", got)
 	}
 	long := Activity{ExcludeUsersWith: make([]string, MaxActivityEvents+1)}
@@ -82,5 +100,27 @@ func TestUserActivityCompilesTheDeclaredRules(t *testing.T) {
 	q.Activity = Activity{NotActivity: []string{"no quotes'"}}
 	if _, err := q.Compile(); !errors.Is(err, ErrInvalid) {
 		t.Errorf("Compile with a bad rule = %v, want ErrInvalid", err)
+	}
+}
+
+// The table is an identifier or database.identifier; anything else is refused,
+// so a caller's table can never carry SQL into the statement.
+func TestActiveEvidenceForRefusesATableThatIsNotAnIdentifier(t *testing.T) {
+	rules := Activity{ExcludeUsersWith: []string{"internal_user"}}
+	for _, table := range []string{
+		"product_events WHERE 1=1) OR (1", "t_org.product_events; DROP TABLE x", "a.b.c", "", ".product_events",
+		"t_org.", "`product_events`", "product events",
+	} {
+		if got, err := ActiveEvidenceFor(table, rules); !errors.Is(err, ErrInvalid) || got != "" {
+			t.Errorf("ActiveEvidenceFor(%q) = %q, %v; want ErrInvalid and no SQL", table, got, err)
+		}
+		if got, err := NewUsersSourceFor(table, "{to:DateTime64(9)}", "", rules); !errors.Is(err, ErrInvalid) || got != "" {
+			t.Errorf("NewUsersSourceFor(%q) = %q, %v; want ErrInvalid and no SQL", table, got, err)
+		}
+	}
+	for _, table := range []string{"product_events", "t_org.product_events", "default.product_events"} {
+		if _, err := ActiveEvidenceFor(table, rules); err != nil {
+			t.Errorf("ActiveEvidenceFor(%q) = %v, want accepted", table, err)
+		}
 	}
 }

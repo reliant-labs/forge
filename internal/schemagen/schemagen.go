@@ -51,7 +51,6 @@ type Schema struct {
 	// Types is the `type` keyword: one name, or several (["string","null"]).
 	Types []string
 	Const any
-	Enum  []any
 	// Properties keeps declaration order, so the output is stable and reads
 	// in the order the Go struct declares its fields.
 	Properties []Property
@@ -138,7 +137,6 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 		{"description", s.Description, s.Description != ""},
 		{"type", typ, typ != nil},
 		{"const", s.Const, s.Const != nil},
-		{"enum", s.Enum, len(s.Enum) > 0},
 		{"format", s.Format, s.Format != ""},
 		{"minimum", s.Minimum, s.Minimum != nil},
 		{"properties", props, props != nil},
@@ -486,7 +484,7 @@ func nullable(fs *Schema) *Schema {
 		c.Types = append(append([]string(nil), fs.Types...), "null")
 		return &c
 	}
-	if fs.Ref == "" && len(fs.Types) == 0 && len(fs.OneOf) == 0 && len(fs.AnyOf) == 0 && fs.Const == nil && len(fs.Enum) == 0 {
+	if fs.Ref == "" && len(fs.Types) == 0 && len(fs.OneOf) == 0 && len(fs.AnyOf) == 0 && fs.Const == nil {
 		return fs // already accepts anything, null included
 	}
 	desc := fs.Description

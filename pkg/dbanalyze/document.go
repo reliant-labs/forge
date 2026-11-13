@@ -64,6 +64,9 @@ type TargetInfo struct {
 	// (pg_class.reltuples) are used for sizes: a dsn target some table of
 	// which has been analyzed. A scratch target never has them.
 	HasStatistics bool `json:"has_statistics"`
+	// Clone is the disposable copy of a dsn target the migrations ran on
+	// (absent for a scratch target, which is disposable itself).
+	Clone *CloneInfo `json:"clone,omitempty"`
 }
 
 // TargetKind is where the analysis runs.
@@ -89,20 +92,22 @@ type Migration struct {
 	Statements []StatementResult `json:"statements"`
 }
 
-// StatementResult is what one statement did, measured inside the run's
-// transaction.
+// StatementResult is what one statement did, measured inside its file's
+// transaction (or on its own, for a statement that cannot be in one).
 type StatementResult struct {
 	Index int    `json:"index"`
 	Line  int    `json:"line"`
 	SQL   string `json:"sql"`
-	// Executed is false for a statement that cannot run inside a
-	// transaction (CREATE INDEX CONCURRENTLY and the like), whose lock is
-	// reported statically, and for one the run did not reach.
+	// Executed is false for a statement the run did not reach, and for one
+	// it did not run because it changes what the whole server shares
+	// (roles, databases, ALTER SYSTEM): Reason says which. A statement that
+	// cannot run inside a transaction (CREATE INDEX CONCURRENTLY and the
+	// like) is executed, on its own, with its lock reported statically.
 	Executed   bool    `json:"executed"`
 	Reason     string  `json:"reason,omitempty"`
 	DurationMS float64 `json:"duration_ms"`
-	// Locks are the relation locks the statement acquired. A mode the run's
-	// transaction already held is listed with HeldBefore (see Lock).
+	// Locks are the relation locks the statement acquired. A mode its
+	// file's transaction already held is listed with HeldBefore (see Lock).
 	Locks    []Lock              `json:"locks"`
 	Rewrites []Rewrite           `json:"rewrites"`
 	Scans    []Scan              `json:"scans"`
@@ -119,13 +124,15 @@ type Lock struct {
 	Mode     string `json:"mode"`
 	// New marks a relation created earlier in the run: locking it is free.
 	New bool `json:"new,omitempty"`
-	// HeldBefore marks a mode the run's transaction already held when the
-	// statement ran — taken by an earlier statement. Postgres does not
-	// record a lock twice, so a statement that needs a mode already held
-	// shows it only this way.
+	// HeldBefore marks a mode the file's transaction already held when the
+	// statement ran — taken by an earlier statement of the same file (each
+	// file commits, releasing its locks, before the next begins). Postgres
+	// does not record a lock twice, so a statement that needs a mode already
+	// held shows it only this way.
 	HeldBefore bool `json:"held_before,omitempty"`
 	// Static marks a lock known from the statement's kind rather than
-	// observed (a statement that was not executed).
+	// observed: a statement that ran outside a transaction takes and
+	// releases its lock within itself, where pg_locks cannot see it.
 	Static bool `json:"static,omitempty"`
 }
 

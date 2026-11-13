@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 )
@@ -26,28 +27,34 @@ const (
 
 // SessionOptions bound every statement a session runs.
 type SessionOptions struct {
-	// StatementTimeout is SET LOCAL statement_timeout. Zero means
+	// StatementTimeout is the session's statement_timeout. Zero means
 	// DefaultStatementTimeout; negative means none.
 	StatementTimeout time.Duration
-	// LockTimeout is SET LOCAL lock_timeout. Zero means
+	// LockTimeout is the session's lock_timeout. Zero means
 	// DefaultLockTimeout; negative means none.
 	LockTimeout time.Duration
 }
 
-// Session is ONE connection to the target holding ONE transaction that is
-// always rolled back. Everything an analysis does — applying migrations,
-// measuring them, explaining queries — runs inside it, so the target is never
-// changed: Postgres DDL is transactional, and Close rolls it all back.
+// Session is ONE connection to a DISPOSABLE database — a clone of the target
+// (CloneDatabase) or a scratch database (PrepareScratch) — that an analysis
+// applies migrations to the way forge's migrator does: each file in a
+// transaction of its own that commits, a statement that cannot run in a
+// transaction on its own. The migrations' effects persist in that database
+// for whatever reads it next (a query pass's EXPLAIN); the database itself is
+// dropped by whoever made it. Nothing a session runs ever reaches the target
+// it was cloned from.
 //
 // A Session is not safe for concurrent use.
 type Session struct {
 	db   *sql.DB
 	conn *sql.Conn
-	tx   *sql.Tx
-	sp   int
+	// tx is the open file's transaction, nil between files.
+	tx *sql.Tx
+	sp int
 }
 
-// Open connects to dsn, begins the transaction and sets its timeouts.
+// Open connects to dsn and sets the session's timeouts. dsn must name a
+// disposable database: what a session runs is committed.
 func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -59,20 +66,14 @@ func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to target: %w", err)
 	}
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		_ = conn.Close()
-		_ = db.Close()
-		return nil, fmt.Errorf("begin: %w", err)
-	}
-	s := &Session{db: db, conn: conn, tx: tx}
+	s := &Session{db: db, conn: conn}
 	settings := []string{
-		"SET LOCAL statement_timeout = " + timeoutSetting(opts.StatementTimeout, DefaultStatementTimeout),
-		"SET LOCAL lock_timeout = " + timeoutSetting(opts.LockTimeout, DefaultLockTimeout),
-		"SET LOCAL application_name = 'forge db analyze'",
+		"SET statement_timeout = " + timeoutSetting(opts.StatementTimeout, DefaultStatementTimeout),
+		"SET lock_timeout = " + timeoutSetting(opts.LockTimeout, DefaultLockTimeout),
+		"SET application_name = 'forge db analyze'",
 	}
 	for _, q := range settings {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
+		if _, err := conn.ExecContext(ctx, q); err != nil {
 			_ = s.Close()
 			return nil, fmt.Errorf("%s: %w", q, err)
 		}
@@ -92,15 +93,62 @@ func timeoutSetting(d, def time.Duration) string {
 	return fmt.Sprintf("'%dms'", d.Milliseconds())
 }
 
-// Tx is the session's transaction, for a caller's own reads (EXPLAIN, the
-// catalog). A statement that may fail belongs in Exec, which keeps the
-// transaction usable after it does; an error in Tx directly aborts it.
-func (s *Session) Tx() *sql.Tx { return s.tx }
+// querier is what a session reads and writes through: the open file's
+// transaction, or the bare connection between files.
+type querier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
 
-// Exec runs one statement inside a savepoint: a failure rolls back to it,
-// so the transaction stays usable for what follows. The error is the
-// statement's own.
+func (s *Session) q() querier {
+	if s.tx != nil {
+		return s.tx
+	}
+	return s.conn
+}
+
+// Conn is the session's connection, for a caller's own reads between files
+// (EXPLAIN against the schema the migrations left, the catalog).
+func (s *Session) Conn() *sql.Conn { return s.conn }
+
+// begin opens a file's transaction.
+func (s *Session) begin(ctx context.Context) error {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	s.tx = tx
+	return nil
+}
+
+// commit commits the open file's transaction.
+func (s *Session) commit() error {
+	tx := s.tx
+	s.tx = nil
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
+	return nil
+}
+
+// rollback abandons the open file's transaction, if there is one.
+func (s *Session) rollback() {
+	if s.tx != nil {
+		_ = s.tx.Rollback()
+		s.tx = nil
+	}
+}
+
+// Exec runs one statement. Inside a file's transaction it runs under a
+// savepoint, so a failure rolls back to it and the transaction stays usable
+// for what follows; between files it runs on its own, as postgres runs a
+// statement that cannot be in a transaction. The error is the statement's own.
 func (s *Session) Exec(ctx context.Context, query string) error {
+	if s.tx == nil {
+		_, err := s.conn.ExecContext(ctx, query)
+		return err
+	}
 	s.sp++
 	name := fmt.Sprintf("forge_analyze_%d", s.sp)
 	if _, err := s.tx.ExecContext(ctx, "SAVEPOINT "+name); err != nil {
@@ -118,16 +166,14 @@ func (s *Session) Exec(ctx context.Context, query string) error {
 	return nil
 }
 
-// Close rolls the transaction back and disconnects. It is safe to call
-// more than once.
+// Close abandons an open file's transaction and disconnects. It is safe to
+// call more than once.
 func (s *Session) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.rollback()
 	var errs []error
-	if err := s.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		errs = append(errs, fmt.Errorf("rollback: %w", err))
-	}
 	if err := s.conn.Close(); err != nil {
 		errs = append(errs, err)
 	}
@@ -138,14 +184,34 @@ func (s *Session) Close() error {
 	return errors.Join(errs...)
 }
 
-// Info reads the server's version and whether the target's statistics can
+// Info reads the server's version and whether the database's statistics can
 // size tables. kind and identity are the caller's and are copied in.
 //
 // Statistics count only on a dsn target: a scratch target's tables are
-// empty whatever pg_class says about them.
+// empty whatever pg_class says about them. Read them from the target itself
+// (Source.Info), not from a clone of it: a clone has the target's row
+// estimates but none of its analyze history.
 func (s *Session) Info(ctx context.Context, kind TargetKind, identity string) (TargetInfo, error) {
+	return readInfo(ctx, sqlQuerier{s.q()}, kind, identity)
+}
+
+// rowScanner and rowQuerier are the one-row reads readInfo and
+// readMigrationState make, over database/sql (a session) or pgx (a Source).
+type rowScanner interface{ Scan(dest ...any) error }
+
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) rowScanner
+}
+
+type sqlQuerier struct{ q querier }
+
+func (s sqlQuerier) QueryRowContext(ctx context.Context, query string, args ...any) rowScanner {
+	return s.q.QueryRowContext(ctx, query, args...)
+}
+
+func readInfo(ctx context.Context, q rowQuerier, kind TargetKind, identity string) (TargetInfo, error) {
 	info := TargetInfo{Kind: kind, Identity: identity}
-	if err := s.tx.QueryRowContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		"SELECT current_setting('server_version'), current_setting('server_version_num')::int").
 		Scan(&info.ServerVersion, &info.ServerVersionNum); err != nil {
 		return info, fmt.Errorf("read server version: %w", err)
@@ -155,7 +221,7 @@ func (s *Session) Info(ctx context.Context, kind TargetKind, identity string) (T
 	if kind != TargetDSN {
 		return info, nil
 	}
-	if err := s.tx.QueryRowContext(ctx, `SELECT EXISTS (
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM pg_stat_user_tables
 		WHERE last_analyze IS NOT NULL OR last_autoanalyze IS NOT NULL)`).
 		Scan(&info.HasStatistics); err != nil {
@@ -173,21 +239,25 @@ type MigrationState struct {
 	Dirty   bool
 }
 
-// MigrationState reads the target's schema_migrations without creating it
+// MigrationState reads the database's schema_migrations without creating it
 // (migratekit.Open would: golang-migrate creates its version table on open).
 func (s *Session) MigrationState(ctx context.Context) (MigrationState, error) {
+	return readMigrationState(ctx, sqlQuerier{s.q()})
+}
+
+func readMigrationState(ctx context.Context, q rowQuerier) (MigrationState, error) {
 	var st MigrationState
 	var exists bool
-	if err := s.tx.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&exists); err != nil {
 		return st, fmt.Errorf("look for schema_migrations: %w", err)
 	}
 	if !exists {
 		return st, nil
 	}
 	var version int64
-	err := s.tx.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations LIMIT 1").Scan(&version, &st.Dirty)
+	err := q.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations LIMIT 1").Scan(&version, &st.Dirty)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, pgx.ErrNoRows):
 		return st, nil
 	case err != nil:
 		return st, fmt.Errorf("read schema_migrations: %w", err)

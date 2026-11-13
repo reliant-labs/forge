@@ -19,10 +19,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/lint"
@@ -51,10 +54,11 @@ func newDBAnalyzeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "analyze",
 		Short: "Measure what pending migrations do on a real postgres: locks, rewrites, scans, time",
-		Long: `Apply migrations statement by statement inside ONE transaction that is always
-rolled back, and measure each statement on the target: the locks it took
-(pg_locks), the tables and indexes it rewrote (pg_class.relfilenode), the
-tables it scanned (pg_stat_xact_user_tables), and how long it ran.
+		Long: `Apply migrations statement by statement, each file in its own transaction as
+forge's migrator applies them, on a DISPOSABLE copy of the target, and measure
+each statement: the locks it took (pg_locks), the tables and indexes it
+rewrote (pg_class.relfilenode), the tables it scanned
+(pg_stat_xact_user_tables), and how long it ran.
 
 Which migrations:
   scratch (default)  the migrations added or changed since --base (default: the
@@ -63,12 +67,17 @@ Which migrations:
   dsn                every migration the target's schema_migrations lacks, on a
                      database you provide — typically an anonymized prod snapshot
 
-The target is never changed. A statement that cannot run inside a transaction
-(CREATE INDEX CONCURRENTLY) is not executed; its lock is reported statically.
-A dsn target that is a non-development environment's declared database is
-refused: point it at a snapshot, not production. The DSN is read from an
-environment variable (database.analyze.target.dsn_env, default
-` + defaultAnalyzeDSNEnv + `), never from forge.yaml.
+A dsn target is only read, then copied (CREATE DATABASE … TEMPLATE) and the
+copy dropped when the analysis ends: the target is never written. It must be
+marked as one forge may copy, by whoever builds it:
+  ALTER DATABASE <db> SET ` + dbanalyze.MarkerSetting + ` = 'on';
+and the role needs CREATEDB and ownership of it, with nothing else connected to
+it during the copy. A target that is a non-development environment's declared
+database is refused too. The DSN is read from an environment variable
+(database.analyze.target.dsn_env, default ` + defaultAnalyzeDSNEnv + `), never
+from forge.yaml. A file whose one statement cannot run inside a transaction
+(CREATE INDEX CONCURRENTLY) runs it on its own; its lock is reported
+statically.
 
 Rules (lint.rules sets their severity; each warns before it gates):
   ` + dbanalyze.RuleTableRewrite + `         a pre-existing table or its indexes rewritten
@@ -95,7 +104,11 @@ Examples:
 				return err
 			}
 			opts.migDir = resolveMigrationsDir(opts.migDir)
-			doc := runDBAnalyze(cmd.Context(), projectDir, cfg, opts, defaultAnalyzeDeps())
+			// An interrupt cancels the running statement; the copy of a
+			// dsn target is dropped on the way out regardless.
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			doc := runDBAnalyze(ctx, projectDir, cfg, opts, defaultAnalyzeDeps())
 			return reportDBAnalyze(cmd.OutOrStdout(), doc, opts.json)
 		},
 	}
@@ -205,22 +218,15 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 	}
 	doc.Target.Identity = databaseIdentity(dsn)
 
-	s, err := dbanalyze.Open(ctx, dsn, dbanalyze.SessionOptions{StatementTimeout: stmtTimeout, LockTimeout: lockTimeout})
-	if err != nil {
-		return fail("connect to the %s target %s: %v", kind, doc.Target.Identity, err)
-	}
-	defer func() { _ = s.Close() }()
-	info, err := s.Info(ctx, doc.Target.Kind, doc.Target.Identity)
-	if err != nil {
-		return fail("%v", err)
-	}
-	doc.Target = info
-
+	var info dbanalyze.TargetInfo
+	work := dsn
 	if kind == config.AnalyzeTargetDSN {
-		st, err := s.MigrationState(ctx)
+		var st dbanalyze.MigrationState
+		info, st, err = inspectAnalyzeTarget(ctx, dsn, doc.Target.Identity)
 		if err != nil {
 			return fail("%v", err)
 		}
+		doc.Target = info
 		analyzed, err = pendingOnTarget(ms, files, st)
 		if err != nil {
 			return fail("%v", err)
@@ -230,6 +236,33 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 			doc.Finalize()
 			return doc
 		}
+		// The migrations run on a copy, never on the target: they commit.
+		clone, err := dbanalyze.CloneDatabase(ctx, dsn)
+		if err != nil {
+			return fail("%v", err)
+		}
+		defer func() {
+			if err := clone.Close(); err != nil && doc.Error == "" {
+				doc.Error = fmt.Sprintf("%v: drop it by hand (DROP DATABASE %s)", err, clone.Info().Database)
+				doc.Finalize()
+			}
+		}()
+		ci := clone.Info()
+		info.Clone = &ci
+		doc.Target = info
+		work = clone.DSN()
+	}
+
+	s, err := dbanalyze.Open(ctx, work, dbanalyze.SessionOptions{StatementTimeout: stmtTimeout, LockTimeout: lockTimeout})
+	if err != nil {
+		return fail("connect to the %s target %s: %v", kind, doc.Target.Identity, err)
+	}
+	defer func() { _ = s.Close() }()
+	if kind == config.AnalyzeTargetScratch {
+		if info, err = s.Info(ctx, doc.Target.Kind, doc.Target.Identity); err != nil {
+			return fail("%v", err)
+		}
+		doc.Target = info
 	}
 
 	migs, findings, err := dbanalyze.AnalyzeMigrations(ctx, s, info, analyzed, dbanalyze.Config{
@@ -323,11 +356,58 @@ func pendingOnTarget(ms []compat.Migration, files []dbanalyze.MigrationFile, st 
 	return out, nil
 }
 
+// inspectAnalyzeTarget reads what is read from a dsn target itself — its
+// marker, server, statistics and schema_migrations — over a read-only
+// connection it closes before returning, since the target is then copied and
+// postgres copies a database only while nobody is connected to it.
+//
+// The marker is the guard: a database is analyzed only when whoever made it
+// said it may be, with ALTER DATABASE … SET forge.analyze_target = 'on'.
+// Production carries no such setting, so a DSN that reaches production — by
+// a pasted runbook line, a stale variable, an env forge could not resolve —
+// is refused here whatever its spelling.
+func inspectAnalyzeTarget(ctx context.Context, dsn, identity string) (dbanalyze.TargetInfo, dbanalyze.MigrationState, error) {
+	var st dbanalyze.MigrationState
+	src, err := dbanalyze.OpenSource(ctx, dsn)
+	if err != nil {
+		return dbanalyze.TargetInfo{}, st, fmt.Errorf("the dsn target %s: %w", identity, err)
+	}
+	defer func() { _ = src.Close() }()
+	marked, err := src.Marked(ctx)
+	if err != nil {
+		return dbanalyze.TargetInfo{}, st, fmt.Errorf("the dsn target %s: %w", identity, err)
+	}
+	if !marked {
+		name := identity[strings.LastIndex(identity, "/")+1:]
+		//nolint:revive,staticcheck // terminal operator-facing prose; see reconcileClaimedDSN
+		return dbanalyze.TargetInfo{}, st, fmt.Errorf(`refusing the dsn target %s: it is not marked as a database forge db analyze may copy and run migrations on.
+
+Whoever builds the snapshot marks it, once, as its owner:
+
+  ALTER DATABASE %s SET %s = 'on';
+
+Never mark production. The analysis copies the target (CREATE DATABASE … TEMPLATE), so the role also needs CREATEDB and ownership of it, and nothing else may be connected to it while the copy is made.`,
+			identity, pgx.Identifier{name}.Sanitize(), dbanalyze.MarkerSetting)
+	}
+	info, err := src.Info(ctx, dbanalyze.TargetDSN, identity)
+	if err != nil {
+		return info, st, err
+	}
+	st, err = src.MigrationState(ctx)
+	return info, st, err
+}
+
 // refuseDeployedAnalyzeDSN refuses a dsn target that is the database a
-// non-development deploy env declares: the analysis is rolled back, but a
-// rewrite or a scan still runs, under real locks, for as long as
-// statement_timeout allows. That is the point on a snapshot and an outage on
-// production.
+// non-development deploy env declares. The analysis runs on a copy, but
+// making the copy reads every block of the target, and a target that is
+// production should not be a snapshot's stand-in at all.
+//
+// It is the SECOND check: the first is the marker (inspectAnalyzeTarget),
+// which a production database does not carry. An env whose DSN forge cannot
+// resolve (a secret it cannot read, KCL that does not render) is therefore
+// not compared, rather than refusing every analysis in the project: the
+// comparison was never what kept production out on its own — it failed open
+// exactly there — and the marker does not depend on resolving anything.
 //
 // Both sides are compared as pgx resolves them (databaseIdentity): a DSN
 // whose host, port or dbname query parameters route it somewhere other than
@@ -349,7 +429,7 @@ func refuseDeployedAnalyzeDSN(ctx context.Context, projectDir, dsn string, decla
 			continue
 		}
 		if d := declared(ctx, projectDir, env); d != "" && slices.Contains(databaseEndpoints(d), id) {
-			return fmt.Errorf("refusing the dsn target %s: it is environment %q's database. forge db analyze runs every pending migration on its target (rolled back, but under real locks and for real time): point it at a snapshot, not at %s", id, env, env)
+			return fmt.Errorf("refusing the dsn target %s: it is environment %q's database. forge db analyze copies its target and runs every pending migration on the copy, which reads every block of it: point it at a snapshot, not at %s", id, env, env)
 		}
 	}
 	return nil
@@ -411,6 +491,9 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 		fmt.Fprintf(w, ", base %s", doc.Base)
 	}
 	fmt.Fprintln(w)
+	if c := t.Clone; c != nil {
+		fmt.Fprintf(w, "analyzed on a copy, %s (%.1f MB, copied in %.0fms), dropped afterwards\n", c.Database, float64(c.SizeBytes)/1e6, c.DurationMS)
+	}
 	for _, m := range doc.Migrations {
 		fmt.Fprintf(w, "\n%s\n", m.File)
 		if !m.Analyzed {
@@ -433,6 +516,8 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 				case l.New:
 				case l.HeldBefore:
 					held = append(held, l.Relation+" "+l.Mode)
+				case l.Static:
+					locks = append(locks, l.Relation+" "+l.Mode+" (known from the statement's kind)")
 				default:
 					locks = append(locks, l.Relation+" "+l.Mode)
 				}
@@ -441,7 +526,7 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 				fmt.Fprintf(w, "    locks:    %s\n", strings.Join(locks, ", "))
 			}
 			if len(held) > 0 {
-				fmt.Fprintf(w, "    held:     %s (taken by an earlier statement)\n", strings.Join(held, ", "))
+				fmt.Fprintf(w, "    held:     %s (taken by an earlier statement of the file)\n", strings.Join(held, ", "))
 			}
 			for _, rw := range st.Rewrites {
 				if !rw.New {

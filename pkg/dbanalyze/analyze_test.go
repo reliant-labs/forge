@@ -202,7 +202,7 @@ func TestMeasuredBehaviour(t *testing.T) {
 // A migration file runs as one transaction: the ACCESS EXCLUSIVE lock its
 // NOT VALID statement takes is held through the VALIDATE that follows, so
 // splitting them only helps across files. Each file commits before the next,
-// so the lock an earlier file took does not count against a later one.
+// so the lock an earlier file took is released before a later one runs.
 func TestLocksAreHeldThroughTheirFileOnly(t *testing.T) {
 	t.Parallel()
 	addNotValid := "ALTER TABLE t ADD CONSTRAINT ck CHECK (a > 0) NOT VALID;\n"
@@ -223,12 +223,28 @@ func TestLocksAreHeldThroughTheirFileOnly(t *testing.T) {
 	if len(split.findings) != 0 {
 		t.Errorf("split across files: findings = %+v, want none", split.findings)
 	}
-	held := false
 	for _, l := range split.stmt(t, 1, 0).Locks {
-		held = held || (l.Relation == "t" && l.Mode == "AccessExclusiveLock" && l.HeldBefore)
+		if l.HeldBefore {
+			t.Errorf("the second file's VALIDATE lists a lock the first file took, which committed: %+v", l)
+		}
 	}
-	if !held {
-		t.Errorf("the second file's VALIDATE does not list the earlier ACCESS EXCLUSIVE as held_before: %+v", split.stmt(t, 1, 0).Locks)
+}
+
+// The lock a statement needs is counted even when an earlier FILE took the
+// same mode: that file committed and released it, so the CHECK takes ACCESS
+// EXCLUSIVE afresh and validates under it.
+func TestALockAnEarlierFileTookIsTakenAgain(t *testing.T) {
+	t.Parallel()
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
+		"ALTER TABLE t ADD COLUMN c int;",
+		"ALTER TABLE t ADD CONSTRAINT ck CHECK (a > 0);")
+	if got := acquired(r.stmt(t, 1, 0), "t"); !slices.Equal(got, []string{"AccessExclusiveLock"}) {
+		t.Errorf("the CHECK acquired %v, want ACCESS EXCLUSIVE", got)
+	}
+	if got, want := r.rules("mb.up.sql", 1), []string{
+		dbanalyze.RuleAccessExclusiveLock + ":t", dbanalyze.RuleValidationScan + ":t",
+	}; !slices.Equal(got, want) {
+		t.Errorf("findings = %v, want %v", got, want)
 	}
 }
 
@@ -262,21 +278,108 @@ func TestRelationsCreatedInTheRunAreExempt(t *testing.T) {
 	}
 }
 
-// CREATE INDEX CONCURRENTLY cannot run in the analysis transaction. It is
-// reported with the lock it is known to take, not executed.
-func TestConcurrentIndexIsReportedStatically(t *testing.T) {
+// CREATE INDEX CONCURRENTLY runs on its own, as the migrator runs it: its
+// lock is reported from its kind, and the index exists for what follows, so
+// the recommended pattern (build the unique index concurrently, then attach
+// it as a constraint) analyzes clean.
+func TestConcurrentIndexRunsOnItsOwn(t *testing.T) {
 	t.Parallel()
-	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{}, "CREATE INDEX CONCURRENTLY t_a ON t (a);")
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
+		"CREATE UNIQUE INDEX CONCURRENTLY t_a ON t (a);",
+		"ALTER TABLE t ADD CONSTRAINT t_a_key UNIQUE USING INDEX t_a;")
 	st := r.stmt(t, 0, 0)
-	if st.Executed {
-		t.Fatal("CREATE INDEX CONCURRENTLY was executed")
+	if !st.Executed || st.DurationMS <= 0 {
+		t.Fatalf("CREATE UNIQUE INDEX CONCURRENTLY: %+v", st)
 	}
 	want := []dbanalyze.Lock{{Relation: "t", Mode: "ShareUpdateExclusiveLock", Static: true}}
 	if !slices.Equal(st.Locks, want) {
 		t.Errorf("locks = %+v, want %+v", st.Locks, want)
 	}
+	if !r.stmt(t, 1, 0).Executed {
+		t.Errorf("ADD CONSTRAINT … USING INDEX: %+v", r.stmt(t, 1, 0))
+	}
 	if len(r.findings) != 0 {
 		t.Errorf("findings = %+v, want none", r.findings)
+	}
+}
+
+// DROP INDEX CONCURRENTLY has its effect too: a later migration may reuse the
+// name.
+func TestConcurrentIndexDropRunsOnItsOwn(t *testing.T) {
+	t.Parallel()
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
+		"CREATE INDEX CONCURRENTLY t_a ON t (a);",
+		"DROP INDEX CONCURRENTLY t_a;",
+		"CREATE INDEX CONCURRENTLY t_a ON t (a, s);")
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	drop := r.stmt(t, 1, 0)
+	want := []dbanalyze.Lock{{Relation: "t_a", Mode: "ShareUpdateExclusiveLock", Static: true}}
+	if !drop.Executed || !slices.Equal(drop.Locks, want) {
+		t.Errorf("DROP INDEX CONCURRENTLY: %+v", drop)
+	}
+	if len(r.findings) != 0 {
+		t.Errorf("findings = %+v, want none", r.findings)
+	}
+}
+
+// postgres runs a file of several statements as one transaction, so a
+// nontransactional statement beside others fails as written; the analysis
+// says so instead of running it differently than the migrator would.
+func TestANontransactionalStatementBesideOthersIsRefused(t *testing.T) {
+	t.Parallel()
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{}, "VACUUM t;\nALTER TABLE t ADD COLUMN c int;")
+	if r.err == nil || !strings.Contains(r.err.Error(), "alone in its own migration file") {
+		t.Fatalf("err = %v", r.err)
+	}
+	alone := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{}, "VACUUM t;")
+	if st := alone.stmt(t, 0, 0); !st.Executed {
+		t.Errorf("VACUUM alone: %+v", st)
+	}
+}
+
+// A file that opens or ends its own transaction is not applied: its COMMIT
+// would commit part of the file and end the measurement.
+func TestAFileControllingItsTransactionIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		"BEGIN;\nCREATE TABLE n (id int);\nCOMMIT;",
+		"CREATE TABLE n (id int);\nCOMMIT;\nALTER TABLE t ADD COLUMN c int;",
+		"SAVEPOINT x;\nCREATE TABLE n (id int);",
+	} {
+		r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{}, sql)
+		if r.err == nil || !strings.Contains(r.err.Error(), "controls its own transaction") {
+			t.Errorf("%q: err = %v", sql, r.err)
+			continue
+		}
+		if len(r.migs) != 1 || r.migs[0].Analyzed || len(r.migs[0].Statements) != 0 {
+			t.Errorf("%q: migrations = %+v, want the file unapplied", sql, r.migs)
+		}
+	}
+}
+
+// A statement that changes what the whole server shares is not run on the
+// copy: a role is not the database's to roll back or drop.
+func TestServerWideStatementsAreNotRun(t *testing.T) {
+	t.Parallel()
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
+		"CREATE ROLE forge_analyze_never_created;\nALTER TABLE t ADD COLUMN c int;")
+	st := r.stmt(t, 0, 0)
+	if st.Executed || !strings.Contains(st.Reason, "whole server") {
+		t.Errorf("CREATE ROLE: %+v", st)
+	}
+	if !r.stmt(t, 0, 1).Executed {
+		t.Error("the statement after it was not executed")
+	}
+	db, err := sql.Open("pgx", r.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var exists bool
+	if err := db.QueryRow("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'forge_analyze_never_created')").Scan(&exists); err != nil || exists {
+		t.Errorf("the role exists (%v, %v)", exists, err)
 	}
 }
 
@@ -392,34 +495,6 @@ func TestALockHeldElsewhereStopsTheAnalysis(t *testing.T) {
 	var se *dbanalyze.StatementError
 	if !errors.As(err, &se) || se.SQLState != "55P03" || !strings.Contains(err.Error(), "the target is in use") {
 		t.Fatalf("err = %v, want a lock_timeout StatementError", err)
-	}
-}
-
-// The target is never changed: everything the analysis applied is rolled
-// back when the session closes, and the session never creates
-// schema_migrations to read it.
-func TestTheTargetIsLeftAsItWas(t *testing.T) {
-	t.Parallel()
-	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
-		"CREATE TABLE n (id int);\nALTER TABLE t ALTER COLUMN a TYPE bigint;\nINSERT INTO p VALUES (1000);")
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
-	db, err := sql.Open("pgx", r.dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var n sql.NullString
-	var typ string
-	var rows int
-	if err := db.QueryRow(`SELECT to_regclass('n')::text,
-		(SELECT data_type FROM information_schema.columns WHERE table_name = 't' AND column_name = 'a'),
-		(SELECT count(*) FROM p)`).Scan(&n, &typ, &rows); err != nil {
-		t.Fatal(err)
-	}
-	if n.Valid || typ != "integer" || rows != 100 {
-		t.Errorf("after the analysis: table n %v, t.a %s, %d rows in p; want no n, integer, 100", n, typ, rows)
 	}
 }
 

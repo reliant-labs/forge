@@ -61,17 +61,24 @@ func (e *StatementError) Error() string {
 
 func (e *StatementError) Unwrap() error { return e.Err }
 
-// AnalyzeMigrations applies files, in order, statement by statement inside
-// the session's transaction, measuring each, and returns what each did and
-// the findings. Findings carry SeverityError; a caller grading them (a
-// warn-first rollout, a project's dial) adjusts that.
+// AnalyzeMigrations applies files, in order, statement by statement, each
+// file in a transaction of its own that commits — as forge's migrator applies
+// them, on the session's DISPOSABLE database — measuring each statement, and
+// returns what each did and the findings. Findings carry SeverityError; a
+// caller grading them (a warn-first rollout, a project's dial) adjusts that.
 //
 // Every relation that exists when it starts is pre-existing; one a statement
 // of the run creates is new, and new relations are exempt from every rule:
 // locking or rewriting a table nobody reads yet is free.
 //
-// A statement that cannot run inside a transaction is not executed: its lock
-// is reported statically. A statement that times out is a finding and ends
+// A file whose one statement cannot run inside a transaction (CREATE INDEX
+// CONCURRENTLY) runs it on its own, with its lock reported statically. A
+// statement that changes what the whole server shares (a role, a database,
+// ALTER SYSTEM) is not run: a copy of the database does not isolate it. A
+// file that controls its own transaction (BEGIN/COMMIT) is not applied but
+// returned as an error, as is one that puts a nontransactional statement
+// beside others, which postgres would refuse. A statement that times out is a
+// finding and ends
 // the run, as does a statement that fails, which is returned as a
 // *StatementError (the analysis could not be made). The migrations the run did
 // not reach are returned unanalyzed, with the reason.
@@ -111,32 +118,48 @@ type analysis struct {
 	findings []Finding
 }
 
-// migration analyzes one file. stop is non-empty when the run must not go
-// on (a statement timed out); err when it could not (a statement failed).
+// migration analyzes one file, applying it as forge's migrator does: in a
+// transaction of its own that commits, unless its one statement cannot run
+// in a transaction, in which case that statement runs on its own. stop is
+// non-empty when the run must not go on (a statement timed out); err when it
+// could not (a statement failed, or the file is one the analysis cannot
+// apply faithfully).
 func (a *analysis) migration(ctx context.Context, f MigrationFile) (Migration, string, error) {
 	m := Migration{File: f.File, Version: f.Version, Analyzed: true, Statements: []StatementResult{}}
 	stmts := SplitStatements(f.SQL)
+	if err := unsupportedFile(f, stmts); err != nil {
+		m.Analyzed, m.Reason = false, err.Error()
+		return m, "", err
+	}
+	if len(stmts) == 1 && stmts[0].NonTransactional() != "" {
+		stop, err := a.alone(ctx, f, stmts[0], &m)
+		return m, stop, err
+	}
+
+	if err := a.s.begin(ctx); err != nil {
+		return m, "", fmt.Errorf("%s: %w", f.File, err)
+	}
 	// The lock modes this file has acquired so far. A migration file runs
 	// as one transaction, so a lock one statement takes is held through
-	// every later statement of the file; one an EARLIER file took was
-	// released when that file committed, and is not counted against this
-	// one (see Lock.HeldBefore).
+	// every later statement of the file (see Lock.HeldBefore). Each file
+	// commits before the next begins, so no lock carries over between files.
 	fileLocks := map[lockKey]bool{}
 	for i, st := range stmts {
 		res := StatementResult{Index: st.Index, Line: st.Line, SQL: st.SQL,
 			Locks: []Lock{}, Rewrites: []Rewrite{}, Scans: []Scan{}}
-		if label := st.NonTransactional(); label != "" {
-			res.Reason = label + " cannot run inside a transaction, so it was not executed; its lock is known statically"
-			res.Locks = append(res.Locks, st.staticLocks()...)
+		if what := st.serverWide(); what != "" {
+			res.Reason = what + " belongs to the whole server, not the database, so a copy of the database does not isolate it: it was not run, and nothing after it sees its effect"
 			m.Statements = append(m.Statements, res)
 			continue
 		}
 		meas, err := a.s.measure(ctx, st.SQL)
 		if err != nil {
+			a.s.rollback()
 			return m, "", fmt.Errorf("%s:%d: measure: %w", f.File, st.Line, err)
 		}
 		res.DurationMS = math.Round(float64(meas.duration.Microseconds())) / 1000
 		if meas.err != nil {
+			a.s.rollback()
 			stop, err := a.failed(&m, f, st, res, meas.err, stmts[i+1:])
 			return m, stop, err
 		}
@@ -149,7 +172,68 @@ func (a *analysis) migration(ctx context.Context, f MigrationFile) (Migration, s
 		a.judge(f.File, st, meas, fileLocks)
 		m.Statements = append(m.Statements, res)
 	}
+	if err := a.s.commit(); err != nil {
+		return m, "", fmt.Errorf("%s: %w", f.File, err)
+	}
 	return m, "", nil
+}
+
+// alone runs a file's one statement that cannot run in a transaction — CREATE
+// INDEX CONCURRENTLY, VACUUM — on its own, as postgres runs it when forge's
+// migrator sends the file. Its lock cannot be observed (the statement takes
+// and releases it within itself), so the one its kind is known to take is
+// reported; the relations it created or rewrote are measured. No rule judges
+// it: the concurrent statements are the fix the rules recommend. A statement
+// that would act on the server rather than the database (CREATE DATABASE,
+// ALTER SYSTEM, a subscription) is not run.
+func (a *analysis) alone(ctx context.Context, f MigrationFile, st Statement, m *Migration) (string, error) {
+	label := st.NonTransactional()
+	res := StatementResult{Index: st.Index, Line: st.Line, SQL: st.SQL,
+		Locks: []Lock{}, Rewrites: []Rewrite{}, Scans: []Scan{}}
+	if what := st.serverWide(); what != "" {
+		res.Reason = what + " belongs to the whole server, not the database, so a copy of the database does not isolate it: it was not run, and nothing after it sees its effect"
+		m.Statements = append(m.Statements, res)
+		return "", nil
+	}
+	meas, err := a.s.measure(ctx, st.SQL)
+	if err != nil {
+		return "", fmt.Errorf("%s:%d: measure: %w", f.File, st.Line, err)
+	}
+	res.DurationMS = math.Round(float64(meas.duration.Microseconds())) / 1000
+	if meas.err != nil {
+		return a.failed(m, f, st, res, meas.err, nil)
+	}
+	res.Executed = true
+	res.Reason = label + " cannot run inside a transaction: it ran on its own, as forge's migrator runs it, and its lock is known statically"
+	a.adoptRebuiltIndexes(&meas)
+	a.record(&res, meas)
+	res.Locks = append(res.Locks, st.staticLocks()...)
+	m.Statements = append(m.Statements, res)
+	return "", nil
+}
+
+// unsupportedFile refuses a file the analysis cannot apply the way forge's
+// migrator would: one that opens or ends transactions itself (its COMMIT
+// would end the file's transaction part-way, and the measurement with it),
+// and one that puts a statement that cannot run in a transaction beside
+// others (postgres runs a multi-statement file in one implicit transaction
+// and refuses it there).
+func unsupportedFile(f MigrationFile, stmts []Statement) error {
+	for _, st := range stmts {
+		if kw := st.transactionControl(); kw != "" {
+			return fmt.Errorf("%s:%d: the migration controls its own transaction (%s), which forge db analyze does not support: forge's migrator runs a file as one transaction, and a COMMIT inside it commits part of the file before the rest can fail. Split the file at the COMMIT and drop the BEGIN/COMMIT",
+				f.File, st.Line, kw)
+		}
+	}
+	if len(stmts) > 1 {
+		for _, st := range stmts {
+			if label := st.NonTransactional(); label != "" {
+				return fmt.Errorf("%s:%d: %s cannot run inside a transaction, and postgres runs a file of several statements as one: the migration fails as written. Put it alone in its own migration file (forge lint's migration lane reports this too)",
+					f.File, st.Line, label)
+			}
+		}
+	}
+	return nil
 }
 
 // failed ends the file at a statement that failed on the target, listing the

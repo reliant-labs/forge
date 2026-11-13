@@ -9,13 +9,15 @@ import (
 
 // WHAT A STATEMENT DID, OBSERVED RATHER THAN INFERRED.
 //
-// Each measured statement is bracketed by two snapshots taken in the same
+// Each measured statement is bracketed by two snapshots taken in its file's
 // transaction, and the difference is the measurement:
 //
 //   - locks: pg_locks rows of this backend (relation locks, granted). A
 //     transaction keeps every lock until it ends, so a row that appears was
 //     acquired by the statement. A mode already held does not appear twice:
-//     the snapshot before the statement says which ones were.
+//     the snapshot before the statement says which ones were. (A statement
+//     that runs outside a transaction has released its locks by the second
+//     snapshot; its lock is reported from its kind.)
 //   - rewrites: pg_class.relfilenode of every user relation. A rewrite (and
 //     a REINDEX) writes a new file and points the relation at it; nothing
 //     else changes it.
@@ -70,7 +72,7 @@ const scansQuery = `SELECT relid, COALESCE(seq_scan, 0), COALESCE(seq_tup_read, 
 // takeSnapshot reads the three catalogs a measurement diffs.
 func (s *Session) takeSnapshot(ctx context.Context) (snapshot, error) {
 	snap := snapshot{rels: map[uint32]relation{}, locks: map[lockKey]bool{}, scans: map[uint32][2]int64{}}
-	rows, err := s.tx.QueryContext(ctx, relationsQuery)
+	rows, err := s.q().QueryContext(ctx, relationsQuery)
 	if err != nil {
 		return snap, fmt.Errorf("read pg_class: %w", err)
 	}
@@ -86,7 +88,7 @@ func (s *Session) takeSnapshot(ctx context.Context) (snapshot, error) {
 		return snap, fmt.Errorf("read pg_class: %w", err)
 	}
 
-	rows, err = s.tx.QueryContext(ctx, locksQuery)
+	rows, err = s.q().QueryContext(ctx, locksQuery)
 	if err != nil {
 		return snap, fmt.Errorf("read pg_locks: %w", err)
 	}
@@ -102,7 +104,7 @@ func (s *Session) takeSnapshot(ctx context.Context) (snapshot, error) {
 		return snap, fmt.Errorf("read pg_locks: %w", err)
 	}
 
-	rows, err = s.tx.QueryContext(ctx, scansQuery)
+	rows, err = s.q().QueryContext(ctx, scansQuery)
 	if err != nil {
 		return snap, fmt.Errorf("read pg_stat_xact_user_tables: %w", err)
 	}

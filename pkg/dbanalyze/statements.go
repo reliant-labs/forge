@@ -2,6 +2,7 @@ package dbanalyze
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/sqllex"
@@ -42,8 +43,9 @@ func (st Statement) NonTransactional() string { return sqllex.NonTransactional(s
 
 // NonConcurrently returns a CREATE [UNIQUE] INDEX CONCURRENTLY statement
 // without CONCURRENTLY, which can run inside a transaction: a pass that needs
-// the index to exist (a query plan that should use it) builds it this way in
-// the rolled-back transaction. False for any other statement.
+// the index to exist inside one (a query plan that should use it) builds it
+// this way. The migration pass does not: it runs the concurrent statement
+// itself, on a disposable database. False for any other statement.
 func (st Statement) NonConcurrently() (string, bool) {
 	loc := concurrentIndexRE.FindStringSubmatchIndex(st.SQL)
 	if loc == nil {
@@ -53,6 +55,58 @@ func (st Statement) NonConcurrently() (string, bool) {
 }
 
 var concurrentIndexRE = regexp.MustCompile(`(?is)^(\s*create\s+(?:unique\s+)?index\s+)concurrently\s+`)
+
+// transactionControl names a statement that opens, ends or subdivides a
+// transaction (BEGIN, COMMIT, SAVEPOINT, …), else "".
+func (st Statement) transactionControl() string {
+	switch w := st.first(); w {
+	case "begin", "start", "commit", "end", "rollback", "abort", "savepoint", "release":
+		return strings.ToUpper(w)
+	case "prepare":
+		if len(st.words) > 1 && st.words[1] == "transaction" {
+			return "PREPARE TRANSACTION"
+		}
+	}
+	return ""
+}
+
+// serverWide names what a statement changes that belongs to the whole
+// server rather than to the database it runs in — roles, databases,
+// tablespaces, the server's configuration, a subscription's replication
+// slot — else "". A copy of the database does not isolate such a change, so
+// the analysis does not run the statement. (A DO block or a function can
+// make the same changes out of sight; that is not detected.)
+func (st Statement) serverWide() string {
+	w := st.words
+	at := func(i int, word string) bool { return len(w) > i && w[i] == word }
+	switch {
+	case (at(0, "create") || at(0, "alter") || at(0, "drop")) &&
+		(at(1, "role") || at(1, "group") || at(1, "user") && !at(2, "mapping")):
+		return "a role"
+	case (at(0, "create") || at(0, "alter") || at(0, "drop")) && at(1, "database"):
+		return "a database"
+	case (at(0, "create") || at(0, "alter") || at(0, "drop")) && at(1, "tablespace"):
+		return "a tablespace"
+	case (at(0, "create") || at(0, "alter") || at(0, "drop")) && at(1, "subscription"):
+		return "a subscription"
+	case at(0, "alter") && at(1, "system"):
+		return "the server's configuration (ALTER SYSTEM)"
+	case at(0, "comment") && at(1, "on") && (at(2, "database") || at(2, "role") || at(2, "tablespace")),
+		at(0, "security") && at(1, "label") && (st.has("database") || st.has("role") || st.has("tablespace")):
+		return "a database, role or tablespace's label"
+	case at(0, "reassign") && at(1, "owned"), at(0, "drop") && at(1, "owned"):
+		return "a role's ownership and privileges"
+	case at(0, "grant") || at(0, "revoke"):
+		i := slices.Index(w, "on")
+		if i < 0 {
+			return "a role's membership"
+		}
+		if at(i+1, "database") || at(i+1, "tablespace") || at(i+1, "parameter") {
+			return "a privilege on a " + w[i+1]
+		}
+	}
+	return ""
+}
 
 // first is the statement's leading keyword, lowercased.
 func (st Statement) first() string {

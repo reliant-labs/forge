@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
@@ -36,9 +38,24 @@ func analyzeProject(t *testing.T, files map[string]string) (projectDir, migDir s
 	return projectDir, migDir
 }
 
-// analyzeTarget is a database migrated with setup, standing in for a
-// snapshot a project points a dsn target at.
+// analyzeTarget is a database migrated with setup and marked as an analysis
+// target, standing in for a snapshot a project points a dsn target at.
 func analyzeTarget(t *testing.T, setup ...dbanalyze.MigrationFile) string {
+	t.Helper()
+	dsn := unmarkedAnalyzeTarget(t, setup...)
+	conn, err := pgx.Connect(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	if _, err := conn.Exec(context.Background(),
+		"DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET forge.analyze_target = %L', current_database(), 'on'); END $$"); err != nil {
+		t.Fatal(err)
+	}
+	return dsn
+}
+
+func unmarkedAnalyzeTarget(t *testing.T, setup ...dbanalyze.MigrationFile) string {
 	t.Helper()
 	testkit.Slow(t, "boots postgres (pkg/dbanalyze's own tests cover the mechanism under -short)")
 	dsn, cleanup, err := dbanalyze.PrepareScratch(context.Background(), setup)
@@ -83,6 +100,9 @@ func TestDBAnalyzeDSNTargetAnalyzesWhatTheTargetLacks(t *testing.T) {
 	if doc.Target.Kind != dbanalyze.TargetDSN || doc.Target.ServerVersionNum == 0 || doc.Target.Identity == "" {
 		t.Errorf("target = %+v", doc.Target)
 	}
+	if c := doc.Target.Clone; c == nil || !strings.HasPrefix(c.Database, "forge_analyze_") || c.SizeBytes <= 0 {
+		t.Errorf("target.clone = %+v", c)
+	}
 	var rules []string
 	for _, f := range doc.Findings {
 		rules = append(rules, f.Rule+"/"+f.Severity)
@@ -103,6 +123,9 @@ func TestDBAnalyzeDSNTargetAnalyzesWhatTheTargetLacks(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(buf.String()), &decoded); err != nil {
 		t.Fatal(err)
+	}
+	if c, ok := decoded["target"].(map[string]any)["clone"].(map[string]any); !ok || c["database"] == nil || c["duration_ms"] == nil || c["size_bytes"] == nil {
+		t.Errorf("target.clone = %v", decoded["target"])
 	}
 	for _, key := range []string{"schema", "target", "base", "migrations", "queries", "findings", "summary", "exit_code"} {
 		if _, ok := decoded[key]; !ok && key != "base" {
@@ -170,6 +193,69 @@ func TestDBAnalyzeCouldNotAnalyze(t *testing.T) {
 			t.Errorf("exit %d", doc.ExitCode)
 		}
 	})
+}
+
+// A target nobody marked is refused before anything is copied, with the line
+// that marks it.
+func TestDBAnalyzeRefusesAnUnmarkedTarget(t *testing.T) {
+	t.Parallel()
+	projectDir, migDir := analyzeProject(t, map[string]string{
+		"20260101000000_orders.up.sql": analyzeBaseSQL,
+		"20260102000000_widen.up.sql":  analyzeNewSQL,
+	})
+	dsn := unmarkedAnalyzeTarget(t, dbanalyze.MigrationFile{File: "20260101000000_orders.up.sql", Version: 20260101000000, SQL: analyzeBaseSQL})
+	doc := runDBAnalyze(context.Background(), projectDir, nil, dbAnalyzeOptions{target: "dsn", migDir: migDir}, dsnDeps(dsn, nil))
+	if doc.ExitCode != dbanalyze.ExitCouldNotAnalyze || !strings.Contains(doc.Error, "SET forge.analyze_target = 'on'") || len(doc.Migrations) != 0 {
+		t.Errorf("exit %d error %q migrations %d", doc.ExitCode, doc.Error, len(doc.Migrations))
+	}
+}
+
+// The recommended safe patterns analyze clean end to end: a unique index
+// built CONCURRENTLY and then attached as a constraint; an index dropped
+// CONCURRENTLY and its name reused. And a type change of an indexed column
+// is the rewrite it is, not an index built without CONCURRENTLY.
+func TestDBAnalyzeConcurrentIndexPatterns(t *testing.T) {
+	t.Parallel()
+	const base = "CREATE TABLE orders (id int PRIMARY KEY, status varchar(10), email text);\nCREATE INDEX orders_status ON orders (status);\n"
+	baseFile := dbanalyze.MigrationFile{File: "20260101000000_orders.up.sql", Version: 20260101000000, SQL: base}
+	cases := []struct {
+		name  string
+		files map[string]string
+		rules string
+		exit  int
+	}{
+		{name: "unique index concurrently, then the constraint", exit: dbanalyze.ExitOK, files: map[string]string{
+			"20260102000000_index.up.sql":  "CREATE UNIQUE INDEX CONCURRENTLY orders_email ON orders (email);\n",
+			"20260103000000_attach.up.sql": "ALTER TABLE orders ADD CONSTRAINT orders_email_key UNIQUE USING INDEX orders_email;\n",
+		}},
+		{name: "drop concurrently, then reuse the name", exit: dbanalyze.ExitOK, files: map[string]string{
+			"20260102000000_drop.up.sql":     "DROP INDEX CONCURRENTLY orders_status;\n",
+			"20260103000000_recreate.up.sql": "CREATE INDEX CONCURRENTLY orders_status ON orders (status, id);\n",
+		}},
+		{name: "a type change of the primary key", exit: dbanalyze.ExitFindings,
+			rules: dbanalyze.RuleTableRewrite + "," + dbanalyze.RuleAccessExclusiveLock,
+			files: map[string]string{"20260102000000_widen.up.sql": "ALTER TABLE orders ALTER COLUMN id TYPE bigint;\n"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			files := map[string]string{baseFile.File: base}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			projectDir, migDir := analyzeProject(t, files)
+			dsn := analyzeTarget(t, baseFile)
+			cfg := &config.ProjectConfig{ModulePath: "example.com/app", ForgeVersion: "v99.0.0"}
+			doc := runDBAnalyze(context.Background(), projectDir, cfg, dbAnalyzeOptions{target: "dsn", migDir: migDir}, dsnDeps(dsn, nil))
+			var rules []string
+			for _, f := range doc.Findings {
+				rules = append(rules, f.Rule)
+			}
+			if doc.ExitCode != tc.exit || strings.Join(rules, ",") != tc.rules {
+				t.Errorf("exit %d (error %q), findings %v; want exit %d, %q", doc.ExitCode, doc.Error, rules, tc.exit, tc.rules)
+			}
+		})
+	}
 }
 
 // A DSN a non-development environment declares is refused; a dev

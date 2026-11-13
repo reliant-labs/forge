@@ -335,6 +335,7 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	// Every project: a backend with no frontend still has users and emits
 	// the CRUD events; Acquisition when it has a frontend.
 	project.Dashboards = append(project.Dashboards, obsbuiltin.Dashboards(in.builtin())...)
+	project.Dashboards = append(project.Dashboards, obsbuiltin.AIDashboards(in.builtin())...)
 	for i := range project.Dashboards {
 		project.Dashboards[i] = withReleaseMarkers(project.Dashboards[i])
 	}

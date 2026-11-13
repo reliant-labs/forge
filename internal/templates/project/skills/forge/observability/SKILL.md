@@ -61,7 +61,7 @@ PASS or SKIP. Run status after `forge env up dev` before investigating.
 
 ### Dashboards
 
-HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per deployed process/role and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`. A hosted environment also gets the built-in product analytics (the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards) with no code: `observability/product-analytics`.
+HyperDX dashboard JSON dropped into `deploy/observability/dashboards/` is loaded automatically, within about 15 seconds and without a restart (HyperDX's file provisioner, `DASHBOARD_PROVISIONER_DIR`). A provisioned dashboard is read-only in the UI and replaced by name on the next load: edit the file, not the browser copy. A dashboard you build by hand in the UI is separate and never overwritten. `forge generate` writes an overview, a dashboard per deployed process/role and a frontend dashboard into it as `*_gen.json`; every other file there is yours. Depth, and how to override a generated one: `observability/dashboards`. A hosted environment also gets the built-in product analytics (the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards) with no code: `observability/product-analytics`; and the **AI hub** (the AI group: runs, model calls, tokens, errors and tools by workflow, model, provider and user, from OpenTelemetry GenAI spans that `pkg/observe/genai` emits): `observability/ai`.
 
 **Alerts** are declared in KCL, not in HyperDX: `forge.AlertRule` (a native ClickHouse SQL `expr`; every returned row is a firing instance), `forge.AlertRoute` (labels to a receiver name) and `forge.AlertDefault` (tune or disable the generated defaults: telemetry, customer-metadata and platform), under `forge.Observability.alerts`. Render refuses a malformed rule; the resolved rules land in the release shape for the control plane to evaluate. Depth: `observability/alerts`. Uptime checks of a hosted env: `observability/uptime`.
 
@@ -210,6 +210,10 @@ Every RPC already writes a structured audit record to your logs (`log_type=audit
   with `observe.NewClientStack` (forge/pkg/observe) — otelconnect client
   interceptor, request-ID forwarding, timeout — then
   `genconnect.NewXClient(stack.HTTPClient, baseURL, stack.ClientOptions...)`.
+
+- **Model calls, agent turns, tool calls, workflow runs**: `pkg/observe/genai`
+  spans (OTel GenAI conventions plus `forge.ai.*`), which the AI hub reads and
+  the sampler never drops: `observability/ai`.
 
 ## Keeping a request in one trace
 

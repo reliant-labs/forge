@@ -69,7 +69,8 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition"; got != want {
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition," +
+		"ai,ai-workflows,ai-models,ai-users,ai-errors,ai-tools"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 
@@ -154,7 +155,8 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 		// The built-in product dashboards count visitors and users across a
 		// project's frontend and backend, so a service filter would split
 		// one visit or one user in two: they filter on the environment only.
-		if obsbuiltin.IsDashboard(d.ID) {
+		// The AI hub's likewise: a run spans the services that start and run it.
+		if obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID) {
 			if got[FieldService] || !got[FieldEnv] {
 				t.Errorf("%s: filters %v, want only deployment.environment.name", d.ID, d.Filters)
 			}

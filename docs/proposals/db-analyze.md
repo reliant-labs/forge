@@ -36,7 +36,9 @@ database:
     target:
       # scratch (default): pgtest's embedded Postgres (or FORGE_TEST_POSTGRES_URL),
       #   migrated to the base, then the change applied.
-      # dsn: a database you provide, e.g. an anonymized prod snapshot.
+      # dsn: a database you provide, e.g. an anonymized prod snapshot, marked with
+      #   ALTER DATABASE <db> SET forge.analyze_target = 'on'; it is read and copied,
+      #   and the migrations run on the copy (see "Safety of a dsn target").
       kind: dsn
       # The NAME of the env var holding the DSN. A DSN is never written in forge.yaml.
       dsn_env: FORGE_ANALYZE_DATABASE_URL
@@ -55,22 +57,51 @@ Rule severities go through `lint.rules` like every other rule (`{db-analyze-…:
 
 ### Safety of a `dsn` target
 
-The target is never changed:
+The target is read, copied and never written. An earlier draft ran everything in one
+transaction that was always rolled back and rejected a copy as unnecessary; review showed
+that model does not hold. A migration's own `COMMIT` ends the transaction and commits
+whatever came before it, a sequence advances whether or not its transaction commits, and a
+statement that cannot run in a transaction cannot be measured inside one, so a later
+migration that depends on it (`ADD CONSTRAINT … USING INDEX`) fails. A rolled-back
+transaction also holds every lock a file took into the next file, which forge's migrator
+never does, and hides the lock a later file needs again. So:
 
-- Everything runs in **one session, one transaction, always rolled back**: `BEGIN`,
-  `SET LOCAL statement_timeout/lock_timeout`, apply pending migrations statement by
-  statement, measure, `EXPLAIN`, `ROLLBACK`. Postgres DDL is transactional.
-- A statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`, a file marked
-  no-transaction) is **not executed**. Its lock is known statically (`SHARE UPDATE
-  EXCLUSIVE`) and is reported as such, with `executed: false`. For the query pass the index
-  is created non-concurrently inside the rolled-back transaction so plans can use it.
-- The DSN is refused when it reconciles (`databaseIdentity`, `internal/cli/db_target.go`)
-  with a database a non-development deploy env declares. Point it at a snapshot, not prod.
-- On a snapshot with data, a rewrite or a scan really runs (bounded by
-  `statement_timeout`) and is rolled back. That cost is the point: it measures it.
+- **The target must be marked** by whoever builds it, once, as its owner:
+  `ALTER DATABASE <db> SET forge.analyze_target = 'on'`. The marker is read from
+  `pg_db_role_setting` for the database itself (a role's or a session's setting does not
+  count). An unmarked target is refused (exit 2) with that line. Production carries no
+  marker, so a DSN that reaches it, however it is spelled and whether or not forge can
+  resolve what a deploy env declares, is refused.
+- As a second check, the DSN is refused when it reconciles (`databaseIdentity`,
+  `internal/cli/db_target.go`) with a database a non-development deploy env declares. The
+  comparison reads the DSN the way pgx dials it (host, port and dbname query parameters,
+  keyword/value DSNs, multi-host lists). An env whose DSN cannot be resolved is not
+  compared: the marker is the guard there.
+- **The analysis runs on a copy.** forge reads the target's marker, version, statistics and
+  `schema_migrations` over a read-only connection, closes it, and copies the target with
+  `CREATE DATABASE forge_analyze_<random> TEMPLATE <target> STRATEGY FILE_COPY` (plain
+  `TEMPLATE` before Postgres 15) from a maintenance connection to the same server. The copy
+  is dropped when the analysis ends, on an error and on an interrupt too. The document
+  reports its name, size and copy time as `target.clone`.
+- The copy needs a role with `CREATEDB` that owns the target (or a superuser, or a target
+  marked `IS_TEMPLATE`), and no other session connected to the target while it is copied.
+  Either failing is exit 2 with the cause; for connected sessions, who they are
+  (`pg_stat_activity`).
+- **Migrations are applied as forge's migrator applies them**: each file `BEGIN`, its
+  statements one at a time (each measured), `COMMIT`. Locks never carry over between files.
+  A file whose one statement cannot run in a transaction (`CREATE INDEX CONCURRENTLY`,
+  `DROP INDEX CONCURRENTLY`, `VACUUM`) runs it on its own, on the copy, with its lock reported
+  statically (`executed: true`). A file that controls its own transaction (`BEGIN`/`COMMIT`)
+  is refused as unsupported, as is one that puts a non-transactional statement beside
+  others (Postgres refuses it in the implicit transaction the migrator runs a file in).
+- A statement that changes what the whole server shares (roles, databases, tablespaces,
+  `ALTER SYSTEM`, subscriptions) is not run: a copy of the database does not isolate it.
+  A `DO` block or function can make such changes out of sight; that is not detected.
+- On a snapshot with data, a rewrite or a scan really runs (bounded by `statement_timeout`)
+  on the copy. That cost is the point: it measures it.
 
-A `clone` isolation mode (`CREATE DATABASE … TEMPLATE`) was considered and left out of v1:
-a rolled-back transaction gives the same answers without a full copy.
+A scratch target is disposable already (a pgtest database cloned from a cached template),
+so migrations run on it directly, in the same per-file model, with no second copy.
 
 ## What is analyzed
 
@@ -88,7 +119,7 @@ An empty set is a verdict, not a silent pass: the document says scanned 0, and w
 
 ## Phase 1: migrations
 
-Per executed statement, inside the transaction:
+Per executed statement, inside its file's transaction:
 
 | Measured | How |
 |---|---|
@@ -130,8 +161,9 @@ Queries no test runs are invisible. That is the intended incentive.
 ## Phase 3: query plans
 
 `forge db analyze queries --capture DIR` selects the shapes whose caller is in a file
-changed since base (`--all` for every one), applies the head schema on the target in the
-rolled-back transaction, and explains each with `EXPLAIN (GENERIC_PLAN, FORMAT JSON)`
+changed since base (`--all` for every one), applies the head schema on the migration pass's
+copy of the target (a scratch database, or the dsn target's `forge_analyze_*` clone, which
+stays open until the query pass is done), and explains each with `EXPLAIN (GENERIC_PLAN, FORMAT JSON)`
 (Postgres 16+; older is exit 2) twice: as is, and with `SET LOCAL enable_seqscan = off`.
 
 - `db-analyze-query-no-usable-index`: under `enable_seqscan = off` a table under a filter,
@@ -188,6 +220,10 @@ show the plan regressions pre-merge analysis cannot.
 }
 ```
 
+A dsn target's `target` also carries `"clone": {"database": "forge_analyze_…",
+"duration_ms": …, "size_bytes": …}`, the copy the migrations ran on.
+
 Exit codes: **0** nothing gating; **1** a gating finding; **2** could not analyze (no
-Postgres, Postgres too old, target ahead of the tree, refused DSN). Never "passed" when
-nothing was examined.
+Postgres, Postgres too old, target ahead of the tree, refused or unmarked DSN, a copy that
+could not be made, a file that controls its own transaction). Never "passed" when nothing
+was examined.

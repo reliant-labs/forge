@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Measure what a migration does on a real postgres with forge db analyze — the locks it takes, the tables it rewrites or scans, how long it runs — inside one always-rolled-back transaction; scratch vs dsn (anonymized snapshot) targets, database.analyze config, the five db-analyze-* rules, the forge.db-analyze/v1 JSON document and exit codes.
+description: Measure what a migration does on a real postgres with forge db analyze — the locks it takes, the tables it rewrites or scans, how long it runs — on a disposable copy of the target; scratch vs dsn (anonymized snapshot) targets, preparing a snapshot (the forge.analyze_target marker, CREATEDB, no connections during the copy), database.analyze config, the five db-analyze-* rules, the forge.db-analyze/v1 JSON document and exit codes.
 ---
 
 # Measuring migrations: `forge db analyze`
@@ -24,10 +24,12 @@ review lane, or in a full gate.
 
 ## What it does
 
-Everything runs in **one session, one transaction, always rolled back**:
-`BEGIN`, `SET LOCAL statement_timeout / lock_timeout`, each pending migration
-applied **statement by statement**, each measured, `ROLLBACK`. Postgres DDL is
-transactional, so the target is never changed.
+The migrations run on a **disposable database**, never on the target: a dsn
+target is read, then copied (`CREATE DATABASE forge_analyze_<random> TEMPLATE
+<target>`) and the copy dropped when the run ends — on an error or an interrupt
+too; a scratch target is a throwaway pgtest database already. Each pending
+migration is applied **as forge's migrator applies it**: the file in one
+transaction, `BEGIN`, its statements **one by one**, each measured, `COMMIT`.
 
 Per executed statement:
 
@@ -42,15 +44,23 @@ Per executed statement:
 A relation created earlier in the run is **new** and exempt from every rule:
 locking or rewriting a table nobody reads yet is free.
 
-A statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`,
-`DROP INDEX CONCURRENTLY`, `VACUUM` …) is **not executed**: it is listed with
-`executed: false` and its lock is reported statically (`SHARE UPDATE
-EXCLUSIVE`, which blocks neither reads nor writes).
+A file whose one statement cannot run in a transaction (`CREATE INDEX
+CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `VACUUM` …) runs it **on its own**, as
+the migrator does: `executed: true`, its duration, and its lock reported
+statically (`SHARE UPDATE EXCLUSIVE`, which blocks neither reads nor writes). So
+the safe patterns analyze clean: an index built concurrently and then attached
+with `ADD CONSTRAINT … USING INDEX`, a name dropped concurrently and reused.
 
-A migration file runs as one transaction in production, so a lock one statement
-takes is held through every later statement **of the same file** — the rules
-count it. A lock an earlier file took was released when that file committed, and
-is not counted (it shows with `held_before: true`).
+A lock one statement takes is held through every later statement **of the same
+file** — the rules count it (`held_before: true` on the later statement). Each
+file commits before the next, so no lock carries over between files.
+
+Refused as unsupported (exit 2): a file that controls its own transaction
+(`BEGIN`/`COMMIT`/`SAVEPOINT` — split the file instead), and a file that puts a
+non-transactional statement beside others (postgres refuses it as written). A
+statement that changes what the whole **server** shares — a role, a database, a
+tablespace, `ALTER SYSTEM`, a subscription — is not run (`executed: false`):
+a copy of one database does not isolate it.
 
 ## Targets
 
@@ -62,12 +72,29 @@ is not counted (it shows with `held_before: true`).
 On a scratch target tables are empty: rewrites, locks and validation scans are
 still observed exactly (they do not depend on rows), but durations are not
 meaningful and sizes come only from `table_rows` hints. On a snapshot with data a
-rewrite or a scan really runs (bounded by `statement_timeout`) and is rolled
-back — that cost is the measurement.
+rewrite or a scan really runs on the copy (bounded by `statement_timeout`) —
+that cost is the measurement.
 
-A dsn target is **refused** when it is the database a non-development env
-declares (`deploy/kcl/<env>/`), or when its DSN names no server and database.
-A target ahead of the tree, or dirty, cannot be analyzed (exit 2).
+### Preparing a snapshot for a dsn target
+
+Whoever builds the snapshot does three things once:
+
+1. **Mark it** as its owner: `ALTER DATABASE <db> SET forge.analyze_target = 'on';`
+   An unmarked target is refused (exit 2) with that line. The marker is the
+   database's own setting (a role's or a session's does not count). Never mark
+   production.
+2. **Let the analysis role copy it**: the role needs `CREATEDB` and must own the
+   database (or be a superuser, or the database is `IS_TEMPLATE`).
+3. **Keep it to itself during a run**: postgres copies a database only while no
+   other session is connected to it. A run that finds one connected fails (exit
+   2) and names who (`pg_stat_activity`). The copy takes about as long as
+   copying the files; the document reports it as `target.clone`
+   (`database`, `duration_ms`, `size_bytes`).
+
+A dsn target is also **refused** when it is the database a non-development env
+declares (`deploy/kcl/<env>/`), judged by where its DSN actually connects
+(host/port/dbname query parameters, keyword/value DSNs; a multi-host DSN is
+refused). A target ahead of the tree, or dirty, cannot be analyzed (exit 2).
 
 ## Configuration
 
@@ -76,7 +103,7 @@ A target ahead of the tree, or dirty, cannot be analyzed (exit 2).
 database:
   analyze:
     target:
-      kind: dsn                          # scratch (default) | dsn
+      kind: dsn                          # scratch (default) | dsn: a marked snapshot, analyzed on a copy (above)
       dsn_env: FORGE_ANALYZE_DATABASE_URL  # the env var's NAME; never a DSN in forge.yaml
       statement_timeout: 60s             # per statement (default 60s); a timeout is a finding
       lock_timeout: 5s                   # default 5s; another session's lock stops the run (exit 2)
@@ -103,7 +130,9 @@ Each warns first through forge's lint rollout and is dialled through
 
 Measured on postgres 18 (and pinned by forge's tests): `varchar` widening, a
 constant default, `DEFAULT now()`, `ADD COLUMN … NOT NULL DEFAULT 0` and any
-`NOT VALID` constraint neither rewrite nor scan; `VALIDATE CONSTRAINT` scans
+`NOT VALID` constraint neither rewrite nor scan; a type change of an indexed
+column rebuilds the index as part of the table's rewrite (`table-rewrite`, not
+`blocking-index-build`); `VALIDATE CONSTRAINT` scans
 under SHARE UPDATE EXCLUSIVE, which blocks no writes — unless the same file's
 `NOT VALID` statement already holds ACCESS EXCLUSIVE. `TRUNCATE` is left to the
 textual lane's `destructive-change`.
@@ -111,7 +140,8 @@ textual lane's `destructive-change`.
 ## The document (`--json`)
 
 `schema: forge.db-analyze/v1`. `target` (`kind`, `identity` host:port/db — never
-credentials — `server_version`, `has_statistics`), `base`, `migrations[]` (each
+credentials — `server_version`, `has_statistics`, and for a dsn target `clone`),
+`base`, `migrations[]` (each
 `statements[]` with `line`, `sql`, `executed`, `duration_ms`, `locks[]`,
 `rewrites[]`, `scans[]`, `rows{}`), `queries[]` (the query-plan pass; empty
 here), `findings[]` (`rule`, `severity`, `file`, `line`, `relation`, `message`,
@@ -120,7 +150,8 @@ here), `findings[]` (`rule`, `severity`, `file`, `line`, `relation`, `message`,
 `exit_code`, `error`.
 
 Exit codes: **0** nothing gating; **1** a gating finding; **2** could not
-analyze (no postgres, target ahead of the tree or dirty, refused DSN, a
+analyze (no postgres, target ahead of the tree or dirty, refused or unmarked
+DSN, a copy that could not be made, a file that controls its own transaction, a
 statement that failed, another session's lock). An empty analysis is exit 0
 with `migrations_scanned: 0` and a `reason` — read the reason, it is never a
 silent pass.
@@ -130,5 +161,6 @@ reported as such; judgement about a specific table ("this one is hot") is a
 comment, not a gate.
 
 The mechanism is a library, `forge/pkg/dbanalyze` (`forge project libraries
-dbanalyze`): a session holding the rolled-back transaction, the measured
-executor, the rules and the document types.
+dbanalyze`): the read-only source and the disposable clone, a session applying
+files as the migrator does, the measured executor, the rules and the document
+types.

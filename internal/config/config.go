@@ -905,7 +905,11 @@ const (
 type AnalyzeTargetConfig struct {
 	// Kind is "scratch" (the default: an embedded Postgres migrated to the
 	// base) or "dsn" (a database the project provides, such as an
-	// anonymized snapshot of prod).
+	// anonymized snapshot of prod). A dsn target is only read and copied —
+	// the migrations run on a disposable copy — and it must be marked by
+	// its owner with ALTER DATABASE <db> SET forge.analyze_target = 'on';
+	// the role needs CREATEDB, and nothing else may be connected to it
+	// during the copy.
 	Kind string `yaml:"kind,omitempty"`
 	// DSNEnv is the NAME of the environment variable holding a dsn target's
 	// connection string. A DSN is never written in forge.yaml.

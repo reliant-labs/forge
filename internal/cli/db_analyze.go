@@ -34,6 +34,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/querycapture"
 	"github.com/reliant-labs/forge/pkg/redact"
 )
 
@@ -48,6 +49,13 @@ type dbAnalyzeOptions struct {
 	base   string
 	migDir string
 	json   bool
+	// capture is the directory a test run recorded query shapes into
+	// (FORGE_QUERY_CAPTURE_DIR); given, the query pass runs.
+	capture string
+	// all plans every captured shape, not only the changed callers'.
+	all bool
+	// queriesOnly is `forge db analyze queries`: the query pass alone.
+	queriesOnly bool
 }
 
 func newDBAnalyzeCommand() *cobra.Command {
@@ -87,6 +95,12 @@ Rules (lint.rules sets their severity; each warns before it gates):
   ` + dbanalyze.RuleBlockingIndexBuild + `   an index built without CONCURRENTLY
   ` + dbanalyze.RuleStatementTimeout + `     a statement exceeded statement_timeout
 
+Queries: --capture DIR (the FORGE_QUERY_CAPTURE_DIR a test run recorded query
+shapes into) adds the query pass after the migrations, on the same copy: each
+captured shape is planned on the head schema and checked for filters, joins
+and ORDER BY … LIMIT no index serves (` + dbanalyze.RuleQueryNoUsableIndex + `,
+` + dbanalyze.RuleQueryLargeSeqScan + `). 'forge db analyze queries' runs it alone.
+
 Exit codes: 0 nothing gating; 1 a gating finding; 2 could not analyze (no
 postgres, target ahead of the tree, refused DSN, a statement that failed).
 An empty analysis is reported as scanned 0, with the reason.
@@ -96,7 +110,8 @@ Load the db/analyze skill for configuration and how to read the document.
 Examples:
   forge db analyze
   forge db analyze --json
-  FORGE_ANALYZE_DATABASE_URL=postgres://... forge db analyze --target dsn`,
+  FORGE_ANALYZE_DATABASE_URL=postgres://... forge db analyze --target dsn
+  FORGE_QUERY_CAPTURE_DIR=/tmp/qc task test:short && forge db analyze --capture /tmp/qc`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			projectDir := dbProjectRoot()
@@ -113,11 +128,8 @@ Examples:
 			return reportDBAnalyze(cmd.OutOrStdout(), doc, opts.json)
 		},
 	}
-	cmd.Flags().StringVar(&opts.target, "target", "", "Where to analyze: scratch (an embedded postgres) or dsn (default: database.analyze.target.kind, else scratch)")
-	cmd.Flags().StringVar(&opts.dsnEnv, "dsn-env", "", "Environment variable holding a dsn target's connection string (default: database.analyze.target.dsn_env, else "+defaultAnalyzeDSNEnv+")")
-	cmd.Flags().StringVar(&opts.base, "base", "", "Revision a scratch target's migrations are split at (default: the merge-base with the remote default branch)")
-	cmd.Flags().StringVar(&opts.migDir, "dir", "", migrationsDirFlagUsage)
-	cmd.Flags().BoolVar(&opts.json, "json", false, "Print the forge.db-analyze/v1 document")
+	addDBAnalyzeFlags(cmd, &opts)
+	cmd.AddCommand(newDBAnalyzeQueriesCommand())
 	return cmd
 }
 
@@ -134,6 +146,16 @@ func defaultAnalyzeDeps() analyzeDeps {
 
 // runDBAnalyze builds the document. It never fails on its own: a failure is
 // the document's Error, exit 2.
+//
+// The migration pass runs unless opts.queriesOnly; the query pass runs when
+// opts.capture names a capture directory. Both run on one disposable
+// database — a scratch database, or the copy of a dsn target — which is
+// dropped on every path out: the query pass plans on the head schema the
+// migration pass committed there. Alone, the query pass brings that database
+// to head itself: a scratch database is migrated with every migration, and a
+// dsn target's copy has its pending migrations applied exactly as the
+// migration pass applies them (each file committed, CONCURRENTLY run for
+// real), unreported.
 func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectConfig, opts dbAnalyzeOptions, deps analyzeDeps) *dbanalyze.Document {
 	doc := dbanalyze.NewDocument()
 	fail := func(format string, args ...any) *dbanalyze.Document {
@@ -159,6 +181,13 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 	if err != nil {
 		return fail("%v", err)
 	}
+	if opts.all && opts.capture == "" {
+		return fail("--all selects captured query shapes: pass --capture DIR (the directory %s named when the tests ran)", querycapture.EnvDir)
+	}
+	if opts.queriesOnly && opts.capture == "" {
+		return fail("the query pass needs --capture DIR: run the tests with %s=DIR first, then pass that directory", querycapture.EnvDir)
+	}
+	analyzeCfg := dbanalyze.Config{TableRows: acfg.TableRows, SmallTableRows: acfg.SmallTableRows, LargeTableRows: acfg.LargeTableRows}
 
 	if h, ok := projectMigrationHook(opts.migDir); ok {
 		return fail("this project's migrations are applied by %s (database.migrations.tool): forge db analyze reads forge-migrator migrations (<version>_<name>.up.sql) only", h.Tool)
@@ -180,21 +209,43 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 		files = append(files, dbanalyze.MigrationFile{File: analyzeRelPath(projectDir, path), Version: uint64(m.Version), SQL: string(data)})
 	}
 
-	var (
-		analyzed []dbanalyze.MigrationFile
-		dsn      string
-	)
-	switch kind {
-	case config.AnalyzeTargetScratch:
-		setup, changed, base, err := splitAtBase(projectDir, opts.migDir, opts.base, files)
+	// The query pass's shapes are chosen before any database is touched: an
+	// empty selection is a verdict that needs no postgres.
+	var qp *queryPass
+	if opts.capture != "" {
+		qp, err = selectQueryShapes(projectDir, cfg, opts)
 		if err != nil {
 			return fail("%v", err)
 		}
-		doc.Base, analyzed = base, changed
-		if len(analyzed) == 0 {
-			doc.Summary.Reason = fmt.Sprintf("no migration in %s was added or changed since %s", analyzeRelPath(projectDir, opts.migDir), base)
-			doc.Finalize()
-			return doc
+		doc.Summary.QueriesCaptured = qp.captured
+		doc.Summary.QueriesReason = qp.reason
+		doc.Summary.Skipped = append(doc.Summary.Skipped, qp.skipped...)
+	}
+	wantQueries := qp != nil && len(qp.shapes) > 0
+
+	// pending are the migrations applied on the disposable database: the
+	// ones the migration pass analyzes, or, for the query pass alone on a
+	// dsn target, the ones its copy lacks to reach head.
+	var (
+		pending []dbanalyze.MigrationFile
+		dsn     string
+	)
+	switch kind {
+	case config.AnalyzeTargetScratch:
+		setup := files
+		if !opts.queriesOnly {
+			var base string
+			setup, pending, base, err = splitAtBase(projectDir, opts.migDir, opts.base, files)
+			if err != nil {
+				return fail("%v", err)
+			}
+			doc.Base = base
+			if len(pending) == 0 {
+				doc.Summary.Reason = fmt.Sprintf("no migration in %s was added or changed since %s", analyzeRelPath(projectDir, opts.migDir), base)
+			}
+		}
+		if len(pending) == 0 && !wantQueries {
+			return finishDBAnalyze(doc, qp)
 		}
 		if v := cfgPostgresVersion(cfg); v != "" && deps.getenv(pgtest.EnvVersion) == "" {
 			// pgtest reads database.postgres_version from the forge.yaml
@@ -228,16 +279,21 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 			return fail("%v", err)
 		}
 		doc.Target = info
-		analyzed, err = pendingOnTarget(ms, files, st)
+		pending, err = pendingOnTarget(ms, files, st)
 		if err != nil {
 			return fail("%v", err)
 		}
-		if len(analyzed) == 0 {
+		if len(pending) == 0 && !opts.queriesOnly {
 			doc.Summary.Reason = fmt.Sprintf("the target has applied every migration in %s (version %d)", analyzeRelPath(projectDir, opts.migDir), st.Version)
-			doc.Finalize()
-			return doc
 		}
-		// The migrations run on a copy, never on the target: they commit.
+		if len(pending) == 0 && !wantQueries {
+			return finishDBAnalyze(doc, qp)
+		}
+		if wantQueries && info.ServerVersionNum < dbanalyze.MinQueryServerVersionNum {
+			return fail("%v; the target runs %s", dbanalyze.ErrServerTooOld, info.ServerVersion)
+		}
+		// The migrations run, and the queries are planned, on a copy, never
+		// on the target: the migrations commit.
 		clone, err := dbanalyze.CloneDatabase(ctx, dsn)
 		if err != nil {
 			return fail("%v", err)
@@ -264,18 +320,86 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 			return fail("%v", err)
 		}
 		doc.Target = info
+		if wantQueries && info.ServerVersionNum < dbanalyze.MinQueryServerVersionNum {
+			return fail("%v; the target runs %s", dbanalyze.ErrServerTooOld, info.ServerVersion)
+		}
 	}
 
-	migs, findings, err := dbanalyze.AnalyzeMigrations(ctx, s, info, analyzed, dbanalyze.Config{
-		TableRows: acfg.TableRows, SmallTableRows: acfg.SmallTableRows, LargeTableRows: acfg.LargeTableRows,
-	})
-	doc.Migrations = append(doc.Migrations, migs...)
-	doc.Findings = gradeAnalyzeFindings(cfg, findings)
+	var migs []dbanalyze.Migration
+	if len(pending) > 0 {
+		var findings []dbanalyze.Finding
+		migs, findings, err = dbanalyze.AnalyzeMigrations(ctx, s, info, pending, analyzeCfg)
+		if opts.queriesOnly {
+			// Applied to reach the head schema; `forge db analyze` is the
+			// command that reports them.
+			if err != nil {
+				return fail("could not bring the copy to the head schema: %v", err)
+			}
+		} else {
+			doc.Migrations = append(doc.Migrations, migs...)
+			doc.Findings = gradeAnalyzeFindings(cfg, findings)
+			if err != nil {
+				return fail("could not analyze past %v", err)
+			}
+		}
+	}
+	if !wantQueries {
+		return finishDBAnalyze(doc, qp)
+	}
+	for _, m := range migs {
+		if !m.Analyzed {
+			doc.Summary.QueriesReason = fmt.Sprintf("the migrations stopped short of the head schema (%s: %s), so no query was planned", m.File, m.Reason)
+			return finishDBAnalyze(doc, qp)
+		}
+	}
+
+	queries, findings, err := dbanalyze.AnalyzeQueries(ctx, s, info, qp.shapes, analyzeCfg)
+	doc.Queries = append(doc.Queries, queries...)
+	doc.Findings = append(doc.Findings, gradeAnalyzeFindings(cfg, findings)...)
 	if err != nil {
-		return fail("could not analyze past %v", err)
+		return fail("could not plan the captured queries: %v", err)
+	}
+	return finishDBAnalyze(doc, qp)
+}
+
+// finishDBAnalyze records what the query pass did not plan and finalizes.
+func finishDBAnalyze(doc *dbanalyze.Document, qp *queryPass) *dbanalyze.Document {
+	if doc.Base == "" && qp != nil {
+		doc.Base = qp.base
+	}
+	for _, q := range doc.Queries {
+		if q.Error == "" {
+			continue
+		}
+		what := "query " + q.Fingerprint
+		if len(q.Callers) > 0 {
+			what += fmt.Sprintf(" (%s:%d)", q.Callers[0].Caller.File, q.Callers[0].Caller.Line)
+		}
+		doc.Summary.Skipped = append(doc.Summary.Skipped, dbanalyze.Skipped{What: what, Reason: "could not be planned: " + q.Error})
 	}
 	doc.Finalize()
 	return doc
+}
+
+// resolveBase resolves --base (default: the merge-base with the remote
+// default branch) to a commit, and the label the document names it by,
+// "<ref>@<short sha>".
+func resolveBase(projectDir, base string) (root, sha, label string, err error) {
+	root = migrationgit.RepoRoot(projectDir)
+	if base != "" {
+		s, ok := migrationgit.ResolveCommit(root, base)
+		if !ok {
+			return "", "", "", fmt.Errorf("--base %q is not a commit in this repository", base)
+		}
+		sha, label = s, base
+	} else {
+		s, ref, ok := migrationgit.MergeBase(root)
+		if !ok {
+			return "", "", "", fmt.Errorf("cannot find the merge-base with the remote default branch (no git repository, no default branch, or a shallow clone): pass --base <rev>")
+		}
+		sha, label = s, strings.TrimPrefix(ref, "refs/remotes/")
+	}
+	return root, sha, label + "@" + shortSHA(sha), nil
 }
 
 // splitAtBase splits a scratch target's migrations at the base revision:
@@ -283,22 +407,10 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 // analyzed. A changed file is analyzed after every unchanged one, in version
 // order (an edited merged migration is itself a defect; see db/versioning).
 func splitAtBase(projectDir, migDir, base string, files []dbanalyze.MigrationFile) (setup, changed []dbanalyze.MigrationFile, label string, err error) {
-	root := migrationgit.RepoRoot(projectDir)
-	var sha string
-	if base != "" {
-		s, ok := migrationgit.ResolveCommit(root, base)
-		if !ok {
-			return nil, nil, "", fmt.Errorf("--base %q is not a commit in this repository", base)
-		}
-		sha, label = s, base
-	} else {
-		s, ref, ok := migrationgit.MergeBase(root)
-		if !ok {
-			return nil, nil, "", fmt.Errorf("cannot find the merge-base with the remote default branch (no git repository, no default branch, or a shallow clone): pass --base <rev>")
-		}
-		sha, label = s, strings.TrimPrefix(ref, "refs/remotes/")
+	root, sha, label, err := resolveBase(projectDir, base)
+	if err != nil {
+		return nil, nil, "", err
 	}
-	label += "@" + shortSHA(sha)
 	atBase, ok := migrationgit.FilesAt(root, migDir, sha)
 	if !ok {
 		return nil, nil, "", fmt.Errorf("cannot read %s at %s", migDir, label)
@@ -541,6 +653,7 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 			}
 		}
 	}
+	writeDBAnalyzeQueriesText(w, doc)
 	if len(doc.Findings) > 0 {
 		fmt.Fprintln(w, "\nfindings:")
 		for _, f := range doc.Findings {
@@ -554,11 +667,57 @@ func writeDBAnalyzeText(w io.Writer, doc *dbanalyze.Document) {
 		}
 	}
 	s := doc.Summary
-	fmt.Fprintf(w, "\n%d migration(s) analyzed, %d statement(s) executed", s.MigrationsScanned, s.StatementsExecuted)
-	if s.Reason != "" {
-		fmt.Fprintf(w, " — %s", s.Reason)
+	queries := queryPassRequested(doc)
+	if len(doc.Migrations) > 0 || s.Reason != "" || !queries {
+		fmt.Fprintf(w, "\n%d migration(s) analyzed, %d statement(s) executed", s.MigrationsScanned, s.StatementsExecuted)
+		if s.Reason != "" {
+			fmt.Fprintf(w, " — %s", s.Reason)
+		}
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w)
+	if queries {
+		fmt.Fprintf(w, "%d of %d captured query shape(s) planned", s.QueriesScanned, s.QueriesCaptured)
+		if s.QueriesReason != "" {
+			fmt.Fprintf(w, " — %s", s.QueriesReason)
+		}
+		fmt.Fprintln(w)
+	}
+	for _, sk := range s.Skipped {
+		fmt.Fprintf(w, "skipped %s: %s\n", sk.What, sk.Reason)
+	}
+}
+
+// writeDBAnalyzeQueriesText prints the query pass: each planned shape with
+// its first caller and, per table, whether an index serves it.
+func writeDBAnalyzeQueriesText(w io.Writer, doc *dbanalyze.Document) {
+	for _, q := range doc.Queries {
+		where := "(no caller)"
+		if len(q.Callers) > 0 {
+			where = fmt.Sprintf("%s:%d", q.Callers[0].Caller.File, q.Callers[0].Caller.Line)
+		}
+		fmt.Fprintf(w, "\n%s  %s\n", where, oneLine(q.SQL, 72))
+		if q.Error != "" {
+			fmt.Fprintf(w, "    not planned: %s\n", q.Error)
+			continue
+		}
+		for _, a := range q.Access {
+			line := a.Verdict
+			if a.How != "" {
+				line += " (" + a.How
+				if a.Index != "" {
+					line += " " + a.Index
+				}
+				line += ")"
+			}
+			if a.Detail != "" && a.Verdict == dbanalyze.AccessUnserved {
+				line += ": " + a.Detail
+			}
+			if a.SeqScan {
+				line += "; the plan seq-scans it"
+			}
+			fmt.Fprintf(w, "    %-20s %s\n", a.Table, line)
+		}
+	}
 }
 
 // analyzeRelPath names path relative to the project, slash-separated.

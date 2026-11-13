@@ -113,6 +113,22 @@ func TestMergeBaseAndChangedSince(t *testing.T) {
 	if len(changed) != len(want) || !changed["20260102000000_add_teams.up.sql"] || !changed["20260501000000_add_sessions.up.sql"] {
 		t.Errorf("ChangedSince = %v, want %v (an untracked file is FilesAt's to tell)", changed, want)
 	}
+
+	// The query pass selects shapes by their callers' files anywhere in the
+	// repository, so it counts an untracked file as changed.
+	paths, ok := ChangedPathsSince(root, sha)
+	if !ok {
+		t.Fatal("ChangedPathsSince: unknown")
+	}
+	rel, _ := filepath.Rel(root, migDir)
+	for _, name := range []string{"20260102000000_add_teams.up.sql", "20260501000000_add_sessions.up.sql", "20260601000000_untracked.up.sql"} {
+		if p := filepath.ToSlash(filepath.Join(rel, name)); !paths[p] {
+			t.Errorf("ChangedPathsSince lacks %s: %v", p, paths)
+		}
+	}
+	if len(paths) != 3 {
+		t.Errorf("ChangedPathsSince = %v, want the three changed files", paths)
+	}
 }
 
 // The default branch's TIP, not the merge-base: a migration that landed on

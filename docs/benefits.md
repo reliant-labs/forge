@@ -573,6 +573,31 @@ _Enforced · Forge, on any infrastructure_
 | `db-analyze-blocking-index-build`  | An index built without CONCURRENTLY on a populated table, blocking writes until the build finishes                        | `forge db analyze` |
 | `db-analyze-statement-timeout`     | A statement that does not finish within statement_timeout on production-shaped data                                       | `forge db analyze` |
 
+<a id="query-index-analysis"></a>
+
+### Index check of tested queries
+
+`forge db analyze queries` plans every query shape a test run recorded on a disposable database at the head schema, with sequential scans disabled, and reports each filter, join and ORDER BY … LIMIT no index serves, with the caller's file and line.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then `forge db analyze queries --capture /tmp/qc` (the shapes whose callers changed since the merge-base; `--all` for every one), or add `--capture` to `forge db analyze` to run it after the migrations.
+
+**Why:** A new filter or join without an index passes every test on a small table and becomes a full scan in production; whether an index can serve it depends on the schema at head, which only the planner knows.
+
+**Evidence:**
+
+- command `forge db analyze queries`
+- source [`pkg/dbanalyze/queries.go`](../pkg/dbanalyze/queries.go)
+- source [`pkg/querycapture`](../pkg/querycapture)
+- source [`internal/cli/db_analyze_queries.go`](../internal/cli/db_analyze_queries.go)
+- skill `db/analyze` (`forge skill load db/analyze`)
+
+| Rule                               | Bug class it prevents                                                                                                        | Lane                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `db-analyze-query-no-usable-index` | A filter, join or ORDER BY … LIMIT that no index can serve, which reads every row of the table once it holds production data | `forge db analyze queries` |
+| `db-analyze-query-large-seqscan`   | A query whose plan on an anonymized production snapshot sequentially scans a large table                                     | `forge db analyze queries` |
+
 <a id="keep-your-migration-tool"></a>
 
 ### Keep your migration tool

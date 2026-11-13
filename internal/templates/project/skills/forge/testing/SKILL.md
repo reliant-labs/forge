@@ -96,6 +96,9 @@ stays real at every tier.
   test that ran it (`forge/pkg/querycapture`; `querycapture.Read` merges a
   directory). Unset, nothing is installed. SQL run on a bare `*sql.DB` is not
   captured, and a query no test runs is never captured, so never analyzed.
+  `forge db analyze queries --capture /tmp/qc` then plans the shapes whose
+  callers changed and reports filters, joins and sorts no index serves
+  (`db/analyze`).
 
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`

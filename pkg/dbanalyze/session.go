@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/jackc/pgx/v5/stdlib" // also registers the "pgx" database/sql driver
 )
 
 // Default per-statement limits of a session.
@@ -164,6 +164,44 @@ func (s *Session) Exec(ctx context.Context, query string) error {
 		return fmt.Errorf("release savepoint: %w", err)
 	}
 	return nil
+}
+
+// explainJSON runs `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) query` on
+// the session's database, between files, and returns the plan document.
+// GENERIC_PLAN (postgres 16+) plans a statement whose $n parameters have no
+// values; it never executes it. noSeqScan plans it with enable_seqscan off,
+// reset before returning.
+//
+// It is sent over the simple query protocol: the extended protocol would make
+// the driver demand a value for every $n, which a generic plan exists to do
+// without. A statement that fails to plan fails alone: no transaction is open.
+func (s *Session) explainJSON(ctx context.Context, query string, noSeqScan bool) ([]byte, error) {
+	if s.tx != nil {
+		return nil, errors.New("explain inside a migration file's transaction")
+	}
+	if noSeqScan {
+		if _, err := s.conn.ExecContext(ctx, "SET enable_seqscan = off"); err != nil {
+			return nil, fmt.Errorf("set enable_seqscan: %w", err)
+		}
+		defer func() { _, _ = s.conn.ExecContext(context.WithoutCancel(ctx), "RESET enable_seqscan") }()
+	}
+	var plan []byte
+	err := s.conn.Raw(func(driverConn any) error {
+		c, ok := driverConn.(*stdlib.Conn)
+		if !ok {
+			return fmt.Errorf("unexpected driver connection %T", driverConn)
+		}
+		results, err := c.Conn().PgConn().Exec(ctx, "EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) "+query).ReadAll()
+		if err != nil {
+			return err
+		}
+		if len(results) != 1 || len(results[0].Rows) != 1 || len(results[0].Rows[0]) != 1 {
+			return fmt.Errorf("EXPLAIN returned %d result(s), not one plan", len(results))
+		}
+		plan = append([]byte(nil), results[0].Rows[0][0]...)
+		return nil
+	})
+	return plan, err
 }
 
 // Close abandons an open file's transaction and disconnects. It is safe to

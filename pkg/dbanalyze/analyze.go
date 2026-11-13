@@ -37,6 +37,13 @@ func (c Config) smallTableRows() int64 {
 	return c.SmallTableRows
 }
 
+func (c Config) largeTableRows() int64 {
+	if c.LargeTableRows <= 0 {
+		return DefaultLargeTableRows
+	}
+	return c.LargeTableRows
+}
+
 // MigrationFile is one migration to analyze.
 type MigrationFile struct {
 	// File is how the document names it (a project-relative path).
@@ -411,23 +418,28 @@ func (a *analysis) tableOf(m measurement, oid uint32) uint32 {
 
 // rows sizes a table: the target's own estimate when it has statistics,
 // else the configured hint, else unknown.
-func (a *analysis) rows(r relation) RowCount {
-	if a.info.HasStatistics && r.reltuples >= 0 {
-		v := int64(r.reltuples)
+func (a *analysis) rows(r relation) RowCount { return tableRows(a.info, a.cfg, r.name, r.reltuples) }
+
+// tableRows sizes the table named name whose pg_class.reltuples is
+// reltuples: the target's own estimate when it has statistics (and the table
+// has been analyzed), else the configured hint, else unknown.
+func tableRows(info TargetInfo, cfg Config, name string, reltuples float64) RowCount {
+	if info.HasStatistics && reltuples >= 0 {
+		v := int64(reltuples)
 		return RowCount{Value: &v, Source: RowsFromReltuples}
 	}
-	if v, ok := a.hint(r.name); ok {
+	if v, ok := cfg.hint(name); ok {
 		return RowCount{Value: &v, Source: RowsFromHints}
 	}
 	return RowCount{Source: RowsUnknown}
 }
 
-func (a *analysis) hint(name string) (int64, bool) {
-	if v, ok := a.cfg.TableRows[name]; ok {
+func (c Config) hint(name string) (int64, bool) {
+	if v, ok := c.TableRows[name]; ok {
 		return v, true
 	}
 	if !strings.Contains(name, ".") {
-		v, ok := a.cfg.TableRows["public."+name]
+		v, ok := c.TableRows["public."+name]
 		return v, ok
 	}
 	return 0, false

@@ -1,6 +1,6 @@
 ---
 name: analyze
-description: Measure what a migration does on a real postgres with forge db analyze — the locks it takes, the tables it rewrites or scans, how long it runs — on a disposable copy of the target; scratch vs dsn (anonymized snapshot) targets, preparing a snapshot (the forge.analyze_target marker, CREATEDB, no connections during the copy), database.analyze config, the five db-analyze-* rules, the forge.db-analyze/v1 JSON document and exit codes.
+description: Measure what a migration does on a real postgres with forge db analyze — the locks it takes, the tables it rewrites or scans, how long it runs — on a disposable copy of the target, and check the queries your tests run (FORGE_QUERY_CAPTURE_DIR + forge db analyze queries) for filters, joins and ORDER BY … LIMIT no index serves; scratch vs dsn (anonymized snapshot) targets, preparing a snapshot (the forge.analyze_target marker, CREATEDB, no connections during the copy), database.analyze config, the db-analyze-* rules, the forge.db-analyze/v1 JSON document and exit codes.
 ---
 
 # Measuring migrations: `forge db analyze`
@@ -17,6 +17,10 @@ forge db analyze            # scratch target, migrations changed since the merge
 forge db analyze --json     # the forge.db-analyze/v1 document
 forge db analyze --base HEAD~3
 FORGE_ANALYZE_DATABASE_URL=postgres://… forge db analyze --target dsn
+
+FORGE_QUERY_CAPTURE_DIR=/tmp/qc task test:short   # record the queries the tests run
+forge db analyze queries --capture /tmp/qc         # plan them: what does no index serve?
+forge db analyze --capture /tmp/qc                 # migrations, then queries, one session
 ```
 
 It needs postgres, so it is never in a fast PR tier: run it on demand, in a
@@ -120,7 +124,8 @@ database:
     small_table_rows: 10000              # findings on a table known to be smaller are dropped
 ```
 
-Flags override per run: `--target`, `--dsn-env`, `--base`, `--dir`, `--json`.
+Flags override per run: `--target`, `--dsn-env`, `--base`, `--dir`, `--json`,
+and for queries `--capture DIR` and `--all`.
 
 ## Rules
 
@@ -144,22 +149,106 @@ under SHARE UPDATE EXCLUSIVE, which blocks no writes — unless the same file's
 `NOT VALID` statement already holds ACCESS EXCLUSIVE. `TRUNCATE` is left to the
 textual lane's `destructive-change`.
 
+## Queries: `forge db analyze queries`
+
+The migration pass measures schema changes; the query pass checks the
+statements your code runs against the schema at head. It has two halves.
+
+**1. Capture.** Run the tests with `FORGE_QUERY_CAPTURE_DIR` set. Every
+statement `forge/pkg/orm` runs (bun builders, the generated stores, `db.Bun()`
+raw SQL, a pgx connection traced with `dbtrace.NewPgxTracer`) is recorded once
+per shape and caller, as JSONL, one file per process:
+
+```bash
+rm -rf /tmp/qc; FORGE_QUERY_CAPTURE_DIR=/tmp/qc task test:short
+```
+
+A shape is the SQL with `$n` placeholders; literals stay inline on purpose (a
+partial index `WHERE status = 'open'` serves `status = 'open'`, never
+`status = $1`). The caller is the first frame outside the database stack and
+generated code, with the generated store frame it passed through and the test
+that ran it. **A query no test runs is not captured**, so it is not analyzed:
+that is the incentive. SQL run on a bare `*sql.DB` outside an `orm.Client` is
+not captured either; route it through the client.
+
+**2. Plan.** `forge db analyze queries --capture /tmp/qc` brings a disposable
+database to the head schema — scratch: an embedded postgres migrated with every
+migration; dsn: the copy of the (marked) target, its pending migrations applied
+exactly as the migration pass applies them, each file committed and `CREATE
+INDEX CONCURRENTLY` run for real — and explains each selected shape there with
+`EXPLAIN (GENERIC_PLAN)` twice: as is, and with `enable_seqscan = off`. The copy
+is dropped afterwards, whatever happened. Needs **postgres 16+** (exit 2 on
+older).
+
+Which shapes: those with a caller (or the generated store frame it went
+through) in a file **changed since `--base`** (default: the merge-base with the
+remote default branch); `--all` takes every one. An empty selection is exit 0
+with `queries_scanned: 0` and `queries_reason` — read it.
+
+`forge db analyze --capture DIR` runs both passes on one copy: the queries are
+planned on the schema the migration pass committed there. Without `--capture`,
+`forge db analyze` is the migration pass alone. A dsn target with nothing
+pending is still copied for the query pass: EXPLAIN never runs on the target.
+
+### How a table is judged
+
+Per table, from the plan with sequential scans disabled (`access[]` in the
+document):
+
+| Verdict (`how`) | Means |
+|---|---|
+| served (`index_cond`) | the scan has an `Index Cond`: an index answers the filter or join |
+| served (`partial_index`) | a partial index whose predicate implies the filter |
+| served (`order`) | an index scan whose order reaches the `LIMIT` untouched (`ORDER BY id DESC LIMIT 20`) |
+| served (`join_key`) | read in full under a hash/merge join, but an index leads with the join column |
+| unserved (`filter`) | a predicate evaluated on every row: a Seq Scan the planner could not avoid, **or an index walked in full with only a `Filter`** — an index node alone proves nothing |
+| unserved (`order`) | every row sorted to return the first few (`Sort` under `Limit`) |
+| unserved (`join`) | read in full to be joined, in a statement that filters something, with no index on the join column (the unindexed foreign key) |
+| unfiltered | nothing an index could serve: an unfiltered list, a count, an unfiltered join |
+
+A scratch target is empty, and that is fine: whether an index **can** serve a
+statement does not depend on rows. Row counts are not faked: restoring
+statistics onto empty tables makes every table plan as one row
+(`docs/proposals/db-analyze-stats-spike.md`). Sizes come from `table_rows`
+hints, or from a dsn snapshot's own statistics.
+
+### Query rules
+
+| Rule | Fires when | Fix |
+|---|---|---|
+| `db-analyze-query-no-usable-index` | a table is unserved (above). **error** when its size is known (dsn statistics, else `table_rows`) and ≥ `small_table_rows`; dropped when known and smaller; **warning** when unknown | an index leading with the filtered/joined column, or the ORDER BY column(s) for `ORDER BY … LIMIT`; a partial index for a filter on a literal. In a new migration, `CREATE INDEX CONCURRENTLY` alone in its file |
+| `db-analyze-query-large-seqscan` | dsn target with statistics only: the normal plan seq-scans a table ≥ `large_table_rows` | serve its filter or join with an index, or bound it |
+
+Each finding names the shape (`query`: its fingerprint) and its first caller as
+`file:line` — module-relative, a caller in a changed file first — plus every
+caller with its generated frame and tests (`callers[]`).
+
+A shape that cannot be planned (a table only its test created, a parameter
+whose type postgres cannot infer) carries `error`/`sqlstate` and is listed in
+`summary.skipped`: not a crash, not a pass.
+
 ## The document (`--json`)
 
 `schema: forge.db-analyze/v1`. `target` (`kind`, `identity` host:port/db — never
 credentials — `server_version`, `has_statistics`, and for a dsn target `clone`),
 `base`, `migrations[]` (each
 `statements[]` with `line`, `sql`, `executed`, `duration_ms`, `locks[]`,
-`rewrites[]`, `scans[]`, `rows{}`), `queries[]` (the query-plan pass; empty
-here), `findings[]` (`rule`, `severity`, `file`, `line`, `relation`, `message`,
-`fix`, `rows`, `note` for a warn-first finding), `summary`
-(`migrations_scanned`, `statements_executed`, `reason` when nothing was scanned),
-`exit_code`, `error`.
+`rewrites[]`, `scans[]`, `rows{}`), `queries[]` (the query pass: each with
+`fingerprint`, `sql`, `operation`, `tables`, `callers[]`, `plan` and
+`plan_no_seqscan` trimmed to node type / relation / index / conds / sort key /
+rows / cost, `access[]` with `table`, `verdict`, `how`, `index`, `scan`,
+`detail`, `seq_scan`, `rows`, and `error`/`sqlstate` when it could not be
+planned), `findings[]` (`rule`, `severity`, `file`, `line`, `relation`,
+`message`, `fix`, `rows`, `note` for a warn-first finding; a query finding adds
+`query` and `callers`), `summary` (`migrations_scanned`, `statements_executed`,
+`queries_captured`, `queries_scanned`, `reason` / `queries_reason` when nothing
+was scanned, `skipped[]`), `exit_code`, `error`.
 
 Exit codes: **0** nothing gating; **1** a gating finding; **2** could not
 analyze (no postgres, target ahead of the tree or dirty, refused or unmarked
 DSN, a copy that could not be made, a file that controls its own transaction, a
-statement that failed, another session's lock). An empty analysis is exit 0
+statement that failed, another session's lock, postgres older than 16 for the
+query pass). An empty analysis is exit 0
 with `migrations_scanned: 0` and a `reason` — read the reason, it is never a
 silent pass.
 

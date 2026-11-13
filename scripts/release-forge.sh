@@ -26,7 +26,8 @@
 #
 # A RELEASE NEVER PUSHES TO THE BRANCH. The tag goes on a commit that is
 # already on origin/<branch> and whose full CI is green; the bookkeeping
-# (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json, npm/server.json) is committed on top
+# (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json, npm/server.json,
+# gemini-extension.json) is committed on top
 # of that commit, pushed to release/vX.Y.Z, and lands through a pull request
 # and the merge queue like any other change. main is protected by a ruleset
 # that only the merge queue may satisfy, so a direct push would need a bypass
@@ -526,6 +527,9 @@ TOUCHED=("${VERSION_FILES[@]}" "$NEXT_FILE" "$CHANGELOG_FILE")
 # The MCP registry listing (npm/server.json) names the npm package's version.
 MCP_SERVER_JSON="npm/server.json"
 [ -f "$MCP_SERVER_JSON" ] && TOUCHED+=("$MCP_SERVER_JSON")
+# Gemini's extension metadata follows the same forge/npm release version.
+GEMINI_MANIFEST="gemini-extension.json"
+[ -f "$GEMINI_MANIFEST" ] && TOUCHED+=("$GEMINI_MANIFEST")
 # The web runtime's bookkeeping (step 8c): its manifests' versions and the
 # scaffold floor that names it.
 WR_MANIFEST="web-runtime/package.json"
@@ -647,6 +651,16 @@ if [ -f "$MCP_SERVER_JSON" ]; then
   fi
   cat "$BACKUP_DIR/mcp-server.json.new" >"$MCP_SERVER_JSON"
 fi
+# Gemini's top-level version is extension metadata, not an MCP package pin.
+if [ -f "$GEMINI_MANIFEST" ]; then
+  echo "→ syncing $GEMINI_MANIFEST to ${VERSION#v}"
+  sed -e 's/^  "version": ".*"/  "version": "'"${VERSION#v}"'"/' "$GEMINI_MANIFEST" >"$BACKUP_DIR/gemini-extension.json.new"
+  if ! grep -q "^  \"version\": \"${VERSION#v}\"" "$BACKUP_DIR/gemini-extension.json.new"; then
+    echo "error: could not set the version in $GEMINI_MANIFEST (expected a two-space-indented \"version\" line)" >&2
+    exit 1
+  fi
+  cat "$BACKUP_DIR/gemini-extension.json.new" >"$GEMINI_MANIFEST"
+fi
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The
@@ -736,7 +750,8 @@ go build ./...
 # Built before the bookkeeping commit exists, so a build failure leaves no
 # commit or tag behind. The stamped commit is the tagged one (HEAD here); the
 # bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json,
-# npm/server.json and CHANGELOG.md, so the compiled source is the tagged source.
+# npm/server.json, gemini-extension.json and CHANGELOG.md, so the compiled source
+# is the tagged source.
 ASSETS_DIR="$BACKUP_DIR/assets"
 echo "→ building release archives"
 FORGE_RELEASE_COMMIT="$(git rev-parse HEAD)" "$RELEASE_SCRIPT_DIR/build-release-assets.sh" "$VERSION" "$ASSETS_DIR"

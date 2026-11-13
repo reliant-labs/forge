@@ -36,7 +36,7 @@ then asks which **organization** the connector may read, optionally narrowed
 to some **projects**, and which tools it may use. That choice is a connector
 grant: it is the connector's whole authority (signing in only says who you
 are), every call is recorded, and you narrow or revoke it at any time in
-Reliant under Settings → Connectors. Revoking stops the next call.
+Reliant under Settings → Access tokens (Reliant Forge connectors). Revoking stops the next call.
 
 It works only for a signed-in person: monitoring has no anonymous path. There is
 nothing to install, and nothing on your machine holds a token.
@@ -45,7 +45,7 @@ nothing to install, and nothing on your machine holds a token.
 
 ### Claude (claude.ai and Claude Desktop)
 
-- **Hosted**: Settings → Connectors → *Add custom connector*. Name it
+- **Hosted**: Settings → Access tokens (Reliant Forge connectors) → *Add custom connector*. Name it
   `Reliant Forge`, URL `https://api.reliantapi.com/forge/mcp`, then *Connect*
   and sign in. In a chat, enable it from the tools menu.
 - **Local** (Desktop only): add to `claude_desktop_config.json`:
@@ -64,7 +64,7 @@ Then run `/mcp` and pick `reliant-forge` → *Authenticate* to sign in.
 
 ### ChatGPT
 
-Settings → Connectors → *Create* (developer mode), URL
+Settings → Access tokens (Reliant Forge connectors) → *Create* (developer mode), URL
 `https://api.reliantapi.com/forge/mcp`, authentication OAuth. Sign in when it
 asks. ChatGPT runs no local servers.
 
@@ -130,7 +130,7 @@ connector is for clients outside Reliant.
 
 A 403 that names a consent URL means you signed in but have not chosen what the
 connector may read: open the URL, choose, retry. A refusal naming a project
-means the grant does not cover it: widen it in Settings → Connectors.
+means the grant does not cover it: widen it in Settings → Access tokens (Reliant Forge connectors).
 
 ## Where to go next
 

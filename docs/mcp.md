@@ -270,7 +270,7 @@ remote MCP server, with nothing to install: **`https://api.reliantapi.com/forge/
 questions from any client, including claude.ai, ChatGPT and phones, which run no
 local server. Add it as a custom connector and sign in with OAuth; Reliant then
 asks which organization (and optionally which projects and tools) the connector
-may use. That grant is its authority, and Settings → Connectors narrows or
+may use. That grant is its authority, and Settings → Access tokens (Reliant Forge connectors) narrows or
 revokes it.
 
 | Tool                                                                                       | CLI equivalent                               | Changes anything                    |

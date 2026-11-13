@@ -404,3 +404,48 @@ func TestTransmitsWaitsForTheNotice(t *testing.T) {
 		t.Error("a nil client transmits")
 	}
 }
+
+// A run that is still going when another run turns telemetry off stops
+// transmitting at once: Transmits reads the opt-out from the file, not from
+// what this run saw at start.
+func TestTransmitsStopsWhenAnotherRunOptsOut(t *testing.T) {
+	_, srv := newSink(t)
+	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	running := New(cfg)
+	if !running.Transmits() {
+		t.Fatal("a fresh run with the notice shown must transmit")
+	}
+	if err := New(cfg).SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if running.Transmits() {
+		t.Error("a running client still transmits after another run's `telemetry off`")
+	}
+}
+
+// Runs flushing at the same moment share one day's allowance: together they
+// send exactly MaxEventsPerDay, never one allowance each.
+func TestConcurrentRunsShareTheDailyCap(t *testing.T) {
+	s, srv := newSink(t)
+	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	const runs = 4
+	clients := make([]*Client, runs)
+	for i := range clients {
+		clients[i] = New(cfg)
+		for j := 0; j < MaxEventsPerDay; j++ {
+			clients[i].Track(context.Background(), "ev_"+string(rune('a'+j%26))+string(rune('a'+j/26))+string(rune('a'+i)))
+		}
+	}
+	var wg sync.WaitGroup
+	for _, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.Flush(context.Background())
+		}()
+	}
+	wg.Wait()
+	if n := len(s.records()); n != MaxEventsPerDay {
+		t.Errorf("%d concurrent runs sent %d events, want the one daily cap %d", runs, n, MaxEventsPerDay)
+	}
+}

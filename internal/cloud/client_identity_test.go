@@ -168,3 +168,24 @@ func TestInstallIdentityWaitsForTheTelemetryNotice(t *testing.T) {
 		t.Errorf("after the notice the install id is sent: %v", h)
 	}
 }
+
+// A process that is still running when another forge process runs
+// `forge telemetry off` stops sending the install id and attribution.
+func TestInstallIdentityStopsWhenAnotherProcessOptsOut(t *testing.T) {
+	cfg := cliev.Config{App: "forge", Endpoint: "http://127.0.0.1:1/v1/logs", ConfigDir: t.TempDir(), Stderr: io.Discard,
+		Getenv: func(string) string { return "" }}
+	running := cliev.New(cfg)
+	h := http.Header{}
+	setInstallIdentity(h, running)
+	if h.Get(InstallIDHeader) == "" {
+		t.Fatalf("telemetry on: want the install id header, got %v", h)
+	}
+	if err := cliev.New(cfg).SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	h = http.Header{}
+	setInstallIdentity(h, running)
+	if len(h) != 0 {
+		t.Errorf("after another process opted out, the running one still sent %v", h)
+	}
+}

@@ -247,12 +247,18 @@ func (c *Client) Status() Status {
 func (c *Client) Enabled() bool { return c != nil && c.status.Enabled }
 
 // Transmits reports whether this run may send anything that identifies the
-// install: Enabled, and the notice has been shown (a quiet first run records
-// events but sends them only once a later run has shown it). Flush sends only
-// when it is true, and so must anything else that sends the install id or its
-// attribution (forge: the X-Forge-Install-Id and X-Reliant-Attribution
-// headers).
-func (c *Client) Transmits() bool { return c.Enabled() && c.noticeOK }
+// install: Enabled, the notice has been shown (a quiet first run records
+// events but sends them only once a later run has shown it), and no other run
+// has turned telemetry off since this one started (the state file is read
+// again on every call). Flush sends only when it is true, and so must anything
+// else that sends the install id or its attribution (forge: the
+// X-Forge-Install-Id and X-Reliant-Attribution headers).
+func (c *Client) Transmits() bool {
+	return c.Enabled() && c.noticeOK && !optedOut(c.state.load())
+}
+
+// optedOut reports whether doc records the user's `telemetry off`.
+func optedOut(doc stateDoc) bool { return doc.Enabled != nil && !*doc.Enabled }
 
 // InstallID is this machine's anonymous install id, "" when telemetry is
 // off and none was ever minted. A program may send it to its own server
@@ -323,7 +329,9 @@ func (c *Client) Track(ctx context.Context, name string, attrs ...slog.Attr) {
 
 // Flush sends the run's events in one batch, waiting at most FlushTimeout,
 // and records the first-run event as sent when it was in the batch. Call it
-// once, as the program exits. Failures are dropped silently.
+// once, as the program exits. Failures are dropped silently, and still count
+// toward the day's MaxEventsPerDay, which bounds what every run on the machine
+// together attempts.
 func (c *Client) Flush(ctx context.Context) {
 	if !c.Transmits() {
 		return
@@ -335,20 +343,26 @@ func (c *Client) Flush(ctx context.Context) {
 	if len(batch) == 0 {
 		return
 	}
-	doc := c.state.load()
-	if doc.Enabled != nil && !*doc.Enabled {
-		return // turned off by another run since this one started
-	}
+	// Reserve the batch's share of the day's allowance before posting, under
+	// the state lock, so concurrent runs cannot all spend the same room. A
+	// reservation is spent whether or not the post succeeds: the cap bounds
+	// what is attempted. A run turned off by another since it started
+	// reserves, and sends, nothing.
 	day := c.cfg.Now().UTC().Format("2006-01-02")
-	if doc.Day != day {
-		doc.Day, doc.SentToday = day, 0
-	}
-	if room := MaxEventsPerDay - doc.SentToday; room < len(batch) {
-		if room <= 0 {
+	reserved := 0
+	if _, err := c.state.update(func(d *stateDoc) {
+		if optedOut(*d) {
 			return
 		}
-		batch = batch[:room]
+		if d.Day != day {
+			d.Day, d.SentToday = day, 0
+		}
+		reserved = min(len(batch), max(MaxEventsPerDay-d.SentToday, 0))
+		d.SentToday += reserved
+	}); err != nil || reserved == 0 {
+		return
 	}
+	batch = batch[:reserved]
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -357,21 +371,14 @@ func (c *Client) Flush(ctx context.Context) {
 	if !c.post(ctx, batch) {
 		return
 	}
-	sentFirstRun := false
 	for _, r := range batch {
 		if r.name == FirstRunEvent(c.cfg.App) {
-			sentFirstRun = true
+			// Only this flag: the file is re-read under its lock, so a choice
+			// another run made during the post (`telemetry off`) is kept.
+			_, _ = c.state.update(func(d *stateDoc) { d.FirstRunSent = true })
+			break
 		}
 	}
-	// Only the counters: the file is re-read under its lock, so a choice
-	// another run made during the post (`telemetry off`) is kept.
-	_, _ = c.state.update(func(d *stateDoc) {
-		if d.Day != day {
-			d.Day, d.SentToday = day, 0
-		}
-		d.SentToday += len(batch)
-		d.FirstRunSent = d.FirstRunSent || sentFirstRun
-	})
 }
 
 // FirstRunEvent is the name of a program's first-run event:

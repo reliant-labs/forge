@@ -6,6 +6,8 @@ import (
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/schema"
+
+	"github.com/reliant-labs/forge/pkg/querycapture"
 )
 
 // ─── running bun's statements with their values bound ──────────────────────
@@ -63,6 +65,8 @@ func (bindHook) AfterQuery(context.Context, *bun.QueryEvent) {}
 type bindConn struct {
 	conn    bun.IConn // the *sql.DB pool or the *sql.Tx
 	dialect *forgeDialect
+	// capture, when set, records each statement as sent (capture.go).
+	capture *querycapture.Recorder
 }
 
 // bound is the statement to send for query, which bun rendered and is running
@@ -91,16 +95,25 @@ func (c *bindConn) bound(ctx context.Context, query string, args []any) (string,
 
 func (c *bindConn) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	query, args = c.bound(ctx, query, args)
+	if c.capture != nil {
+		recordSent(ctx, c.capture, query)
+	}
 	return c.conn.QueryContext(ctx, query, args...)
 }
 
 func (c *bindConn) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	query, args = c.bound(ctx, query, args)
+	if c.capture != nil {
+		recordSent(ctx, c.capture, query)
+	}
 	return c.conn.ExecContext(ctx, query, args...)
 }
 
 func (c *bindConn) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	query, args = c.bound(ctx, query, args)
+	if c.capture != nil {
+		recordSent(ctx, c.capture, query)
+	}
 	return c.conn.QueryRowContext(ctx, query, args...)
 }
 

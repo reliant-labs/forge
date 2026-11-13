@@ -10,6 +10,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
+	"github.com/reliant-labs/forge/pkg/querycapture"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 )
@@ -26,6 +27,9 @@ type Client struct {
 	// bunDialect is the dialect bun runs with; transactions opened on this
 	// client bind their statements through it (bind.go).
 	bunDialect *forgeDialect
+	// capture records the statements this client runs; nil unless
+	// FORGE_QUERY_CAPTURE_DIR was set when it was constructed (capture.go).
+	capture *querycapture.Recorder
 }
 
 // NewClient opens a new ORM client on jackc/pgx, the driver forge's
@@ -83,8 +87,14 @@ func NewClientWithDBContext(ctx context.Context, db *sql.DB, dialectName string)
 	// every query built off this handle — see ambientResolver in tx.go — and
 	// the connection it resolves binds each statement's values (bind.go).
 	fd := newForgeDialect()
-	bdb := bun.NewDB(db, fd, bun.WithConnResolver(&ambientResolver{db: db, pool: &bindConn{conn: db, dialect: fd}}))
+	// Query capture (capture.go) is on only when FORGE_QUERY_CAPTURE_DIR is
+	// set now; otherwise rec is nil and nothing is installed.
+	rec := querycapture.FromEnv()
+	bdb := bun.NewDB(db, fd, bun.WithConnResolver(&ambientResolver{db: db, pool: &bindConn{conn: db, dialect: fd, capture: rec}}))
 	bdb.AddQueryHook(bindHook{})
+	if rec != nil {
+		bdb.AddQueryHook(captureHook{rec: rec})
+	}
 	// bunotel records the ORM's query histogram (go.sql.query_timing) and, on
 	// a pool not traced at the driver, a span per query. A pool that is
 	// (serverkit.OpenDB, NewClient — pkg/observe/dbtrace) already has its span
@@ -95,7 +105,7 @@ func NewClientWithDBContext(ctx context.Context, db *sql.DB, dialectName string)
 		hookOpts = append(hookOpts, bunotel.WithTracerProvider(tracenoop.NewTracerProvider()))
 	}
 	bdb.AddQueryHook(bunotel.NewQueryHook(hookOpts...))
-	return &Client{bun: bdb, dialect: dialect, bunDialect: fd}, nil
+	return &Client{bun: bdb, dialect: dialect, bunDialect: fd, capture: rec}, nil
 }
 
 func requirePostgres(dialectName string) error {
@@ -135,17 +145,26 @@ func (c *Client) Close() error { return c.bun.Close() }
 // $1/$2 placeholders, and bun's `?`-rewriting must not touch it. (Generated
 // code uses db.Bun()'s typed builders, which handle their own placeholders.)
 func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if c.capture != nil {
+		c.capture.Record(query)
+	}
 	return c.conn(ctx).ExecContext(ctx, query, args...)
 }
 
 // Query runs a raw SQL query (escape hatch). See Exec for the
 // raw-passthrough rationale.
 func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if c.capture != nil {
+		c.capture.Record(query)
+	}
 	return c.conn(ctx).QueryContext(ctx, query, args...)
 }
 
 // QueryRow runs a raw SQL query returning at most one row (escape hatch).
 func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if c.capture != nil {
+		c.capture.Record(query)
+	}
 	return c.conn(ctx).QueryRowContext(ctx, query, args...)
 }
 
@@ -208,17 +227,27 @@ func (t *Tx) Rollback() error {
 // it bypasses bun's query formatter (native $1/$2 placeholders) by going
 // to the embedded *sql.Tx.
 func (t *Tx) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	t.record(query)
 	return t.tx.Tx.ExecContext(ctx, query, args...)
 }
 
 // Query runs a raw SQL query within the transaction (raw passthrough).
 func (t *Tx) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	t.record(query)
 	return t.tx.Tx.QueryContext(ctx, query, args...)
 }
 
 // QueryRow runs a raw SQL query within the transaction (raw passthrough).
 func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	t.record(query)
 	return t.tx.Tx.QueryRowContext(ctx, query, args...)
+}
+
+// record captures a raw statement when the client captures (capture.go).
+func (t *Tx) record(query string) {
+	if t.client != nil && t.client.capture != nil {
+		t.client.capture.Record(query)
+	}
 }
 
 // RunTransaction on a Tx JOINS the transaction already in progress: it
@@ -244,7 +273,7 @@ func (c *Client) begin(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	state := &txState{db: c.bun.DB, tx: tx, outer: ctx, conn: &bindConn{conn: tx.Tx, dialect: c.bunDialect}}
+	state := &txState{db: c.bun.DB, tx: tx, outer: ctx, conn: &bindConn{conn: tx.Tx, dialect: c.bunDialect, capture: c.capture}}
 	return &Tx{tx: tx, dialect: c.dialect, state: state, client: c}, nil
 }
 

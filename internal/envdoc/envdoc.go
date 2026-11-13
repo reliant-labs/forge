@@ -133,6 +133,21 @@ type Options struct {
 	// Release is the release being built or deployed ("" when unbound): the
 	// service.version every derived OTEL_RESOURCE_ATTRIBUTES carries.
 	Release string
+	// ImageTag is the tag the render binds (KCL's `-D image_tag`), "" when
+	// unbound: the document's own image_tag, else the env's default, applies.
+	ImageTag string
+	// ImageDigests is the per-image digest map a deploy captured from its
+	// pushes (KCL's `-D image_digests`), keyed as kcl/lib/images.k
+	// digest_key keys it.
+	ImageDigests map[string]string
+	// WorkloadPins are the exact per-slot references a release snapshot
+	// binds (KCL's `-D forge_workload_image_digests`): workload → slot
+	// ("container:<name>", "init:<name>", "input:<key>") → reference.
+	WorkloadPins map[string]map[string]string
+	// Immutable refuses any image slot WorkloadPins does not bind (KCL's
+	// `-D forge_immutable_release`): a recorded release deploys exactly the
+	// references it recorded.
+	Immutable bool
 }
 
 // Load reads, validates and lowers the env document declaring env, returning

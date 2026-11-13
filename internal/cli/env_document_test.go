@@ -72,8 +72,8 @@ func TestEnvDocument_MonitoringOnlyIsTheSameTargetAsKCL(t *testing.T) {
 // TestEnvDocument_RenderContractLoadsLikeItsRender: a render-contract golden,
 // saved as an env document, loads into exactly the entities its KCL render
 // parses into. Lowering a document that already carries the lowered form is
-// the identity. A golden with a cluster workload forge builds is refused (its
-// image is pinned per release by the KCL render; design §3), by name.
+// the identity — including a cluster workload forge builds, whose saved
+// spec.image is the unbound derivation and is re-derived to itself.
 func TestEnvDocument_RenderContractLoadsLikeItsRender(t *testing.T) {
 	files, _ := filepath.Glob("testdata/render_contract/*.json")
 	if len(files) == 0 {
@@ -103,18 +103,6 @@ func TestEnvDocument_RenderContractLoadsLikeItsRender(t *testing.T) {
 			writeEnvDocument(t, dir, want.Env+".json", string(body))
 
 			out, ok, err := loadEnvDocument(context.Background(), dir, want.Env)
-			clusterBuilt := ""
-			for _, w := range want.Workloads {
-				if w.OnRuntime(RuntimeCluster) && w.Build.Type != "" {
-					clusterBuilt = w.Name
-				}
-			}
-			if clusterBuilt != "" {
-				if err == nil || !strings.Contains(err.Error(), `workload "`+clusterBuilt+`"`) || !strings.Contains(err.Error(), "needs KCL") {
-					t.Fatalf("a cluster workload forge builds (%s) must be refused in a document; err = %v", clusterBuilt, err)
-				}
-				return
-			}
 			if err != nil || !ok {
 				t.Fatalf("load: ok %v, %v", ok, err)
 			}

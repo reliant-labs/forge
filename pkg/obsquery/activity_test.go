@@ -94,8 +94,8 @@ func TestUserActivityCompilesTheDeclaredRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(st.SQL, "EventName IN ('internal_user')"); n != 4 {
-		t.Errorf("the exclusion appears %d times, want 4 (act, seen, nu_cur, nu_prev):\n%s", n, st.SQL)
+	if n := strings.Count(st.SQL, "EventName IN ('internal_user')"); n != 6 {
+		t.Errorf("the exclusion appears %d times, want 6 (act, seen, nu_cur, nu_prev, nd_cur, nd_prev):\n%s", n, st.SQL)
 	}
 	q.Activity = Activity{NotActivity: []string{"no quotes'"}}
 	if _, err := q.Compile(); !errors.Is(err, ErrInvalid) {

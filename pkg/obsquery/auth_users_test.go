@@ -108,3 +108,96 @@ func TestUserActivityWithoutSeenTotalReadsNoRetention(t *testing.T) {
 		t.Error("the retention-wide read ran without WantSeenTotal")
 	}
 }
+
+// The first-seen rule keeps the users of the data's first FirstSeenGraceDays
+// out of New, from the same fragment the decided-from moment comes from.
+func TestNewUsersSourceExcludesTheDataStart(t *testing.T) {
+	src := NewUsersSource("product_events", "{to:DateTime64(9)}", "")
+	for _, frag := range []string{
+		"min(first_at) OVER (PARTITION BY EnvId) AS data_from",
+		"reports = 0 AND first_at >= data_from + INTERVAL 7 DAY",
+	} {
+		if !strings.Contains(src, frag) {
+			t.Errorf("NewUsersSource lacks %q:\n%s", frag, src)
+		}
+	}
+	decided := NewUsersDecidedFrom("product_events", "{to:DateTime64(9)}", "")
+	if !strings.Contains(decided, "min(first_at) + INTERVAL 7 DAY) AS DecidedFrom") {
+		t.Errorf("NewUsersDecidedFrom does not add the grace to the data's start:\n%s", decided)
+	}
+	if per := newUsersPerUser("product_events", "{to:DateTime64(9)}", "", UserActivityEvidence); !strings.Contains(src, per) || !strings.Contains(decided, per) {
+		t.Error("NewUsersSource and NewUsersDecidedFrom read different rows")
+	}
+}
+
+func TestNewDecided(t *testing.T) {
+	from := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)
+	to := from.Add(30 * 24 * time.Hour)
+	cases := []struct {
+		name        string
+		decidedFrom time.Time
+		want        NewDecision
+	}{
+		{"data start inside the range", time.Date(2026, 10, 31, 14, 3, 0, 0, time.UTC), NewDecidedPart},
+		{"data start before the range", time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC), NewDecidedAll},
+		{"decided exactly at the range's start", from, NewDecidedAll},
+		{"sign-up event present", time.Time{}, NewDecidedAll},
+		{"no events", time.Time{}, NewDecidedAll},
+		{"decided at the range's end", to, NewDecidedNone},
+		{"data start after the range", to.Add(48 * time.Hour), NewDecidedNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NewDecided(tc.decidedFrom, from, to); got != tc.want {
+				t.Errorf("NewDecided(%v) = %s, want %s", tc.decidedFrom, got, tc.want)
+			}
+		})
+	}
+}
+
+// Parse reads each window's decided-from moment off the rule rows.
+func TestUserActivityParseReadsNewDecidedFrom(t *testing.T) {
+	epoch := time.Unix(0, 0).UTC()
+	decided := time.Date(2026, 10, 31, 14, 3, 0, 0, time.UTC)
+	prevDecided := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	rule := func(kind string, at time.Time, reports uint8) []any {
+		return []any{kind, "env-prod", "", uint64(0), uint64(0), uint64(0), []string{}, at, uint32(0), reports}
+	}
+	cur := func(active, nw, returning uint64) []any {
+		return []any{"cur", "env-prod", "", active, nw, returning, []string{}, epoch, uint32(0), uint8(0)}
+	}
+	cases := []struct {
+		name          string
+		rows          [][]any
+		rule          NewUsersRule
+		decided, prev time.Time
+		current       UserActivityCounts
+	}{
+		{name: "data start inside the range",
+			rows: [][]any{cur(4, 2, 2), rule("rule", decided, 0), rule("rule_prev", prevDecided, 0)},
+			rule: NewUsersFirstSeen, decided: decided, prev: prevDecided, current: UserActivityCounts{Active: 4, New: 2, Returning: 2}},
+		{name: "data start before the range",
+			rows: [][]any{cur(3, 1, 2), rule("rule", prevDecided, 0)},
+			rule: NewUsersFirstSeen, decided: prevDecided, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
+		{name: "sign-up event present",
+			rows: [][]any{cur(3, 1, 2), rule("rule", epoch, 1), rule("rule_prev", epoch, 1)},
+			rule: NewUsersSignups, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
+		{name: "no events", rule: NewUsersFirstSeen},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := userActivityQuery().Parse(&fakeRows{rows: tc.rows})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("envs = %+v", got)
+			}
+			e := got[0]
+			if e.NewRule != tc.rule || !e.NewDecidedFrom.Equal(tc.decided) || !e.PreviousNewDecidedFrom.Equal(tc.prev) || e.Current != tc.current {
+				t.Errorf("got rule %s decided %v prev %v current %+v; want %s %v %v %+v",
+					e.NewRule, e.NewDecidedFrom, e.PreviousNewDecidedFrom, e.Current, tc.rule, tc.decided, tc.prev, tc.current)
+			}
+		})
+	}
+}

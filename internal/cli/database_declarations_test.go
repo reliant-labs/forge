@@ -255,9 +255,17 @@ func TestDBSelect_ByName(t *testing.T) {
 	if _, err := requireMigrationsDir(""); err == nil || !strings.Contains(err.Error(), "pass --db <name>") {
 		t.Fatalf("requireMigrationsDir must refuse the ambiguous default: %v", err)
 	}
-	// --dir is explicit and needs no database.
-	if got, err := selectMigrationsDir("sql"); err != nil || got != filepath.Join(proj, "sql") {
-		t.Errorf("--dir = %q, %v", got, err)
+	// --dir needs no --db when a declared database names it; with several
+	// declared, a --dir none of them names is refused rather than applied
+	// with the primary's tool (review R4.B2 on #2211).
+	if got, err := selectMigrationsDir("analytics/migrations"); err != nil || got != filepath.Join(proj, "analytics", "migrations") {
+		t.Errorf("--dir analytics/migrations = %q, %v", got, err)
+	}
+	if _, err := selectMigrationsDir("sql"); !errors.Is(err, config.ErrMigrationsDirUnowned) {
+		t.Errorf("--dir sql with several declared: err = %v, want ErrMigrationsDirUnowned", err)
+	}
+	if _, err := requireMigrationsDir("sql"); !errors.Is(err, config.ErrMigrationsDirUnowned) {
+		t.Errorf("requireMigrationsDir(--dir sql) with several declared: err = %v, want ErrMigrationsDirUnowned", err)
 	}
 
 	// --db and --dir together must name one database (review R2.B1 on
@@ -433,6 +441,46 @@ func TestMigrationsDirDatabase_NamedDir(t *testing.T) {
 			t.Fatalf("tool %q err %v, want forge", db.MigrationTool(), err)
 		}
 	})
+
+	// A declaration that cannot be read is not "none declared": which
+	// databases exist is unknown, so a named directory gets no tool, not the
+	// forge.yaml primary's (review R4.B1 on #2211).
+	t.Run("unreadable declaration: refused", func(t *testing.T) {
+		unreadable := errors.New("reading what deploy/kcl declares: env prod does not render")
+		stubDeclarer(t, nil, unreadable)
+		for _, rel := range []string{"db/migrations", "sql/other"} {
+			if _, err := config.MigrationsDirDatabase(dir, abs(rel)); !errors.Is(err, unreadable) {
+				t.Errorf("%s: err = %v, want the declaration's error", rel, err)
+			}
+			if _, ok, err := migrationhook.ResolveForNamedDir(dir, abs(rel)); ok || !errors.Is(err, unreadable) {
+				t.Errorf("%s: hook ok=%v err=%v, want a refusal and no hook", rel, ok, err)
+			}
+		}
+	})
+}
+
+// `forge db --dir` on a project whose declaration cannot be read refuses
+// before any migrator runs, with or without --db (review R4.B1/B2 on #2211).
+func TestDBSelect_DirWithUnreadableDeclaration(t *testing.T) {
+	clearProjectDir(t)
+	proj := writeDBProject(t, "name: x\nmodule_path: example.com/x\n", nil)
+	elsewhere(t)
+	if err := cmdutil.SetProjectDir(proj); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := errors.New("reading what deploy/kcl declares: env prod does not render")
+	stubDeclarer(t, nil, unreadable)
+	prev := dbFlagName
+	t.Cleanup(func() { dbFlagName = prev })
+	for _, name := range []string{"", "default"} {
+		dbFlagName = name
+		if _, err := selectMigrationsDir("db/migrations"); !errors.Is(err, unreadable) {
+			t.Errorf("--db %q --dir db/migrations: err = %v, want the declaration's error", name, err)
+		}
+		if _, _, err := projectMigrationHook(filepath.Join(proj, "db", "migrations")); !errors.Is(err, unreadable) {
+			t.Errorf("--db %q hook: err = %v, want the declaration's error", name, err)
+		}
+	}
 }
 
 // A declarer that answers an empty list is no declaration: the project keeps

@@ -314,12 +314,19 @@ var ErrMigrationsDirUnowned = errors.New("migrations directory belongs to no dec
 // database's; with one database (or none declared in the env declaration) any
 // directory is the primary's, as before databases were declared. With several
 // declared, a directory none of them names is refused rather than handed to
-// the primary's tool.
+// the primary's tool. A declaration that cannot be read (an env that does not
+// render, envs that disagree, migrations declared twice) is an error too:
+// which databases exist is unknown, so no tool can be chosen for the
+// directory. Only a project whose envs declare no database schema keeps the
+// forge.yaml primary.
 func MigrationsDirDatabase(projectDir, absDir string) (DatabaseConfig, error) {
 	primary, _ := readDatabaseBlock(projectDir)
 	dbs, err := ProjectDatabases(projectDir)
-	if err != nil || len(dbs) == 0 || dbs[0].Source != DatabaseSourceKCL {
-		return primary, nil //nolint:nilerr // an unreadable declaration keeps the forge.yaml primary, as DatabaseForMigrationsDir does
+	if err != nil {
+		return DatabaseConfig{}, err
+	}
+	if len(dbs) == 0 || dbs[0].Source != DatabaseSourceKCL {
+		return primary, nil
 	}
 	legacy, _ := readYAMLDatabaseBlock(projectDir)
 	names := make([]string, 0, len(dbs))

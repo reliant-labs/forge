@@ -93,13 +93,19 @@ func resolveMigrationsDir(flagDir string) string {
 
 // selectMigrationsDir is resolveMigrationsDir for a command that takes --db:
 // --dir when given, else the selected database's directory (selectedDatabase),
-// refusing an unknown or ambiguous --db rather than guessing. --dir and --db
-// together must name the same database: a --dir that is another declared
-// database's migrations is refused, or the command would apply that
-// database's files with the --db database's tool and connection.
+// refusing an unknown or ambiguous --db rather than guessing. An explicit
+// --dir must belong to a database: with several declared, a directory none of
+// them names is refused, as is any --dir when the declaration cannot be read
+// (config.MigrationsDirDatabase), or the command would apply it with the
+// primary's tool and connection. --dir and --db together must name the same
+// database: a --dir that is another declared database's migrations is
+// refused for the same reason.
 func selectMigrationsDir(flagDir string) (string, error) {
 	if flagDir != "" {
 		dir := dbProjectPath(flagDir)
+		if _, err := config.MigrationsDirDatabase(dbProjectRoot(), dir); err != nil {
+			return "", fmt.Errorf("forge db: --dir %s: %w", dir, err)
+		}
 		if dbFlagName != "" {
 			if err := checkDirMatchesDB(dir); err != nil {
 				return "", err

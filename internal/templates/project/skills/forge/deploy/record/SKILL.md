@@ -1,6 +1,7 @@
 ---
 name: deploy/record
 description: Record deploys your OWN CI does — one `forge release record` step after the existing deploy job, in any repo and any language, no deploy/kcl, forge builds and applies nothing. Monitoring then gets deploy markers (`forge obs changes`), per-release verdicts (`forge obs check --wait`) and a Releases page labelled "recorded by CI". Copy-paste recipes for GitHub Actions (step and vendored composite action), GitLab CI and Buildkite. Use when a team keeps its pipeline and wants forge's release tracking or monitoring, or asks "can forge see my deploys?".
+applies: any
 ---
 
 # Record deploys from your existing CI
@@ -75,6 +76,11 @@ That is the whole integration. forge builds nothing and applies nothing.
 | `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
 
 Monitoring needs sign-in: a record on this machine is history, not a marker.
+
+A control plane that predates record-only releases refuses a **version-only**
+record with an upgrade hint, and accepts one with image digests as an ordinary
+release, without the "recorded by CI" label. The machine ledger takes both.
+Record digests whenever you have them: they are what ran.
 
 ## Recipes
 

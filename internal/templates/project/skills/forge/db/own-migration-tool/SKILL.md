@@ -1,6 +1,7 @@
 ---
 name: own-migration-tool
 description: Keep your migration tool — goose, atlas, flyway, dbmate, golang-migrate or your own command — and your migrations directory, and still get forge's ORM projection, seeding, migration safety and `forge db migrate`. The forge.yaml `database.migrations` hook, per-tool examples, what forge runs and with which environment, what changes (and what does not), and how to migrate on deploy.
+applies: any
 ---
 
 # Keep your migration tool

@@ -258,6 +258,9 @@ benefits:
       without a rewrite, with migration skills for service, CLI and library
       projects.
     availability: forge
+    scope: any
+    adopt: "In the app's directory, `forge project new --in-place --kind app --dry-run` prints what it would write from the Dockerfile and compose file; without `--dry-run` it writes forge.yaml and deploy/kcl and touches none of the app's files."
+    estimate: "~1 hour"
     evidence:
       - command: project new
       - path: internal/cli/new_app.go
@@ -628,6 +631,9 @@ benefits:
       forge's schema features would wait behind it. Running the team's own tool
       against forge's throwaway Postgres gives the same applied schema without
       the move.
+    scope: any
+    adopt: "Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`."
+    estimate: "~10 min"
     evidence:
       - path: internal/migrationhook
       - path: internal/shadowdb/hook.go
@@ -3034,6 +3040,9 @@ benefits:
       A missing `status` or `plan` hook is reported unverified, never as "no
       diff". Cluster workloads are checked off the cluster and against the
       release's recorded bundle with a client-side live diff.
+    scope: any
+    adopt: "`forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`."
+    estimate: "~1 hour"
     evidence:
       - command: env verify
       - command: env verify --image
@@ -3146,6 +3155,9 @@ benefits:
       deploys, so a record never poses as forge's own deploy. A retried CI step
       records once, and the same version with other digests is a conflict, not
       an overwrite. Not signed in, it records on this machine's ledger.
+    scope: any
+    adopt: 'Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.'
+    estimate: "~15 min"
     evidence:
       - command: release record
       - skill: deploy/record

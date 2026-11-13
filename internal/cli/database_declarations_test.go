@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
 )
 
@@ -228,5 +229,123 @@ func TestKCLMayDeclareDatabaseSchemas(t *testing.T) {
 	// forge.yaml.
 	if dbs, err := declaredDatabasesOfEnvs(none); err != nil || dbs != nil {
 		t.Errorf("declarer on a non-declaring project = %v, %v", dbs, err)
+	}
+}
+
+// `forge db … --db <name>` acts on the named database; without it, on the
+// primary; with several and no `default`, it refuses rather than guess.
+func TestDBSelect_ByName(t *testing.T) {
+	clearProjectDir(t)
+	proj := writeDBProject(t, "name: x\nmodule_path: example.com/x\n", nil)
+	elsewhere(t)
+	if err := cmdutil.SetProjectDir(proj); err != nil {
+		t.Fatal(err)
+	}
+	app := config.DeclaredDatabase{Name: "app", Source: config.DatabaseSourceKCL, Migrations: config.MigrationsConfig{Dir: "db/migrations", Tool: "forge"}}
+	analytics := config.DeclaredDatabase{Name: "analytics", Source: config.DatabaseSourceKCL, Migrations: config.MigrationsConfig{Dir: "analytics/migrations", Tool: "goose"}}
+	stubDeclarer(t, []config.DeclaredDatabase{analytics, app}, nil)
+	prev := dbFlagName
+	t.Cleanup(func() { dbFlagName = prev })
+
+	dbFlagName = ""
+	if _, err := selectMigrationsDir(""); err == nil || !strings.Contains(err.Error(), "none is named \"default\"") {
+		t.Fatalf("ambiguous default: err = %v", err)
+	}
+	if _, err := requireMigrationsDir(""); err == nil || !strings.Contains(err.Error(), "pass --db <name>") {
+		t.Fatalf("requireMigrationsDir must refuse the ambiguous default: %v", err)
+	}
+	// --dir is explicit and needs no database.
+	if got, err := selectMigrationsDir("sql"); err != nil || got != filepath.Join(proj, "sql") {
+		t.Errorf("--dir = %q, %v", got, err)
+	}
+
+	dbFlagName = "analytics"
+	got, err := selectMigrationsDir("")
+	if err != nil || got != filepath.Join(proj, "analytics", "migrations") {
+		t.Fatalf("--db analytics = %q, %v", got, err)
+	}
+	// Its directory resolves to its own tool.
+	h, hooked := projectMigrationHook(got)
+	if !hooked || h.Tool != "goose" {
+		t.Errorf("--db analytics hook = %+v, %v; want goose", h, hooked)
+	}
+	dbFlagName = "app"
+	got, _ = selectMigrationsDir("")
+	if _, hooked := projectMigrationHook(got); hooked {
+		t.Error("--db app (forge's migrator) resolved a hook")
+	}
+	dbFlagName = "nope"
+	if _, err := selectMigrationsDir(""); err == nil || !strings.Contains(err.Error(), `no database named "nope"`) {
+		t.Errorf("unknown --db: %v", err)
+	}
+
+	// A project with one database: no flag needed, and `--db default` names
+	// forge.yaml's.
+	stubDeclarer(t, nil, nil)
+	for _, name := range []string{"", "default"} {
+		dbFlagName = name
+		if got, err := selectMigrationsDir(""); err != nil || got != filepath.Join(proj, "db", "migrations") {
+			t.Errorf("legacy --db %q = %q, %v", name, got, err)
+		}
+	}
+}
+
+// THE BYTE-IDENTICAL GUARANTEE. A project that declares no database schema
+// in KCL — forge.yaml's legacy keys, or nothing at all, beside a deploy tree
+// that provisions a ManagedDatabase as before — evaluates nothing, and every
+// accessor generate, lint and the db commands read the database through
+// answers exactly what it answered before the env declaration became a
+// source (no declarer registered). Generated output is a function of those
+// answers, so it is byte-identical.
+func TestDeclaredDatabases_LegacyProjectsUnchanged(t *testing.T) {
+	kcl := map[string]string{"prod": "import forge\noutput = forge.render(forge.Bundle {project = \"x\", databases = [forge.ManagedDatabase {name = \"db\"}]})\n"}
+	for name, yaml := range map[string]string{
+		"legacy keys": "name: x\nmodule_path: example.com/x\ndatabase:\n  migrations_dir: sql/migrations\n  orm:\n    package: internal/store\n  migration_safety:\n    destructive_change: warn\n",
+		"tool hook":   "name: x\nmodule_path: example.com/x\ndatabase:\n  migrations:\n    dir: migrations\n    tool: goose\n",
+		"none":        "name: x\nmodule_path: example.com/x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeDBProject(t, yaml, kcl)
+			type answers struct {
+				Dir, Path, Tool string
+				DB              config.DatabaseConfig
+				ORM             config.ORMConfig
+				Primary         config.DatabaseConfig
+				Loaded          config.DatabaseConfig
+				Dbs             []config.DeclaredDatabase
+			}
+			read := func() answers {
+				cfg, err := config.LoadProjectDir(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dbs, err := config.ProjectDatabases(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				a := answers{
+					Dir: config.MigrationsDirIn(dir), Path: config.MigrationsPathIn(dir), Tool: config.MigrationToolIn(dir),
+					DB: config.DatabaseIn(dir), ORM: config.ORMPackage(cfg), Primary: cfg.PrimaryDatabase(), Dbs: dbs,
+				}
+				if err := cfg.UseDeclaredDatabases(); err != nil {
+					t.Fatal(err)
+				}
+				a.Loaded = cfg.Database
+				return a
+			}
+			before := func() answers {
+				prev := config.RegisterDatabaseDeclarer(nil)
+				defer config.RegisterDatabaseDeclarer(prev)
+				return read()
+			}()
+			renders := declarationRenders.Load()
+			after := read()
+			if !reflect.DeepEqual(before, after) {
+				t.Errorf("the env declaration changed a legacy project's database:\nbefore %+v\nafter  %+v", before, after)
+			}
+			if n := declarationRenders.Load() - renders; n != 0 {
+				t.Errorf("a project that declares no schema evaluated its envs %d time(s); want none", n)
+			}
+		})
 	}
 }

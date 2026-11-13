@@ -115,7 +115,7 @@ func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	return withoutToolLedgers(projectDir, tables), nil
+	return withoutToolLedgers(projectDir, migDir, tables), nil
 }
 
 func appliedTables(projectDir, migDir string) ([]schemadef.Table, error) {
@@ -135,8 +135,8 @@ func appliedTables(projectDir, migDir string) ([]schemadef.Table, error) {
 }
 
 // withoutToolLedgers drops the hook tool's history tables from tables.
-func withoutToolLedgers(projectDir string, tables []schemadef.Table) []schemadef.Table {
-	h, hooked := migrationhook.ResolveIn(projectDir)
+func withoutToolLedgers(projectDir, migDir string, tables []schemadef.Table) []schemadef.Table {
+	h, hooked := migrationhook.ResolveForDir(projectDir, migDir)
 	if !hooked {
 		return tables
 	}
@@ -181,7 +181,7 @@ func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 // left open.
 func Open(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, error) {
 	tables, shadow, err := openApplied(projectDir, migDir)
-	return withoutToolLedgers(projectDir, tables), shadow, err
+	return withoutToolLedgers(projectDir, migDir, tables), shadow, err
 }
 
 func openApplied(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shadow, error) {

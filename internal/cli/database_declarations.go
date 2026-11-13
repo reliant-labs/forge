@@ -22,8 +22,9 @@ package cli
 // `schema_only_databases` anywhere under deploy/kcl), so a project that
 // declares none — every project that predates this — evaluates nothing and
 // reads forge.yaml exactly as before. A declaring project pays it once per
-// process (the result is cached per project), and inside `forge generate`
-// the evaluations share the run's render memo.
+// process and state of its deploy tree (the result is cached on the .k
+// files' sizes and modification times), and inside `forge generate` the
+// evaluations share the run's render memo.
 
 import (
 	"context"
@@ -282,13 +283,34 @@ type declaredDatabasesEntry struct {
 	err  error
 }
 
-// declaredDatabasesCache memoizes the declarer per absolute project dir for
-// the life of the process.
+// declaredDatabasesCache memoizes the declarer per project and per state of
+// its deploy tree (kclTreeFingerprint) for the life of the process: the
+// readers call it many times in one command, and a long-lived process (the
+// MCP server) must still see an edit.
 var declaredDatabasesCache sync.Map // string → *declaredDatabasesEntry
 
-// resetDeclaredDatabasesCache drops the memo; tests that rewrite a project's
-// KCL between reads call it.
-func resetDeclaredDatabasesCache() { declaredDatabasesCache = sync.Map{} }
+// kclTreeFingerprint names the state of every .k file under
+// projectDir/deploy/kcl by path, size and modification time — a stat per
+// file, no read. ok is false when there is none.
+func kclTreeFingerprint(projectDir string) (fp string, ok bool) {
+	var b strings.Builder
+	_ = filepath.WalkDir(filepath.Join(projectDir, "deploy", "kcl"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fs.SkipDir
+		}
+		if d.IsDir() || filepath.Ext(p) != ".k" {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		ok = true
+		fmt.Fprintf(&b, "%s\x00%d\x00%d\n", p, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return b.String(), ok
+}
 
 // declaredDatabasesOfEnvs is config's DatabaseDeclarer: the databases the
 // project's envs declare a schema for, unioned (unionDeclaredDatabases).
@@ -297,12 +319,17 @@ func declaredDatabasesOfEnvs(projectDir string) ([]config.DeclaredDatabase, erro
 	if err != nil {
 		abs = projectDir
 	}
-	if !kclMayDeclareDatabaseSchemas(abs) {
+	fp, ok := kclTreeFingerprint(abs)
+	if !ok {
 		return nil, nil
 	}
-	v, _ := declaredDatabasesCache.LoadOrStore(abs, &declaredDatabasesEntry{})
+	v, _ := declaredDatabasesCache.LoadOrStore(abs+"\x00"+fp, &declaredDatabasesEntry{})
 	e := v.(*declaredDatabasesEntry)
-	e.once.Do(func() { e.dbs, e.err = renderDeclaredDatabases(abs) })
+	e.once.Do(func() {
+		if kclMayDeclareDatabaseSchemas(abs) {
+			e.dbs, e.err = renderDeclaredDatabases(abs)
+		}
+	})
 	return e.dbs, e.err
 }
 

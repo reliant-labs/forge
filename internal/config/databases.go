@@ -29,6 +29,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -301,13 +302,25 @@ func (c *ProjectConfig) UseDeclaredDatabases() error {
 	if dbs[0].Source != DatabaseSourceKCL {
 		return nil
 	}
-	d, ok := PrimaryDatabase(dbs)
-	if !ok {
+	d, primary := PrimaryDatabase(dbs)
+	if primary {
+		c.Database = d.Config(c.Database)
+	}
+	// The derived driver, and the features that read it, follow the
+	// declared databases: the project has a database when any declared
+	// one's migrations directory exists.
+	c.Database.Driver = "none"
+	for _, db := range dbs {
+		if dirExists(filepath.Join(c.projectDir, filepath.FromSlash(db.MigrationsPath()))) {
+			c.Database.Driver = DialectPostgres
+			break
+		}
+	}
+	c.Features.derived = followPinnedRequirements(DeriveFeatureDefaults(c), c.Features, c)
+	if !primary {
 		_, err := SelectDatabase(dbs, "")
 		return err
 	}
-	c.Database = d.Config(c.Database)
-	DeriveDatabase(c)
 	return nil
 }
 

@@ -25,6 +25,16 @@ another tool applies (`database.migrations.tool`) embeds nothing — its migrate
 job runs that tool, in an image holding the tool and the migrations: load
 `db/own-migration-tool`.
 
+## Several databases: one migrate job each
+
+With several declared databases (`db`), each gets its own migrate job. The
+binary embeds the primary's migrations only; another database's job runs its
+tool in an image holding the tool and its migrations (`db/own-migration-tool`),
+`DATABASE_URL` (or the tool's variable) set from
+`forge.DatabaseRef {name = "<that database>"}`. In an image with forge,
+`["forge", "db", "migrate", "up", "--db", "<name>"]` does it. forge does not
+generate these jobs yet.
+
 ## The wiring
 
 ```

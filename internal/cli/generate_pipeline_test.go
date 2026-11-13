@@ -54,6 +54,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"reconcile forge_version with go.mod",
 		"announce project",
 		"sync forge KCL module vendor",
+		"read declared databases",
 		"detect proto directories",
 		"ensure gen/go.mod",
 		"buf generate (Go stubs)",

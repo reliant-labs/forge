@@ -1194,7 +1194,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	migDir := config.MigrationsPathIn(projectDir)
 	if cfg != nil {
-		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.Database.MigrationsPath()))
+		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.PrimaryDatabase().MigrationsPath()))
 	}
 	hasMigrations := dirExists(migDir)
 	if !hasMigrations {
@@ -1233,7 +1233,7 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittyp
 	allowed := migrationlint.AllowDestructiveFiles(migDir)
 	severity := "error"
 	if cfg != nil {
-		severity = cfg.Database.MigrationSafety.EffectiveDestructiveChange()
+		severity = cfg.PrimaryDatabase().MigrationSafety.EffectiveDestructiveChange()
 	}
 	details["destructive_change_severity"] = severity
 	if len(allowed) > 0 {

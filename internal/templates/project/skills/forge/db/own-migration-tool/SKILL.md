@@ -28,6 +28,21 @@ your migrations changes.
 | `forge lint --migration-safety` — read the findings and the "skipped (tool: …)" lines | 2 min |
 | (deploying with forge) declare the migrate job with your tool's image | 10–20 min |
 
+The same declaration lives on the database in the env (KCL) instead, and must
+when a project has several databases — `driver` is `tool`:
+
+```python
+schema_only_databases = [forge.Database {
+    name = "default"
+    migrations = forge.DatabaseMigrations {dir = "migrations", driver = "goose"}
+}]
+```
+
+`apply`, `status` and `check` take the same argv there. Declare it in ONE place:
+forge.yaml's `database.migrations` and a KCL `migrations` together are refused.
+`forge db … --db <name>` runs the named database's tool. Load `db` (Declaring a
+database's schema in the env) for the rules.
+
 ## What you get
 
 - **The ORM, stores and CRUD wiring from your schema.** forge applies your

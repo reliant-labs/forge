@@ -151,14 +151,21 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 // (config.ORMPackage's PackageDir, "internal/db" by default): the stores it
 // already holds decide which library tables keep theirs, deprecated.
 func BuildORMEntities(projectDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
-	tables, err := shadowdb.Tables(projectDir, config.MigrationsPathIn(projectDir))
+	return BuildORMEntitiesFrom(projectDir, config.MigrationsPathIn(projectDir), ormDir, services)
+}
+
+// BuildORMEntitiesFrom is BuildORMEntities over the migrations in migDir (an
+// absolute directory) rather than the primary database's: the projection of
+// one of several declared databases (config.ProjectDatabases).
+func BuildORMEntitiesFrom(projectDir, migDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
+	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		return nil, err
 	}
 	if len(tables) == 0 {
 		return nil, nil
 	}
-	views, err := shadowdb.Views(projectDir, config.MigrationsPathIn(projectDir))
+	views, err := shadowdb.Views(projectDir, migDir)
 	if err != nil {
 		return nil, err
 	}

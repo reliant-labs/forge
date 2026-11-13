@@ -565,6 +565,26 @@ _Enforced · Forge, on any infrastructure_
 - command `forge db migrate up`
 - skill `db/own-migration-tool` (`forge skill load db/own-migration-tool`)
 
+<a id="several-databases"></a>
+
+### Several databases, declared per database
+
+Each database declares its own dialect, migrations directory and tool, ORM package and migration-safety dials in the env declaration, so a monorepo with several databases gets every one linted, `forge db --db <name>` for each, and an ORM projected per database.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}` on a `forge.ManagedDatabase`, `forge.ExternalDatabase` or schema-only `forge.Database` in deploy/kcl.
+
+**Why:** forge.yaml's `database:` block describes one database. Declaring the schema on the database itself puts it beside what runs it, and lets every reader act on each database with its own tool and dials.
+
+**Evidence:**
+
+- source [`internal/config/databases.go`](../internal/config/databases.go)
+- source [`internal/cli/database_declarations.go`](../internal/cli/database_declarations.go)
+- lint lane `forge lint --migration-safety`
+- command `forge db migrate up`
+- skill `db` (`forge skill load db`)
+
 <a id="managed-postgres-backups"></a>
 
 ### Backups and point-in-time restore

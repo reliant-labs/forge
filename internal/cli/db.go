@@ -83,6 +83,11 @@ When something is wedged:
 	cmd.AddCommand(newDBResetCommand())
 	cmd.AddCommand(newDBQueryCommand())
 
+	// --db picks which of the project's databases the migration, migrate,
+	// seed, reset and squash verbs act on (db_paths.go). `forge db query`
+	// names an env's database with its own --database.
+	cmd.PersistentFlags().StringVar(&dbFlagName, "db", "", dbSelectFlagUsage)
+
 	// Every db subcommand reads its project's files from the -C project
 	// root, never the CWD — see db_paths.go.
 	cmd.Long += `
@@ -185,7 +190,7 @@ Examples:
   forge db squash --to 20260506_baseline --out-dir db/baselines/
   forge db squash --from-dsn 'postgres://postgres:pw@localhost:5432/goose_built?sslmode=disable'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if h, ok := projectMigrationHook(""); ok {
+			if h, ok := projectMigrationHook(resolveMigrationsDir(fromDir)); ok {
 				return refuseUnderMigrationHook("squash", h,
 					"a squash writes a forge baseline. To move the project onto forge's migrator, set database.migrations.tool to forge (or delete it) first; to squash "+h.Tool+"'s history, use "+h.Tool)
 			}
@@ -212,8 +217,12 @@ Examples:
 			if len(excludeTables) > 0 {
 				return fmt.Errorf("--exclude-table applies only to --from-dsn: a replayed history holds no other tool's tables")
 			}
+			squashFromDir, err := selectMigrationsDir(fromDir)
+			if err != nil {
+				return err
+			}
 			return runDBSquash(cmd.Context(), squashOptions{
-				FromDir:  resolveMigrationsDir(fromDir),
+				FromDir:  squashFromDir,
 				Baseline: baseline,
 				OutDir:   outDir,
 				Image:    image,
@@ -556,7 +565,11 @@ neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 			return cobra.ExactArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if h, ok := projectMigrationHook(resolveMigrationsDir(migDir)); ok {
+			newDir, err := selectMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
+			if h, ok := projectMigrationHook(newDir); ok {
 				name := closedSet + "_closed_set"
 				if len(args) == 1 {
 					name = args[0]
@@ -572,7 +585,7 @@ neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 				if len(args) == 1 {
 					name = args[0]
 				}
-				return newClosedSetMigration(cmd.Context(), closedSet, name, resolveMigrationsDir(migDir), dsn, withContext)
+				return newClosedSetMigration(cmd.Context(), closedSet, name, newDir, dsn, withContext)
 			}
 			for _, flag := range []string{"backward-compatible", "breaks-rollback"} {
 				if v, _ := cmd.Flags().GetString(flag); cmd.Flags().Changed(flag) && strings.TrimSpace(v) == "" {
@@ -585,10 +598,12 @@ neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 				BackwardCompatible: backwardCompatible,
 				BreaksRollback:     breaksRollback,
 			}
-			if store, err := loadProjectStore(); err == nil {
+			if db, _, err := selectedDatabase(); err == nil {
+				opts.RequireCompatDeclaration = db.MigrationSafety.RequireCompatDeclaration
+			} else if store, err := loadProjectStore(); err == nil {
 				opts.RequireCompatDeclaration = store.Database().MigrationSafety.RequireCompatDeclaration
 			}
-			return database.CreateMigration(cmd.Context(), args[0], resolveMigrationsDir(migDir), opts)
+			return database.CreateMigration(cmd.Context(), args[0], newDir, opts)
 		},
 	}
 	newCmd.Flags().StringVar(&migDir, "dir", "", migrationsDirFlagUsage)
@@ -665,7 +680,10 @@ Examples:
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir := resolveMigrationsDir(migDir)
+			dir, err := selectMigrationsDir(migDir)
+			if err != nil {
+				return err
+			}
 			if h, ok := projectMigrationHook(dir); ok {
 				return refuseUnderMigrationHook("migration rebase", h, "re-number the file the way "+h.Tool+" orders migrations")
 			}

@@ -641,6 +641,31 @@ benefits:
       - command: db migrate up
       - skill: db/own-migration-tool
 
+  - id: several-databases
+    category: data
+    title: Several databases, declared per database
+    claim: >-
+      Each database declares its own dialect, migrations directory and tool, ORM
+      package and migration-safety dials in the env declaration, so a monorepo
+      with several databases gets every one linted, `forge db --db <name>` for
+      each, and an ORM projected per database.
+    availability: forge
+    headline: false
+    use: >-
+      `migrations = forge.DatabaseMigrations {dir = "analytics/migrations",
+      driver = "goose"}` on a `forge.ManagedDatabase`, `forge.ExternalDatabase`
+      or schema-only `forge.Database` in deploy/kcl.
+    why: >-
+      forge.yaml's `database:` block describes one database. Declaring the
+      schema on the database itself puts it beside what runs it, and lets every
+      reader act on each database with its own tool and dials.
+    evidence:
+      - path: internal/config/databases.go
+      - path: internal/cli/database_declarations.go
+      - analyzer: --migration-safety
+      - command: db migrate up
+      - skill: db
+
   - id: managed-postgres-backups
     category: data
     title: Backups and point-in-time restore

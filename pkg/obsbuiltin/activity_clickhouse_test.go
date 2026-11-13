@@ -87,4 +87,8 @@ func TestActivityRulesRemoveUsersFromEveryCountOnClickHouse(t *testing.T) {
 	check(ruled, "rules", "users", "new", true, rows("2026-03-15\t1"))
 	check(ruled, "rules", "users", "returning", false, "1")
 	check(ruled, "rules", "users", "accounts", false, "2")
+	// Sign-up counts and cohorts (suCTE) leave the marked user's sign-up out:
+	// ua and ub signed up by password, ub is staff.
+	check(plain, "no rules", "users", "signups-by-method", false, "2026-03-15\tpassword\t2")
+	check(ruled, "rules", "users", "signups-by-method", false, "2026-03-15\tpassword\t1")
 }

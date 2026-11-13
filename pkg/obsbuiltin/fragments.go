@@ -131,7 +131,9 @@ func stitchCTE(rng string) string {
 // obsquery.NewUsersSource reads: the 90 days before {to}) is in [lo, hi), with
 // the visitor hash the sign-up itself carried (a hosted backend's request is
 // stamped by the edge, so devidp's sign-up has one with no browser code) and
-// its method, provider and verification.
+// its method, provider and verification. Its rows are user evidence (active,
+// which a sign-up always is), so a project's activity rules leave a marked
+// user's sign-up out of every cohort and sign-up count too (withActivity).
 func suCTE(lo, hi string) string {
 	return `su AS (
   SELECT * FROM (
@@ -140,7 +142,7 @@ func suCTE(lo, hi string) string {
            argMin(Props['method'], Timestamp) AS method, argMin(Props['provider'], Timestamp) AS provider,
            argMin(Props['social_provider'], Timestamp) AS social, argMin(Props['verified'], Timestamp) AS verified
     FROM product_events
-    WHERE EventName = 'auth_signed_up' AND UserId != '' AND ` + envScope + ` AND ` +
+    WHERE EventName = 'auth_signed_up' AND ` + active + ` AND ` + envScope + ` AND ` +
 		lastDays(obsquery.NewUsersWindowDays, to) + `
     GROUP BY EnvId, UserId)
   WHERE at >= ` + lo + ` AND at < ` + hi + `)`

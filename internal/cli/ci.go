@@ -621,21 +621,21 @@ func discoverGoModules(root string, rootOnly bool) (modules, empty []string, err
 	var order []string
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			if path == root {
-				return werr
-			}
-			return nil // an unreadable subtree is not the project's to scan
+			// Fail closed: a subtree the walk cannot read may hold a module, or
+			// packages of one, and a scan that skipped it would pass without
+			// having looked.
+			return werr
 		}
 		if d.IsDir() {
-			if path != root {
-				name := d.Name()
-				if name == "vendor" || name == "testdata" || name == "node_modules" ||
-					strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
-					return filepath.SkipDir
-				}
+			if path != root && skipModuleWalkDir(d.Name()) {
+				return filepath.SkipDir
 			}
 			mod := moduleOf[filepath.Dir(path)]
-			if _, serr := os.Stat(filepath.Join(path, "go.mod")); serr == nil {
+			isModule, serr := hasGoMod(path)
+			if serr != nil {
+				return serr
+			}
+			if isModule {
 				rel, rerr := filepath.Rel(root, path)
 				if rerr != nil {
 					return rerr
@@ -668,6 +668,27 @@ func discoverGoModules(root string, rootOnly bool) (modules, empty []string, err
 		}
 	}
 	return modules, empty, nil
+}
+
+// skipModuleWalkDir reports whether discoverGoModules skips a directory by
+// name: what go never builds from a parent module, and what is not the
+// project's own code.
+func skipModuleWalkDir(name string) bool {
+	return name == "vendor" || name == "testdata" || name == "node_modules" ||
+		strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
+// hasGoMod reports whether dir holds a go.mod. A stat that fails for any
+// reason but absence is an error: the walk fails closed rather than guess.
+func hasGoMod(dir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
 }
 
 // countSelfCertifiedFiles reports how many forge-owned files carry a

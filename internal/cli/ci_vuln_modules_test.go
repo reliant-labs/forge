@@ -77,6 +77,28 @@ func TestDiscoverGoModules(t *testing.T) {
 	}
 }
 
+// A subtree the walk cannot read fails the discovery: it may hold a module,
+// or the root module's packages, and a scan that skipped it would pass
+// without having looked (forge#2192 review).
+func TestDiscoverGoModules_FailsClosedOnAnUnreadableSubtree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 directory, so there is nothing unreadable to walk")
+	}
+	root := writeGoModuleTree(t)
+	locked := filepath.Join(root, "internal", "svc") // the root module's own package
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	for _, rootOnly := range []bool{false, true} {
+		modules, empty, err := discoverGoModules(root, rootOnly)
+		if err == nil {
+			t.Errorf("rootOnly=%v: discovery over an unreadable subtree passed: modules = %v, empty = %v", rootOnly, modules, empty)
+		}
+	}
+}
+
 // The gate scans every module and fails on a called advisory in a NESTED
 // one. `forge ci vuln-scan --go` used to run `govulncheck ./...` in the
 // working directory only, which stops at a nested go.mod, and printed

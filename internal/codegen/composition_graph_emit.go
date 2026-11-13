@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -355,7 +356,7 @@ func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []gra
 		if err := m.checkConstructorReach(roots, draft); err != nil {
 			return nil, err
 		}
-		allProblems := append(problems, m.constructorGraphProblems()...)
+		allProblems := slices.Concat(problems, m.constructorGraphProblems())
 		if len(allProblems) == 0 {
 			return nil, nil
 		}

@@ -548,7 +548,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Measured migration locks and rewrites
 
-`forge db analyze` runs each pending migration statement by statement on a real Postgres inside one transaction that is always rolled back, and reports the locks it took, the tables it rewrote or scanned, and how long it ran.
+`forge db analyze` runs each pending migration statement by statement on a real Postgres (an embedded one, or a database you name, such as an anonymized production snapshot) inside one transaction that is always rolled back, and reports the locks it took, the tables it rewrote or scanned, and how long it ran.
 
 _Enforced · Forge, on any infrastructure_
 

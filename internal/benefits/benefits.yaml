@@ -618,9 +618,10 @@ benefits:
     title: Measured migration locks and rewrites
     claim: >-
       `forge db analyze` runs each pending migration statement by statement on
-      a real Postgres inside one transaction that is always rolled back, and
-      reports the locks it took, the tables it rewrote or scanned, and how long
-      it ran.
+      a real Postgres (an embedded one, or a database you name, such as an
+      anonymized production snapshot) inside one transaction that is always
+      rolled back, and reports the locks it took, the tables it rewrote or
+      scanned, and how long it ran.
     availability: forge
     headline: false
     use: >-

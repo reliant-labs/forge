@@ -189,6 +189,10 @@ type KCLEntities struct {
 	// safety for forge's readers, with nothing run or reached. See
 	// SchemaOnlyDatabaseEntity and DatabaseSchemaEntity.
 	SchemaOnlyDatabases []SchemaOnlyDatabaseEntity `json:"schema_only_databases,omitempty"`
+	// APIs are the APIs the env declares the project serves (forge.API), each
+	// by its contract. Groundwork: validated (validateAPIs) and listed, nothing
+	// generated from them yet. See APIEntity.
+	APIs []APIEntity `json:"apis,omitempty"`
 	// Buckets are the env's buckets forge manages (a forge.Bucket on
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
@@ -1666,6 +1670,7 @@ type kclRenderRaw struct {
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
 	SchemaOnlyDatabases      []SchemaOnlyDatabaseEntity                `json:"schema_only_databases,omitempty"`
+	APIs                     []APIEntity                               `json:"apis,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
 	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
@@ -1927,6 +1932,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := checkFrontendRuntimeConfigKeys(projectDir, entities.Frontends); err != nil {
 		return nil, err
 	}
+	// Refused here too: an OpenAPI spec KCL cannot read cheaply is checked
+	// the moment the env is loaded (validateAPIs).
+	if err := validateAPIs(projectDir, entities.APIs); err != nil {
+		return nil, err
+	}
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2045,6 +2055,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
 		SchemaOnlyDatabases:      raw.SchemaOnlyDatabases,
+		APIs:                     raw.APIs,
 		Buckets:                  raw.Buckets,
 		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,

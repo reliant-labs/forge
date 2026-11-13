@@ -1,5 +1,19 @@
 {
   "output": {
+    "apis": [
+      {
+        "base_path": "/v1",
+        "database": "analytics",
+        "kind": "openapi",
+        "name": "public",
+        "spec": "api/openapi.yaml"
+      },
+      {
+        "kind": "proto",
+        "name": "acme",
+        "spec": "proto"
+      }
+    ],
     "applier": null,
     "cluster_target": {
       "cluster": "k3d-acme",

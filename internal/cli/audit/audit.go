@@ -93,6 +93,7 @@ var auditCategoryOrder = []string{
 	"features",
 	"ingress",
 	"environments",
+	"resources",
 	"external_builds",
 	"prerequisites",
 	"conventions",
@@ -211,6 +212,9 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 		report.Categories["ingress"] = f.Audit.Ingress(cfg, abs)
 	}
 	report.Categories["environments"] = auditEnvironments(f, abs)
+	if f.Audit.Resources != nil {
+		report.Categories["resources"] = f.Audit.Resources(cfg, abs)
+	}
 	report.Categories["external_builds"] = f.Audit.ExternalBuilds(cfg, abs)
 	if f.Audit.Prerequisites != nil {
 		report.Categories["prerequisites"] = f.Audit.Prerequisites(cfg, abs)

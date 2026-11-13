@@ -71,6 +71,7 @@ func init() {
 		Ingress:                       auditIngress,
 		ExternalBuilds:                auditExternalBuilds,
 		Prerequisites:                 auditPrerequisites,
+		Resources:                     auditResources,
 		ListEnvs:                      ListEnvs,
 		ProjectDefinesConnectServices: projectDefinesConnectServices,
 		// scanProjectDrift returns []checksums.Tier1DriftEntry; the audit

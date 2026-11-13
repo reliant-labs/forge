@@ -33,6 +33,9 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
           spec    — v1alpha1.WorkloadSpec JSON (the generated
                     tiers.workload_json), identical to the record's spec
     infra[], frontends[], databases[]
+    apis[]                    the APIs the project serves (forge.API):
+                              {name, kind: proto|openapi, spec, base_path,
+                              database}, present only when declared
     schema_only_databases[]   databases declared for their schema only
                               (forge.Database), present only when declared.
                               A database of any kind that declares
@@ -2539,6 +2542,17 @@ render = lambda bundle: Bundle -> any {
             "declared_buckets": [_render_declared_bucket(b) for b in bundle.buckets]
         if bundle.external_databases:
             "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
+        # The APIs the project serves (forge.API): present only when declared,
+        # so an env without one renders as before. Go derives the proto API of
+        # a project that declares none, and checks an OpenAPI spec's version.
+        if bundle.apis:
+            "apis": [{k: _v for k, _v in {
+                "name": a.name
+                "kind": a.kind
+                "spec": _repo_rel_path(a.spec)
+                "base_path": a.base_path
+                "database": a.database
+            } if _v} for a in bundle.apis]
         # Databases declared for their schema only (forge.Database): present
         # only when declared, so an env without one renders as before.
         if bundle.schema_only_databases:

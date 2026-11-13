@@ -65,7 +65,8 @@ export const UTM_PARAMS = [
 export const MAX_ATTRIBUTION_VALUE_CHARS = 128;
 
 /** A referrer host (`ref`): a hostname, never a URL. */
-const REF_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const REF_RE =
+  /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 /** An entry page (`lp`): a path, no query or fragment. */
 const LP_RE = /^\/[A-Za-z0-9/_.~-]{0,127}$/;
 
@@ -195,11 +196,17 @@ export function parseAttribution(search: string): Attribution {
  * referrer's host when it is another site, and this page's path. Pure;
  * exported for tests.
  */
-export function selfVisit(referrer: string, location: { host: string; pathname: string }): Attribution {
+export function selfVisit(
+  referrer: string,
+  location: { host: string; pathname: string },
+): Attribution {
   const out: Attribution = {};
   try {
     const host = referrer ? new URL(referrer).host.toLowerCase() : "";
-    const ref = host && host !== location.host.toLowerCase() ? cleanRef(host.replace(/:\d+$/, "")) : undefined;
+    const ref =
+      host && host !== location.host.toLowerCase()
+        ? cleanRef(host.replace(/:\d+$/, ""))
+        : undefined;
     if (ref) {
       out.ref = ref;
     }
@@ -217,7 +224,10 @@ function currentVisit(): Attribution {
   if (typeof window === "undefined" || !window.location) {
     return {};
   }
-  return selfVisit(typeof document !== "undefined" ? document.referrer : "", window.location);
+  return selfVisit(
+    typeof document !== "undefined" ? document.referrer : "",
+    window.location,
+  );
 }
 
 function readStoredAttribution(): Attribution {
@@ -290,7 +300,11 @@ export function captureAttribution(options?: {
     // campaign link's visit, a new external referral, or the first visit
     // of all. A same-site page load with nothing new keeps what is stored.
     const self = currentVisit();
-    if (Object.keys(incoming).length > 0 || self.ref || Object.keys(stored).length === 0) {
+    if (
+      Object.keys(incoming).length > 0 ||
+      self.ref ||
+      Object.keys(stored).length === 0
+    ) {
       incoming = { ...incoming, ...self };
     }
   }
@@ -353,16 +367,23 @@ export function visitorId(): string {
  * Parameters the URL already carries are kept. Below the `full` tier nothing
  * identifying is added and nothing is stored: only this page load's `utm_*`
  * and the referrer's host (`ref`), which say where the visit came from and not
- * who made it. Returns the URL unchanged when it is not an absolute http(s)
- * URL, in the `off` tier and after disableTelemetry() — so it is safe to wrap
- * every outbound link.
+ * who made it, and only to a destination on this page's own host or on one of
+ * `options.sites`: a link to anywhere else carries nothing, so a campaign or
+ * the referrer is never handed to an unrelated third party. Returns the URL
+ * unchanged when it is not an absolute http(s) URL, in the `off` tier and
+ * after disableTelemetry() — so it is safe to wrap every outbound link.
  */
-export function withAttribution(url: string): string {
+export function withAttribution(
+  url: string,
+  options?: WithAttributionOptions,
+): string {
   if (isTelemetryDisabled() || typeof url !== "string") {
     return url;
   }
   if (!active) {
-    return analyticsTier() === "off" ? url : withVisitOnly(url);
+    return analyticsTier() === "off"
+      ? url
+      : withVisitOnly(url, options?.sites ?? []);
   }
   let parsed: URL;
   try {
@@ -399,9 +420,38 @@ export function withAttribution(url: string): string {
   return parsed.toString();
 }
 
+/** Options of withAttribution. */
+export type WithAttributionOptions = {
+  /**
+   * Below the `full` tier, the other sites a link may carry this visit's
+   * `utm_*` and referrer host to: a host (`app.example.com`) or a parent
+   * domain (`example.com`, which also admits every subdomain of it). The
+   * page's own host always may. Ignored in `full`.
+   */
+  sites?: readonly string[];
+};
+
+// passesVisitTo reports whether a below-full link to host may carry the
+// visit: this page's own host, or one of sites (exactly, or a subdomain of it).
+function passesVisitTo(host: string, sites: readonly string[]): boolean {
+  const dest = host.toLowerCase();
+  const here =
+    typeof window !== "undefined"
+      ? (window.location?.hostname ?? window.location?.host ?? "")
+      : "";
+  if (here !== "" && dest === here.toLowerCase().replace(/:\d+$/, "")) {
+    return true;
+  }
+  return sites.some((site) => {
+    const s = site.trim().toLowerCase().replace(/^\.+/, "");
+    return s !== "" && (dest === s || dest.endsWith("." + s));
+  });
+}
+
 // withAttribution below the full tier: this page load's utm_* and the
-// referrer's host, from the URL and document, never storage, never an id.
-function withVisitOnly(url: string): string {
+// referrer's host, from the URL and document, never storage, never an id,
+// and only to this site or the caller's named sites (passesVisitTo).
+function withVisitOnly(url: string, sites: readonly string[]): string {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -411,8 +461,13 @@ function withVisitOnly(url: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return url;
   }
+  if (!passesVisitTo(parsed.hostname, sites)) {
+    return url;
+  }
   const here =
-    typeof window !== "undefined" ? parseAttribution(window.location?.search ?? "") : {};
+    typeof window !== "undefined"
+      ? parseAttribution(window.location?.search ?? "")
+      : {};
   const add: Record<string, string> = {};
   for (const key of UTM_PARAMS) {
     const v = here[key];

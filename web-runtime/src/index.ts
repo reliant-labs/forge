@@ -290,6 +290,7 @@ export {
   type AppClient,
   type Attribution,
   type AttributionTouch,
+  type WithAttributionOptions,
 } from "./attribution.js";
 
 /**

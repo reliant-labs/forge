@@ -136,7 +136,11 @@ and `lp` (the entry page's path). The first page load that names neither takes
 them from itself. `withAttribution(url)` passes all of them on, and the first
 sign-in's `user_identified` carries `referrer_host` and `landing_path`. Below
 `full`, `withAttribution` passes on only this page load's `utm_*` and the
-referrer's host: no id, and nothing is stored.
+referrer's host: no id, nothing is stored, and only to a link on the page's own
+host or on a site the call names — `withAttribution(url, { sites:
+["example.com"] })` admits `example.com` and its subdomains. A link anywhere
+else is returned unchanged, so wrapping every outbound link never hands a
+campaign or a referrer to a third party.
 
 **The org.** `setTelemetryOrg(orgId | null)` names the org later events are
 about (the `orgId` attribute, stored in `product_events.OrgId`). It follows the

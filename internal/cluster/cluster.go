@@ -1715,11 +1715,7 @@ func decodeNetworkPolicy(raw any) (*deploy.EnvNetworkPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
-	var np struct {
-		EgressPorts        []int32 `json:"egress_ports"`
-		TelemetryNamespace string  `json:"telemetry_namespace"`
-		IngressNamespace   string  `json:"ingress_namespace"`
-	}
+	var np NetworkPolicyOutput
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&np); err != nil {

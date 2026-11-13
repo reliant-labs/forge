@@ -50,6 +50,14 @@ output = forge.render(forge.Bundle {
         fw.Workload {name = "cli", kind = "tool", build = forge.GoBuild {cmd = "./cmd/acme-cli", output_name = "acme-cli"}, runtime = forge.BuildOnly {}}
     ]
     infra = [forge.HostInfra {name = "postgres", port = 5433, database = "acme"}]
+    # A database declared for its schema only: the host postgres above runs
+    # it, so forge neither provisions nor reaches it, but lint, `forge db`
+    # and the ORM read its migrations.
+    schema_only_databases = [forge.Database {
+        name = "analytics"
+        migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}
+        orm = forge.DatabaseORM {package = "internal/analyticsdb"}
+    }]
     frontends = [
         forge.Frontend {name = "web", type = "vite", path = "frontends/web", runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}, runtime = forge.OnHost {}}
         # A frontend on the author's own bucket, beside hosted workloads: the

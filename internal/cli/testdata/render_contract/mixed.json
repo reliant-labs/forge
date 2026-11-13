@@ -211,6 +211,19 @@
     "required_dns": [],
     "required_secrets": [],
     "runtime_classes": [],
+    "schema_only_databases": [
+      {
+        "dialect": "postgres",
+        "migrations": {
+          "dir": "analytics/migrations",
+          "driver": "goose"
+        },
+        "name": "analytics",
+        "orm": {
+          "package": "internal/analyticsdb"
+        }
+      }
+    ],
     "secret_provider": {
       "path": "secrets/dev.yaml",
       "type": "file"

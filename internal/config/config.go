@@ -833,7 +833,7 @@ func ORMPackage(cfg *ProjectConfig) ORMConfig {
 	if cfg == nil {
 		return ORMConfig{}
 	}
-	return cfg.Database.ORM
+	return cfg.PrimaryDatabase().ORM
 }
 
 // MigrationSafetyConfig controls migrationlint's three severity dials

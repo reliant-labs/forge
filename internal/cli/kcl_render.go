@@ -184,6 +184,11 @@ type KCLEntities struct {
 	// does not run (forge.ExternalDatabase): routes for `forge db query`,
 	// never rendered. See ExternalDatabaseEntity.
 	ExternalDatabases []ExternalDatabaseEntity `json:"external_databases,omitempty"`
+	// SchemaOnlyDatabases are the databases the env declares for their
+	// schema only (a bare forge.Database): migrations, ORM and migration
+	// safety for forge's readers, with nothing run or reached. See
+	// SchemaOnlyDatabaseEntity and DatabaseSchemaEntity.
+	SchemaOnlyDatabases []SchemaOnlyDatabaseEntity `json:"schema_only_databases,omitempty"`
 	// Buckets are the env's buckets forge manages (a forge.Bucket on
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
@@ -1190,6 +1195,8 @@ type DatabaseEntity struct {
 	Cluster   string                             `json:"cluster,omitempty"`
 	Namespace string                             `json:"namespace,omitempty"`
 	Spec      deployv1alpha1.ManagedDatabaseSpec `json:"spec"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // Hosted reports whether the control plane runs this database.
@@ -1230,6 +1237,8 @@ type ExternalDatabaseEntity struct {
 	Reach string `json:"reach,omitempty"`
 	// Port is the Service port, 0 when undeclared.
 	Port int `json:"port,omitempty"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and
@@ -1656,6 +1665,7 @@ type kclRenderRaw struct {
 	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
+	SchemaOnlyDatabases      []SchemaOnlyDatabaseEntity                `json:"schema_only_databases,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
 	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
@@ -2034,6 +2044,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:               raw.HelmCharts,
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
+		SchemaOnlyDatabases:      raw.SchemaOnlyDatabases,
 		Buckets:                  raw.Buckets,
 		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,

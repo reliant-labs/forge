@@ -15,9 +15,9 @@ one mixed env. Together they are the §9.1 contract between three parties:
 | `host` | `forge.OnHost` workloads: an air service with `listen_ports`, a go-run migrate job. Also `HostInfra` infra entries (postgres, nats with a monitor port, temporal with a namespace), a dev frontend, a `SecretRef` with `optional`, and a WorkloadURL resolved to `localhost` |
 | `compose` | `forge.OnCompose` third-party services: no build, `spec.image` is `""`, and literal env is merged into the compose process `env` |
 | `cluster` | `forge.OnCluster` workloads of every scheduled kind, a third-party image, a cluster `ManagedDatabase`, an opted-in `network_policy`, and the `forge.dev/v1alpha1 Workload` records in `manifests` |
-| `hosted` | `forge.OnHosted` service and job, a hosted database, and a frontend on `forge.OnHosted`. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
+| `hosted` | `forge.OnHosted` service and job, a hosted database declaring its schema (`migrations`, `orm`), and a frontend on `forge.OnHosted`. References stay references: `managedSecret` (from a config `SecretRef`'s `store_key`), `databaseRef`, `workloadURL` |
 | `build-only` | `forge.BuildOnly` tools: a Go CLI with a build variant, and a docker-built image |
-| `mixed` | One env binding host (the default), compose, cluster, hosted and build-only side by side. The cluster workload reaches the host `api` through the cluster's `host_gateway` |
+| `mixed` | One env binding host (the default), compose, cluster, hosted and build-only side by side. The cluster workload reaches the host `api` through the cluster's `host_gateway`. A schema-only `forge.Database` lands in `schema_only_databases` |
 | `identity-hosted` | `forge.ManagedIdentity` on a hosted env: the API reads reserved managed secrets (`RELIANT_IDENTITY_*`), declared role members and an SMTP relay are recorded as names, and the one delivered Secret is a machine user's key |
 | `identity-cluster` | The same declaration on a cluster env: roles only; applications, consumers, the delivered `identity` (required) and `identity_jwks` Secrets and the API's whole typed config are derived, with the broker token and JWKS snapshot as re-read files |
 | `identity-share-with` | A preview env reusing staging's users: only derived applications and consumers, the owner named |
@@ -56,7 +56,11 @@ one mixed env. Together they are the §9.1 contract between three parties:
   - hosted referrer: kept as `{"workloadURL": {"name": ...}}`.
 - `network_policy` is `null` unless the Bundle sets `forge.NetworkPolicy`
   (opt-in). Go passes it as `deploy.Context.Network`.
-- `databases[]` is `{name, runtime: cluster|hosted, cluster, namespace, spec}`.
+- `databases[]` is `{name, runtime: cluster|hosted, cluster, namespace, spec}`,
+  plus `{dialect, migrations, orm, migration_safety}` when the database
+  declares `migrations` (so does an `external_databases[]` entry).
+  `schema_only_databases[]` is `{name, dialect, migrations, orm,
+  migration_safety}`, present only when declared.
 - Optional values in the runtime, build, infra and frontend blocks project as
   `null` rather than being omitted.
 

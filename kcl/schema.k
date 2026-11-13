@@ -1001,7 +1001,178 @@ _dashboards_spec = lambda dashboards: DatabaseDashboards -> any {
     } if dashboards else Undefined
 }
 
-schema ManagedDatabase:
+# ---------------------------------------------------------------------------
+# A database's schema: its dialect, its migrations, its ORM, migration safety.
+# ---------------------------------------------------------------------------
+
+# The SQL dialects forge accepts today, and the ones it knows of but does not
+# support yet: a declaration of a known one is refused as "not supported yet"
+# rather than as a typo.
+_DATABASE_DIALECTS_SUPPORTED = ["postgres"]
+_DATABASE_DIALECTS_KNOWN = ["postgres", "mysql", "mariadb", "sqlite", "sqlserver", "oracle", "cockroachdb"]
+# The tools DatabaseMigrations.driver accepts: forge.yaml's
+# `database.migrations.tool` under its declaration name.
+_MIGRATION_DRIVERS = ["forge", "golang-migrate", "goose", "atlas", "flyway", "dbmate", "custom"]
+# The severity dials of DatabaseMigrationSafety.
+_MIGRATION_SAFETY_SEVERITIES = ["error", "warn", "off"]
+
+# A repository-relative path as every reader compares it: surrounding blanks,
+# a leading "./" and trailing "/" dropped, so "./db/migrations/" and
+# "db/migrations" are one directory.
+_repo_rel_path = lambda p: str -> str {
+    _p = p.strip()
+    _p = _p[2:] if _p.startswith("./") else _p
+    _p.rstrip("/")
+}
+
+# Whether p names a directory inside the repository: relative, not the root
+# itself, and never climbing out of it. An absolute path would bake one
+# machine's layout into a file every teammate and CI runner shares, and a
+# path out of the project cannot be embedded into the binary or mounted into
+# a build context.
+_is_repo_rel_path = lambda p: str -> bool {
+    _c = _repo_rel_path(p)
+    _segs = _c.split("/")
+    bool(_c) and _c != "." and not _c.startswith("/") and not regex.match(_c, r"^[A-Za-z]:") \
+        and all _seg in _segs { _seg != ".." }
+}
+
+schema DatabaseMigrations:
+    """Where a database's migrations live and which tool applies them. Set on
+    any database declaration (`forge.Database`, `forge.ManagedDatabase`,
+    `forge.ExternalDatabase`) as `migrations`.
+
+        migrations = forge.DatabaseMigrations {
+            dir = "db/migrations"
+            driver = "goose"
+        }
+
+    It is forge.yaml's `database.migrations:` block, declared per database:
+    `driver` is that block's `tool`. A team that already runs goose, atlas,
+    flyway, dbmate, golang-migrate or a command of its own keeps it; forge
+    runs that tool wherever it would have applied its own migrator (the
+    shadow database the ORM and the seeder read, `forge db migrate up`).
+
+      * `dir`: the repository-relative directory holding the migrations.
+      * `driver`: forge (the default), golang-migrate, goose, atlas, flyway,
+        dbmate or custom.
+      * `apply`, `status`, `check`: argv (no shell) that apply every pending
+        migration to $DATABASE_URL, report what is applied, and exit 0 only
+        when the database is fully migrated. They override a built-in
+        driver's; `custom` requires `apply`; `forge` takes none.
+
+    See `forge skill load db/own-migration-tool`.
+    """
+    dir: str = "db/migrations"
+    driver: str = "forge"
+    apply?: [str]
+    status?: [str]
+    $check?: [str]
+
+    check:
+        _is_repo_rel_path(dir), \
+            "DatabaseMigrations.dir '${dir}' is not a directory inside the repository: use a relative path with no '..' segment, such as \"db/migrations\""
+        driver in _MIGRATION_DRIVERS, \
+            "DatabaseMigrations.driver '${driver}' is not one of ${_MIGRATION_DRIVERS}: `custom` runs your own `apply` argv"
+        driver != "forge" or (not apply and not status and not $check), \
+            "DatabaseMigrations sets apply, status or check, but driver is forge: forge's own migrator takes no command. To run one of yours, set `driver` to your tool (or \"custom\")"
+        driver != "custom" or apply, \
+            "DatabaseMigrations.driver is custom but there is no apply command: set `apply` to the argv that applies every pending migration to $DATABASE_URL"
+        all _argv in [apply, status, $check] { not _argv or bool(_argv[0].strip()) }, \
+            "DatabaseMigrations: an apply, status or check argv has no command: set it to the argv to run, e.g. [\"./scripts/migrate.sh\", \"up\"]; a shell line is [\"sh\", \"-c\", \"...\"]"
+
+schema DatabaseORM:
+    """Where the generated data layer of a database lands. Set on a database
+    declaration as `orm`; forge.yaml's `database.orm:` declared per database.
+
+    `package` is the repository-relative directory the ORM projects into —
+    every <entity>_orm_gen.go, store_gen.go and _repo_ext.go seam — and so
+    the Go package its files declare (the last path element). Two databases
+    never share one.
+    """
+    package: str
+
+    check:
+        _is_repo_rel_path(package), \
+            "DatabaseORM.package '${package}' is not a directory inside the repository: use a relative path with no '..' segment, such as \"internal/db\""
+
+schema DatabaseMigrationSafety:
+    """The severity dials of `forge lint --migration-safety` for one database:
+    forge.yaml's `database.migration_safety:` declared per database. Each
+    dial is error, warn or off; unset is the lint's default.
+    """
+    enabled: bool = True
+    unsafe_add_column?: str
+    destructive_change?: str
+    volatile_default?: str
+    # Require every migration after the baseline to declare
+    # `-- forge:backward-compatible — <why>` or `-- forge:breaks-rollback <why>`.
+    require_compat_declaration: bool = False
+
+    check:
+        all _s in [unsafe_add_column, destructive_change, volatile_default] { not _s or _s in _MIGRATION_SAFETY_SEVERITIES }, \
+            "DatabaseMigrationSafety: unsafe_add_column, destructive_change and volatile_default are each one of ${_MIGRATION_SAFETY_SEVERITIES}"
+
+schema Database:
+    """A database whose schema this repository owns: its name, its SQL
+    dialect, its migrations, where its ORM lands and how its migrations are
+    linted. It is what `forge lint --migration-safety`, `forge db … --db
+    <name>`, the ORM projection and the seeder read.
+
+    Every database declaration IS one: a `forge.ManagedDatabase` is a
+    Database forge runs, a `forge.ExternalDatabase` one forge reaches. A bare
+    `forge.Database`, on `Bundle.schema_only_databases`, is one forge does
+    neither for: it declares the schema only — the shape of a project whose
+    database runs somewhere forge does not see, or one that adopts forge for
+    its lint and codegen first.
+
+        schema_only_databases = [forge.Database {
+            name = "app"
+            migrations = forge.DatabaseMigrations {dir = "migrations", driver = "goose"}
+            orm = forge.DatabaseORM {package = "internal/store"}
+        }]
+
+    The schema half is OPTIONAL on a managed or external database: one that
+    declares no `migrations` is declared for provisioning (or querying)
+    alone, as before, and forge reads the project's migrations from
+    forge.yaml. Several databases may declare migrations (a monorepo); each
+    has its own directory and ORM package.
+
+      * `dialect`: the SQL dialect. postgres is the one supported today;
+        mysql, mariadb, sqlite, sqlserver, oracle and cockroachdb are known
+        and refused as not supported yet.
+      * `migrations`: forge.DatabaseMigrations.
+      * `orm`: forge.DatabaseORM. Needs `migrations`.
+      * `migration_safety`: forge.DatabaseMigrationSafety. Needs `migrations`.
+
+    A database's schema is a fact of the project, not of one env: every env
+    that declares the same database must declare the same schema, and forge
+    reads the union of every env's declarations. The database named
+    `default` (else the only one) is the project's primary: the one `forge
+    db` acts on without `--db`, and the one the services' generated CRUD
+    wiring uses. See `forge skill load db`.
+    """
+    name: str
+    dialect: str = "postgres"
+    migrations?: DatabaseMigrations
+    orm?: DatabaseORM
+    migration_safety?: DatabaseMigrationSafety
+
+    check:
+        dialect in _DATABASE_DIALECTS_KNOWN, \
+            "database '${name}': dialect '${dialect}' is not one forge knows (${_DATABASE_DIALECTS_KNOWN})"
+        dialect not in _DATABASE_DIALECTS_KNOWN or dialect in _DATABASE_DIALECTS_SUPPORTED, \
+            "database '${name}': dialect '${dialect}' is not supported yet: forge supports ${_DATABASE_DIALECTS_SUPPORTED}"
+        migrations or not (orm or migration_safety), \
+            "database '${name}' sets orm or migration_safety but no migrations: they describe the schema its migrations declare, so set `migrations = forge.DatabaseMigrations {...}` too"
+
+# Every database the env declares a schema for (one with `migrations`),
+# whatever kind it is.
+_schema_databases = lambda databases: [any], external_databases: [any], schema_only_databases: [any] -> [any] {
+    [d for d in databases + external_databases + schema_only_databases if d.migrations]
+}
+
+schema ManagedDatabase(Database):
     """A dedicated Postgres: the managed-database tier, as a Bundle entry.
 
     THE SPEC IS GENERATED. `spec` is tiers.ManagedDatabase, generated from
@@ -1032,6 +1203,9 @@ schema ManagedDatabase:
     With no `runtime`, a database lands on the env's primary cluster target
     (`Bundle.cluster_target`, else the first cluster-bound workload's), in
     `namespace` when set.
+
+    It is a forge.Database, so it may also declare its schema: `dialect`,
+    `migrations`, `orm` and `migration_safety` (see Database).
     """
     name: str
     runtime?: OnCluster | OnHosted
@@ -1055,7 +1229,7 @@ schema ManagedDatabase:
 _EXTERNAL_DATABASE_SSLMODES = ["require", "disable", "verify-full"]
 _EXTERNAL_DATABASE_REACHES = ["port_forward", "direct"]
 
-schema ExternalDatabase:
+schema ExternalDatabase(Database):
     """A Postgres the env's workloads use but forge does not run (Cloud SQL,
     RDS, a database behind a pooler), declared so `forge db query <env>` can
     read it. Set on `Bundle.external_databases`.
@@ -1121,6 +1295,9 @@ schema ExternalDatabase:
     `port` is the Service port. Unset, a port-forward picks the Service's
     Postgres port (5432) or its only port, and `direct` dials 5432, so set it
     for a pooler (`port = 6432`).
+
+    It is a forge.Database, so it may also declare its schema: `dialect`,
+    `migrations`, `orm` and `migration_safety` (see Database).
     """
     name: str
     runtime?: OnCluster
@@ -8044,6 +8221,11 @@ schema Bundle:
     # `forge db query` can reach them. Nothing is rendered for them. See
     # ExternalDatabase.
     external_databases: [ExternalDatabase] = []
+    # Databases declared for their schema only (a bare forge.Database): the
+    # migrations, ORM and migration safety forge's lint, `forge db` and the
+    # ORM read, for a database this env neither runs nor reaches. Nothing is
+    # rendered for them. See Database.
+    schema_only_databases: [Database] = []
     # Object-storage buckets (forge.Bucket): where each lives, reached by a
     # workload through forge.BucketRef / forge.bucket_env. See Bucket.
     buckets: [Bucket] = []
@@ -8308,9 +8490,25 @@ schema Bundle:
         # A database binds a runtime, or lands on the env's cluster_target.
         all db in databases { _db_runtime(db) or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ManagedDatabase ${[db.name for db in databases if not _db_runtime(db)]} binds no runtime: set `runtime = forge.OnCluster {target = ...}` or `forge.OnHosted {}` on it (a database runs on a cluster or on the control plane, never on a host)"
-        # `forge db query --database <name>` picks among both kinds.
-        len(_duplicates([db.name for db in databases] + [x.name for x in external_databases])) == 0, \
-            "Bundle: a database name is declared twice across databases and external_databases: ${_duplicates([db.name for db in databases] + [x.name for x in external_databases])}. `forge db query --database` names one"
+        # `forge db query --database <name>` picks among both kinds, and
+        # `forge db --db <name>` among every kind.
+        len(_duplicates([db.name for db in databases] + [x.name for x in external_databases] + [d.name for d in schema_only_databases])) == 0, \
+            "Bundle: a database name is declared twice across databases, external_databases and schema_only_databases: ${_duplicates([db.name for db in databases] + [x.name for x in external_databases] + [d.name for d in schema_only_databases])}. `forge db query --database` and `forge db --db` name one"
+        # A schema-only database is a bare forge.Database that declares its
+        # schema: a managed or external one belongs on its own list, and one
+        # with no migrations would declare nothing.
+        all d in schema_only_databases { typeof(d) == "Database" }, \
+            "Bundle.schema_only_databases ${[d.name for d in schema_only_databases if typeof(d) != 'Database']} are not bare forge.Database declarations: a forge.ManagedDatabase goes on `databases`, a forge.ExternalDatabase on `external_databases`"
+        all d in schema_only_databases { d.migrations }, \
+            "Bundle.schema_only_databases ${[d.name for d in schema_only_databases if not d.migrations]} declare no migrations: a schema-only database declares its schema, so set `migrations = forge.DatabaseMigrations {...}`"
+        all d in schema_only_databases { regex.match(d.name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(d.name) <= 63 }, \
+            "Bundle.schema_only_databases ${[d.name for d in schema_only_databases if not (regex.match(d.name, r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') and len(d.name) <= 63)]}: a database name is an RFC-1123 label of at most 63 characters (`forge db --db` names it)"
+        # Two databases never share a migrations directory or an ORM package:
+        # each reader (the ORM, the lint, `forge db`) acts on one database's.
+        len(_duplicates([_repo_rel_path(d.migrations.dir) for d in _schema_databases(databases, external_databases, schema_only_databases)])) == 0, \
+            "Bundle: two databases declare the same migrations dir ${_duplicates([_repo_rel_path(d.migrations.dir) for d in _schema_databases(databases, external_databases, schema_only_databases)])}: each database's migrations live in a directory of their own"
+        len(_duplicates([_repo_rel_path(d.orm.package) for d in _schema_databases(databases, external_databases, schema_only_databases) if d.orm])) == 0, \
+            "Bundle: two databases declare the same ORM package ${_duplicates([_repo_rel_path(d.orm.package) for d in _schema_databases(databases, external_databases, schema_only_databases) if d.orm])}: each database's generated data layer lands in a package of its own"
         all x in external_databases { x.runtime or cluster_target or any w in workloads { w.runtime and w.runtime.type == "cluster" } }, \
             "ExternalDatabase ${[x.name for x in external_databases if not x.runtime]} binds no runtime and the env has no cluster target: set `runtime = forge.OnCluster {target = ...}` on it (the cluster its service runs on)"
         # A forge.BucketRef names a bucket, so the name is unique.

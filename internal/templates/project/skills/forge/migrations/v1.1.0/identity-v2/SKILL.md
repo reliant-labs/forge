@@ -251,9 +251,10 @@ line names it.
     - **Drop the proof lock** if you applied it from an earlier version of
       this step: delete `proofLockerFor` (with its `pgx` and `dbtrace`
       imports) and the `ProofLocker:` line in `mountSignInMethods`.
-      `SignInRoutes` ignores the field now. `devidp.NewPostgresProofLocker`
-      and `UnavailableProofLocker` are deprecated but keep working exactly
-      as before for anything else that uses them.
+      `SignInRoutes` still takes a supplied locker where it always did (and
+      still refuses when it cannot be taken), but nothing needs it any more.
+      `devidp.NewPostgresProofLocker` and `UnavailableProofLocker` are
+      deprecated and keep working exactly as before.
     - **Serve sign-up through the LOGIN_POLICY, with mail.** The legacy
       sign-up (`auth_self_signup` outside development) and a policy whose
       `email` is `delivery = "none"` create the account WITH its password,
@@ -269,6 +270,17 @@ line names it.
       — and `POST /auth/invite/accept` answers `account_needs_admin` (409)
       for an invitation naming such an account. Both carry a `message` the
       scaffolded forms already display; a hand-written form must show it.
+
+    **Roll it out in one step.** A broker from before this release takes an
+    unverified account's credentials back and verifies it; this one leaves
+    such an account untouched and proves its owner into a fresh account. If
+    replicas of both versions serve the same users at once, an old replica
+    can verify an account a new one has already superseded, and the two
+    then both claim the address (the new broker leaves that pair alone, for
+    an administrator). Deploy every replica of the broker in one step, or
+    drain the old replicas' sign-in traffic before the new ones serve it.
+    `SignInRoutesConfig.ProofLocker` is deprecated but still taken when set,
+    so a broker that keeps its lock during the rollout keeps its behaviour.
 
     No database, table or setting is involved. `forge lint` cannot see the
     client option; check the literal by hand.

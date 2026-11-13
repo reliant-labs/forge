@@ -60,6 +60,9 @@ type fakeZitadel struct {
 	// failUsernameChanges makes that many username changes fail (500): a
 	// broker that stops part-way through a takeover.
 	failUsernameChanges int
+	// failUsernameChangeOf makes the next username change of that one
+	// account fail (500).
+	failUsernameChangeOf string
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
@@ -577,6 +580,11 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("PUT /v2/users/human/{id}", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failUsernameChangeOf == u.id {
+			f.failUsernameChangeOf = ""
+			zerr(w, 500, "COMMAND-fake", "username change failed")
+			return
+		}
 		if f.failUsernameChanges > 0 {
 			f.failUsernameChanges--
 			zerr(w, 500, "COMMAND-fake", "username change failed")

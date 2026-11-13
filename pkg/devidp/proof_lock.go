@@ -18,8 +18,10 @@ import (
 // account's credentials back, and a stale revocation could land on a
 // credential the owner had just set (forge#2121). That eviction no longer
 // exists: no credential is put on an unverified account and a proof never
-// verifies an account holding one (see proveAddress), so SignInRoutes has
-// nothing to serialise and ignores SignInRoutesConfig.ProofLocker.
+// verifies an account holding one (see proveAddress), so nothing needs
+// serialising. SignInRoutes still takes SignInRoutesConfig.ProofLocker where
+// it always did when one is supplied, and still refuses when it cannot be
+// taken; with none, it takes no lock.
 //
 // The lockers themselves keep every guarantee they had (forge is semver v1):
 // a PostgresProofLocker still excludes across replicas, and
@@ -30,8 +32,8 @@ import (
 // ProofLocker serialises, per account, an address proof and the credential
 // installs that follow one.
 //
-// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker since
-// forge#2121's fix; the interface and its implementations still work. Set SignInRoutesConfig.ProofLocker only to a
+// Deprecated: since forge#2121's fix nothing needs it; SignInRoutes still
+// honours one that is supplied, and the implementations still work. Set SignInRoutesConfig.ProofLocker only to a
 // lock every replica of the broker shares (NewPostgresProofLocker); nil keeps
 // the in-process lock, which is enough for a single replica.
 type ProofLocker interface {
@@ -50,7 +52,7 @@ type ProofLocker interface {
 // verification and passkey enrolment answer "unavailable" (fail closed), as
 // during a lock-store outage; signing in with an existing credential does
 // not take the lock and keeps working.
-// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker; the
+// Deprecated: nothing needs a proof lock since forge#2121's fix; the
 // locker still refuses every acquisition.
 func UnavailableProofLocker(err error) ProofLocker {
 	if err == nil {
@@ -115,7 +117,7 @@ type PostgresProofLocker struct {
 }
 
 // NewPostgresProofLocker returns a ProofLocker on db.
-// Deprecated: SignInRoutes ignores SignInRoutesConfig.ProofLocker; the
+// Deprecated: nothing needs a proof lock since forge#2121's fix; the
 // locker still excludes across replicas for callers of its own.
 func NewPostgresProofLocker(db *sql.DB, opt PostgresProofLockerOptions) *PostgresProofLocker {
 	if opt.MaxWait <= 0 {

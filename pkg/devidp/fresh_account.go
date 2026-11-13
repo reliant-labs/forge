@@ -114,7 +114,8 @@ var errAmbiguousAddress = errors.New("several accounts have the address and none
 var errNoMailToProve = errors.New("no mail is delivered here, so no address can be proven")
 
 // accountFor resolves an address to the account the sign-in routes act on.
-// None: ErrUserNotFound. One: that one. Several (a fresh account beside the
+// None: ErrUserNotFound. One: that one — finishing its takeover first, when
+// it is a verified fresh account whose takeover was cut short. Several (a fresh account beside the
 // one it supersedes): the one verified account — finishing its takeover
 // first —, else the one fresh account still waiting for its proof. Anything
 // else is errAmbiguousAddress.
@@ -128,6 +129,15 @@ func (r *SignInRoutes) accountFor(ctx context.Context, email string) (User, erro
 	case 0:
 		return User{}, ErrUserNotFound
 	case 1:
+		// One match can still be a takeover cut short AFTER the old
+		// account's email moved (the rename of this one, or the clearing of
+		// its MetaSupersedes, failed): finish it. Idempotent, and a no-op
+		// for an account that supersedes nothing.
+		if users[0].EmailVerified {
+			if _, err := r.finishFreshAccount(ctx, users[0]); err != nil {
+				r.cfg.Logger.ErrorContext(ctx, "the fresh account could not take its address over yet; it resumes on the next sign-in", "user_id", users[0].ID, "error", err)
+			}
+		}
 		return users[0], nil
 	}
 	var verified, fresh []User

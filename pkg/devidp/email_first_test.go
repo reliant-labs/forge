@@ -669,3 +669,48 @@ func TestEmailFirst_ConcurrentReplicasConvergeOnOneFreshAccount(t *testing.T) {
 		t.Fatalf("%d verified accounts after the race, want 1", verified)
 	}
 }
+
+// A takeover cut short AFTER the old account's email moved — at the rename
+// of the fresh account, or at the clearing of its marker — leaves the address
+// with ONE match. The owner can sign in meanwhile, and the next lookup of the
+// address finishes it.
+func TestEmailFirst_ATakeoverCutShortAfterTheEmailMovedResumes(t *testing.T) {
+	for name, fault := range map[string]func(z *fakeZitadel, freshID string){
+		"renaming the fresh account":        func(z *fakeZitadel, freshID string) { z.failUsernameChangeOf = freshID },
+		"clearing the fresh account's mark": func(z *fakeZitadel, _ string) { z.failMetadataDeletes = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, policyWith(SignupOpen, allMethods))
+			s := squat(t, h)
+			victim := h.browser()
+			victim.post("/auth/register", map[string]any{"email": victimEmail, "password": "victim-password-1"})
+			mail := h.z.lastMail(t)
+			h.z.mu.Lock()
+			fault(h.z, mail.userID)
+			h.z.mu.Unlock()
+			if status, body := victim.post("/auth/verify", map[string]any{"userID": mail.userID, "code": mail.code}); status != 200 {
+				t.Fatalf("verify: %d %v", status, body)
+			}
+			h.z.mu.Lock()
+			moved, pending := s.email == supersededEmail(s.id), h.z.users[mail.userID].metadata[MetaSupersedes] != ""
+			h.z.mu.Unlock()
+			if !moved || !pending {
+				t.Fatalf("precondition: want the old email moved and the takeover unfinished (moved=%v pending=%v)", moved, pending)
+			}
+			if got := len(usersWithEmail(h, victimEmail)); got != 1 {
+				t.Fatalf("%d accounts have the address, want the fresh one alone", got)
+			}
+			if err := signInGated(h, victimEmail, "victim-password-1"); err != nil {
+				t.Fatalf("the owner cannot sign in mid-takeover: %v", err)
+			}
+
+			h.browser().post("/auth/magic/request", map[string]any{"email": victimEmail}) // the next lookup
+			n := h.z.user(mail.userID)
+			h.z.mu.Lock()
+			defer h.z.mu.Unlock()
+			if n.name() != victimEmail || n.metadata[MetaSupersedes] != "" || s.name() != supersededUsername(s.id) {
+				t.Fatalf("not converged: fresh=%q (supersedes %q), old=%q", n.name(), n.metadata[MetaSupersedes], s.name())
+			}
+		})
+	}
+}

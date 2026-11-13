@@ -63,13 +63,13 @@ package deploytarget
 import (
 	"context"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"os"
 	"path/filepath"
 	"time"
 
 	"oras.land/oras-go/v2/content"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
 )

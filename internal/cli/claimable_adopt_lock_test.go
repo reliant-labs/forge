@@ -78,7 +78,7 @@ func TestReleaseDecisionNamesAdoptionRatherThanUserChanges(t *testing.T) {
 		Now:        time.Now(),
 	}
 	got := chooseDeployReleaseFor(context.Background(), q).Reason
-	if !strings.Contains(got, "forge added") || strings.Contains(got, "the checkout has uncommitted changes") {
+	if !strings.Contains(got, "forge just added its files") || strings.Contains(got, "the checkout has uncommitted changes") {
 		t.Errorf("adoption-only dirt reads as the user's changes: %q", got)
 	}
 	q.Changes.Paths = append(q.Changes.Paths, "src/App.tsx")

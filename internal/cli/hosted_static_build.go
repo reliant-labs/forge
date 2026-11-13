@@ -3,10 +3,10 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
 

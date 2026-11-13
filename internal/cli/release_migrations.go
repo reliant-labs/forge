@@ -37,7 +37,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"os"
 	"path/filepath"
@@ -45,6 +44,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/pkg/release"

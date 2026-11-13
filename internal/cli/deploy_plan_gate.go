@@ -29,11 +29,11 @@ package cli
 
 import (
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 

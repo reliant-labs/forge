@@ -820,9 +820,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	budget := detectBuildMemoryBudget()
 	parallel, memCaps := resolveBuildConcurrency(opts.parallelSet, opts.parallel, budget)
 	opts.parallel = parallel
-	if !cloud.ClaimableActive() {
-		fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
-	}
+	printBuildMemory(budget, memCaps)
 
 	plan := buildPlan{
 		cfg:               cfg,
@@ -916,12 +914,28 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
 	}
 
-	if len(results) == 0 {
-		return nil
-	}
-	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
-	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	printBuildSuccess(len(results), opts.outputDir)
 	return nil
+}
+
+// printBuildMemory reports the build's memory budget, except on an anonymous
+// deploy, whose output keeps to what its user can act on. Extracted, like
+// printBuildHeader, to hold runBuild under its statement budget.
+func printBuildMemory(budget buildMemoryBudget, memCaps buildMemoryCaps) {
+	if !cloud.ClaimableActive() {
+		fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+	}
+}
+
+// printBuildSuccess closes a build in which every target succeeded. A build
+// that had no targets to run says nothing, rather than "All 0 builds
+// succeeded".
+func printBuildSuccess(n int, outputDir string) {
+	if n == 0 {
+		return
+	}
+	fmt.Printf("\n[build] All %d builds succeeded.\n", n)
+	fmt.Printf("[build] Binaries available in %s/\n", outputDir)
 }
 
 // builtSet is what runBuild's builds produced, as recordBuild needs it.

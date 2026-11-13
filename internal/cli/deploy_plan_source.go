@@ -35,10 +35,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"sync"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 

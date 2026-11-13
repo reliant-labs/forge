@@ -50,7 +50,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"io/fs"
 	"os"
@@ -73,6 +72,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/cloud"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,

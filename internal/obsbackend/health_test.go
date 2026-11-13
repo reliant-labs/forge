@@ -65,6 +65,31 @@ func TestCloudReleaseHealthMapsTheWireAndOmitsAnUnsetWindow(t *testing.T) {
 	}
 }
 
+// A release is the env's: a backend narrowed to a dev instance (hosted dev
+// telemetry) still asks for the env's release health, sends no instance
+// narrowing, and accepts the control plane's answer, which echoes none.
+func TestCloudReleaseHealthIsEnvWideOnANarrowedBackend(t *testing.T) {
+	f := &fakeCaller{replies: map[string]string{procGetReleaseHealth: healthWire}}
+	c := cloudWith(f)
+	c.Instances = Instances{IDs: []string{"sess-1"}, Users: []string{"u1"}}
+	res, err := c.ReleaseHealth(context.Background(), HealthRequest{Release: "v2", Now: t0c})
+	if err != nil {
+		t.Fatalf("a narrowed backend's release health: %v", err)
+	}
+	if res.Report.Subject.Release != "v2" {
+		t.Errorf("report: %+v", res.Report.Subject)
+	}
+	scope := f.reqs[procGetReleaseHealth]["scope"].(map[string]any)
+	for _, k := range []string{"instanceIds", "instanceUsers"} {
+		if _, ok := scope[k]; ok {
+			t.Errorf("release health sent %s: %v", k, scope)
+		}
+	}
+	if scope["envIds"].([]any)[0] != "env-1" {
+		t.Errorf("scope: %v", scope)
+	}
+}
+
 func TestCloudReleaseHealthSendsWindowPromotionAndOverrides(t *testing.T) {
 	f := &fakeCaller{replies: map[string]string{procGetReleaseHealth: healthWire}}
 	_, err := cloudWith(f).ReleaseHealth(context.Background(), HealthRequest{

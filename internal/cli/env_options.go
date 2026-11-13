@@ -35,6 +35,9 @@ so there is nothing to keep in sync:
 
     forge env up dev -D host_runner=go-run
 
+The same -D is taken by forge env build (to build that variant) and by
+forge env render (to preview it). forge env deploy refuses it.
+
 forge discovers these by parsing the env's KCL with its kcl.mod dependencies
 resolved. It reports the name, and whatever ` + "`type`" + ` / ` + "`default`" + ` / ` + "`help`" + ` the
 declaration passed — those are optional, but an option declared bare shows up

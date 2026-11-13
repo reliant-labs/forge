@@ -108,6 +108,39 @@ func (st Statement) serverWide() string {
 	return ""
 }
 
+// nonBlocking reports whether a statement that cannot run in a transaction is
+// one that neither rewrites a table nor blocks writes to one: the
+// CONCURRENTLY forms, which take SHARE UPDATE EXCLUSIVE, plain VACUUM (also
+// SHARE UPDATE EXCLUSIVE, no rewrite), and DISCARD ALL. VACUUM FULL, CLUSTER
+// and a non-concurrent REINDEX of a schema or database are not.
+func (st Statement) nonBlocking() bool {
+	switch st.NonTransactional() {
+	case "CREATE INDEX CONCURRENTLY", "DROP INDEX CONCURRENTLY", "REINDEX … CONCURRENTLY",
+		"ALTER TABLE … DETACH PARTITION … CONCURRENTLY", "DISCARD ALL":
+		return true
+	case "VACUUM":
+		return !st.optionOn("full")
+	}
+	return false
+}
+
+// optionOn reports whether a statement names option and does not turn it
+// off: VACUUM FULL, VACUUM (FULL), VACUUM (FULL true), but not
+// VACUUM (FULL false).
+func (st Statement) optionOn(option string) bool {
+	i := slices.Index(st.words, option)
+	if i < 0 {
+		return false
+	}
+	if i+1 < len(st.words) {
+		switch st.words[i+1] {
+		case "false", "off", "0":
+			return false
+		}
+	}
+	return true
+}
+
 // first is the statement's leading keyword, lowercased.
 func (st Statement) first() string {
 	if len(st.words) == 0 {

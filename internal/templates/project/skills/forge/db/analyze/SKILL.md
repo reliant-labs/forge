@@ -50,6 +50,13 @@ the migrator does: `executed: true`, its duration, and its lock reported
 statically (`SHARE UPDATE EXCLUSIVE`, which blocks neither reads nor writes). So
 the safe patterns analyze clean: an index built concurrently and then attached
 with `ADD CONSTRAINT … USING INDEX`, a name dropped concurrently and reused.
+Only the genuinely non-blocking ones are exempt from the rules (the
+`CONCURRENTLY` forms, plain `VACUUM`). `VACUUM FULL`, `CLUSTER` and a
+non-concurrent `REINDEX SCHEMA/DATABASE` are judged like any statement: what they
+rewrote is measured, and their lock is the one postgres documents (ACCESS
+EXCLUSIVE for `VACUUM FULL`/`CLUSTER`; SHARE on the table and ACCESS EXCLUSIVE on
+each index for `REINDEX`), so they raise `table-rewrite` (and
+`access-exclusive-lock`) with a fix for the operation.
 
 A lock one statement takes is held through every later statement **of the same
 file** — the rules count it (`held_before: true` on the later statement). Each

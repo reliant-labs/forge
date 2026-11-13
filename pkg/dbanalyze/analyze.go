@@ -181,11 +181,18 @@ func (a *analysis) migration(ctx context.Context, f MigrationFile) (Migration, s
 // alone runs a file's one statement that cannot run in a transaction — CREATE
 // INDEX CONCURRENTLY, VACUUM — on its own, as postgres runs it when forge's
 // migrator sends the file. Its lock cannot be observed (the statement takes
-// and releases it within itself), so the one its kind is known to take is
-// reported; the relations it created or rewrote are measured. No rule judges
-// it: the concurrent statements are the fix the rules recommend. A statement
-// that would act on the server rather than the database (CREATE DATABASE,
-// ALTER SYSTEM, a subscription) is not run.
+// and releases it within itself, before the snapshot after it), but what it
+// rewrote is measured (relfilenode), and the lock is the one postgres
+// documents for the operation.
+//
+// Only the operations that neither rewrite a table nor block its writes are
+// exempt from the rules: the CONCURRENTLY forms (the fix the rules
+// recommend), DETACH PARTITION CONCURRENTLY, and plain VACUUM. Every other
+// one — VACUUM FULL, CLUSTER, a non-concurrent REINDEX SCHEMA/DATABASE — is
+// judged like any statement, with its documented lock on each relation it
+// was measured to rewrite (documentedLocks). A statement that would act on
+// the server rather than the database (CREATE DATABASE, ALTER SYSTEM, a
+// subscription) is not run.
 func (a *analysis) alone(ctx context.Context, f MigrationFile, st Statement, m *Migration) (string, error) {
 	label := st.NonTransactional()
 	res := StatementResult{Index: st.Index, Line: st.Line, SQL: st.SQL,
@@ -204,12 +211,50 @@ func (a *analysis) alone(ctx context.Context, f MigrationFile, st Statement, m *
 		return a.failed(m, f, st, res, meas.err, nil)
 	}
 	res.Executed = true
-	res.Reason = label + " cannot run inside a transaction: it ran on its own, as forge's migrator runs it, and its lock is known statically"
 	a.adoptRebuiltIndexes(&meas)
 	a.record(&res, meas)
-	res.Locks = append(res.Locks, st.staticLocks()...)
+	if st.nonBlocking() {
+		res.Reason = label + " cannot run inside a transaction: it ran on its own, as forge's migrator runs it. It neither rewrites a table nor blocks writes to one, and its lock is known statically"
+		res.Locks = append(res.Locks, st.staticLocks()...)
+		m.Statements = append(m.Statements, res)
+		return "", nil
+	}
+	locks := a.documentedLocks(st, meas)
+	keys := make([]lockKey, 0, len(locks))
+	for k := range locks {
+		keys = append(keys, k)
+	}
+	sortKeys(keys)
+	for _, k := range keys {
+		res.Locks = append(res.Locks, Lock{Relation: meas.rels[k.oid].name, Mode: k.mode, New: !a.pre[k.oid], Static: true})
+	}
+	res.Reason = label + " cannot run inside a transaction: it ran on its own, as forge's migrator runs it. Its locks are the ones postgres documents for it, on each relation it was measured to rewrite"
+	a.judge(f.File, st, meas, locks)
 	m.Statements = append(m.Statements, res)
 	return "", nil
+}
+
+// documentedLocks is the lock a standalone maintenance statement holds on
+// each relation it was measured to rewrite, from postgres's documentation of
+// the operation: a non-concurrent REINDEX holds SHARE on the table (it blocks
+// writes, not reads) and ACCESS EXCLUSIVE on each index it rebuilds; VACUUM
+// FULL and CLUSTER hold ACCESS EXCLUSIVE on the table they rewrite, indexes
+// and all. Any other operation that rewrites something is assumed to hold
+// ACCESS EXCLUSIVE on the table, the conservative reading.
+func (a *analysis) documentedLocks(st Statement, m measurement) map[lockKey]bool {
+	locks := map[lockKey]bool{}
+	for _, oid := range m.rewritten {
+		t := a.tableOf(m, oid)
+		if st.first() == "reindex" {
+			locks[lockKey{t, "ShareLock"}] = true
+			if oid != t {
+				locks[lockKey{oid, "AccessExclusiveLock"}] = true
+			}
+			continue
+		}
+		locks[lockKey{t, "AccessExclusiveLock"}] = true
+	}
+	return locks
 }
 
 // unsupportedFile refuses a file the analysis cannot apply the way forge's
@@ -420,13 +465,17 @@ func (a *analysis) judge(file string, st Statement, m measurement, fileLocks map
 			rewrittenTables[t] = nil
 		}
 	}
+	rewriteFix, aelFix := fixTableRewrite, fixAccessExclusive
+	if fix := maintenanceFix(st); fix != "" {
+		rewriteFix, aelFix = fix, fix
+	}
 	for _, t := range sortedOIDs(rewrittenTables) {
 		name := m.rels[t].name
 		msg := fmt.Sprintf("rewrote %s: every row is copied to new storage, and every index rebuilt, under ACCESS EXCLUSIVE", name)
 		if a.indexOnlyRewrite(m, t) {
 			msg = fmt.Sprintf("rebuilt index(es) %s of %s", strings.Join(rewrittenTables[t], ", "), name)
 		}
-		a.addSized(m, t, Finding{Rule: RuleTableRewrite, File: file, Line: st.Line, Relation: name, Message: msg, Fix: fixTableRewrite})
+		a.addSized(m, t, Finding{Rule: RuleTableRewrite, File: file, Line: st.Line, Relation: name, Message: msg, Fix: rewriteFix})
 	}
 
 	builtOn := map[uint32][]string{}
@@ -446,8 +495,8 @@ func (a *analysis) judge(file string, st Statement, m measurement, fileLocks map
 
 	for _, t := range a.preTables(m) {
 		name := m.rels[t].name
-		_, rewritten := rewrittenTables[t]
-		rewritten = rewritten && !a.indexOnlyRewrite(m, t)
+		_, touched := rewrittenTables[t]
+		rewritten := touched && !a.indexOnlyRewrite(m, t)
 		scanned := m.scanned[t][0] > 0
 		ael := rewritten || holds(t, func(mode string) bool { return mode == "AccessExclusiveLock" })
 		if ael && (scanned || rewritten) {
@@ -457,9 +506,11 @@ func (a *analysis) judge(file string, st Statement, m measurement, fileLocks map
 			}
 			a.addSized(m, t, Finding{Rule: RuleAccessExclusiveLock, File: file, Line: st.Line, Relation: name,
 				Message: fmt.Sprintf("held ACCESS EXCLUSIVE on %s, which blocks every read and write of it, while the statement %s it", name, what),
-				Fix:     fixAccessExclusive})
+				Fix:     aelFix})
 		}
-		if scanned && !rewritten && len(builtOn[t]) == 0 && holds(t, blocksWrites) {
+		// A scan that builds an index — a new one, or a rebuild of an
+		// existing one (REINDEX) — is the build's, judged above.
+		if scanned && !touched && len(builtOn[t]) == 0 && holds(t, blocksWrites) {
 			a.addSized(m, t, Finding{Rule: RuleValidationScan, File: file, Line: st.Line, Relation: name,
 				Message: fmt.Sprintf("scanned every row of %s under a lock that blocks writes to it (%s)", name, strongest(modes[t])),
 				Fix:     validationFix(st)})
@@ -511,6 +562,21 @@ func (a *analysis) addSized(m measurement, t uint32, f Finding) {
 func (a *analysis) add(f Finding) {
 	f.Severity = SeverityError
 	a.findings = append(a.findings, f)
+}
+
+// maintenanceFix is the fix for a maintenance statement's rewrite, which the
+// generic advice (change the column type differently) does not fit; "" for
+// any other statement.
+func maintenanceFix(st Statement) string {
+	switch st.first() {
+	case "vacuum":
+		return fixVacuumFull
+	case "cluster":
+		return fixCluster
+	case "reindex":
+		return fixReindex
+	}
+	return ""
 }
 
 func validationFix(st Statement) string {

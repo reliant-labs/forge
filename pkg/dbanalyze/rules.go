@@ -46,6 +46,14 @@ const (
 	fixIndexBuild = "build the index with CREATE INDEX CONCURRENTLY, as the only statement of its migration file " +
 		"(it cannot run inside a transaction); for a UNIQUE or PRIMARY KEY constraint, build the unique index " +
 		"concurrently first and then ADD CONSTRAINT … USING INDEX"
+	fixVacuumFull = "VACUUM FULL rewrites the table under ACCESS EXCLUSIVE, blocking every read and write of it " +
+		"until it finishes: a migration should run plain VACUUM, which makes space reusable without a rewrite; " +
+		"reclaim disk with an online tool (pg_repack) outside migrations"
+	fixCluster = "CLUSTER rewrites the table under ACCESS EXCLUSIVE, blocking every read and write of it until it " +
+		"finishes: leave it out of migrations, and reorder online (pg_repack --order-by) if the order matters"
+	fixReindex = "use REINDEX … CONCURRENTLY, alone in its migration file: a plain REINDEX holds SHARE on the " +
+		"table, blocking its writes, and ACCESS EXCLUSIVE on each index, blocking the reads that use it, for the " +
+		"whole rebuild"
 	fixStatementTimeout = "the statement did not finish within statement_timeout on this target: it would hold " +
 		"its locks at least that long in production. Batch the work, or split it so the long part runs " +
 		"without a blocking lock"

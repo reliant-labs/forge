@@ -143,10 +143,10 @@ func TestMeasuredBehaviour(t *testing.T) {
 			sql: "ALTER TABLE t ALTER COLUMN v TYPE varchar(20)", locksOnT: []string{"AccessExclusiveLock"}},
 		{name: "a constant default does not rewrite",
 			sql: "ALTER TABLE t ADD COLUMN c int NOT NULL DEFAULT 5", locksOnT: []string{"AccessExclusiveLock"}},
-		// transaction_timestamp() is what now() is called. Its value is
-		// never read: the case pins that a stable default is evaluated once
-		// and stored as the column's missing value, so nothing here depends
-		// on the clock.
+		// transaction_timestamp() is the function SQL's NOW names. Its value
+		// is never read: the case pins that a stable default is evaluated
+		// once and stored as the column's missing value, so nothing here
+		// depends on the clock.
 		{name: "a stable default (transaction_timestamp, i.e. now) does not rewrite",
 			sql: "ALTER TABLE t ADD COLUMN c timestamptz DEFAULT transaction_timestamp()", locksOnT: []string{"AccessExclusiveLock"}},
 		{name: "a volatile default rewrites",
@@ -300,6 +300,71 @@ func TestConcurrentIndexRunsOnItsOwn(t *testing.T) {
 	}
 	if len(r.findings) != 0 {
 		t.Errorf("findings = %+v, want none", r.findings)
+	}
+}
+
+// A maintenance statement that cannot run in a transaction is judged like
+// any other unless it really is non-blocking: VACUUM FULL, CLUSTER and a
+// non-concurrent REINDEX rewrite under locks that block writes (VACUUM FULL
+// and CLUSTER reads too), so they are findings; plain VACUUM and the
+// CONCURRENTLY forms are not. The last file of each case is the one judged.
+func TestMaintenanceStatementsAreJudged(t *testing.T) {
+	t.Parallel()
+	rewriteAndLock := []string{dbanalyze.RuleAccessExclusiveLock + ":t", dbanalyze.RuleTableRewrite + ":t"}
+	cases := []struct {
+		name     string
+		files    []string
+		findings []string
+		locksOnT []string // the documented (static) locks reported on t
+	}{
+		{name: "VACUUM FULL", files: []string{"VACUUM FULL t;"}, findings: rewriteAndLock, locksOnT: []string{"AccessExclusiveLock"}},
+		{name: "VACUUM (FULL)", files: []string{"VACUUM (FULL, ANALYZE) t;"}, findings: rewriteAndLock, locksOnT: []string{"AccessExclusiveLock"}},
+		{name: "VACUUM (FULL false)", files: []string{"VACUUM (FULL false) t;"}},
+		{name: "plain VACUUM", files: []string{"VACUUM t;"}},
+		{name: "VACUUM ANALYZE", files: []string{"VACUUM ANALYZE t;"}},
+		{name: "CLUSTER of every clustered table", files: []string{"ALTER TABLE t CLUSTER ON t_pkey;", "CLUSTER;"},
+			findings: rewriteAndLock, locksOnT: []string{"AccessExclusiveLock"}},
+		{name: "REINDEX SCHEMA", files: []string{"REINDEX SCHEMA public;"},
+			findings: []string{dbanalyze.RuleTableRewrite + ":t"}, locksOnT: []string{"ShareLock"}},
+		{name: "REINDEX TABLE in a transaction", files: []string{"REINDEX TABLE t;"},
+			findings: []string{dbanalyze.RuleTableRewrite + ":t"}},
+		{name: "REINDEX SCHEMA CONCURRENTLY", files: []string{"REINDEX SCHEMA CONCURRENTLY public;"}},
+		{name: "REINDEX TABLE CONCURRENTLY", files: []string{"REINDEX TABLE CONCURRENTLY t;"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{}, tc.files...)
+			last := len(tc.files) - 1
+			st := r.stmt(t, last, 0)
+			if !st.Executed {
+				t.Fatalf("not executed: %+v", st)
+			}
+			file := "m" + string(rune('a'+last)) + ".up.sql"
+			var onT []string
+			for _, f := range r.rules(file, 1) {
+				if strings.HasSuffix(f, ":t") {
+					onT = append(onT, f)
+				}
+			}
+			if !slices.Equal(onT, tc.findings) {
+				t.Errorf("findings on t = %v, want %v (all: %+v)", onT, tc.findings, r.findings)
+			}
+			var static []string
+			for _, l := range st.Locks {
+				if l.Relation == "t" && l.Static {
+					static = append(static, l.Mode)
+				}
+			}
+			if tc.locksOnT != nil && !slices.Equal(static, tc.locksOnT) {
+				t.Errorf("static locks on t = %v, want %v (%+v)", static, tc.locksOnT, st.Locks)
+			}
+			for _, f := range r.findings {
+				if f.Relation == "t" && f.Rule == dbanalyze.RuleTableRewrite && strings.Contains(f.Fix, "column") {
+					t.Errorf("a maintenance statement got the column-change fix: %q", f.Fix)
+				}
+			}
+		})
 	}
 }
 

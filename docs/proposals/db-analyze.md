@@ -42,14 +42,14 @@ database:
       kind: dsn
       # The NAME of the env var holding the DSN. A DSN is never written in forge.yaml.
       dsn_env: FORGE_ANALYZE_DATABASE_URL
-      statement_timeout: 60s   # per statement; a timeout is itself a finding
+      statement_timeout: 60s # per statement; a timeout is itself a finding
       lock_timeout: 5s
     # Size hints for a scratch target (it has no rows). Ignored when the target has
     # statistics of its own (a dsn target that has been ANALYZEd).
     table_rows:
       orders: 40000000
-    large_table_rows: 1000000  # at or above this a table is "large"
-    small_table_rows: 10000    # below this, scan/index findings are dropped
+    large_table_rows: 1000000 # at or above this a table is "large"
+    small_table_rows: 10000 # below this, scan/index findings are dropped
 ```
 
 Flags override per run: `--target scratch|dsn`, `--dsn-env NAME`, `--base REV`, `--json`.
@@ -91,8 +91,10 @@ never does, and hides the lock a later file needs again. So:
   statements one at a time (each measured), `COMMIT`. Locks never carry over between files.
   A file whose one statement cannot run in a transaction (`CREATE INDEX CONCURRENTLY`,
   `DROP INDEX CONCURRENTLY`, `VACUUM`) runs it on its own, on the copy, with its lock reported
-  statically (`executed: true`). A file that controls its own transaction (`BEGIN`/`COMMIT`)
-  is refused as unsupported, as is one that puts a non-transactional statement beside
+  statically (`executed: true`). Only the non-blocking ones (the `CONCURRENTLY` forms, plain
+  `VACUUM`) are exempt from the rules: `VACUUM FULL`, `CLUSTER` and a non-concurrent
+  `REINDEX SCHEMA/DATABASE` are judged with their measured rewrites and documented locks.
+  A file that controls its own transaction (`BEGIN`/`COMMIT`) is refused as unsupported, as is one that puts a non-transactional statement beside
   others (Postgres refuses it in the implicit transaction the migrator runs a file in).
 - A statement that changes what the whole server shares (roles, databases, tablespaces,
   `ALTER SYSTEM`, subscriptions) is not run: a copy of the database does not isolate it.
@@ -121,13 +123,13 @@ An empty set is a verdict, not a silent pass: the document says scanned 0, and w
 
 Per executed statement, inside its file's transaction:
 
-| Measured | How |
-|---|---|
-| locks taken | diff of `pg_locks WHERE pid = pg_backend_pid()` before/after, mapped to relation names and modes |
-| table/index rewrite | `pg_class.relfilenode` of every user relation before/after |
-| scans | `pg_stat_xact_user_tables` (`seq_scan`, `seq_tup_read`) delta |
-| duration | wall time (meaningful on a dsn target with data) |
-| size | `reltuples` on a target with statistics, else `table_rows`, else unknown |
+| Measured            | How                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------ |
+| locks taken         | diff of `pg_locks WHERE pid = pg_backend_pid()` before/after, mapped to relation names and modes |
+| table/index rewrite | `pg_class.relfilenode` of every user relation before/after                                       |
+| scans               | `pg_stat_xact_user_tables` (`seq_scan`, `seq_tup_read`) delta                                    |
+| duration            | wall time (meaningful on a dsn target with data)                                                 |
+| size                | `reltuples` on a target with statistics, else `table_rows`, else unknown                         |
 
 A relation created earlier in the same migration run is "new" and exempt: locking or
 rewriting an empty table nobody reads yet is free.
@@ -199,23 +201,51 @@ show the plan regressions pre-merge analysis cannot.
 ```json
 {
   "schema": "forge.db-analyze/v1",
-  "target": {"kind": "scratch", "identity": "localhost:5432/forge_analyze_x", "server_version": "18.1", "has_statistics": false},
+  "target": {
+    "kind": "scratch",
+    "identity": "localhost:5432/forge_analyze_x",
+    "server_version": "18.1",
+    "has_statistics": false
+  },
   "base": "origin/main@abc123",
-  "migrations": [{
-    "file": "db/migrations/20261101_add_status.up.sql", "version": 20261101, "analyzed": true,
-    "statements": [{
-      "index": 0, "line": 3, "sql": "ALTER TABLE orders ALTER COLUMN status TYPE text",
-      "executed": true, "duration_ms": 12,
-      "locks": [{"relation": "orders", "mode": "AccessExclusiveLock"}],
-      "rewrites": [{"relation": "orders", "kind": "table"}],
-      "scans": [{"relation": "orders", "seq_scan": 1, "seq_tup_read": 0}],
-      "rows": {"orders": {"value": 40000000, "source": "table_rows"}}
-    }]
-  }],
+  "migrations": [
+    {
+      "file": "db/migrations/20261101_add_status.up.sql",
+      "version": 20261101,
+      "analyzed": true,
+      "statements": [
+        {
+          "index": 0,
+          "line": 3,
+          "sql": "ALTER TABLE orders ALTER COLUMN status TYPE text",
+          "executed": true,
+          "duration_ms": 12,
+          "locks": [{ "relation": "orders", "mode": "AccessExclusiveLock" }],
+          "rewrites": [{ "relation": "orders", "kind": "table" }],
+          "scans": [{ "relation": "orders", "seq_scan": 1, "seq_tup_read": 0 }],
+          "rows": { "orders": { "value": 40000000, "source": "table_rows" } }
+        }
+      ]
+    }
+  ],
   "queries": [],
-  "findings": [{"rule": "db-analyze-table-rewrite", "severity": "warning", "file": "…", "line": 3,
-                "relation": "orders", "message": "…", "fix": "…"}],
-  "summary": {"migrations_scanned": 1, "statements_executed": 1, "queries_scanned": 0, "skipped": []},
+  "findings": [
+    {
+      "rule": "db-analyze-table-rewrite",
+      "severity": "warning",
+      "file": "…",
+      "line": 3,
+      "relation": "orders",
+      "message": "…",
+      "fix": "…"
+    }
+  ],
+  "summary": {
+    "migrations_scanned": 1,
+    "statements_executed": 1,
+    "queries_scanned": 0,
+    "skipped": []
+  },
   "exit_code": 0
 }
 ```

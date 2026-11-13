@@ -1,5 +1,7 @@
 package dbanalyze
 
+import "github.com/reliant-labs/forge/pkg/querycapture"
+
 // SchemaVersion names the document's shape. A consumer checks it before
 // reading anything else; fields are only ever added under it.
 const SchemaVersion = "forge.db-analyze/v1"
@@ -26,8 +28,11 @@ const (
 type Document struct {
 	Schema string     `json:"schema"`
 	Target TargetInfo `json:"target"`
-	// Base is the revision the migrations were split at, as "<ref>@<sha>"
-	// ("" for a dsn target, whose own schema_migrations decides).
+	// Base is the revision changes were measured from, as "<ref>@<sha>":
+	// where a scratch target's migrations were split, and the query shapes
+	// selected. "" when nothing was selected by it (a dsn target's
+	// migrations are decided by its own schema_migrations; --all selects
+	// every shape).
 	Base       string      `json:"base,omitempty"`
 	Migrations []Migration `json:"migrations"`
 	// Queries is the query-plan pass's output. It is always present, empty
@@ -171,10 +176,104 @@ const (
 	RowsUnknown       = "unknown"
 )
 
-// Query is one analyzed query shape. The query-plan pass (Phase 3 of
-// docs/proposals/db-analyze.md) defines its fields; the migration pass
-// leaves the array empty.
-type Query struct{}
+// Query is one captured query shape (forge/pkg/querycapture) and what the
+// planner makes of it on the head schema. The migration pass leaves the
+// array empty.
+type Query struct {
+	Fingerprint string `json:"fingerprint"`
+	// SQL is the shape's statement: $n placeholders, inline literals kept.
+	SQL       string   `json:"sql"`
+	Operation string   `json:"operation,omitempty"`
+	Tables    []string `json:"tables"`
+	// Callers are the call sites that ran the shape; the first is the one
+	// findings name (a caller in a changed file, when one is).
+	Callers []querycapture.CallSite `json:"callers"`
+	// Plan is the generic plan as postgres would run it, trimmed.
+	Plan *PlanNode `json:"plan,omitempty"`
+	// PlanNoSeqScan is the generic plan with enable_seqscan off: which
+	// indexes can serve the statement at all.
+	PlanNoSeqScan *PlanNode `json:"plan_no_seqscan,omitempty"`
+	// Access is, per table the statement reads, whether an index serves it.
+	Access []TableAccess `json:"access"`
+	// Error is why the shape could not be planned (a table only a test
+	// created, a parameter whose type postgres cannot infer); the shape is
+	// listed in the summary's skipped.
+	Error    string `json:"error,omitempty"`
+	SQLState string `json:"sqlstate,omitempty"`
+}
+
+// TableAccess is how the no-seqscan plan reads one table.
+type TableAccess struct {
+	// Table is the table, "schema.table" outside public; a partition is
+	// named by its partitioned root.
+	Table string `json:"table"`
+	// Verdict is AccessServed, AccessUnserved or AccessUnfiltered.
+	Verdict string `json:"verdict"`
+	// How says why: for served, ServedByIndexCond, ServedByPartialIndex,
+	// ServedByOrder, ServedByJoinKey or ServedByTID; for unserved,
+	// UnservedFilter, UnservedOrder or UnservedJoin.
+	How string `json:"how,omitempty"`
+	// Index is the index that serves it, or the one walked in full.
+	Index string `json:"index,omitempty"`
+	// Scan is the scan node's type in the no-seqscan plan.
+	Scan string `json:"scan"`
+	// Detail is the predicate, sort key or join columns the verdict is
+	// about.
+	Detail string `json:"detail,omitempty"`
+	// SeqScan reports whether the normal plan reads it with a Seq Scan.
+	SeqScan bool      `json:"seq_scan"`
+	Rows    *RowCount `json:"rows,omitempty"`
+}
+
+// TableAccess verdicts.
+const (
+	// AccessServed: an index serves the filter, join or order on the table.
+	AccessServed = "served"
+	// AccessUnserved: the table is filtered, joined in a restricted
+	// statement, or ordered under a LIMIT, and no index serves it.
+	AccessUnserved = "unserved"
+	// AccessUnfiltered: the statement reads the table in full and nothing
+	// an index could serve constrains it (an unfiltered list, a count).
+	AccessUnfiltered = "unfiltered"
+)
+
+// TableAccess.How values.
+const (
+	ServedByIndexCond    = "index_cond"    // the scan has an Index Cond
+	ServedByPartialIndex = "partial_index" // a partial index whose predicate implies the filter
+	ServedByOrder        = "order"         // an index scan delivers the ORDER BY … LIMIT order
+	ServedByJoinKey      = "join_key"      // an index leads with the column the table is joined on
+	ServedByTID          = "tid"           // a ctid lookup
+	UnservedFilter       = "filter"        // a predicate evaluated on every row
+	UnservedOrder        = "order"         // every row sorted to return the first few
+	UnservedJoin         = "join"          // read in full to be joined, with no index on the join key
+)
+
+// PlanNode is one node of an EXPLAIN plan, trimmed to what a review reads.
+type PlanNode struct {
+	NodeType string `json:"node_type"`
+	// Operation is a ModifyTable node's (Insert, Update, Delete, Merge).
+	Operation string `json:"operation,omitempty"`
+	// Relation is the scanned relation, "schema.rel" outside public.
+	Relation    string   `json:"relation,omitempty"`
+	Alias       string   `json:"alias,omitempty"`
+	Index       string   `json:"index,omitempty"`
+	IndexCond   string   `json:"index_cond,omitempty"`
+	RecheckCond string   `json:"recheck_cond,omitempty"`
+	Filter      string   `json:"filter,omitempty"`
+	HashCond    string   `json:"hash_cond,omitempty"`
+	MergeCond   string   `json:"merge_cond,omitempty"`
+	JoinFilter  string   `json:"join_filter,omitempty"`
+	SortKey     []string `json:"sort_key,omitempty"`
+	// Disabled marks a node the planner was told not to use (postgres 18
+	// reports it; a Seq Scan in the no-seqscan plan is one on any version).
+	Disabled bool `json:"disabled,omitempty"`
+	// Subplan names an InitPlan or SubPlan.
+	Subplan string     `json:"subplan,omitempty"`
+	Rows    float64    `json:"rows"`
+	Cost    float64    `json:"cost"`
+	Plans   []PlanNode `json:"plans,omitempty"`
+}
 
 // Finding is one rule's verdict on one relation.
 type Finding struct {
@@ -190,6 +289,12 @@ type Finding struct {
 	// Note explains a severity the caller adjusted (a rule's warn-first
 	// rollout, a project's lint.rules).
 	Note string `json:"note,omitempty"`
+	// Query is the fingerprint of the query shape a query-pass finding is
+	// about; File and Line are then its first caller's (module-relative).
+	Query string `json:"query,omitempty"`
+	// Callers are the shape's call sites, with their generated frames and
+	// the tests that ran them.
+	Callers []querycapture.CallSite `json:"callers,omitempty"`
 }
 
 // Summary counts what was examined, so an empty analysis is never read as a
@@ -197,10 +302,16 @@ type Finding struct {
 type Summary struct {
 	MigrationsScanned  int `json:"migrations_scanned"`
 	StatementsExecuted int `json:"statements_executed"`
-	QueriesScanned     int `json:"queries_scanned"`
-	// Reason says why nothing was scanned, when nothing was.
-	Reason  string    `json:"reason,omitempty"`
-	Skipped []Skipped `json:"skipped"`
+	// QueriesCaptured is how many query shapes the capture held, before
+	// selection; QueriesScanned how many were planned.
+	QueriesCaptured int `json:"queries_captured"`
+	QueriesScanned  int `json:"queries_scanned"`
+	// Reason says why no migration was scanned, when none was.
+	Reason string `json:"reason,omitempty"`
+	// QueriesReason says why no query was scanned, when a query pass was
+	// asked for and none was.
+	QueriesReason string    `json:"queries_reason,omitempty"`
+	Skipped       []Skipped `json:"skipped"`
 }
 
 // Skipped is something the analysis did not examine, and why.
@@ -224,7 +335,12 @@ func (d *Document) Finalize() {
 			}
 		}
 	}
-	d.Summary.QueriesScanned = len(d.Queries)
+	d.Summary.QueriesScanned = 0
+	for _, q := range d.Queries {
+		if q.Error == "" {
+			d.Summary.QueriesScanned++
+		}
+	}
 	if d.Error != "" {
 		d.ExitCode = ExitCouldNotAnalyze
 		return

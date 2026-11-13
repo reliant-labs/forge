@@ -166,7 +166,7 @@ Queries no test runs are invisible. That is the intended incentive.
 changed since base (`--all` for every one), applies the head schema on the migration pass's
 copy of the target (a scratch database, or the dsn target's `forge_analyze_*` clone, which
 stays open until the query pass is done), and explains each with `EXPLAIN (GENERIC_PLAN, FORMAT JSON)`
-(Postgres 16+; older is exit 2) twice: as is, and with `SET LOCAL enable_seqscan = off`.
+(Postgres 16+; older is exit 2) twice: as is, and with `enable_seqscan = off`.
 
 - `db-analyze-query-no-usable-index`: under `enable_seqscan = off` a table under a filter,
   join or `ORDER BY … LIMIT` is not served by an index. Served means its scan node has an
@@ -183,6 +183,48 @@ A scratch target does not borrow row counts. Restoring statistics
 the planner keeps the restored rows-per-page ratio but multiplies it by the real block
 count, zero, so every table plans as one row (`db-analyze-stats-spike.md`, measured on
 18.3). Real plans at size need a dsn target with data.
+
+### As implemented
+
+Where the implementation (`pkg/dbanalyze/plan.go`, `queries.go`;
+`internal/cli/db_analyze_queries.go`) refines the above, measured on 18.x plans
+(`pkg/dbanalyze/queries_test.go` pins each case):
+
+- **A disabled Seq Scan alone is not a verdict.** An unfiltered `count(*)` or an
+  unfiltered join seq-scans with nothing an index could serve. A full read (no `Index
+Cond`, no partial index, no order reaching a `LIMIT`) is unserved only when it carries
+  a `Filter`, sits under a `Sort` under a `Limit`, or is **joined in a statement that
+  restricts something** with no index leading with its join column. The last is the
+  unindexed foreign key: with seq scans off the planner keeps a hash join and reads the
+  joined table in full (no `Disabled` node on the side it walks by an index), so the join
+  columns are read from the plan's conditions and checked against the catalog
+  (`join_key`). Anything else is `unfiltered`, not a finding.
+- **A partial index shows no `Index Cond`** (its predicate implies the filter, so the
+  planner drops it): partial-index use is read from `pg_index.indpred`.
+- **An index scan whose order reaches the `LIMIT`** (no `Sort` between) is served even
+  with a `Filter`: it stops after the first rows. The unrelated-index trap is an index
+  walked in full with a `Filter` and nothing to stop it.
+- `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON)`: VERBOSE qualifies every column with its
+  alias, which is how a condition is told to be a filter or a join. It is sent over the
+  simple query protocol: the extended protocol makes the driver demand a value per `$n`.
+- The document's per-table verdict is `queries[].access[]` (`verdict`
+  served/unserved/unfiltered, `how`, `index`, `detail`, `seq_scan`, `rows`); the summary
+  adds `queries_captured` and `queries_reason`.
+- **Where it plans: the disposable database, never the target.** `forge db analyze
+--capture DIR` runs the migration pass and then the query pass on the same scratch
+  database or `forge_analyze_*` copy, after the migration pass has committed every file
+  (concurrent index builds included, run for real). `forge db analyze queries` alone
+  brings that database to head itself: a scratch database is migrated with every
+  migration by forge's migrator; a dsn target's copy gets its pending migrations through
+  the migration pass's own code (`AnalyzeMigrations`, each file committed), with the
+  measurements discarded. A dsn target with nothing pending is still copied: EXPLAIN never
+  runs on the target. The copy is dropped on every path out (a deferred `Clone.Close` on
+  its own deadline). `enable_seqscan` is a session `SET` reset after each probe, not a
+  `SET LOCAL`: no transaction is open between files. Without `--capture`, Phase 1 is
+  unchanged; `--capture` on `queries` defaults to `$FORGE_QUERY_CAPTURE_DIR`.
+- Not seen: the scans of a foreign key's referential triggers (a `DELETE` of a parent
+  whose child's foreign key is unindexed) — `EXPLAIN` without `ANALYZE` does not plan
+  them.
 
 ## Phase 4: review integration (control-plane)
 
@@ -243,6 +285,7 @@ show the plan regressions pre-merge analysis cannot.
   "summary": {
     "migrations_scanned": 1,
     "statements_executed": 1,
+    "queries_captured": 0,
     "queries_scanned": 0,
     "skipped": []
   },

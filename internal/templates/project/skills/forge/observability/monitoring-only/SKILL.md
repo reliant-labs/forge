@@ -21,7 +21,7 @@ forge obs status prod                    # after the app has sent anything
 forge obs receivers create oncall --type slack --secret "$SLACK_WEBHOOK_URL"
 ```
 
-`forge obs init` works in a repo with no forge files: it offers to write a minimal `forge.yaml` (`name:`, `envs:`, `monitoring: true`; `--write-config` writes it without asking), or takes `--project <name> --no-write` and touches nothing. In a Go repo it also writes `module_path:` from `go.mod`. It refuses an env that `deploy/kcl/<env>/` already declares (`forge env deploy` wires that env's telemetry). `--json` prints a `forge.obs.init/v1` document. The ingest token is printed **once**: store the header in the deploy system's secret store, never in the repo. `forge obs tokens list|create|rotate|revoke` manages the rest of its life: a token per CI system or cluster, `rotate --grace 24h` before expiry (the old one keeps working through the grace), `revoke` for a leaked one (the collector drops it within minutes). Minting, rotating and revoking need the `obs:write` permission (owners and admins hold it).
+`forge obs init` works in a repo with no forge files. With an env document (`deploy/envs/<env>.yaml`, below; the recommended form) it reads the project and the control plane from it and writes nothing. Without one it offers to write a minimal `forge.yaml` (`name:`, `envs:`, `monitoring: true`, the legacy shorthand; `--write-config` writes it without asking), or takes `--project <name> --no-write` and touches nothing. In a Go repo it also writes `module_path:` from `go.mod`. It refuses an env that `deploy/kcl/<env>/` already declares (`forge env deploy` wires that env's telemetry). `--json` prints a `forge.obs.init/v1` document. The ingest token is printed **once**: store the header in the deploy system's secret store, never in the repo. `forge obs tokens list|create|rotate|revoke` manages the rest of its life: a token per CI system or cluster, `rotate --grace 24h` before expiry (the old one keeps working through the grace), `revoke` for a leaked one (the collector drops it within minutes). Minting, rotating and revoking need the `obs:write` permission (owners and admins hold it).
 
 ## The variables (identical in every language)
 
@@ -64,4 +64,16 @@ Every SDK above reads the variables; nothing forge-specific goes in the code. Th
 
 ## Where it is declared
 
-`forge.yaml` holds the switch and the env names (`envs:`, `monitoring:`), and the `forge obs` verbs read them through the same model a KCL env lowers into. An env that later moves to `deploy/kcl/<env>/main.k` is KCL's: remove it from `envs:` (declaring the same env's monitoring in both is a load error naming both). `--project` and `--control-plane` on any `forge obs` verb stand in for forge.yaml in a repo with none.
+**Recommended: an env document**, `deploy/envs/<env>.yaml`. It is the same document a KCL env renders to, written by hand and validated against the env schema (`forge project schema env`, apiVersion `forge.dev/env/v1`). The minimal monitoring-only one is five lines:
+
+```yaml
+apiVersion: forge.dev/env/v1
+project: shop
+env: prod
+control_plane: {}                                   # Reliant's control plane (endpoint and token env take their defaults)
+observability: {destination: {token_from_control_plane: true}}
+```
+
+It needs no forge.yaml: the `forge obs` verbs take the project from it. `forge obs init prod` then registers the env and mints its token and writes nothing (the document already declares the env). The document grows with the adoption: add `workloads: [{name: api, runtime: {type: external}}]` to record deploys from CI (`deploy/record`). A schema error names the path and the field (`observability.destinaton: unknown field (did you mean "destination"?)`).
+
+**Legacy shorthand: forge.yaml `envs:` + `monitoring:`.** It keeps working and lowers into the same model, and it is what `forge obs init` writes when no env document declares the env; new projects should prefer the document. An env is declared in exactly one place: a document, `deploy/kcl/<env>/main.k`, or forge.yaml `envs:`. Any two for one env is a load error naming both; an env that moves to a document or to KCL leaves `envs:`. `--project` and `--control-plane` on any `forge obs` verb stand in for forge.yaml in a repo with none.

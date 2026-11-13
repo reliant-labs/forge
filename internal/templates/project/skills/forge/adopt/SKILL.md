@@ -16,6 +16,12 @@ and every step can be the last.
 Already adopted (a `forge.yaml` and `deploy/kcl` declaring the app's
 Dockerfile)? Your path is `adopt/deploy`, the tiers after Tier 1.
 
+An env needs no KCL: `deploy/envs/<env>.yaml` is an **env document**, the
+same declaration in plain YAML, validated against `forge project schema env`;
+a monitoring-only env is five lines (`observability/monitoring-only`, and
+`deploy`, "Declare an env without KCL"). forge.yaml keeps tooling config; never
+list resources there.
+
 This skill has two jobs: to let you tell the user, truthfully and briefly, what
 forge would do for this repo and what it costs; and to send you to the
 sub-skill that does the work. Survey before you quote a number.

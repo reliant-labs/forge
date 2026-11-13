@@ -51,6 +51,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/openbao"
@@ -1513,7 +1514,10 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 	}
 	var out []byte
 	var err error
-	if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
+	if doc, ok, derr := envdoc.Load(workDir, env, envdoc.Options{Release: kclrender.Release(ctx)}); ok || derr != nil {
+		// An env document declares this env: it IS the render (internal/envdoc).
+		out, err = doc, derr
+	} else if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
 		out, err = run(ctx, workDir, mainK, env, dArgs)
 	} else {
 		out, err = kclrender.Run(workDir, mainK, dArgs)

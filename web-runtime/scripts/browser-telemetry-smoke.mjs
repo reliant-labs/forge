@@ -617,7 +617,7 @@ window.tier = analyticsTier();
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`${origin}/?utm_source=news&gclid=SECRET-CLICK-ID${mode ? `&mode=${mode}` : ""}`);
+    await page.goto(`${origin}/?utm_source=news&gclid=SECRET-CLICK-ID${mode ? `&mode=${mode}` : ""}#access_token=SECRET-FRAGMENT`);
     await page.waitForFunction((want) => window.ready === true && window.tier === want, tier, { timeout: 5000 });
     await page.evaluate(async () => {
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
@@ -651,13 +651,22 @@ window.tier = analyticsTier();
       .map((r) => r.resource?.attributes?.find((a) => a.key === "rum.sessionId")?.value?.stringValue)
       .filter(Boolean));
     assert.equal(sessions.size, 1, `one in-memory session: ${[...sessions]}`);
-    // The product events never carry the click id. (The SDK's own
-    // location.href span attribute is the page URL, query included; the
-    // ingest side scrubs it, see "Network URLs" in telemetry.ts.)
-    const productAttrs = actions
-      .filter((a) => ["page_viewed", "checkout_started", "flag_evaluated", "auth_signed_in"].includes(a.name))
-      .map((a) => Object.fromEntries(Object.entries(a.attrs).filter(([k]) => k !== "location.href")));
-    assert.equal(JSON.stringify(productAttrs).includes("SECRET-CLICK-ID"), false, "the click id is never a product-event prop");
+    // No URL leaves the browser with its query or fragment: the SDK's own
+    // location.href (every span) and documentLoad's http.url included (see
+    // "No URL leaves the browser" in telemetry.ts). So neither secret is
+    // anywhere in what was exported.
+    const wire = JSON.stringify(traces);
+    assert.equal(wire.includes("SECRET-CLICK-ID"), false, "the click id never leaves the browser");
+    assert.equal(wire.includes("SECRET-FRAGMENT"), false, "the fragment never leaves the browser");
+    // The page is `/` until the pushState, `/orders/17` after it.
+    const clean = [`${origin}/`, `${origin}/orders/17`];
+    const hrefs = actions.map((a) => a.attrs["location.href"]).filter(Boolean);
+    assert.ok(hrefs.length > 0, "spans carry location.href");
+    for (const href of hrefs) {
+      assert.ok(clean.includes(href), `location.href without query or fragment: ${href}`);
+    }
+    const documentLoad = actions.find((a) => a.name === "documentLoad");
+    assert.ok(clean.includes(documentLoad?.attrs["http.url"]), `documentLoad's http.url has no query: ${documentLoad?.attrs["http.url"]}`);
     // identified carries the signed-in subject; aggregate never does.
     const users = new Set(actions.map((a) => a.attrs.userId).filter(Boolean));
     assert.deepEqual([...users], tier === "identified" ? ["u-1"] : []);

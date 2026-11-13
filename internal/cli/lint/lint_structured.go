@@ -180,14 +180,30 @@ func (s *lintScope) contains(file string) bool {
 }
 
 // filter keeps the findings a scoped run reports: those under the scope,
-// plus those with no file at all (unattributable, so never hidden).
+// plus those with no file at all (unattributable, so never hidden) — except
+// a raw line that belongs to an anchored finding (its source excerpt, caret
+// or run summary: lintJSONFinding.under), which goes where its anchor goes.
+//
+// Without that exception an out-of-scope golangci-lint issue was dropped
+// while the lines printed beneath it were kept: a scoped `forge lint --quiet`
+// showed a source line, a caret and "* goimports: 1" with no file:line, and
+// the lane gated on those path-less lines for an issue outside the scope.
 func (s *lintScope) filter(fs []lintJSONFinding) []lintJSONFinding {
 	if s == nil {
 		return fs
 	}
 	out := make([]lintJSONFinding, 0, len(fs))
 	for _, f := range fs {
-		if f.File == "" || s.contains(f.File) {
+		switch {
+		case f.File != "":
+			if s.contains(f.File) {
+				out = append(out, f)
+			}
+		case f.under != "":
+			if s.contains(f.under) {
+				out = append(out, f)
+			}
+		default:
 			out = append(out, f)
 		}
 	}

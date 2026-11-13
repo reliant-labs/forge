@@ -132,6 +132,7 @@ func newEnvRenderCmd() *cobra.Command {
 		failOnWrite  bool
 		noWriteCheck bool
 		noCharts     bool
+		options      []string
 	)
 
 	cmd := &cobra.Command{
@@ -169,6 +170,13 @@ promise otherwise, ` + Name() + ` watches the tree and reports on stderr every f
 changed while rendering; --fail-on-write turns that report into a non-zero
 exit for callers that need the guarantee.
 
+-D name=value binds a render option the env's KCL declares (` + "`option(\"<name>\")`" + `), with
+the same parsing and declared-name check as ` + Name() + ` env up and ` + Name() + ` env build,
+so the render previews the env under that option: the workloads, host
+commands and manifests it declares. ` + Name() + ` env options <env> lists them. A deploy
+takes no -D (it renders from the repo alone), so a render with -D is a preview
+of the option, not of what ` + Name() + ` env deploy applies.
+
 Exits non-zero with the KCL error when the environment does not render, so it
 is usable as a CI gate.
 
@@ -180,7 +188,8 @@ Examples:
   ` + Name() + ` env render prod --kind Deployment,Job       # only those kinds
   ` + Name() + ` env render prod --target workspace-proxy    # only that app's objects
   ` + Name() + ` env render prod | kubectl diff -f -         # diff the render against a live cluster
-  ` + Name() + ` env render dev --fail-on-write >/dev/null   # assert the render touched nothing`,
+  ` + Name() + ` env render dev --fail-on-write >/dev/null   # assert the render touched nothing
+  ` + Name() + ` env render dev -D platform=amd64             # the env under a declared option`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEnvRender(cmd, args[0], envRenderOptions{
 				noCharts:     noCharts,
@@ -195,6 +204,7 @@ Examples:
 				noDigest:     noDigest,
 				failOnWrite:  failOnWrite,
 				noWriteCheck: noWriteCheck,
+				options:      options,
 			})
 		},
 	}
@@ -211,6 +221,7 @@ Examples:
 	cmd.Flags().BoolVar(&failOnWrite, "fail-on-write", false, "Exit non-zero if any file in the project changed while rendering (the render is not guaranteed side-effect-free — see the command description)")
 	cmd.Flags().BoolVar(&noWriteCheck, "no-write-check", false, "Skip the before/after scan that detects files the render wrote")
 	cmd.Flags().BoolVar(&noCharts, "no-charts", false, "Skip templating declared forge.HelmChart platform deps (no helm, no network); the summary names what was left out")
+	cmd.Flags().StringArrayVarP(&options, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }
@@ -230,6 +241,10 @@ type envRenderOptions struct {
 	failOnWrite  bool
 	noWriteCheck bool
 	noCharts     bool
+	// options are the raw `-D name=value` values (see up_options.go). They
+	// bind EVERY render this command makes — the declaration and the
+	// manifest stream — so the preview cannot disagree with itself.
+	options []string
 }
 
 // runEnvRender prints the render with a hard guarantee: STDOUT CARRIES ONLY
@@ -283,6 +298,44 @@ func declarationFor(ctx context.Context, projectDir, envName string, probed *KCL
 	return entities, nil
 }
 
+// envRenderMainK is env's deploy/kcl/<env>/main.k (under kclDir when the
+// project moved it), or an error naming the declared environments when the
+// env has none.
+func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
+	if kclDir == "" {
+		kclDir = "deploy/kcl"
+	}
+	mainK := filepath.Join(kclDir, envName, "main.k")
+	if _, serr := os.Stat(mainK); serr != nil {
+		envs, _ := ListEnvs(projectDir)
+		return "", fmt.Errorf("environment %q not found: %s does not exist (declared environments: %s)",
+			envName, mainK, strings.Join(envs, ", "))
+	}
+	return mainK, nil
+}
+
+// bindEnvRenderOptions binds the -D options before the first render, exactly
+// as `forge env up` does (parse first for its reserved-name message, then the
+// declared-name check). The declaration renders read them through
+// activeRenderOptionDArgs; the manifest render takes the returned bindings.
+// restore puts back the options that were active before; it is a no-op when
+// no -D was given.
+func bindEnvRenderOptions(projectDir, envName string, values []string) (dArgs []string, restore func(), err error) {
+	dArgs, err = parseRenderOptions(values)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateRenderOptions(projectDir, envName, values); err != nil {
+		return nil, nil, err
+	}
+	if dArgs == nil {
+		return nil, func() {}, nil
+	}
+	prev := activeRenderOptionDArgs()
+	setRenderOptions(dArgs)
+	return dArgs, func() { setRenderOptions(prev) }, nil
+}
+
 // renderEnvTo is the render itself. out receives the manifest stream (or the
 // --list table) and nothing else; see runEnvRender.
 func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRenderOptions) error {
@@ -295,15 +348,9 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	}
 	projectDir := projectDirForKCL()
 
-	kclDir := store.K8s().KCLDir
-	if kclDir == "" {
-		kclDir = "deploy/kcl"
-	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
-	if _, serr := os.Stat(mainK); serr != nil {
-		envs, _ := ListEnvs(projectDir)
-		return fmt.Errorf("environment %q not found: %s does not exist (declared environments: %s)",
-			envName, mainK, strings.Join(envs, ", "))
+	mainK, err := envRenderMainK(store.K8s().KCLDir, projectDir, envName)
+	if err != nil {
+		return err
 	}
 
 	// Arm the SAME render context `forge env deploy` arms before its first
@@ -323,6 +370,12 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// Pinned and scanned BEFORE activation, because deciding the purpose is
 	// itself a render (envRunsOnThisMachine), and any file.write it fires
 	// belongs in the write report as much as the main render's does.
+	optionDArgs, restoreOptions, err := bindEnvRenderOptions(projectDir, envName, opts.options)
+	if err != nil {
+		return err
+	}
+	defer restoreOptions()
+
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 
 	scan := newRenderWriteScan(projectDir, opts.noWriteCheck)
@@ -407,7 +460,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// pod that no deploy would make.
 	ctx = kclrender.WithRelease(ctx, boundRelease)
 
-	manifests, appliedOverrides, rerr := cluster.RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, envName, loadDeployEnvConfigKV(projectDir, envName), digests)
+	manifests, appliedOverrides, rerr := cluster.RenderManifestsWithOverrides(ctx, mainK, imageTag, namespace, envName, withRenderOptionKV(loadDeployEnvConfigKV(projectDir, envName), optionDArgs), digests)
 	if rerr != nil {
 		return fmt.Errorf("render %s: %w", mainK, rerr)
 	}
@@ -1242,8 +1295,10 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 			fmt.Fprintf(w, "  %s: %v\n", h.Name, err)
 			continue
 		}
+		// The project root is every host process's default directory, so
+		// only a declared working_dir elsewhere is worth naming.
 		dir := ""
-		if cmd.Dir != "" {
+		if cmd.Dir != "" && cmd.Dir != projectDirForKCL() {
 			dir = "  (in " + cmd.Dir + ")"
 		}
 		fmt.Fprintf(w, "  %s (%s): %s%s\n", h.Name, h.Kind, strings.Join(cmd.Args, " "), dir)

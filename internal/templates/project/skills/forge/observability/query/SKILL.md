@@ -18,7 +18,7 @@ After a change, four questions decide what to do next:
 
 ```bash
 forge env deploy prod
-forge obs check prod --wait --json          # 0 PASS · 1 FAIL · 2 cannot tell · 8 wait timed out
+forge obs check prod --wait --json          # 0 PASS · 1 FAIL · 2 cannot tell (incl. low traffic) · 8 wait timed out
 # on FAIL, the document's findings[] and suggested[] name the next commands:
 forge obs issue ISS-7f3a prod --json        # culprit, latest event, trace id, suspect commits, the release live
 forge obs trace 0af7651916cd43dd8448eb211c80319c prod
@@ -110,6 +110,8 @@ release_health = forge.ReleaseHealth {
 | 1 | FAIL: a `fail_on` finding fired |
 | 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
 | 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
+
+**Low traffic is exit 2, not 8.** 8 means `--wait` ran out with the after window still open: check again later. `low_traffic` and `thin_baseline` mean the window CLOSED with too few requests: final for that promotion, so report "not proven good" and do not loop on it (`observability/release-health`, Low traffic).
 
 An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
 

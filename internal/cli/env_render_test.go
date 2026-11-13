@@ -641,6 +641,8 @@ func TestEnvRenderCommandSurface(t *testing.T) {
 		"no-charts",
 		"no-digest",
 		"no-write-check",
+		// -D name=value: the env's declared options, as env up/build take them.
+		"option",
 		"tag",
 		"target",
 	})

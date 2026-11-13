@@ -158,7 +158,9 @@ func TestExternalLinesToFindings(t *testing.T) {
 			severity: lintSevError,
 			want: []lintJSONFinding{
 				{File: "main.go", Line: 1, Col: 1, Severity: lintSevError, Rule: "golangci-lint", Message: "missing package comment"},
-				{Severity: lintSevError, Rule: "external", Message: "some banner"},
+				// A raw line after an anchored finding records it (under), so
+				// a scoped run keeps or drops the two together.
+				{Severity: lintSevError, Rule: "external", Message: "some banner", under: "main.go"},
 			},
 		},
 	}

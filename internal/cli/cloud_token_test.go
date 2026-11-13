@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -84,6 +85,113 @@ func TestCloudTokenCreate_ServerRefusalIsAnError(t *testing.T) {
 	err := runCloudTokenCreate(context.Background(), caller, "n", []string{"deploy:read"}, 0, true, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "human session") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A control plane that refuses token administration to a CLI login (reason
+// person_session_required, control-plane#2636) gets a message that sends the
+// person to the web app's API tokens page, and exit 9 — for every verb. The
+// control plane's code and reason survive into the --json error facts.
+func TestCloudToken_PersonSessionRequiredPointsAtTheWebApp(t *testing.T) {
+	t.Setenv(cloud.ConsoleURLEnv, "")
+	refusal := func(endpoint string) *cloud.Error {
+		return &cloud.Error{
+			HTTPStatus: 403, Code: cloud.CodePermissionDenied, Reason: cloud.ReasonPersonSessionRequired,
+			Message:  "Managing access tokens or member permissions (Settings → API tokens and Members in the web app) needs a person signed in to the Reliant web app",
+			Endpoint: endpoint,
+		}
+	}
+	run := map[string]func(cloudCaller) error{
+		"mint": func(c cloudCaller) error {
+			return runCloudTokenCreate(context.Background(), c, "ci", []string{"deploy:write"}, 0, true, &bytes.Buffer{})
+		},
+		"list": func(c cloudCaller) error {
+			return runCloudTokenList(context.Background(), c, false, true, &bytes.Buffer{})
+		},
+		"revoke": func(c cloudCaller) error {
+			return runCloudTokenRevoke(context.Background(), c, "tok_1", true, &bytes.Buffer{})
+		},
+	}
+	for action, fn := range run {
+		t.Run(action, func(t *testing.T) {
+			err := fn(&recordingCaller{err: refusal(cloud.DefaultEndpoint)})
+			if got := exitCodeForError(err); got != exitNeedsHuman {
+				t.Errorf("exit = %d, want %d (%v)", got, exitNeedsHuman, err)
+			}
+			msg := err.Error()
+			for _, want := range []string{
+				"does not let a CLI login (`forge login`) " + action + " access tokens",
+				action + " tokens in the web app: https://forge.reliantlabs.io/settings/tokens (Settings → API tokens)",
+				"signing in again with `forge login` does not help",
+				"server said: Managing access tokens",
+				"reason: person_session_required",
+			} {
+				if !strings.Contains(strings.ToLower(msg), strings.ToLower(want)) {
+					t.Errorf("message missing %q:\n%s", want, msg)
+				}
+			}
+			if facts := errorFactsOf(err); facts.ErrorCode != cloud.CodePermissionDenied || facts.ErrorReason != cloud.ReasonPersonSessionRequired {
+				t.Errorf("error facts = %+v", facts)
+			}
+		})
+	}
+
+	// A control plane whose web app forge cannot know is named by its endpoint.
+	err := runCloudTokenCreate(context.Background(), &recordingCaller{err: refusal("https://cp.example.com")}, "ci", []string{"deploy:write"}, 0, false, &bytes.Buffer{})
+	if msg := err.Error(); !strings.Contains(msg, "Settings → API tokens (the web app of the control plane at https://cp.example.com)") ||
+		!strings.Contains(msg, "FORGE_CONTROL_PLANE_TOKEN") {
+		t.Errorf("unknown web app:\n%s", msg)
+	}
+}
+
+// Only that reason is mapped: another PermissionDenied (a machine credential,
+// which the control plane refuses on its own terms) keeps its own error and
+// exit code, so a control plane that admits a CLI login is never second-guessed.
+func TestCloudToken_OtherRefusalsAreUnchanged(t *testing.T) {
+	t.Parallel()
+	machine := &cloud.Error{HTTPStatus: 403, Code: cloud.CodePermissionDenied, Message: "machine credentials cannot manage machine credentials"}
+	err := runCloudTokenCreate(context.Background(), &recordingCaller{err: machine}, "ci", []string{"deploy:write"}, 0, true, &bytes.Buffer{})
+	var refusal *personSessionRefusal
+	if errors.As(err, &refusal) {
+		t.Fatalf("a refusal without person_session_required must not be mapped: %v", err)
+	}
+	if !errors.Is(err, machine) || exitCodeForError(err) != exitWrong {
+		t.Errorf("err = %v (exit %d), want the server's error, exit 1", err, exitCodeForError(err))
+	}
+}
+
+// The scaffolded release workflow and the skills send a person to the web app
+// to mint the CI token, not to `forge cloud token create` under `forge login`,
+// which a control plane may refuse (control-plane#2636).
+func TestCITokenMintingTextPointsAtTheWebApp(t *testing.T) {
+	t.Parallel()
+	read := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	release := read("../templates/ci/github/release.yml.tmpl")
+	if !strings.Contains(release, "Settings → API tokens") || !strings.Contains(release, "https://forge.reliantlabs.io/settings/tokens") {
+		t.Errorf("release.yml.tmpl must send a person to the web app to mint FORGE_CONTROL_PLANE_TOKEN")
+	}
+	if strings.Contains(release, "--json | jq -r .secret") {
+		t.Errorf("release.yml.tmpl still mints the CI token with `forge cloud token create`")
+	}
+	for _, skill := range []string{
+		"adopt/deploy", "deploy/record", "deploy/domains", "deploy/lifecycle", "observability/query",
+	} {
+		body := read("../templates/project/skills/forge/" + skill + "/SKILL.md")
+		if !strings.Contains(body, "Settings → API tokens") {
+			t.Errorf("skill %s: no pointer to the web app's Settings → API tokens", skill)
+		}
+		for _, stale := range []string{"forge cloud token create --name ci", "forge cloud token\n  create --env staging", "an org admin can mint\n`forge cloud token create"} {
+			if strings.Contains(body, stale) {
+				t.Errorf("skill %s still tells users to mint the CI token with %q", skill, stale)
+			}
+		}
 	}
 }
 

@@ -118,8 +118,8 @@ enough (--version, with the commit detected from CI); pass --workload/--image
 pairs to record the digests your pipeline shipped.
 
 Where it records: an env with deploy/kcl uses the ledger its KCL selects.
-Otherwise, signed in (forge login, or a CI token in FORGE_CONTROL_PLANE_TOKEN
-from ` + "`forge cloud token create --scopes deploy:write`" + `) it records on Reliant cloud;
+Otherwise, signed in (forge login, or a CI token with deploy:write in
+FORGE_CONTROL_PLANE_TOKEN, minted in the web app's Settings → API tokens) it records on Reliant cloud;
 not signed in, on this machine's ledger, which monitoring cannot see.
 
 Idempotent: a CI retry records once. The same version with different digests
@@ -189,9 +189,9 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 		l, err := machineLedger(projectDir)
 		return recordLedger{ledger: l, note: fmt.Sprintf(
 			"note: not signed in to %s (%v), so this is recorded on this machine only and monitoring cannot see it. "+
-				"Sign in with `%s login`, or set %s to a token from `%s cloud token create --scopes deploy:write`, "+
+				"Sign in with `%s login`, or set %s to a token with deploy:write minted in the web app (%s), "+
 				"then re-run, or move this machine's records with `%s ledger import --from-file-ledger`.",
-			ep.URL, cerr, Name(), ep.TokenEnv, Name(), Name())}, err
+			ep.URL, cerr, Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL), Name())}, err
 	}
 	return recordLedger{
 		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, deploytarget.HostedEnvSelfManaged),

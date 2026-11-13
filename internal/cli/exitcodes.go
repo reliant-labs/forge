@@ -127,6 +127,10 @@ const (
 	// it, and the report (--json: needs_human) names each item and its fix.
 	// A pin bot opens its PR as a draft on 9 and as a merge candidate on 0;
 	// it never retries a 9, because re-running changes nothing.
+	//
+	// `forge cloud token create|list|revoke`: the control plane refuses
+	// token administration to a CLI login (reason person_session_required);
+	// a person does it in the web app (cloud_token.go, tokenAdminRefusal).
 	exitNeedsHuman = 9
 )
 

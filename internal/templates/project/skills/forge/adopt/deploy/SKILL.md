@@ -356,8 +356,9 @@ deploys from CI instead of a laptop, and probes that mean "ready".
   one job that installs forge (`curl -fsSL
   https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`),
   runs `forge lint`, `forge env deploy staging --yes` and `forge obs check
-  staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` from `forge cloud token
-  create --env staging --name ci --scopes deploy:read,deploy:write`. `ci`.
+  staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` a token with
+  deploy:read,deploy:write that a person mints in the web app
+  (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens). `ci`.
 - **Health endpoints.** Serve a readiness path that checks the database and a
   cheap liveness path, then `probes = tiers.Probes {readinessPath = "/readyz",
   livenessPath = "/healthz"}` in `workloads.k`.

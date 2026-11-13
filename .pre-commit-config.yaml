@@ -123,7 +123,12 @@ repos:
         #
         # CHANGELOG.md: formatted by scripts/release-forge.sh, its only
         # writer (see the whitespace fixers above).
-        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|CHANGELOG\.md$)|(^|/)testdata/
+        #
+        # schema/*.schema.json is generated from the Go types
+        # (internal/schemagen; TestEnvSchemaIsCurrent compares it byte for
+        # byte and embeds it as schema.EnvV1). Its encoder owns the layout,
+        # as with .forge/ above: a prettier rewrite fails that test.
+        exclude: ^(gen/|\.forge/|.*\.pb\.go$|.*/skills/.*\.md$|pkg/deploy/[^/]+/crds/|schema/[^/]+\.schema\.json$|CHANGELOG\.md$)|(^|/)testdata/
 
   # Compiled binaries do not belong in git: they never diff usefully, they are
   # large forever, and a Go binary embeds the build machine's absolute paths.

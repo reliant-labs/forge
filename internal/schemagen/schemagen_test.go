@@ -20,7 +20,7 @@ type item struct {
 	Runtime json.RawMessage `json:"runtime"`
 	Tags    []string        `json:"tags,omitempty"`
 	Hidden  string          `json:"-"`
-	private string
+	private string          //nolint:unused // an unexported field: the schema must skip it
 }
 
 type base struct {

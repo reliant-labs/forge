@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,30 +36,30 @@ var linkedDockerConfigEntries = []string{"contexts", "cli-plugins", "buildx"}
 // rather than the credsStore, so the anonymous credential never reaches the
 // user's keychain or credential helper.
 //
-// Best effort: on any failure the real config is left in use and the returned
-// restore is a no-op.
-func isolateDockerConfig(keepCredentials bool, loginHost string) (restore func()) {
-	noop := func() {}
+// It fails closed: when the throwaway config cannot be set up, it returns an
+// error and the caller refuses the anonymous deploy before any login, rather
+// than let the login reach the user's real config. With no DOCKER_CONFIG and
+// no home directory there is no user config to copy, and the throwaway starts
+// empty.
+func isolateDockerConfig(keepCredentials bool, loginHost string) (restore func(), err error) {
 	real := os.Getenv("DOCKER_CONFIG")
 	if real == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return noop
+		if home, herr := os.UserHomeDir(); herr == nil {
+			real = filepath.Join(home, ".docker")
 		}
-		real = filepath.Join(home, ".docker")
 	}
 	tmp, err := os.MkdirTemp("", "forge-docker-config-")
 	if err != nil {
-		return noop
+		return nil, fmt.Errorf("isolate the anonymous deploy's docker config: %w", err)
 	}
 	if err := populateIsolatedDockerConfig(real, tmp, keepCredentials, loginHost); err != nil {
 		_ = os.RemoveAll(tmp)
-		return noop
+		return nil, fmt.Errorf("isolate the anonymous deploy's docker config: %w", err)
 	}
 	prev, had := os.LookupEnv("DOCKER_CONFIG")
 	if err := os.Setenv("DOCKER_CONFIG", tmp); err != nil {
 		_ = os.RemoveAll(tmp)
-		return noop
+		return nil, fmt.Errorf("isolate the anonymous deploy's docker config: %w", err)
 	}
 	return func() {
 		if had {
@@ -67,10 +68,11 @@ func isolateDockerConfig(keepCredentials bool, loginHost string) (restore func()
 			_ = os.Unsetenv("DOCKER_CONFIG")
 		}
 		_ = os.RemoveAll(tmp)
-	}
+	}, nil
 }
 
-// populateIsolatedDockerConfig fills dst from the docker config directory src:
+// populateIsolatedDockerConfig fills dst from the docker config directory src
+// (none when src is empty):
 // config.json (without its credential keys unless keepCredentials), and a link
 // to each of linkedDockerConfigEntries that exists. No other entry is linked. A
 // link that cannot be made is skipped: the entry is an optional convenience,
@@ -79,12 +81,8 @@ func isolateDockerConfig(keepCredentials bool, loginHost string) (restore func()
 // When credentials are kept, loginHost (if set) gets an empty credHelpers
 // entry, so its login is stored in dst's config.json and nowhere else.
 func populateIsolatedDockerConfig(src, dst string, keepCredentials bool, loginHost string) error {
-	cfg := map[string]any{}
-	if raw, err := os.ReadFile(filepath.Join(src, "config.json")); err == nil {
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
+	cfg, err := readDockerConfig(src)
+	if err != nil {
 		return err
 	}
 	if !keepCredentials {
@@ -107,10 +105,33 @@ func populateIsolatedDockerConfig(src, dst string, keepCredentials bool, loginHo
 		return err
 	}
 	for _, name := range linkedDockerConfigEntries {
+		if src == "" {
+			break
+		}
 		if _, err := os.Lstat(filepath.Join(src, name)); err != nil {
 			continue
 		}
 		_ = os.Symlink(filepath.Join(src, name), filepath.Join(dst, name))
 	}
 	return nil
+}
+
+// readDockerConfig is src's config.json as a map: empty when src is empty (no
+// user config) or holds no config.json.
+func readDockerConfig(src string) (map[string]any, error) {
+	cfg := map[string]any{}
+	if src == "" {
+		return cfg, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(src, "config.json"))
+	if os.IsNotExist(err) {
+		return cfg, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }

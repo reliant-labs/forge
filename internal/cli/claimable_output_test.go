@@ -264,7 +264,10 @@ func TestIsolateDockerConfig(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", "")
 	os.Unsetenv("DOCKER_CONFIG")
 
-	restore := isolateDockerConfig(false, "registry.example.com/org")
+	restore, err := isolateDockerConfig(false, "registry.example.com/org")
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := os.Getenv("DOCKER_CONFIG")
 	if dir == "" || dir == real {
 		t.Fatalf("DOCKER_CONFIG = %q, want a throwaway directory", dir)
@@ -310,7 +313,10 @@ func TestIsolateDockerConfig(t *testing.T) {
 
 	// A deploy that builds an image keeps the user's registry credentials, so
 	// a private base image still pulls.
-	restore = isolateDockerConfig(true, "registry.example.com/org")
+	restore, err = isolateDockerConfig(true, "registry.example.com/org")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer restore()
 	kept, err := os.ReadFile(filepath.Join(os.Getenv("DOCKER_CONFIG"), "config.json"))
 	if err != nil {
@@ -334,5 +340,44 @@ func TestIsolateDockerConfig(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(os.Getenv("DOCKER_CONFIG"), f)); !os.IsNotExist(err) {
 			t.Errorf("a build deploy's throwaway config links %s (err=%v)", f, err)
 		}
+	}
+}
+
+// No throwaway config, no deploy: when isolation cannot be set up the error
+// reaches the caller, and DOCKER_CONFIG is left exactly as it was rather than
+// silently pointing the login at the user's real config.
+func TestIsolateDockerConfigFailsClosed(t *testing.T) {
+	real := t.TempDir()
+	// A config.json that cannot be parsed: the throwaway cannot be built from it.
+	if err := os.WriteFile(filepath.Join(real, "config.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", real)
+
+	restore, err := isolateDockerConfig(false, "registry.example.com")
+	if err == nil {
+		restore()
+		t.Fatal("isolateDockerConfig set up a config from an unreadable one; want an error")
+	}
+	if got := os.Getenv("DOCKER_CONFIG"); got != real {
+		t.Errorf("DOCKER_CONFIG = %q after a failed isolation, want it unchanged (%q)", got, real)
+	}
+
+	// With no user config at all (no DOCKER_CONFIG, no home), the throwaway
+	// starts empty: isolation still holds.
+	t.Setenv("DOCKER_CONFIG", "")
+	os.Unsetenv("DOCKER_CONFIG")
+	t.Setenv("HOME", "")
+	restore, err = isolateDockerConfig(true, "registry.example.com")
+	if err != nil {
+		t.Fatalf("isolation with no user config: %v", err)
+	}
+	defer restore()
+	raw, err := os.ReadFile(filepath.Join(os.Getenv("DOCKER_CONFIG"), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"registry.example.com":""`)) {
+		t.Errorf("the empty throwaway does not pin the platform login to its file: %s", raw)
 	}
 }

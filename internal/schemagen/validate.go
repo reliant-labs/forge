@@ -3,7 +3,9 @@ package schemagen
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -104,13 +106,19 @@ func checkKeywords(s map[string]any, at string) error {
 }
 
 // DecodeJSON decodes a JSON document the way [Compiled.Validate] expects
-// (numbers kept exact).
+// (numbers kept exact). The data must hold exactly one value: a second value
+// or trailing garbage after the document is an error, trailing whitespace is
+// not.
 func DecodeJSON(data []byte) (any, error) {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil {
 		return nil, err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("data after the JSON document at offset %d", dec.InputOffset())
 	}
 	return v, nil
 }

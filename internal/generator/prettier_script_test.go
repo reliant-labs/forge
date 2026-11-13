@@ -133,3 +133,35 @@ func prettierHookPatterns(t *testing.T, raw []byte) (files, exclude *regexp.Rege
 	t.Fatal("no prettier hook in .pre-commit-config.yaml")
 	return nil, nil
 }
+
+// TestPrettierHookLeavesGeneratedSchemasAlone pins the hook's exclusion of
+// schema/*.schema.json. schemagen writes those files and TestEnvSchemaIsCurrent
+// compares them byte for byte (it also embeds them as schema.EnvV1), so a
+// prettier rewrite turns the merge group red: it did for #2210's first queue
+// run. The exclusion must stay that narrow: handwritten JSON, YAML and docs,
+// including those next to the schemas, are still formatted.
+func TestPrettierHookLeavesGeneratedSchemasAlone(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(forgeRepoRoot(t), ".pre-commit-config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, exclude := prettierHookPatterns(t, raw)
+	formats := func(p string) bool { return files.MatchString(p) && !exclude.MatchString(p) }
+	for _, p := range []string{"schema/env.v1.schema.json", "schema/forge.v2.schema.json"} {
+		if formats(p) {
+			t.Errorf("the prettier hook formats generated %s", p)
+		}
+	}
+	for _, p := range []string{
+		"web-runtime/package.json",
+		"schema/README.md",
+		"schema/examples/env.json",
+		"docs/design/env-document.md",
+		".github/workflows/ci.yml",
+		"internal/cli/schema.json",
+	} {
+		if !formats(p) {
+			t.Errorf("the prettier hook no longer formats handwritten %s", p)
+		}
+	}
+}

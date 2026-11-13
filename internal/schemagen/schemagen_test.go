@@ -147,3 +147,16 @@ func TestGenerateIsDeterministic(t *testing.T) {
 		t.Fatal("two generations differ")
 	}
 }
+
+func TestDecodeJSONTakesExactlyOneDocument(t *testing.T) {
+	for _, ok := range []string{`{"a":1}`, "{\"a\":1}\n", " {\"a\":1} \n\t "} {
+		if _, err := DecodeJSON([]byte(ok)); err != nil {
+			t.Errorf("DecodeJSON(%q) = %v, want the document", ok, err)
+		}
+	}
+	for _, bad := range []string{`{"a":1}{"b":2}`, `{"a":1} 2`, `{"a":1} garbage`, `{"a":1}]`} {
+		if _, err := DecodeJSON([]byte(bad)); err == nil {
+			t.Errorf("DecodeJSON(%q) accepted trailing data", bad)
+		}
+	}
+}

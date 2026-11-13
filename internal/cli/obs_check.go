@@ -12,7 +12,10 @@ package cli
 // plane unreachable, auth refused, telemetry off, the control plane does not
 // serve release health yet); 8 --wait ran out before the after window
 // finished. Exit 2 deliberately covers "low traffic" and "unreachable": both
-// mean "not proven good", and a gate must not read either as a pass.
+// mean "not proven good", and a gate must not read either as a pass. Low
+// traffic is NOT exit 8: 8 says "check again later", and a closed after
+// window with too few requests is final for that promotion — a later check
+// reads the same window and reaches the same verdict.
 
 import (
 	"context"
@@ -179,8 +182,14 @@ Exit status:
   1  FAIL: we looked, and the release made things worse
   2  INCONCLUSIVE, or we could not look (control plane unreachable, auth
      refused, telemetry off). Both mean "not proven good"; a gate must not
-     read either as a pass.
-  8  --wait ran out before the after window finished
+     read either as a pass. The document's reason_code says why it is
+     INCONCLUSIVE. low_traffic / thin_baseline: the window closed with too
+     few requests to judge — final for that promotion, since a later check
+     reads the same window; for an env that is always quiet, lower
+     min_requests in its release_health (or --threshold min_requests=N) or
+     widen --window. window_open (no --wait): check again, or use --wait.
+  8  --wait ran out (--timeout) before the after window finished: check
+     again later. Low traffic is never 8.
 
 Thresholds come from the env's release_health declaration (KCL); --threshold
 name=value overrides one for this call (` + strings.Join(releasehealth.OverrideNames, ", ") + `).

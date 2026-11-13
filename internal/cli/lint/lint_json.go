@@ -136,6 +136,12 @@ type lintJSONFinding struct {
 	// rollout is the pseudo-rule key of a pass whose findings carry another
 	// tool's rule IDs (the golangci-lint build-tag passes). Internal.
 	rollout string
+	// under is, for a raw sub-tool line (no file), the File of the anchored
+	// finding it follows in the SAME tool output — the source excerpt, caret
+	// and run summary golangci-lint prints beneath an issue. A --scope run
+	// keeps or drops such a line with its anchor (lintScope.filter). Empty
+	// for a line no anchor precedes. Internal.
+	under string
 }
 
 // lintJSONSummary counts findings by severity. Total is the slice
@@ -974,6 +980,7 @@ var reTrailingLinter = regexp.MustCompile(`\(([A-Za-z0-9_-]+)\)$`)
 // finding (the caller knows whether the tool's exit gated the build).
 func externalLinesToFindings(output, rule, severity string) []lintJSONFinding {
 	var out []lintJSONFinding
+	anchor := "" // the File of the last anchored finding in this output
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if strings.TrimSpace(line) == "" {
@@ -1001,12 +1008,14 @@ func externalLinesToFindings(output, rule, severity string) []lintJSONFinding {
 				}
 			}
 			out = append(out, f)
+			anchor = f.File
 			continue
 		}
 		out = append(out, lintJSONFinding{
 			Severity: severity,
 			Rule:     "external",
 			Message:  line,
+			under:    anchor,
 		})
 	}
 	return out

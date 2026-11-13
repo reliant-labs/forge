@@ -173,34 +173,121 @@ If the connection string is right, the environment is wrong (pass --env). If the
 		env, claimedID, env+" declares:", declaredID, env, env, env)
 }
 
-// redactDSNForMessage masks a password before a DSN reaches an error message:
-// the URL's userinfo, a password query parameter, and a keyword/value DSN's
-// password=. A DSN that will not parse is reported opaquely rather than
-// echoed, since an unparseable string is exactly the one whose shape is
-// unknown.
+// redactDSNForMessage masks every secret a DSN carries before it reaches an
+// error message: the URL's userinfo password, a password or sslpassword query
+// parameter, and a keyword/value DSN's password= or sslpassword=. passfile is
+// a path, not a secret, and is left as written.
+//
+// Both forms are read the way pgx reads them, not matched as text: a URL's
+// query keys are percent-decoded first (pgx accepts %70assword=), and a
+// keyword/value string is tokenized as pgx tokenizes it (quoted values,
+// backslash escapes, spaces around =). A DSN that will not parse is reported
+// opaquely rather than echoed, since an unparseable string is exactly the one
+// whose shape — and so whose secrets — are unknown.
 func redactDSNForMessage(dsn string) string {
+	const opaque = "the given connection string"
 	if !strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://") {
-		if _, err := pgconn.ParseConfig(dsn); err != nil {
-			return "the given connection string"
+		out, ok := redactKeywordValueDSN(dsn)
+		if !ok {
+			return opaque
 		}
-		return dsnPasswordRE.ReplaceAllString(dsn, "${1}xxxxx")
+		return out
 	}
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return "the given connection string"
+		return opaque
 	}
 	if u.User != nil {
 		if _, hasPassword := u.User.Password(); hasPassword {
 			u.User = url.UserPassword(u.User.Username(), "xxxxx")
 		}
 	}
-	return dsnPasswordRE.ReplaceAllString(u.String(), "${1}xxxxx")
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return opaque
+	}
+	for k := range q {
+		if isDSNSecretKey(k) {
+			q[k] = []string{"xxxxx"}
+		}
+	}
+	u.RawQuery = q.Encode()
+	u.Fragment, u.RawFragment = "", ""
+	return u.String()
 }
 
-// dsnPasswordRE matches a password a DSN carries outside the URL's userinfo:
-// `password=…` as a keyword/value pair (bare or single-quoted) or as a URL
-// query parameter.
-var dsnPasswordRE = regexp.MustCompile(`(?i)(\bpassword\s*=\s*)('(?:[^'\\]|\\.)*'|[^\s&]*)`)
+// isDSNSecretKey reports whether a connection-string keyword names a secret:
+// pgx's password and sslpassword, and — since masking too much costs nothing
+// and a keyword pgx does not know is still sent somewhere — any keyword that
+// mentions a password in any casing.
+func isDSNSecretKey(k string) bool {
+	return strings.Contains(strings.ToLower(k), "password")
+}
+
+// redactKeywordValueDSN masks the secret values of a keyword/value DSN,
+// tokenizing it as pgx's parseKeywordValueSettings does: a keyword is a run
+// of non-space characters, then optional space, '=', optional space, then a
+// value that is either single-quoted (backslash escapes, closing quote
+// required) or runs to the next unescaped space. Everything else is kept as
+// written. ok is false for a string pgx would not parse.
+func redactKeywordValueDSN(s string) (string, bool) {
+	if strings.IndexByte(s, 0) >= 0 {
+		return "", false
+	}
+	isSpace := func(c byte) bool { return strings.IndexByte(" \t\n\r\v\f", c) >= 0 }
+	var out strings.Builder
+	i := 0
+	for {
+		for i < len(s) && isSpace(s[i]) {
+			out.WriteByte(s[i])
+			i++
+		}
+		if i == len(s) {
+			return out.String(), true
+		}
+		eq := strings.IndexByte(s[i:], '=')
+		if eq < 0 {
+			return "", false
+		}
+		key := strings.TrimRight(s[i:i+eq], " \t\n\r\v\f")
+		if key == "" || strings.ContainsAny(key, " \t\n\r\v\f") {
+			return "", false
+		}
+		out.WriteString(s[i : i+eq+1])
+		i += eq + 1
+		for i < len(s) && isSpace(s[i]) {
+			out.WriteByte(s[i])
+			i++
+		}
+		start := i
+		if i < len(s) && s[i] == '\'' {
+			i++
+			for ; i < len(s) && s[i] != '\''; i++ {
+				if s[i] == '\\' {
+					i++
+				}
+			}
+			if i >= len(s) {
+				return "", false // unterminated quoted value
+			}
+			i++ // the closing quote
+		} else {
+			for ; i < len(s) && !isSpace(s[i]); i++ {
+				if s[i] == '\\' {
+					i++
+				}
+			}
+			if i > len(s) {
+				i = len(s) // a trailing backslash
+			}
+		}
+		if isDSNSecretKey(key) {
+			out.WriteString("xxxxx")
+		} else {
+			out.WriteString(s[start:i])
+		}
+	}
+}
 
 // declaredEnvDSN resolves the DATABASE_URL the ENVIRONMENT declares — the
 // value forge reconciles a claimed DSN against.

@@ -1826,6 +1826,12 @@ benefits:
         bug_class: >-
           A literal `?` in bun-formatted SQL, which bun consumes as a
           placeholder, so the statement runs against shifted arguments
+      - id: forgeconv-product-event-pii
+        lane: --conventions
+        bug_class: >-
+          A product event property named for personal data (`email`, `name`,
+          `ip`, `url`, `path`, `token`), stored per event for months and
+          joined to a user
       - id: forgeconv-tx-lock-under-serializable
         lane: --conventions
         bug_class: >-

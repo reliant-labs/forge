@@ -402,3 +402,74 @@ export function installSpanExportScrub(
     return 0;
   }
 }
+
+// ── Session replay ───────────────────────────────────────────────────────
+//
+// Replay is not a span: the SDK's rrweb recorder posts its events as OTLP log
+// BODIES, a JSON string each, which no span exporter sees. The one that
+// carries the page's address is rrweb's Meta event, the opening record of
+// every recording and of every full-snapshot checkout after it:
+// `{"type":4,"data":{"href":"<location.href>","width":…,"height":…}}`. So the
+// runtime hands rrweb a record plugin (replayUrlScrubPlugin) whose
+// eventProcessor rewrites `data.href` with scrubUrl before the recorder
+// serializes the event. rrweb runs every plugin's eventProcessor on each event
+// on its way to the recorder's emit, so nothing the recorder buffers or posts
+// ever held the query or the fragment. No other rrweb event names the page's
+// address; the URLs inside the recorded DOM (an `<a href>`, a stylesheet) are
+// page content the replay needs to render, and are left as recorded.
+
+/** rrweb's EventType.Meta. */
+const RRWEB_META = 4;
+
+/** The slice of an rrweb event replayUrlScrubPlugin reads. */
+interface ReplayEventLike {
+  type?: unknown;
+  data?: unknown;
+}
+
+/**
+ * An rrweb record plugin (rrweb's RecordPlugin shape, `plugins` in its record
+ * options): only a name, no options and an eventProcessor.
+ */
+export interface ReplayRecordPlugin {
+  name: string;
+  options: Record<string, never>;
+  eventProcessor<E>(event: E): E;
+}
+
+/**
+ * The rrweb record plugin that strips the query string (except the parameters
+ * `keepQueryParams` allows) and the fragment from the page URL of every Meta
+ * event, so a replay's opening record carries the same URL a span's
+ * location.href does. Every other event, and every event this cannot read, is
+ * passed on as recorded. The event is copied, never modified.
+ */
+export function replayUrlScrubPlugin(
+  options: TelemetryUrlScrubOptions = {},
+): ReplayRecordPlugin {
+  const keep = queryParamFilter(options.keepQueryParams);
+  return {
+    name: "forge/replay-url-scrub",
+    options: {},
+    eventProcessor<E>(event: E): E {
+      const e = event as ReplayEventLike | null;
+      if (
+        !e ||
+        e.type !== RRWEB_META ||
+        !e.data ||
+        typeof e.data !== "object"
+      ) {
+        return event;
+      }
+      const data = e.data as { href?: unknown };
+      if (typeof data.href !== "string") {
+        return event;
+      }
+      const href = scrubUrl(data.href, keep);
+      if (href === data.href) {
+        return event;
+      }
+      return { ...e, data: { ...data, href } } as E;
+    },
+  };
+}

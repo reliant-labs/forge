@@ -109,6 +109,18 @@ linters:
         linters:
           - forbidigo
 
+      # FORGE_QUERY_CAPTURE_DIR switches on query-shape capture for
+      # `forge db analyze` (docs/proposals/db-analyze.md, Phase 2). Its
+      # consumer is a test run: `FORGE_QUERY_CAPTURE_DIR=… task test` fans out
+      # to one binary per package, every one of which builds its own ORM
+      # clients, and the environment is the only channel that reaches all of
+      # them — the same reason pgtest reads FORGE_TEST_POSTGRES_URL. It never
+      # changes what a query does, only whether its shape is written down.
+      # Scoped to the one reader, FromEnv.
+      - path: ^querycapture/recorder\.go$
+        linters:
+          - forbidigo
+
       # release.CaptureProvenance runs `git` against the caller's checkout,
       # and a child git needs the ambient environment to run at all (PATH,
       # HOME for its config, GIT_* for a worktree). The ONE variable it adds
@@ -136,6 +148,15 @@ linters:
       # consumer cannot drift from `forge login`. Scoped to that one file:
       # the rest of pkg/credentials still takes its Dirs from the caller.
       - path: ^credentials/env\.go$
+        linters:
+          - forbidigo
+
+      # observe/cliev/env.go is Config.Getenv's default: DO_NOT_TRACK,
+      # <APP>_TELEMETRY and the CI markers are a user-to-every-CLI opt-out
+      # contract, not app configuration (see the file). Scoped to that one
+      # file: the rest of cliev reads the environment only through
+      # Config.Getenv.
+      - path: ^observe/cliev/env\.go$
         linters:
           - forbidigo
 

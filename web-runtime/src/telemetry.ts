@@ -128,6 +128,12 @@
 // ingest side scrubs the same attributes again, as defence in depth, for an
 // older runtime and for anything that reaches it some other way.
 //
+// Session replay carries the page URL too, outside any span: rrweb's Meta
+// event, the opening record of a recording, holds `location.href` as
+// `data.href` in a log body. The recorder gets an rrweb plugin
+// (url-scrub.ts, replayUrlScrubPlugin) that strips it the same way, with the
+// same `keepUrlQueryParams`, before the event is serialized.
+//
 // ── Network spans are named by what they called ──────────────────────────
 //
 // HyperDX names every fetch/XHR span `HTTP <METHOD>`, so a trace a browser
@@ -223,6 +229,7 @@ import {
   installSpanExportScrub,
   type QueryParamFilter,
   queryParamFilter,
+  replayUrlScrubPlugin,
   scrubUrl,
 } from "./url-scrub.js";
 import {
@@ -265,7 +272,9 @@ export {
   scrubUrl,
   scrubUrlAttributes,
   queryParamFilter,
+  replayUrlScrubPlugin,
   type QueryParamFilter,
+  type ReplayRecordPlugin,
   type SpanExporterLike,
   type TelemetryUrlScrubOptions,
 } from "./url-scrub.js";
@@ -336,8 +345,9 @@ export interface BrowserTelemetryConfig {
    * Query parameters kept in the URLs telemetry exports: exact names (`ref`)
    * or prefixes ending in `*` (`utm_*`), matched case-sensitively on the
    * decoded name. Default none: every URL-valued attribute (location.href,
-   * http.url, url.full, prev.href, document.referrer, …) is exported without
-   * its query string, and always without its fragment. See "No URL leaves the
+   * http.url, url.full, prev.href, document.referrer, …), and the page URL in
+   * a session replay's Meta records, is exported without its query string,
+   * and always without its fragment. See "No URL leaves the
    * browser with its query string or fragment" in the header.
    */
   keepUrlQueryParams?: string[];
@@ -1705,7 +1715,16 @@ export function buildSdkOptions(
     maskAllText: true,
     recordCanvas: false,
     blockSelector: REPLAY_BLOCK_SELECTOR,
-    replay: { inlineImages: false, collectFonts: false },
+    // The SDK passes these to rrweb's record() as they are. The plugin strips
+    // the query and fragment from the replay's page URL (see "No URL leaves
+    // the browser" in the header).
+    replay: {
+      inlineImages: false,
+      collectFonts: false,
+      plugins: [
+        replayUrlScrubPlugin({ keepQueryParams: config.keepUrlQueryParams }),
+      ],
+    },
   };
   return options;
 }

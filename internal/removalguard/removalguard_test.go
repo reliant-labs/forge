@@ -1700,6 +1700,8 @@ var removals = []removal{
 					"web-runtime/src/telemetry.test.ts",
 					"web-runtime/scripts/browser-telemetry-smoke.mjs",
 					"pkg/deploy/observability_line_resource_test.go",
+					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.
+					"pkg/observe/cliev/otlp.go",
 				},
 			},
 			{

@@ -90,7 +90,7 @@ func gradableRules() []string {
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",
 		"forgeconv-list-filter-optional", "forgeconv-no-container-deps", "forgeconv-no-getenv",
 		"forgeconv-no-handler-error-mapping", "forgeconv-one-service-per-file",
-		"forgeconv-optional-dep-marker-position", "forgeconv-service-dir-consistency",
+		"forgeconv-optional-dep-marker-position", "forgeconv-product-event-pii", "forgeconv-service-dir-consistency",
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
 		string(contractcheck.RuleOutboundIONoRPC), string(contractcheck.RuleInternalPackageMissingContract),

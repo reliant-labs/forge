@@ -10,11 +10,14 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/reliant-labs/forge/internal/commitpolicy"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -426,6 +429,11 @@ var removals = []removal{
 					"pkg/serverkit/",
 					"internal/cli/deploy*.go",
 					"internal/cli/env_render*.go",
+					// The env document's JSON Schema is generated from the Go types
+					// that decode it, pkg/deploy's Workload among them, so it repeats
+					// their Kubernetes RBAC doc comments (PolicyRule, NamespacedRBAC,
+					// ClusterRBAC) verbatim. Kubernetes manifests only.
+					"schema/env.v1.schema.json",
 					// `forge cluster connect` applies a ClusterRole/ClusterRoleBinding to the
 					// owner's cluster, and its skill documents it. Kubernetes manifests only;
 					// the files carry an `rbac` local naming that bootstrap-manifest struct.
@@ -2449,12 +2457,27 @@ func survivingReferences(t *testing.T, root string) map[string][]finding {
 		allowedFor[ri] = append(append([]allowance{}, commonAllowances...), rm.Allowances...)
 	}
 
+	// One whole-file prefilter per removal (newPrefilter): most files name
+	// no removal at all, and a literal search over the file is far cheaper
+	// than running every pattern's NFA over every line, which was nearly all
+	// of the guard's 165s on a CI runner and kept it off the merge tier. A
+	// prefilter hit only admits the file to the per-line pass below, which
+	// still decides every finding, so the output is unchanged.
+	prefilter := make([]prefilter, len(removals))
+	for ri, rm := range removals {
+		prefilter[ri] = newPrefilter(rm.Patterns)
+	}
+
 	hitsCh := make(chan fileHits, len(scanned))
 	forEachIndex(len(scanned), func(idx int) {
 		rel, content := scanned[idx].rel, scanned[idx].content
 		local := map[string][]finding{}
 		lines := strings.Split(string(content), "\n")
+		text := &scannedText{raw: content}
 		for ri, rm := range removals {
+			if !prefilter[ri].Match(text) {
+				continue
+			}
 			for i, line := range lines {
 				for _, hit := range matchLine(root, line, rm, allowedFor[ri], rel) {
 					hit.feature, hit.path, hit.line = rm.Name, rel, i+1
@@ -2542,6 +2565,214 @@ func TestGuardScansOnlyWhatGitWouldCommit(t *testing.T) {
 		if !hit[rel] {
 			t.Errorf("%s carries a removed reference and git would commit it, yet the guard "+
 				"passed it. The scan has stopped reading files it must read.", rel)
+		}
+	}
+}
+
+// prefilter admits a file to survivingReferences' per-line pass. Its one
+// obligation: it never rejects a file one of whose lines a pattern matches.
+//
+// It holds each pattern with every zero-width assertion (\b, \B, ^, $, \A, \z)
+// deleted. Deleting an assertion can only widen what a regexp matches, and
+// what is left asserts nothing about position, so a match inside a line is a
+// match inside the file, wherever that line sits in it. Each top-level
+// alternative is then checked on its own, and only after a substring search
+// for a literal every match of it contains: Go's regexp has no DFA, so the
+// whole pattern ran as an NFA over every byte of every file, and a leading \b
+// or (?i) defeats its own literal-prefix scan. A file it admits wrongly costs
+// only the per-line pass.
+type prefilter []prefilterAlt
+
+// prefilterAlt is one alternative: lit, which every match contains (compared
+// under case folding when fold is set), and re, the alternative itself, nil
+// when it is exactly lit.
+type prefilterAlt struct {
+	lit  []byte
+	fold bool
+	re   *regexp.Regexp
+}
+
+// scannedText is a file as the prefilter reads it: the bytes, and their
+// case-folded form, computed once per file when an alternative needs it.
+type scannedText struct {
+	raw    []byte
+	folded []byte
+}
+
+func (s *scannedText) foldedBytes() []byte {
+	if s.folded == nil {
+		s.folded = foldCase(s.raw)
+	}
+	return s.folded
+}
+
+func (pf prefilter) Match(s *scannedText) bool {
+	for _, a := range pf {
+		if len(a.lit) > 0 {
+			hay := s.raw
+			if a.fold {
+				hay = s.foldedBytes()
+			}
+			if !bytes.Contains(hay, a.lit) {
+				continue
+			}
+		}
+		if a.re == nil || a.re.Match(s.raw) {
+			return true
+		}
+	}
+	return false
+}
+
+func newPrefilter(patterns []*regexp.Regexp) prefilter {
+	var pf prefilter
+	for _, p := range patterns {
+		// regexp.Compile parses with syntax.Perl, so this cannot fail on a
+		// compiled pattern; if it ever did, admitting every file is correct.
+		re, err := syntax.Parse(p.String(), syntax.Perl)
+		if err != nil {
+			return prefilter{{re: regexp.MustCompile(``)}}
+		}
+		dropAssertions(re)
+		for _, alt := range alternatives(re.Simplify()) {
+			a := prefilterAlt{re: regexp.MustCompile(alt.String())}
+			if lit, whole := requiredLiteral(alt); lit != nil {
+				a.fold = lit.Flags&syntax.FoldCase != 0
+				a.lit = []byte(string(lit.Rune))
+				if a.fold {
+					a.lit = foldCase(a.lit)
+				}
+				if whole {
+					a.re = nil
+				}
+			}
+			pf = append(pf, a)
+		}
+	}
+	return pf
+}
+
+// requiredLiteral returns a literal every match of re contains, and whether
+// re is exactly that literal: re itself when it is a literal, else the
+// longest literal term of a concatenation. Nil when there is none.
+func requiredLiteral(re *syntax.Regexp) (lit *syntax.Regexp, whole bool) {
+	switch re.Op {
+	case syntax.OpLiteral:
+		return re, true
+	case syntax.OpConcat:
+		for _, sub := range re.Sub {
+			if sub.Op == syntax.OpLiteral && (lit == nil || len(sub.Rune) > len(lit.Rune)) {
+				lit = sub
+			}
+		}
+	}
+	return lit, false
+}
+
+// foldCase maps every rune of b to one representative of its case-folding
+// orbit (the smallest), so two texts are equal under (?i) exactly when their
+// foldCase forms are equal byte for byte. The orbit, not unicode.ToLower:
+// Go's (?i) matches s against ſ and k against the Kelvin sign, which ToLower
+// leaves apart. Invalid UTF-8 becomes U+FFFD, as the regexp engine reads it.
+func foldCase(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for len(b) > 0 {
+		c := b[0]
+		if c < utf8.RuneSelf {
+			if 'a' <= c && c <= 'z' {
+				c -= 'a' - 'A' // an ASCII letter's orbit starts at its upper case
+			}
+			out = append(out, c)
+			b = b[1:]
+			continue
+		}
+		r, size := utf8.DecodeRune(b)
+		b = b[size:]
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			least = min(least, f)
+		}
+		out = utf8.AppendRune(out, least)
+	}
+	return out
+}
+
+// dropAssertions turns every zero-width assertion in re into an empty match.
+func dropAssertions(re *syntax.Regexp) {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		re.Op = syntax.OpEmptyMatch
+	}
+	for _, sub := range re.Sub {
+		dropAssertions(sub)
+	}
+}
+
+// alternatives splits re into regexps that, together, match what re matches:
+// its top-level alternatives, looking through captures and through empty
+// matches beside a single concatenated term.
+func alternatives(re *syntax.Regexp) []*syntax.Regexp {
+	switch re.Op {
+	case syntax.OpAlternate:
+		var out []*syntax.Regexp
+		for _, sub := range re.Sub {
+			out = append(out, alternatives(sub)...)
+		}
+		return out
+	case syntax.OpCapture:
+		return alternatives(re.Sub[0])
+	case syntax.OpConcat:
+		var terms []*syntax.Regexp
+		for _, sub := range re.Sub {
+			if sub.Op != syntax.OpEmptyMatch {
+				terms = append(terms, sub)
+			}
+		}
+		if len(terms) == 1 {
+			return alternatives(terms[0])
+		}
+	}
+	return []*syntax.Regexp{re}
+}
+
+// TestPrefilterNeverMissesALineMatch holds the prefilter to its obligation
+// on the shapes that could break it: each pattern matches one line of a
+// file, and the prefilter must admit that file. A text anchor (\A, \z, or ^/$
+// without (?m)) is the case a whole-file match would otherwise get wrong, the
+// parser factors alternations sharing a \b into one term, and (?i) matches
+// across Unicode fold orbits (ſ is an s, the Kelvin sign a k) that a
+// lower-cased substring search would miss.
+func TestPrefilterNeverMissesALineMatch(t *testing.T) {
+	cases := []struct{ pattern, line string }{
+		{`^\s*registry\s*=`, `  registry = "x"`},
+		{`(?m)^on_registry\s*=`, `on_registry = 1`},
+		{`\bimg_lib$`, `use img_lib`},
+		{`\Aforge up\z`, `forge up`},
+		{`\bstringValue\b|\bintegerLiteral\b|\bSynthStringValue\b`, `x := integerLiteral(1)`},
+		{`(?i)\bforge (dev) (?:server|loop)\b`, `the Forge DEV Loop`},
+		{`\bforge\s+(?:up|down)\b(?:\s+--env)`, `forge  down --env prod`},
+		{`(?i)\bRequireRoles`, "requireRoleſ"},
+		{`(?i)tenant_key`, "TENANT_\u212aEY"},
+		{`(?:ClusterTarget|DockerBuild)\.registry\b`, `x := DockerBuild.registry`},
+	}
+	for _, c := range cases {
+		p := regexp.MustCompile(c.pattern)
+		if !p.MatchString(c.line) {
+			t.Fatalf("bad case: `%s` does not match %q", c.pattern, c.line)
+		}
+		content := &scannedText{raw: []byte("first line\n" + c.line + "\nlast line")}
+		if !newPrefilter([]*regexp.Regexp{p}).Match(content) {
+			t.Errorf("the prefilter for `%s` rejects a file whose middle line %q it matches", c.pattern, c.line)
+		}
+	}
+
+	// It must also reject: a prefilter that admits every file is correct but
+	// buys nothing, and the scan is back to its NFA cost.
+	neutral := &scannedText{raw: []byte("package main\n\nfunc main() {}\n")}
+	for _, rm := range removals {
+		if newPrefilter(rm.Patterns).Match(neutral) {
+			t.Errorf("%q: the prefilter admits a file that names nothing; a pattern reduced to an empty match", rm.Name)
 		}
 	}
 }
@@ -2877,12 +3108,23 @@ func TestLegitimateLookalikesAreStillPresent(t *testing.T) {
 
 	root := repoRoot(t)
 	seen := make([]int, len(lookalikes))
+	// Presence is all that is asserted, so a token found once is not
+	// searched for again, and a file reaches a token's own regexp only past
+	// its prefilter: counting every hit in every file ran each token's NFA
+	// over the whole tree.
+	pfs := make([]prefilter, len(lookalikes))
+	for i, l := range lookalikes {
+		pfs[i] = newPrefilter([]*regexp.Regexp{l.token})
+	}
 	forEachScannedFile(t, root, func(rel string, content []byte) {
 		if strings.HasPrefix(rel, "internal/removalguard/") {
 			return // this file names them all; that proves nothing
 		}
+		text := &scannedText{raw: content}
 		for i, l := range lookalikes {
-			seen[i] += len(l.token.FindAllIndex(content, -1))
+			if seen[i] == 0 && pfs[i].Match(text) && l.token.Match(content) {
+				seen[i]++
+			}
 		}
 	})
 

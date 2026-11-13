@@ -42,7 +42,7 @@ type Source struct {
 func OpenSource(ctx context.Context, dsn string) (*Source, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("connect to the target: %w", err)
+		return nil, fmt.Errorf("connect to the target: %w", parseCause(err))
 	}
 	if _, err := conn.Exec(ctx, "SET default_transaction_read_only = on"); err != nil {
 		_ = conn.Close(context.WithoutCancel(ctx))
@@ -139,7 +139,7 @@ const (
 func CloneDatabase(ctx context.Context, dsn string) (*Clone, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse the target's connection string: %w", err)
+		return nil, fmt.Errorf("parse the target's connection string: %w", parseCause(err))
 	}
 	source := cfg.Database
 	if source == "" {
@@ -290,7 +290,7 @@ func withDatabase(dsn, name string) (string, error) {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		u, err := url.Parse(dsn)
 		if err != nil {
-			return "", fmt.Errorf("parse the target's connection string: %w", err)
+			return "", fmt.Errorf("parse the target's connection string: %w", parseCause(err))
 		}
 		u.Path, u.RawPath = "/"+name, ""
 		q := u.Query()
@@ -307,6 +307,25 @@ func withDatabase(dsn, name string) (string, error) {
 		return "", fmt.Errorf("could not point the target's connection string at the analysis copy %s", name)
 	}
 	return out, nil
+}
+
+// parseCause is what to report of a connection string that would not parse:
+// the cause alone. A *url.Error's text is the raw URL, password and all, and
+// pgx's *pgconn.ParseConfigError masks only the positions it knows hold a
+// password, echoing the rest (a fragment, say) as written.
+func parseCause(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	var pe *pgconn.ParseConfigError
+	if errors.As(err, &pe) {
+		if inner := pe.Unwrap(); inner != nil {
+			return inner
+		}
+		return errors.New("not a valid connection string")
+	}
+	return err
 }
 
 // pgxQuerier adapts a pgx connection to the reads readInfo and

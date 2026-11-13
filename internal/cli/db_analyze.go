@@ -34,6 +34,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/redact"
 )
 
 // defaultAnalyzeDSNEnv is the variable a dsn target's connection string is
@@ -418,7 +419,7 @@ Never mark production. The analysis copies the target (CREATE DATABASE … TEMPL
 func refuseDeployedAnalyzeDSN(ctx context.Context, projectDir, dsn string, declared func(context.Context, string, string) string) error {
 	id := databaseIdentity(dsn)
 	if id == "" {
-		return fmt.Errorf("refusing the dsn target %s: it does not resolve to exactly one server and database (it names no database, lists several hosts, or does not parse), so forge cannot check that it is not a deployed environment's database", redactDSNForMessage(dsn))
+		return fmt.Errorf("refusing the dsn target %s: it does not resolve to exactly one server and database (it names no database, lists several hosts, or does not parse), so forge cannot check that it is not a deployed environment's database", redact.DSN(dsn))
 	}
 	envs, err := ListEnvs(projectDir)
 	if err != nil {

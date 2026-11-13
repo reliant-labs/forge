@@ -134,3 +134,30 @@ func TestQuoteIdent(t *testing.T) {
 		}
 	}
 }
+
+// A refusal names the DSN it refused, and never its password, however the
+// password is spelled: percent-encoded query keys (pgx decodes them),
+// duplicates, any casing, sslpassword, userinfo. Each DSN reaches one refusal
+// path of splitAppDSN: the dbname/path mismatch, the multi-host list, or a URL
+// that does not parse (whose *url.Error carries the raw URL).
+func TestSplitAppDSN_RefusalsNeverEchoAPassword(t *testing.T) {
+	for _, tc := range []struct{ dsn, refusal string }{
+		{"postgres://u@localhost:5432/scratch?dbname=prod&%70assword=hunter2", "connects to database"},
+		{"postgres://u@localhost:5432/scratch?dbname=prod&password=x&password=hunter2", "connects to database"},
+		{"postgres://u:hunter2@localhost:5432/scratch?dbname=prod&PassWord=hunter2&sslpassword=hunter2", "connects to database"},
+		{"postgres://u@snap:5432,prod-db:5432/app?%70assword=hunter2", "several hosts"},
+		{"postgres://u@snap:5432,prod-db:5432/app?%70%61ssword=x&%70assword=hunter2", "several hosts"},
+		// pgx reads the fragment into sslmode, so this one fails to parse.
+		{"postgres://u:hunter2@snap:5432,prod-db:5432/app?sslmode=disable#hunter2", "parse dsn"},
+		{"postgres://u:hunter2@db:badport/app?%70assword=hunter2", "parse dsn"},
+	} {
+		_, _, err := splitAppDSN(tc.dsn)
+		if err == nil || !strings.Contains(err.Error(), tc.refusal) {
+			t.Errorf("splitAppDSN(%q) = %v, want the %q refusal", tc.dsn, err, tc.refusal)
+			continue
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("splitAppDSN(%q) echoed the password: %v", tc.dsn, err)
+		}
+	}
+}

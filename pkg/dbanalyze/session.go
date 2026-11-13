@@ -64,7 +64,7 @@ func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("connect to target: %w", err)
+		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
 	s := &Session{db: db, conn: conn}
 	settings := []string{

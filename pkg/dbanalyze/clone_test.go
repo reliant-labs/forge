@@ -270,3 +270,25 @@ func TestCloneOfAnUnreachableTargetIsAnError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A connection string that does not parse is reported by its cause, never
+// echoed: url and pgx parse errors carry the string, and pgx masks only the
+// positions it knows hold a password.
+func TestUnparseableTargetsAreNotEchoed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, dsn := range []string{
+		"postgres://u:hunter2@db/app?%70assword=hunter2&sslmode=disable#hunter2",
+		"postgres://u:hunter2@db:badport/app?%70assword=hunter2",
+	} {
+		if _, err := dbanalyze.CloneDatabase(ctx, dsn); err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("CloneDatabase(%q) = %v", dsn, err)
+		}
+		if _, err := dbanalyze.OpenSource(ctx, dsn); err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("OpenSource(%q) = %v", dsn, err)
+		}
+		if _, err := dbanalyze.Open(ctx, dsn, dbanalyze.SessionOptions{}); err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("Open(%q) = %v", dsn, err)
+		}
+	}
+}

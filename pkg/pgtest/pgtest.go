@@ -58,6 +58,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" — production's driver
 
 	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
+	"github.com/reliant-labs/forge/pkg/redact"
 )
 
 // EnvBaseURL names the env var that, when set, points pgtest at an
@@ -797,7 +798,7 @@ func NewAtURL(baseURL string) (*sql.DB, func(), error) {
 func NewURLAtURL(baseURL string) (dsn string, cleanup func(), err error) {
 	base, err := openBase(baseURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
+		return "", nil, fmt.Errorf("pgtest: connect to %s: %w", redact.DSN(baseURL), err)
 	}
 	sweepScratchOnce(base, baseURL)
 	name := scratchName(scratchShadowPrefix)
@@ -841,7 +842,7 @@ func createDatabaseSQL(name, template string) string {
 func newAtURL(baseURL, template string) (*sql.DB, func(), error) {
 	base, err := openBase(baseURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("pgtest: connect to %s: %w", redactDSN(baseURL), err)
+		return nil, nil, fmt.Errorf("pgtest: connect to %s: %w", redact.DSN(baseURL), err)
 	}
 	// A crashed earlier run's scratch databases on this server go first.
 	sweepScratchOnce(base, baseURL)
@@ -908,7 +909,7 @@ func EnsureDatabase(appDSN string) error {
 	}
 	base, err := openBase(server)
 	if err != nil {
-		return fmt.Errorf("pgtest: connect to %s: %w", redactDSN(server), err)
+		return fmt.Errorf("pgtest: connect to %s: %w", redact.DSN(server), err)
 	}
 	defer func() { _ = base.Close() }()
 
@@ -971,7 +972,7 @@ func RecreateDatabase(appDSN string) error {
 	}
 	base, err := openBase(server)
 	if err != nil {
-		return fmt.Errorf("pgtest: connect to %s: %w", redactDSN(server), err)
+		return fmt.Errorf("pgtest: connect to %s: %w", redact.DSN(server), err)
 	}
 	defer func() { _ = base.Close() }()
 
@@ -999,14 +1000,14 @@ func RecreateDatabase(appDSN string) error {
 func splitAppDSN(appDSN string) (name, server string, err error) {
 	u, err := url.Parse(appDSN)
 	if err != nil {
-		return "", "", fmt.Errorf("pgtest: parse dsn %s: %w", redactDSN(appDSN), err)
+		return "", "", fmt.Errorf("pgtest: parse dsn %s: %w", redact.DSN(appDSN), parseCause(err))
 	}
 	if u.Host == "" {
-		return "", "", fmt.Errorf("pgtest: dsn %s names no host", redactDSN(appDSN))
+		return "", "", fmt.Errorf("pgtest: dsn %s names no host", redact.DSN(appDSN))
 	}
 	name = strings.TrimPrefix(u.Path, "/")
 	if name == "" || strings.Contains(name, "/") {
-		return "", "", fmt.Errorf("pgtest: dsn %s names no database", redactDSN(appDSN))
+		return "", "", fmt.Errorf("pgtest: dsn %s names no database", redact.DSN(appDSN))
 	}
 	maint := *u
 	maint.Path = "/postgres"
@@ -1034,24 +1035,44 @@ func splitAppDSN(appDSN string) (name, server string, err error) {
 func sameServerAsDialed(appDSN, name, maint string) error {
 	app, err := pgconn.ParseConfig(appDSN)
 	if err != nil {
-		return fmt.Errorf("pgtest: parse dsn %s: %w", redactDSN(appDSN), err)
+		return fmt.Errorf("pgtest: parse dsn %s: %w", redact.DSN(appDSN), parseCause(err))
 	}
 	if app.Database != name {
-		return fmt.Errorf("pgtest: dsn %s connects to database %q but its path names %q (a dbname parameter overrides the path): name the database in the path alone", redactDSN(appDSN), app.Database, name)
+		return fmt.Errorf("pgtest: dsn %s connects to database %q but its path names %q (a dbname parameter overrides the path): name the database in the path alone", redact.DSN(appDSN), app.Database, name)
 	}
 	for _, fb := range app.Fallbacks {
 		if fb.Host != app.Host || fb.Port != app.Port {
-			return fmt.Errorf("pgtest: dsn %s lists several hosts: name one server", redactDSN(appDSN))
+			return fmt.Errorf("pgtest: dsn %s lists several hosts: name one server", redact.DSN(appDSN))
 		}
 	}
 	m, err := pgconn.ParseConfig(maint)
 	if err != nil {
-		return fmt.Errorf("pgtest: parse maintenance dsn %s: %w", redactDSN(maint), err)
+		return fmt.Errorf("pgtest: parse maintenance dsn %s: %w", redact.DSN(maint), parseCause(err))
 	}
 	if m.Host != app.Host || m.Port != app.Port || m.Database != "postgres" {
-		return fmt.Errorf("pgtest: dsn %s routes its maintenance connection to %s:%d/%s, not %s:%d/postgres: name the server in the URL alone", redactDSN(appDSN), m.Host, m.Port, m.Database, app.Host, app.Port)
+		return fmt.Errorf("pgtest: dsn %s routes its maintenance connection to %s:%d/%s, not %s:%d/postgres: name the server in the URL alone", redact.DSN(appDSN), m.Host, m.Port, m.Database, app.Host, app.Port)
 	}
 	return nil
+}
+
+// parseCause is what to report of a connection string that would not parse:
+// the cause alone. A *url.Error's text is the raw URL, password and all, and
+// pgx's *pgconn.ParseConfigError masks only the positions it knows hold a
+// password, echoing the rest (a fragment, say) as written. The caller names
+// the DSN itself, through redact.DSN.
+func parseCause(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	var pe *pgconn.ParseConfigError
+	if errors.As(err, &pe) {
+		if inner := pe.Unwrap(); inner != nil {
+			return inner
+		}
+		return errors.New("not a valid connection string")
+	}
+	return err
 }
 
 // quoteIdent double-quotes a postgres identifier, doubling any embedded double
@@ -1099,21 +1120,6 @@ func withConnectTimeout(dsn string, seconds int) string {
 		sep = "&"
 	}
 	return fmt.Sprintf("%s%sconnect_timeout=%d", dsn, sep, seconds)
-}
-
-// redactDSN masks the password in a DSN for safe inclusion in error
-// messages. A DSN that will not parse is reported opaquely.
-func redactDSN(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "postgres://<unparseable-dsn>"
-	}
-	if u.User != nil {
-		if _, hasPw := u.User.Password(); hasPw {
-			u.User = url.UserPassword(u.User.Username(), "xxxxx")
-		}
-	}
-	return u.String()
 }
 
 // replaceDBName swaps the database segment of a base DSN

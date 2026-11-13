@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -230,9 +231,10 @@ type graphModel struct {
 	// configs is every config the processes load (nil: no root config).
 	configs *processConfigs
 
-	routesView routesGenView
-	opsView    *graphOperatorsView
-	opNodes    []*graphNode
+	routesView          routesGenView
+	opsView             *graphOperatorsView
+	opNodes             []*graphNode
+	constructorProblems []unconstructibleComponent
 }
 
 // assembleGraph discovers, types, reconciles and resolves the graph, writing
@@ -248,16 +250,14 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
 		return nil, notAComponentConsumedError(in.ProjectDir, consumed)
 	}
-	if bad := unconstructibleComponents(in.ProjectDir, comps); len(bad) > 0 {
-		return nil, unconstructibleError(bad)
-	}
+	constructorProblems := unconstructibleComponents(in.ProjectDir, comps)
 	providers, roots, groups, err := discoverAppDeclsAndGroups(in.ProjectDir)
 	if err != nil {
 		return nil, err
 	}
 
 	// Nodes: components, providers, then the generated ones.
-	m := &graphModel{byName: map[string]*graphNode{}, compNode: map[string]*graphNode{}, groups: groups}
+	m := &graphModel{byName: map[string]*graphNode{}, compNode: map[string]*graphNode{}, groups: groups, constructorProblems: constructorProblems}
 	add := func(n *graphNode) error {
 		if prev, dup := m.byName[n.Name]; dup {
 			return fmt.Errorf("the composition graph has two nodes named %s (%s and %s): every node needs its own accessor g.%s() — rename the provider func", n.Name, prev.Doc, n.Doc, n.Name)
@@ -339,6 +339,9 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if err := m.wire(in, resolver, roots); err != nil {
 		return nil, err
 	}
+	if err := m.validateReachedConstructors(roots); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 
@@ -348,7 +351,16 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 // whose Deps do not resolve is left out (composition_graph_reach.go).
 func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []graphRoot) error {
 	scope := func(draft string, problems []graphProblem) (map[string]unbuiltNode, error) {
-		return m.outOfReach(roots, draft, problems)
+		// Constructor shape is another construction problem, not proof that
+		// every directory in a role catalogue belongs to an explicit root.
+		if err := m.checkConstructorReach(roots, draft); err != nil {
+			return nil, err
+		}
+		allProblems := slices.Concat(problems, m.constructorGraphProblems())
+		if len(allProblems) == 0 {
+			return nil, nil
+		}
+		return m.outOfReach(roots, draft, allProblems)
 	}
 	f, err := reconcileGraphComposeFile(in, m.nodes, resolver, scope)
 	if err != nil {
@@ -515,7 +527,7 @@ func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *g
 	if err != nil {
 		return graphComposeFile{}, err
 	}
-	if len(problems) > 0 {
+	if len(problems) > 0 || scope != nil {
 		if scope == nil {
 			return graphComposeFile{}, graphProblemsError(problems)
 		}

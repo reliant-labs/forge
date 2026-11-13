@@ -16,7 +16,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/observe"
 )
 
-// sink is a fake ingest endpoint that keeps every batch it receives.
+// sink is a fake ingest endpoint that keeps every batch it receives. mu
+// guards every field: the handler runs on the server's goroutines, and a
+// request the client abandoned can still be in flight when a test changes
+// the endpoint's behaviour.
 type sink struct {
 	mu      sync.Mutex
 	batches []otlpPayload
@@ -25,12 +28,22 @@ type sink struct {
 	hang bool
 }
 
+// respond sets how the endpoint answers the next request.
+func (s *sink) respond(hang bool, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hang, s.status = hang, status
+}
+
 func newSink(t *testing.T) (*sink, *httptest.Server) {
 	t.Helper()
 	s := &sink{status: http.StatusOK}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body) // the server notices a dropped client only after the body is read
-		if s.hang {
+		s.mu.Lock()
+		hang, status := s.hang, s.status
+		s.mu.Unlock()
+		if hang {
 			<-r.Context().Done()
 			return
 		}
@@ -44,7 +57,7 @@ func newSink(t *testing.T) (*sink, *httptest.Server) {
 		s.mu.Lock()
 		s.batches = append(s.batches, p)
 		s.mu.Unlock()
-		w.WriteHeader(s.status)
+		w.WriteHeader(status)
 	}))
 	t.Cleanup(srv.Close)
 	return s, srv
@@ -202,7 +215,7 @@ func TestQuietRunSendsNothingUntilTheNoticeWasShown(t *testing.T) {
 
 func TestFlushIsBoundedAndDropsFailures(t *testing.T) {
 	s, srv := newSink(t)
-	s.hang = true
+	s.respond(true, http.StatusOK)
 	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
 	c := New(cfg)
 	c.Track(context.Background(), FirstRunEvent("forge"))
@@ -213,7 +226,7 @@ func TestFlushIsBoundedAndDropsFailures(t *testing.T) {
 		t.Error("an unsent first-run event must be retried on the next run")
 	}
 
-	s.hang, s.status = false, http.StatusServiceUnavailable
+	s.respond(false, http.StatusServiceUnavailable)
 	c = New(cfg)
 	c.Track(context.Background(), FirstRunEvent("forge"))
 	c.Flush(context.Background())

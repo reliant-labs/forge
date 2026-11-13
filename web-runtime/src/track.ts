@@ -86,6 +86,11 @@ export type TrackProps = Record<string, unknown>;
 export interface TelemetrySink {
   track(name: string, attributes: Record<string, TrackValue>): void;
   setUser(id: string): void;
+  /**
+   * Stamp the org later events are about (setTelemetryOrg); "" clears it.
+   * Optional, so a sink written before it existed still type-checks.
+   */
+  setOrg?(id: string): void;
   disable(): void;
   /**
    * Export what is batched now, without waiting for the batch timer: the
@@ -399,6 +404,47 @@ export function setTelemetryUser(id: string | null | undefined): void {
   notifyTier(before, false, false);
 }
 
+let namedOrg = "";
+let lastStampedOrg: string | null = null;
+
+/**
+ * Name the org the browser's later events are about (the signed-in user's
+ * current org), or clear it with null or "". It is an opaque org id, carried
+ * as the `orgId` global attribute beside `userId` and stored in
+ * product_events.OrgId, so a funnel can count by org (forge.Funnel
+ * `by = "org"`). It follows the user id's tier rule exactly: only in the
+ * `identified` and `full` tiers, never under GPC / DNT, in modes "off" and
+ * "aggregate" or after optOutOfAnalytics(). Nothing is stored on the device.
+ * Held until the SDK has started.
+ */
+export function setTelemetryOrg(id: string | null | undefined): void {
+  if (typeof window === "undefined" || disabled) {
+    return;
+  }
+  namedOrg =
+    typeof id === "string" && !id.includes("@")
+      ? id.trim().slice(0, MAX_USER_ID_CHARS)
+      : "";
+  stampOrg();
+}
+
+// Give the sink the org the current tier allows, when it changed.
+function stampOrg(): void {
+  if (!sink?.setOrg) {
+    return;
+  }
+  const value = stampable(namedOrg);
+  if (value === (lastStampedOrg ?? "")) {
+    return;
+  }
+  try {
+    lastStampedOrg = value;
+    sink.setOrg(value);
+  } catch {
+    // Telemetry must never break the app.
+  }
+}
+
 // The id the SDK may carry for `id`: itself in `identified` and `full`,
 // nothing in `off`, in mode "aggregate" or under GPC / DNT.
 function stampable(id: string): string {
@@ -448,6 +494,7 @@ export function isTelemetryDisabled(): boolean {
 export function setTelemetrySink(next: TelemetrySink | null): void {
   sink = next;
   lastStamped = null;
+  lastStampedOrg = null;
   const held = pending;
   pending = [];
   if (!next || disabled) {
@@ -486,6 +533,9 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
     } catch {
       // Telemetry must never break the app.
     }
+  }
+  if (namedOrg) {
+    stampOrg();
   }
 }
 
@@ -721,6 +771,9 @@ function notifyTier(
       // Telemetry must never break the app.
     }
   }
+  if (restamp) {
+    stampOrg();
+  }
   for (const listener of [...tierListeners]) {
     try {
       listener(after, before);
@@ -739,6 +792,8 @@ export function resetTrackState(): void {
   analyticsConsent = false;
   optedOut = null;
   namedUser = "";
+  namedOrg = "";
+  lastStampedOrg = null;
   extraLocalKeys.clear();
   tierListeners.clear();
   warnedReserved = false;

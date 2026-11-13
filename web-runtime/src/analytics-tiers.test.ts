@@ -216,9 +216,22 @@ describe("the cookieless modes: identified (the default) and aggregate", () => {
         { flagKey: "dark-mode", providerMetadata: { name: "flagd" } },
         { flagKey: "dark-mode", value: true, variant: "on" },
       );
+      // Below full a link to a site the page names carries where the visit
+      // came from (the referrer's host), never an id; a link anywhere else
+      // carries nothing.
+      expect(
+        index.withAttribution("https://app.example.com/", {
+          sites: ["example.com"],
+        }),
+      ).toBe("https://app.example.com/?ref=news.ycombinator.com");
       expect(index.withAttribution("https://app.example.com/")).toBe(
         "https://app.example.com/",
       );
+      expect(
+        index.withAttribution("https://tracker.example.net/", {
+          sites: ["example.com"],
+        }),
+      ).toBe("https://tracker.example.net/");
       // The SDK checks its session again, as it does every minute.
       const first = client.getSessionId();
       expect(client.getSessionId()).toBe(first);
@@ -376,7 +389,7 @@ describe("the full tier", () => {
     expect(dom.local.getItem("forge.visitor_id")).toBe(visitor);
     // The signed-in user is linked to the visitor once consent arrives.
     expect(actions("user_identified")).toEqual([
-      ["user_identified", { visitor_id: visitor }],
+      ["user_identified", { visitor_id: visitor, landing_path: "/" }],
     ]);
   });
 

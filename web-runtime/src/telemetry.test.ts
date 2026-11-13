@@ -2206,8 +2206,15 @@ describe("app.client, visitor.id and user_identified", () => {
       "app.client": "landing",
     });
     expect(store.size).toBe(0);
-    expect(index.withAttribution("https://app.example.com/")).toBe(
-      "https://app.example.com/",
+    // This page load's campaign is passed on to the site's own app; no
+    // visitor id is, and an unrelated site gets nothing.
+    expect(
+      index.withAttribution("https://app.example.com/", {
+        sites: ["app.example.com"],
+      }),
+    ).toBe("https://app.example.com/?utm_source=news");
+    expect(index.withAttribution("https://elsewhere.example.org/")).toBe(
+      "https://elsewhere.example.org/",
     );
     k.setTelemetryUser("user-1");
     expect(

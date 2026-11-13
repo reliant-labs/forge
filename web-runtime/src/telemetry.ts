@@ -1037,6 +1037,8 @@ async function start(
           hdx.addAction?.("user_identified", identify);
         }
       },
+      // The org later events are about (setTelemetryOrg), beside userId.
+      setOrg: (id) => hdx.setGlobalAttributes?.({ orgId: id }),
       // The page is being hidden or unloaded: export the batch now. The
       // SDK's exporter posts with fetch keepalive, which outlives the page.
       flush: () => flushSdk(),

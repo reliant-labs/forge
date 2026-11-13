@@ -428,6 +428,10 @@ func TestTransmitsStopsWhenAnotherRunOptsOut(t *testing.T) {
 func TestConcurrentRunsShareTheDailyCap(t *testing.T) {
 	s, srv := newSink(t)
 	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	// One fixed day: reservations made either side of UTC midnight would
+	// rightly draw on two days' allowances.
+	now := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	cfg.Now = func() time.Time { return now }
 	const runs = 4
 	clients := make([]*Client, runs)
 	for i := range clients {
@@ -445,7 +449,12 @@ func TestConcurrentRunsShareTheDailyCap(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := len(s.records()); n != MaxEventsPerDay {
-		t.Errorf("%d concurrent runs sent %d events, want the one daily cap %d", runs, n, MaxEventsPerDay)
+	// The reservations are exact; what was delivered can only be fewer (a post
+	// that ran out of FlushTimeout on a loaded machine still spent its share).
+	if got := newState(clients[0].state.path).load().SentToday; got != MaxEventsPerDay {
+		t.Errorf("%d concurrent runs reserved %d events, want the one daily cap %d", runs, got, MaxEventsPerDay)
+	}
+	if n := len(s.records()); n > MaxEventsPerDay {
+		t.Errorf("%d concurrent runs sent %d events, more than the daily cap %d", runs, n, MaxEventsPerDay)
 	}
 }

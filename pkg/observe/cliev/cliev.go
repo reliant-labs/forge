@@ -327,8 +327,10 @@ func (c *Client) Track(ctx context.Context, name string, attrs ...slog.Attr) {
 	c.pending = append(c.pending, record{at: c.cfg.Now(), name: name, attrs: out})
 }
 
-// Flush sends the run's events in one batch, waiting at most FlushTimeout,
-// and records the first-run event as sent when it was in the batch. Call it
+// Flush sends the run's events in one batch, waiting at most FlushTimeout for
+// the state lock and the post together, and records the first-run event as
+// sent when it was in the batch (one more locked write, bounded by its own
+// short wait). Call it
 // once, as the program exits. Failures are dropped silently, and still count
 // toward the day's MaxEventsPerDay, which bounds what every run on the machine
 // together attempts.
@@ -348,9 +350,17 @@ func (c *Client) Flush(ctx context.Context) {
 	// reservation is spent whether or not the post succeeds: the cap bounds
 	// what is attempted. A run turned off by another since it started
 	// reserves, and sends, nothing.
+	//
+	// One deadline for the whole send: waiting for another run's state lock
+	// spends the same FlushTimeout as the post.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, FlushTimeout)
+	defer cancel()
 	day := c.cfg.Now().UTC().Format("2006-01-02")
 	reserved := 0
-	if _, err := c.state.update(func(d *stateDoc) {
+	if _, err := c.state.updateCtx(ctx, func(d *stateDoc) {
 		if optedOut(*d) {
 			return
 		}
@@ -363,18 +373,16 @@ func (c *Client) Flush(ctx context.Context) {
 		return
 	}
 	batch = batch[:reserved]
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(ctx, FlushTimeout)
-	defer cancel()
 	if !c.post(ctx, batch) {
 		return
 	}
 	for _, r := range batch {
 		if r.name == FirstRunEvent(c.cfg.App) {
 			// Only this flag: the file is re-read under its lock, so a choice
-			// another run made during the post (`telemetry off`) is kept.
+			// another run made during the post (`telemetry off`) is kept. Past
+			// the deadline on purpose (bounded by the lock's own wait): an
+			// event that was delivered must be recorded, or the next run
+			// sends it again.
 			_, _ = c.state.update(func(d *stateDoc) { d.FirstRunSent = true })
 			break
 		}

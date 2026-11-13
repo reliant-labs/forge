@@ -57,13 +57,19 @@ func (s *state) load() stateDoc {
 // holding the process mutex and the cross-process lock throughout, and
 // returns what it wrote.
 func (s *state) update(fn func(*stateDoc)) (stateDoc, error) {
+	return s.updateCtx(context.Background(), fn)
+}
+
+// updateCtx is update, waiting for another run's lock no longer than ctx
+// allows (and never longer than lockWait).
+func (s *state) updateCtx(ctx context.Context, fn func(*stateDoc)) (stateDoc, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return stateDoc{}, err
 	}
 	lock := flock.New(s.path + ".lock")
-	ctx, cancel := context.WithTimeout(context.Background(), lockWait)
+	ctx, cancel := context.WithTimeout(ctx, lockWait)
 	defer cancel()
 	ok, err := lock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {

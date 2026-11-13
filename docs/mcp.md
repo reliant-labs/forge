@@ -15,8 +15,9 @@ binary to shell out to and nothing to keep in sync with the CLI.
 Most of what forge offers works on the app as it is: forge need not build or
 deploy it. In an existing app, in any language, the server leads with:
 
-- **Monitoring.** After `forge login`, `forge obs init <env>` registers the
-  env, mints an ingest token and prints the `OTEL_*` variables. Set them where
+- **Monitoring.** After `forge login`, `forge obs init <env>…` (one or more
+  envs) registers each env, mints an ingest token per env and prints its
+  `OTEL_*` variables. Set them where
   the app runs and any OpenTelemetry SDK sends its traces, logs and metrics to
   dashboards, issues and alerts at
   `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in

@@ -92,8 +92,9 @@ to trust, and the user can stop after any of them.
 
 ```bash
 forge project benefits                                   # what applies to this repo, with estimates
-forge login && forge obs init prod staging               # hosted monitoring: registers the envs, mints a token per env, prints the
-                                                         #   OTEL_* variables: endpoint, headers (the token, shown once), attributes
+forge login && forge obs init prod staging               # hosted monitoring (`obs init [env…]`: one or more envs): registers each env,
+                                                         #   mints a token per env, prints its OTEL_* variables: endpoint,
+                                                         #   headers (the token, shown once), attributes
 forge cloud token create --name ci --scopes deploy:write # record deploys: the CI secret FORGE_CONTROL_PLANE_TOKEN, then after the deploy job:
 forge release record --env prod --version "$TAG" --workload api --image "ghcr.io/acme/api@$DIGEST"
 forge obs check prod --release "$TAG" --wait             #   …and its verdict: exit 0 good, 1 regressed, 2 not proven, 8 too early

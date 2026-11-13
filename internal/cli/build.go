@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/goexec"
@@ -819,7 +820,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	budget := detectBuildMemoryBudget()
 	parallel, memCaps := resolveBuildConcurrency(opts.parallelSet, opts.parallel, budget)
 	opts.parallel = parallel
-	fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+	printBuildMemory(budget, memCaps)
 
 	plan := buildPlan{
 		cfg:               cfg,
@@ -913,9 +914,28 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return fmt.Errorf("%d of %d builds failed", len(failed), len(results))
 	}
 
-	fmt.Printf("\n[build] All %d builds succeeded.\n", len(results))
-	fmt.Printf("[build] Binaries available in %s/\n", opts.outputDir)
+	printBuildSuccess(len(results), opts.outputDir)
 	return nil
+}
+
+// printBuildMemory reports the build's memory budget, except on an anonymous
+// deploy, whose output keeps to what its user can act on. Extracted, like
+// printBuildHeader, to hold runBuild under its statement budget.
+func printBuildMemory(budget buildMemoryBudget, memCaps buildMemoryCaps) {
+	if !cloud.ClaimableActive() {
+		fmt.Printf("[build]   Memory:   %s\n", describeBuildBudget(budget, memCaps))
+	}
+}
+
+// printBuildSuccess closes a build in which every target succeeded. A build
+// that had no targets to run says nothing, rather than "All 0 builds
+// succeeded".
+func printBuildSuccess(n int, outputDir string) {
+	if n == 0 {
+		return
+	}
+	fmt.Printf("\n[build] All %d builds succeeded.\n", n)
+	fmt.Printf("[build] Binaries available in %s/\n", outputDir)
 }
 
 // builtSet is what runBuild's builds produced, as recordBuild needs it.
@@ -1017,6 +1037,12 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 // Extracted for the same reason as printBuildSummary: it is pure rendering,
 // and inline it held runBuild over its statement budget.
 func printBuildHeader(projectName string, opts buildOptions, resolvedTag, tagSource string, push pushPlan, entities *KCLEntities) {
+	if cloud.ClaimableActive() {
+		// One line: the output dir, target and docker switch are the
+		// defaults, and the KCL plan is summarised by the lines below it.
+		fmt.Printf("[build] Building %s (env %s, release %s)\n", projectName, opts.env, resolvedTag)
+		return
+	}
 	fmt.Printf("[build] Building project: %s\n", projectName)
 	fmt.Printf("[build]   Output:   %s\n", opts.outputDir)
 	fmt.Printf("[build]   Target:   %s\n", opts.buildTarget)
@@ -1055,6 +1081,9 @@ func partitionBuildResults(results []buildResult) (succeeded, failed []buildResu
 // person to add a step there had to choose between their change and a lint
 // failure that is not about their change.
 func printBuildSummary(succeeded, failed []buildResult, start time.Time) {
+	if len(succeeded) == 0 && len(failed) == 0 {
+		return
+	}
 	fmt.Println()
 	fmt.Println(strings.Repeat("-", 50))
 	fmt.Printf("[build] Summary (%s)\n", time.Since(start).Truncate(time.Millisecond))
@@ -1839,8 +1868,10 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 	}
 	fmt.Fprintf(out, "\n[build] %s release %s (%d image(s), %d package(s), %d file(s)): %s\n",
 		verb, cut.Release.Version, cut.Images, cut.Packages, cut.Files, strings.Join(releaseImageNames(cut.Release), ", "))
-	fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
-	fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
+	if !cloud.ClaimableActive() {
+		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
+		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
+	}
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build

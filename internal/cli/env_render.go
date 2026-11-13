@@ -72,6 +72,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/cloud"
 )
 
 // renderedObject is one document of the env's rendered manifest stream,
@@ -1120,7 +1121,9 @@ func (s *renderWriteScan) report(w io.Writer, envName string) {
 	}
 	changes := s.changes()
 	if len(changes) == 0 {
-		fmt.Fprintf(w, "[render] wrote nothing: %d path(s) unchanged across the render\n", s.scanned)
+		if !cloud.ClaimableActive() {
+			fmt.Fprintf(w, "[render] wrote nothing: %d path(s) unchanged across the render\n", s.scanned)
+		}
 		return
 	}
 	fmt.Fprintf(w, "[render] NOT side-effect-free — %d file(s) changed while rendering %q:\n", len(changes), envName)

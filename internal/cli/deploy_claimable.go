@@ -272,6 +272,14 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
 		compute := needsCompute(entities)
+		// The registry login of an anonymous deploy lands in a throwaway
+		// docker config, so it does not write to the user's ~/.docker. No
+		// throwaway, no deploy: the login never falls back to the real one.
+		restoreDocker, err := isolateDockerConfig(compute, platformRegistryHost(entities))
+		if err != nil {
+			return err
+		}
+		defer restoreDocker()
 
 		// Everything the ordinary no-version deploy does, as the anonymous user.
 		// --yes is implied: there is no human at this keyboard to approve a

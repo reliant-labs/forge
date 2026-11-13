@@ -26,27 +26,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// byoSource is one `output.generated` entry.
-type byoGenerated struct {
-	Name      string   `json:"name"`
-	Command   []string `json:"command"`
-	Dir       string   `json:"dir"`
-	Cluster   string   `json:"cluster"`
-	Namespace string   `json:"namespace"`
-}
-
-// byoChart is one `output.bundled_charts` entry (a HelmChart whose delivery
-// is "bundle"), in the projection _render_helm_chart emits.
-type byoChart struct {
-	Name      string         `json:"name"`
-	Chart     string         `json:"chart"`
-	Repo      string         `json:"repo"`
-	OCI       string         `json:"oci"`
-	Version   string         `json:"version"`
-	Namespace string         `json:"namespace"`
-	Values    map[string]any `json:"values"`
-	Cluster   string         `json:"cluster"`
-}
+// byoGenerated and byoChart are the output entries this file expands; their
+// wire types are exported in output_types.go, where the env schema reads them.
+type (
+	byoGenerated = GeneratedOutput
+	byoChart     = BundledChartOutput
+)
 
 // clusterScopedKinds never receive a defaulted namespace. Mirrors
 // kcl/render.k's _CLUSTER_SCOPED, which places forge.Manifests the same way.

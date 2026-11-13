@@ -13,7 +13,7 @@
 // Lives under the browser-shared root because it is a Vitest suite: Next.js
 // and Vite SPA both run `vitest run`.
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The runtime's telemetry entry points, observed: what the context names to
@@ -147,7 +147,9 @@ describe("AuthContextProvider", () => {
     );
 
     expect(await screen.findByText("signed in as real@example.com")).toBeTruthy();
-    expect(telemetry.identifyUser).toHaveBeenLastCalledWith("sub_real");
+    // identifyUser runs in the provider's effect, which can land after the
+    // text renders: wait for it rather than racing it.
+    await waitFor(() => expect(telemetry.identifyUser).toHaveBeenLastCalledWith("sub_real"));
   });
 
   it('names nobody to telemetry when the runtime config says IDENTIFY_USER = "false"', async () => {
@@ -165,7 +167,7 @@ describe("AuthContextProvider", () => {
 
     expect(await screen.findByText("signed in as real@example.com")).toBeTruthy();
     // Only ever cleared: no subject is attached, so no heartbeat is sent.
-    expect(telemetry.identifyUser).toHaveBeenCalled();
+    await waitFor(() => expect(telemetry.identifyUser).toHaveBeenCalled());
     for (const [id] of telemetry.identifyUser.mock.calls) expect(id).toBeNull();
   });
 

@@ -33,6 +33,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -223,7 +224,10 @@ func renderDeployPlan(out io.Writer, env string, plan release.Plan) {
 		fmt.Fprintf(out, " (release %s)", plan.ReleaseVersion)
 	}
 	fmt.Fprintf(out, "\n")
-	fmt.Fprintf(out, "  computed against: %s\n", describePlanBasis(plan.LiveBasis))
+	first := isFirstDeployPlan(plan)
+	if !first {
+		fmt.Fprintf(out, "  computed against: %s\n", describePlanBasis(plan.LiveBasis))
+	}
 
 	if plan.ConfigIdentical {
 		// The short-circuit, stated rather than rendered as an empty
@@ -232,24 +236,70 @@ func renderDeployPlan(out io.Writer, env string, plan release.Plan) {
 		fmt.Fprintf(out, "  config identical — this deploy changes images at most\n")
 	}
 
+	// On a first deploy the nothing-to-compare warnings are dropped, but only
+	// when something else is left to show: a plan must never render blank while
+	// its findings say "not computed" (F-20).
+	hide := first && len(planFindings(plan, true)) > 0
+	shown := 0
 	for _, section := range planSectionOrder {
 		findings := findingsInSection(plan, section.key)
+		if hide {
+			findings = withoutNothingToCompare(findings)
+		}
 		if len(findings) == 0 {
 			continue
 		}
+		shown += len(findings)
 		fmt.Fprintf(out, "\n  %s\n", section.label)
 		for _, f := range findings {
 			fmt.Fprintf(out, "    [%s] %s%s\n", f.Class, f.Subject, detailSuffix(f.Detail))
 		}
 	}
 
-	if len(plan.Findings) == 0 {
+	if shown == 0 && len(plan.Findings) == 0 {
 		fmt.Fprintf(out, "\n  no changes found\n")
 	}
 	if stops := plan.StopCodes(); len(stops) > 0 {
 		fmt.Fprintf(out, "\n  DESTRUCTIVE: %s — each needs --acknowledge-destructive\n", strings.Join(stops, ", "))
 	}
-	fmt.Fprintf(out, "\n  plan digest: %s\n", plan.Digest)
+	if !cloud.ClaimableActive() {
+		// An anonymous deploy is approved by default; there is no digest for
+		// anyone to pass to --approve.
+		fmt.Fprintf(out, "\n  plan digest: %s\n", plan.Digest)
+	}
+}
+
+// isFirstDeployPlan reports whether the plan was computed for an environment
+// that has never been promoted and has no applied bundle: nothing is live, so
+// there is nothing to diff against or to drift from.
+func isFirstDeployPlan(plan release.Plan) bool {
+	b := plan.LiveBasis
+	return b.CurrentPromotionID == "" && b.AppliedBundleID == "" && !b.DriftObserved
+}
+
+// planFindings is the plan's findings, without the nothing-to-compare ones when
+// dropUnknown is set.
+func planFindings(plan release.Plan, dropUnknown bool) []release.PlanFinding {
+	if !dropUnknown {
+		return plan.Findings
+	}
+	return withoutNothingToCompare(plan.Findings)
+}
+
+// withoutNothingToCompare drops the two warn findings that only say there is no
+// earlier state to compare with (BuildPlan's unknown objects and unknown drift).
+// On a first deploy they are true of every environment and tell the reader
+// nothing. Every other finding, a stop-class one included, stays.
+func withoutNothingToCompare(findings []release.PlanFinding) []release.PlanFinding {
+	var out []release.PlanFinding
+	for _, f := range findings {
+		if f.Code == release.FindingUnknown && f.Class == release.ClassWarn &&
+			(f.Section == release.SectionObjects || f.Section == release.SectionDrift) && f.Subject == f.Section {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // planSectionOrder is §8.6's table, in its order.

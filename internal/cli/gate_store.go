@@ -172,7 +172,7 @@ func classifyGateError(err error, what string) error {
 		return &gateExitError{
 			code: exitUndetermined, msg: fmt.Sprintf("%s: %s", what, cerr.Message), cause: err,
 			hint: "recording evidence needs a token with deploy:write (or member access); " +
-				"`forge cloud token create` issues one",
+				"mint one in the web app (Settings → API tokens)",
 		}
 	case cerr.HasCode(cloud.CodeUnimplemented):
 		return &gateExitError{

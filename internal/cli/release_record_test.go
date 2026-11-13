@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -139,15 +141,15 @@ func (f *fakeRecordCP) called(short string) []map[string]any {
 }
 
 // useRecordLedger points openRecordLedger at l for the test.
-func useRecordLedger(t *testing.T, open func(ctx context.Context, projectDir, project, env, token string) (recordLedger, error)) {
+func useRecordLedger(t *testing.T, open recordLedgerOpener) {
 	t.Helper()
 	prev := openRecordLedger
 	openRecordLedger = open
 	t.Cleanup(func() { openRecordLedger = prev })
 }
 
-func hostedRecordTarget(cp *fakeRecordCP) func(context.Context, string, string, string, string) (recordLedger, error) {
-	return func(_ context.Context, _, project, _, _ string) (recordLedger, error) {
+func hostedRecordTarget(cp *fakeRecordCP) recordLedgerOpener {
+	return func(_ context.Context, _, project, _, _ string, _ *KCLEntities) (recordLedger, error) {
 		return recordLedger{
 			ledger:   hostedLedger(cp, cloud.DefaultEndpoint, project, deploytarget.HostedEnvSelfManaged),
 			endpoint: cloud.DefaultEndpoint,
@@ -282,6 +284,44 @@ func TestReleaseRecord_RefusalOnAForgeDeployedEnv(t *testing.T) {
 	}
 }
 
+// A declaration forge cannot stat for a reason other than absence (here, a
+// directory it may not search) is never taken for no declaration: the record
+// is refused with the error, and nothing is cut.
+func TestAdmitDeclaredEnv_AnUnreadableDeclarationIsNotAbsent(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("mode 000 does not stop this user searching a directory (root, or Windows, where chmod sets only the read-only bit), so its stat cannot fail")
+	}
+	projectDir := t.TempDir()
+	envDir := filepath.Join(projectDir, "deploy", "kcl", "prod")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte("# prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(envDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(envDir, 0o755) })
+	prevRender := renderRecordEnv
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) {
+		t.Fatal("an unreadable declaration was rendered")
+		return nil, nil
+	}
+	t.Cleanup(func() { renderRecordEnv = prevRender })
+
+	entities, err := admitDeclaredEnv(context.Background(), projectDir, "prod")
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("admitDeclaredEnv = (%v, %v), want a permission error, never an admission", entities, err)
+	}
+
+	// Absent stays absent: an env with no declaration is admitted as one
+	// forge does not deploy.
+	if entities, err := admitDeclaredEnv(context.Background(), projectDir, "staging"); err != nil || entities != nil {
+		t.Fatalf("no declaration: admitDeclaredEnv = (%v, %v), want (nil, nil)", entities, err)
+	}
+}
+
 // An env forge's KCL declares is one forge deploys: a record into it is
 // refused before anything is cut, on the machine ledger too, where no control
 // plane would refuse it.
@@ -301,6 +341,11 @@ func TestReleaseRecord_RefusesAKCLDeclaredEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	prevRender := renderRecordEnv
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) {
+		return &KCLEntities{Workloads: []WorkloadEntity{hostWL("api")}}, nil
+	}
+	t.Cleanup(func() { renderRecordEnv = prevRender })
 	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
 	_, err := recordReleaseIn(context.Background(),
 		releaseRecordOptions{env: "dev", version: "v1", commit: recordCommitA}, sc, &bytes.Buffer{})

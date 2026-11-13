@@ -33,7 +33,7 @@ const (
 
 // active is the rows that count their UserId as active, shared with the
 // console's Users card (GetUserActivity) and `forge obs users`.
-const active = obsquery.ActiveEvidence
+const active = obsquery.UserActivityEvidence
 
 // user is the distinct-user key. A user is counted once per environment, as
 // the Users card counts them (per env), so a project dashboard over several
@@ -47,6 +47,29 @@ const visitor = "(EnvId, h)"
 // ends at end: one row per new user, EnvId, UserId, NewAt, ReportsSignups.
 func newUsers(end string) string {
 	return obsquery.NewUsersSource("product_events", end, envScope)
+}
+
+// newDecided is obsquery.NewUsersDecidedFrom over product_events for the
+// window that ends at end: one row per environment, EnvId, ReportsSignups,
+// DataFrom, DecidedFrom.
+func newDecided(end string) string {
+	return obsquery.NewUsersDecidedFrom("product_events", end, envScope)
+}
+
+// unlessUndecided is the figure expression fig over the range [from, end), or
+// NULL when no environment ACTIVE in the range can tell a new user from a
+// returning one there: each one with UserActivityEvidence rows in the range reports
+// no sign-ups and its DecidedFrom is at or after end. A new or returning
+// figure there would be a guess (every user returning), so the panel shows no
+// figure. An environment with no activity in the range contributes a
+// determinate nothing, so it neither nulls the figure nor needs deciding: a
+// range nobody was active in answers 0. With several environments in scope,
+// one that decides any part of the range (DecidedFrom before end) keeps the
+// figure, and each environment's own contribution is NewUsersSource's for it.
+func unlessUndecided(from, end, fig string) string {
+	return "if((SELECT count() > 0 AND countIf(DecidedFrom < " + end + ") = 0 FROM (" + newDecided(end) + ")" +
+		" WHERE EnvId IN (SELECT EnvId FROM product_events WHERE " + active + " AND " + envScope +
+		" AND Timestamp >= " + from + " AND Timestamp < " + end + ")), NULL, " + fig + ")"
 }
 
 // lastDays is the predicate on Timestamp for the n days before end.
@@ -131,7 +154,9 @@ func stitchCTE(rng string) string {
 // obsquery.NewUsersSource reads: the 90 days before {to}) is in [lo, hi), with
 // the visitor hash the sign-up itself carried (a hosted backend's request is
 // stamped by the edge, so devidp's sign-up has one with no browser code) and
-// its method, provider and verification.
+// its method, provider and verification. Its rows are user evidence (active,
+// which a sign-up always is), so a project's activity rules leave a marked
+// user's sign-up out of every cohort and sign-up count too (withActivity).
 func suCTE(lo, hi string) string {
 	return `su AS (
   SELECT * FROM (
@@ -140,7 +165,7 @@ func suCTE(lo, hi string) string {
            argMin(Props['method'], Timestamp) AS method, argMin(Props['provider'], Timestamp) AS provider,
            argMin(Props['social_provider'], Timestamp) AS social, argMin(Props['verified'], Timestamp) AS verified
     FROM product_events
-    WHERE EventName = 'auth_signed_up' AND UserId != '' AND ` + envScope + ` AND ` +
+    WHERE EventName = 'auth_signed_up' AND ` + active + ` AND ` + envScope + ` AND ` +
 		lastDays(obsquery.NewUsersWindowDays, to) + `
     GROUP BY EnvId, UserId)
   WHERE at >= ` + lo + ` AND at < ` + hi + `)`

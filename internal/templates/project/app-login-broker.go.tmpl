@@ -66,6 +66,9 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/devidp"
 	"github.com/reliant-labs/forge/pkg/observe"
+{{- if .DatabaseURLField}}
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
+{{- end}}
 
 	"{{.Module}}/pkg/config"
 {{- if .MiddlewareDeclaresSessionCookie}}
@@ -509,7 +512,9 @@ func proofLockerFor(dsn string, logger *slog.Logger) devidp.ProofLocker {
 		logger.Error("the proof lock's database_url cannot be parsed: address proofs, verification and passkey enrolment are refused until it is fixed", "error", err)
 		return devidp.UnavailableProofLocker(err)
 	}
-	db := stdlib.OpenDB(*pc)
+	// Traced like every other pool the app opens: each lock statement is a
+	// span on the request that took the lock.
+	db := dbtrace.OpenDB(stdlib.GetConnector(*pc))
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(2)
 	return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})

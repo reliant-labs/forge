@@ -992,6 +992,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err := resolveFrontendEntitySources(ctx, projectDir, entities); err != nil {
 		return fmt.Errorf("resolve frontend sources: %w", err)
 	}
+	anchorFrontendPaths(projectDir, entities)
 	if entitiesEmpty(entities) {
 		return fmt.Errorf("no services/operators/frontends/cronjobs declared in deploy/kcl/%s/", opts.env)
 	}
@@ -3469,6 +3470,25 @@ type frontendLaunch struct {
 	// env's pulled values). Each frontend receives only the keys it
 	// DECLARES via env_vars secret_ref.
 	secrets map[string]string
+}
+
+// anchorFrontendPaths makes every frontend's relative Path absolute under
+// projectDir. A frontend's path is declared relative to the project root, but
+// `forge env up` uses it as the dev server's cmd.Dir and stats its
+// package.json — both of which a relative path resolves against forge's OWN
+// working directory. That is the project root only when forge runs from it:
+// `forge -C <dir> env up` from another checkout launched every dev server in
+// the caller's tree. Anchoring once, right after the render, gives the ~10
+// readers below one answer instead of each re-deriving it.
+func anchorFrontendPaths(projectDir string, e *KCLEntities) {
+	if e == nil || projectDir == "" {
+		return
+	}
+	for i := range e.Frontends {
+		if p := e.Frontends[i].Path; p != "" && !filepath.IsAbs(p) {
+			e.Frontends[i].Path = filepath.Join(projectDir, p)
+		}
+	}
 }
 
 // frontendPhaseEnabled reports whether `forge env up` should start the

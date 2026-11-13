@@ -5,7 +5,15 @@
 // replay is off by default and masked when on, and no real secret is ever in
 // the options. The SDK itself is mocked — its behaviour is HyperDX's to test;
 // what is ours is exactly what we hand it.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 const init = vi.fn();
 const recordException = vi.fn();
@@ -936,6 +944,360 @@ describe("fetch and XHR URL query stripping", () => {
     expect(t.stripUrlQuery("/a/b?x=1")).toBe("/a/b");
     expect(t.stripUrlQuery("/a/b#frag?x")).toBe("/a/b");
     expect(t.stripUrlQuery("/a/b")).toBe("/a/b");
+  });
+});
+
+describe("URLs in what the SDK exports", () => {
+  // The SDK's own export pipeline, built the way @hyperdx/otel-web's init
+  // builds it (index.js): its SplunkWebTracerProvider, its attributes
+  // processor (which stamps `location.href` on every span as it starts) and its
+  // batch processor, over an exporter that serializes each batch with the
+  // OTel JSON serializer the SDK's OTLPTraceExporter posts. Only the spans are
+  // synthesized here, each with the attributes its instrumentation records
+  // (document-load, user-interaction, the SDK's routeChange, fetch, its error
+  // instrumentation and addAction); scripts/browser-telemetry-smoke.mjs proves
+  // the same against the real bundle and real instrumentations in Chromium.
+  const PAGE = `${ORIGIN}/welcome?email=jane%40example.com&utm_source=news#access_token=SECRET`;
+  const NEXT = `${ORIGIN}/orders/17?ref=mail&token=SECRET#top`;
+
+  type KeyValue = {
+    key: string;
+    value: {
+      stringValue?: string;
+      intValue?: number | string;
+      arrayValue?: { values: Array<{ stringValue?: string }> };
+    };
+  };
+  type ExportedSpan = {
+    name: string;
+    attributes: KeyValue[];
+    events?: Array<{ name: string; attributes?: KeyValue[] }>;
+  };
+  type Batch = {
+    resourceSpans: Array<{
+      resource: { attributes: KeyValue[] };
+      scopeSpans: Array<{ scope: { name: string }; spans: ExportedSpan[] }>;
+    }>;
+  };
+
+  const value = (kv: KeyValue) =>
+    kv.value.stringValue ??
+    kv.value.intValue ??
+    kv.value.arrayValue?.values.map((v) => v.stringValue);
+  const attrs = (list: KeyValue[] = []) =>
+    Object.fromEntries(list.map((kv) => [kv.key, value(kv)]));
+
+  // The SDK's classes, loaded once: a cold import of the OTel web stack
+  // takes seconds on a loaded machine. The package's exports map hides
+  // these files, so they are imported by path.
+  let sdk: Record<string, any> = {};
+  beforeAll(async () => {
+    const root = "../node_modules/@hyperdx/otel-web";
+    const otel = `${root}/node_modules/@opentelemetry`;
+    sdk = {
+      ...(await import(`${root}/dist/esm/SplunkWebTracerProvider.js`)),
+      ...(await import(`${root}/dist/esm/SplunkSpanAttributesProcessor.js`)),
+      ...(await import(`${root}/dist/esm/HyperDXBatchSpanProcessor.js`)),
+      ...(await import(`${otel}/resources/build/esm/index.js`)),
+      ...(await import(
+        `${otel}/otlp-transformer/build/esm/trace/json/index.js`
+      )),
+    };
+  }, 60_000);
+
+  let batches: Batch[] = [];
+  let recorded: Array<{ attributes: Record<string, unknown> }> = [];
+  let provider: { forceFlush(): Promise<void> } | null = null;
+  const location = { href: PAGE, origin: ORIGIN };
+
+  async function boot(config: Record<string, unknown> = {}) {
+    stubDom();
+    vi.stubGlobal("location", location);
+    location.href = PAGE;
+    const { trace } = await import("@opentelemetry/api");
+    const {
+      SplunkWebTracerProvider,
+      SplunkSpanAttributesProcessor,
+      HyperDXBatchSpanProcessor,
+      resourceFromAttributes,
+      JsonTraceSerializer,
+    } = sdk;
+    trace.disable();
+    init.mockImplementation((opts: Record<string, unknown>) => {
+      const exporter = {
+        export(spans: never[], done: (r: { code: number }) => void) {
+          const bytes = JsonTraceSerializer.serializeRequest(spans);
+          batches.push(JSON.parse(new TextDecoder().decode(bytes)));
+          done({ code: 0 });
+        },
+        shutdown: () => Promise.resolve(),
+      };
+      const p = new SplunkWebTracerProvider({
+        resource: resourceFromAttributes({
+          "service.name": opts.service,
+          ...(opts.otelResourceAttributes as Record<string, string>),
+          // An app's own resource attribute that holds a URL.
+          "app.start_url": PAGE,
+        }),
+        spanProcessors: [
+          new SplunkSpanAttributesProcessor({}),
+          new HyperDXBatchSpanProcessor(exporter, {
+            scheduledDelayMillis: 60_000,
+          }),
+        ],
+      });
+      // As the SDK does: the session is a live getter on the resource.
+      Object.defineProperty(p.resource.attributes, "rum.sessionId", {
+        get: () => "91b955b313a1a86644ea53730a92deab",
+        enumerable: true,
+        configurable: true,
+      });
+      trace.setGlobalTracerProvider(p);
+      provider = p;
+      // A span that ends DURING init, before the runtime's hook goes in.
+      trace
+        .getTracer("@opentelemetry/instrumentation-document-load")
+        .startSpan("documentFetch", { attributes: { "http.url": PAGE } })
+        .end();
+    });
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      ...config,
+    });
+    return trace;
+  }
+
+  async function record(trace: typeof import("@opentelemetry/api").trace) {
+    const tracer = (name: string) => trace.getTracer(name);
+    const keep = <T>(span: T): T => {
+      recorded.push(span as never);
+      return span;
+    };
+    const doc = keep(
+      tracer("@opentelemetry/instrumentation-document-load").startSpan(
+        "documentLoad",
+        {
+          attributes: {
+            "http.url": PAGE,
+            "http.user_agent": "Mozilla/5.0 (X11) HeadlessChrome",
+            "document.referrer": "https://search.example/?q=jane%40example.com",
+          },
+        },
+      ),
+    );
+    doc.addEvent("fetchStart");
+    doc.end();
+    tracer("@opentelemetry/instrumentation-document-load")
+      .startSpan("resourceFetch", {
+        attributes: { "http.url": `${ORIGIN}/assets/app.js?v=3#map` },
+      })
+      .end();
+    tracer("@opentelemetry/instrumentation-user-interaction")
+      .startSpan("click", {
+        attributes: {
+          event_type: "click",
+          target_element: "BUTTON",
+          target_xpath: '//*[@id="go"]',
+          "http.url": PAGE,
+        },
+      })
+      .end();
+    // The SDK's routeChange: emitted after history.pushState moved the page.
+    location.href = NEXT;
+    tracer("route")
+      .startSpan("routeChange", {
+        attributes: { component: "user-interaction", "prev.href": PAGE },
+      })
+      .end();
+    const fetchSpan = tracer("@opentelemetry/instrumentation-fetch").startSpan(
+      "HTTP GET",
+      {
+        attributes: {
+          "http.method": "GET",
+          "http.url": `${ORIGIN}/api/search?q=jane&utm_campaign=x#r`,
+          "url.full": `${ORIGIN}/api/search?q=jane&utm_campaign=x#r`,
+          "url.query": "q=jane&utm_campaign=x",
+          "url.fragment": "r",
+          "url.path": "/api/search",
+          "http.status_code": 200,
+        },
+      },
+    );
+    fetchSpan.addEvent("redirect", {
+      "http.url": `${ORIGIN}/api/next?code=oauth`,
+    });
+    fetchSpan.end();
+    tracer("errors")
+      .startSpan("onerror", {
+        attributes: {
+          "error.message": "Failed to load script",
+          target_src: `${ORIGIN}/assets/chunk.js?sig=SECRET`,
+        },
+      })
+      .end();
+    tracer("@hyperdx/browser")
+      .startSpan("checkout_started", {
+        attributes: {
+          component: "custom-action",
+          // Free text is not a URL attribute: exported as recorded.
+          message: "opened /welcome?email=jane@example.com",
+          links: ["https://x.example/a?b=c"],
+          count: 3,
+        },
+      })
+      .end();
+    await provider!.forceFlush();
+  }
+
+  const spansOf = () =>
+    batches.flatMap((b) =>
+      b.resourceSpans.flatMap((r) => r.scopeSpans.flatMap((s) => s.spans)),
+    );
+  const span = (name: string) => {
+    const found = spansOf().find((s) => s.name === name);
+    expect(found, `${name} among ${spansOf().map((s) => s.name)}`).toBeTruthy();
+    return attrs(found!.attributes);
+  };
+
+  beforeEach(() => {
+    batches = [];
+    recorded = [];
+    provider = null;
+  });
+
+  afterEach(async () => {
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+  });
+
+  it("exports every instrumented span type with no query or fragment in any URL", async () => {
+    const trace = await boot();
+    await record(trace);
+
+    expect(span("documentFetch")).toMatchObject({
+      "location.href": `${ORIGIN}/welcome`,
+      "http.url": `${ORIGIN}/welcome`,
+    });
+    expect(span("documentLoad")).toMatchObject({
+      "location.href": `${ORIGIN}/welcome`,
+      "http.url": `${ORIGIN}/welcome`,
+      "document.referrer": "https://search.example/",
+    });
+    expect(span("resourceFetch")["http.url"]).toBe(`${ORIGIN}/assets/app.js`);
+    expect(span("click")).toMatchObject({
+      "location.href": `${ORIGIN}/welcome`,
+      "http.url": `${ORIGIN}/welcome`,
+    });
+    expect(span("routeChange")).toMatchObject({
+      "location.href": `${ORIGIN}/orders/17`,
+      "prev.href": `${ORIGIN}/welcome`,
+    });
+    const fetched = span("HTTP GET");
+    expect(fetched).toMatchObject({
+      "http.url": `${ORIGIN}/api/search`,
+      "url.full": `${ORIGIN}/api/search`,
+      "url.path": "/api/search",
+    });
+    expect(fetched).not.toHaveProperty("url.query");
+    expect(fetched).not.toHaveProperty("url.fragment");
+    const event = spansOf().find((s) => s.name === "HTTP GET")!.events![0]!;
+    expect(attrs(event.attributes)["http.url"]).toBe(`${ORIGIN}/api/next`);
+    expect(span("onerror")["target_src"]).toBe(`${ORIGIN}/assets/chunk.js`);
+
+    // Resource attributes too, and the batch still has ONE resource.
+    const resources = batches.flatMap((b) => b.resourceSpans);
+    expect(resources.length).toBe(batches.length);
+    for (const r of resources) {
+      expect(attrs(r.resource.attributes)).toMatchObject({
+        "app.start_url": `${ORIGIN}/welcome`,
+        "service.name": "web",
+        "rum.sessionId": "91b955b313a1a86644ea53730a92deab",
+      });
+    }
+
+    // Nothing that left carries a secret from a URL.
+    const wire = JSON.stringify(batches);
+    for (const secret of ["SECRET", "email=", "q=jane", "code=oauth", "v=3"]) {
+      expect(
+        wire.replace("opened /welcome?email=jane@example.com", ""),
+      ).not.toContain(secret);
+    }
+  });
+
+  it("leaves every non-URL attribute exactly as recorded, and the recorded spans untouched", async () => {
+    const trace = await boot();
+    await record(trace);
+
+    expect(span("checkout_started")).toEqual({
+      "location.href": `${ORIGIN}/orders/17`,
+      component: "custom-action",
+      message: "opened /welcome?email=jane@example.com",
+      links: ["https://x.example/a?b=c"],
+      count: 3,
+    });
+    expect(span("documentLoad")["http.user_agent"]).toBe(
+      "Mozilla/5.0 (X11) HeadlessChrome",
+    );
+    expect(span("click")).toMatchObject({
+      event_type: "click",
+      target_element: "BUTTON",
+      target_xpath: '//*[@id="go"]',
+    });
+    expect(span("HTTP GET")).toMatchObject({
+      "http.method": "GET",
+      "http.status_code": 200,
+    });
+    expect(span("onerror")["error.message"]).toBe("Failed to load script");
+    // The export is a view: the span the SDK recorded keeps its own values.
+    expect(recorded[0]!.attributes["http.url"]).toBe(PAGE);
+  });
+
+  it("keeps only the query parameters keepUrlQueryParams names, and never a fragment", async () => {
+    const trace = await boot({ keepUrlQueryParams: ["utm_*", "ref"] });
+    await record(trace);
+
+    expect(span("documentLoad")).toMatchObject({
+      "location.href": `${ORIGIN}/welcome?utm_source=news`,
+      "http.url": `${ORIGIN}/welcome?utm_source=news`,
+      "document.referrer": "https://search.example/",
+    });
+    expect(span("routeChange")).toMatchObject({
+      "location.href": `${ORIGIN}/orders/17?ref=mail`,
+      "prev.href": `${ORIGIN}/welcome?utm_source=news`,
+    });
+    expect(span("HTTP GET")).toMatchObject({
+      "http.url": `${ORIGIN}/api/search?utm_campaign=x`,
+      "url.full": `${ORIGIN}/api/search?utm_campaign=x`,
+      "url.query": "utm_campaign=x",
+    });
+    expect(span("HTTP GET")).not.toHaveProperty("url.fragment");
+    const wire = JSON.stringify(batches);
+    expect(wire).not.toContain("SECRET");
+    expect(wire).not.toContain("q=jane");
+  });
+
+  it("warns, and still runs, when the SDK's provider has no exporter to wrap", async () => {
+    stubDom();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+    init.mockImplementation(() => {
+      trace.setGlobalTracerProvider({
+        getTracer: () => ({}) as never,
+        forceFlush: () => Promise.resolve(),
+      } as never);
+    });
+    const { t } = await load();
+
+    await expect(
+      t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).resolves.toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("URLs are exported with their query"),
+    );
+    warn.mockRestore();
   });
 });
 

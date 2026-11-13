@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -68,12 +69,19 @@ func dockerLoginArgs(host, username string) []string {
 // is what the subprocess would get. A seam that re-derived the argv inside the
 // real implementation would let the credential reach the command line without
 // any test being able to notice.
+//
+// Its output is captured, not inherited: a successful login prints "Login
+// Succeeded" and a plaintext-credentials warning that read as an error in a
+// deploy that was working. It is shown only when the login fails.
 var dockerLogin = func(ctx context.Context, args []string, password io.Reader) error {
 	c := exec.CommandContext(ctx, "docker", args...)
 	c.Stdin = password
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
+	var out bytes.Buffer
+	c.Stdout, c.Stderr = &out, &out
 	if err := c.Run(); err != nil {
+		if detail := strings.TrimSpace(out.String()); detail != "" {
+			return fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, detail)
+		}
 		return fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
 	}
 	return nil

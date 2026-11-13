@@ -49,6 +49,11 @@ a warning. Property values become strings; keep them low-cardinality and
 never put secrets or personal data in them. A `slog.Group` flattens to
 `group.key`.
 
+`observe.TrackState` emits a fact about a user that is not activity (a
+snapshot, a marker); the user counts skip it. Load
+`observability/product-events/user-counts` for it and for the project's own
+rules (`not_activity`, `exclude_users_with`).
+
 ## Automatic events from generated CRUD
 
 Every generated Create, Update and Delete rpc records a product event once its
@@ -229,6 +234,43 @@ fixed auth vocabulary the console counts new and active users from. Load
 the auth middleware's daily heartbeat, `identifyUser`, `trackAuthEvent`, any
 other language) and the edge visitor-day hash.
 
+## Project funnels and counts: `forge.ProjectAnalytics`
+
+Funnels and counts over every event (browser, server and CLI alike) that
+belong to no one frontend are declared once for the project, on the
+environment's observability, and drawn on the built-in Product dashboard:
+
+```kcl
+observability = forge.Observability {
+    analytics = forge.ProjectAnalytics {
+        funnels = [forge.Funnel {
+            id = "forge-deploy", by = "org", window = "30d"
+            steps = [
+                forge.Step {event = "deploy_succeeded", where = {first_for_org = "true"}}
+                "claim_completed"
+                forge.Step {event = "deploy_succeeded", where = {first_for_org = "false"}, within = "14d"}
+            ]
+        }]
+        counts = [forge.Count {id = "deploys", event = "deploy_succeeded", group_by = ["mode", "first_for_org"]}]
+    }
+}
+```
+
+- A step is an event name or a `forge.Step`: `where` props must match (values
+  are compared as strings), and `within` bounds the time since the previous
+  step. With any `within`, the funnel counts a sequence (each step within its
+  `within`, else the funnel's `window`, of the one before); without, every step
+  is within `window` of the first.
+- `by = "org"` counts the org each event is about (`org.id`: the claims, or
+  `observe.WithActor`), across the project's environments. Project funnels
+  count by `visitor`, `person` or `org`.
+- A `forge.Count` is a table: the event's occurrences per combination of its
+  `group_by` props, with the distinct orgs and users behind them.
+- Every environment's declarations are merged, one funnel or count per id, as
+  frontends' funnels are.
+- `by = "org"` and the counts' org column read `product_events.OrgId`, which
+  needs the hosted tenant schema v29.
+
 ## Declaring product analytics in KCL: `forge.Analytics`
 
 Nothing needs declaring: a frontend with no `analytics` block runs in the
@@ -290,6 +332,14 @@ wherever they are set (unset defers), and any `dashboards = False` drops them.
 What the dashboards draw from these declarations, and every definition they
 count by (visitor-day, visit, channel table, same-day stitch, person, sign-up
 attribution, activation): `observability/product-analytics`.
+
+## Deleting a user's events: `observe.RequestPurge`
+
+On account deletion or a data-subject request, `observe.RequestPurge(ctx,
+requestID, observe.PurgeSubject{UserID: ..., VisitorID: ...})` asks the
+platform to delete the subject's product events in this environment. Load
+`observability/product-events/purge` for how it is authenticated and what it
+covers.
 
 ## Retention
 

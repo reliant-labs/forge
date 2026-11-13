@@ -69,25 +69,29 @@ What an existing app gets from forge before it is a forge project: no
 forge.yaml, no generated code, any language. `forge project benefits`
 prints this list for the directory you run it in.
 
-| Benefit                                                       | Start with                                                                                                                                                        | Agent time |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`. | ~5 min     |
-| [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                    | ~15 min    |
-| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                         | ~15 min    |
-| [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                    | ~5 min     |
-| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                       | ~5 min     |
-| [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                       | ~10 min    |
-| [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                             | ~5 min     |
-| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                | ~10 min    |
-| [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                          | ~30 min    |
-| [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                   | ~10 min    |
-| [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                  | ~15 min    |
-| [Monitoring for any app](#monitoring-any-language)            | `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                      | ~15 min    |
-| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                               | ~2 min     |
-| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                       | ~2 min     |
-| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                    | ~2 min     |
-| [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                    | ~2 min     |
-| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                 | ~2 min     |
+| Benefit                                                       | Start with                                                                                                                                                                                                                                | Agent time |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| [Adopt an existing app](#adopt-existing-project)              | In the app's directory, `forge project new --in-place --kind app --dry-run` prints what it would write from the Dockerfile and compose file; without `--dry-run` it writes forge.yaml and deploy/kcl and touches none of the app's files. | ~1 hour    |
+| [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`.                                                                         | ~5 min     |
+| [Keep your migration tool](#keep-your-migration-tool)         | Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`.                                                                                         | ~10 min    |
+| [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                                                                                            | ~15 min    |
+| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                                                                                                 | ~15 min    |
+| [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                                                                                            | ~5 min     |
+| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                                                                                               | ~5 min     |
+| [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                                                                                               | ~10 min    |
+| [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                                                                                                     | ~5 min     |
+| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                        | ~10 min    |
+| [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                                                                                                  | ~30 min    |
+| [Prove parity before deploying](#env-verify-parity)           | `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`.                                   | ~1 hour    |
+| [Record deploys from existing CI](#record-deploys)            | Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.                                              | ~15 min    |
+| [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                                                                                           | ~10 min    |
+| [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                                                                                          | ~15 min    |
+| [Monitoring for any app](#monitoring-any-language)            | `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                                                                                              | ~15 min    |
+| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                       | ~2 min     |
+| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                               | ~2 min     |
+| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                                                                                            | ~2 min     |
+| [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                                                                                            | ~2 min     |
+| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                         | ~2 min     |
 
 ---
 
@@ -221,6 +225,8 @@ _Enforced · Forge, on any infrastructure_
 An app that already exists, in any language, keeps its code: one command, `forge project new --in-place --kind app`, reads its Dockerfile(s) and compose file (ports, Postgres, migration command, credentials) and writes only `forge.yaml` and `deploy/kcl/` (dev, staging and prod envs with a managed Postgres and a pre-rollout migration job), printing what it detected and what it assumed (`--dry-run` prints the files instead). `--claimable` sizes prod for a deploy with no account. Then work in tiers you can stop after (ship it, see it with OpenTelemetry, harden it with gated promotion and CI, and move pieces onto forge's Go stack only when that pays). `forge project new --in-place` and `forge project migrate import` bring an existing Go repository onto forge without a rewrite, with migration skills for service, CLI and library projects.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** In the app's directory, `forge project new --in-place --kind app --dry-run` prints what it would write from the Dockerfile and compose file; without `--dry-run` it writes forge.yaml and deploy/kcl and touches none of the app's files. **Agent time:** ~1 hour.
 
 **Evidence:**
 
@@ -544,6 +550,8 @@ _Enforced · Forge, on any infrastructure_
 A team on goose, atlas, flyway, dbmate, golang-migrate or its own command keeps it and its migrations directory: forge runs that tool to build the schema it projects the ORM and seeds from, lints every SQL file it applies, and runs it from `forge db migrate up` — no protos, no conversion.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`. **Agent time:** ~10 min.
 
 **Use:** `database: {migrations: {dir: migrations, tool: goose}}` in forge.yaml; `tool: custom` with `apply: [...]` runs any command.
 
@@ -2196,7 +2204,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Scoped machine access tokens
 
-`pkg/accesstoken` gives one machine credential with a closed scope vocabulary that can never grant authority its holder lacks; org automation tokens come from `forge cloud token create`.
+`pkg/accesstoken` gives one machine credential with a closed scope vocabulary that can never grant authority its holder lacks; a person mints the CI token in the web app (Settings → API tokens), and `forge cloud token` manages them where the control plane admits a CLI login.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -2561,12 +2569,13 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
 
-**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook. Declare a `forge.ControlPlane` and the env is self-managed: the control plane records every promotion (and your CI's `forge release record`), and its hosted secrets stay write-only.
 
 **Evidence:**
 
 - source [`kcl/workload.k`](../kcl/workload.k)
 - source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- source [`internal/cli/hosted_env_resolver.go`](../internal/cli/hosted_env_resolver.go)
 - command `forge env deploy`
 - command `forge env status`
 - skill `deploy/external` (`forge skill load deploy/external`)
@@ -2578,6 +2587,8 @@ _Enforced · Forge, on any infrastructure_
 `forge env verify <env>` compares, per workload, the digest the env's promotion pins against the digest running and runs your tool's own dry run, while building, recording and deploying nothing, so forge's first deploy of an existing project is known to change nothing.
 
 _Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`. **Agent time:** ~1 hour.
 
 **Use:** `forge env verify prod`, or `--image api=repo@sha256:…` before any forge release exists; `--json` for CI. Exit 0 match, 1 drift, 2 not verified.
 
@@ -2686,7 +2697,9 @@ One `forge release record` step after the deploy job your pipeline already runs 
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
+**Works in any repo** (no forge.yaml). **Start:** Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set. **Agent time:** ~15 min.
+
+**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token with deploy:write, minted in the web app (Settings → API tokens), as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
 
 **Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as forge's own deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
 

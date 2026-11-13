@@ -123,8 +123,52 @@ func adoptBeforeClaimableDeploy(ctx context.Context, out io.Writer) ([]string, e
 		msg, next := plan.failure(captured, err)
 		return nil, &claimableRefusal{exit: exitCodeForError(err), code: cloud.CodeInvalidArgument, msg: msg + "\n  run instead: " + next, next: []string{next}}
 	}
-	_, _ = fmt.Fprintf(out, "  Adopted this app as forge project %q: added forge.yaml and deploy/kcl/ (and forge's .gitignore entries); the app's own files are untouched.\n", plan.name)
-	return changedAppFiles(dir, before), nil
+	changed := changedAppFiles(dir, before)
+	_, _ = fmt.Fprintf(out, "  Adopted this app as forge project %q: %s\n", plan.name, describeAdoption(before, changed))
+	return changed, nil
+}
+
+// describeAdoption says what an adoption wrote, from the files that changed
+// rather than from a list that could fall out of step with the scaffolder. New
+// files are named, a new directory once by its top-level name; a file that
+// already existed is named as changed, and .gitignore as the entries appended
+// to it.
+func describeAdoption(before map[string]string, changed []string) string {
+	var added, modified []string
+	seen := map[string]bool{}
+	for _, rel := range changed {
+		_, existed := before[rel]
+		name, _, nested := strings.Cut(rel, "/")
+		if nested {
+			if existed {
+				modified = append(modified, rel)
+				continue
+			}
+			name += "/"
+		} else if existed {
+			modified = append(modified, rel)
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			added = append(added, name)
+		}
+	}
+	var parts []string
+	if len(added) > 0 {
+		parts = append(parts, "added "+strings.Join(added, ", "))
+	}
+	for _, rel := range modified {
+		if rel == ".gitignore" {
+			parts = append(parts, "appended forge's entries to .gitignore")
+		} else {
+			parts = append(parts, "changed "+rel)
+		}
+	}
+	if len(parts) == 0 {
+		return "nothing needed writing."
+	}
+	return strings.Join(parts, "; ") + "; the rest of the app is untouched."
 }
 
 // skipSnapshotDir holds what no adoption touches and a walk should not pay for.

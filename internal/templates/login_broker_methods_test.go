@@ -110,13 +110,19 @@ func TestLoginBrokerScaffoldSharesTheProofLockOnTheAppsDatabase(t *testing.T) {
 		"ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger)",
 		"pc, err := pgx.ParseConfig(dsn)",
 		"return devidp.UnavailableProofLocker(err)",
-		"db := stdlib.OpenDB(*pc)",
+		"db := dbtrace.OpenDB(stdlib.GetConnector(*pc))",
+		`"github.com/reliant-labs/forge/pkg/observe/dbtrace"`,
 		"return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})",
 		`"github.com/jackc/pgx/v5/stdlib"`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("the broker lacks %q", want)
 		}
+	}
+	// forge-tracing-raw-sql-open: an untraced pool fails the project's own
+	// lint the moment it is scaffolded (TestE2EProjectUpgradeConvergesAcrossARange).
+	if strings.Contains(src, "stdlib.OpenDB(") {
+		t.Error("the broker opens the proof lock's pool untraced (stdlib.OpenDB); use dbtrace.OpenDB")
 	}
 	without := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true}))
 	if strings.Contains(without, "cfg.DatabaseUrl") || strings.Contains(without, `"github.com/jackc/pgx/v5"`) {

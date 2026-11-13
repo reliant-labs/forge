@@ -133,7 +133,7 @@ SELECT if(os_name = '', 'unknown', os_name) AS os, count() AS "Visitors" FROM fi
 				"the share active in days 28 to 35 after signing up. A channel with fewer than %d such sign-ups shows no share.", w4FromDays, w4ToDays, w4MinCohort),
 			retentionByChannelSQL(rules), 24, 8),
 	}
-	return d
+	return in.withActivity(d)
 }
 
 // channelRules are the project's custom channel rules.

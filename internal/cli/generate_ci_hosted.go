@@ -55,7 +55,9 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 			continue
 		}
 		out.Hosted = append(out.Hosted, env)
-		if envAppliesLocally(entities) {
+		// Mixed is what needs the kubeconfig step: an OnExternal part
+		// brings its own tooling's credentials, so it alone is not mixed.
+		if forgeAppliesItselfLocally(entities) {
 			out.Mixed = append(out.Mixed, env)
 		}
 	}

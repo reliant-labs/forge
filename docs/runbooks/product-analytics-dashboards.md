@@ -51,7 +51,7 @@ judged against a deployed project. They depend on:
 3. **The numbers agree with the Users card.** Over 7 days ending now, the
    Overview's _Active users_, _New users_ and _Returning users_ equal the
    console's Users card for the same environment (both compile from
-   `obsquery.ActiveEvidence` and `obsquery.NewUsersSource`).
+   `obsquery.UserActivityEvidence` and `obsquery.NewUsersSource`).
 
 4. **No decode, validation or query errors.** From a control-plane checkout:
 

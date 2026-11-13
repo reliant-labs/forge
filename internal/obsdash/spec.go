@@ -32,6 +32,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/pkg/obsbuiltin"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
 // PartsVersion identifies the shape of the files the Spec is written to
@@ -106,6 +107,13 @@ type Input struct {
 	// Frontends is non-empty; a visitor or person funnel (IsProductFunnel)
 	// belongs to the built-in Product dashboard.
 	Funnels []FrontendFunnel
+	// Counts are the project's declared event counts (forge.Count), drawn on
+	// the built-in Product dashboard.
+	Counts []EventCount
+	// Activity is the project's declared user-activity rules
+	// (forge.ProjectAnalytics.not_activity, .exclude_users_with), compiled
+	// into every built-in user count.
+	Activity obsquery.Activity
 	// Analytics is the project's declared product analytics (goals, the
 	// activation event, channel rules); nil when no frontend declares any.
 	Analytics *ProductAnalytics
@@ -155,7 +163,7 @@ func (in Input) frontendServiceNames() []string {
 // builtin is what the built-in product dashboards read from in.
 func (in Input) builtin() obsbuiltin.Input {
 	return obsbuiltin.Input{Project: in.Project, Web: len(in.Frontends) > 0 || len(in.FrontendServices) > 0,
-		Analytics: in.Analytics, Funnels: in.Funnels}
+		Analytics: in.Analytics, Funnels: in.Funnels, Counts: in.Counts, Activity: in.Activity}
 }
 
 // WithoutProcessDashboards is sp for an environment that deploys no process: a
@@ -202,7 +210,11 @@ type Fragments struct {
 	FrontendServices []string `json:",omitempty"`
 	HasDatabase      bool
 	Funnels          []FrontendFunnel
+	Counts           []EventCount      `json:",omitempty"`
 	Analytics        *ProductAnalytics `json:",omitempty"`
+	// Activity is the project's user-activity rules; `forge obs users` reads
+	// them from here, so it counts the users the dashboards count.
+	Activity *obsquery.Activity `json:",omitempty"`
 }
 
 // ProcessPart holds one deployed executable/role's dashboard and saved searches.
@@ -278,7 +290,11 @@ func (p Process) runsWork() bool { return p.Kind == KindWorkerProc || p.Kind == 
 // BuildParts derives the project's Spec as process parts, sorted by process
 // identity. RPC-free workers and gateways retain their runtime/workload panels.
 func BuildParts(in Input) (ProjectPart, []ProcessPart) {
-	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics}
+	fragments := Fragments{Frontends: in.Frontends, FrontendServices: in.FrontendServices, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Counts: in.Counts, Analytics: in.Analytics}
+	if !in.Activity.IsZero() {
+		a := in.Activity
+		fragments.Activity = &a
+	}
 	project := ProjectPart{
 		Input:    &fragments,
 		Version:  PartsVersion,

@@ -111,13 +111,22 @@
 // restore, is kept. TTFB, CLS and INP are kept: being hidden does not change
 // them.
 //
-// ── Network URLs carry no query string ───────────────────────────────────
+// ── No URL leaves the browser with its query string or fragment ──────────
 //
-// fetch/XHR spans record the request URL, and a query string is where tokens,
-// OAuth codes and search terms live. The runtime rewrites `http.url` and
-// `url.full` on every fetch/XHR span to the URL without query or fragment.
-// The SDK's own `location.href` attribute (the page URL, stamped on every span)
-// has no client-side hook; the ingest side scrubs it.
+// The query and the fragment are where emails, tokens, OAuth codes and search
+// terms live, and the SDK stamps the page URL on every span: `location.href`
+// on each one, `http.url` and `document.referrer` on documentLoad, the
+// request URL on fetch/XHR and resource spans, and, when its interaction
+// instrumentation is on, `http.url` on click spans and `prev.href` on
+// routeChange spans. Right after init the runtime wraps the SDK's span
+// exporter (url-scrub.ts, installSpanExportScrub), so every URL-valued span,
+// span-event, link and resource attribute is exported without its query and
+// fragment, whatever instrumentation recorded it; `url.query` and
+// `url.fragment` are dropped. `keepUrlQueryParams` (off by default) names
+// query parameters to keep (`utm_*`). fetch/XHR spans are also stripped as
+// they end (finishNetworkSpan), before the span is named from the URL. The
+// ingest side scrubs the same attributes again, as defence in depth, for an
+// older runtime and for anything that reaches it some other way.
 //
 // ── Network spans are named by what they called ──────────────────────────
 //
@@ -211,6 +220,12 @@ import {
   rumSessionId,
 } from "./telemetry-gate.js";
 import {
+  installSpanExportScrub,
+  type QueryParamFilter,
+  queryParamFilter,
+  scrubUrl,
+} from "./url-scrub.js";
+import {
   type AnalyticsMode,
   analyticsTier,
   browserPrivacyOptOut,
@@ -243,6 +258,17 @@ export {
 
 export { type PageViewOptions } from "./page-views.js";
 export { type IdentifyOptions } from "./session-identity.js";
+
+export {
+  isUrlAttribute,
+  scrubbingSpanExporter,
+  scrubUrl,
+  scrubUrlAttributes,
+  queryParamFilter,
+  type QueryParamFilter,
+  type SpanExporterLike,
+  type TelemetryUrlScrubOptions,
+} from "./url-scrub.js";
 
 export {
   type BenignErrorClassifier,
@@ -306,6 +332,15 @@ export interface BrowserTelemetryConfig {
    * Default false, and it should stay false: bodies are user data.
    */
   advancedNetworkCapture?: boolean;
+  /**
+   * Query parameters kept in the URLs telemetry exports: exact names (`ref`)
+   * or prefixes ending in `*` (`utm_*`), matched case-sensitively on the
+   * decoded name. Default none: every URL-valued attribute (location.href,
+   * http.url, url.full, prev.href, document.referrer, …) is exported without
+   * its query string, and always without its fragment. See "No URL leaves the
+   * browser with its query string or fragment" in the header.
+   */
+  keepUrlQueryParams?: string[];
   /**
    * Session replay (rrweb). Default false. When true, all text and inputs are
    * masked, media is blocked and canvas is not recorded (see the header).
@@ -925,6 +960,8 @@ async function start(
     // Before init: the SDK reads its session cookie as it starts. In memory
     // below the full tier; on the device in it.
     const rum = keepRumSession();
+    // Before init: the fetch/XHR hook reads it from the first request on.
+    keepQuery = queryParamFilter(config.keepUrlQueryParams);
     hdx.init(
       buildSdkOptions(
         { ...config, replay },
@@ -933,6 +970,10 @@ async function start(
         pageClientResourceAttributes(),
       ),
     );
+    // Straight after init, in the same task: the SDK's batch is exported on a
+    // timer, so every span it has recorded so far is still held and goes out
+    // scrubbed too (see "No URL leaves the browser" in the header).
+    scrubSdkUrls(config);
     // Over the SDK's patched fetch, so an RPC whose fetch() runs after an
     // await (a server stream) still opens its span under the context the
     // trace interceptor chose. See interaction-context.ts.
@@ -1822,11 +1863,34 @@ function finishNetworkSpan(span: UrlSpan): void {
   }
 }
 
+// The query parameters the running SDK keeps (keepUrlQueryParams), or null.
+let keepQuery: QueryParamFilter | null = null;
+
+/**
+ * Wraps the running SDK's span exporter so nothing it exports carries a URL
+ * query or fragment. A provider without the pinned SDK's shape is reported
+ * once: its spans still go out, and the ingest side's scrub still strips them.
+ */
+function scrubSdkUrls(config: BrowserTelemetryConfig): void {
+  const provider = trace.getTracerProvider() as FlushableProvider;
+  const scrubbing = installSpanExportScrub(provider, {
+    keepQueryParams: config.keepUrlQueryParams,
+  });
+  const delegate = (provider.getDelegate?.() ?? provider) as FlushableProvider;
+  // Only an SDK provider can flush; the API's no-op provider (no SDK
+  // running) has nothing to scrub.
+  if (scrubbing === 0 && typeof delegate.forceFlush === "function") {
+    console.warn(
+      "[telemetry] the SDK's span exporter was not found; URLs are exported with their query and fragment",
+    );
+  }
+}
+
 function stripNetworkQuery(span: UrlSpan): void {
   for (const key of URL_ATTRIBUTES) {
     const value = span.attributes?.[key];
     if (typeof value === "string") {
-      const stripped = stripUrlQuery(value);
+      const stripped = scrubUrl(value, keepQuery);
       if (stripped !== value) {
         span.setAttribute(key, stripped);
       }

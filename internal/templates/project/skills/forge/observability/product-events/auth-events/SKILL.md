@@ -8,12 +8,17 @@ description: The standard auth product events the console counts users from — 
 Three product event names are reserved for a fixed auth vocabulary, the same
 whatever the auth provider. The console counts users over a range from them
 and the rest of the table: **active** = distinct users with any user-attributed
-event (`obsquery.ActiveEvidence`: every row with a `UserId` except
-`auth_signed_out` and the platform's `auth_accounts`; a sign-in or the auth
-middleware's daily heartbeat is enough); **new** = distinct users with
+event (`obsquery.UserActivityEvidence`: every row with a `UserId` except
+`auth_signed_out`, the platform's `auth_accounts` and an `observe.TrackState`
+fact, narrowed by the project's `forge.ProjectAnalytics.not_activity` and
+`exclude_users_with`; a sign-in or the auth middleware's daily heartbeat is
+enough); **new** = distinct users with
 `auth_signed_up` in the range, or, in an env that reported no sign-up in the
-90 days before the range's end, the users first seen in the range
-(`obsquery.NewUsersSource`); **returning** = active users who are not new.
+90 days before the range's end, the users first seen in the range, except
+those first seen in the first 7 days of the env's retained data, who may be
+returning (`obsquery.NewUsersSource`; a range that holds nothing past those 7
+days shows no new or returning figure). Emit `auth_signed_up` and the guess is
+never made. **returning** = active users who are not new.
 Every count is distinct by `user.id`, so the same sign-in reported twice
 (server and browser, two replicas, a retry) counts once. `forge obs users
 <env> [--series 30] [--json]` prints them; the console's Users card and the

@@ -249,12 +249,13 @@ func envClusterWork(e *KCLEntities) bool {
 // from this machine once the split has handed units to the hub: the work that
 // is not in any unit (compose, host infra, a shipped frontend, a helm chart,
 // secrets forge renders or mints) is always forge's, and cluster work is
-// forge's for every unit the hub does not converge.
+// forge's for every unit the hub does not converge. A forge.OnExternal
+// workload is in no unit either: its deploy hook runs from here.
 func forgeAppliesLocally(e *KCLEntities, split unitSplit) bool {
 	if e == nil {
 		return false
 	}
-	if len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 || forgeOwnsClusterExtras(e) {
+	if len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 || forgeOwnsClusterExtras(e) || appliedThroughExternalHooks(e) {
 		return true
 	}
 	for _, f := range e.Frontends {

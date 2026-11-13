@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -547,5 +548,62 @@ func TestRunLint_CombinedLanesTextVerdict(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "computed-fields") {
 		t.Errorf("the verdict names a lane that passed: %v", err)
+	}
+}
+
+// A scoped run drops an out-of-scope golangci-lint issue TOGETHER with the
+// lines printed beneath it. It used to drop only the anchored line, so
+// `forge lint --quiet --scope …` showed a source excerpt, a caret and
+// "* goimports: 1" with no file:line, counted them as 4 errors, and gated on
+// an issue outside the scope (forge bug report 3389de9f).
+func TestScopedRunDropsAnOutOfScopeIssueWithItsSnippet(t *testing.T) {
+	root := scopeFixture(t)
+	scope, err := parseLintScope(root, []string{"internal/handlers/jobs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outOfScope := "internal/handlers/jobs2/service.go:4:1: File is not properly formatted (goimports)\n" +
+		"\t\"github.com/golang-jwt/jwt/v5\"\n" +
+		"^\n"
+	inScope := "internal/handlers/jobs/service.go:85:6: func badlyFormatted is unused (unused)\n" +
+		"func badlyFormatted() {}\n" +
+		"     ^\n"
+	summary := "2 issues:\n* goimports: 1\n* unused: 1\n"
+
+	// Only the out-of-scope issue: nothing survives, and nothing gates.
+	fs := externalLinesToFindings(outOfScope+"1 issues:\n* goimports: 1\n", "golangci-lint", lintSevError)
+	kept, gated := scopeOutcome(scope, fs, true)
+	if len(kept) != 0 || gated {
+		t.Errorf("an issue outside the scope left %d finding(s) behind (gated=%v): %+v", len(kept), gated, kept)
+	}
+	var buf bytes.Buffer
+	_ = renderLintOutcomes(&buf, []lintStepOutcome{{name: "golangci-lint", gates: true, ran: true, gated: gated, findings: kept}}, true, scope)
+	if strings.Contains(buf.String(), "golang-jwt") || strings.Contains(buf.String(), "❌ golangci-lint") {
+		t.Errorf("a scoped quiet run printed an out-of-scope issue's snippet without its path:\n%s", buf.String())
+	}
+
+	// Both: the in-scope issue keeps its snippet; the other's is gone.
+	fs = externalLinesToFindings(outOfScope+inScope+summary, "golangci-lint", lintSevError)
+	kept, gated = scopeOutcome(scope, fs, true)
+	if !gated {
+		t.Error("the in-scope issue must still gate")
+	}
+	var msgs []string
+	for _, f := range kept {
+		msgs = append(msgs, f.Message)
+		if f.File == "" && strings.Contains(f.Message, "golang-jwt") {
+			t.Errorf("the out-of-scope issue's snippet survived: %+v", f)
+		}
+	}
+	if len(kept) == 0 || kept[0].File != "internal/handlers/jobs/service.go" || !slices.Contains(msgs, "func badlyFormatted() {}") {
+		t.Errorf("the in-scope issue and its snippet must survive together: %q", msgs)
+	}
+
+	// A line no issue precedes (a load error) is still unattributable, and
+	// still never hidden.
+	fs = externalLinesToFindings("level=error msg=\"typechecking error\"\n"+outOfScope, "golangci-lint", lintSevError)
+	kept, gated = scopeOutcome(scope, fs, true)
+	if len(kept) != 1 || kept[0].File != "" || !gated {
+		t.Errorf("a file-less error before any issue must be kept and gate: %+v (gated=%v)", kept, gated)
 	}
 }

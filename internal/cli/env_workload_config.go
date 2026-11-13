@@ -94,6 +94,9 @@ func localWorkloadConfig(ctx context.Context, projectDir, env string, e *KCLEnti
 	if w.OnRuntime(RuntimeHost) {
 		refs = append(refs, managedSecretRefsForService(&w)...)
 	}
+	if mode == secretsRequired && requiresAnySecret(refs) && hostedSecretsWriteOnly(e) {
+		return nil, nil, writeOnlySecretsError(env, e, w.Name)
+	}
 	missing = secrets.MissingDeclaredRefs(prov, refs)
 	if len(missing) > 0 && mode == secretsRequired {
 		return nil, nil, withEnvInSecretFix(secrets.MissingRefsError(prov, missing, secretStoreLabel(e)), env)

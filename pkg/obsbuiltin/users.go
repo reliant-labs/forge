@@ -30,7 +30,7 @@ var usersSections = []dashspec.Section{
 // Users is the Users dashboard: accounts, active, new and returning users,
 // engagement, retention and authentication, over the hosted product_events
 // table. Active and new compile from the fragments the console's Users card
-// does (obsquery.ActiveEvidence, obsquery.NewUsersSource).
+// does (obsquery.UserActivityEvidence, obsquery.NewUsersSource).
 func Users(in Input) dashspec.Dashboard {
 	a := in.Analytics
 	d := dashspec.Dashboard{
@@ -45,8 +45,10 @@ func Users(in Input) dashspec.Dashboard {
 		DefaultRange:   "30d",
 		DefaultCompare: dashspec.ComparePeriod,
 	}
-	newRule := fmt.Sprintf("New users are the users whose first auth_signed_up is in the range; in an environment that reported no sign-up "+
-		"in the %d days before the end of the range, the users first seen in the range instead (the Authentication section says which).", obsquery.NewUsersWindowDays)
+	newRule := fmt.Sprintf("Users whose first auth_signed_up is in the range; where no sign-up was reported in the %d days before its end, "+
+		"the users first seen in the range, except those within %d days of the earliest event retained (the data begins there; they count as returning). "+
+		"No figure when no part of the range is decided. The Authentication section says which rule applies, and from when.",
+		obsquery.NewUsersWindowDays, obsquery.FirstSeenGraceDays)
 
 	dauWauMau := chart("glance", "dau-wau-mau", "Daily, weekly and monthly active users",
 		"Distinct signed-in users each UTC day, and over the 7 and 30 days ending that day.",
@@ -86,7 +88,8 @@ func Users(in Input) dashspec.Dashboard {
 		exact(figure("glance", "active", "Active users", "Distinct users with any signed-in product event in the range (a sign-in, the daily session heartbeat, a CRUD write, an app event). The trend is each UTC day's.",
 			activeSQL, activeTrendSQL, dashspec.UnitCount, colorUsers)),
 		exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)),
-		exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it.", returningSQL, "", dashspec.UnitCount, colorWeekly)),
+		exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it. No figure when the range "+
+			"decides no new users (New's description says when).", returningSQL, "", dashspec.UnitCount, colorWeekly)),
 		dauWauMau,
 		figure("glance", "stickiness", "Stickiness (DAU / MAU)",
 			"The average daily active users over the average 30-day active users across the range's days: how habitual the product is. DAU over MAU, not Statsig's rolling stickiness.",
@@ -107,14 +110,15 @@ func Users(in Input) dashspec.Dashboard {
 		table("auth", "signups-by-provider", "Sign-ups by provider",
 			"The range's sign-ups by auth provider, and the social provider of a social sign-up (forge/google).", signupsByProviderSQL, 6, 8),
 		table("auth", "auth-sources", "Where auth events come from",
-			"The clients that reported auth events in the range (backend, web, …). A last row says when the environment reports no sign-ups, so new users are the ones first seen.",
+			"The clients that reported auth events in the range (backend, web, …). A last row says when the environment reports no sign-ups, so new users are the ones first seen, "+
+				"and from when, when that is inside the range: before then a user first seen may be returning.",
 			authSourcesSQL, 12, 8),
 
 		table("people", "most-active-users", "Most active users",
 			"Signed-in users by product events in the range, with the days they were active and when they were last seen. `forge obs sessions <env> --user <id>` lists a user's sessions.",
 			mostActiveUsersSQL, 24, 9),
 	}
-	return d
+	return in.withActivity(d)
 }
 
 // rollingUsers is one row per UTC day of the range over each user's active
@@ -168,16 +172,14 @@ FROM product_events
 WHERE ` + active + ` AND ` + scope + `
 GROUP BY day ORDER BY day`
 
-	newSQL = `SELECT count() AS "New users"
-FROM (` + newUsers(to) + `)
-WHERE NewAt >= ` + from
+	newSQL = `SELECT ` + unlessUndecided(from, to, `(SELECT count() FROM (`+newUsers(to)+`) WHERE NewAt >= `+from+`)`) + ` AS "New users"`
 
 	newTrendSQL = `SELECT toDate(NewAt) AS day, count() AS "New users"
 FROM (` + newUsers(to) + `)
 WHERE NewAt >= ` + from + `
 GROUP BY day ORDER BY day`
 
-	returningSQL = `SELECT uniqExact(` + user + `) AS "Returning users"
+	returningSQL = `SELECT ` + unlessUndecided(from, to, `uniqExact(`+user+`)`) + ` AS "Returning users"
 FROM product_events
 WHERE ` + active + ` AND ` + scope + `
   AND ` + user + ` NOT IN (SELECT EnvId, UserId FROM (` + newUsers(to) + `) WHERE NewAt >= ` + from + `)`
@@ -291,8 +293,12 @@ FROM (
   WHERE EventName IN ('auth_signed_up', 'auth_signed_in', 'auth_signed_out') AND ` + scope + `
   GROUP BY client
   UNION ALL
-  SELECT 1, 'sign-ups not reported: new users are the users first seen', 0, 0, 0, 0
-  FROM (SELECT count() AS n FROM product_events WHERE EventName = 'auth_signed_up' AND ` + envScope + ` AND ` + lastDays(obsquery.NewUsersWindowDays, to) + `)
+  SELECT 1, if(decided > ` + from + `,
+               concat('sign-ups not reported: new users are the users first seen from ', formatDateTime(decided, '%Y-%m-%d %H:%i', 'UTC'),
+                      ' UTC, ` + fmt.Sprint(obsquery.FirstSeenGraceDays) + ` days after the earliest event retained; a user first seen before then may be returning and counts as returning'),
+               'sign-ups not reported: new users are the users first seen'), 0, 0, 0, 0
+  FROM (SELECT count() AS n, (SELECT max(DecidedFrom) FROM (` + newDecided(to) + `)) AS decided
+        FROM product_events WHERE EventName = 'auth_signed_up' AND ` + envScope + ` AND ` + lastDays(obsquery.NewUsersWindowDays, to) + `)
   WHERE n = 0)
 ORDER BY o, client`
 

@@ -36,6 +36,8 @@ func (f *fakeRows) Scan(dest ...any) error {
 			*p = row[i].(int32)
 		case *uint64:
 			*p = row[i].(uint64)
+		case *uint32:
+			*p = row[i].(uint32)
 		case *string:
 			*p = row[i].(string)
 		case *float64:

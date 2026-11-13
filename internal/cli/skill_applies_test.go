@@ -79,7 +79,12 @@ func TestShippedSkillsDeclareAppliesAny(t *testing.T) {
 			t.Errorf("skill %q: applies %q is not \"any\" (or absent)", s.Path, s.Applies)
 		}
 	}
-	for _, want := range []string{"adopt", "adopt/deploy", "adopt/linters", "adopt/monitoring", "adopt/libraries", "debug"} {
+	for _, want := range []string{
+		"adopt", "adopt/deploy", "adopt/linters", "adopt/monitoring", "adopt/libraries", "debug",
+		// The adopt menu's entry points that work in a repo forge does not deploy.
+		"observability/monitoring-only", "deploy/record", "deploy/external", "db/own-migration-tool",
+		"migration/ownership", "deploy/polyrepo",
+	} {
 		if !applies[want] {
 			t.Errorf("skill %q must declare applies: any", want)
 		}

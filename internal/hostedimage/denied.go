@@ -55,5 +55,5 @@ func DeniedHint(reference string) string {
 		"  forge composed that address from the organization your credential acts for, so the "+
 		"likely causes are a credential that has expired, or one that carries deploy:read but not "+
 		"deploy:write (a push needs both the organization's subtree and write access).\n"+
-		"  fix: re-run `forge registry login <env>`, and check the token's scopes with `forge cloud token list`", reference)
+		"  fix: re-run `forge registry login <env>`, and check the token's scopes with `forge cloud status <env>` or in the web app (Settings → API tokens)", reference)
 }

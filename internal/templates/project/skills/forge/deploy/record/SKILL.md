@@ -34,7 +34,7 @@ That is the whole integration. forge builds nothing and applies nothing.
 | Step | Time |
 |---|---|
 | `forge.yaml` with `name: <project>` at the repo root (if there is none) | 1 min |
-| `forge cloud token create --name ci --scopes deploy:write` (a human signed in with `forge login`; no deploy/kcl needed), stored as the CI secret `FORGE_CONTROL_PLANE_TOKEN` | 5 min |
+| A token with `deploy:write`, minted by a person in the web app (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens; no deploy/kcl needed), stored as the CI secret `FORGE_CONTROL_PLANE_TOKEN` | 5 min |
 | Paste the recipe below after the deploy job | 5 min |
 | Run the pipeline once; `forge obs changes prod` shows the marker | 4 min |
 

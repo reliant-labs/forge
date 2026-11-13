@@ -209,7 +209,10 @@ func TestBuildCmd_WorkingDir(t *testing.T) {
 		projectDir string
 		wantDir    string
 	}{
-		{"empty WorkingDir leaves cmd.Dir empty (inherit parent cwd)", "", projectDir, ""},
+		// The project root, not the parent's cwd: under `forge -C <dir>` the
+		// two differ, and air could not find the config sitting in <dir>.
+		{"empty WorkingDir runs in ProjectDir", "", projectDir, projectDir},
+		{"empty WorkingDir and ProjectDir inherit the parent cwd", "", "", ""},
 		{"absolute WorkingDir is used verbatim", absSibling, projectDir, absSibling},
 		{"relative WorkingDir resolves against ProjectDir", "../sibling", projectDir, filepath.Join(base, "forge", "sibling")},
 		{"relative WorkingDir with empty ProjectDir falls through verbatim", "../sibling", "", "../sibling"},

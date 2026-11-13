@@ -72,7 +72,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // and 0.13.12 is the first release that exports no session replay after
 // analytics consent is withdrawn (#2159); a compatible latest release is
 // insufficient when a lockfile retains the floor.
-const webRuntimePublishedRange = "^0.13.12"
+const webRuntimePublishedRange = "^0.13.14"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

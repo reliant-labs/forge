@@ -1242,8 +1242,10 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 			fmt.Fprintf(w, "  %s: %v\n", h.Name, err)
 			continue
 		}
+		// The project root is every host process's default directory, so
+		// only a declared working_dir elsewhere is worth naming.
 		dir := ""
-		if cmd.Dir != "" {
+		if cmd.Dir != "" && cmd.Dir != projectDirForKCL() {
 			dir = "  (in " + cmd.Dir + ")"
 		}
 		fmt.Fprintf(w, "  %s (%s): %s%s\n", h.Name, h.Kind, strings.Join(cmd.Args, " "), dir)

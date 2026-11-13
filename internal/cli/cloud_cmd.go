@@ -557,7 +557,7 @@ func newCloudStatusCmd() *cobra.Command {
 			if cred.ExpiresAt != nil {
 				fmt.Fprintf(out, "  expires:    %s\n", cred.ExpiresAt.Format(time.RFC3339))
 			}
-			fmt.Fprintf(out, "  (the secret is never printed; match the prefix in `forge cloud token list --env %s` or the console)\n", ep.Env)
+			fmt.Fprintf(out, "  (the secret is never printed; match the prefix in the web app's Settings → API tokens)\n")
 			return nil
 		},
 	}

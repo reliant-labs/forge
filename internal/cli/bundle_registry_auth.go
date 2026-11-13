@@ -120,8 +120,8 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 	return bundleRegistryAuth{
 		Host:     host,
 		Identity: fmt.Sprintf("the control-plane credential for %s (%s: %s)", ep.URL, cred.Source, cred.From),
-		Fix: fmt.Sprintf("%s — or, in CI, refresh $%s. Check the credential's scopes with `forge cloud token list` (a push needs deploy:write)",
-			cloud.SignInHint(), ep.TokenEnv),
+		Fix: fmt.Sprintf("%s — or, in CI, refresh $%s. Check the credential's scopes with `forge cloud status %s` (a push needs deploy:write)",
+			cloud.SignInHint(), ep.TokenEnv, env),
 		credential: func(context.Context) (string, error) {
 			fresh, err := cloud.ResolveCredential("", ep)
 			if err != nil {

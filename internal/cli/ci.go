@@ -647,6 +647,8 @@ func discoverGoModules(root string, rootOnly bool) (modules, empty []string, err
 				mod = rel
 				order = append(order, rel)
 			}
+			// Every directory is recorded, root included (its rel is "."), so
+			// a .go file directly in the root counts toward the root module.
 			moduleOf[path] = mod
 			return nil
 		}

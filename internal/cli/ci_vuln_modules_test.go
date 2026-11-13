@@ -77,6 +77,30 @@ func TestDiscoverGoModules(t *testing.T) {
 	}
 }
 
+// A project whose only Go package is the root directory itself is one module
+// with packages: the root is recorded as its own module before any of its
+// files are seen, so a root-level .go file counts.
+func TestDiscoverGoModules_SinglePackageAtTheRoot(t *testing.T) {
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"go.mod":  "module example.com/tiny\n",
+		"main.go": "package main\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rootOnly := range []bool{false, true} {
+		modules, empty, err := discoverGoModules(root, rootOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(modules, []string{"."}) || len(empty) != 0 {
+			t.Errorf("rootOnly=%v: modules = %v, empty = %v; want [.] and none", rootOnly, modules, empty)
+		}
+	}
+}
+
 // A subtree the walk cannot read fails the discovery: it may hold a module,
 // or the root module's packages, and a scan that skipped it would pass
 // without having looked (forge#2192 review).

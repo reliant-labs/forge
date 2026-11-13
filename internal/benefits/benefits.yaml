@@ -2661,8 +2661,10 @@ benefits:
     title: Scoped machine access tokens
     claim: >-
       `pkg/accesstoken` gives one machine credential with a closed scope
-      vocabulary that can never grant authority its holder lacks; org automation
-      tokens come from `forge cloud token create`.
+      vocabulary that can never grant authority its holder lacks; a person
+      mints the CI token in the web app (Settings → API tokens), and
+      `forge cloud token` manages them where the control plane admits a CLI
+      login.
     availability: forge
     why: >-
       The token is the `rlat_` wire format, hashed and compared in constant
@@ -3126,8 +3128,8 @@ benefits:
       forge.
     availability: forge
     use: >-
-      Works in any repo: add `forge.yaml` with `name:`, store a token from
-      `forge cloud token create --scopes deploy:write` as
+      Works in any repo: add `forge.yaml` with `name:`, store a token with
+      deploy:write, minted in the web app (Settings → API tokens), as
       `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge
       release record --env prod --version "$TAG" [--workload api --image
       ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG"

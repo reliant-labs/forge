@@ -136,8 +136,8 @@ denial is never a mis-declared org. In order:
    again (`reliant auth login` / the app); standalone, `forge login` again; in
    CI, refresh the secret.
 2. **The token holds `deploy:read` but not `deploy:write`.** A push needs both
-   the org's subtree and write access; check the token's scopes with
-   `forge cloud token list`.
+   the org's subtree and write access; check the token's scopes in the web
+   app (Settings → API tokens).
 
 **Re-running a manual `docker login` fixes neither.** If a push is being
 refused, the question is what your token may write, not whether a credential

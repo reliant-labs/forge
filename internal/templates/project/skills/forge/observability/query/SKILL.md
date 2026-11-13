@@ -156,7 +156,7 @@ Exit codes are shared by every verb: **1** = you asked for something wrong (bad 
 
 ## Machine credentials
 
-CI tokens read telemetry with `obs:read` (`forge cloud token create --env prod --scopes obs:read`). Triage needs `obs:triage`, and `forge env releases` against a cloud env also needs `deploy:read`. Under Reliant, the credential helper grants these from the person's own authority.
+CI tokens read telemetry with `obs:read`; a person mints the CI token in the web app (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens). Triage needs `obs:triage`, and `forge env releases` against a cloud env also needs `deploy:read`. Under Reliant, the credential helper grants these from the person's own authority.
 
 ## One cause, many issues
 

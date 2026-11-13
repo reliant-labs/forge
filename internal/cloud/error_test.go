@@ -265,7 +265,7 @@ func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
 		"lacks the domain:read scope",
 		"re-run `forge login` to pick up the scope",
 		"your role has no domain:read grant: ask an org admin",
-		"forge cloud token create --env <env> --name <name> --scopes domain:read",
+		"An admin can mint a token with it in the web app (Settings → API tokens",
 		"export ACME_TOKEN=<token>",
 	} {
 		if !strings.Contains(got, want) {
@@ -274,6 +274,56 @@ func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
 	}
 	if strings.Contains(got, "(human — opens a browser)") {
 		t.Errorf("a missing-scope 403 must not give the generic login advice:\n%s", got)
+	}
+}
+
+// A refusal with reason person_session_required (control-plane#2636: token
+// administration from a CLI login) must not tell the user to `forge login`
+// again — that mints another CLI login and the same refusal. It names the web
+// app, and keeps the code and reason machine-readable.
+func TestCall_PersonSessionRequiredPointsAtTheWebApp(t *testing.T) {
+	t.Setenv(ConsoleURLEnv, "")
+	srv := connectErrorServer(t, http.StatusForbidden, map[string]any{
+		"code": "permission_denied", "message": "Managing access tokens or member permissions (Settings → API tokens and Members in the web app) needs a person signed in to the Reliant web app",
+	}, ReasonPersonSessionRequired)
+	err := callAgainst(t, srv)
+	var cerr *Error
+	if !errors.As(err, &cerr) || !cerr.HasReason(ReasonPersonSessionRequired) || !cerr.HasCode(CodePermissionDenied) {
+		t.Fatalf("want a typed permission_denied/person_session_required error, got %T %v", err, err)
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"needs a person signed in to the Reliant web app, not a CLI login",
+		"sign in to the web app of the control plane at " + srv.URL,
+		"signing in again with `forge login` does not help",
+		"server said: Managing access tokens",
+		"reason: person_session_required",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("message missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "(human — opens a browser)") {
+		t.Errorf("must not give the generic login advice:\n%s", got)
+	}
+}
+
+// The web app forge links to: FORGE_CONSOLE_URL, else Reliant's for Reliant
+// cloud, else none (another control plane's web app is unknowable).
+func TestTokenSettingsURL(t *testing.T) {
+	t.Setenv(ConsoleURLEnv, "")
+	if got, want := TokenSettingsURL(DefaultEndpoint), DefaultConsoleURL+"/settings/tokens"; got != want {
+		t.Errorf("Reliant cloud: %q, want %q", got, want)
+	}
+	if got := TokenSettingsURL("https://cp.example.com"); got != "" {
+		t.Errorf("another control plane: %q, want none", got)
+	}
+	if got := TokenSettingsWhere("https://cp.example.com"); got != "Settings → API tokens" {
+		t.Errorf("where without a URL: %q", got)
+	}
+	t.Setenv(ConsoleURLEnv, "https://console.example.com/")
+	if got, want := TokenSettingsURL("https://cp.example.com"), "https://console.example.com/settings/tokens"; got != want {
+		t.Errorf("override: %q, want %q", got, want)
 	}
 }
 

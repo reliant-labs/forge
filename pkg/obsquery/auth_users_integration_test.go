@@ -17,6 +17,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
+	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
@@ -40,6 +41,7 @@ type productEvent struct {
 	event     string
 	client    string
 	retention uint16
+	props     map[string]string
 }
 
 func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []productEvent) {
@@ -51,7 +53,7 @@ func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []prod
 	if err := c.Exec(ctx, fmt.Sprintf(productEventsDDL, db)); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := c.PrepareBatch(ctx, "INSERT INTO "+db+".product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Client, RetentionDays)")
+	batch, err := c.PrepareBatch(ctx, "INSERT INTO "+db+".product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Client, RetentionDays, Props)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,11 @@ func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []prod
 		if retention == 0 {
 			retention = 90
 		}
-		if err := batch.Append(ts, "api", e.env, e.user, e.event, client, retention); err != nil {
+		props := e.props
+		if props == nil {
+			props = map[string]string{}
+		}
+		if err := batch.Append(ts, "api", e.env, e.user, e.event, client, retention, props); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -173,6 +179,50 @@ func TestUserActivityOverAPopulation(t *testing.T) {
 				t.Errorf("%s breaks returning <= active, active-returning <= new: %+v", e.EnvID, w)
 			}
 		}
+	}
+}
+
+// A fact about a user (observe.TrackState) never counts them, and a project's
+// declared rules leave out its own not-activity events and every user a
+// marker event names, history included.
+func TestUserActivityLeavesStateEventsAndDeclaredRulesOut(t *testing.T) {
+	c := startClickHouse(t)
+	const db = "t_users_rules"
+	state := map[string]string{observe.PropKind: observe.KindState}
+	seedProductEvents(t, c, db, []productEvent{
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u1", event: "project_created"},                          // active
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u2", event: "billing_subscription_state", props: state}, // a snapshot only
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u3", event: "legacy_snapshot"},                          // declared not activity
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u4", event: "project_created"},                          // staff
+		{at: "2026-08-20T09:00:00Z", env: "prod", user: "u4", event: "internal_user"},                            // marked long ago
+		{at: "2026-08-21T09:00:00Z", env: "prod", user: "u6", event: "project_created"},                          // the data's start, with or without rules (FirstSeenGraceDays)
+		{at: "2026-11-05T09:00:00Z", env: "stage", user: "u5", event: "project_created"},                         // marked in prod only
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u5", event: "internal_user"},
+	})
+	end := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	q := obsquery.UserActivityQuery{
+		Scope: obsquery.Scope{Database: db, EnvRestricted: true, EnvIDs: []string{"prod", "stage"}, Start: end.Add(-7 * 24 * time.Hour), End: end},
+	}
+	read := func(a obsquery.Activity) (prod, stage obsquery.UserActivityCounts) {
+		t.Helper()
+		q.Activity = a
+		got, err := obsquery.ReadUserActivity(context.Background(), rumRunner(c), q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got[0].Current, got[1].Current
+	}
+	// The convention alone: u2's snapshot is not activity; u3's legacy event
+	// and the markers still count (an undeclared marker is an event like any).
+	if prod, _ := read(obsquery.Activity{}); prod != (obsquery.UserActivityCounts{Active: 4, New: 3, Returning: 1}) {
+		t.Errorf("prod without rules = %+v, want active u1,u3,u4,u5; new u1,u3,u5; returning u4 (first seen in August)", prod)
+	}
+	prod, stage := read(obsquery.Activity{NotActivity: []string{"legacy_snapshot"}, ExcludeUsersWith: []string{"internal_user"}})
+	if prod.Active != 1 || prod.New != 1 {
+		t.Errorf("prod with rules = %+v, want active and new u1 only", prod)
+	}
+	if stage.Active != 1 {
+		t.Errorf("stage with rules = %+v, want u5: a marker excludes a user in its own environment", stage)
 	}
 }
 

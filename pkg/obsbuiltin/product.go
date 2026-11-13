@@ -172,7 +172,7 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 		"Each flag and variant: the persons exposed in the range, and the share of them whose first "+activationTitle(a)+
 			" came within "+window+" after their first exposure. Descriptive, not a significance test.",
 		flagExposureSQL(a), 24, 8))
-	return d
+	return in.withActivity(d)
 }
 
 // activationFunnelSQL is the built-in funnel: visitor-days, the range's

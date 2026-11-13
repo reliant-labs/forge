@@ -25,7 +25,7 @@ import (
 //	brandnew  reports no sign-ups; its data begins 11-10, so nothing in the
 //	          range is decided.
 //	empty     no events.
-//	signedout only a sign-out: rows in scope, none of them ActiveEvidence.
+//	signedout only a sign-out: rows in scope, none of them UserActivityEvidence.
 const newUsersSeed = `
 INSERT INTO forge_obsbuiltin_newusers.product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Props, Client) VALUES
     ('2026-10-24 14:03:00', 'api', 'fresh', 'f1', 'task_created', {}, 'backend'),
@@ -162,7 +162,7 @@ func TestNewUsersUndecidedGuardIsScopedToTheRangesActivity(t *testing.T) {
 		// day's answer is a determinate nothing, not a missing figure.
 		{"undecided env, nobody active in the range", end.Add(-24 * time.Hour), []string{"brandnew"}, "0", "0"},
 		{"undecided env, active in the range", end.Add(-3 * 24 * time.Hour), []string{"brandnew"}, `\N`, `\N`},
-		// Rows in scope, but no ActiveEvidence row in the 90-day window.
+		// Rows in scope, but no UserActivityEvidence row in the 90-day window.
 		{"only a sign-out in scope", month, []string{"signedout"}, "0", "0"},
 		// One environment that decides the range keeps the figure; the
 		// undecided one counts its users returning (b1, b2).

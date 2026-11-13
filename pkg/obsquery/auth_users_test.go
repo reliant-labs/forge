@@ -43,7 +43,7 @@ func userActivityQuery() UserActivityQuery {
 
 func TestUserActivityFragmentsAreGolden(t *testing.T) {
 	golden(t, "user_activity_fragments.golden.sql",
-		"-- ActiveEvidence\n"+ActiveEvidence+"\n\n-- NewUsersSource\n"+
+		"-- UserActivityEvidence\n"+UserActivityEvidence+"\n\n-- NewUsersSource\n"+
 			NewUsersSource("product_events", "{to:DateTime64(9)}", "(empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))")+"\n")
 }
 
@@ -53,7 +53,7 @@ func TestUserActivityStatementIsGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "user_activity.golden.sql", st.SQL+"\n")
-	for _, frag := range []string{ActiveEvidence, "max(has_signup) OVER (PARTITION BY EnvId)"} {
+	for _, frag := range []string{UserActivityEvidence, "max(has_signup) OVER (PARTITION BY EnvId)"} {
 		if !strings.Contains(st.SQL, frag) {
 			t.Errorf("the statement does not compile from the shared fragment %q", frag)
 		}
@@ -125,7 +125,7 @@ func TestNewUsersSourceExcludesTheDataStart(t *testing.T) {
 	if !strings.Contains(decided, "min(first_at) + INTERVAL 7 DAY) AS DecidedFrom") {
 		t.Errorf("NewUsersDecidedFrom does not add the grace to the data's start:\n%s", decided)
 	}
-	if per := newUsersPerUser("product_events", "{to:DateTime64(9)}", ""); !strings.Contains(src, per) || !strings.Contains(decided, per) {
+	if per := newUsersPerUser("product_events", "{to:DateTime64(9)}", "", UserActivityEvidence); !strings.Contains(src, per) || !strings.Contains(decided, per) {
 		t.Error("NewUsersSource and NewUsersDecidedFrom read different rows")
 	}
 }

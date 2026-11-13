@@ -3918,11 +3918,27 @@ schema ProjectAnalytics:
                     ]
                 }]
                 counts = [forge.Count {id = "deploys", event = "deploy_succeeded", group_by = ["mode", "first_for_org"]}]
+                not_activity = ["billing_subscription_state"]
+                exclude_users_with = ["internal_user"]
             }
         }
+
+    `not_activity` and `exclude_users_with` are the project's user-activity
+    rules: every user count (the Users dashboard, the Overview's Users card,
+    `forge obs users`) reads them. An event emitted with observe.TrackState
+    is never activity and needs no entry here; list the events an older
+    emitter writes that name a user without being something they did. A
+    user with any retained row of an `exclude_users_with` event in an
+    environment is left out of that environment's counts, history included.
     """
     funnels: [Funnel] = []
     counts: [Count] = []
+    # Product events that name a user without being something the user did
+    # (a state snapshot, a marker): they never count a user as active or new.
+    not_activity: [str] = []
+    # Marker events (a staff or test-account marker such as internal_user):
+    # a user with any retained row of one is left out of every user count.
+    exclude_users_with: [str] = []
 
     check:
         all f in funnels { f.by in ["visitor", "person", "org"] }, \
@@ -3932,6 +3948,9 @@ schema ProjectAnalytics:
         len({c.id: True for c in counts}) == len(counts), \
             "ProjectAnalytics.counts declares a count id twice: each count needs its own id"
         len(funnels) <= 50 and len(counts) <= 50, "ProjectAnalytics declares at most 50 funnels and 50 counts"
+        all e in not_activity { regex.match(e, _ANALYTICS_EVENT_RE) } and all e in exclude_users_with { regex.match(e, _ANALYTICS_EVENT_RE) }, \
+            "ProjectAnalytics.not_activity and .exclude_users_with must be product event names: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
+        len(not_activity) <= 50 and len(exclude_users_with) <= 50, "ProjectAnalytics lists at most 50 not_activity and 50 exclude_users_with events"
 
 schema Goal:
     """A conversion the built-in Product dashboard counts: one product event,

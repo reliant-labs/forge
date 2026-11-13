@@ -50,7 +50,7 @@ func ExtendOverview(d dashspec.Dashboard, in Input) dashspec.Dashboard {
 	if d.DefaultRange == "" {
 		d.DefaultRange = "24h"
 	}
-	return d
+	return in.withActivity(d)
 }
 
 func hasSection(ss []dashspec.Section, id string) bool {

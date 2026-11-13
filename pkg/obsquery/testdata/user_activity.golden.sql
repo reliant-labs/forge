@@ -2,7 +2,7 @@ WITH
 act AS (
   SELECT EnvId, UserId, Timestamp, Client, RetentionDays
   FROM t_org.product_events
-  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p6:Int64}) AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})),
+  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p6:Int64}) AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})),
 nu_cur AS (
 SELECT EnvId, UserId, if(reports = 1, signed_up_at, first_at) AS NewAt, reports AS ReportsSignups
 FROM (
@@ -12,7 +12,7 @@ FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
-    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId))
 WHERE has_signup = 1 OR (reports = 0 AND first_at >= data_from + INTERVAL 7 DAY)),
 nu_prev AS (
@@ -24,7 +24,7 @@ FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
-    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId))
 WHERE has_signup = 1 OR (reports = 0 AND first_at >= data_from + INTERVAL 7 DAY)),
 nd_cur AS (
@@ -34,7 +34,7 @@ FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
-    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId)
 GROUP BY EnvId),
 nd_prev AS (
@@ -44,7 +44,7 @@ FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
-    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId)
 GROUP BY EnvId)
 SELECT 'cur' AS kind, CAST(EnvId AS String) AS env_id, '' AS day,
@@ -100,5 +100,5 @@ SELECT 'seen' AS kind, CAST(EnvId AS String) AS env_id, '' AS day,
        toUInt64(uniqExact(UserId)) AS active_users, toUInt64(0), toUInt64(0),
        CAST([] AS Array(String)), min(Timestamp) AS first_at, toUInt32(max(RetentionDays)) AS retention_days, toUInt8(0)
 FROM t_org.product_events
-WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Timestamp >= fromUnixTimestamp64Nano({p8:Int64}) AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p8:Int64}) AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
 GROUP BY EnvId

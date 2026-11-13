@@ -2655,6 +2655,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		if in.Counts, err = declaredCounts(ctx.renderedEnvs().analytics); err != nil {
 			return err
 		}
+		if in.Activity, err = declaredActivity(ctx.renderedEnvs().analytics); err != nil {
+			return err
+		}
 		if in.Analytics, err = declaredAnalytics(ctx.renderedFrontends()); err != nil {
 			return err
 		}

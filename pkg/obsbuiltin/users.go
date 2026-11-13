@@ -30,7 +30,7 @@ var usersSections = []dashspec.Section{
 // Users is the Users dashboard: accounts, active, new and returning users,
 // engagement, retention and authentication, over the hosted product_events
 // table. Active and new compile from the fragments the console's Users card
-// does (obsquery.ActiveEvidence, obsquery.NewUsersSource).
+// does (obsquery.UserActivityEvidence, obsquery.NewUsersSource).
 func Users(in Input) dashspec.Dashboard {
 	a := in.Analytics
 	d := dashspec.Dashboard{
@@ -118,7 +118,7 @@ func Users(in Input) dashspec.Dashboard {
 			"Signed-in users by product events in the range, with the days they were active and when they were last seen. `forge obs sessions <env> --user <id>` lists a user's sessions.",
 			mostActiveUsersSQL, 24, 9),
 	}
-	return d
+	return in.withActivity(d)
 }
 
 // rollingUsers is one row per UTC day of the range over each user's active

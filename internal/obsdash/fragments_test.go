@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
 // The shared project part must not change when an unrelated service is added.
@@ -21,6 +22,7 @@ func TestFragmentsContainOnlyProjectInputs(t *testing.T) {
 		Activation: "order_created",
 		Channels:   []ChannelRule{{Host: "news.ycombinator.com", Channel: "Organic social"}},
 	}
+	in.Activity = obsquery.Activity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"}}
 	project, _ := BuildParts(in)
 	more := in
 	more.Services = append(append([]Service(nil), in.Services...), Service{
@@ -39,7 +41,7 @@ func TestFragmentsContainOnlyProjectInputs(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ReadFragments: ok=%v err=%v", ok, err)
 	}
-	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics}
+	want := Input{Project: in.Project, Frontends: in.Frontends, HasDatabase: in.HasDatabase, Funnels: in.Funnels, Analytics: in.Analytics, Activity: in.Activity}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("project fragments did not round-trip: got %+v, want %+v", got, want)
 	}

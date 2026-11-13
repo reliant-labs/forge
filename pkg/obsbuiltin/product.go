@@ -299,6 +299,11 @@ GROUP BY i ORDER BY i`, lits(labels), unit, level, src, group, len(f.Steps)+1)
 // sequenceLevel is the highest step a key reached in order, each step within
 // its Within (else the window, secs) of the one before: sequenceMatch over
 // each prefix, highest first.
+//
+// Every pair of steps is joined by a (?t<=N) condition, never bare: in
+// sequenceMatch a time condition lets any number of events lie between the two
+// steps, while bare (?1)(?2) would need them adjacent among the events the
+// conditions describe (a repeated step in between would break the match).
 func sequenceLevel(f Funnel, secs int64, conds []string) string {
 	ts := "toDateTime(ts), " + strings.Join(conds, ", ")
 	var arms []string

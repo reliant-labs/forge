@@ -66,3 +66,27 @@ func TestEventsFunnelByOrgWithStepFiltersAndWithin(t *testing.T) {
 		t.Errorf("count:\n%s\nwant\n%s", got, wantCount)
 	}
 }
+
+// Steps in order with other step events between them still count: o5 repeats a
+// deploy before its claim and claims twice before its second deploy. A
+// sequenceMatch pattern of bare (?1)(?2) would need the steps adjacent among
+// the described events; each (?t<=N) between steps lets any number of events
+// lie between them, so o5 reaches every step.
+const interleavedSeed = `
+INSERT INTO forge_obsbuiltin_events_interleaved.product_events (Timestamp, ServiceName, EnvId, OrgId, UserId, EventName, Props, Client) VALUES
+    ('2026-03-06 10:00:00', 'api', 'e1', 'o5', 'u5', 'deploy_succeeded', {'mode': 'claimable', 'first_for_org': 'true'}, 'backend'),
+    ('2026-03-06 10:30:00', 'api', 'e1', 'o5', 'u5', 'deploy_succeeded', {'mode': 'claimable', 'first_for_org': 'false'}, 'backend'),
+    ('2026-03-06 11:00:00', 'api', 'e1', 'o5', 'u5', 'claim_completed', {'path': 'upgrade'}, 'backend'),
+    ('2026-03-06 11:30:00', 'api', 'e1', 'o5', 'u5', 'claim_completed', {'path': 'membership'}, 'backend'),
+    ('2026-03-07 09:00:00', 'api', 'e1', 'o5', 'u5', 'deploy_succeeded', {'mode': 'account', 'first_for_org': 'false'}, 'backend');
+`
+
+func TestEventsFunnelCountsStepsWithOtherStepEventsBetweenThem(t *testing.T) {
+	ch := newClickHouse(t, "forge_obsbuiltin_events_interleaved", interleavedSeed)
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	want := "deploy_succeeded (first_for_org=true)\t1\nclaim_completed\t1\ndeploy_succeeded (first_for_org=false)\t1"
+	if got := ch.run(productFunnel(eventsFunnel()).SQL, start, end, "e1"); got != want {
+		t.Errorf("sequenced funnel with interleaved step events:\n%s\nwant\n%s", got, want)
+	}
+}

@@ -69,7 +69,7 @@ func TestDashboardSetFollowsTheProject(t *testing.T) {
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition," +
+	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,users,product,acquisition,"+
 		"ai,ai-workflows,ai-models,ai-users,ai-errors,ai-tools"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}

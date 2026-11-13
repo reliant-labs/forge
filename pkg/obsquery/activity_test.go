@@ -26,11 +26,11 @@ func mustNewUsers(t *testing.T, table, to, scope string, a Activity) string {
 }
 
 func TestActiveEvidenceForWithoutRulesIsTheConvention(t *testing.T) {
-	if got := mustEvidence(t, "product_events", Activity{}); got != ActiveEvidence {
-		t.Errorf("ActiveEvidenceFor(zero) = %q, want ActiveEvidence", got)
+	if got := mustEvidence(t, "product_events", Activity{}); got != UserActivityEvidence {
+		t.Errorf("ActiveEvidenceFor(zero) = %q, want UserActivityEvidence", got)
 	}
-	if !strings.Contains(ActiveEvidence, "Props['forge.kind'] != 'state'") {
-		t.Errorf("ActiveEvidence %q does not leave observe.TrackState events out", ActiveEvidence)
+	if !strings.Contains(UserActivityEvidence, "Props['forge.kind'] != 'state'") {
+		t.Errorf("UserActivityEvidence %q does not leave observe.TrackState events out", UserActivityEvidence)
 	}
 	if got := mustNewUsers(t, "product_events", "{to:DateTime64(9)}", "", Activity{}); got != NewUsersSource("product_events", "{to:DateTime64(9)}", "") {
 		t.Error("NewUsersSourceFor(zero) differs from NewUsersSource")
@@ -41,7 +41,7 @@ func TestActiveEvidenceForCompilesTheRules(t *testing.T) {
 	a := Activity{NotActivity: []string{"billing_subscription_state", "claimable_account_created"}, ExcludeUsersWith: []string{"internal_user"}}
 	got := mustEvidence(t, "t_org.product_events", a)
 	for _, want := range []string{
-		ActiveEvidence + " AND ",
+		UserActivityEvidence + " AND ",
 		"EventName NOT IN ('billing_subscription_state', 'claimable_account_created')",
 		"(EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM t_org.product_events WHERE EventName IN ('internal_user') AND UserId != '')",
 	} {
@@ -64,7 +64,7 @@ func TestActivityRefusesNamesThatAreNotEvents(t *testing.T) {
 	if got := mustEvidence(t, "product_events", bad); strings.Contains(got, "1=1") || !strings.Contains(got, "'ok_event'") {
 		t.Errorf("ActiveEvidenceFor(unvalidated) = %q", got)
 	}
-	if got := mustEvidence(t, "product_events", Activity{ExcludeUsersWith: []string{"'"}}); got != ActiveEvidence {
+	if got := mustEvidence(t, "product_events", Activity{ExcludeUsersWith: []string{"'"}}); got != UserActivityEvidence {
 		t.Errorf("a rule with no valid name must add no clause: %q", got)
 	}
 	long := Activity{ExcludeUsersWith: make([]string, MaxActivityEvents+1)}
@@ -122,5 +122,18 @@ func TestActiveEvidenceForRefusesATableThatIsNotAnIdentifier(t *testing.T) {
 		if _, err := ActiveEvidenceFor(table, rules); err != nil {
 			t.Errorf("ActiveEvidenceFor(%q) = %v, want accepted", table, err)
 		}
+	}
+}
+
+// ActiveEvidence is a published constant: its value is frozen at what it was
+// before UserActivityEvidence (semver at major 1), and the new predicate
+// extends it rather than replacing it.
+func TestDeprecatedActiveEvidenceKeepsItsValue(t *testing.T) {
+	const was = "UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts')"
+	if ActiveEvidence != was {
+		t.Errorf("ActiveEvidence = %q, want its published value %q", ActiveEvidence, was)
+	}
+	if !strings.HasPrefix(UserActivityEvidence, ActiveEvidence+" AND ") {
+		t.Errorf("UserActivityEvidence %q does not extend ActiveEvidence", UserActivityEvidence)
 	}
 }

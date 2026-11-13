@@ -1,4 +1,4 @@
--- ActiveEvidence
+-- UserActivityEvidence
 UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state'
 
 -- NewUsersSource

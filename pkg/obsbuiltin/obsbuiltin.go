@@ -17,7 +17,7 @@
 //     keyed by the hash alone: its day is the day the edge received the
 //     batch, not the event's;
 //   - a visit is one visitor's events with gaps of 30 minutes or less;
-//   - a user is a UserId per environment, active by obsquery.ActiveEvidence
+//   - a user is a UserId per environment, active by obsquery.UserActivityEvidence
 //     and new by obsquery.NewUsersSource, the two fragments the console's
 //     Users card compiles from, so the card and the dashboards agree;
 //   - a sign-up is attributed to the first touch of its own day (its own
@@ -94,7 +94,7 @@ func Dashboards(in Input) []dashspec.Dashboard {
 }
 
 // withActivity compiles the project's user-activity rules (in.Activity) into
-// d. Every builder writes obsquery.ActiveEvidence, the one predicate a user
+// d. Every builder writes obsquery.UserActivityEvidence, the one predicate a user
 // count reads (obsquery.NewUsersSource embeds it too), so the rules replace
 // that fragment wherever it appears, and every panel, the Overview's Users
 // card included, counts the same users as `forge obs users`.
@@ -108,8 +108,8 @@ func (in Input) withActivity(d dashspec.Dashboard) dashspec.Dashboard {
 	}
 	panels := make([]dashspec.Panel, len(d.Panels))
 	for i, p := range d.Panels {
-		p.SQL = strings.ReplaceAll(p.SQL, obsquery.ActiveEvidence, evidence)
-		p.TrendSQL = strings.ReplaceAll(p.TrendSQL, obsquery.ActiveEvidence, evidence)
+		p.SQL = strings.ReplaceAll(p.SQL, obsquery.UserActivityEvidence, evidence)
+		p.TrendSQL = strings.ReplaceAll(p.TrendSQL, obsquery.UserActivityEvidence, evidence)
 		panels[i] = p
 	}
 	d.Panels = panels

@@ -7,7 +7,7 @@ import (
 )
 
 // A project's own rules for which product events count a user (Activity),
-// beyond the convention every project gets (ActiveEvidence: no sign-out, no
+// beyond the convention every project gets (UserActivityEvidence: no sign-out, no
 // account snapshot, no observe.TrackState event). A project declares them in
 // KCL (forge.ProjectAnalytics.not_activity and .exclude_users_with), forge
 // generate compiles them into the built-in dashboards and the Overview's Users
@@ -75,16 +75,16 @@ func union(a, b []string) []string {
 	return out
 }
 
-// ActiveEvidenceFor is ActiveEvidence under a's rules, over table (the
+// ActiveEvidenceFor is UserActivityEvidence under a's rules, over table (the
 // product_events table the statement reads, for the exclusion's subquery:
 // "product_events" or "<database>.product_events", each part an identifier,
-// else ErrInvalid). With no rule it is ActiveEvidence itself. A name in a
+// else ErrInvalid). With no rule it is UserActivityEvidence itself. A name in a
 // that is not an event name never reaches the SQL (Validate reports it).
 func ActiveEvidenceFor(table string, a Activity) (string, error) {
 	if !validTable(table) {
 		return "", invalid("table %q is not an identifier or database.identifier", table)
 	}
-	out := ActiveEvidence
+	out := UserActivityEvidence
 	if l := sqlList(a.NotActivity); l != "" {
 		out += " AND EventName NOT IN (" + l + ")"
 	}

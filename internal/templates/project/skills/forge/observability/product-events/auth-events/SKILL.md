@@ -8,7 +8,7 @@ description: The standard auth product events the console counts users from — 
 Three product event names are reserved for a fixed auth vocabulary, the same
 whatever the auth provider. The console counts users over a range from them
 and the rest of the table: **active** = distinct users with any user-attributed
-event (`obsquery.ActiveEvidence`: every row with a `UserId` except
+event (`obsquery.UserActivityEvidence`: every row with a `UserId` except
 `auth_signed_out`, the platform's `auth_accounts` and an `observe.TrackState`
 fact, narrowed by the project's `forge.ProjectAnalytics.not_activity` and
 `exclude_users_with`; a sign-in or the auth middleware's daily heartbeat is

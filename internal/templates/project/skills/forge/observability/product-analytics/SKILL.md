@@ -103,7 +103,7 @@ count persons.
 dashboard over several environments equals the sum of their cards.
 
 - **Active**: any user-attributed product event except `auth_signed_out`,
-  `auth_accounts` and an `observe.TrackState` fact (`obsquery.ActiveEvidence`):
+  `auth_accounts` and an `observe.TrackState` fact (`obsquery.UserActivityEvidence`):
   a sign-in, the daily session heartbeat, a CRUD write, an app event. The
   project's `forge.ProjectAnalytics.not_activity` and `exclude_users_with`
   narrow it (`obsquery.ActiveEvidenceFor`).
@@ -189,7 +189,7 @@ the end of the range; a channel with fewer than 20 shows none.
 The fragments are Go in `forge/pkg/obsbuiltin` (`fragments.go`); `reliant forge
 project libraries obsbuiltin` prints the package's API. A panel of your own
 reaches the same answer by keying visitors on `(EnvId, DayVisitor)`, users on
-`(EnvId, UserId)`, and active users on `obsquery.ActiveEvidence` (or
+`(EnvId, UserId)`, and active users on `obsquery.UserActivityEvidence` (or
 `obsquery.ActiveEvidenceFor` the project's declared rules):
 
 ```sql

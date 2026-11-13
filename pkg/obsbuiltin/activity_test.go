@@ -9,7 +9,7 @@ import (
 )
 
 // A project's declared user-activity rules reach every user count: each
-// place a panel reads obsquery.ActiveEvidence it reads the rules' evidence,
+// place a panel reads obsquery.UserActivityEvidence it reads the rules' evidence,
 // the Overview's Users card included, and a project with no rules is drawn
 // exactly as before.
 func TestActivityRulesReachEveryUserCount(t *testing.T) {
@@ -28,13 +28,13 @@ func TestActivityRulesReachEveryUserCount(t *testing.T) {
 	for _, d := range every(in) {
 		for i, p := range d.Panels {
 			for _, sql := range []string{p.SQL, p.TrendSQL} {
-				bare, ruled := strings.Count(sql, obsquery.ActiveEvidence), strings.Count(sql, evidence)
+				bare, ruled := strings.Count(sql, obsquery.UserActivityEvidence), strings.Count(sql, evidence)
 				if bare != ruled {
-					t.Errorf("%s/%s reads ActiveEvidence %d times but the rules only %d", d.ID, p.ID, bare, ruled)
+					t.Errorf("%s/%s reads UserActivityEvidence %d times but the rules only %d", d.ID, p.ID, bare, ruled)
 				}
 				counted[d.ID] += ruled
 			}
-			if was := plain[d.ID].Panels[i]; !strings.Contains(was.SQL+was.TrendSQL, obsquery.ActiveEvidence) &&
+			if was := plain[d.ID].Panels[i]; !strings.Contains(was.SQL+was.TrendSQL, obsquery.UserActivityEvidence) &&
 				(was.SQL != p.SQL || was.TrendSQL != p.TrendSQL) {
 				t.Errorf("%s/%s does not count users but the rules changed it", d.ID, p.ID)
 			}
@@ -59,7 +59,7 @@ func TestNoActivityRulesDrawTheDashboardsUnchanged(t *testing.T) {
 // The Overview's Users card counts users in four panels (active, new,
 // returning, daily active) and falls back to users seen for Accounts. Each
 // builds its SQL from fragments (the active const, newUsers) rather than
-// naming obsquery.ActiveEvidence itself, so this checks the result, not the
+// naming obsquery.UserActivityEvidence itself, so this checks the result, not the
 // token: every statement of the card that reads UserId carries the project's
 // exclusion and not-activity rules.
 func TestOverviewUserCardHonoursActivityRules(t *testing.T) {

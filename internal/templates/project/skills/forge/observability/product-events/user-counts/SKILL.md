@@ -6,7 +6,7 @@ description: Who the console counts as an active, new or returning user — obse
 # Who counts as a user
 
 The user counts (active, new, returning) read one predicate,
-`obsquery.ActiveEvidence`: every product event row with a `UserId`, except a
+`obsquery.UserActivityEvidence`: every product event row with a `UserId`, except a
 sign-out, the platform's `auth_accounts` snapshot and an event marked as a
 fact about the user rather than something they did. The project narrows it
 with its own rules (`obsquery.ActiveEvidenceFor`), and the Users dashboard,
@@ -22,7 +22,7 @@ observe.TrackState(ctx, "billing_subscription_state", slog.String("plan", "pro")
 A daily snapshot, a staff marker or a record the platform writes on a user's
 behalf names a user but is not something they did. `observe.TrackState` is
 `Track` with the reserved prop `forge.kind = "state"` (`observe.PropKind`,
-`observe.KindState`); the user counts (`obsquery.ActiveEvidence`: the Users
+`observe.KindState`); the user counts (`obsquery.UserActivityEvidence`: the Users
 dashboard, the Overview's Users card, `forge obs users`) skip every row that
 carries it, while Events by name, funnels and counts still see the event. An
 emitter that writes its own record (one that names the user itself) adds

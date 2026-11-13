@@ -33,7 +33,7 @@ const (
 
 // active is the rows that count their UserId as active, shared with the
 // console's Users card (GetUserActivity) and `forge obs users`.
-const active = obsquery.ActiveEvidence
+const active = obsquery.UserActivityEvidence
 
 // user is the distinct-user key. A user is counted once per environment, as
 // the Users card counts them (per env), so a project dashboard over several

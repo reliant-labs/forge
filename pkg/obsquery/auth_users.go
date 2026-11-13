@@ -17,7 +17,7 @@ import (
 // from the two exported fragments below, so the Overview's Users card and the
 // dashboards cannot disagree:
 //
-//   - ActiveEvidence: the rows that count a user as active. Any
+//   - UserActivityEvidence: the rows that count a user as active. Any
 //     user-attributed product event: the standard auth events (a sign-in, the
 //     auth middleware's daily resumed heartbeat), the automatic CRUD events,
 //     the app's own. "Signed in during the range" is the meaning; every
@@ -56,14 +56,23 @@ const (
 // platform event that names no user's activity.
 const EventAuthAccounts = "auth_accounts"
 
-// ActiveEvidence is the predicate on product_events rows that count their
+// UserActivityEvidence is the predicate on product_events rows that count their
 // UserId as active: any user-attributed event except a sign-out (which ends a
 // session), the platform's account snapshot, and an event that is a fact
 // about the user rather than something they did (observe.TrackState's
 // observe.PropKind = observe.KindState: a billing snapshot, a staff marker).
 // A project's own rules extend it (ActiveEvidenceFor).
-const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')" +
+const UserActivityEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')" +
 	" AND Props['" + observe.PropKind + "'] != '" + observe.KindState + "'"
+
+// ActiveEvidence is the predicate UserActivityEvidence was before
+// observe.TrackState: any user-attributed event except a sign-out and the
+// platform's account snapshot. Its value is frozen (forge is semver at major
+// 1, and a caller may compare or embed it); it still counts a TrackState fact
+// as activity.
+//
+// Deprecated: use UserActivityEvidence, which leaves TrackState facts out.
+const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')"
 
 // NewUsersSource is a subquery over table with one row per new user of the
 // window that ends at to (a DateTime64(9) SQL expression):
@@ -73,15 +82,15 @@ const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.A
 // An environment with any auth_signed_up in the NewUsersWindowDays before to
 // "reports sign-ups" (ReportsSignups = 1): its new users are the ones that
 // signed up, NewAt their first sign-up. Otherwise every user first seen
-// (ActiveEvidence) in that window is new, NewAt their first event. scope is
+// (UserActivityEvidence) in that window is new, NewAt their first event. scope is
 // an extra predicate on the rows ("" for none): the environments and
 // services of the read. A caller counts the users with NewAt in its range.
 func NewUsersSource(table, to, scope string) string {
-	return newUsersSource(table, to, scope, ActiveEvidence)
+	return newUsersSource(table, to, scope, UserActivityEvidence)
 }
 
 // newUsersSource is NewUsersSource with evidence as the rows that count a user
-// (ActiveEvidence, or ActiveEvidenceFor a project's rules).
+// (UserActivityEvidence, or ActiveEvidenceFor a project's rules).
 func newUsersSource(table, to, scope, evidence string) string {
 	if scope != "" {
 		scope = " AND " + scope
@@ -129,13 +138,13 @@ type EnvUserActivity struct {
 	Current, Previous UserActivityCounts
 	// Days is the series, oldest first, zero-filled; empty without SeriesDays.
 	Days []UserActivityDay
-	// SeenTotal is the distinct users with any ActiveEvidence row still
+	// SeenTotal is the distinct users with any UserActivityEvidence row still
 	// retained (at most MaxSeenTotalDays); nil unless WantSeenTotal.
 	SeenTotal *int64
 	// RetentionDays is the longest retention of the rows read (what SeenTotal
 	// spans); 0 when none was read.
 	RetentionDays uint32
-	// FirstEventAt is the earliest ActiveEvidence row read: within the read
+	// FirstEventAt is the earliest UserActivityEvidence row read: within the read
 	// window, or within retention with WantSeenTotal. Zero: none.
 	FirstEventAt time.Time
 	// Clients are where the current window's rows came from (app.client:
@@ -155,7 +164,7 @@ type UserActivityQuery struct {
 	// WantSeenTotal adds SeenTotal, the one read over the whole retention.
 	WantSeenTotal bool
 	// Activity is the project's declared rules (ActiveEvidenceFor); zero is
-	// ActiveEvidence alone.
+	// UserActivityEvidence alone.
 	Activity Activity
 }
 

@@ -11,7 +11,7 @@ import (
 // can join it), but it is not activity: counting it would make every account
 // with a subscription "active" every day. Such an event carries the reserved
 // prop PropKind = KindState, and the user-activity predicate
-// (pkg/obsquery.ActiveEvidence) leaves every row that carries it out of the
+// (pkg/obsquery.UserActivityEvidence) leaves every row that carries it out of the
 // active, new and returning counts: the Users dashboard, the Overview's Users
 // card and `forge obs users` alike.
 const (

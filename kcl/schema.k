@@ -3765,6 +3765,49 @@ _ANALYTICS_EVENT_RE = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 _ANALYTICS_ID_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 _ANALYTICS_MODES = ["off", "aggregate", "identified", "full"]
 
+schema Step:
+    """One funnel step that is more than an event name: the event, the props
+    it must carry, and how soon after the previous step it must come.
+
+        forge.Step {event = "deploy_succeeded", where = {first_for_org = "true"}}
+        forge.Step {event = "deploy_succeeded", where = {first_for_org = "false"}, within = "14d"}
+
+    `where` values are compared as strings, the way props are stored ("true",
+    "3"). `within` bounds the time since the previous step; set on any step,
+    the funnel counts a sequence in which each step comes within its
+    `within`, or the funnel's `window`, of the one before. A step with
+    `where` or `within` belongs to a funnel counted over the product_events
+    table (`by` = "visitor", "person" or "org").
+    """
+    # The product event name.
+    event: str
+    # Props the event must carry, each equal to its value.
+    where: {str: str} = {}
+    # How long after the previous step this one may come ("14d"). Not on the
+    # first step.
+    within?: str
+
+    check:
+        regex.match(event, _ANALYTICS_EVENT_RE), \
+            "Step.event '${event}' is not a product event name: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
+        len(where) <= 8, "Step '${event}'.where sets ${len(where)} props: at most 8"
+        all k, v in where { regex.match(k, r"^[a-z0-9_.]{1,64}$") and len(v) <= 256 }, \
+            "Step '${event}'.where must name props as track() stores them (lowercase letters, digits, '_' and '.') with values of at most 256 characters"
+        not within or regex.match(within, _WINDOW_RE), \
+            "Step '${event}'.within '${within}' is not a window: a number and a unit of s, m, h or d, like \"14d\""
+
+# A funnel step's event name and its identity (the event and its where), for
+# a step written as a bare name or as a forge.Step.
+_step_event = lambda s: any -> str {
+    s if typeof(s) == "str" else s.event
+}
+_step_key = lambda s: any -> str {
+    s if typeof(s) == "str" else s.event + "|" + ",".join(sorted([k + "=" + v for k, v in s.where]))
+}
+_step_is_bare = lambda s: any -> bool {
+    typeof(s) == "str" or (len(s.where) == 0 and not s.within)
+}
+
 schema Funnel:
     """A product funnel: the ordered events a user journey passes through.
 
@@ -3776,29 +3819,37 @@ schema Funnel:
             by = "user"
         }
 
-    `steps` are the event names the app passes to `track()` (forge-web-runtime),
-    in order. A funnel counted per browser `session` or per `user` is one
-    `funnel` panel on the project's frontend dashboard: how many journeys
-    reached each step within `window` of their first one.
+    `steps` are the event names the app passes to `track()` (forge-web-runtime)
+    or observe.Track, in order; a step may also be a forge.Step, which adds the
+    props the event must carry (`where`) and how soon after the previous step
+    it must come (`within`). A funnel counted per browser `session` or per
+    `user` is one `funnel` panel on the project's frontend dashboard: how many
+    journeys reached each step within `window` of their first one; its steps
+    are bare names.
 
-    `by = "visitor"` and `by = "person"` count over the hosted product_events
-    table instead, so they belong to the built-in Product dashboard, not the
-    frontend one: `visitor` is the cookieless daily visitor (one visitor per
-    UTC day, so its `window` is at most a day), and `person` is the signed-in
-    user, or the anonymous visitor of the same day that one sign-in links to
-    them (forge.Analytics).
+    `by = "visitor"`, `"person"` and `"org"` count over the hosted
+    product_events table instead, so they belong to the built-in Product
+    dashboard, not the frontend one: `visitor` is the cookieless daily visitor
+    (one visitor per UTC day, so its `window` is at most a day), `person` is
+    the signed-in user, or the anonymous visitor of the same day that one
+    sign-in links to them (forge.Analytics), and `org` is the org each event is
+    about (observe.Track's org.id), followed across the project's environments.
+
+    Declare funnels on a frontend (`BrowserTelemetry.funnels`) or for the whole
+    project (`Observability.analytics.funnels`, forge.ProjectAnalytics).
     """
     # The panel's stable id (the panel is `funnel-<id>`).
     id: str
     # The panel's title. Unset: the id.
     title?: str
-    # The event names, in order: 2 to 10, each distinct.
-    steps: [str]
+    # The steps, in order: 2 to 10, each an event name or a forge.Step, each
+    # distinct (the same event may appear twice with different `where`).
+    steps: [str | Step]
     # How long a journey may take from its first step to its last: a number
     # and a unit of s, m, h or d ("30m", "1h", "7d").
     window: str = "1h"
     # What identifies one journey: the browser "session", the "user", the
-    # cookieless daily "visitor", or the "person" (forge.Analytics).
+    # cookieless daily "visitor", the "person" (forge.Analytics) or the "org".
     by: str = "session"
 
     check:
@@ -3806,16 +3857,81 @@ schema Funnel:
             "Funnel.id '${id}' is not a valid id: letters, digits, '-', '_' and '.', starting with a letter or digit"
         len(steps) >= 2 and len(steps) <= 10, \
             "Funnel '${id}' has ${len(steps)} steps: a funnel has 2 to 10"
-        all s in steps { s.strip() != "" and len(s) <= 128 }, \
+        all s in steps { _step_event(s).strip() != "" and len(_step_event(s)) <= 128 }, \
             "Funnel '${id}'.steps must be non-empty event names of at most 128 characters"
-        len({s: True for s in steps}) == len(steps), \
-            "Funnel '${id}'.steps repeats a step: each event name may appear once"
+        len({_step_key(s): True for s in steps}) == len(steps), \
+            "Funnel '${id}'.steps repeats a step: each event name may appear once, or more than once with different `where`"
         regex.match(window, r"^[1-9][0-9]{0,3}[smhd]$"), \
             "Funnel '${id}'.window '${window}' is not a window: a number and a unit of s, m, h or d, like \"1h\" or \"7d\""
-        by in ["session", "user", "visitor", "person"], \
-            "Funnel '${id}'.by must be 'session' | 'user' | 'visitor' | 'person'"
+        by in ["session", "user", "visitor", "person", "org"], \
+            "Funnel '${id}'.by must be 'session' | 'user' | 'visitor' | 'person' | 'org'"
         by != "visitor" or not regex.match(window, _WINDOW_RE) or _window_seconds(window) <= 86400, \
             "Funnel '${id}' is counted by visitor, whose id changes every UTC day, so its window '${window}' must be at most 1d; count by \"person\" to follow a signed-in user across days"
+        by in ["visitor", "person", "org"] or all s in steps { _step_is_bare(s) }, \
+            "Funnel '${id}' is counted by ${by}, a frontend dashboard panel whose steps are bare event names; a forge.Step with `where` or `within` needs by = \"visitor\", \"person\" or \"org\""
+        typeof(steps[0]) == "str" or not steps[0].within, \
+            "Funnel '${id}'.steps[0] sets `within`: the first step has no step before it"
+
+schema Count:
+    """A product event counted on the built-in Product dashboard, broken down
+    by its props.
+
+        forge.Count {id = "deploys", event = "deploy_succeeded", group_by = ["mode", "first_for_org"]}
+
+    Each row is one combination of the `group_by` props' values, with the
+    events, and the distinct orgs and users behind them, in the range.
+    """
+    # The panel's stable id (the panel is `count-<id>`).
+    id: str
+    # The panel's title. Unset: the id.
+    title?: str
+    # The product event counted.
+    event: str
+    # The props it is broken down by: at most 4.
+    group_by: [str] = []
+
+    check:
+        regex.match(id, _ANALYTICS_ID_RE), \
+            "Count.id '${id}' is not a valid id: up to 64 letters, digits, '-', '_' and '.', starting with a letter or digit"
+        regex.match(event, _ANALYTICS_EVENT_RE), \
+            "Count '${id}'.event '${event}' is not a product event name"
+        len(group_by) <= 4, "Count '${id}'.group_by names ${len(group_by)} props: at most 4"
+        all g in group_by { regex.match(g, r"^[a-z0-9_.]{1,64}$") }, \
+            "Count '${id}'.group_by must name props as track() stores them (lowercase letters, digits, '_' and '.')"
+        len({g: True for g in group_by}) == len(group_by), "Count '${id}'.group_by repeats a prop"
+
+schema ProjectAnalytics:
+    """The project's Events declarations that belong to no one frontend:
+    funnels and counts over every product event, browser, server and CLI
+    alike, drawn on the built-in Product dashboard. Set on
+    `Observability.analytics`; every environment's declarations are merged
+    (one funnel or count per id), as frontends' are.
+
+        observability = forge.Observability {
+            analytics = forge.ProjectAnalytics {
+                funnels = [forge.Funnel {
+                    id = "forge-deploy", by = "org", window = "30d"
+                    steps = [
+                        forge.Step {event = "deploy_succeeded", where = {first_for_org = "true"}}
+                        "claim_completed"
+                        forge.Step {event = "deploy_succeeded", where = {first_for_org = "false"}, within = "14d"}
+                    ]
+                }]
+                counts = [forge.Count {id = "deploys", event = "deploy_succeeded", group_by = ["mode", "first_for_org"]}]
+            }
+        }
+    """
+    funnels: [Funnel] = []
+    counts: [Count] = []
+
+    check:
+        all f in funnels { f.by in ["visitor", "person", "org"] }, \
+            "ProjectAnalytics.funnels are drawn on the Product dashboard, so each counts by \"visitor\", \"person\" or \"org\"; a session or user funnel belongs on its frontend's BrowserTelemetry.funnels"
+        len({f.id: True for f in funnels}) == len(funnels), \
+            "ProjectAnalytics.funnels declares a funnel id twice: each funnel needs its own id"
+        len({c.id: True for c in counts}) == len(counts), \
+            "ProjectAnalytics.counts declares a count id twice: each count needs its own id"
+        len(funnels) <= 50 and len(counts) <= 50, "ProjectAnalytics declares at most 50 funnels and 50 counts"
 
 schema Goal:
     """A conversion the built-in Product dashboard counts: one product event,
@@ -6976,6 +7092,9 @@ schema Observability:
     retention: ObservabilityRetention = ObservabilityRetention {}
     agent: ObservabilityAgent = ObservabilityAgent {}
     alerts: Alerts = Alerts {}
+    # The project's Events funnels and counts (forge.ProjectAnalytics), drawn
+    # on the built-in Product dashboard. Unset: none beyond the frontends'.
+    analytics?: ProjectAnalytics
 
     check:
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \

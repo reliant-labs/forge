@@ -66,6 +66,9 @@ type Input struct {
 	// Funnels are the project's declared funnels; the Product dashboard draws
 	// the ones IsProductFunnel counts.
 	Funnels []Funnel
+	// Counts are the project's declared event counts (forge.Count), drawn on
+	// the Product dashboard.
+	Counts []Count
 }
 
 // Dashboards are the built-in product dashboards for in: Users and Product

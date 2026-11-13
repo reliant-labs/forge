@@ -1426,6 +1426,30 @@ type FunnelEntity struct {
 	Steps  []string `json:"steps"`
 	Window string   `json:"window"`
 	By     string   `json:"by"`
+	// StepFilters are the forge.Step refinements, one per step (an empty
+	// one for a bare name); nil when every step is a bare name.
+	StepFilters []FunnelStepEntity `json:"step_filters,omitempty"`
+}
+
+// FunnelStepEntity mirrors what kcl/schema.k Step adds to its event name.
+type FunnelStepEntity struct {
+	Where  map[string]string `json:"where,omitempty"`
+	Within string            `json:"within,omitempty"`
+}
+
+// ProjectAnalyticsEntity mirrors kcl/schema.k ProjectAnalytics
+// (Observability.analytics).
+type ProjectAnalyticsEntity struct {
+	Funnels []FunnelEntity `json:"funnels,omitempty"`
+	Counts  []CountEntity  `json:"counts,omitempty"`
+}
+
+// CountEntity mirrors kcl/schema.k Count.
+type CountEntity struct {
+	ID      string   `json:"id"`
+	Title   string   `json:"title,omitempty"`
+	Event   string   `json:"event"`
+	GroupBy []string `json:"group_by,omitempty"`
 }
 
 // EffectiveEnvVars is the frontend's env-var stream forge injects at dev
@@ -1543,6 +1567,9 @@ type ObservabilityEntity struct {
 	} `json:"agent"`
 	// Alerts is Observability.alerts as the author declared it; nil when none.
 	Alerts *AlertsEntity `json:"alerts,omitempty"`
+	// Analytics is Observability.analytics, the project's Events funnels and
+	// counts; nil when none.
+	Analytics *ProjectAnalyticsEntity `json:"analytics,omitempty"`
 }
 
 // RetentionOverrideEntity is one forge.RetentionOverride.

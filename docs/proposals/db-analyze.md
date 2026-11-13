@@ -134,15 +134,21 @@ changed since base (`--all` for every one), applies the head schema on the targe
 rolled-back transaction, and explains each with `EXPLAIN (GENERIC_PLAN, FORMAT JSON)`
 (Postgres 16+; older is exit 2) twice: as is, and with `SET LOCAL enable_seqscan = off`.
 
-- `db-analyze-query-no-usable-index`: with `enable_seqscan = off` the plan still seq-scans
-  a table under a filter or join condition, so no index can serve the predicate. True at
-  any size, so it works on an empty scratch database.
-- `db-analyze-query-large-seqscan` (needs real statistics): the normal plan seq-scans a
-  table at or above `large_table_rows`.
+- `db-analyze-query-no-usable-index`: under `enable_seqscan = off` a table under a filter,
+  join or `ORDER BY … LIMIT` is not served by an index. Served means its scan node has an
+  `Index Cond` (or an index order satisfying the `ORDER BY`). Unserved means a scan marked
+  `Disabled: true` (PG 18), or an index scan carrying only a `Filter`: the planner may walk
+  an unrelated index in full rather than seq-scan, so an index node alone proves nothing.
+  True at any size, so it works on an empty scratch database. Severity comes from the
+  table's size (statistics on a dsn target, else `table_rows`, else warning).
+- `db-analyze-query-large-seqscan` (dsn target with real statistics only): the normal plan
+  seq-scans a table at or above `large_table_rows`.
 
-Whether a scratch target can borrow row counts (Postgres 18's
-`pg_restore_relation_stats`) is a spike: the planner also scales by the relation's
-on-disk size, which is zero on an empty table. See `db-analyze-stats-spike.md`.
+A scratch target does not borrow row counts. Restoring statistics
+(`pg_restore_relation_stats`, or writing `pg_class`) on an empty table makes plans worse:
+the planner keeps the restored rows-per-page ratio but multiplies it by the real block
+count, zero, so every table plans as one row (`db-analyze-stats-spike.md`, measured on
+18.3). Real plans at size need a dsn target with data.
 
 ## Phase 4: review integration (control-plane)
 

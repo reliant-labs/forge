@@ -132,10 +132,11 @@ func StartChat(ctx context.Context, c Chat) (context.Context, trace.Span) {
 type Agent struct {
 	// Name is gen_ai.agent.name: what a "by agent" breakdown groups on.
 	Name string
-	// ID is gen_ai.agent.id.
+	// ID is gen_ai.agent.id: the agent instance (in Reliant, the thread).
 	ID string
 	// ConversationID is gen_ai.conversation.id, carried by every span
-	// under the turn.
+	// under the turn: the conversation the agent serves (in Reliant, the
+	// root chat, shared by the threads a spawn starts under it).
 	ConversationID string
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
@@ -224,8 +225,8 @@ type Node struct {
 	ID string
 	// Type is forge.ai.node.type.
 	Type string
-	// Iteration is forge.ai.node.iteration: the node's execution count in
-	// the run, from 0.
+	// Iteration is forge.ai.node.iteration: the loop iteration, 0 outside a
+	// loop and 0, 1, 2, ... inside one.
 	Iteration int
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue

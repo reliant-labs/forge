@@ -172,8 +172,9 @@ const (
 	AttrNodeID = "forge.ai.node.id"
 	// AttrNodeType is the node's type ("agent", "tool", "approval", ...).
 	AttrNodeType = "forge.ai.node.type"
-	// AttrNodeIteration is the node's execution count within the run, from
-	// 0: a node a loop revisits runs more than once.
+	// AttrNodeIteration is the loop iteration the node ran in: 0 outside a
+	// loop, and 0, 1, 2, ... for each pass of the loop it is inside. It is
+	// not a per-run execution count: two nodes of one pass share it.
 	AttrNodeIteration = "forge.ai.node.iteration"
 
 	// AttrToolLocation is where a tool ran ("local", "daemon", "remote").

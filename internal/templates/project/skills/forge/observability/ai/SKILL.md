@@ -67,11 +67,11 @@ name as a constant. A semver-1 contract: a name is never renamed in place.
 | `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.response.finish_reasons` | model call | |
 | `gen_ai.usage.input_tokens`, `.output_tokens`, `.cache_read.input_tokens`, `.cache_creation.input_tokens`, `.reasoning.output_tokens` | model call | |
 | `gen_ai.retries`, event `gen_ai.retry_wait` (`attempt`, `http.response.status_code`, `reason`, `delay_ms`), event `gen_ai.first_token` | model call | retries; one event per backoff; time to first token |
-| `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.conversation.id` | agent turn (name and conversation flow down) | |
+| `gen_ai.agent.name`, `gen_ai.agent.id`, `gen_ai.conversation.id` | agent turn (name and conversation flow down) | Reliant: `agent.name` = the preset, `agent.id` = the thread, `conversation.id` = the root chat |
 | `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type`, `forge.ai.tool.location` | tool call | location: `local`, `daemon`, `remote` |
 | `forge.ai.workflow.name`, `forge.ai.run.id`, `forge.ai.root_run_id` | every span of a run | |
 | `forge.ai.workflow.ref`, `forge.ai.workflow.trigger`, `forge.ai.parent_run_id` | workflow segment | |
-| `forge.ai.node.id` (flows down), `forge.ai.node.type`, `forge.ai.node.iteration` | node | |
+| `forge.ai.node.id` (flows down), `forge.ai.node.type`, `forge.ai.node.iteration` | node | iteration: the loop iteration, 0 outside a loop (0, 1, 2, ... inside one) |
 | `forge.ai.cost.usd` | model call | the REPORTED cost, never an estimate |
 | `user.id`, `org.id` | any | opaque ids, the keys product analytics uses |
 | `error.type` | any failed or cancelled span | `canceled` is not a failure |
@@ -88,7 +88,7 @@ ctx = genai.WithScope(ctx, attribute.String(genai.AttrUserID, uid), attribute.St
 ctx, wf := genai.StartWorkflow(ctx, genai.Workflow{Name: "triage", RunID: runID, Trigger: "schedule"})
 defer func() { genai.End(wf, err) }()
 ctx, node := genai.StartNode(ctx, genai.Node{ID: "classify"})
-ctx, turn := genai.StartAgent(ctx, genai.Agent{Name: "triager", ConversationID: chatID})
+ctx, turn := genai.StartAgent(ctx, genai.Agent{Name: "triager", ID: threadID, ConversationID: rootChatID})
 ctx, span := genai.StartChat(ctx, genai.Chat{Provider: "anthropic", Model: model})
 msg, err := client.Messages.New(ctx, params)
 // SetResponse(span, Response{Model, ID, FinishReasons, Usage, CostUSD}), then

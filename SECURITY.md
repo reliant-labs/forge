@@ -22,9 +22,7 @@ report and we'll discuss feasibility.
 **Do not open a public GitHub issue for suspected vulnerabilities.**
 Instead, email us privately:
 
-- **Contact:** security@reliant-labs.example
-- **PGP key:** _(optional — add a public-key fingerprint here if your
-  project publishes one)_
+- **Contact:** security@reliantlabs.io
 
 Please include:
 

@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -224,9 +225,7 @@ const reasonRecordOnlyRelease = "record_only_release"
 
 // renderRecordEnv renders a declared env for admitDeclaredEnv. A seam: tests
 // state the render instead of evaluating KCL.
-var renderRecordEnv = func(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
-	return RenderKCL(ctx, projectDir, env)
-}
+var renderRecordEnv = RenderKCL
 
 // admitDeclaredEnv decides, before anything is cut, whether a record may go
 // into an env forge's own KCL declares, and returns that env's render (nil for
@@ -246,7 +245,12 @@ var renderRecordEnv = func(ctx context.Context, projectDir, env string) (*KCLEnt
 func admitDeclaredEnv(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
 	decl := filepath.Join("deploy", "kcl", env, "main.k")
 	if _, err := os.Stat(filepath.Join(projectDir, decl)); err != nil {
-		return nil, nil //nolint:nilerr // no declaration: an env forge does not deploy
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil // no declaration: an env forge does not deploy
+		}
+		// A declaration forge cannot read may still be one it deploys: refuse
+		// rather than treat it as absent.
+		return nil, fmt.Errorf("cannot tell whether forge deploys environment %q: %w", env, err)
 	}
 	entities, err := renderRecordEnv(ctx, projectDir, env)
 	if err == nil && externalOnlyEnv(entities) {

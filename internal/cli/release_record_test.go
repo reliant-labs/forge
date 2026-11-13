@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,6 +280,44 @@ func TestReleaseRecord_RefusalOnAForgeDeployedEnv(t *testing.T) {
 	var refused *promoteRefusedError
 	if !errors.As(err, &refused) || refused.Reason != "record_only_release" {
 		t.Fatalf("err = %v, want the record_only_release refusal", err)
+	}
+}
+
+// A declaration forge cannot stat for a reason other than absence (here, a
+// directory it may not search) is never taken for no declaration: the record
+// is refused with the error, and nothing is cut.
+func TestAdmitDeclaredEnv_AnUnreadableDeclarationIsNotAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root searches a mode-000 directory, so its stat cannot fail")
+	}
+	projectDir := t.TempDir()
+	envDir := filepath.Join(projectDir, "deploy", "kcl", "prod")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte("# prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(envDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(envDir, 0o755) })
+	prevRender := renderRecordEnv
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) {
+		t.Fatal("an unreadable declaration was rendered")
+		return nil, nil
+	}
+	t.Cleanup(func() { renderRecordEnv = prevRender })
+
+	entities, err := admitDeclaredEnv(context.Background(), projectDir, "prod")
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("admitDeclaredEnv = (%v, %v), want a permission error, never an admission", entities, err)
+	}
+
+	// Absent stays absent: an env with no declaration is admitted as one
+	// forge does not deploy.
+	if entities, err := admitDeclaredEnv(context.Background(), projectDir, "staging"); err != nil || entities != nil {
+		t.Fatalf("no declaration: admitDeclaredEnv = (%v, %v), want (nil, nil)", entities, err)
 	}
 }
 

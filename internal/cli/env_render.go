@@ -298,6 +298,44 @@ func declarationFor(ctx context.Context, projectDir, envName string, probed *KCL
 	return entities, nil
 }
 
+// envRenderMainK is env's deploy/kcl/<env>/main.k (under kclDir when the
+// project moved it), or an error naming the declared environments when the
+// env has none.
+func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
+	if kclDir == "" {
+		kclDir = "deploy/kcl"
+	}
+	mainK := filepath.Join(kclDir, envName, "main.k")
+	if _, serr := os.Stat(mainK); serr != nil {
+		envs, _ := ListEnvs(projectDir)
+		return "", fmt.Errorf("environment %q not found: %s does not exist (declared environments: %s)",
+			envName, mainK, strings.Join(envs, ", "))
+	}
+	return mainK, nil
+}
+
+// bindEnvRenderOptions binds the -D options before the first render, exactly
+// as `forge env up` does (parse first for its reserved-name message, then the
+// declared-name check). The declaration renders read them through
+// activeRenderOptionDArgs; the manifest render takes the returned bindings.
+// restore puts back the options that were active before; it is a no-op when
+// no -D was given.
+func bindEnvRenderOptions(projectDir, envName string, values []string) (dArgs []string, restore func(), err error) {
+	dArgs, err = parseRenderOptions(values)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateRenderOptions(projectDir, envName, values); err != nil {
+		return nil, nil, err
+	}
+	if dArgs == nil {
+		return nil, func() {}, nil
+	}
+	prev := activeRenderOptionDArgs()
+	setRenderOptions(dArgs)
+	return dArgs, func() { setRenderOptions(prev) }, nil
+}
+
 // renderEnvTo is the render itself. out receives the manifest stream (or the
 // --list table) and nothing else; see runEnvRender.
 func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRenderOptions) error {
@@ -310,15 +348,9 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	}
 	projectDir := projectDirForKCL()
 
-	kclDir := store.K8s().KCLDir
-	if kclDir == "" {
-		kclDir = "deploy/kcl"
-	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
-	if _, serr := os.Stat(mainK); serr != nil {
-		envs, _ := ListEnvs(projectDir)
-		return fmt.Errorf("environment %q not found: %s does not exist (declared environments: %s)",
-			envName, mainK, strings.Join(envs, ", "))
+	mainK, err := envRenderMainK(store.K8s().KCLDir, projectDir, envName)
+	if err != nil {
+		return err
 	}
 
 	// Arm the SAME render context `forge env deploy` arms before its first
@@ -338,22 +370,11 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// Pinned and scanned BEFORE activation, because deciding the purpose is
 	// itself a render (envRunsOnThisMachine), and any file.write it fires
 	// belongs in the write report as much as the main render's does.
-	// Bind the -D options before the first render, exactly as `forge env up`
-	// does (parse first for its reserved-name message, then the declared-name
-	// check). The declaration renders read them through
-	// activeRenderOptionDArgs; the manifest render takes them below.
-	optionDArgs, err := parseRenderOptions(opts.options)
+	optionDArgs, restoreOptions, err := bindEnvRenderOptions(projectDir, envName, opts.options)
 	if err != nil {
 		return err
 	}
-	if err := validateRenderOptions(projectDir, envName, opts.options); err != nil {
-		return err
-	}
-	if optionDArgs != nil {
-		prev := activeRenderOptionDArgs()
-		setRenderOptions(optionDArgs)
-		defer setRenderOptions(prev)
-	}
+	defer restoreOptions()
 
 	unpin := pinFile(filepath.Join(projectDir, ".forge", "ports-"+envName+".json"))
 

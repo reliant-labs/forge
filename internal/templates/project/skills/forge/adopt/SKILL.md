@@ -80,7 +80,7 @@ to trust, and the user can stop after any of them.
 | **Runtime libraries** | `forge/pkg` (Go), `@reliantlabs/forge-web-runtime` (Node, browser) | a Go module, or Node ≥ 22 | ~15–30 min / ~2 min | `adopt/libraries` |
 | **Monitoring: instrument** | logs, traces and RED metrics in forge's shape, to any OTLP backend | nothing | ~30–60 min / ~5 min | `adopt/monitoring` |
 | **Monitoring: hosted dashboards** | dashboards, issues, alerts, `forge obs` for agents, an `obs check` verdict per `service.version` — for any app, wherever it runs | sign-in | ~15 min with an OTel SDK in place, ~30–60 min without / ~10 min | `observability/monitoring-only` |
-| **Record deploys** | a deploy marker and an `obs check` verdict per release, a Releases page; their pipeline unchanged | a forge.yaml with `name:`; a CI token | ~15 min / ~5 min | `deploy/record` |
+| **Record deploys** | a deploy marker and an `obs check` verdict per release, a Releases page; their pipeline unchanged | the env's document (`deploy/envs/<env>.yaml`, from `obs init`) listing the workloads they deploy as `runtime: {type: external}`, no forge.yaml; a CI token | ~15 min / ~5 min | `deploy/record` |
 | **Parity: forge drives their tool** | `forge env verify` proves no diff against what runs, read-only; then forge builds, records and promotes while their Helm, Fly, Cloud Run, ECS, Argo or script deploys | a forge env (`adopt/deploy` Tier 1) | ~1 hour / ~5 min | `deploy/external` |
 | **Forge drives deploys** | dev/staging/prod, build once, promote by digest, plans, managed Postgres, secrets | a Dockerfile; sign-in; billing for hosted workloads | ~1 hour / ~10 min | `adopt/deploy` |
 | **Static site or SPA** | envs, CDN hosting, custom domains | a Vite or Next.js app | ~10–15 min / ~5 min | `deploy/static-site` |
@@ -102,7 +102,8 @@ forge login && forge obs init prod staging               # hosted monitoring (`o
                                                          #   document (deploy/envs/<env>.yaml; commit it), registers the env,
                                                          #   mints a token per env, prints its OTEL_* variables: endpoint,
                                                          #   headers (the token, shown once), attributes
-forge cloud token create --name ci --scopes deploy:write # record deploys: the CI secret FORGE_CONTROL_PLANE_TOKEN, then after the deploy job:
+forge cloud token create --name ci --scopes deploy:write # record deploys: the CI secret FORGE_CONTROL_PLANE_TOKEN; add the deployed workloads
+                                                         #   to deploy/envs/prod.yaml (`runtime: {type: external}`), then after the deploy job:
 forge release record --env prod --version "$TAG" --workload api --image "ghcr.io/acme/api@$DIGEST"
 forge obs check prod --release "$TAG" --wait             #   …and its verdict: exit 0 good, 1 regressed, 2 not proven, 8 too early
 forge project new --in-place --kind app --dry-run        # deploys by forge: what it would write from the Dockerfile; writes nothing

@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/migrationhook"
 )
 
 // The render contract carries each database's schema, and the decoder reads
@@ -265,13 +266,18 @@ func TestDBSelect_ByName(t *testing.T) {
 		t.Fatalf("--db analytics = %q, %v", got, err)
 	}
 	// Its directory resolves to its own tool.
-	h, hooked := projectMigrationHook(got)
-	if !hooked || h.Tool != "goose" {
-		t.Errorf("--db analytics hook = %+v, %v; want goose", h, hooked)
+	h, hooked, err := projectMigrationHook(got)
+	if err != nil || !hooked || h.Tool != "goose" {
+		t.Errorf("--db analytics hook = %+v, %v, %v; want goose", h, hooked, err)
+	}
+	// --dir naming no declared database's directory is refused, not handed
+	// to the primary's tool.
+	if _, hooked, err := projectMigrationHook(filepath.Join(proj, "sql")); hooked || !errors.Is(err, config.ErrMigrationsDirUnowned) {
+		t.Errorf("--dir sql: hooked=%v err=%v, want ErrMigrationsDirUnowned", hooked, err)
 	}
 	dbFlagName = "app"
 	got, _ = selectMigrationsDir("")
-	if _, hooked := projectMigrationHook(got); hooked {
+	if _, hooked, _ := projectMigrationHook(got); hooked {
 		t.Error("--db app (forge's migrator) resolved a hook")
 	}
 	dbFlagName = "nope"
@@ -335,7 +341,7 @@ func TestDeclaredDatabases_LegacyProjectsUnchanged(t *testing.T) {
 			}
 			before := func() answers {
 				prev := config.RegisterDatabaseDeclarer(nil)
-				defer config.RegisterDatabaseDeclarer(prev)
+				defer func() { config.RegisterDatabaseDeclarer(prev) }()
 				return read()
 			}()
 			renders := declarationRenders.Load()
@@ -347,5 +353,85 @@ func TestDeclaredDatabases_LegacyProjectsUnchanged(t *testing.T) {
 				t.Errorf("a project that declares no schema evaluated its envs %d time(s); want none", n)
 			}
 		})
+	}
+}
+
+// A directory a person names (`forge db --dir`) is the migrations of the
+// declared database that names it. With several declared, a directory none
+// names is refused, never handed to the primary's tool (review B1 on #2211):
+// that could run goose over a dbmate directory.
+func TestMigrationsDirDatabase_NamedDir(t *testing.T) {
+	main := config.DeclaredDatabase{Name: "default", Dialect: "postgres", Source: config.DatabaseSourceKCL,
+		Migrations: config.MigrationsConfig{Dir: "db/migrations", Tool: "goose"}}
+	events := config.DeclaredDatabase{Name: "events", Dialect: "postgres", Source: config.DatabaseSourceKCL,
+		Migrations: config.MigrationsConfig{Dir: "db/events", Tool: "dbmate"}}
+	dir := writeDBProject(t, "name: x\n", nil)
+	abs := func(rel string) string { return filepath.Join(dir, filepath.FromSlash(rel)) }
+
+	t.Run("several declared: each directory is its own database's", func(t *testing.T) {
+		stubDeclarer(t, []config.DeclaredDatabase{main, events}, nil)
+		for rel, tool := range map[string]string{"db/migrations": "goose", "db/events": "dbmate"} {
+			db, err := config.MigrationsDirDatabase(dir, abs(rel))
+			if err != nil || db.MigrationTool() != tool {
+				t.Errorf("%s: tool %q err %v, want %s", rel, db.MigrationTool(), err, tool)
+			}
+			h, ok, err := migrationhook.ResolveForNamedDir(dir, abs(rel))
+			if err != nil || !ok || h.Tool != tool {
+				t.Errorf("%s: hook %q ok=%v err %v, want %s", rel, h.Tool, ok, err, tool)
+			}
+		}
+	})
+
+	t.Run("several declared: an unnamed directory is refused", func(t *testing.T) {
+		stubDeclarer(t, []config.DeclaredDatabase{main, events}, nil)
+		_, err := config.MigrationsDirDatabase(dir, abs("sql/other"))
+		if !errors.Is(err, config.ErrMigrationsDirUnowned) || !strings.Contains(err.Error(), "--db") {
+			t.Fatalf("err = %v, want ErrMigrationsDirUnowned pointing at --db", err)
+		}
+		if _, ok, err := migrationhook.ResolveForNamedDir(dir, abs("sql/other")); ok || !errors.Is(err, config.ErrMigrationsDirUnowned) {
+			t.Fatalf("hook ok=%v err=%v, want a refusal and no hook", ok, err)
+		}
+		// The shadow-schema reader keeps its fallback: its directory comes
+		// from the configuration, not from a person.
+		if got := config.DatabaseForMigrationsDir(dir, abs("sql/other")).MigrationTool(); got != "goose" {
+			t.Errorf("DatabaseForMigrationsDir fallback = %s, want the primary's goose", got)
+		}
+	})
+
+	t.Run("one declared: any directory is the primary's", func(t *testing.T) {
+		stubDeclarer(t, []config.DeclaredDatabase{events}, nil)
+		db, err := config.MigrationsDirDatabase(dir, abs("sql/other"))
+		if err != nil || db.MigrationTool() != "dbmate" {
+			t.Fatalf("tool %q err %v, want the only database's dbmate", db.MigrationTool(), err)
+		}
+	})
+
+	t.Run("none declared: forge.yaml's database", func(t *testing.T) {
+		stubDeclarer(t, nil, nil)
+		db, err := config.MigrationsDirDatabase(dir, abs("sql/other"))
+		if err != nil || db.MigrationTool() != config.MigrationToolForge {
+			t.Fatalf("tool %q err %v, want forge", db.MigrationTool(), err)
+		}
+	})
+}
+
+// A declarer that answers an empty list is no declaration: the project keeps
+// its forge.yaml database, and nothing indexes an empty slice (review B2 on
+// #2211).
+func TestUseDeclaredDatabases_EmptyDeclaration(t *testing.T) {
+	stubDeclarer(t, []config.DeclaredDatabase{}, nil)
+	dir := writeDBProject(t, "name: x\ndatabase:\n  migrations_dir: sql/migrations\n", nil)
+	cfg, err := config.LoadProjectDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.UseDeclaredDatabases(); err != nil {
+		t.Fatalf("UseDeclaredDatabases: %v", err)
+	}
+	if got := cfg.Database.MigrationsPath(); got != "sql/migrations" {
+		t.Errorf("migrations = %s, want forge.yaml's sql/migrations", got)
+	}
+	if got, err := config.MigrationsDirDatabase(dir, filepath.Join(dir, "anything")); err != nil || got.MigrationsPath() != "sql/migrations" {
+		t.Errorf("MigrationsDirDatabase = %s err %v, want forge.yaml's database", got.MigrationsPath(), err)
 	}
 }

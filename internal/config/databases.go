@@ -289,6 +289,21 @@ func DatabaseForMigrationsDir(projectDir, absDir string) DatabaseConfig {
 	return primary
 }
 
+// MigrationsDirOwner returns the database the env declaration declares whose
+// migrations live in absDir, and false when none does (or none is declared).
+func MigrationsDirOwner(projectDir, absDir string) (DeclaredDatabase, bool) {
+	dbs, err := ProjectDatabases(projectDir)
+	if err != nil || len(dbs) == 0 || dbs[0].Source != DatabaseSourceKCL {
+		return DeclaredDatabase{}, false
+	}
+	for _, d := range dbs {
+		if sameDir(projectDir, d.MigrationsPath(), absDir) {
+			return d, true
+		}
+	}
+	return DeclaredDatabase{}, false
+}
+
 // ErrMigrationsDirUnowned is MigrationsDirDatabase's error for a directory no
 // declared database names while several are declared: which tool applies it
 // cannot be told, and guessing the primary's could run the wrong migrator.

@@ -190,7 +190,11 @@ Examples:
   forge db squash --to 20260506_baseline --out-dir db/baselines/
   forge db squash --from-dsn 'postgres://postgres:pw@localhost:5432/goose_built?sslmode=disable'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			h, ok, herr := projectMigrationHook(resolveMigrationsDir(fromDir))
+			hookDir, herr := selectMigrationsDir(fromDir)
+			if herr != nil {
+				return herr
+			}
+			h, ok, herr := projectMigrationHook(hookDir)
 			if herr != nil {
 				return herr
 			}

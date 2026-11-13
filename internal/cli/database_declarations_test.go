@@ -260,6 +260,26 @@ func TestDBSelect_ByName(t *testing.T) {
 		t.Errorf("--dir = %q, %v", got, err)
 	}
 
+	// --db and --dir together must name one database (review R2.B1 on
+	// #2211): another database's directory under --db is refused; its own,
+	// spelled either way, passes.
+	dbFlagName = "analytics"
+	if _, err := selectMigrationsDir("db/migrations"); err == nil || !strings.Contains(err.Error(), `database "app"'s migrations, but --db names "analytics"`) {
+		t.Errorf("--db analytics --dir db/migrations: err = %v, want the mismatch refused", err)
+	}
+	if _, err := requireMigrationsDir("db/migrations"); err == nil {
+		t.Error("requireMigrationsDir (migrate up, seed, reset) accepted --db analytics with app's --dir")
+	}
+	for _, d := range []string{"analytics/migrations", "./analytics/migrations/", filepath.Join(proj, "analytics", "migrations")} {
+		if got, err := selectMigrationsDir(d); err != nil || got != filepath.Join(proj, "analytics", "migrations") {
+			t.Errorf("--db analytics --dir %s = %q, %v; want its own directory", d, got, err)
+		}
+	}
+	dbFlagName = "nope"
+	if _, err := selectMigrationsDir("db/migrations"); err == nil || !strings.Contains(err.Error(), `no database named "nope"`) {
+		t.Errorf("unknown --db with --dir: %v", err)
+	}
+
 	dbFlagName = "analytics"
 	got, err := selectMigrationsDir("")
 	if err != nil || got != filepath.Join(proj, "analytics", "migrations") {

@@ -107,8 +107,11 @@ dashboard over several environments equals the sum of their cards.
   heartbeat, a CRUD write, an app event.
 - **New**: a user whose first `auth_signed_up` is in the range. An environment
   that reported no sign-up in the 90 days before the end of the range counts the
-  users first seen in the range instead (`obsquery.NewUsersSource`); the Users
-  dashboard's _Where auth events come from_ table says when.
+  users first seen in the range instead (`obsquery.NewUsersSource`), except the
+  users first seen within 7 days of the earliest event retained: the data, not
+  the user, begins there, so they count as returning. A range with nothing
+  past those 7 days shows no New or Returning figure. The Users dashboard's
+  _Where auth events come from_ table says when, and from which moment.
 - **Returning**: active and not new.
 
 **Sign-up attribution.** A sign-up (a user's first `auth_signed_up`) is credited

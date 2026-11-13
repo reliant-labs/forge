@@ -196,8 +196,11 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 	check("users", "new", false, "e1", "5")
 	check("users", "new", true, "e1", rows("2026-02-20\t1", "2026-02-24\t1", "2026-03-01\t1", "2026-03-16\t2"))
 	check("users", "returning", false, "e1", "1")
-	// e2 reports no sign-ups: u9 is new because first seen.
-	check("users", "new", false, "e2", "1")
+	// e2 reports no sign-ups and its data begins with u9's one event, inside
+	// the range: no part of the range can tell new from returning, so New and
+	// Returning show no figure rather than counting u9 new.
+	check("users", "new", false, "e2", "\\N")
+	check("users", "returning", false, "e2", "\\N")
 	// Stickiness is the days' summed DAU over their summed MAU: 13 user-days
 	// over u1 10 + u2 25 + u3 21 + u4 1 + u5 1 + u6 16 = 74 user-windows.
 	check("users", "stickiness", false, "e1", "0.1757")
@@ -234,7 +237,8 @@ func TestBuiltinDashboardsOnAPopulation(t *testing.T) {
 	check("users", "verified-share", false, "e1", "0.6")
 	check("users", "signups-by-provider", false, "e1", rows("forge\t4\t80", "forge/google\t1\t20"))
 	check("users", "auth-sources", false, "e1", rows("backend\t5\t2\t1\t1", "web\t1\t0\t0\t0"))
-	check("users", "auth-sources", false, "e2", "sign-ups not reported: new users are the users first seen\t0\t0\t0\t0")
+	check("users", "auth-sources", false, "e2", "sign-ups not reported: new users are the users first seen from 2026-03-23 09:00 UTC, "+
+		"7 days after the earliest event retained; a user first seen before then may be returning and counts as returning\t0\t0\t0\t0")
 	check("users", "most-active-users", false, "e1", rows(
 		"u4\t6\t1\t6\t2026-03-16 09:25:00", "u2\t5\t3\t5\t2026-03-13 15:00:00", "u1\t3\t3\t3\t2026-03-16 10:00:00",
 		"u6\t3\t3\t3\t2026-03-13 09:00:00", "u3\t2\t2\t2\t2026-03-13 15:05:00", "u5\t2\t1\t1\t2026-03-16 11:33:01"))

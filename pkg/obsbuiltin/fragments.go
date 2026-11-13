@@ -49,6 +49,22 @@ func newUsers(end string) string {
 	return obsquery.NewUsersSource("product_events", end, envScope)
 }
 
+// newDecided is obsquery.NewUsersDecidedFrom over product_events for the
+// window that ends at end: one row per environment, EnvId, ReportsSignups,
+// DataFrom, DecidedFrom.
+func newDecided(end string) string {
+	return obsquery.NewUsersDecidedFrom("product_events", end, envScope)
+}
+
+// unlessUndecided is the figure expression fig, or NULL when no environment
+// of the read can tell a new user from a returning one before end: each one
+// with rows reports no sign-ups and its DecidedFrom is at or after end. A
+// new or returning figure there would be a guess (every user returning), so
+// the panel shows no figure; a read with no rows at all still answers 0.
+func unlessUndecided(end, fig string) string {
+	return "if((SELECT count() > 0 AND countIf(DecidedFrom < " + end + ") = 0 FROM (" + newDecided(end) + ")), NULL, " + fig + ")"
+}
+
 // lastDays is the predicate on Timestamp for the n days before end.
 func lastDays(n int, end string) string {
 	return fmt.Sprintf("Timestamp >= %s - INTERVAL %d DAY AND Timestamp < %s", end, n, end)

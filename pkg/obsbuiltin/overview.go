@@ -111,10 +111,10 @@ func overviewUserPanels() []dashspec.Panel {
 		return `SELECT uniqExact(` + user + `) FROM product_events WHERE ` + active + ` AND ` + envScope + ` AND ` + lastDays(7, end)
 	}
 	newIn := func(end string) string {
-		return `SELECT count() FROM (` + newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY`
+		return `SELECT ` + unlessUndecided(end, `(SELECT count() FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY)`)
 	}
 	returningIn := func(end string) string {
-		return activeIn(end) + ` AND ` + user + ` NOT IN (SELECT EnvId, UserId FROM (` + newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY)`
+		return `SELECT ` + unlessUndecided(end, `(`+activeIn(end)+` AND `+user+` NOT IN (SELECT EnvId, UserId FROM (`+newUsers(end)+`) WHERE NewAt >= `+end+` - INTERVAL 7 DAY))`)
 	}
 	twoWeeks := func(title string, q func(string) string) string {
 		return `SELECT (` + q(to) + `) AS "` + title + `",
@@ -132,9 +132,11 @@ GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active user
 		exact(figure("users", "active-7d", "Active users", "Distinct users with any signed-in product event."+fixed,
 			twoWeeks("Active users (7 days)", activeIn), "", dashspec.UnitCount, colorUsers)),
 		exact(figure("users", "new-7d", "New users",
-			fmt.Sprintf("Users who signed up; in an environment that reported no sign-up in the %d days before, the users first seen.", obsquery.NewUsersWindowDays)+fixed,
+			fmt.Sprintf("Users who signed up; in an environment that reported no sign-up in the %d days before, the users first seen, except those first seen "+
+				"within %d days of the earliest event retained (they may be returning, and count as returning). No figure when nothing in the 7 days can be decided.",
+				obsquery.NewUsersWindowDays, obsquery.FirstSeenGraceDays)+fixed,
 			twoWeeks("New users (7 days)", newIn), "", dashspec.UnitCount, colorNew)),
-		exact(figure("users", "returning-7d", "Returning users", "Active users who are not new."+fixed,
+		exact(figure("users", "returning-7d", "Returning users", "Active users who are not new; no figure when New has none."+fixed,
 			twoWeeks("Returning users (7 days)", returningIn), "", dashspec.UnitCount, colorWeekly)),
 		exact(figure("users", "accounts", "Accounts",
 			"Accounts in the environment's identity instance, from the platform's daily snapshot; an environment with none shows its users seen in the last 90 days.",

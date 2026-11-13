@@ -124,3 +124,33 @@ func TestDeclaredSystemEventsAndStaffAreLeftOut(t *testing.T) {
 		})
 	}
 }
+
+// A staff marker marks its user in the environment it was emitted in, never
+// the same id in another: "u" is staff in e1 (its internal_user marker) and a
+// customer in e2, where the same opaque id is someone else.
+func TestStaffMarkerIsScopedToItsEnvironment(t *testing.T) {
+	const db = "forge_obsbuiltin_staff_env"
+	seed := "INSERT INTO " + db + ".product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Props, Client) VALUES\n    " +
+		strings.Join([]string{
+			"('2026-03-11 00:10:00', 'api', 'e1', 'u', 'internal_user', {}, 'backend')",
+			"('2026-03-11 10:00:00', 'api', 'e1', 'u', 'auth_signed_in', {'kind': 'credential', 'method': 'password'}, 'backend')",
+			"('2026-03-12 10:00:00', 'api', 'e2', 'u', 'auth_signed_in', {'kind': 'credential', 'method': 'password'}, 'backend')",
+		}, ",\n    ") + ";\n"
+	ch := newClickHouse(t, db, seed)
+	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-7 * 24 * time.Hour)
+	users := Users(Input{Project: "shop", Web: true, Analytics: &Analytics{StaffEvents: []string{"internal_user"}}})
+	active := func(envs ...string) string {
+		t.Helper()
+		return strings.SplitN(ch.run(panel(t, users, "active").SQL, start, end, envs...), "\t", 2)[0]
+	}
+	if got := active("e1"); got != "0" {
+		t.Errorf("active in e1 = %s, want 0: u is staff there", got)
+	}
+	if got := active("e2"); got != "1" {
+		t.Errorf("active in e2 = %s, want 1: e1's marker must not hide e2's u", got)
+	}
+	if got := active("e1", "e2"); got != "1" {
+		t.Errorf("active over e1 and e2 = %s, want 1: only e2's u counts", got)
+	}
+}

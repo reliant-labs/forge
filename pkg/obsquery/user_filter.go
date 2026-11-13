@@ -37,9 +37,10 @@ type UserFilter struct {
 	// SystemEvents are product event names that are never a user's own
 	// activity, wherever and whenever they were emitted.
 	SystemEvents []string `json:",omitempty"`
-	// StaffEvents are product event names that mark their UserId as staff:
-	// a user with any one of them still retained (in the environments read)
-	// is left out of every user count, on every day.
+	// StaffEvents are product event names that mark their UserId as staff
+	// in the environment they were emitted in: a user with any one of them
+	// still retained there is left out of that environment's user counts, on
+	// every day. The same id in another environment is not marked.
 	StaffEvents []string `json:",omitempty"`
 	// StaffUserIDs are opaque user ids (the events' UserId, never an email)
 	// that are staff.
@@ -75,7 +76,9 @@ func (f UserFilter) notStaff(table, scope string) string {
 		if scope != "" {
 			marked += " AND " + scope
 		}
-		conds = append(conds, "UserId NOT IN (SELECT UserId FROM "+table+" WHERE "+marked+")")
+		// Keyed by (EnvId, UserId): an id is staff in the environment its
+		// marker was emitted in, never in another env that reuses the id.
+		conds = append(conds, "(EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM "+table+" WHERE "+marked+")")
 	}
 	if ids := sortedSet(f.StaffUserIDs); len(ids) > 0 {
 		conds = append(conds, "UserId NOT IN "+chTuple(ids))

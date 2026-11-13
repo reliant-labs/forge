@@ -120,11 +120,11 @@ func TestUserFilterPredicate(t *testing.T) {
 		{"system events, sorted and deduplicated", UserFilter{SystemEvents: []string{"b", "a", "b", ""}},
 			"EventName NOT IN ('a', 'b')"},
 		{"staff by marker event, in the read's environments", UserFilter{StaffEvents: []string{"internal_user"}},
-			"UserId NOT IN (SELECT UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ")"},
+			"(EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ")"},
 		{"staff by id, quoted", UserFilter{StaffUserIDs: []string{"o'brien", "c1"}},
 			`UserId NOT IN ('c1', 'o\'brien')`},
 		{"all three", UserFilter{SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"c1"}},
-			"EventName NOT IN ('billing_state') AND UserId NOT IN (SELECT UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ") AND UserId NOT IN ('c1')"},
+			"EventName NOT IN ('billing_state') AND (EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ") AND UserId NOT IN ('c1')"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.filter.Predicate("t.product_events", scope); got != tc.want {

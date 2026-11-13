@@ -281,7 +281,7 @@ func TestUserPanelsLeaveOutSystemEventsAndStaff(t *testing.T) {
 		AcquisitionID: {"signups", "visit-to-signup", "channels", "signups-by-channel-weekly", "sources", "campaigns", "landing-pages", "countries", "devices", "retention-by-channel"},
 		"overview":    {"active-7d", "new-7d", "returning-7d", "accounts", "dau-30d"},
 	}
-	const declared = "EventName NOT IN ('billing_state') AND UserId NOT IN (SELECT UserId FROM product_events WHERE EventName IN ('internal_user')"
+	const declared = "EventName NOT IN ('billing_state') AND (EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM product_events WHERE EventName IN ('internal_user')"
 	for _, tc := range []struct {
 		name string
 		in   Input

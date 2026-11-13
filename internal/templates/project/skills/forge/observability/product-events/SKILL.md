@@ -291,6 +291,14 @@ What the dashboards draw from these declarations, and every definition they
 count by (visitor-day, visit, channel table, same-day stitch, person, sign-up
 attribution, activation): `observability/product-analytics`.
 
+## Deleting a user's events: `observe.RequestPurge`
+
+On account deletion or a data-subject request, `observe.RequestPurge(ctx,
+requestID, observe.PurgeSubject{UserID: ..., VisitorID: ...})` asks the
+platform to delete the subject's product events in this environment. Load
+`observability/product-events/purge` for how it is authenticated and what it
+covers.
+
 ## Retention
 
 `forge.Observability.retention.product_events_days` (1 to 400, default 90) is

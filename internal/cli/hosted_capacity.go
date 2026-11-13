@@ -57,6 +57,8 @@ func hostedCapacityPreflight(ctx context.Context, envName string, entities *KCLE
 	}
 	report := &promotePlanCapacity{Verdict: verdict, Demand: demand}
 	switch {
+	case verdict.Unchecked && cloud.ClaimableActive():
+		// The plan's Capacity section says it once.
 	case verdict.Unchecked:
 		fmt.Fprintf(out, "WARNING: capacity could not be pre-checked: %s\n", verdict.Summary())
 	case verdict.Queued():

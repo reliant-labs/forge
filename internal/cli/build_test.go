@@ -230,16 +230,11 @@ func TestResolveBuildArch(t *testing.T) {
 			want:      "",
 		},
 		{
-			name:      "docker build, no target → amd64 default",
+			name:      "docker build, no target → host arch (empty), like the project image",
 			cfgArch:   "",
 			flagArch:  "",
 			dockerCtx: true,
-			want: func() string {
-				if runtime.GOARCH == "amd64" {
-					return ""
-				}
-				return "amd64"
-			}(),
+			want:      "",
 		},
 		{
 			name:      "docker build with cfg arch differs from host → cross-compile",

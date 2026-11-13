@@ -36,7 +36,7 @@ func attr(key string, values ...string) Attribute { return Attribute{Key: key, V
 func builtinSpecs() []Spec {
 	return []Spec{
 		{Name: "rpc.server.calls", Type: Counter, Unit: "{call}", Description: "Total RPC calls received.", Attributes: []Attribute{attr("procedure")}, Stability: Stable, Since: legacySince},
-		{Name: "rpc.server.errors", Type: Counter, Unit: "{error}", Description: "Total RPC calls that returned an error, by connect code and error class (server fault, user error, canceled).", Attributes: []Attribute{attr("procedure"), attr("code", connectCodes...), attr("error_class", "server", "user", "canceled")}, Stability: Stable, Since: legacySince},
+		{Name: "rpc.server.errors", Type: Counter, Unit: "{error}", Description: "Total RPC calls that returned an error, by connect code and error class (server fault, user error, canceled). A call the server ended on purpose (svcerr.ExpectedClose) is not counted.", Attributes: []Attribute{attr("procedure"), attr("code", connectCodes...), attr("error_class", "server", "user", "canceled")}, Stability: Stable, Since: legacySince},
 		{Name: "rpc.server.duration", Type: Histogram, Unit: "s", Description: "RPC duration.", Attributes: []Attribute{attr("procedure")}, Stability: Stable, Since: legacySince},
 
 		{Name: "go.memory.used", Type: UpDownCounter, Unit: "By", Description: "Memory used by the Go runtime.", Attributes: []Attribute{attr("go.memory.type", "stack", "other")}, Stability: Stable, Since: legacySince},

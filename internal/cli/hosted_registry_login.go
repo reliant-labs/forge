@@ -120,8 +120,10 @@ func loginToPlatformRegistry(ctx context.Context, env, host, flagToken string, d
 	if err != nil {
 		return fmt.Errorf("log in to %s, the registry env %q declares: %w", host, env, err)
 	}
-	fmt.Printf("[registry] logging in to %s with env %s's control-plane credential (%s: %s)\n",
-		host, env, cred.Source, cred.From)
+	if cred.Source != cloud.SourceClaimable {
+		fmt.Printf("[registry] logging in to %s with env %s's control-plane credential (%s: %s)\n",
+			host, env, cred.Source, cred.From)
+	}
 	if err := runDockerLogin(ctx, host, platformRegistryUsername, cred.Token); err != nil {
 		return err
 	}

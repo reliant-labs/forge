@@ -714,6 +714,13 @@ func shapeFrontendTelemetryOf(e *KCLEntities) []release.ShapeFrontendTelemetry {
 			ErrorsIgnore: t.Errors.Ignore,
 		}
 		for _, fn := range t.Funnels {
+			// An Events funnel (by org, or with forge.Step filters) is drawn
+			// on the generated Product dashboard only: the release shape's
+			// funnel has neither, and a platform that does not know `org`
+			// would refuse the shape.
+			if fn.By == "org" || len(fn.StepFilters) > 0 {
+				continue
+			}
 			item.Funnels = append(item.Funnels, release.ShapeFunnel{ID: fn.ID, Title: fn.Title, Steps: fn.Steps, Window: fn.Window, By: fn.By})
 		}
 		if !item.IsDefault() {

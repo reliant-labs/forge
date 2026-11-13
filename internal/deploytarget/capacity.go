@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -200,6 +201,8 @@ func (e *CapacityRefusedError) Error() string {
 // Summary is the one-line form for plan and deploy output.
 func (v CapacityVerdict) Summary() string {
 	switch {
+	case v.Unchecked && cloud.ClaimableActive():
+		return "not pre-checked (enforced at record/promote)"
 	case v.Unchecked:
 		return "not pre-checked (control plane predates CheckDeployCapacity; enforced at record/promote)"
 	case v.Allowed && v.HasComputePlan:

@@ -126,6 +126,9 @@ func renderedFrontends(projectDir string) []renderedEnvFrontend {
 // its one environment; see renderedDashboardProcesses).
 type renderedEnvironments struct {
 	frontends []renderedEnvFrontend
+	// analytics is each env's Observability.analytics (the project's Events
+	// funnels and counts), in environment order.
+	analytics []renderedEnvAnalytics
 	workloads []WorkloadEntity
 	// failed is every environment that did not render, in environment
 	// order. The inventory is built without it (a half-written main.k must
@@ -155,8 +158,17 @@ func renderEnvironments(projectDir string) renderedEnvironments {
 			out.frontends = append(out.frontends, renderedEnvFrontend{Env: r.env, Frontend: fe})
 		}
 		out.workloads = append(out.workloads, r.entities.Workloads...)
+		if o := r.entities.Observability; o != nil && o.Analytics != nil {
+			out.analytics = append(out.analytics, renderedEnvAnalytics{Env: r.env, Analytics: *o.Analytics})
+		}
 	}
 	return out
+}
+
+// renderedEnvAnalytics is Observability.analytics as one environment declares it.
+type renderedEnvAnalytics struct {
+	Env       string
+	Analytics ProjectAnalyticsEntity
 }
 
 // renderedEnvs is renderEnvironments(ctx.ProjectDir), read once per run.

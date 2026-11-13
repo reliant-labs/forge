@@ -100,9 +100,17 @@ func siteFrontendAt(dir string) (generator.SiteFrontend, bool) {
 	return fe, true
 }
 
+// agentInstructionFiles are the files a coding agent's harness writes into a
+// directory before any code exists (Claude Code's /init, Codex, Gemini CLI,
+// Reliant). A folder holding only these is still empty: an agent told to
+// start a site there should not be refused by its own memory file, and the
+// merge keeps the user's copy rather than overwriting it.
+var agentInstructionFiles = map[string]bool{"AGENTS.MD": true, "CLAUDE.MD": true, "GEMINI.MD": true, "RELIANT.MD": true}
+
 // emptyForSite reports whether dir holds nothing a greenfield site could
 // collide with: only hidden entries (.git, .gitignore, an editor's
-// dotfiles), README* and LICENSE*. Anything else — a plain-HTML site, a
+// dotfiles), README*, LICENSE* and an agent's instruction file
+// (agentInstructionFiles). Anything else — a plain-HTML site, a
 // package.json for a framework forge cannot adopt — is something the user
 // should decide about, not something to scaffold over.
 func emptyForSite(dir string) (bool, []string) {
@@ -114,7 +122,7 @@ func emptyForSite(dir string) (bool, []string) {
 	for _, e := range entries {
 		name := e.Name()
 		upper := strings.ToUpper(name)
-		if strings.HasPrefix(name, ".") || strings.HasPrefix(upper, "README") || strings.HasPrefix(upper, "LICENSE") {
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(upper, "README") || strings.HasPrefix(upper, "LICENSE") || agentInstructionFiles[upper] {
 			continue
 		}
 		blocking = append(blocking, name)

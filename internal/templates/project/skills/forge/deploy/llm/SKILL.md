@@ -159,15 +159,23 @@ the claim's first reconcile); you change nothing. Deleting the env revokes it.
 ## 5. Unclaimed (`--claimable`) deploys
 
 An unclaimed backend has **no outbound internet** (`deploy/hosting`), so
-`api.openai.com` and every other provider fail by design. Reliant's gateway is
-the one LLM path it has: declare `forge.LLM {runtime = forge.OnHosted {}}` in
-the env you deploy with `--claimable` and use `forge.llm_env()`.
+`api.openai.com` and every other provider fail by design. Declaring
+`forge.LLM {runtime = forge.OnHosted {}}` with `forge.llm_env()` configures
+Reliant's gateway contract, but does **not** prove an unclaimed app can use it.
 
 Until the platform's in-cluster route to the gateway is enabled for unclaimed
 compute, the variables of an unclaimed pod stay **blank** (the workload is not
 failed for it). Write the app so a missing key degrades (a "LLM unavailable"
 message, or the feature hidden), never a crash at startup. A claimed deploy
 gets its key on the normal hosted network.
+
+For a direct third-party provider key, ask the user to claim the deploy and
+arrange backend billing first, then `forge login`, store the key as a managed
+secret and redeploy without `--claimable`. Keep the key on a backend, never in
+a browser bundle. Verify an actual server-side model response: a successful
+render or healthy rollout alone does not prove model access. The public
+[recovery guide](https://docs.reliantlabs.io/forge/deploy-without-an-account#what-claiming-gives-you)
+links to the detailed LLM configuration and verification flow.
 
 ## 6. Errors you will see
 

@@ -2,6 +2,7 @@ package obsbuiltin
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/dashspec"
@@ -15,7 +16,7 @@ var productSections = []dashspec.Section{
 	{ID: "events", Title: "Goals and events",
 		Description: "The conversions declared in forge.Analytics, every product event by name, and the records people write through the generated CRUD handlers."},
 	{ID: "funnels", Title: "Funnels",
-		Description: "Visit to sign-up to activation, built in, and every forge.Funnel counted by visitor or person."},
+		Description: "Visit to sign-up to activation, built in, and every forge.Funnel counted by visitor, person or org."},
 	{ID: "experiments", Title: "Experiments",
 		Description: "Feature-flag exposures (flag_evaluated, from trackExposure or the OpenFeature hook) and how each variant's people went on to activate. Descriptive, not a significance test; empty until an exposure is recorded."},
 }
@@ -160,6 +161,13 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 			d.Panels = append(d.Panels, productFunnel(f))
 		}
 	}
+	if len(in.Counts) > 0 {
+		d.Sections = append(append([]dashspec.Section(nil), d.Sections...), dashspec.Section{ID: "counts", Title: "Counts",
+			Description: "Every forge.Count: a product event's occurrences broken down by its props."})
+		for _, c := range in.Counts {
+			d.Panels = append(d.Panels, countPanel(c))
+		}
+	}
 	d.Panels = append(d.Panels, table("experiments", "flag-exposure", "Flag exposures",
 		"Each flag and variant: the persons exposed in the range, and the share of them whose first "+activationTitle(a)+
 			" came within "+window+" after their first exposure. Descriptive, not a significance test.",
@@ -212,42 +220,138 @@ LEFT JOIN hits AS h ON h.goal = d.goal
 GROUP BY d.goal ORDER BY indexOf(` + lits(ids) + `, d.goal)`
 }
 
-// productFunnel is a declared visitor or person funnel: windowFunnel over
-// the product events of each visitor-day or each person, steps in order.
+// productFunnel is a declared visitor, person or org funnel over the product
+// events of each visitor-day, person or org, steps in order. A step that is a
+// forge.Step also matches its props (Where). Without any step's Within it is
+// windowFunnel: every step within the window of the first. With one, it is a
+// sequence: each step within its Within, or the window, of the step before.
 func productFunnel(f Funnel) dashspec.Panel {
 	window := f.Window
 	if window == "" {
 		window = dashspec.DefaultFunnelWindow
 	}
 	secs := windowSeconds(window, dashspec.DefaultFunnelWindow)
-	var conds []string
-	for _, s := range f.Steps {
-		conds = append(conds, "EventName = "+lit(s))
+	var conds, labels []string
+	seen := map[string]bool{}
+	var names []string
+	for i, s := range f.Steps {
+		cond := "EventName = " + lit(s)
+		label := s
+		filter := f.stepFilter(i)
+		keys := make([]string, 0, len(filter.Where))
+		for k := range filter.Where {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var wh []string
+		for _, k := range keys {
+			cond += " AND Props[" + lit(k) + "] = " + lit(filter.Where[k])
+			wh = append(wh, k+"="+filter.Where[k])
+		}
+		if len(wh) > 0 {
+			label += " (" + strings.Join(wh, ", ") + ")"
+		}
+		if len(wh) > 0 {
+			cond = "(" + cond + ")"
+		}
+		conds = append(conds, cond)
+		labels = append(labels, label)
+		if !seen[s] {
+			seen[s] = true
+			names = append(names, s)
+		}
 	}
-	in := "EventName IN (" + strings.Trim(lits(f.Steps), "[]") + ")"
-	var src, unit, who string
-	if f.By == FunnelByVisitor {
-		unit, who = "Visitors", "visitor-day (the platform's daily visitor hash)"
-		src = `SELECT EnvId, DayVisitor AS k, Timestamp AS ts, EventName FROM product_events WHERE ` + scope + ` AND DayVisitor != '' AND DeviceType != 'bot' AND ` + in
-	} else {
-		unit, who = "Persons", "person (the signed-in user, else the user a same-day sign-in links a visitor to, else the visitor-day)"
+	in := "EventName IN (" + strings.Trim(lits(names), "[]") + ")"
+	var src, unit, who, group string
+	switch f.By {
+	case FunnelByVisitor:
+		unit, who, group = "Visitors", "visitor-day (the platform's daily visitor hash)", "EnvId, k"
+		src = `SELECT EnvId, DayVisitor AS k, Timestamp AS ts, EventName, Props FROM product_events WHERE ` + scope + ` AND DayVisitor != '' AND DeviceType != 'bot' AND ` + in
+	case FunnelByOrg:
+		unit, who, group = "Orgs", "org (the org each event is about: observe.Track's org.id, the browser's setTelemetryOrg), across the selected environments", "k"
+		src = `SELECT EnvId, OrgId AS k, Timestamp AS ts, EventName, Props FROM product_events WHERE ` + scope + ` AND OrgId != '' AND ` + in
+	default:
+		unit, who, group = "Persons", "person (the signed-in user, else the user a same-day sign-in links a visitor to, else the visitor-day)", "EnvId, k"
 		src = with(stitchCTE(inRange), personsCTE(inRange, in)) + `
-SELECT EnvId, person AS k, ts, EventName FROM persons WHERE person != ''`
+SELECT EnvId, person AS k, ts, EventName, Props FROM persons WHERE person != ''`
 	}
 	title := f.Title
 	if title == "" {
 		title = f.ID
 	}
+	level := fmt.Sprintf("windowFunnel(%d)(toDateTime(ts), %s)", secs, strings.Join(conds, ", "))
+	how := "within " + window
+	if f.sequenced() {
+		level, how = sequenceLevel(f, secs, conds), "each step within its `within`, else "+window+", of the step before"
+	}
 	sql := fmt.Sprintf(`SELECT %s[i] AS "Step", countIf(level >= i) AS %q
 FROM (
-  SELECT windowFunnel(%d)(toDateTime(ts), %s) AS level
+  SELECT %s AS level
   FROM (%s)
-  GROUP BY EnvId, k)
+  GROUP BY %s)
 ARRAY JOIN range(1, %d) AS i
-GROUP BY i ORDER BY i`, lits(f.Steps), unit, secs, strings.Join(conds, ", "), src, len(f.Steps)+1)
+GROUP BY i ORDER BY i`, lits(labels), unit, level, src, group, len(f.Steps)+1)
 	return chart("funnels", "funnel-"+f.ID, title,
-		fmt.Sprintf("Product events in order (%s), within %s, counted per %s.", strings.Join(f.Steps, " → "), window, who),
+		fmt.Sprintf("Product events in order (%s), %s, counted per %s.", strings.Join(labels, " → "), how, who),
 		sql, &dashspec.Display{Style: dashspec.StyleFunnel, Color: colorSignups}, 24, 8)
+}
+
+// sequenceLevel is the highest step a key reached in order, each step within
+// its Within (else the window, secs) of the one before: sequenceMatch over
+// each prefix, highest first.
+//
+// Every pair of steps is joined by a (?t<=N) condition, never bare: in
+// sequenceMatch a time condition lets any number of events lie between the two
+// steps, while bare (?1)(?2) would need them adjacent among the events the
+// conditions describe (a repeated step in between would break the match).
+func sequenceLevel(f Funnel, secs int64, conds []string) string {
+	ts := "toDateTime(ts), " + strings.Join(conds, ", ")
+	var arms []string
+	for k := len(conds); k >= 2; k-- {
+		var pat strings.Builder
+		pat.WriteString("(?1)")
+		for i := 2; i <= k; i++ {
+			gap := secs
+			if w := f.stepFilter(i - 1).Within; w != "" {
+				gap = windowSeconds(w, dashspec.DefaultFunnelWindow)
+			}
+			fmt.Fprintf(&pat, "(?t<=%d)(?%d)", gap, i)
+		}
+		arms = append(arms, fmt.Sprintf("sequenceMatch(%s)(%s), %d", lit(pat.String()), ts, k))
+	}
+	arms = append(arms, fmt.Sprintf("max(%s), 1", conds[0]), "0")
+	return "multiIf(" + strings.Join(arms, ", ") + ")"
+}
+
+// countPanel is a declared event count: the event's occurrences in the range
+// and the orgs and users behind them, one row per combination of the
+// GroupBy props.
+func countPanel(c Count) dashspec.Panel {
+	title := c.Title
+	if title == "" {
+		title = c.ID
+	}
+	var cols, group []string
+	for _, g := range c.GroupBy {
+		cols = append(cols, "Props["+lit(g)+"] AS "+fmt.Sprintf("%q", g))
+		group = append(group, fmt.Sprintf("%q", g))
+	}
+	sel := strings.Join(append(cols, `count() AS "Events"`, `uniqExactIf(OrgId, OrgId != '') AS "Orgs"`, `uniqExactIf(UserId, UserId != '') AS "Users"`), ", ")
+	sql := `SELECT ` + sel + `
+FROM product_events
+WHERE EventName = ` + lit(c.Event) + ` AND ` + scope
+	if len(group) > 0 {
+		sql += "\nGROUP BY " + strings.Join(group, ", ")
+	}
+	sql += `
+ORDER BY "Events" DESC
+LIMIT 100`
+	by := ""
+	if len(c.GroupBy) > 0 {
+		by = ", by " + strings.Join(c.GroupBy, ", ")
+	}
+	return table("counts", "count-"+c.ID, title,
+		fmt.Sprintf("%s events in the range%s: how many, and the distinct orgs and users behind them.", c.Event, by), sql, 24, 8)
 }
 
 // flagExposureSQL is each flag and variant's exposed persons, and the share

@@ -51,6 +51,14 @@ import (
 // read-only command (render, config, status, deploy --dry-run) resolves the
 // blocks its keys already hold and never hands out a new one, so it can
 // neither leak a block nor fail at the dev_stack.max_stacks ceiling.
+// devstackNoLocalNoted records the envs whose "declares no local cluster" note
+// this process has printed: a deploy renders the same env several times and
+// the note is the same each time.
+var devstackNoLocalNoted sync.Map
+
+// devstackWorktreeNoted is the same for the worktree/branch line.
+var devstackWorktreeNoted sync.Map
+
 func activateDevStack(ctx context.Context, projectDir, env string, purpose renderPurpose, claim blockClaim) (devstack.Options, func()) {
 	opts, restore, _ := activateDevStackRendered(ctx, projectDir, env, purpose, claim)
 	return opts, restore
@@ -81,7 +89,9 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 		// --json` is the discovery call agents and scripts parse), so the
 		// stream did not decode. A human piping through a terminal still
 		// sees it.
-		fmt.Fprintf(os.Stderr, "[devstack] worktree=%q branch=%q\n", opts.Worktree, opts.Branch)
+		if _, seen := devstackWorktreeNoted.LoadOrStore(opts.Worktree+"\x00"+opts.Branch, true); !seen {
+			fmt.Fprintf(os.Stderr, "[devstack] worktree=%q branch=%q\n", opts.Worktree, opts.Branch)
+		}
 	}
 
 	// Back fp.dev_stacks() with the registry's DEV-STACK roster, so a KCL
@@ -105,8 +115,10 @@ func activateDevStackRendered(ctx context.Context, projectDir, env string, purpo
 			// allocate_port to protect: it resolves to base, deterministically,
 			// and neither port store is written.
 			kclplugin.UseBlockAllocator(nil)
-			fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
-				"allocate_port resolves to its base port and no port block is claimed\n", env)
+			if _, seen := devstackNoLocalNoted.LoadOrStore(env, true); !seen {
+				fmt.Fprintf(os.Stderr, "[devstack] env %q declares no local cluster or host process: "+
+					"allocate_port resolves to its base port and no port block is claimed\n", env)
+			}
 			return opts, func() {}, probed
 		}
 	}

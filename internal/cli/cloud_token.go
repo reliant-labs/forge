@@ -9,9 +9,16 @@ package cli
 // with the wrong scopes, or done with a PERSONAL token that dies when its owner
 // leaves. These call AccessTokenService's ORG token RPCs (CreateToken /
 // ListTokens / RevokeToken): the token has no acting user, so it outlives any
-// person. The control plane requires a HUMAN session for these (an org admin
-// via `forge login`); a machine credential is refused server-side, and that
-// refusal is surfaced as-is.
+// person. The control plane requires a HUMAN session for these; a machine
+// credential is refused server-side, and that refusal is surfaced as-is.
+//
+// A CONTROL PLANE MAY REFUSE A CLI LOGIN TOO. Reliant cloud refuses token
+// administration to a `forge login` session (control-plane#2636, reason
+// person_session_required): a token a CLI login minted outlived revoking the
+// login. The CI token is then minted in the web app (Settings → API tokens),
+// and these verbs say so (tokenAdminRefusal) instead of printing a bare
+// PermissionDenied. They never refuse up front: a control plane that still
+// admits a CLI login keeps working.
 //
 // THE SECRET IS SHOWN EXACTLY ONCE — by the server's design, and so by this
 // verb's. `--json` prints it in the document so it can be piped straight into
@@ -20,6 +27,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,10 +68,14 @@ func newCloudTokenCmd() *cobra.Command {
 		Long: `Manage the organization's automation tokens on the hosted control plane.
 
 An org token has no acting user, so it outlives any one person — which is what
-a CI pipeline's FORGE_CONTROL_PLANE_TOKEN must be. Minting needs a human session
-(an org admin, via ` + "`forge login`" + `); the control plane refuses a machine credential.
+a CI pipeline's FORGE_CONTROL_PLANE_TOKEN must be. Minting needs a human session;
+the control plane refuses a machine credential.
 
-Typical setup for the scaffolded release workflow:
+On Reliant cloud, mint the CI token in the web app instead:
+` + cloud.DefaultConsoleURL + cloud.TokenSettingsPath + ` (Settings → API tokens). It refuses
+token administration to a CLI login (` + "`forge login`" + `), because a token a CLI
+login minted would outlive revoking the login; these commands then say so and
+exit 9. They still work against a control plane that admits a CLI login:
 
   forge cloud token create --env prod --name github-actions \
       --scopes deploy:read,deploy:write --json | jq -r .secret \
@@ -228,7 +240,7 @@ func runCloudTokenCreate(ctx context.Context, client cloudCaller, name string, s
 		Secret string          `json:"secret"`
 	}
 	if err := client.Call(ctx, procCreateToken, req, &resp); err != nil {
-		return fmt.Errorf("create token %q: %w", name, err)
+		return tokenAdminRefusal("mint", fmt.Errorf("create token %q: %w", name, err))
 	}
 	if jsonOut {
 		doc := cloudTokenCreateDocument{Token: resp.Token, Secret: resp.Secret}
@@ -278,7 +290,7 @@ func runCloudTokenList(ctx context.Context, client cloudCaller, includeRevoked, 
 		Tokens []wireAccessToken `json:"tokens"`
 	}
 	if err := client.Call(ctx, procListTokens, req, &resp); err != nil {
-		return fmt.Errorf("list tokens: %w", err)
+		return tokenAdminRefusal("list", fmt.Errorf("list tokens: %w", err))
 	}
 	if jsonOut {
 		doc := cloudTokenListDocument{Tokens: resp.Tokens}
@@ -332,7 +344,7 @@ type cloudTokenRevokeDocument struct {
 
 func runCloudTokenRevoke(ctx context.Context, client cloudCaller, id string, jsonOut bool, out io.Writer) error {
 	if err := client.Call(ctx, procRevokeToken, map[string]any{"id": id}, &struct{}{}); err != nil {
-		return fmt.Errorf("revoke token %s: %w", id, err)
+		return tokenAdminRefusal("revoke", fmt.Errorf("revoke token %s: %w", id, err))
 	}
 	if jsonOut {
 		doc := cloudTokenRevokeDocument{Revoked: id}
@@ -341,6 +353,56 @@ func runCloudTokenRevoke(ctx context.Context, client cloudCaller, id string, jso
 	}
 	fmt.Fprintf(out, "Revoked token %s. Anything still using it now gets 401.\n", id)
 	return nil
+}
+
+// tokenAdminRefusal turns a control plane's refusal of token administration
+// to a CLI login (reason person_session_required) into where to do it
+// instead: the web app's Settings → API tokens. Every other error, including
+// a refusal without that reason, is returned unchanged. It reacts to the
+// server's answer only, so a control plane that admits a CLI login is never
+// refused by forge.
+func tokenAdminRefusal(action string, err error) error {
+	var ce *cloud.Error
+	if !errors.As(err, &ce) || !ce.HasReason(cloud.ReasonPersonSessionRequired) {
+		return err
+	}
+	return &personSessionRefusal{action: action, err: ce}
+}
+
+// personSessionRefusal is a token verb refused because the control plane
+// wants a person in the web app, not a CLI login. Exit 9 (exitNeedsHuman):
+// re-running changes nothing, and a person has to act — in the web app.
+// Unwrap keeps the control plane's code and reason in a --json document's
+// error facts.
+type personSessionRefusal struct {
+	action string // mint | list | revoke
+	err    *cloud.Error
+}
+
+func (r *personSessionRefusal) Unwrap() error { return r.err }
+func (r *personSessionRefusal) ExitCode() int { return exitNeedsHuman }
+
+func (r *personSessionRefusal) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "the control plane at %s does not let a CLI login (`forge login`) %s access tokens: "+
+		"a token a CLI login minted would outlive revoking the login.\n", r.err.Endpoint, r.action)
+	where := "in the web app's Settings → API tokens"
+	if u := cloud.TokenSettingsURL(r.err.Endpoint); u != "" {
+		where = "in the web app: " + u + " (Settings → API tokens)"
+	} else {
+		where += " (the web app of the control plane at " + r.err.Endpoint + ")"
+	}
+	fmt.Fprintf(&b, "fix: sign in as a person and %s tokens %s.\n", r.action, where)
+	if r.action == "mint" {
+		fmt.Fprintf(&b, "     Store the secret as your CI's %s; signing in again with `forge login` does not help.", cloud.DefaultTokenEnv)
+	} else {
+		b.WriteString("     Signing in again with `forge login` does not help.")
+	}
+	if r.err.Message != "" {
+		b.WriteString("\n  server said: " + r.err.Message)
+	}
+	b.WriteString("\n  reason: " + r.err.Reason)
+	return b.String()
 }
 
 func timeOrDash(t *time.Time) string {

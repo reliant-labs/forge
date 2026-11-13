@@ -85,9 +85,9 @@ func TestReserveStdoutForJSON_OnlyTheDocumentReachesStdout(t *testing.T) {
 
 // THE REPORTED SHAPE, end to end: `forge env deploy <env> --plan-only --json`
 // on a first run, where a registry login runs (a real docker subprocess that
-// inherits stdout and prints "Login Succeeded") and forge prints descriptor
-// progress. Stdout must still parse as exactly one JSON document (ea6e3b48,
-// 8721487f), with the progress readable on stderr.
+// prints "Login Succeeded", which forge now keeps to itself) and forge prints
+// descriptor progress. Stdout must still parse as exactly one JSON document
+// (ea6e3b48, 8721487f), with the progress readable on stderr.
 func TestDeployPlanOnlyJSON_StdoutIsOneDocumentOnAFirstRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("drives the deploy path end to end and execs a fake docker; skipped in -short")
@@ -147,9 +147,12 @@ func TestDeployPlanOnlyJSON_StdoutIsOneDocumentOnAFirstRun(t *testing.T) {
 	if preflights == 0 {
 		t.Error("the plan ran no preflight")
 	}
-	for _, want := range []string{"Login Succeeded", "protoc-gen-forge"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr is missing %q (progress must stay readable):\n%s", want, stderr)
+	if !strings.Contains(stderr, "protoc-gen-forge") {
+		t.Errorf("stderr is missing forge's progress (it must stay readable):\n%s", stderr)
+	}
+	for _, bad := range []string{"Login Succeeded", "stored unencrypted"} {
+		if strings.Contains(stdout, bad) || strings.Contains(stderr, bad) {
+			t.Errorf("a successful docker login's output reached the user (%q):\nstdout:\n%s\nstderr:\n%s", bad, stdout, stderr)
 		}
 	}
 }

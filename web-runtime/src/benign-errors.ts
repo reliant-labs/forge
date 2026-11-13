@@ -10,6 +10,8 @@
 //     a component unmounted, a newer request superseded an older one. When
 //     nobody awaited the promise it surfaces as an unhandled rejection
 //     ("signal is aborted without reason"), and it describes nothing that broke.
+//     A `TimeoutError` (AbortSignal.timeout() elapsing) is counted as the
+//     same kind.
 //   - NETWORK. The browser's own generic fetch failure — a TypeError reading
 //     "Failed to fetch" (Chromium, now with " (host)" appended), "Load failed"
 //     (Safari) or "NetworkError when attempting to fetch resource." (Firefox).
@@ -74,7 +76,9 @@ export function classifyBenignError(error: unknown): BenignErrorKind | null {
   if (name === "ConnectError" || name === "ConnectClientError") {
     return null;
   }
-  if (name === "AbortError") {
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError: a
+  // deadline the app set elapsing, the same non-defect as a cancellation.
+  if (name === "AbortError" || name === "TimeoutError") {
     return "abort";
   }
   if (name === "TypeError") {

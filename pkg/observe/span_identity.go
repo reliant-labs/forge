@@ -92,6 +92,11 @@ func SessionIDFromBaggage(header http.Header) string {
 // span: error_class=canceled, which is what obsquery's error expressions exclude,
 // and the error as an exception event. The status otelconnect then sets is left
 // as it is: it describes the wire code, and the class says who must act.
+//
+// The one exception is an ending the handler declared with
+// svcerr.ExpectedClose — the server ended the call on purpose, so nothing
+// failed. RecordSpanError sets that span's status OK, with rpc.close_reason,
+// and OK is final: otelconnect's Error for the same Unavailable is ignored.
 func RequestSpanInterceptor() connect.Interceptor { return requestSpan{} }
 
 type requestSpan struct{}

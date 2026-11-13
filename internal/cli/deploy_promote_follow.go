@@ -54,6 +54,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 )
@@ -294,6 +295,12 @@ func followPromote(ctx context.Context, env string, plan promotePlan, ledger env
 		// is the difference between "forge is done" and "the release is
 		// live", and a caller who opted out of the gate is exactly the
 		// one who needs to know which they got.
+		if cloud.ClaimableActive() {
+			// `env status --wait` needs an account, which an anonymous
+			// deploy lacks; the claim block names the command that works.
+			o.notice("\nRecorded. %s is converged by its control plane.\n", env)
+			return nil
+		}
 		o.notice("\nRecorded. %s is converged by its control plane; gate on it with: forge env status %s --wait\n", env, env)
 		return nil
 	}
@@ -499,7 +506,9 @@ func applyHostedPublish(ctx context.Context, env string, o promoteFollowOptions)
 	if o.FailFast {
 		opts.rollout.FailFast = true
 	}
-	o.notice("\nPublishing %s's newly recorded release to its control plane\n", env)
+	if !cloud.ClaimableActive() {
+		o.notice("\nPublishing %s's newly recorded release to its control plane\n", env)
+	}
 	// Under --json the promote owns the single document on stdout, and this
 	// apply is a phase inside it rather than a command of its own. It prints
 	// with fmt.Printf throughout (the group headers, the per-deployment

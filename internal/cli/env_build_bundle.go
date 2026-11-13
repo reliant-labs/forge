@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
@@ -396,7 +397,7 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	// A seal that cannot be built, or that the control plane refuses, costs
 	// one line and the legacy bundle — never the deploy.
 	seal, why := sealEvidenceSnapshotFn(ctx, projectDir, env, ledger, doc, in, input)
-	if _, seen := evidenceSkipNoted.LoadOrStore(env+"\x00"+why, true); why != "" && !seen {
+	if _, seen := evidenceSkipNoted.LoadOrStore(env+"\x00"+why, true); why != "" && !seen && !cloud.ClaimableActive() {
 		fmt.Fprintf(in.errWriter(), "[bundle] Note: env %s's bundle records no snapshot of the environment: %s. The deploy is unaffected.\n", env, why)
 	}
 	if seal != nil {
@@ -771,9 +772,9 @@ func recordWrittenBundle(ctx context.Context, projectDir, env string, ledger env
 		return out, nil
 	case errors.Is(err, errControlPlanePredatesBundles):
 		fmt.Fprintf(in.errWriter(),
-			"[bundle] %s predates bundles; upgrade it.\n"+
+			"[bundle] %s.\n"+
 				"[bundle]   Env %s's bundle %s was written but not recorded; the build continues on the pre-bundle path.\n",
-			errControlPlanePredatesBundles.Error(), env, shortDigest(placed.Digest))
+			controlPlanePredatesBundlesNote(), env, shortDigest(placed.Digest))
 		return placed.bundleWriteOutcome, nil
 	case declarationUndeliverable(err) && ledger.hubUnits() && in.Pushed:
 		return placed.bundleWriteOutcome, errHubBundleNotRecorded(env, placed.Digest, err)
@@ -893,9 +894,20 @@ func bundleRecorderFor(ctx context.Context, projectDir, env string, ledger envLe
 	return hostedRecordStoreFor(client, hostedEnvRefFor(env, entities).Project), nil
 }
 
+// bundleReportedOnce is the (env, digest) pairs an anonymous deploy has already
+// reported as recorded.
+var bundleReportedOnce sync.Map
+
 // printBundleWrites is the one-line-per-env report.
 func printBundleWrites(out io.Writer, written []bundleWriteOutcome) {
 	for _, b := range written {
+		if cloud.ClaimableActive() && b.Recorded {
+			// A deploy builds and then records the same bundle again; the
+			// second report of the same digest adds nothing.
+			if _, dup := bundleReportedOnce.LoadOrStore(b.Env+"\x00"+b.Digest, true); dup {
+				continue
+			}
+		}
 		if b.Skipped {
 			fmt.Fprintf(out, "[bundle] env %s: no bundle written (the env could not be projected)\n", b.Env)
 			continue

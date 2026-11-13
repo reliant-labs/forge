@@ -139,6 +139,10 @@ Forge takes a project from an empty directory to production, purpose-built
 for LLM-driven development: environments, build-once releases, hosting,
 observability and linters from day 0.
 
+New here? 'forge start' prints, in about 60 lines, the one command for the
+directory you are in: deploy the app already here with no account
+('forge env deploy prod --claimable'), or create one.
+
 A landing page, docs site, SPA or PWA with no backend is a complete forge
 project: one static frontend on hosted static hosting, no server to run.
 Adopt an existing Vite or Next.js app with
@@ -147,8 +151,8 @@ deploy/static-site').
 
 An app with an API adds Go services defined in proto and wired over Connect
 RPC — generated handlers, typed frontend hooks, mocks and middleware, one
-consistent interface pattern through the stack. 'forge start' walks that path
-from an empty directory to authored protos, in one call.`,
+consistent interface pattern through the stack. 'forge start app' walks that
+path from an empty directory to authored protos, in one call.`,
 		Version: versionLine(),
 		// SilenceErrors: cobra never prints the error itself — main()
 		// owns the single, final "Error: ..." line. Without this every
@@ -262,7 +266,8 @@ from an empty directory to authored protos, in one call.`,
 	addGlobalFlags(rootCmd.PersistentFlags(), &projectDir)
 
 	// Add all commands
-	// `forge start` prints the greenfield brief. It is a top-level verb
+	// `forge start` prints the router (and `forge start app` the greenfield
+	// brief). It is a top-level verb
 	// rather than a flag on `skill load` because it must be reachable from
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.

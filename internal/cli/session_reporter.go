@@ -139,8 +139,8 @@ func sessionTargetForEntities(env string, entities *KCLEntities, projectDir stri
 // machine ledger and no control plane at all — so branching on the kind
 // enum would have excluded the common case while looking correct.
 //
-// The facts are the two hostedEnvKindOf itself derives from (HasHosted,
-// runsOnOwnCluster), read directly. So this agrees with hostedEnvKindOf on
+// The facts are the ones hostedEnvKindOf itself derives from (HasHosted,
+// runsOnOwnCluster, appliedThroughExternalHooks), read directly. So this agrees with hostedEnvKindOf on
 // every env that HAS a kind, and extends the same rule to the envs that do
 // not, rather than inventing a second notion of local.
 func envReportsSessions(entities *KCLEntities) (why string, ok bool) {
@@ -152,6 +152,8 @@ func envReportsSessions(entities *KCLEntities) (why string, ok bool) {
 		return "the platform runs this environment's workloads, so a local stack is not its state", false
 	case runsOnOwnCluster(entities):
 		return "this environment runs on a cluster, so a local stack is not its state", false
+	case appliedThroughExternalHooks(entities):
+		return "your own deploy tooling runs this environment's workloads (forge.OnExternal), so a local stack is not its state", false
 	}
 	return "", true
 }

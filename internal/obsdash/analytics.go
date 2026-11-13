@@ -18,6 +18,11 @@ type (
 	// FrontendFunnel is one declared funnel (forge.Funnel in KCL):
 	// obsbuiltin.Funnel.
 	FrontendFunnel = obsbuiltin.Funnel
+	// FunnelStep is what a forge.Step adds to a funnel step:
+	// obsbuiltin.FunnelStep.
+	FunnelStep = obsbuiltin.FunnelStep
+	// EventCount is one declared event count (forge.Count): obsbuiltin.Count.
+	EventCount = obsbuiltin.Count
 )
 
 // Funnel identities that count over the hosted product_events table
@@ -25,6 +30,7 @@ type (
 const (
 	FunnelByVisitor = obsbuiltin.FunnelByVisitor
 	FunnelByPerson  = obsbuiltin.FunnelByPerson
+	FunnelByOrg     = obsbuiltin.FunnelByOrg
 )
 
 // DefaultActivationWindow is obsbuiltin.DefaultActivationWindow.

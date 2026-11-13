@@ -346,7 +346,7 @@
       "name": "rpc.server.errors",
       "type": "counter",
       "unit": "{error}",
-      "description": "Total RPC calls that returned an error, by connect code and error class (server fault, user error, canceled).",
+      "description": "Total RPC calls that returned an error, by connect code and error class (server fault, user error, canceled). A call the server ended on purpose (svcerr.ExpectedClose) is not counted.",
       "attributes": [
         {
           "key": "procedure"

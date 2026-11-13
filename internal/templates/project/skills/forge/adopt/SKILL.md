@@ -79,6 +79,8 @@ to trust, and the user can stop after any of them.
 | **Forge drives deploys** | dev/staging/prod, build once, promote by digest, plans, managed Postgres, secrets | a Dockerfile; sign-in; billing for hosted workloads | ~1 hour / ~10 min | `adopt/deploy` |
 | **Static site or SPA** | envs, CDN hosting, custom domains | a Vite or Next.js app | ~10–15 min / ~5 min | `deploy/static-site` |
 | **Migrations: safety lane** | the safety lane on their SQL | `db/migrations/*.up.sql` | ~15 min / ~3 min | `adopt/linters`, `db/orm-and-safety` |
+| **Migrations: several databases** | each database's directory, tool, ORM package and lint dials declared on the database in the env; every one linted, `forge db --db <name>` | forge envs (`deploy/kcl`) | ~15 min / ~2 min | `db` |
+| **Bring their OpenAPI spec** | the spec checked as OpenAPI 3 (Swagger 2 refused) and listed among the project's APIs; nothing generated from it yet | an OpenAPI 3 document; forge envs | ~10 min / ~1 min | `api-openapi` |
 | **Migrations: keep their tool** | the safety lane on whatever their tool applies, in their directory; `forge db migrate up` runs their tool | goose, atlas, flyway, dbmate, golang-migrate, or a command | ~10 min / ~2 min | `db/own-migration-tool` |
 | **Ownership knobs** | forge stays out of what they own: areas, single files, agent files, CI workflows, lint lanes | a forge.yaml | ~10 min / ~2 min | `migration/ownership`, `ci/extending`, `ci/lint-rollout` |
 | **Several repositories** | a shared envs repo imported by git pin, or one deploy repo building N app repos' Dockerfiles; no monorepo, no Go | a forge project per repo, or one deploy repo | ~1 hour, +15 min per further repo / ~10 min | `deploy/polyrepo` |

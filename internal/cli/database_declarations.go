@@ -258,6 +258,12 @@ var kclSchemaDeclarationRE = regexp.MustCompile(`(?m)^[^#\n]*(\bmigrations\s*=|\
 // kclMayDeclareDatabaseSchemas reports whether any .k file under
 // projectDir/deploy/kcl can declare a database schema.
 func kclMayDeclareDatabaseSchemas(projectDir string) bool {
+	return kclSourceMatches(projectDir, kclSchemaDeclarationRE)
+}
+
+// kclSourceMatches reports whether any .k file under projectDir/deploy/kcl
+// matches re.
+func kclSourceMatches(projectDir string, re *regexp.Regexp) bool {
 	root := filepath.Join(projectDir, "deploy", "kcl")
 	found := false
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -268,7 +274,7 @@ func kclMayDeclareDatabaseSchemas(projectDir string) bool {
 			return nil
 		}
 		b, rerr := os.ReadFile(p) //nolint:gosec // a .k file of the project's own deploy tree
-		if rerr == nil && kclSchemaDeclarationRE.Match(b) {
+		if rerr == nil && re.Match(b) {
 			found = true
 			return fs.SkipAll
 		}
@@ -277,17 +283,18 @@ func kclMayDeclareDatabaseSchemas(projectDir string) bool {
 	return found
 }
 
-type declaredDatabasesEntry struct {
-	once sync.Once
-	dbs  []config.DeclaredDatabase
-	err  error
+type envDeclarationsEntry struct {
+	once   sync.Once
+	perEnv map[string]*KCLEntities
+	err    error
 }
 
-// declaredDatabasesCache memoizes the declarer per project and per state of
-// its deploy tree (kclTreeFingerprint) for the life of the process: the
+// envDeclarationsCache memoizes every env's render per project and per state
+// of its deploy tree (kclTreeFingerprint) for the life of the process: the
 // readers call it many times in one command, and a long-lived process (the
-// MCP server) must still see an edit.
-var declaredDatabasesCache sync.Map // string → *declaredDatabasesEntry
+// MCP server) must still see an edit. The databases and the APIs read the
+// same renders.
+var envDeclarationsCache sync.Map // string → *envDeclarationsEntry
 
 // kclTreeFingerprint names the state of every .k file under
 // projectDir/deploy/kcl by path, size and modification time — a stat per
@@ -312,33 +319,41 @@ func kclTreeFingerprint(projectDir string) (fp string, ok bool) {
 	return b.String(), ok
 }
 
-// declaredDatabasesOfEnvs is config's DatabaseDeclarer: the databases the
-// project's envs declare a schema for, unioned (unionDeclaredDatabases).
-func declaredDatabasesOfEnvs(projectDir string) ([]config.DeclaredDatabase, error) {
+// declaredEnvs returns every env's declaration of the project at projectDir
+// (env → entities), evaluated once per state of its deploy tree, or nil when
+// may — the caller's cheap pre-check of the KCL source — says nothing it
+// reads can be declared there.
+func declaredEnvs(projectDir string, may func(string) bool) (map[string]*KCLEntities, error) {
 	abs, err := filepath.Abs(projectDir)
 	if err != nil {
 		abs = projectDir
 	}
 	fp, ok := kclTreeFingerprint(abs)
-	if !ok {
+	if !ok || !may(abs) {
 		return nil, nil
 	}
-	v, _ := declaredDatabasesCache.LoadOrStore(abs+"\x00"+fp, &declaredDatabasesEntry{})
-	e := v.(*declaredDatabasesEntry)
-	e.once.Do(func() {
-		if kclMayDeclareDatabaseSchemas(abs) {
-			e.dbs, e.err = renderDeclaredDatabases(abs)
-		}
-	})
-	return e.dbs, e.err
+	v, _ := envDeclarationsCache.LoadOrStore(abs+"\x00"+fp, &envDeclarationsEntry{})
+	e := v.(*envDeclarationsEntry)
+	e.once.Do(func() { e.perEnv, e.err = renderEnvDeclarations(abs) })
+	return e.perEnv, e.err
 }
 
-// renderDeclaredDatabases evaluates every env of the project (renderEnvsPure:
-// concurrently, side-effect free, memoized inside a generate run) and unions
-// their databases. An env that does not render is an error: its KCL may
-// declare a database, and a reader that silently skipped it would act on the
-// wrong migrations.
-func renderDeclaredDatabases(projectDir string) ([]config.DeclaredDatabase, error) {
+// declaredDatabasesOfEnvs is config's DatabaseDeclarer: the databases the
+// project's envs declare a schema for, unioned (unionDeclaredDatabases).
+func declaredDatabasesOfEnvs(projectDir string) ([]config.DeclaredDatabase, error) {
+	perEnv, err := declaredEnvs(projectDir, kclMayDeclareDatabaseSchemas)
+	if err != nil || perEnv == nil {
+		return nil, err
+	}
+	return unionDeclaredDatabases(perEnv)
+}
+
+// renderEnvDeclarations evaluates every env of the project (renderEnvsPure:
+// concurrently, side-effect free, memoized inside a generate run). An env
+// that does not render is an error: its KCL may declare what the caller
+// reads, and a reader that silently skipped it would act on the wrong
+// declaration.
+func renderEnvDeclarations(projectDir string) (map[string]*KCLEntities, error) {
 	envs, err := ListEnvs(projectDir)
 	if err != nil || len(envs) == 0 {
 		return nil, err
@@ -346,11 +361,11 @@ func renderDeclaredDatabases(projectDir string) ([]config.DeclaredDatabase, erro
 	perEnv := make(map[string]*KCLEntities, len(envs))
 	for _, r := range renderEnvsPure(context.Background(), projectDir, envs) {
 		if r.err != nil {
-			return nil, fmt.Errorf("reading the databases deploy/kcl declares: env %s does not render: %w", r.env, r.err)
+			return nil, fmt.Errorf("reading what deploy/kcl declares: env %s does not render: %w", r.env, r.err)
 		}
 		perEnv[r.env] = r.entities
 	}
-	return unionDeclaredDatabases(perEnv)
+	return perEnv, nil
 }
 
 func init() {

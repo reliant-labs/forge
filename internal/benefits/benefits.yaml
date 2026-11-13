@@ -301,6 +301,33 @@ benefits:
       - command: api curl
       - skill: api/http
 
+  - id: bring-openapi-spec
+    category: build
+    title: Bring your OpenAPI spec
+    claim: >-
+      An API whose contract is an OpenAPI 3 document is declared as a
+      `forge.API`, checked as OpenAPI 3 whenever the env loads (a Swagger 2
+      document is refused with how to convert it) and listed with the project's
+      databases in `forge project audit --json`; nothing is generated from it
+      yet.
+    availability: forge
+    headline: false
+    use: >-
+      `apis = [forge.API {name = "billing", kind = "openapi", spec =
+      "api/openapi.yaml"}]` in `deploy/kcl/<env>/main.k`; read
+      `.categories.resources.details.apis` of `forge project audit --json`.
+    why: >-
+      Declaring each API by its contract records which APIs a project serves
+      and where their specs live, so a later feature reads one declaration
+      instead of guessing; a Swagger 2 spec is caught the day it is declared.
+    scope: any
+    adopt: "Add `apis = [forge.API {name = \"api\", kind = \"openapi\", spec = \"openapi.yaml\"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`."
+    estimate: "~10 min"
+    evidence:
+      - path: internal/cli/api_declarations.go
+      - command: project audit
+      - skill: api-openapi
+
   - id: service-catalog
     category: build
     title: Browsable API inventory

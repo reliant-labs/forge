@@ -1166,6 +1166,56 @@ schema Database:
         migrations or not (orm or migration_safety), \
             "database '${name}' sets orm or migration_safety but no migrations: they describe the schema its migrations declare, so set `migrations = forge.DatabaseMigrations {...}` too"
 
+# ---------------------------------------------------------------------------
+# An API the project serves: its contract, proto or OpenAPI.
+# ---------------------------------------------------------------------------
+
+# The contract languages forge.API accepts.
+_API_KINDS = ["proto", "openapi"]
+
+schema API:
+    """An API the project serves, declared by its contract. Set on
+    `Bundle.apis`.
+
+        apis = [forge.API {
+            name = "billing"
+            kind = "openapi"
+            spec = "api/openapi.yaml"     # a repository-relative OpenAPI 3 file
+            base_path = "/billing"
+            database = "default"          # the database it serves from
+        }]
+
+      * `kind = "proto"`: `spec` is the directory holding the service protos
+        (`proto`). A project with proto services and no proto API declared
+        gets one derived: `{name = <project>, kind = "proto", spec = "proto"}`.
+      * `kind = "openapi"`: `spec` is an OpenAPI 3 document (YAML or JSON).
+        forge reads it when the env is loaded and refuses one that is not
+        OpenAPI 3.x — a Swagger 2 document is refused with "convert to
+        OpenAPI 3".
+      * `base_path`: where it is served, starting with "/".
+      * `database`: the name of a database the env declares (databases,
+        external_databases or schema_only_databases).
+
+    GROUNDWORK: an API is validated and listed (`forge project audit --json`);
+    nothing is generated or served from an OpenAPI spec yet. See `forge skill
+    load api-openapi`.
+    """
+    name: str
+    kind: str
+    spec: str
+    base_path?: str
+    database?: str
+
+    check:
+        regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 63, \
+            "API.name '${name}' must be an RFC-1123 label of at most 63 characters"
+        kind in _API_KINDS, \
+            "API '${name}'.kind '${kind}' is not one of ${_API_KINDS}"
+        _is_repo_rel_path(spec), \
+            "API '${name}'.spec '${spec}' is not a path inside the repository: use a relative path with no '..' segment, such as \"api/openapi.yaml\""
+        not base_path or base_path.startswith("/"), \
+            "API '${name}'.base_path '${base_path}' must start with \"/\""
+
 # Every database the env declares a schema for (one with `migrations`),
 # whatever kind it is.
 _schema_databases = lambda databases: [any], external_databases: [any], schema_only_databases: [any] -> [any] {
@@ -8226,6 +8276,10 @@ schema Bundle:
     # ORM read, for a database this env neither runs nor reaches. Nothing is
     # rendered for them. See Database.
     schema_only_databases: [Database] = []
+    # The APIs the project serves, each declared by its contract (forge.API:
+    # proto or OpenAPI). Groundwork: validated and listed, nothing generated
+    # from them yet. See API.
+    apis: [API] = []
     # Object-storage buckets (forge.Bucket): where each lives, reached by a
     # workload through forge.BucketRef / forge.bucket_env. See Bucket.
     buckets: [Bucket] = []
@@ -8503,6 +8557,12 @@ schema Bundle:
             "Bundle.schema_only_databases ${[d.name for d in schema_only_databases if not d.migrations]} declare no migrations: a schema-only database declares its schema, so set `migrations = forge.DatabaseMigrations {...}`"
         all d in schema_only_databases { regex.match(d.name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(d.name) <= 63 }, \
             "Bundle.schema_only_databases ${[d.name for d in schema_only_databases if not (regex.match(d.name, r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$') and len(d.name) <= 63)]}: a database name is an RFC-1123 label of at most 63 characters (`forge db --db` names it)"
+        # An API names itself uniquely, and the database it serves from is one
+        # the env declares.
+        len(_duplicates([a.name for a in apis])) == 0, \
+            "Bundle.apis: an API name is declared twice: ${_duplicates([a.name for a in apis])}"
+        all a in apis { not a.database or a.database in [db.name for db in databases] + [x.name for x in external_databases] + [d.name for d in schema_only_databases] }, \
+            "Bundle.apis ${[a.name for a in apis if a.database and a.database not in [db.name for db in databases] + [x.name for x in external_databases] + [d.name for d in schema_only_databases]]} name a database the env does not declare: set `database` to one of databases, external_databases or schema_only_databases"
         # Two databases never share a migrations directory or an ORM package:
         # each reader (the ORM, the lint, `forge db`) acts on one database's.
         len(_duplicates([_repo_rel_path(d.migrations.dir) for d in _schema_databases(databases, external_databases, schema_only_databases)])) == 0, \

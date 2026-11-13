@@ -135,6 +135,15 @@ func declaredDatabases(projectDir string) ([]DeclaredDatabase, error) {
 // and the env declaration declare.
 var ErrDatabaseDeclaredTwice = errors.New("database migrations declared twice")
 
+// DeclaresDatabase reports whether forge.yaml's block declares anything about
+// the project's database: its migrations, their tool, its ORM package or its
+// migration-safety dials. A project whose block declares none has its
+// database derived (db/migrations exists).
+func (c DatabaseConfig) DeclaresDatabase() bool {
+	return c.declaresMigrations() || strings.TrimSpace(c.ORM.Package) != "" ||
+		!reflect.DeepEqual(c.MigrationSafety, MigrationSafetyConfig{})
+}
+
 // declaresMigrations reports whether forge.yaml's block declares where the
 // migrations are or what applies them.
 func (c DatabaseConfig) declaresMigrations() bool {

@@ -53,6 +53,12 @@ output = forge.render(forge.Bundle {
     # A database declared for its schema only: the host postgres above runs
     # it, so forge neither provisions nor reaches it, but lint, `forge db`
     # and the ORM read its migrations.
+    # The APIs the project serves, by contract. Groundwork: listed and
+    # validated, nothing generated from them.
+    apis = [
+        forge.API {name = "public", kind = "openapi", spec = "api/openapi.yaml", base_path = "/v1", database = "analytics"}
+        forge.API {name = "acme", kind = "proto", spec = "proto"}
+    ]
     schema_only_databases = [forge.Database {
         name = "analytics"
         migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}

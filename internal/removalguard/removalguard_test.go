@@ -429,6 +429,11 @@ var removals = []removal{
 					"pkg/serverkit/",
 					"internal/cli/deploy*.go",
 					"internal/cli/env_render*.go",
+					// The env document's JSON Schema is generated from the Go types
+					// that decode it, pkg/deploy's Workload among them, so it repeats
+					// their Kubernetes RBAC doc comments (PolicyRule, NamespacedRBAC,
+					// ClusterRBAC) verbatim. Kubernetes manifests only.
+					"schema/env.v1.schema.json",
 					// `forge cluster connect` applies a ClusterRole/ClusterRoleBinding to the
 					// owner's cluster, and its skill documents it. Kubernetes manifests only;
 					// the files carry an `rbac` local naming that bootstrap-manifest struct.

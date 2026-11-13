@@ -320,6 +320,7 @@ forge project migrate tdd	cmd	allow-version-skew:bool dry-run:bool path:string p
 forge project new	cmd	binary:string buf-plugins:string claimable:bool disable:stringSlice force:bool forge-root:string frontend-kind:string frontend-workspaces:bool frontend:stringSlice go-version:string harness:string in-place:bool kind:string link-forge:bool mod:string name:string output:string path/p:string project-dir/C:string routes:stringSlice service:stringSlice skip-tools:bool verbose/v:bool verify:bool
 forge project rescaffold	cmd	allow-version-skew:bool project-dir/C:string
 forge project scaffolded	cmd	absent:bool allow-version-skew:bool project-dir/C:string
+forge project schema	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge project shapes	cmd	allow-version-skew:bool grep:string kind:string project-dir/C:string service:string unimplemented:bool
 forge project start	cmd	allow-version-skew:bool project-dir/C:string
 forge project upgrade	group	all:bool allow-dirty:bool check:bool dry-run:bool force:bool json:bool project-dir/C:string skip:stringSlice to:string

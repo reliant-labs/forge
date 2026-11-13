@@ -334,6 +334,15 @@ var removals = []removal{
 				Paths: []string{"pkg/fluxdelivery/"},
 			},
 			{
+				Name: "Kubernetes PolicyRule in the generated env schema",
+				Reason: "schema/env.v1.schema.json is generated from the Go types the env document decodes " +
+					"into (internal/schemagen; TestEnvSchemaIsCurrent), and carries pkg/deploy/v1alpha1.PolicyRule's " +
+					"doc comment: a Kubernetes Role rule a workload's ServiceAccount is granted, not application " +
+					"authorization. Scoped to that sentence in that file.",
+				Token: regexp.MustCompile(`PolicyRule is one RBAC rule`),
+				Paths: []string{"schema/env.v1.schema.json"},
+			},
+			{
 				Name:   "HTTP Authorization header",
 				Reason: "`Authorization: Bearer …` is AUTHENTICATION, which forge still supports and generates. Never confuse the header with the removed authorization feature.",
 				Token:  regexp.MustCompile(`(?i)\bauthorizations?\b`),

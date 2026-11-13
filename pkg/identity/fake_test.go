@@ -100,7 +100,10 @@ type fUser struct {
 	// Unverified is the email's isVerified, negated: an account a test
 	// seeds is verified unless it says otherwise.
 	Unverified bool
-	Metadata   map[string]string
+	// ResetCode and EmailCode are the outstanding password-reset and
+	// email-verification codes.
+	ResetCode, EmailCode string
+	Metadata             map[string]string
 }
 
 type fCred struct {
@@ -1143,10 +1146,34 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mutate("rename user " + u.ID)
 		return200(w)
+	case strings.HasSuffix(path, "/email/resend") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/email/resend"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		u.EmailCode = "EVR" + strconv.Itoa(f.seq)
+		f.seq++
+		f.mutate("resend email code " + u.ID)
+		reply(w, 200, map[string]any{"verificationCode": u.EmailCode, "details": details()})
+	case strings.HasSuffix(path, "/email/verify") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/email/verify"), "/")]
+		code, _ := body["verificationCode"].(string)
+		if u == nil || u.EmailCode == "" || code != u.EmailCode {
+			zerr(w, 400, 3, "CODE-woT0xc", "Code is invalid")
+			return
+		}
+		u.Unverified, u.EmailCode = false, ""
+		f.mutate("verify email " + u.ID)
+		return200(w)
 	case strings.HasSuffix(path, "/email") && r.Method == "POST":
 		u := f.users[strings.Trim(strings.TrimSuffix(path, "/email"), "/")]
 		if u == nil {
 			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		if e, _ := body["email"].(string); strings.EqualFold(e, u.Email) {
+			zerr(w, 400, 9, "COMMAND-Uch5e", "Email not changed")
 			return
 		}
 		u.Email, _ = body["email"].(string)
@@ -1174,7 +1201,33 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 		return200(w)
 	case strings.HasSuffix(path, "/password_reset"):
 		f.mutate("password reset")
+		if u := f.users[strings.Trim(strings.TrimSuffix(path, "/password_reset"), "/")]; u != nil {
+			u.ResetCode = "ABC123"
+		}
 		reply(w, 200, map[string]any{"verificationCode": "ABC123"})
+	case strings.HasSuffix(path, "/password") && r.Method == "POST":
+		// What the login broker's devidp.ResetPassword redeems.
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/password"), "/")]
+		code, _ := body["verificationCode"].(string)
+		if u == nil || u.ResetCode == "" || code != u.ResetCode {
+			zerr(w, 400, 3, "CODE-woT0xc", "Code is invalid")
+			return
+		}
+		np, _ := body["newPassword"].(map[string]any)
+		u.PasswordSetBy, _ = np["password"].(string)
+		u.ResetCode = ""
+		u.AuthMethods = []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}
+		f.mutate("set password " + u.ID)
+		return200(w)
+	case r.Method == "GET" && strings.Count(strings.Trim(path, "/"), "/") == 0 && path != "":
+		// What devidp.FindUserByID reads.
+		u := f.users[strings.Trim(path, "/")]
+		if u == nil || u.Machine {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		reply(w, 200, map[string]any{"user": map[string]any{"userId": u.ID, "username": u.UserName, "preferredLoginName": u.UserName,
+			"state": "USER_STATE_ACTIVE", "human": map[string]any{"email": map[string]any{"email": u.Email, "isVerified": !u.Unverified}}}})
 	case strings.HasSuffix(path, "/invite_code") && r.Method == "POST":
 		id := strings.Trim(strings.TrimSuffix(path, "/invite_code"), "/")
 		u := f.users[id]

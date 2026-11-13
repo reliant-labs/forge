@@ -31,6 +31,7 @@ import (
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/devidp"
+	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -140,10 +141,13 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("plant the squatted account: %v", err)
 	}
-	unproven, err := client.UnprovenAccounts(ctx)
-	if err != nil {
-		t.Fatalf("UnprovenAccounts: %v", err)
-	}
+	// Zitadel's user search trails its writes (an eventually consistent
+	// projection): wait until the new account is searchable.
+	var unproven []devidp.UnprovenAccount
+	testkit.Eventually(t, "the squatted account in the user search", func() bool {
+		unproven, err = client.UnprovenAccounts(ctx)
+		return err == nil && len(unproven) > 0
+	}, testkit.Within(time.Minute))
 	if len(unproven) != 1 || unproven[0].UserID != squatted || !unproven[0].ContactOnly ||
 		len(unproven[0].Credentials) != 1 || unproven[0].Credentials[0] != "AUTHENTICATION_METHOD_TYPE_PASSWORD" {
 		t.Fatalf("UnprovenAccounts = %+v, want the squatted account with its password", unproven)
@@ -251,5 +255,49 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	}
 	if _, err := client.CreateSession(ctx, devidp.Credentials{LoginName: address, Password: "Squatter-Passw0rd!"}); err == nil {
 		t.Fatal("TAKEOVER: the squatter's password checks out by the owner's address")
+	}
+
+	// forge#2179 RC-10: a declared member whose account already exists,
+	// unverified and credential-less, is adopted with its address marked
+	// verified, so its sign-in code sets a password through the broker's
+	// ProvenCredentialsOnly client.
+	const member = "member@acme.test"
+	pendingID, err := client.CreateUser(ctx, devidp.NewUser{Email: member})
+	if err != nil {
+		t.Fatalf("create the pending member: %v", err)
+	}
+	// Searchable first, or converge would not find it to adopt.
+	testkit.Eventually(t, "the pending member in the user search", func() bool {
+		u, err := client.FindUserByEmail(ctx, member)
+		return err == nil && u.ID == pendingID
+	}, testkit.Within(time.Minute))
+	rec, err := identity.New(identity.Options{BaseURL: base, Issuer: base, Credential: identity.PATFile(in.PATPath),
+		Keys: &identity.MemKeyStore{}, SignInCodes: true, ReadyTimeout: readyTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := rec.Reconcile(ctx, identity.Spec{Project: identity.ProjectSpec{Name: "acme"},
+		Roles: []identity.Role{{Key: "owner", Declared: true, Members: []string{member}}}})
+	if err != nil {
+		t.Fatalf("converge the declared member: %v", err)
+	}
+	memberCode := ""
+	for _, c := range rep.SignInCodes {
+		if c.Email == member {
+			memberCode = c.Code
+		}
+	}
+	if memberCode == "" {
+		t.Fatalf("no sign-in code for the adopted member: %+v", rep.SignInCodes)
+	}
+	if _, _, verified := user(pendingID); !verified {
+		t.Fatal("the adopted member's address was not marked verified")
+	}
+	guarded := &devidp.Client{Base: base, Token: token, ProvenCredentialsOnly: true}
+	if err := guarded.ResetPassword(ctx, devidp.PasswordReset{UserID: pendingID, Code: memberCode, NewPassword: "Member-Passw0rd!"}); err != nil {
+		t.Fatalf("the adopted member's sign-in code through the broker: %v", err)
+	}
+	if _, err := client.CreateSession(ctx, devidp.Credentials{LoginName: member, Password: "Member-Passw0rd!"}); err != nil {
+		t.Fatalf("the adopted member's new password: %v", err)
 	}
 }

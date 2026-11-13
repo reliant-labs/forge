@@ -238,7 +238,10 @@ func (h humanUser) verified() bool { return h.Human != nil && h.Human.Email.IsVe
 
 // findHuman returns the account a declared address adopts: the one whose
 // address is verified, else one holding no credential (a sign-up still
-// waiting for its proof: nothing on it to inherit). An UNVERIFIED account
+// waiting for its proof: nothing on it to inherit). Adopting that one marks
+// its address verified (adoptPending): a declared address is the admin's
+// assertion, as for an account converge creates, and the login broker sets
+// no password on an unverified account. An UNVERIFIED account
 // holding a credential is never adopted. Nobody proved who set that
 // credential — whoever registered the address first — so granting it a
 // declared role would hand the role to them (forge#2121). It is moved out of
@@ -258,8 +261,8 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 			return h.UserID, nil
 		}
 	}
-	adopt := ""
-	for _, h := range hits {
+	var adopt *humanUser
+	for i, h := range hits {
 		var methods struct {
 			AuthMethodTypes []string `json:"authMethodTypes"`
 		}
@@ -267,8 +270,8 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 			return "", fmt.Errorf("read the sign-in methods of user %s: %w", h.UserID, err)
 		}
 		if len(methods.AuthMethodTypes) == 0 {
-			if adopt == "" {
-				adopt = h.UserID
+			if adopt == nil {
+				adopt = &hits[i]
 			}
 			continue
 		}
@@ -276,7 +279,46 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 			return "", err
 		}
 	}
-	return adopt, nil
+	if adopt == nil {
+		return "", nil
+	}
+	if err := p.adoptPending(ctx, email, *adopt); err != nil {
+		return "", err
+	}
+	return adopt.UserID, nil
+}
+
+// adoptPending marks the address of an unverified, credential-less account a
+// declared address adopts as verified — what converge does for an account it
+// creates ("isVerified": true), and for the same reason: the address comes
+// from reviewed config, not from a sign-up form. Without it the account's
+// first sign-in code could not set a password: the login broker adds no
+// credential to an unverified account (devidp ProvenCredentialsOnly,
+// forge#2121). Only a CREDENTIAL-LESS account is ever verified here; one
+// holding credentials is superseded instead (supersedeUnproven).
+func (p *run) adoptPending(ctx context.Context, email string, h humanUser) error {
+	p.rep.change(Updated, "user", email, "adopted an unverified account holding no credential: address marked verified (declared)")
+	if p.dry() {
+		return nil
+	}
+	// The issuer's own verification, with a code minted for it and redeemed
+	// at once: SetEmail to the same address with isVerified is refused
+	// ("Email not changed", COMMAND-Uch5e, Zitadel v4.19.5).
+	base := "/v2/users/" + url.PathEscape(h.UserID) + "/email"
+	var minted struct {
+		VerificationCode string `json:"verificationCode"`
+	}
+	if err := p.c.call(ctx, http.MethodPost, base+"/resend", map[string]any{"returnCode": map[string]any{}}, &minted, mint); err != nil {
+		return objErr("user", email, fmt.Errorf("mint a code to verify the declared address: %w", err))
+	}
+	if minted.VerificationCode == "" {
+		return objErr("user", email, errors.New("the instance returned no code to verify the declared address"))
+	}
+	if err := p.c.call(ctx, http.MethodPost, base+"/verify", map[string]any{"verificationCode": minted.VerificationCode}, nil, mint); err != nil {
+		return objErr("user", email, fmt.Errorf("mark the declared address verified: %w", err))
+	}
+	p.logf("adopted an unverified, credential-less account for a declared address; marked it verified", "user_id", h.UserID)
+	return nil
 }
 
 // supersedeUnproven moves an unverified account holding unproven credentials

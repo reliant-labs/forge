@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // credentialConfigKeys are the docker config.json keys that carry or point at
@@ -101,7 +103,7 @@ func populateIsolatedDockerConfig(src, dst string, keepCredentials bool, loginHo
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dst, "config.json"), raw, 0o600); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dst, "config.json"), raw, 0o600); err != nil {
 		return err
 	}
 	for _, name := range linkedDockerConfigEntries {

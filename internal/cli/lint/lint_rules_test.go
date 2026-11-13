@@ -275,7 +275,7 @@ func TestEveryEmittedRuleIsGradable(t *testing.T) {
 		"internal/linter/tracinglint", "internal/lint/secrets", "internal/commitpolicy",
 		"internal/contractcheck",
 	}
-	files := map[string]bool{"internal/codegen/composition_graph_lint.go": true, "pkg/release/fluxsafe.go": true}
+	files := map[string]bool{"internal/codegen/composition_graph_lint.go": true, "pkg/release/fluxsafe.go": true, "pkg/dbanalyze/rules.go": true}
 	for _, d := range dirs {
 		entries, err := os.ReadDir(filepath.Join(root, d))
 		if err != nil {

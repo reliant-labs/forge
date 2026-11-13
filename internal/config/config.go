@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
@@ -788,6 +789,9 @@ type DatabaseConfig struct {
 	// docs/design/env-document.md). They keep working under semver 1.
 	Migrations      MigrationsConfig      `yaml:"migrations,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
+	// Analyze configures `forge db analyze`: the database it runs on and the
+	// size hints it judges findings by.
+	Analyze AnalyzeConfig `yaml:"analyze,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.
 	ORM ORMConfig `yaml:"orm,omitempty"`
 	// PostgresVersion is the postgres the project runs in production — a
@@ -885,6 +889,73 @@ func (c MigrationSafetyConfig) EffectiveDestructiveChange() string {
 // volatile-default rule, falling back to "warn" when unset/invalid.
 func (c MigrationSafetyConfig) EffectiveVolatileDefault() string {
 	return effectiveSeverity(c.VolatileDefault, "warn")
+}
+
+// AnalyzeConfig is `database.analyze:` — where `forge db analyze` runs and
+// how it sizes tables (docs/proposals/db-analyze.md, "Configuration").
+type AnalyzeConfig struct {
+	Target AnalyzeTargetConfig `yaml:"target,omitempty"`
+	// TableRows are size hints for a target that cannot size a table itself
+	// (a scratch database has no rows). Keyed by table name. Ignored for a
+	// table the target has statistics for.
+	TableRows map[string]int64 `yaml:"table_rows,omitempty"`
+	// LargeTableRows: at or above it a table is large. 0 = 1,000,000.
+	LargeTableRows int64 `yaml:"large_table_rows,omitempty"`
+	// SmallTableRows: below it (when the size is known) findings are
+	// dropped. 0 = 10,000.
+	SmallTableRows int64 `yaml:"small_table_rows,omitempty"`
+}
+
+// Analyze target kinds.
+const (
+	AnalyzeTargetScratch = "scratch"
+	AnalyzeTargetDSN     = "dsn"
+)
+
+// AnalyzeTargetConfig is the database `forge db analyze` runs on.
+type AnalyzeTargetConfig struct {
+	// Kind is "scratch" (the default: an embedded Postgres migrated to the
+	// base) or "dsn" (a database the project provides, such as an
+	// anonymized snapshot of prod). A dsn target is only read and copied —
+	// the migrations run on a disposable copy — and it must be marked by
+	// its owner with ALTER DATABASE <db> SET forge.analyze_target = 'on';
+	// the role needs CREATEDB, and nothing else may be connected to it
+	// during the copy.
+	Kind string `yaml:"kind,omitempty"`
+	// DSNEnv is the NAME of the environment variable holding a dsn target's
+	// connection string. A DSN is never written in forge.yaml.
+	DSNEnv string `yaml:"dsn_env,omitempty"`
+	// StatementTimeout and LockTimeout bound every statement on the target
+	// (Go durations: "60s", "5s"). Empty means 60s and 5s.
+	StatementTimeout string `yaml:"statement_timeout,omitempty"`
+	LockTimeout      string `yaml:"lock_timeout,omitempty"`
+}
+
+// EffectiveKind is Kind, defaulted to scratch.
+func (c AnalyzeTargetConfig) EffectiveKind() string {
+	if k := strings.TrimSpace(c.Kind); k != "" {
+		return k
+	}
+	return AnalyzeTargetScratch
+}
+
+// Timeouts parses StatementTimeout and LockTimeout; zero for an empty one.
+func (c AnalyzeTargetConfig) Timeouts() (statement, lock time.Duration, err error) {
+	parse := func(key, v string) (time.Duration, error) {
+		if strings.TrimSpace(v) == "" {
+			return 0, nil
+		}
+		d, err := time.ParseDuration(strings.TrimSpace(v))
+		if err != nil || d <= 0 {
+			return 0, fmt.Errorf("database.analyze.target.%s %q is not a positive duration such as \"60s\"", key, v)
+		}
+		return d, nil
+	}
+	if statement, err = parse("statement_timeout", c.StatementTimeout); err != nil {
+		return 0, 0, err
+	}
+	lock, err = parse("lock_timeout", c.LockTimeout)
+	return statement, lock, err
 }
 
 func effectiveSeverity(value, fallback string) string {

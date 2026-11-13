@@ -613,6 +613,99 @@ benefits:
           `forge:breaks-rollback`, which a rollback decision and the release
           guard read
 
+  - id: migration-analysis
+    category: data
+    title: Measured migration locks and rewrites
+    claim: >-
+      `forge db analyze` runs each pending migration statement by statement,
+      file by file as forge's migrator applies them, on a disposable copy of a
+      real Postgres database (an embedded one, or a snapshot you name and mark,
+      such as an anonymized production snapshot, which is only read and
+      copied), and reports the locks it took, the tables it rewrote or
+      scanned, and how long it ran.
+    availability: forge
+    headline: false
+    use: >-
+      Run `forge db analyze` (an embedded Postgres migrated to the merge-base),
+      or point it at an anonymized snapshot with `database.analyze.target` and
+      `--target dsn`; `--json` is the document a reviewer reads.
+    why: >-
+      Whether `ALTER COLUMN … TYPE` rewrites a table or a constraint scans one
+      depends on the column types, the existing schema and the Postgres
+      version, which no reading of the SQL text can know.
+    scope: any
+    adopt: "Run `forge db analyze` in a project whose migrations forge's migrator applies; it needs no database of yours."
+    estimate: "~5 min"
+    evidence:
+      - command: db analyze
+      - path: pkg/dbanalyze
+      - path: internal/cli/db_analyze.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-table-rewrite
+        lane: "forge db analyze"
+        bug_class: >-
+          A migration that copies every row of a populated table under ACCESS
+          EXCLUSIVE, an outage as long as the copy
+      - id: db-analyze-access-exclusive-lock
+        lane: "forge db analyze"
+        bug_class: >-
+          ACCESS EXCLUSIVE held across a full scan or rewrite, blocking every
+          read and write of the table for its duration
+      - id: db-analyze-validation-scan
+        lane: "forge db analyze"
+        bug_class: >-
+          A constraint validated by a full scan under a lock that blocks writes,
+          where NOT VALID then VALIDATE would not block them
+      - id: db-analyze-blocking-index-build
+        lane: "forge db analyze"
+        bug_class: >-
+          An index built without CONCURRENTLY on a populated table, blocking
+          writes until the build finishes
+      - id: db-analyze-statement-timeout
+        lane: "forge db analyze"
+        bug_class: >-
+          A statement that does not finish within statement_timeout on
+          production-shaped data
+
+  - id: query-index-analysis
+    category: data
+    title: Index check of tested queries
+    claim: >-
+      `forge db analyze queries` plans every query shape a test run recorded
+      on a disposable database at the head schema, with sequential scans
+      disabled, and reports each
+      filter, join and ORDER BY … LIMIT no index serves, with the caller's
+      file and line.
+    availability: forge
+    headline: false
+    use: >-
+      Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then
+      `forge db analyze queries --capture /tmp/qc` (the shapes whose callers
+      changed since the merge-base; `--all` for every one), or add
+      `--capture` to `forge db analyze` to run it after the migrations.
+    why: >-
+      A new filter or join without an index passes every test on a small
+      table and becomes a full scan in production; whether an index can serve
+      it depends on the schema at head, which only the planner knows.
+    evidence:
+      - command: db analyze queries
+      - path: pkg/dbanalyze/queries.go
+      - path: pkg/querycapture
+      - path: internal/cli/db_analyze_queries.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-query-no-usable-index
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A filter, join or ORDER BY … LIMIT that no index can serve, which
+          reads every row of the table once it holds production data
+      - id: db-analyze-query-large-seqscan
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A query whose plan on an anonymized production snapshot
+          sequentially scans a large table
+
   - id: keep-your-migration-tool
     category: data
     title: Keep your migration tool

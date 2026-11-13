@@ -238,6 +238,38 @@ describe("scrubbingSpanExporter", () => {
     expect(done).toHaveBeenCalledWith(expect.objectContaining({ code: 1 }));
   });
 
+  it("reports an inner exporter that throws through the callback, once, instead of throwing", () => {
+    const done = vi.fn();
+    const throwing = {
+      export: vi.fn(() => {
+        throw new Error("encoder blew up");
+      }),
+      shutdown: () => Promise.resolve(),
+    };
+
+    expect(() =>
+      scrubbingSpanExporter(throwing).export([{ attributes: {} }], done),
+    ).not.toThrow();
+    expect(done).toHaveBeenCalledOnce();
+    expect(done).toHaveBeenCalledWith(expect.objectContaining({ code: 1 }));
+
+    // One that reports and then throws is still reported only once.
+    const reportsThenThrows = {
+      export: vi.fn((_spans: unknown[], cb: (r: unknown) => void) => {
+        cb({ code: 0 });
+        throw new Error("late");
+      }),
+      shutdown: () => Promise.resolve(),
+    };
+    const done2 = vi.fn();
+    scrubbingSpanExporter(reportsThenThrows).export(
+      [{ attributes: {} }],
+      done2,
+    );
+    expect(done2).toHaveBeenCalledOnce();
+    expect(done2).toHaveBeenCalledWith({ code: 0 });
+  });
+
   it("delegates shutdown and forceFlush, and is never wrapped twice", async () => {
     const inner = {
       export: vi.fn(),

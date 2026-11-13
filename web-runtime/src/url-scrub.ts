@@ -276,7 +276,24 @@ export function scrubbingSpanExporter<S, E extends SpanExporterLike<S>>(
         resultCallback({ code: 1, error: new Error("url scrub failed") });
         return;
       }
-      inner.export(out, resultCallback);
+      // An inner exporter that throws instead of reporting must still end the
+      // export through the callback: BatchSpanProcessor calls this from its
+      // scheduled flush, and an exception would abort that flush. The
+      // callback is reported once, whichever happens first.
+      let reported = false;
+      const report: typeof resultCallback = (result) => {
+        if (reported) return;
+        reported = true;
+        resultCallback(result);
+      };
+      try {
+        inner.export(out, report);
+      } catch (error) {
+        report({
+          code: 1,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
     },
     shutdown: () => inner.shutdown(),
     forceFlush: () => inner.forceFlush?.() ?? Promise.resolve(),

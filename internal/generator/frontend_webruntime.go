@@ -36,9 +36,7 @@ package generator
 import (
 	"context"
 	"encoding/json"
-
 	"fmt"
-	"github.com/reliant-labs/forge/internal/checksums"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,10 +44,10 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime

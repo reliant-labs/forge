@@ -124,7 +124,7 @@ window.withdrawConsent = disableTelemetry;
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 // Replay records a person: it runs only in the full analytics tier.
 grantAnalyticsConsent();
-window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, keepUrlQueryParams: ['utm_*'], apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
 for (const type of ['mousedown','mouseup','click']) document.querySelector('#idle').addEventListener(type, () => {});
 document.querySelector('#action').addEventListener('click', () => {
@@ -154,7 +154,10 @@ document.querySelector('#action').addEventListener('click', () => {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(origin);
+    // The page's own URL carries a query and a fragment: neither may leave the
+    // browser, in a span or in the replay's Meta record, except the parameter
+    // keepUrlQueryParams allows.
+    await page.goto(`${origin}/?email=PRIVATE_QUERY_SENTINEL%40x.test&utm_source=proof#PRIVATE_FRAGMENT_SENTINEL`);
     await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 }).catch((error) => {
       throw new Error(`${error.message}; browser errors: ${errors.join("; ")}`);
     });
@@ -204,6 +207,11 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.ok(replay.length > 0, "session replay still exports records");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
+    const metas = events.filter(event => event.type === 4);
+    assert.ok(metas.length > 0, "the real recorder's opening Meta record is exported");
+    for (const meta of metas) {
+      assert.equal(meta.data.href, `${origin}/?utm_source=proof`, "the replay's page URL keeps only the allowed parameter");
+    }
     // Withdrawal goes through the public runtime API, not an SDK-only test
     // substitute. No post-withdrawal DOM mutation becomes a replay event, and
     // nothing at all is posted after it (the dedicated test below covers
@@ -220,6 +228,9 @@ document.querySelector('#action').addEventListener('click', () => {
     const exported = JSON.stringify([...traces, ...logs]);
     for (const secret of ["PRIVATE_TEXT_SENTINEL", "PRIVATE_INPUT_SENTINEL", "PRIVATE_EDIT_SENTINEL"]) {
       assert.equal(exported.includes(secret), false, "private text never leaves the browser");
+    }
+    for (const secret of ["PRIVATE_QUERY_SENTINEL", "PRIVATE_FRAGMENT_SENTINEL"]) {
+      assert.equal(exported.includes(secret), false, `the page URL's ${secret} never leaves the browser`);
     }
   } finally {
     await browser?.close();

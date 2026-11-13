@@ -24,7 +24,7 @@ forge ci test-budget	cmd	allow-version-skew:bool budget:duration from:string pro
 forge ci validate-kcl	cmd	allow-version-skew:bool project-dir/C:string
 forge ci verify-generated	cmd	allow-version-skew:bool no-cache:bool project-dir/C:string
 forge ci verify-test-run	cmd	allow-version-skew:bool from:string gate-json:string max-skip-ratio:float64 min-tests:int project-dir/C:string warn-only:bool
-forge ci vuln-scan	cmd	all:bool allow-version-skew:bool go:bool npm:bool project-dir/C:string
+forge ci vuln-scan	cmd	all:bool allow-version-skew:bool go:bool npm:bool project-dir/C:string root-module:bool
 forge cloud	group	allow-version-skew:bool project-dir/C:string
 forge cloud cluster	group	project-dir/C:string
 forge cloud cluster connect	cmd	address:string allow-version-skew:bool apply-scope:string ca-file:string context:string delivery-secret:stringArray delivery-subject:string dry-run:bool env:string issuer:string live-from:string project-dir/C:string token:string

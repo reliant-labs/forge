@@ -348,8 +348,13 @@ func TestFindDirectLLMCalls(t *testing.T) {
 		t.Errorf("findDirectLLMCalls = %q, want %q", got, want)
 	}
 	note := directLLMNote(got)
-	if !strings.Contains(note, reliantLLMProviderDocURL) || !strings.Contains(note, "Reliant's LLM provider") {
-		t.Errorf("the note does not point at the Reliant provider:\n%s", note)
+	for _, want := range []string{reliantLLMProviderDocURL, "no outbound internet", "never in a static site's browser bundle", "claim the deploy", "backend billing", "forge login", "managed secret", "without --claimable", "actual model request server-side", "do not assume an unclaimed gateway route is enabled", "disable the feature, not crash startup"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("recovery note lacks %q:\n%s", want, note)
+		}
+	}
+	if strings.Contains(note, "/forge/llm-provider") || strings.Contains(note, "Route those calls through Reliant's LLM provider instead") {
+		t.Errorf("recovery must not point to the missing page or promise unclaimed gateway access:\n%s", note)
 	}
 	if calls := findDirectLLMCalls(t.TempDir()); len(calls) != 0 {
 		t.Errorf("an empty tree reported %v", calls)

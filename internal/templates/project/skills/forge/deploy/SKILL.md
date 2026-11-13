@@ -12,7 +12,7 @@ provides, what it refuses, and the gates (billing, unset secrets):
 
 **No Reliant account yet?** `forge env deploy <env> --claimable` publishes
 anyway and prints a live URL plus a claim link for your user (see
-`deploy/hosting`, "No account: `--claimable`"; an unclaimed backend has no outbound internet, so an LLM call goes through Reliant's gateway: `deploy/llm`). It needs no `forge login`.
+`deploy/hosting`, "No account: `--claimable`"; an unclaimed backend has no outbound internet. Do not promise gateway access: `deploy/llm` explains that unclaimed gateway credentials may be blank; degrade the feature or claim the deploy first). It needs no `forge login`.
 
 ## The model: declare once, bind per env
 

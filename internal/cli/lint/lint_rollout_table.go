@@ -230,6 +230,9 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 	}},
+	// A product event property whose key names personal data (email, name,
+	// ip, url, path, token). Advisory; --strict raises it.
+	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{"forgeconv-product-event-pii"}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

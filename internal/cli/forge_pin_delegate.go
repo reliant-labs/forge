@@ -75,6 +75,7 @@ import (
 //     TO, and must work when the old pin cannot be built.
 //   - project new: the project it writes is not the one around the cwd.
 //   - report-bug: reports a defect in this forge, and must work offline.
+//   - telemetry: this machine's usage-event choice, the same for every forge.
 //   - storage, slot: bound this machine's caches and heavy slots under THIS
 //     forge's rules. A pinned forge older than the 2h floor and the
 //     live-build lease (#1231, #1243, #1245) would trim the Go build cache
@@ -98,7 +99,7 @@ import (
 // project, stays here (machineWideFlags).
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
-	"project upgrade", "project new", "report-bug", "storage", "slot", "mcp",
+	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
 	"env ps", "env devstack",
 }
 

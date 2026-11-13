@@ -26,7 +26,10 @@ import (
 //     rule kept once; the same conditions credited to two channels are
 //     refused;
 //   - dashboards: any declaration of False drops them, because an opt-out is
-//     the author's explicit word.
+//     the author's explicit word;
+//   - system_events and staff (its events and user ids): the union, sorted,
+//     because a frontend that says an event is the system's, or a user is
+//     staff, is right for every dashboard.
 //
 // `mode` is not merged: it is per frontend and per env, and reaches the
 // browser as ANALYTICS_MODE without passing through the dashboards.
@@ -44,6 +47,9 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 		window     origin
 		channels   = map[obsdash.ChannelRule]bool{}
 		conditions = map[string]origin{}
+		system     = map[string]bool{}
+		staffEv    = map[string]bool{}
+		staffIDs   = map[string]bool{}
 	)
 	for _, r := range rendered {
 		if r.Frontend.Telemetry == nil || r.Frontend.Telemetry.Analytics == nil {
@@ -93,6 +99,17 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 		if !a.Dashboards {
 			out.NoDashboards = true
 		}
+		for _, e := range a.SystemEvents {
+			system[e] = true
+		}
+		if a.Staff != nil {
+			for _, e := range a.Staff.Events {
+				staffEv[e] = true
+			}
+			for _, id := range a.Staff.UserIDs {
+				staffIDs[id] = true
+			}
+		}
 	}
 	if !declared {
 		return nil, nil
@@ -102,7 +119,17 @@ func declaredAnalytics(rendered []renderedEnvFrontend) (*obsdash.ProductAnalytic
 	}
 	sort.Slice(out.Goals, func(i, j int) bool { return out.Goals[i].ID < out.Goals[j].ID })
 	out.Activation, out.ActivationWindow = activation.value, window.value
+	out.SystemEvents, out.StaffEvents, out.StaffUserIDs = declaredSet(system), declaredSet(staffEv), declaredSet(staffIDs)
 	return &out, nil
+}
+
+// declaredSet is set's members, sorted; nil when it is empty, so a project
+// that declares none reads exactly as it did before the field.
+func declaredSet(set map[string]bool) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	return sortedKeys(set)
 }
 
 // describeChannelConditions names a rule's conditions for an error message.

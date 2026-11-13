@@ -50,9 +50,10 @@ func Acquisition(in Input) dashspec.Dashboard {
 		DefaultCompare: dashspec.ComparePeriod,
 	}
 	rules := in.channelRules()
+	ppl := peopleOf(in.Analytics)
 	traffic := with(webCTE(inRange), visitsCTE, firstCTE(rules))
-	signups := with(stitchCTE(inRange), suCTE(from, to), suhCTE)
-	attributed := with(webCTE(inRange), visitsCTE, firstCTE(rules), stitchCTE(inRange), suCTE(from, to), suhCTE)
+	signups := with(stitchCTE(inRange), suCTE(ppl, from, to), suhCTE)
+	attributed := with(webCTE(inRange), visitsCTE, firstCTE(rules), stitchCTE(inRange), suCTE(ppl, from, to), suhCTE)
 	b := breakdown{in: in}
 	stacked := bars(true, nil)
 
@@ -131,7 +132,7 @@ SELECT if(os_name = '', 'unknown', os_name) AS os, count() AS "Visitors" FROM fi
 		table("quality", "retention-by-channel", "Week-4 retention by channel",
 			fmt.Sprintf("The sign-ups of the %d to %d days before the end of the range (whatever range is selected, so each has lived its fourth week), by channel: "+
 				"the share active in days 28 to 35 after signing up. A channel with fewer than %d such sign-ups shows no share.", w4FromDays, w4ToDays, w4MinCohort),
-			retentionByChannelSQL(rules), 24, 8),
+			retentionByChannelSQL(ppl, rules), 24, 8),
 	}
 	return d
 }
@@ -198,7 +199,7 @@ func (b breakdown) sql(dims []dim, metrics []string, where string, limit int) st
 		where = "\nWHERE " + where
 	}
 	group := strings.Join(keys, ", ")
-	return with(webCTE(inRange), visitsCTE, firstCTE(b.in.channelRules()), stitchCTE(inRange), suCTE(from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `,
+	return with(webCTE(inRange), visitsCTE, firstCTE(b.in.channelRules()), stitchCTE(inRange), suCTE(peopleOf(a), from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `,
 v AS (SELECT ` + strings.Join(vk, ", ") + `, uniqExact(` + visitor + `) AS visitors, sum(n_visits) AS visits, sum(bounces) AS bounces
       FROM first GROUP BY ` + group + `),
 s AS (SELECT ` + strings.Join(sk, ", ") + `, count() AS signups, countIf(x.UserId != '' AND x.at >= u.at AND x.at < u.at + ` + w + `) AS activated
@@ -213,17 +214,17 @@ ORDER BY ` + order + fmt.Sprintf(" LIMIT %d", limit)
 // retentionByChannelSQL is the W4 table: sign-ups old enough to have lived
 // their fourth week, by the channel of their sign-up day's first visit, and
 // the share active in days 28 to 35 after signing up.
-func retentionByChannelSQL(rules []ChannelRule) string {
+func retentionByChannelSQL(p people, rules []ChannelRule) string {
 	lo := fmt.Sprintf("%s - INTERVAL %d DAY", to, w4FromDays)
 	hi := fmt.Sprintf("%s - INTERVAL %d DAY", to, w4ToDays)
 	// The cohort's visits and links are read over the cohort's own days.
 	rng := "Timestamp >= " + lo + " AND Timestamp < " + hi + " + INTERVAL 1 DAY"
-	return with(webCTE(rng), visitsCTE, firstCTE(rules), stitchCTE(rng), suCTE(lo, hi), suhCTE) + `,
+	return with(webCTE(rng), visitsCTE, firstCTE(rules), stitchCTE(rng), suCTE(p, lo, hi), suhCTE) + `,
 w4 AS (
   SELECT DISTINCT u.EnvId AS EnvId, u.UserId AS UserId
   FROM su_h AS u
   INNER JOIN (SELECT EnvId, UserId, Timestamp FROM product_events
-              WHERE ` + active + ` AND ` + envScope + ` AND Timestamp >= ` + lo + ` + INTERVAL 28 DAY AND Timestamp < ` + to + `) AS e
+              WHERE ` + p.active() + ` AND ` + envScope + ` AND Timestamp >= ` + lo + ` + INTERVAL 28 DAY AND Timestamp < ` + to + `) AS e
     ON e.EnvId = u.EnvId AND e.UserId = u.UserId
   WHERE e.Timestamp >= u.at + INTERVAL 28 DAY AND e.Timestamp < u.at + INTERVAL 35 DAY)
 SELECT if(f.h = '', 'Unattributed', f.channel) AS "Channel", count() AS "Sign-ups",

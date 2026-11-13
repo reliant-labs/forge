@@ -108,3 +108,52 @@ func TestUserActivityWithoutSeenTotalReadsNoRetention(t *testing.T) {
 		t.Error("the retention-wide read ran without WantSeenTotal")
 	}
 }
+
+func TestUserFilterPredicate(t *testing.T) {
+	const scope = "has(['e1'], EnvId)"
+	for _, tc := range []struct {
+		name   string
+		filter UserFilter
+		want   string
+	}{
+		{"zero leaves nothing more out", UserFilter{}, ""},
+		{"system events, sorted and deduplicated", UserFilter{SystemEvents: []string{"b", "a", "b", ""}},
+			"EventName NOT IN ('a', 'b')"},
+		{"staff by marker event, in the read's environments", UserFilter{StaffEvents: []string{"internal_user"}},
+			"UserId NOT IN (SELECT UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ")"},
+		{"staff by id, quoted", UserFilter{StaffUserIDs: []string{"o'brien", "c1"}},
+			`UserId NOT IN ('c1', 'o\'brien')`},
+		{"all three", UserFilter{SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"c1"}},
+			"EventName NOT IN ('billing_state') AND UserId NOT IN (SELECT UserId FROM t.product_events WHERE EventName IN ('internal_user') AND UserId != '' AND " + scope + ") AND UserId NOT IN ('c1')"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.filter.Predicate("t.product_events", scope); got != tc.want {
+				t.Errorf("Predicate =\n%s\nwant\n%s", got, tc.want)
+			}
+			if tc.filter.IsZero() != (tc.want == "") {
+				t.Errorf("IsZero = %v", tc.filter.IsZero())
+			}
+		})
+	}
+}
+
+func TestUserActivityAppliesTheFilterEverywhere(t *testing.T) {
+	q := userActivityQuery()
+	plain, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plain.SQL, NotSystemActivity) {
+		t.Errorf("the default statement does not leave out marked events:\n%s", plain.SQL)
+	}
+	q.Filter = UserFilter{SystemEvents: []string{"billing_state"}, StaffUserIDs: []string{"c1"}}
+	st, err := q.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// act, nu_cur, nu_prev and seen each read the table once, and each
+	// leaves the declared rows out.
+	if n, reads := strings.Count(st.SQL, "EventName NOT IN ('billing_state') AND UserId NOT IN ('c1')"), strings.Count(st.SQL, "FROM t_org.product_events"); n != reads || n != 4 {
+		t.Errorf("the filter is applied to %d of %d reads, want 4 of 4:\n%s", n, reads, st.SQL)
+	}
+}

@@ -4,6 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ACTIVITY_PROP,
+  ACTIVITY_SYSTEM,
   disableTelemetry,
   isTelemetryDisabled,
   MAX_EVENT_NAME_CHARS,
@@ -160,6 +162,38 @@ describe("track", () => {
     track("  onboarding_step ", { step: 2, Bad: 1 });
 
     expect(s.track).toHaveBeenCalledWith("onboarding_step", { step: 2 });
+  });
+
+  it.each([
+    ["the person's own activity by default", undefined, false],
+    [
+      "the person's own activity when system is false",
+      { system: false },
+      false,
+    ],
+    ["the system's when marked", { system: true }, true],
+  ] as const)("records an event as %s", (_, options, marked) => {
+    const s = sink();
+    setTelemetrySink(s);
+    // A full set of props: the marker is never the one the key cap drops.
+    const props = Object.fromEntries(
+      Array.from({ length: MAX_PROP_KEYS }, (_, i) => [`k${i}`, i]),
+    );
+
+    track("billing_refreshed", props, options);
+
+    const sent = s.track.mock.calls[0]![1];
+    expect(sent[ACTIVITY_PROP]).toBe(marked ? ACTIVITY_SYSTEM : undefined);
+    expect(Object.keys(sent)).toHaveLength(MAX_PROP_KEYS + (marked ? 1 : 0));
+  });
+
+  it("keeps the marker on an event held until the sink is installed", () => {
+    track("sync_completed", {}, { system: true });
+    const s = sink();
+    setTelemetrySink(s);
+    expect(s.track.mock.calls).toEqual([
+      ["sync_completed", { [ACTIVITY_PROP]: ACTIVITY_SYSTEM }],
+    ]);
   });
 
   it("bounds the event name and ignores blank or non-string names", () => {

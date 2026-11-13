@@ -40,6 +40,7 @@ type productEvent struct {
 	event     string
 	client    string
 	retention uint16
+	props     map[string]string
 }
 
 func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []productEvent) {
@@ -51,7 +52,7 @@ func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []prod
 	if err := c.Exec(ctx, fmt.Sprintf(productEventsDDL, db)); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := c.PrepareBatch(ctx, "INSERT INTO "+db+".product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Client, RetentionDays)")
+	batch, err := c.PrepareBatch(ctx, "INSERT INTO "+db+".product_events (Timestamp, ServiceName, EnvId, UserId, EventName, Client, RetentionDays, Props)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +68,11 @@ func seedProductEvents(t *testing.T, c clickhouse.Conn, db string, events []prod
 		if retention == 0 {
 			retention = 90
 		}
-		if err := batch.Append(ts, "api", e.env, e.user, e.event, client, retention); err != nil {
+		props := e.props
+		if props == nil {
+			props = map[string]string{}
+		}
+		if err := batch.Append(ts, "api", e.env, e.user, e.event, client, retention, props); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -168,5 +173,74 @@ func TestUserActivityOverAPopulation(t *testing.T) {
 				t.Errorf("%s breaks returning <= active, active-returning <= new: %+v", e.EnvID, w)
 			}
 		}
+	}
+}
+
+// The declared system events and staff, and the emitters' marker, against
+// one population. prod reports sign-ups; the range is the 7 days before
+// 2026-11-10 12:00.
+//
+//	u1      signs up and in on 11-05: a person
+//	owner   only billing_state, one a day, emitted before anyone marked it:
+//	        history, which only a declared system event corrects
+//	owner2  billing_state marked by its emitter (forge.activity = system)
+//	staff   signs up on 11-06 and carries the app's internal_user marker
+//	canary  a synthetic sign-in on 11-07, staff by its id
+func TestUserActivityLeavesOutSystemEventsAndStaff(t *testing.T) {
+	c := startClickHouse(t)
+	const db = "t_users_filter"
+	marked := map[string]string{"forge.activity": "system"}
+	events := []productEvent{
+		{at: "2026-11-05T09:00:00Z", env: "prod", user: "u1", event: "auth_signed_up"},
+		{at: "2026-11-05T09:00:01Z", env: "prod", user: "u1", event: "auth_signed_in"},
+		{at: "2026-11-06T10:00:00Z", env: "prod", user: "staff", event: "auth_signed_up"},
+		{at: "2026-11-06T00:10:00Z", env: "prod", user: "staff", event: "internal_user"},
+		{at: "2026-11-07T10:00:00Z", env: "prod", user: "canary", event: "auth_signed_in"},
+	}
+	for d := 4; d <= 9; d++ {
+		at := fmt.Sprintf("2026-11-%02dT10:00:00Z", d)
+		events = append(events,
+			productEvent{at: at, env: "prod", user: "owner", event: "billing_state"},
+			productEvent{at: at, env: "prod", user: "owner2", event: "billing_state", props: marked})
+	}
+	seedProductEvents(t, c, db, events)
+	end := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		filter obsquery.UserFilter
+		want   obsquery.UserActivityCounts
+		seen   int64
+	}{
+		{"defaults: only the marked events are left out", obsquery.UserFilter{},
+			obsquery.UserActivityCounts{Active: 4, New: 2, Returning: 2}, 4}, // u1 owner staff canary; new u1 staff
+		{"a declared system event corrects history", obsquery.UserFilter{SystemEvents: []string{"billing_state"}},
+			obsquery.UserActivityCounts{Active: 3, New: 2, Returning: 1}, 3}, // u1 staff canary
+		{"staff by marker event", obsquery.UserFilter{SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}},
+			obsquery.UserActivityCounts{Active: 2, New: 1, Returning: 1}, 2}, // u1 canary
+		{"staff by id", obsquery.UserFilter{SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"canary"}},
+			obsquery.UserActivityCounts{Active: 1, New: 1, Returning: 0}, 1}, // u1
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := obsquery.UserActivityQuery{
+				Scope:         obsquery.Scope{Database: db, EnvRestricted: true, EnvIDs: []string{"prod"}, Start: end.Add(-7 * 24 * time.Hour), End: end},
+				WantSeenTotal: true, Filter: tc.filter,
+			}
+			got, err := obsquery.ReadUserActivity(context.Background(), rumRunner(c), q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("envs = %+v", got)
+			}
+			if got[0].Current != tc.want {
+				t.Errorf("current = %+v, want %+v", got[0].Current, tc.want)
+			}
+			if got[0].NewRule != obsquery.NewUsersSignups {
+				t.Errorf("new rule = %q: a filter must not hide that the env reports sign-ups", got[0].NewRule)
+			}
+			if got[0].SeenTotal == nil || *got[0].SeenTotal != tc.seen {
+				t.Errorf("seen total = %v, want %d", got[0].SeenTotal, tc.seen)
+			}
+		})
 	}
 }

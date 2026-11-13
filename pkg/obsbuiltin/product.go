@@ -40,6 +40,7 @@ const (
 // "Product usage" dashboard (SupersededUsageID) with Users.
 func Product(in Input) dashspec.Dashboard {
 	a := in.Analytics
+	ppl := peopleOf(a)
 	d := dashspec.Dashboard{
 		ID:    ProductID,
 		Title: in.Project + ": product",
@@ -102,7 +103,7 @@ FROM p LEFT JOIN en ON en.route = p.route LEFT JOIN ex ON ex.route = p.route
 ORDER BY "Views" DESC, "Route" LIMIT 50`, 24, 9),
 		table("pages", "entry-pages", "Entry pages",
 			"Visits by the route they started on: the share that bounced, and the share whose visitor signed up the same day.",
-			with(web, visitsCTE, stitchCTE(inRange), suCTE(from, to), suhCTE)+`
+			with(web, visitsCTE, stitchCTE(inRange), suCTE(ppl, from, to), suhCTE)+`
 SELECT entry_route AS "Entry page", count() AS "Visits",
        round(100 * avg(views = 1 AND actions = 0), 1) AS "Bounce %",
        round(100 * countIf(`+visitor+` IN (SELECT EnvId, h FROM su_h WHERE h != '')) / count(), 1) AS "Sign-up %"
@@ -152,7 +153,7 @@ GROUP BY entity ORDER BY count() DESC, entity LIMIT 20`,
 		activation,
 		figure("funnels", "signups-from-visit", "Sign-ups from a visit",
 			"The share of the range's sign-ups linked to a visit: the sign-up carried a visitor hash, or a same-day sign-in links one to the user. The rest signed up through the API or on another device.",
-			with(stitchCTE(inRange), suCTE(from, to), suhCTE)+`
+			with(stitchCTE(inRange), suCTE(ppl, from, to), suhCTE)+`
 SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su_h`, "", dashspec.UnitPercent, colorSignups),
 	)
 	for _, f := range in.Funnels {
@@ -172,7 +173,7 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 // past the end of the range, so a past range's late activations count).
 func activationFunnelSQL(a *Analytics) string {
 	w := activationWindow(a)
-	return with(webCTE(inRange), stitchCTE(inRange), suCTE(from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `
+	return with(webCTE(inRange), stitchCTE(inRange), suCTE(peopleOf(a), from, to), suhCTE, actCTE(a, from, to+" + "+w)) + `
 SELECT step AS "Step", n AS "Persons"
 FROM (
   SELECT 1 AS i, 'Visited' AS step, (SELECT uniqExact(` + visitor + `) FROM web) AS n

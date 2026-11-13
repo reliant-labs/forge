@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -59,6 +60,36 @@ func TestDeclaredAnalytics_MergesAcrossEnvsAndFrontends(t *testing.T) {
 	}
 	if got.EffectiveActivationWindow() != "14d" || !got.DashboardsEnabled() {
 		t.Errorf("effective window %q, dashboards %v", got.EffectiveActivationWindow(), got.DashboardsEnabled())
+	}
+}
+
+func TestDeclaredAnalytics_SystemEventsAndStaffAddUp(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		declared []*AnalyticsEntity
+		want     obsquery.UserFilter
+	}{
+		{"none declared reads as before", []*AnalyticsEntity{{Mode: "identified", Dashboards: true}}, obsquery.UserFilter{}},
+		{"one frontend", []*AnalyticsEntity{{Dashboards: true, SystemEvents: []string{"billing_state"}, Staff: &AnalyticsStaffEntity{Events: []string{"internal_user"}}}},
+			obsquery.UserFilter{SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}}},
+		{"the union, sorted, across frontends and envs", []*AnalyticsEntity{
+			{Dashboards: true, SystemEvents: []string{"nightly_rollup", "billing_state"}, Staff: &AnalyticsStaffEntity{UserIDs: []string{"canary"}}},
+			{Dashboards: true, SystemEvents: []string{"billing_state"}, Staff: &AnalyticsStaffEntity{Events: []string{"internal_user"}, UserIDs: []string{"bot", "canary"}}},
+		}, obsquery.UserFilter{SystemEvents: []string{"billing_state", "nightly_rollup"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"bot", "canary"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var fes []renderedEnvFrontend
+			for i, a := range tc.declared {
+				fes = append(fes, analyticsFrontend([]string{"dev", "prod"}[i%2], "web", a))
+			}
+			got, err := declaredAnalytics(fes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.UserFilter(), tc.want) {
+				t.Errorf("UserFilter = %+v, want %+v", got.UserFilter(), tc.want)
+			}
+		})
 	}
 }
 
@@ -163,6 +194,8 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
                     goals = [forge.Goal {id = "pricing", route = "/pricing"}, forge.Goal {id = "checkout", event = "purchase"}]
                     activation = "order_created"
                     channels = [forge.Channel {host = "News.YCombinator.com", channel = "Organic social"}]
+                    system_events = ["billing_snapshot"]
+                    staff = forge.Staff {events = ["internal_user"], user_ids = ["canary-1"]}
                 }
                 funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
             }
@@ -189,6 +222,9 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 		Activation: "order_created",
 		Channels:   []AnalyticsChannelEntity{{Host: "news.ycombinator.com", Channel: "Organic social"}},
 		Dashboards: true,
+
+		SystemEvents: []string{"billing_snapshot"},
+		Staff:        &AnalyticsStaffEntity{Events: []string{"internal_user"}, UserIDs: []string{"canary-1"}},
 	}
 	if web.Telemetry == nil || !reflect.DeepEqual(web.Telemetry.Analytics, wantEntity) {
 		t.Fatalf("analytics = %+v, want %+v", web.Telemetry, wantEntity)
@@ -208,6 +244,9 @@ func TestFrontendAnalytics_FromRealKCL(t *testing.T) {
 	}
 	if a == nil || len(a.Goals) != 2 || a.Goals[0].ID != "checkout" || a.Activation != "order_created" || a.EffectiveActivationWindow() != "7d" || len(a.Channels) != 1 {
 		t.Errorf("declaredAnalytics = %+v", a)
+	}
+	if want := (obsquery.UserFilter{SystemEvents: []string{"billing_snapshot"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"canary-1"}}); a == nil || !reflect.DeepEqual(a.UserFilter(), want) {
+		t.Errorf("the user filter the dashboards read = %+v, want %+v", a.UserFilter(), want)
 	}
 	project, _ := obsdash.BuildParts(obsdash.Input{Project: "acme", Frontends: []string{"web"}, Analytics: a})
 	if project.Input == nil || !reflect.DeepEqual(project.Input.Analytics, a) {

@@ -49,6 +49,23 @@ a warning. Property values become strings; keep them low-cardinality and
 never put secrets or personal data in them. A `slog.Group` flattens to
 `group.key`.
 
+**An event about a user that the user did not cause** (a daily billing
+snapshot attributed to an org's owner, a job's result, an account the platform
+created) must not make them an active user. Mark it as the system's:
+
+```go
+observe.TrackSystem(ctx, org.OwnerID, "billing_state", slog.String("plan", plan)) // names its user; "" for none
+observe.Track(ctx, "sync_completed", observe.SystemActivity())                   // or mark one Track
+ctx = observe.WithSystemActivity(ctx) // or every event under ctx: Track, TrackAuth, the login broker's, CRUD's
+```
+
+The mark is the reserved property `forge.activity = "system"`
+(`observe.PropActivity`, stored as `Props['forge.activity']`); the browser's
+twin is `track(name, props, {system: true})`. The event is stored and counted
+as an event as usual; only the user counts ignore it. Events stored before you
+marked them are corrected by declaring the name in `forge.Analytics.system_events`
+(below); the app's staff are left out with `forge.Analytics.staff`.
+
 ## Automatic events from generated CRUD
 
 Every generated Create, Update and Delete rpc records a product event once its
@@ -251,6 +268,8 @@ forge.Frontend {
             activation = "order_created"       # unset: the user's first <entity>_created
             activation_window = "7d"           # unset: 7d; at most 90d
             channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+            system_events = ["billing_snapshot"]   # never a user's own activity, stored ones included
+            staff = forge.Staff {events = ["internal_user"], user_ids = ["<monitor's subject>"]}
             # dashboards = False               # drop the built-in product dashboards
         }
         funnels = [forge.Funnel {id = "buy", steps = ["view_product", "purchase"], by = "person", window = "7d"}]
@@ -265,6 +284,8 @@ forge.Frontend {
 | `activation` | the event that marks a user activated | a product event name |
 | `activation_window` | how long after signing up a user has to activate | `30m`, `1h`, `7d`…, at most `90d` |
 | `channels` | rules tried in order **ahead of** the built-in channel table; a visit whose first page view matches every condition a rule sets (`host`: the referrer host or a subdomain of it; `source`/`medium`: `utm_source`/`utm_medium`, case-insensitive) is credited to `channel`, a built-in name or a new one | at least one condition; a host name, not a URL; no two rules with the same conditions |
+| `system_events` | product events that are never a user's own activity (a snapshot the system records about a user, a job's result): every user count ignores them, including ones stored before their emitter marked them (`observe.TrackSystem`) | product event names; at most 50 |
+| `staff` | the app's own team, left out of every user count: `events` are marker events whose user is staff (one still retained makes them staff on every day), `user_ids` opaque user ids (never emails: an event carries the provider's subject) | at most 20 events, 100 ids; no `@` |
 | `dashboards` | `False` drops the built-in Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections; collection still follows `mode` | |
 
 `mode` reaches the browser as `ANALYTICS_MODE` in the runtime config document
@@ -285,7 +306,8 @@ The dashboards are the project's, while each env declares its frontends, so
 `forge generate` merges every env's and frontend's declaration: an equal goal or
 channel rule collapses, a goal id or channel conditions declared two different
 ways is refused naming both, `activation` and `activation_window` must agree
-wherever they are set (unset defers), and any `dashboards = False` drops them.
+wherever they are set (unset defers), any `dashboards = False` drops them, and
+`system_events` and `staff` add up (the union).
 
 What the dashboards draw from these declarations, and every definition they
 count by (visitor-day, visit, channel table, same-day stitch, person, sign-up

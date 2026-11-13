@@ -45,7 +45,7 @@ func ExtendOverview(d dashspec.Dashboard, in Input) dashspec.Dashboard {
 		panels = append(panels, trafficPanels(in.channelRules())...)
 	}
 	sections = append(sections, overviewUsers)
-	panels = append(panels, overviewUserPanels()...)
+	panels = append(panels, overviewUserPanels(peopleOf(in.Analytics))...)
 	d.Sections, d.Panels = sections, panels
 	if d.DefaultRange == "" {
 		d.DefaultRange = "24h"
@@ -105,16 +105,16 @@ SELECT round(1000 * (SELECT count() FROM error_events WHERE `+scope+`) / nullIf(
 	}
 }
 
-func overviewUserPanels() []dashspec.Panel {
+func overviewUserPanels(p people) []dashspec.Panel {
 	const week = "{to:DateTime64(9)} - INTERVAL 7 DAY"
 	activeIn := func(end string) string {
-		return `SELECT uniqExact(` + user + `) FROM product_events WHERE ` + active + ` AND ` + envScope + ` AND ` + lastDays(7, end)
+		return `SELECT uniqExact(` + user + `) FROM product_events WHERE ` + p.active() + ` AND ` + envScope + ` AND ` + lastDays(7, end)
 	}
 	newIn := func(end string) string {
-		return `SELECT count() FROM (` + newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY`
+		return `SELECT count() FROM (` + p.newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY`
 	}
 	returningIn := func(end string) string {
-		return activeIn(end) + ` AND ` + user + ` NOT IN (SELECT EnvId, UserId FROM (` + newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY)`
+		return activeIn(end) + ` AND ` + user + ` NOT IN (SELECT EnvId, UserId FROM (` + p.newUsers(end) + `) WHERE NewAt >= ` + end + ` - INTERVAL 7 DAY)`
 	}
 	twoWeeks := func(title string, q func(string) string) string {
 		return `SELECT (` + q(to) + `) AS "` + title + `",
@@ -125,7 +125,7 @@ func overviewUserPanels() []dashspec.Panel {
 		"Distinct signed-in users each UTC day of the 30 days ending at the end of the range.",
 		`SELECT toDate(Timestamp) AS day, uniqExact(`+user+`) AS "Daily active users"
 FROM product_events
-WHERE `+active+` AND `+envScope+` AND Timestamp >= toStartOfDay(`+to+`) - INTERVAL 29 DAY AND Timestamp < `+to+`
+WHERE `+p.active()+` AND `+envScope+` AND Timestamp >= toStartOfDay(`+to+`) - INTERVAL 29 DAY AND Timestamp < `+to+`
 GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active users": colorUsers}), 24, 7)
 	dau.MinStep = "1d"
 	return []dashspec.Panel{
@@ -138,7 +138,7 @@ GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active user
 			twoWeeks("Returning users (7 days)", returningIn), "", dashspec.UnitCount, colorWeekly)),
 		exact(figure("users", "accounts", "Accounts",
 			"Accounts in the environment's identity instance, from the platform's daily snapshot; an environment with none shows its users seen in the last 90 days.",
-			accountsSQL, "", dashspec.UnitCount, colorNeutral)),
+			accountsSQL(p), "", dashspec.UnitCount, colorNeutral)),
 		dau,
 	}
 }

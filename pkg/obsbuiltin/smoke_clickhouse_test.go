@@ -13,6 +13,9 @@ func fullInput() Input {
 			Goals:      []Goal{{ID: "checkout", Title: "Checkout", Event: "purchase"}, {ID: "pricing", Route: "/pricing"}},
 			Activation: "order_created", ActivationWindow: "7d",
 			Channels: []ChannelRule{{Host: "news.ycombinator.com", Channel: "Hacker News"}, {Source: "partner", Medium: "referral", Channel: "Partners"}},
+			// None of these is in the population, so its answers stand;
+			// TestDeclaredSystemEventsAndStaffAreLeftOut seeds them.
+			SystemEvents: []string{"billing_state"}, StaffEvents: []string{"internal_user"}, StaffUserIDs: []string{"canary"},
 		},
 		Funnels: []Funnel{
 			{ID: "buy", Title: "Buy", Funnel: dashspec.Funnel{Steps: []string{"page_viewed", "add_to_cart", "purchase"}, By: FunnelByPerson, Window: "1d"}},

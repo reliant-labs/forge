@@ -102,14 +102,44 @@ count persons.
 **User.** A user id per environment, the way the Users card counts it, so a
 dashboard over several environments equals the sum of their cards.
 
-- **Active**: any user-attributed product event except `auth_signed_out` and
-  `auth_accounts` (`obsquery.ActiveEvidence`): a sign-in, the daily session
-  heartbeat, a CRUD write, an app event.
+- **Active**: any user-attributed product event except `auth_signed_out`,
+  `auth_accounts` and an event marked as the system's
+  (`obsquery.ActiveEvidence`): a sign-in, the daily session heartbeat, a CRUD
+  write, an app event. The project's declared system events and staff are left
+  out too (below).
 - **New**: a user whose first `auth_signed_up` is in the range. An environment
   that reported no sign-up in the 90 days before the end of the range counts the
   users first seen in the range instead (`obsquery.NewUsersSource`); the Users
   dashboard's _Where auth events come from_ table says when.
 - **Returning**: active and not new.
+
+**System events and staff.** An event the system recorded about a user (a
+daily billing snapshot attributed to an org's owner, a background job's result)
+is not that user's activity. Every app's own events count by default; two
+things leave events out of every user count, and a third leaves people out:
+
+- **The marker**, set when the event is emitted: the reserved property
+  `forge.activity = "system"`, written by `observe.TrackSystem(ctx, userID,
+  name, …)`, by `observe.SystemActivity()` among any emitter's attributes, by
+  everything recorded under `observe.WithSystemActivity(ctx)` (Track, TrackAuth,
+  the login broker's sign-ins, the CRUD events), and in the browser by
+  `track(name, props, {system: true})`. Stored as `Props['forge.activity']`.
+- **Declared system event names**, `forge.Analytics {system_events = [...]}`:
+  the whole event type, wherever and whenever it was emitted. This is what
+  corrects history: events stored before anyone marked them cannot be
+  re-marked.
+- **Staff**, `forge.Analytics {staff = forge.Staff {events = [...], user_ids =
+  [...]}}`. forge does not know who your staff are, and an event never carries
+  an email, so the app states it in the data: the users of a marker event it
+  emits per staff member (a daily `internal_user`, say; any one still
+  retained makes that user staff on every day), and opaque user ids (a
+  synthetic monitor's account).
+
+They apply to active, new and returning users, DAU/WAU/MAU, stickiness,
+lifecycle, power users, cohorts, the sign-ups every dashboard counts (and so
+conversion, activation and week-4 retention), _Sign-ins by method_ and _Most
+active users_. Panels that count visits, page views or events (_Events by name_,
+the CRUD panels, _Where auth events come from_) are unchanged.
 
 **Sign-up attribution.** A sign-up (a user's first `auth_signed_up`) is credited
 to the **first touch of its own day**: its own hash, else the one hash the stitch
@@ -132,7 +162,9 @@ users over the last 7 days beside the 7 before (fixed, whatever range is
 picked, as the Users card), accounts and 30 days of daily active users.
 
 **Users.** _At a glance_: accounts (the platform's daily `auth_accounts`
-snapshot; an environment with none shows its users seen in 90 days), active,
+snapshot; an environment with several sources reports one per identity
+provider, `Props['provider']`, and their newest are summed; one with none shows
+its users seen in 90 days), active,
 new, returning, daily/weekly/monthly active users, stickiness (average DAU over
 average 30-day active users). _Engagement_: weekly lifecycle (new, retained,
 resurrected, and churned below zero; the current week counts no churn until it
@@ -168,7 +200,7 @@ the end of the range; a channel with fewer than 20 shows none.
 ## Extend, override, opt out
 
 - **Extend by declaration**, no JSON: `forge.Analytics {goals, activation,
-  activation_window, channels}` and `forge.Funnel {by = "visitor" | "person"}`
+  activation_window, channels, system_events, staff}` and `forge.Funnel {by = "visitor" | "person"}`
   regenerate the panels on the next `forge generate`. Syntax and the merge
   rules across frontends and environments: `observability/product-events`.
 - **Override one dashboard** with a spec-form file of the same name:
@@ -187,7 +219,8 @@ the end of the range; a channel with fewer than 20 shows none.
 The fragments are Go in `forge/pkg/obsbuiltin` (`fragments.go`); `reliant forge
 project libraries obsbuiltin` prints the package's API. A panel of your own
 reaches the same answer by keying visitors on `(EnvId, DayVisitor)`, users on
-`(EnvId, UserId)`, and active users on `obsquery.ActiveEvidence`:
+`(EnvId, UserId)`, and active users on `obsquery.ActiveEvidence` (plus
+`obsquery.UserFilter.Predicate` for the declared system events and staff):
 
 ```sql
 SELECT Props['route'] AS route, uniqExact((EnvId, DayVisitor)) AS visitors

@@ -1,6 +1,9 @@
 package obsbuiltin
 
-import "github.com/reliant-labs/forge/pkg/dashspec"
+import (
+	"github.com/reliant-labs/forge/pkg/dashspec"
+	"github.com/reliant-labs/forge/pkg/obsquery"
+)
 
 // The product-analytics declarations the built-in dashboards read
 // (forge.Analytics in KCL, merged across the project's frontends by forge
@@ -47,6 +50,16 @@ type Analytics struct {
 	// Product and Acquisition dashboards (a frontend declared
 	// Analytics.dashboards = False).
 	NoDashboards bool `json:",omitempty"`
+	// SystemEvents are product events that are never a user's own activity
+	// (Analytics.system_events), sorted: the user counts ignore them,
+	// including the ones stored before any emitter marked them.
+	SystemEvents []string `json:",omitempty"`
+	// StaffEvents are product events that mark their user as the app's staff
+	// (Analytics.staff.events), sorted; StaffUserIDs name staff by opaque
+	// user id (Analytics.staff.user_ids), sorted. The user counts leave staff
+	// out.
+	StaffEvents  []string `json:",omitempty"`
+	StaffUserIDs []string `json:",omitempty"`
 }
 
 // Goal is one declared conversion (forge.Goal): exactly one of Event and
@@ -83,6 +96,15 @@ func (a *Analytics) EffectiveActivationWindow() string {
 		return DefaultActivationWindow
 	}
 	return a.ActivationWindow
+}
+
+// UserFilter is what the user counts leave out beyond the events their
+// emitters marked: the declared system events and staff. Zero for nil.
+func (a *Analytics) UserFilter() obsquery.UserFilter {
+	if a == nil {
+		return obsquery.UserFilter{}
+	}
+	return obsquery.UserFilter{SystemEvents: a.SystemEvents, StaffEvents: a.StaffEvents, StaffUserIDs: a.StaffUserIDs}
 }
 
 // DashboardsEnabled reports whether the built-in product dashboards are drawn.

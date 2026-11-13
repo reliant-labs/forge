@@ -1399,6 +1399,18 @@ type AnalyticsEntity struct {
 	ActivationWindow string                   `json:"activation_window,omitempty"`
 	Channels         []AnalyticsChannelEntity `json:"channels,omitempty"`
 	Dashboards       bool                     `json:"dashboards"`
+	// SystemEvents are the product events the frontend declares are never a
+	// user's own activity (Analytics.system_events).
+	SystemEvents []string `json:"system_events,omitempty"`
+	// Staff is who the frontend declares the app's staff are
+	// (Analytics.staff); nil when it declares none.
+	Staff *AnalyticsStaffEntity `json:"staff,omitempty"`
+}
+
+// AnalyticsStaffEntity mirrors kcl/schema.k Staff.
+type AnalyticsStaffEntity struct {
+	Events  []string `json:"events,omitempty"`
+	UserIDs []string `json:"user_ids,omitempty"`
 }
 
 // AnalyticsGoalEntity mirrors kcl/schema.k Goal: exactly one of Event and

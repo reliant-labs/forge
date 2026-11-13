@@ -34,6 +34,21 @@ const (
 	// AppClientBackend is the app.client value for events emitted by Track.
 	AppClientBackend = "backend"
 
+	// PropActivity is the reserved event property that says whose activity
+	// an event is. It is a property, so it is stored in product_events'
+	// Props (Props['forge.activity']) by every pipeline that stores events,
+	// and the log record carries it as product.forge.activity. Unset: the
+	// event is the activity of the user it names, which is every event's
+	// default.
+	PropActivity = "forge.activity"
+	// ActivitySystem is PropActivity's value for an event the system
+	// recorded about a user rather than one the user caused: a daily billing
+	// snapshot attributed to an org's owner, a background job's result, an
+	// account the platform created. Active, new and returning user counts
+	// ignore such events (pkg/obsquery.ActiveEvidence); every other read of
+	// the event is unchanged.
+	ActivitySystem = "system"
+
 	// MaxProductProps is the most properties one event keeps; the rest are dropped.
 	MaxProductProps = 32
 	// MaxProductPropValueLen is the longest property value in characters;
@@ -108,6 +123,51 @@ func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 	trackAs(ctx, name, userID, attrs)
 }
 
+// TrackSystem records a product event the system recorded about userID
+// rather than one userID caused: it is Track with the user named by the
+// caller (a worker has no signed-in caller; "" attributes the event to no
+// one) and the event marked as not the user's own activity (PropActivity =
+// ActivitySystem). The event is stored and counted as an event as usual, but
+// it never makes userID an active, new or returning user.
+//
+//	observe.TrackSystem(ctx, org.OwnerID, "billing_subscription_state", slog.String("plan", plan))
+//
+// An emitter of its own (one that does not call Track) marks an event by
+// adding SystemActivity() to its properties.
+func TrackSystem(ctx context.Context, userID, name string, attrs ...slog.Attr) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	trackAs(ctx, name, userID, append(attrs[:len(attrs):len(attrs)], SystemActivity()))
+}
+
+// SystemActivity is the event property that marks a product event as not the
+// user's own activity (PropActivity = ActivitySystem). Pass it among an
+// event's attributes, to Track or to any emitter that writes each attribute
+// as a product.<key> property; TrackSystem adds it for you.
+func SystemActivity() slog.Attr { return slog.String(PropActivity, ActivitySystem) }
+
+type systemActivityKey struct{}
+
+// WithSystemActivity marks every product event recorded under the returned
+// context as not the user's own activity: Track, TrackAuth, and the events
+// forge records on the app's behalf (the login broker's sign-ins and
+// sign-ups in pkg/devidp, the generated CRUD events). It is how a caller
+// marks events it does not emit itself, per call: a synthetic monitor's
+// sign-in, a job that writes through the generated handlers.
+//
+//	ctx = observe.WithSystemActivity(ctx) // the identity canary's login
+func WithSystemActivity(ctx context.Context) context.Context {
+	return context.WithValue(ctx, systemActivityKey{}, true)
+}
+
+// SystemActivityFrom reports whether ctx marks its product events as not the
+// user's own activity (WithSystemActivity).
+func SystemActivityFrom(ctx context.Context) bool {
+	marked, _ := ctx.Value(systemActivityKey{}).(bool)
+	return marked
+}
+
 // trackAs is Track with the user named by the caller rather than read from
 // ctx: the one record shape every product event shares. TrackAuth uses it,
 // because at sign-in the request is still anonymous.
@@ -132,12 +192,23 @@ func trackAs(ctx context.Context, name, userID string, attrs []slog.Attr) {
 	if v := appVersion.Load(); v != nil && *v != "" {
 		out = append(out, slog.String(AttrAppVersion, *v))
 	}
-	props := 0
-	out = appendProps(out, "", attrs, &props)
+	props, activity := 0, ""
+	out = appendProps(out, "", attrs, &props, &activity)
+	// The activity marker is the event's meaning, not one of its properties:
+	// it is written once, after them, so the property cap never drops it.
+	if SystemActivityFrom(ctx) {
+		activity = ActivitySystem
+	}
+	if activity != "" {
+		out = append(out, slog.String(AttrPropPrefix+PropActivity, truncateRunes(activity, MaxProductPropValueLen)))
+	}
 	logger.LogAttrs(ctx, slog.LevelInfo, EventNamePrefix+name, out...)
 }
 
-func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int) []slog.Attr {
+// appendProps writes attrs as product.<key> properties, at most
+// MaxProductProps of them. The activity marker (PropActivity) is not written
+// here: its value is left in activity for the caller to write once.
+func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int, activity *string) []slog.Attr {
 	for _, a := range attrs {
 		v := a.Value.Resolve()
 		if v.Kind() == slog.KindGroup {
@@ -145,14 +216,18 @@ func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int) 
 			if a.Key != "" {
 				p += a.Key + "."
 			}
-			out = appendProps(out, p, v.Group(), props)
+			out = appendProps(out, p, v.Group(), props, activity)
 			continue
 		}
 		if a.Key == "" {
 			continue
 		}
+		if prefix+a.Key == PropActivity {
+			*activity = v.String()
+			continue
+		}
 		if *props >= MaxProductProps {
-			return out
+			continue
 		}
 		*props++
 		out = append(out, slog.String(AttrPropPrefix+prefix+a.Key, truncateRunes(v.String(), MaxProductPropValueLen)))

@@ -3884,6 +3884,41 @@ schema Channel:
         channel.strip() != "" and channel.strip() == channel and len(channel) <= 64, \
             "Channel.channel must be a non-empty name of at most 64 characters, with no surrounding whitespace"
 
+schema Staff:
+    """Who the app's own staff are, so the built-in dashboards leave them out
+    of their user counts.
+
+        forge.Staff {events = ["internal_user"], user_ids = ["8d1c…"]}
+
+    forge does not know who your staff are, and a product event never carries
+    an email (the emitters refuse one), so the rule is stated in the data:
+
+      * `events`   — product events that mark their user as staff. The app
+                     emits one per staff member (a worker can emit it daily
+                     from the team's membership); a user with any such event
+                     still retained, in the environments a panel reads, is
+                     staff on every day.
+      * `user_ids` — opaque user ids (the events' user id, the provider's
+                     subject) that are staff: a synthetic monitor's account,
+                     a shared test login.
+
+    Staff are left out of active, new and returning users, DAU/WAU/MAU,
+    retention, sign-ups and the sign-in and most-active tables. Their events
+    are still stored, and every other panel still counts them.
+    """
+    # Product events whose user is staff.
+    events: [str] = []
+    # Opaque user ids that are staff.
+    user_ids: [str] = []
+
+    check:
+        len(events) <= 20, "Staff.events declares ${len(events)} events: at most 20"
+        all e in events { regex.match(e, _ANALYTICS_EVENT_RE) }, \
+            "Staff.events has an entry that is not a product event name: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
+        len(user_ids) <= 100, "Staff.user_ids declares ${len(user_ids)} ids: at most 100"
+        all u in user_ids { u.strip() != "" and u.strip() == u and len(u) <= 128 and "@" not in u }, \
+            "Staff.user_ids entries are opaque user ids of at most 128 characters, never an email: an event's user id is the provider's subject"
+
 schema Analytics:
     """Built-in product analytics for one frontend in one environment.
 
@@ -3894,6 +3929,8 @@ schema Analytics:
                     goals = [forge.Goal {id = "checkout", event = "purchase"}]
                     activation = "order_created"
                     channels = [forge.Channel {host = "news.ycombinator.com", channel = "Organic social"}]
+                    system_events = ["billing_snapshot"]
+                    staff = forge.Staff {events = ["internal_user"]}
                 }
             }
         }
@@ -3903,6 +3940,13 @@ schema Analytics:
     activation event and channel rules adds to those dashboards; funnels stay
     on `BrowserTelemetry.funnels` (`by = "visitor"` or `"person"` for the
     dashboards' product funnels).
+
+    Active, new and returning users count any event that names a user, except
+    one its emitter marked as the system's (observe.TrackSystem, or the
+    forge.activity = "system" property). `system_events` names whole event
+    types as the system's, which also corrects the ones stored before they
+    were marked; `staff` leaves the app's own team out of the user counts.
+    Declarations from several frontends add up.
 
     `mode` is the MOST the app allows a browser; a browser runs in the lowest
     of it, the consent the app signalled, and its own privacy signals (GPC or
@@ -3942,6 +3986,13 @@ schema Analytics:
     # The built-in Overview, Users, Product and Acquisition dashboards. False
     # drops them; collection still follows `mode`.
     dashboards: bool = True
+    # Product events that are never a user's own activity (a snapshot the
+    # system records about a user, a background job's result): the user
+    # counts ignore them, stored ones included. Unset: only events marked as
+    # the system's when they were emitted.
+    system_events: [str] = []
+    # The app's staff, left out of the user counts. Unset: everyone counts.
+    staff?: Staff
 
     check:
         mode in _ANALYTICS_MODES, \
@@ -3958,6 +4009,10 @@ schema Analytics:
             "Analytics.channels declares ${len(channels)} rules: at most 100"
         len({((c.host or "") + "|" + (c.source or "") + "|" + (c.medium or "")).lower(): True for c in channels}) == len(channels), \
             "Analytics.channels repeats a rule's conditions: the second could never match, so drop it or change its conditions"
+        len(system_events) <= 50, \
+            "Analytics.system_events declares ${len(system_events)} events: at most 50"
+        all e in system_events { regex.match(e, _ANALYTICS_EVENT_RE) }, \
+            "Analytics.system_events has an entry that is not a product event name: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
 
 schema FrontendErrors:
     """Which browser errors a frontend does not want as issues.

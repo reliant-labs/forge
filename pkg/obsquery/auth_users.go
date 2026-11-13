@@ -21,7 +21,9 @@ import (
 //     user-attributed product event: the standard auth events (a sign-in, the
 //     auth middleware's daily resumed heartbeat), the automatic CRUD events,
 //     the app's own. "Signed in during the range" is the meaning; every
-//     event a signed-in user caused is the evidence.
+//     event a signed-in user caused is the evidence, so an event the system
+//     recorded about a user (marked by its emitter, or a declared system
+//     event: UserFilter) is not, and neither is anything staff did.
 //   - NewUsersSource: each user's "new" moment. An environment that reports
 //     sign-ups (an auth_signed_up in the NewUsersWindowDays before the end
 //     of the range) counts the users who signed up; one that does not counts
@@ -54,8 +56,10 @@ const EventAuthAccounts = "auth_accounts"
 
 // ActiveEvidence is the predicate on product_events rows that count their
 // UserId as active: any user-attributed event except a sign-out (which ends a
-// session) and the platform's account snapshot.
-const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')"
+// session), the platform's account snapshot, and an event its emitter marked
+// as not the user's own activity (NotSystemActivity). A project's declared
+// system events and staff narrow it further (UserFilter).
+const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "') AND " + NotSystemActivity
 
 // NewUsersSource is a subquery over table with one row per new user of the
 // window that ends at to (a DateTime64(9) SQL expression):
@@ -140,6 +144,9 @@ type UserActivityQuery struct {
 	SeriesDays uint32
 	// WantSeenTotal adds SeenTotal, the one read over the whole retention.
 	WantSeenTotal bool
+	// Filter is the project's declared system events and staff, left out of
+	// every count; the zero value leaves out only what ActiveEvidence does.
+	Filter UserFilter
 }
 
 // window is the query's derived time bounds.
@@ -180,14 +187,22 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 	w := q.window()
 	b := newBuilder(s)
 	var scope []string
-	if e := b.browserEnvCond("EnvId", s); e != "" {
-		scope = append(scope, e)
+	envCond := b.browserEnvCond("EnvId", s)
+	if envCond != "" {
+		scope = append(scope, envCond)
 	}
 	if sv := b.serviceIn(s.Services); sv != "" {
 		scope = append(scope, sv)
 	}
 	if e := b.browserInstanceCond(s); e != "" {
 		scope = append(scope, e)
+	}
+	table := b.table(s, tblProduct)
+	// The declared filter rides the scope, so every part (active, new, the
+	// series, the first event, the seen total) leaves out the same rows. A
+	// staff marker counts from any service of the environments read.
+	if f := q.Filter.Predicate(table, envCond); f != "" {
+		scope = append(scope, f)
 	}
 	scopeSQL := strings.Join(scope, " AND ")
 	and := func(c string) string {
@@ -196,7 +211,6 @@ func (q UserActivityQuery) Compile() (Stmt, error) {
 		}
 		return " AND " + c
 	}
-	table := b.table(s, tblProduct)
 	to, curFrom, prevFrom, readFrom := b.nanoTime(w.to), b.nanoTime(w.curFrom), b.nanoTime(w.prevFrom), b.nanoTime(w.readFrom)
 
 	const zeros = "toUInt64(0), toUInt64(0), toUInt64(0)"

@@ -31,9 +31,37 @@ const (
 	scope = inRange + " AND " + envScope
 )
 
-// active is the rows that count their UserId as active, shared with the
-// console's Users card (GetUserActivity) and `forge obs users`.
-const active = obsquery.ActiveEvidence
+// people is the population a dashboard's user panels count: the rows of
+// obsquery.ActiveEvidence (shared with the console's Users card,
+// GetUserActivity and `forge obs users`), narrowed by the project's declared
+// system events and staff (Analytics.UserFilter). The zero value is every
+// user ActiveEvidence counts.
+type people struct {
+	// filter is the declaration's predicate on product_events rows; "" when
+	// nothing is declared.
+	filter string
+}
+
+// peopleOf is the population a's declarations leave.
+func peopleOf(a *Analytics) people {
+	return people{filter: a.UserFilter().Predicate("product_events", envScope)}
+}
+
+// and is the declaration's predicate as an " AND …" suffix, "" for none.
+func (p people) and() string {
+	if p.filter == "" {
+		return ""
+	}
+	return " AND " + p.filter
+}
+
+// active is the rows that count their UserId as active.
+func (p people) active() string { return obsquery.ActiveEvidence + p.and() }
+
+// events is the rows an event-count panel counts for its users (sign-ins by
+// method): not marked as the system's, not a declared system event, not
+// staff's.
+func (p people) events() string { return obsquery.NotSystemActivity + p.and() }
 
 // user is the distinct-user key. A user is counted once per environment, as
 // the Users card counts them (per env), so a project dashboard over several
@@ -44,9 +72,10 @@ const user = "(EnvId, UserId)"
 const visitor = "(EnvId, h)"
 
 // newUsers is obsquery.NewUsersSource over product_events for the window that
-// ends at end: one row per new user, EnvId, UserId, NewAt, ReportsSignups.
-func newUsers(end string) string {
-	return obsquery.NewUsersSource("product_events", end, envScope)
+// ends at end: one row per new user of p, EnvId, UserId, NewAt,
+// ReportsSignups.
+func (p people) newUsers(end string) string {
+	return obsquery.NewUsersSource("product_events", end, envScope+p.and())
 }
 
 // lastDays is the predicate on Timestamp for the n days before end.
@@ -131,8 +160,9 @@ func stitchCTE(rng string) string {
 // obsquery.NewUsersSource reads: the 90 days before {to}) is in [lo, hi), with
 // the visitor hash the sign-up itself carried (a hosted backend's request is
 // stamped by the edge, so devidp's sign-up has one with no browser code) and
-// its method, provider and verification.
-func suCTE(lo, hi string) string {
+// its method, provider and verification. p's declarations leave out the
+// sign-ups of staff, and one marked or declared as the system's.
+func suCTE(p people, lo, hi string) string {
 	return `su AS (
   SELECT * FROM (
     SELECT EnvId, UserId, min(Timestamp) AS at, toDate(min(Timestamp)) AS d,
@@ -141,7 +171,7 @@ func suCTE(lo, hi string) string {
            argMin(Props['social_provider'], Timestamp) AS social, argMin(Props['verified'], Timestamp) AS verified
     FROM product_events
     WHERE EventName = 'auth_signed_up' AND UserId != '' AND ` + envScope + ` AND ` +
-		lastDays(obsquery.NewUsersWindowDays, to) + `
+		lastDays(obsquery.NewUsersWindowDays, to) + ` AND ` + p.events() + `
     GROUP BY EnvId, UserId)
   WHERE at >= ` + lo + ` AND at < ` + hi + `)`
 }

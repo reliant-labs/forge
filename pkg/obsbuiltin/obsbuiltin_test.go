@@ -270,6 +270,60 @@ func TestDeclarationsReachThePanels(t *testing.T) {
 	}
 }
 
+// Every panel that counts users leaves out the marked events always, and the
+// declared system events and staff when the project declares them; panels
+// that count visits and events do not change. TestDeclaredSystemEventsAndStaffAreLeftOut
+// checks what that means on ClickHouse.
+func TestUserPanelsLeaveOutSystemEventsAndStaff(t *testing.T) {
+	filtered := map[string][]string{
+		UsersID:       {"accounts", "active", "new", "returning", "dau-wau-mau", "stickiness", "lifecycle-weekly", "power-users-l28", "time-to-activation", "retention-cohorts", "signups-by-method", "signins-by-method", "verified-share", "signups-by-provider", "most-active-users"},
+		ProductID:     {"entry-pages", "funnel-activation", "signups-from-visit"},
+		AcquisitionID: {"signups", "visit-to-signup", "channels", "signups-by-channel-weekly", "sources", "campaigns", "landing-pages", "countries", "devices", "retention-by-channel"},
+		"overview":    {"active-7d", "new-7d", "returning-7d", "accounts", "dau-30d"},
+	}
+	const declared = "EventName NOT IN ('billing_state') AND UserId NOT IN (SELECT UserId FROM product_events WHERE EventName IN ('internal_user')"
+	for _, tc := range []struct {
+		name string
+		in   Input
+		want string // in every filtered panel; "" for none
+	}{
+		{"nothing declared", Input{Project: "shop", Web: true}, ""},
+		{"an empty declaration", Input{Project: "shop", Web: true, Analytics: &Analytics{}}, ""},
+		{"declared", fullInput(), declared},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, d := range every(tc.in) {
+				ids := map[string]bool{}
+				for _, id := range filtered[d.ID] {
+					ids[id] = true
+				}
+				for _, p := range d.Panels {
+					sql := p.SQL + p.TrendSQL
+					if !ids[p.ID] {
+						if strings.Contains(sql, "'billing_state'") || strings.Contains(sql, obsquery.NotSystemActivity) {
+							t.Errorf("%s/%s counts visits or events, yet leaves events out:\n%s", d.ID, p.ID, sql)
+						}
+						continue
+					}
+					delete(ids, p.ID)
+					if !strings.Contains(sql, obsquery.NotSystemActivity) {
+						t.Errorf("%s/%s does not leave out the marked events:\n%s", d.ID, p.ID, sql)
+					}
+					if tc.want == "" && strings.Contains(sql, "UserId NOT IN (") {
+						t.Errorf("%s/%s leaves users out with nothing declared:\n%s", d.ID, p.ID, sql)
+					}
+					if tc.want != "" && (!strings.Contains(sql, tc.want) || !strings.Contains(sql, "UserId NOT IN ('canary')")) {
+						t.Errorf("%s/%s does not apply the declaration:\n%s", d.ID, p.ID, sql)
+					}
+				}
+				for id := range ids {
+					t.Errorf("%s has no panel %s", d.ID, id)
+				}
+			}
+		})
+	}
+}
+
 func TestChannelRulesQuoteTheirValues(t *testing.T) {
 	expr := channelExpr([]ChannelRule{{Host: "evil.com') OR (1", Channel: "x'y"}}, "ref", "src", "med", "click")
 	if strings.Contains(expr, "evil.com')") || !strings.Contains(expr, `'evil.com\') or (1'`) || !strings.Contains(expr, `'x\'y'`) {

@@ -3102,8 +3102,9 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
 # every frontend's declaration into the project's dashboards, can tell a
 # declaration from a default (the defaults are the dashboards'). An unset
 # `analytics` is omitted from the telemetry (above), so a frontend that
-# declares none renders exactly as it did before the field. Channel
-# conditions are lowercased: they are matched case-insensitively.
+# declares none renders exactly as it did before the field; likewise an
+# empty `system_events` and `staff`. Channel conditions are lowercased: they
+# are matched case-insensitively.
 _render_analytics = lambda a: Analytics -> any {
     {
         "mode": a.mode
@@ -3122,7 +3123,8 @@ _render_analytics = lambda a: Analytics -> any {
             "channel": c.channel
         } for c in a.channels]
         "dashboards": a.dashboards
-    }
+    } | ({"system_events": a.system_events} if a.system_events else {}) \
+      | ({"staff": {"events": a.staff.events, "user_ids": a.staff.user_ids}} if a.staff and (a.staff.events or a.staff.user_ids) else {})
 }
 
 # Render a GitSource to its stable dict form. An unset `source` projects

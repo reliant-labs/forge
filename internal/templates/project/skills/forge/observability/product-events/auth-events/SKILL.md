@@ -9,8 +9,9 @@ Three product event names are reserved for a fixed auth vocabulary, the same
 whatever the auth provider. The console counts users over a range from them
 and the rest of the table: **active** = distinct users with any user-attributed
 event (`obsquery.ActiveEvidence`: every row with a `UserId` except
-`auth_signed_out` and the platform's `auth_accounts`; a sign-in or the auth
-middleware's daily heartbeat is enough); **new** = distinct users with
+`auth_signed_out`, the platform's `auth_accounts` and an event marked as the
+system's; a sign-in or the auth middleware's daily heartbeat is enough; the
+project's declared `system_events` and `staff` are left out too); **new** = distinct users with
 `auth_signed_up` in the range, or, in an env that reported no sign-up in the
 90 days before the range's end, the users first seen in the range
 (`obsquery.NewUsersSource`); **returning** = active users who are not new.
@@ -18,6 +19,13 @@ Every count is distinct by `user.id`, so the same sign-in reported twice
 (server and browser, two replicas, a retry) counts once. `forge obs users
 <env> [--series 30] [--json]` prints them; the console's Users card and the
 generated dashboards compile from the same two fragments.
+
+A synthetic monitor that signs in every minute (an identity canary) is not a
+user. Mark its sign-ins per call, with no logger filter: run the login it
+drives under `ctx = observe.WithSystemActivity(ctx)` (the login broker's
+`auth_signed_in` then carries `forge.activity = "system"`), or name its subject
+in `forge.Analytics.staff.user_ids`, which also leaves its past sign-ins out of
+_Sign-ins by method_.
 
 | event | when | props |
 |---|---|---|

@@ -185,9 +185,12 @@ export { SERVER_TRACE_ID_ATTRIBUTE, serverTraceIdOf } from "./trace-id.js";
  * "/telemetry" subpath, never the barrel.
  */
 export {
+  ACTIVITY_PROP,
+  ACTIVITY_SYSTEM,
   disableTelemetry,
   setTelemetryUser,
   track,
+  type TrackOptions,
   type TrackProps,
   type TrackValue,
 } from "./track.js";

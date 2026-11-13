@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,8 +243,18 @@ func TestDockerLogin_OutputOnlyOnFailure(t *testing.T) {
 func TestIsolateDockerConfig(t *testing.T) {
 	home := t.TempDir()
 	real := filepath.Join(home, ".docker")
-	if err := os.MkdirAll(filepath.Join(real, "contexts"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, d := range []string{"contexts", "cli-plugins", "buildx"} {
+		if err := os.MkdirAll(filepath.Join(real, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// State forge does not know: a credential helper's cache and Docker
+	// Desktop's own files. None of it may be reachable from the throwaway.
+	unknown := []string{".token_seed", "desktop", ".ecr"}
+	for _, f := range unknown {
+		if err := os.WriteFile(filepath.Join(real, f), []byte("secret-state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	orig := `{"auths":{"ghcr.io":{"auth":"c2VjcmV0"}},"credsStore":"desktop","currentContext":"colima","aliases":{"x":"y"}}`
 	if err := os.WriteFile(filepath.Join(real, "config.json"), []byte(orig), 0o600); err != nil {
@@ -253,7 +264,7 @@ func TestIsolateDockerConfig(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", "")
 	os.Unsetenv("DOCKER_CONFIG")
 
-	restore := isolateDockerConfig(false)
+	restore := isolateDockerConfig(false, "registry.example.com/org")
 	dir := os.Getenv("DOCKER_CONFIG")
 	if dir == "" || dir == real {
 		t.Fatalf("DOCKER_CONFIG = %q, want a throwaway directory", dir)
@@ -270,8 +281,15 @@ func TestIsolateDockerConfig(t *testing.T) {
 	if !bytes.Contains(raw, []byte("colima")) {
 		t.Errorf("the throwaway config lost the user's docker context: %s", raw)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "contexts")); err != nil {
-		t.Errorf("the user's docker contexts are not reachable: %v", err)
+	for _, d := range []string{"contexts", "cli-plugins", "buildx"} {
+		if _, err := os.Stat(filepath.Join(dir, d)); err != nil {
+			t.Errorf("the user's docker %s are not reachable: %v", d, err)
+		}
+	}
+	for _, f := range unknown {
+		if _, err := os.Lstat(filepath.Join(dir, f)); !os.IsNotExist(err) {
+			t.Errorf("the throwaway config links %s, state forge does not know (err=%v)", f, err)
+		}
 	}
 
 	// A login in the throwaway directory writes there and nowhere else.
@@ -292,7 +310,7 @@ func TestIsolateDockerConfig(t *testing.T) {
 
 	// A deploy that builds an image keeps the user's registry credentials, so
 	// a private base image still pulls.
-	restore = isolateDockerConfig(true)
+	restore = isolateDockerConfig(true, "registry.example.com/org")
 	defer restore()
 	kept, err := os.ReadFile(filepath.Join(os.Getenv("DOCKER_CONFIG"), "config.json"))
 	if err != nil {
@@ -300,5 +318,21 @@ func TestIsolateDockerConfig(t *testing.T) {
 	}
 	if !bytes.Contains(kept, []byte("ghcr.io")) || !bytes.Contains(kept, []byte("desktop")) {
 		t.Errorf("a build deploy's throwaway config lost the user's credentials: %s", kept)
+	}
+	// The platform login still never reaches the user's credsStore: an empty
+	// credHelpers entry pins that one host to the throwaway config file.
+	var keptCfg struct {
+		CredHelpers map[string]string `json:"credHelpers"`
+	}
+	if err := json.Unmarshal(kept, &keptCfg); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := keptCfg.CredHelpers["registry.example.com"]; !ok || h != "" {
+		t.Errorf("credHelpers[registry.example.com] = %q (present %v), want \"\" so the login stays in the file: %s", h, ok, kept)
+	}
+	for _, f := range unknown {
+		if _, err := os.Lstat(filepath.Join(os.Getenv("DOCKER_CONFIG"), f)); !os.IsNotExist(err) {
+			t.Errorf("a build deploy's throwaway config links %s (err=%v)", f, err)
+		}
 	}
 }

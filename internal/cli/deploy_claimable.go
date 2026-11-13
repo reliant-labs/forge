@@ -274,7 +274,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		compute := needsCompute(entities)
 		// The registry login of an anonymous deploy lands in a throwaway
 		// docker config, so it does not write to the user's ~/.docker.
-		defer isolateDockerConfig(compute)()
+		defer isolateDockerConfig(compute, platformRegistryHost(entities))()
 
 		// Everything the ordinary no-version deploy does, as the anonymous user.
 		// --yes is implied: there is no human at this keyboard to approve a

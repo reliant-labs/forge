@@ -4,11 +4,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // credentialConfigKeys are the docker config.json keys that carry or point at
 // credentials; the throwaway config drops them.
 var credentialConfigKeys = []string{"auths", "credsStore", "credHelpers"}
+
+// linkedDockerConfigEntries are the only entries of the user's docker config
+// directory the throwaway one links: what docker needs to reach its daemon
+// (contexts, with their TLS material) and to find its plugins and builders
+// (cli-plugins, buildx). Everything else is left out, because an entry forge
+// does not know may be a credential helper's or Docker Desktop's own state,
+// and linking it would let the anonymous login read or rewrite it.
+var linkedDockerConfigEntries = []string{"contexts", "cli-plugins", "buildx"}
 
 // isolateDockerConfig points DOCKER_CONFIG at a throwaway directory for an
 // anonymous deploy, so the registry login it makes does not write a credential
@@ -18,12 +27,15 @@ var credentialConfigKeys = []string{"auths", "credsStore", "credHelpers"}
 // keepCredentials says whether the user's own registry credentials are copied
 // along. A site-only deploy builds no image, so it takes none: the throwaway
 // holds only what the login writes. A deploy that builds a Dockerfile may need
-// them to pull a private base image, so there they are kept, and a configured
-// credential helper still receives the login as it always has.
+// them to pull a private base image, so there they are kept. Even then the
+// login to loginHost (the platform registry) is pinned to the throwaway file:
+// an empty credHelpers entry for a host makes docker use the config file for it
+// rather than the credsStore, so the anonymous credential never reaches the
+// user's keychain or credential helper.
 //
 // Best effort: on any failure the real config is left in use and the returned
 // restore is a no-op.
-func isolateDockerConfig(keepCredentials bool) (restore func()) {
+func isolateDockerConfig(keepCredentials bool, loginHost string) (restore func()) {
 	noop := func() {}
 	real := os.Getenv("DOCKER_CONFIG")
 	if real == "" {
@@ -37,7 +49,7 @@ func isolateDockerConfig(keepCredentials bool) (restore func()) {
 	if err != nil {
 		return noop
 	}
-	if err := populateIsolatedDockerConfig(real, tmp, keepCredentials); err != nil {
+	if err := populateIsolatedDockerConfig(real, tmp, keepCredentials, loginHost); err != nil {
 		_ = os.RemoveAll(tmp)
 		return noop
 	}
@@ -58,9 +70,13 @@ func isolateDockerConfig(keepCredentials bool) (restore func()) {
 
 // populateIsolatedDockerConfig fills dst from the docker config directory src:
 // config.json (without its credential keys unless keepCredentials), and a link
-// to every other entry. A link that cannot be made is skipped: the entry is an
-// optional convenience, and an isolated config is still the goal.
-func populateIsolatedDockerConfig(src, dst string, keepCredentials bool) error {
+// to each of linkedDockerConfigEntries that exists. No other entry is linked. A
+// link that cannot be made is skipped: the entry is an optional convenience,
+// and an isolated config is still the goal.
+//
+// When credentials are kept, loginHost (if set) gets an empty credHelpers
+// entry, so its login is stored in dst's config.json and nowhere else.
+func populateIsolatedDockerConfig(src, dst string, keepCredentials bool, loginHost string) error {
 	cfg := map[string]any{}
 	if raw, err := os.ReadFile(filepath.Join(src, "config.json")); err == nil {
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -73,6 +89,13 @@ func populateIsolatedDockerConfig(src, dst string, keepCredentials bool) error {
 		for _, k := range credentialConfigKeys {
 			delete(cfg, k)
 		}
+	} else if host, _, _ := strings.Cut(loginHost, "/"); host != "" {
+		helpers, _ := cfg["credHelpers"].(map[string]any)
+		if helpers == nil {
+			helpers = map[string]any{}
+		}
+		helpers[host] = ""
+		cfg["credHelpers"] = helpers
 	}
 	raw, err := json.Marshal(cfg)
 	if err != nil {
@@ -81,18 +104,11 @@ func populateIsolatedDockerConfig(src, dst string, keepCredentials bool) error {
 	if err := os.WriteFile(filepath.Join(dst, "config.json"), raw, 0o600); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		if e.Name() == "config.json" {
+	for _, name := range linkedDockerConfigEntries {
+		if _, err := os.Lstat(filepath.Join(src, name)); err != nil {
 			continue
 		}
-		_ = os.Symlink(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
+		_ = os.Symlink(filepath.Join(src, name), filepath.Join(dst, name))
 	}
 	return nil
 }

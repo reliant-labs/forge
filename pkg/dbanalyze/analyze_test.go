@@ -133,12 +133,22 @@ func TestMeasuredBehaviour(t *testing.T) {
 			sql: "ALTER TABLE t ALTER COLUMN a TYPE bigint", rewrites: []string{"t", "t_pkey"}, scanned: true,
 			locksOnT:  []string{"AccessExclusiveLock", "ShareLock"},
 			findingOn: []string{dbanalyze.RuleAccessExclusiveLock + ":t", dbanalyze.RuleTableRewrite + ":t"}},
+		// Postgres drops and recreates t_pkey under a new OID: the rebuild
+		// is the rewrite's, not an index built without CONCURRENTLY.
+		{name: "changing an indexed column's type rewrites the table and rebuilds its index",
+			sql: "ALTER TABLE t ALTER COLUMN id TYPE bigint", rewrites: []string{"t", "t_pkey"}, scanned: true,
+			locksOnT:  []string{"AccessExclusiveLock", "ShareLock"},
+			findingOn: []string{dbanalyze.RuleAccessExclusiveLock + ":t", dbanalyze.RuleTableRewrite + ":t"}},
 		{name: "widening a varchar does not rewrite",
 			sql: "ALTER TABLE t ALTER COLUMN v TYPE varchar(20)", locksOnT: []string{"AccessExclusiveLock"}},
 		{name: "a constant default does not rewrite",
 			sql: "ALTER TABLE t ADD COLUMN c int NOT NULL DEFAULT 5", locksOnT: []string{"AccessExclusiveLock"}},
-		{name: "a stable default (now()) does not rewrite",
-			sql: "ALTER TABLE t ADD COLUMN c timestamptz DEFAULT now()", locksOnT: []string{"AccessExclusiveLock"}},
+		// transaction_timestamp() is what now() is called. Its value is
+		// never read: the case pins that a stable default is evaluated once
+		// and stored as the column's missing value, so nothing here depends
+		// on the clock.
+		{name: "a stable default (transaction_timestamp, i.e. now) does not rewrite",
+			sql: "ALTER TABLE t ADD COLUMN c timestamptz DEFAULT transaction_timestamp()", locksOnT: []string{"AccessExclusiveLock"}},
 		{name: "a volatile default rewrites",
 			sql: "ALTER TABLE t ADD COLUMN c double precision DEFAULT random()", rewrites: []string{"t", "t_pkey"}, scanned: true,
 			locksOnT:  []string{"AccessExclusiveLock", "ShareLock"},
@@ -267,6 +277,21 @@ func TestConcurrentIndexIsReportedStatically(t *testing.T) {
 	}
 	if len(r.findings) != 0 {
 		t.Errorf("findings = %+v, want none", r.findings)
+	}
+}
+
+// When a type change keeps an index's storage (a binary-compatible change),
+// the recreated index is neither built nor rewritten.
+func TestAnIndexWhoseStorageIsReusedIsNotRebuilt(t *testing.T) {
+	t.Parallel()
+	r := analyze(t, dbanalyze.Config{}, dbanalyze.SessionOptions{},
+		"CREATE INDEX t_v ON t (v);",
+		"ALTER TABLE t ALTER COLUMN v TYPE varchar(20);")
+	if got := rewritten(r.stmt(t, 1, 0)); len(got) != 0 {
+		t.Errorf("rewrites = %v, want none", got)
+	}
+	if got := r.rules("mb.up.sql", 1); len(got) != 0 {
+		t.Errorf("findings = %v, want none", got)
 	}
 }
 

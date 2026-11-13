@@ -135,27 +135,13 @@ func (a *analysis) migration(ctx context.Context, f MigrationFile) (Migration, s
 		if err != nil {
 			return m, "", fmt.Errorf("%s:%d: measure: %w", f.File, st.Line, err)
 		}
-		res.Executed = meas.err == nil
 		res.DurationMS = math.Round(float64(meas.duration.Microseconds())) / 1000
 		if meas.err != nil {
-			res.Error, res.SQLState = meas.err.Error(), sqlState(meas.err)
-			m.Statements = append(m.Statements, res)
-			reason := fmt.Sprintf("not reached: %s:%d failed", f.File, st.Line)
-			if res.SQLState == sqlStateQueryCanceled {
-				reason = fmt.Sprintf("not reached: %s:%d exceeded statement_timeout", f.File, st.Line)
-				a.add(Finding{Rule: RuleStatementTimeout, File: f.File, Line: st.Line,
-					Message: "the statement exceeded statement_timeout on the target and was cancelled", Fix: fixStatementTimeout})
-			}
-			m.Statements = append(m.Statements, unreached(stmts[i+1:], reason)...)
-			if res.SQLState == sqlStateQueryCanceled {
-				return m, reason, nil
-			}
-			msg := meas.err
-			if res.SQLState == sqlStateLockNotAvailable {
-				msg = fmt.Errorf("%w (another session holds a lock this statement needs: the target is in use)", meas.err)
-			}
-			return m, reason, &StatementError{File: f.File, Line: st.Line, SQLState: res.SQLState, Err: msg}
+			stop, err := a.failed(&m, f, st, res, meas.err, stmts[i+1:])
+			return m, stop, err
 		}
+		res.Executed = true
+		a.adoptRebuiltIndexes(&meas)
 		for _, k := range meas.acquired {
 			fileLocks[k] = true
 		}
@@ -164,6 +150,74 @@ func (a *analysis) migration(ctx context.Context, f MigrationFile) (Migration, s
 		m.Statements = append(m.Statements, res)
 	}
 	return m, "", nil
+}
+
+// failed ends the file at a statement that failed on the target, listing the
+// rest of it as unreached. A timeout is a finding and stops the run (stop is
+// the reason); any other failure is a *StatementError.
+func (a *analysis) failed(m *Migration, f MigrationFile, st Statement, res StatementResult, cause error, rest []Statement) (string, error) {
+	res.Error, res.SQLState = cause.Error(), sqlState(cause)
+	m.Statements = append(m.Statements, res)
+	reason := fmt.Sprintf("not reached: %s:%d failed", f.File, st.Line)
+	if res.SQLState == sqlStateQueryCanceled {
+		reason = fmt.Sprintf("not reached: %s:%d exceeded statement_timeout", f.File, st.Line)
+		a.add(Finding{Rule: RuleStatementTimeout, File: f.File, Line: st.Line,
+			Message: "the statement exceeded statement_timeout on the target and was cancelled", Fix: fixStatementTimeout})
+	}
+	m.Statements = append(m.Statements, unreached(rest, reason)...)
+	if res.SQLState == sqlStateQueryCanceled {
+		return reason, nil
+	}
+	msg := cause
+	if res.SQLState == sqlStateLockNotAvailable {
+		msg = fmt.Errorf("%w (another session holds a lock this statement needs: the target is in use)", cause)
+	}
+	return reason, &StatementError{File: f.File, Line: st.Line, SQLState: res.SQLState, Err: msg}
+}
+
+// adoptRebuiltIndexes recognizes the indexes a statement rebuilt rather than
+// built. ALTER COLUMN … TYPE drops every index on the column and recreates it
+// under a new OID with the same name: the catalog shows a pre-existing index
+// gone and a "new" one on a pre-existing table, which would read as an index
+// built without CONCURRENTLY — a fix that does not apply, since the
+// statement, not an index build, is what needs changing.
+//
+// A recreated index is the one it replaces: it is never a build, it is
+// pre-existing (for this statement and every later one) when that one was,
+// and it counts as a rewrite of it when it was written to new storage, which
+// the table-rewrite rule judges with its table — and as nothing at all when
+// postgres reused its storage (a binary-compatible type change).
+func (a *analysis) adoptRebuiltIndexes(m *measurement) {
+	type key struct {
+		table uint32
+		name  string
+	}
+	gone := map[key]relation{}
+	for _, oid := range m.dropped {
+		if r := m.rels[oid]; r.isIndex() {
+			gone[key{r.table, r.name}] = r
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	created := m.created[:0:0]
+	for _, oid := range m.created {
+		r := m.rels[oid]
+		old, rebuilt := gone[key{r.table, r.name}]
+		if !r.isIndex() || !rebuilt {
+			created = append(created, oid)
+			continue
+		}
+		if a.pre[old.oid] {
+			a.pre[oid] = true
+		}
+		if r.relfilenode != old.relfilenode {
+			m.rewritten = append(m.rewritten, oid)
+		}
+	}
+	m.created = created
+	sort.Slice(m.rewritten, func(i, j int) bool { return m.rewritten[i] < m.rewritten[j] })
 }
 
 // unreached lists statements the run did not execute.

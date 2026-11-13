@@ -143,8 +143,10 @@ type measurement struct {
 	held     []lockKey
 	// rewritten are relations whose relfilenode changed.
 	rewritten []uint32
-	// created are relations that exist after the statement and not before.
+	// created are relations that exist after the statement and not before;
+	// dropped the ones that existed before and not after.
 	created []uint32
+	dropped []uint32
 	// scanned is the seq_scan / seq_tup_read delta per table.
 	scanned map[uint32][2]int64
 	// rels is every relation either snapshot knows, for naming.
@@ -170,6 +172,9 @@ func (s *Session) measure(ctx context.Context, query string) (measurement, error
 	m.rels = make(map[uint32]relation, len(after.rels))
 	for oid, r := range before.rels {
 		m.rels[oid] = r
+		if _, ok := after.rels[oid]; !ok {
+			m.dropped = append(m.dropped, oid)
+		}
 	}
 	for oid, r := range after.rels {
 		// Names and sizes come from before the statement where both know
@@ -213,6 +218,7 @@ func (s *Session) measure(ctx context.Context, query string) (measurement, error
 	sortKeys(m.held)
 	sort.Slice(m.rewritten, func(i, j int) bool { return m.rewritten[i] < m.rewritten[j] })
 	sort.Slice(m.created, func(i, j int) bool { return m.created[i] < m.created[j] })
+	sort.Slice(m.dropped, func(i, j int) bool { return m.dropped[i] < m.dropped[j] })
 	return m, nil
 }
 

@@ -55,3 +55,44 @@ func TestNoActivityRulesDrawTheDashboardsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// The Overview's Users card counts users in four panels (active, new,
+// returning, daily active) and falls back to users seen for Accounts. Each
+// builds its SQL from fragments (the active const, newUsers) rather than
+// naming obsquery.ActiveEvidence itself, so this checks the result, not the
+// token: every statement of the card that reads UserId carries the project's
+// exclusion and not-activity rules.
+func TestOverviewUserCardHonoursActivityRules(t *testing.T) {
+	in := fullInput()
+	in.Activity = obsquery.Activity{NotActivity: []string{"billing_subscription_state"}, ExcludeUsersWith: []string{"internal_user"}}
+	const exclude = "(EnvId, UserId) NOT IN (SELECT EnvId, UserId FROM product_events WHERE EventName IN ('internal_user') AND UserId != '')"
+	const notActivity = "EventName NOT IN ('billing_subscription_state')"
+	var overview *dashspec.Dashboard
+	for _, d := range every(in) {
+		if d.ID == "overview" {
+			overview = &d
+			break
+		}
+	}
+	if overview == nil {
+		t.Fatal("no overview dashboard")
+	}
+	want := map[string]bool{"active-7d": true, "new-7d": true, "returning-7d": true, "dau-30d": true, "accounts": true}
+	for _, p := range overview.Panels {
+		if p.Section != "users" {
+			continue
+		}
+		delete(want, p.ID)
+		for kind, sql := range map[string]string{"SQL": p.SQL, "TrendSQL": p.TrendSQL} {
+			if !strings.Contains(sql, "UserId") {
+				continue
+			}
+			if !strings.Contains(sql, exclude) || !strings.Contains(sql, notActivity) {
+				t.Errorf("overview/%s %s counts users without the project's rules:\n%s", p.ID, kind, sql)
+			}
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("the Users card no longer has panels %v; update this test", want)
+	}
+}

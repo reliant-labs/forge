@@ -239,7 +239,7 @@ var newRules = []rolloutGroup{
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.6.0", GatesFrom: "v1.6.1", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.RuleIDs()},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

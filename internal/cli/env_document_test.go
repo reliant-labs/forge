@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/obsbackend"
@@ -266,5 +267,26 @@ func TestDeclareEnv_DocumentAndForgeYAMLEnvsIsALoadError(t *testing.T) {
 	_, err := declareEnv(dir, cfg, "prod")
 	if !errors.Is(err, errEnvDeclaredTwice) || !strings.Contains(err.Error(), "deploy/envs/prod.yaml") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Documents that send telemetry to different places cannot share one init
+// (review B1 on #2216), in either argument order; agreeing ones can.
+func TestSameMonitoringDestination(t *testing.T) {
+	cloudA := &config.MonitoringConfig{Enabled: true}
+	cloudA2 := &config.MonitoringConfig{Enabled: true, ControlPlane: " "}
+	cloudB := &config.MonitoringConfig{Enabled: true, ControlPlane: "https://cp.example"}
+	self := &config.MonitoringConfig{Enabled: true, Endpoint: "https://otel.example"}
+	doc := func(m *config.MonitoringConfig) envDocumentDeclaration {
+		return envDocumentDeclaration{Project: "x", Monitoring: m}
+	}
+	if err := sameMonitoringDestination([]string{"prod", "staging"}, []envDocumentDeclaration{doc(cloudA), doc(cloudA2)}); err != nil {
+		t.Errorf("one destination refused: %v", err)
+	}
+	for _, pair := range [][2]*config.MonitoringConfig{{self, cloudA}, {cloudA, self}, {cloudA, cloudB}, {cloudB, cloudA}, {cloudA, nil}} {
+		err := sameMonitoringDestination([]string{"prod", "staging"}, []envDocumentDeclaration{doc(pair[0]), doc(pair[1])})
+		if err == nil || !strings.Contains(err.Error(), "init them separately") || !strings.Contains(err.Error(), "staging") {
+			t.Errorf("%+v / %+v: err = %v, want a refusal naming staging", pair[0], pair[1], err)
+		}
 	}
 }

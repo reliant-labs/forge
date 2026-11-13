@@ -113,7 +113,37 @@ func envDocumentsFor(projectDir string, envs []string) ([]envDocumentDeclaration
 		return nil, fmt.Errorf("envs %s have env documents (%s/) and %s do not: declare every env one way — add a document for each (forge project schema env), or init them separately",
 			strings.Join(envsWithDocs(envs, without), ", "), envdoc.Dir, strings.Join(without, ", "))
 	}
+	if err := sameMonitoringDestination(envs, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// sameMonitoringDestination refuses documents (docs[i] declares envs[i]) that
+// send telemetry to different places: one init resolves a single monitoring
+// block, so a self-hosted prod beside a cloud-backed staging, or two control
+// planes, would register or print every env against the first one. It runs
+// before anything is connected to or written.
+func sameMonitoringDestination(envs []string, docs []envDocumentDeclaration) error {
+	dest := func(m *config.MonitoringConfig) string {
+		if m == nil {
+			return "no observability"
+		}
+		if ep := strings.TrimSpace(m.Endpoint); ep != "" {
+			return "self-hosted endpoint " + ep
+		}
+		cp := strings.TrimSpace(m.ControlPlane)
+		if cp == "" {
+			cp = "Reliant's control plane"
+		}
+		return "control plane " + cp
+	}
+	for i := 1; i < len(docs); i++ {
+		if a, b := dest(docs[0].Monitoring), dest(docs[i].Monitoring); a != b {
+			return fmt.Errorf("env %s's document sends telemetry to %s and env %s's to %s: one `forge obs init` sets up one destination — init them separately", envs[0], a, envs[i], b)
+		}
+	}
+	return nil
 }
 
 func envsWithDocs(envs, without []string) []string {

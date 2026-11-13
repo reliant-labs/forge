@@ -45,6 +45,17 @@ var extensions = []string{".yaml", ".yml", ".json"}
 // env document declare.
 var ErrDeclaredTwice = errors.New("env declared twice")
 
+// Candidates are the files that would declare env's document, present or
+// not: what a cache keyed on env's declaration must stamp, so adding,
+// editing or removing one invalidates it.
+func Candidates(projectDir, env string) []string {
+	out := make([]string, 0, len(extensions))
+	for _, ext := range extensions {
+		out = append(out, filepath.Join(projectDir, Dir, env+ext))
+	}
+	return out
+}
+
 // Path returns the env document declaring env in the project at projectDir,
 // "" when there is none. Two documents for one env (prod.yaml and prod.json)
 // are an error naming both.

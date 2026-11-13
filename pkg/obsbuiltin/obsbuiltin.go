@@ -73,9 +73,9 @@ type Input struct {
 	// the Product dashboard.
 	Counts []Count
 	// Activity is the project's declared user-activity rules
-	// (forge.ProjectAnalytics.not_activity and .exclude_users_with): every
-	// user count reads obsquery.ActiveEvidenceFor them. Zero: the
-	// convention alone.
+	// (forge.ProjectAnalytics.not_activity, .exclude_users_with and
+	// .exclude_user_ids): every user count reads obsquery.ActiveEvidenceFor
+	// them. Zero: the convention alone.
 	Activity obsquery.Activity
 }
 

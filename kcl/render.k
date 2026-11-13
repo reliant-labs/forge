@@ -3118,7 +3118,8 @@ _render_project_analytics = lambda a: ProjectAnalytics -> any {
             "event": c.event
             "group_by": c.group_by
         } for c in a.counts]
-    } | ({"not_activity": a.not_activity} if a.not_activity else {}) | ({"exclude_users_with": a.exclude_users_with} if a.exclude_users_with else {})
+    } | ({"not_activity": a.not_activity} if a.not_activity else {}) | ({"exclude_users_with": a.exclude_users_with} if a.exclude_users_with else {}) \
+      | ({"exclude_user_ids": a.exclude_user_ids} if a.exclude_user_ids else {})
 }
 
 # Render an Analytics to its stable dict form. `activation` and

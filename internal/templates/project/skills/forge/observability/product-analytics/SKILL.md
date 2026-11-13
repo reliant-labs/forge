@@ -105,8 +105,9 @@ dashboard over several environments equals the sum of their cards.
 - **Active**: any user-attributed product event except `auth_signed_out`,
   `auth_accounts` and an `observe.TrackState` fact (`obsquery.UserActivityEvidence`):
   a sign-in, the daily session heartbeat, a CRUD write, an app event. The
-  project's `forge.ProjectAnalytics.not_activity` and `exclude_users_with`
-  narrow it (`obsquery.ActiveEvidenceFor`).
+  project's `forge.ProjectAnalytics.not_activity`, `exclude_users_with` and
+  `exclude_user_ids` narrow it (`obsquery.ActiveEvidenceFor`); load
+  `observability/product-events/user-counts`.
 - **New**: a user whose first `auth_signed_up` is in the range. An environment
   that reported no sign-up in the 90 days before the end of the range counts the
   users first seen in the range instead (`obsquery.NewUsersSource`), except the

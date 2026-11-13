@@ -224,6 +224,11 @@ func TestUserActivityLeavesStateEventsAndDeclaredRulesOut(t *testing.T) {
 	if stage.Active != 1 {
 		t.Errorf("stage with rules = %+v, want u5: a marker excludes a user in its own environment", stage)
 	}
+	// An id excludes its user in every environment, history included.
+	prod, stage = read(obsquery.Activity{ExcludeUserIDs: []string{"u5", "u3"}})
+	if prod != (obsquery.UserActivityCounts{Active: 2, New: 1, Returning: 1}) || stage.Active != 0 {
+		t.Errorf("excluding u3 and u5 by id: prod %+v, want active u1,u4 new u1 returning u4; stage %+v, want no one", prod, stage)
+	}
 }
 
 // TestUserActivityNewUsersFirstSeenGrace: where New falls back to first-seen,

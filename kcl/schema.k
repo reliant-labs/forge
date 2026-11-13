@@ -3920,16 +3920,22 @@ schema ProjectAnalytics:
                 counts = [forge.Count {id = "deploys", event = "deploy_succeeded", group_by = ["mode", "first_for_org"]}]
                 not_activity = ["billing_subscription_state"]
                 exclude_users_with = ["internal_user"]
+                exclude_user_ids = ["8d1c0e5e-identity-canary"]
             }
         }
 
-    `not_activity` and `exclude_users_with` are the project's user-activity
-    rules: every user count (the Users dashboard, the Overview's Users card,
-    `forge obs users`) reads them. An event emitted with observe.TrackState
-    is never activity and needs no entry here; list the events an older
-    emitter writes that name a user without being something they did. A
-    user with any retained row of an `exclude_users_with` event in an
-    environment is left out of that environment's counts, history included.
+    `not_activity`, `exclude_users_with` and `exclude_user_ids` are the
+    project's user-activity rules: every user count (the Users dashboard, the
+    Overview's Users card, `forge obs users`) reads them. An event emitted
+    with observe.TrackState (or under observe.WithStateEvents, or tracked
+    with `{state: true}` in the browser) is never activity and needs no entry
+    here; list the events an older emitter writes that name a user without
+    being something they did. A user with any retained row of an
+    `exclude_users_with` event in an environment is left out of that
+    environment's counts, history included: it is how staff by email or
+    domain is declared, since the app (which knows emails) emits the marker.
+    `exclude_user_ids` leaves users out by their opaque id (the events'
+    user id, never an email) in every environment.
     """
     funnels: [Funnel] = []
     counts: [Count] = []
@@ -3939,6 +3945,10 @@ schema ProjectAnalytics:
     # Marker events (a staff or test-account marker such as internal_user):
     # a user with any retained row of one is left out of every user count.
     exclude_users_with: [str] = []
+    # Opaque user ids (the events' user id, never an email) left out of every
+    # user count in every environment: a synthetic monitor, a shared test
+    # login.
+    exclude_user_ids: [str] = []
 
     check:
         all f in funnels { f.by in ["visitor", "person", "org"] }, \
@@ -3951,6 +3961,9 @@ schema ProjectAnalytics:
         all e in not_activity { regex.match(e, _ANALYTICS_EVENT_RE) } and all e in exclude_users_with { regex.match(e, _ANALYTICS_EVENT_RE) }, \
             "ProjectAnalytics.not_activity and .exclude_users_with must be product event names: up to 128 letters, digits, '_', '.', ':' and '-', starting with a letter or digit"
         len(not_activity) <= 50 and len(exclude_users_with) <= 50, "ProjectAnalytics lists at most 50 not_activity and 50 exclude_users_with events"
+        len(exclude_user_ids) <= 100, "ProjectAnalytics.exclude_user_ids lists ${len(exclude_user_ids)} ids: at most 100"
+        all u in exclude_user_ids { u.strip() != "" and u.strip() == u and len(u) <= 128 and "@" not in u }, \
+            "ProjectAnalytics.exclude_user_ids are opaque user ids of at most 128 characters with no surrounding space, never an email: an event's user id is the provider's subject"
 
 schema Goal:
     """A conversion the built-in Product dashboard counts: one product event,

@@ -92,3 +92,55 @@ func TestActivityRulesRemoveUsersFromEveryCountOnClickHouse(t *testing.T) {
 	check(plain, "no rules", "users", "signups-by-method", false, "2026-03-15\tpassword\t2")
 	check(ruled, "rules", "users", "signups-by-method", false, "2026-03-15\tpassword\t1")
 }
+
+// The excluded-id and state-sign-in population, 03-15 in environment e1:
+//
+//	ua  a person: a credential sign-in and a page view.
+//	uf  a synthetic monitor signing in under observe.WithStateEvents: its
+//	    sign-in carries forge.kind = state, so it is never a user's.
+//	ue  staff: a credential sign-in and a page view, excluded by id
+//	    (exclude_user_ids).
+const excludedIDSeed = `
+INSERT INTO forge_obsbuiltin_excluded_ids.product_events
+    (Timestamp, ServiceName, EnvId, UserId, EventName, Props, Client) VALUES
+    ('2026-03-15 10:00:00', 'api', 'e1', 'ua', 'auth_signed_in', {'kind': 'credential', 'method': 'password'}, 'backend'),
+    ('2026-03-15 10:05:00', 'web', 'e1', 'ua', 'page_viewed', {'route': '/'}, 'web'),
+    ('2026-03-15 10:01:00', 'api', 'e1', 'uf', 'auth_signed_in', {'kind': 'credential', 'method': 'password', 'forge.kind': 'state'}, 'backend'),
+    ('2026-03-15 10:02:00', 'api', 'e1', 'ue', 'auth_signed_in', {'kind': 'credential', 'method': 'password'}, 'backend'),
+    ('2026-03-15 10:06:00', 'web', 'e1', 'ue', 'page_viewed', {'route': '/'}, 'web');
+`
+
+// TestExcludedUserIDsAndStateSignInsOnClickHouse: a sign-in recorded as a
+// state event counts no user and no sign-in, and a user excluded by id is
+// gone from the user counts, Most active users and Sign-ins by method.
+func TestExcludedUserIDsAndStateSignInsOnClickHouse(t *testing.T) {
+	ch := newClickHouse(t, "forge_obsbuiltin_excluded_ids", excludedIDSeed)
+	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-30 * 24 * time.Hour)
+	rows := func(r ...string) string { return strings.Join(r, "\n") }
+	check := func(a obsquery.Activity, dash, id, want string) {
+		t.Helper()
+		in := fullInput()
+		in.Activity = a
+		d := Users(in)
+		if dash == "overview" {
+			d = ExtendOverview(dashspec.Dashboard{ID: "overview", Title: "shop: overview"}, in)
+		}
+		if got := ch.run(panel(t, d, id).SQL, start, end, "e1"); got != want {
+			t.Errorf("%+v: %s/%s =\n%s\nwant\n%s", a, dash, id, got, want)
+		}
+	}
+
+	none := obsquery.Activity{}
+	check(none, "users", "active", "2")
+	check(none, "users", "signins-by-method", "2026-03-15\tpassword\t2")
+	check(none, "users", "most-active-users", rows(
+		"ua\t2\t1\t2\t2026-03-15 10:05:00",
+		"ue\t2\t1\t2\t2026-03-15 10:06:00"))
+
+	staff := obsquery.Activity{ExcludeUserIDs: []string{"ue"}}
+	check(staff, "users", "active", "1")
+	check(staff, "overview", "active-7d", "1\t0")
+	check(staff, "users", "signins-by-method", "2026-03-15\tpassword\t1")
+	check(staff, "users", "most-active-users", "ua\t2\t1\t2\t2026-03-15 10:05:00")
+}

@@ -110,12 +110,17 @@ func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 
 // trackAs is Track with the user named by the caller rather than read from
 // ctx: the one record shape every product event shares. TrackAuth uses it,
-// because at sign-in the request is still anonymous.
+// because at sign-in the request is still anonymous. Under WithStateEvents
+// it marks the event a state event (StateAttrs: first, so the property cap
+// never drops the marker).
 func trackAs(ctx context.Context, name, userID string, attrs []slog.Attr) {
 	logger := FromContext(ctx)
 	if !ValidEventName(name) {
 		logger.WarnContext(ctx, "product event dropped: name must be snake_case", slog.String("event", name))
 		return
+	}
+	if StateEventsFrom(ctx) {
+		attrs = StateAttrs(attrs)
 	}
 
 	out := make([]slog.Attr, 0, 4+len(attrs))

@@ -77,8 +77,29 @@ export const PROP_KEY_RE = /^[a-z0-9_.]{1,64}$/;
 /** What a redacted credential becomes. */
 export const REDACTED = "[redacted]";
 
+/**
+ * The reserved prop that says what kind of fact an event records, and its
+ * value for a state event: a fact about the person, or something the page
+ * recorded on its own, rather than something the person did. The twin of
+ * forge/pkg/observe.PropKind and KindState; the console's active, new and
+ * returning user counts skip an event marked so.
+ */
+export const KIND_PROP = "forge.kind";
+export const KIND_STATE = "state";
+
 /** A prop value an event may carry. Anything else is dropped. */
 export type TrackValue = string | number | boolean;
+
+/** How track() records an event. */
+export interface TrackOptions {
+  /**
+   * The event is a state event, not the signed-in person's own activity: the
+   * page recorded it on its own (a background refresh, a scheduled sync's
+   * result). It is sent as usual, marked `forge.kind = "state"`, and never
+   * makes the person an active user.
+   */
+  state?: boolean;
+}
 /** Props accepted by track(); non-conforming entries are dropped, not thrown on. */
 export type TrackProps = Record<string, unknown>;
 
@@ -276,9 +297,14 @@ function enqueue(op: Pending): void {
  *
  * `name` is a stable, low-cardinality event name ("onboarding_completed"),
  * not a sentence. `props` is bounded and redacted as described in the module
- * header; do not put user content in it.
+ * header; do not put user content in it. `{state: true}` marks an event the
+ * page recorded on its own, not one the person caused (TrackOptions).
  */
-export function track(name: string, props?: TrackProps): void {
+export function track(
+  name: string,
+  props?: TrackProps,
+  options?: TrackOptions,
+): void {
   if (
     typeof name === "string" &&
     !warnedReserved &&
@@ -293,7 +319,7 @@ export function track(name: string, props?: TrackProps): void {
       // Telemetry must never break the app.
     }
   }
-  recordProductEvent(name, props);
+  recordProductEvent(name, props, undefined, options);
 }
 
 /**
@@ -311,6 +337,7 @@ export function recordProductEvent(
   name: string,
   props?: TrackProps,
   onSent?: () => void,
+  options?: TrackOptions,
 ): void {
   if (typeof window === "undefined" || disabled) {
     return;
@@ -323,6 +350,11 @@ export function recordProductEvent(
     return;
   }
   const attributes = sanitizeProps(props);
+  // The marker is the event's meaning, not one of its props: set after the
+  // props are bounded, so the key cap never drops it.
+  if (options?.state === true) {
+    attributes[KIND_PROP] = KIND_STATE;
+  }
   try {
     if (sink) {
       if (analyticsTier() !== "off") {

@@ -113,10 +113,18 @@ func deployDeclarationFor(ctx context.Context, envName string, opts deployOption
 }
 
 // envAppliesLocally reports whether any part of the env is applied FROM THIS
-// MACHINE: a Cluster- or Compose-bound workload, host infra, a cluster
-// database, a declared cluster_target (support resources), or a frontend
-// shipped or built by forge from here (OnBucket, OnFirebase, BuildOnly).
+// MACHINE: what forge applies itself (forgeAppliesItselfLocally), or a
+// workload bound to forge.OnExternal, whose deploy hook this machine runs.
 func envAppliesLocally(e *KCLEntities) bool {
+	return forgeAppliesItselfLocally(e) || appliedThroughExternalHooks(e)
+}
+
+// forgeAppliesItselfLocally is the part of envAppliesLocally forge applies
+// with its own tools rather than the author's hooks: a Cluster- or
+// Compose-bound workload, host infra, a cluster database, a declared
+// cluster_target (support resources), or a frontend shipped or built by forge
+// from here (OnBucket, OnFirebase, BuildOnly).
+func forgeAppliesItselfLocally(e *KCLEntities) bool {
 	if len(e.WorkloadsOn(RuntimeCluster)) > 0 || len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
 		return true
 	}
@@ -224,7 +232,10 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	if release != "" {
 		fmt.Printf("  Release:     %s  (pinning its digests)\n", release)
 	}
-	fmt.Printf("  Dry run:     %v\n\n", opts.dryRun)
+	if opts.dryRun {
+		fmt.Printf("  Dry run:     true\n")
+	}
+	fmt.Println()
 
 	if len(groups) == 0 {
 		fmt.Println("Nothing to publish — the env binds nothing to the control plane.")
@@ -317,7 +328,9 @@ func recordHostedBundle(ctx context.Context, envName, bound string, digests map[
 			return "", fmt.Errorf("hosted env %q: its bundle was not recorded, so the control plane has nothing to apply.\n"+
 				"  fix: forge env build %s --release <version> --push && forge env deploy %s <version>", envName, envName, envName)
 		}
-		fmt.Printf("  bundle %s recorded (%s)\n", shortDigest(o.Digest), o.Reference)
+		if !cloud.ClaimableActive() {
+			fmt.Printf("  bundle %s recorded (%s)\n", shortDigest(o.Digest), o.Reference)
+		}
 		digest = o.Digest
 	}
 	return digest, nil

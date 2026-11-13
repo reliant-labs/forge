@@ -2196,7 +2196,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Scoped machine access tokens
 
-`pkg/accesstoken` gives one machine credential with a closed scope vocabulary that can never grant authority its holder lacks; org automation tokens come from `forge cloud token create`.
+`pkg/accesstoken` gives one machine credential with a closed scope vocabulary that can never grant authority its holder lacks; a person mints the CI token in the web app (Settings → API tokens), and `forge cloud token` manages them where the control plane admits a CLI login.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -2561,12 +2561,13 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `wl.api | {runtime = forge.OnExternal {status = [...], plan = [...], deploy = [...], health = [...]}}`; no hooks at all is record-only.
 
-**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook.
+**Why:** Hooks are argv with no shell, and receive the frozen `repo@sha256:…` as `$FORGE_IMAGE`, so the bytes your tool ships are the bytes the release recorded. The deploy lands in the same ledger and deploy markers as every other runtime, and `forge env status` reads the running digest through the `status` hook. Declare a `forge.ControlPlane` and the env is self-managed: the control plane records every promotion (and your CI's `forge release record`), and its hosted secrets stay write-only.
 
 **Evidence:**
 
 - source [`kcl/workload.k`](../kcl/workload.k)
 - source [`internal/deploytarget/external.go`](../internal/deploytarget/external.go)
+- source [`internal/cli/hosted_env_resolver.go`](../internal/cli/hosted_env_resolver.go)
 - command `forge env deploy`
 - command `forge env status`
 - skill `deploy/external` (`forge skill load deploy/external`)
@@ -2686,7 +2687,7 @@ One `forge release record` step after the deploy job your pipeline already runs 
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token from `forge cloud token create --scopes deploy:write` as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
+**Use:** Works in any repo: add `forge.yaml` with `name:`, store a token with deploy:write, minted in the web app (Settings → API tokens), as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
 
 **Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as forge's own deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
 

@@ -27,6 +27,53 @@ func ConsoleBase(configured string) string {
 	return DefaultConsoleURL
 }
 
+// TokenSettingsPath is the web app's Settings → API tokens page, where a
+// person mints, lists and revokes the tokens forge and CI use
+// (FORGE_CONTROL_PLANE_TOKEN). The path is the forge shell's (reliant
+// frontends/web/src/components/ForgeShell/ForgeSettingsPage.tsx, section
+// "tokens").
+const TokenSettingsPath = "/settings/tokens"
+
+// WebAppBase is the web app a person signs in to for the control plane at
+// endpoint: FORGE_CONSOLE_URL when set, Reliant's (DefaultConsoleURL) for
+// Reliant cloud, else "" — forge cannot know another control plane's web app.
+func WebAppBase(endpoint string) string {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv(ConsoleURLEnv)), "/"); v != "" {
+		return v
+	}
+	if strings.TrimRight(strings.TrimSpace(endpoint), "/") == DefaultEndpoint {
+		return DefaultConsoleURL
+	}
+	return ""
+}
+
+// TokenSettingsURL is TokenSettingsPath in the web app of the control plane
+// at endpoint, "" when WebAppBase does not know that web app.
+func TokenSettingsURL(endpoint string) string {
+	if base := WebAppBase(endpoint); base != "" {
+		return base + TokenSettingsPath
+	}
+	return ""
+}
+
+// TokenSettingsWhere names the API tokens page for a sentence, with its URL
+// when forge knows it.
+func TokenSettingsWhere(endpoint string) string {
+	if u := TokenSettingsURL(endpoint); u != "" {
+		return "Settings → API tokens, " + u
+	}
+	return "Settings → API tokens"
+}
+
+// webAppFix is the remedy for an operation that needs a person signed in to
+// the web app.
+func webAppFix(endpoint string) string {
+	if base := WebAppBase(endpoint); base != "" {
+		return "sign in to the Reliant web app (" + base + ") and do it there"
+	}
+	return "sign in to the web app of the control plane at " + endpoint + " and do it there"
+}
+
 // Console builds links into one project's console. The path vocabulary is
 // the console's own (reliant frontends/web/src/components/Forge/Console/paths.ts):
 // the project is the FORGE project name, and `?env=` is the one scope param.

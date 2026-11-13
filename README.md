@@ -5,6 +5,21 @@ that ships the production system — dev environments, tests, secrets, multiple
 environments, releases, observability and hosting — from the first commit, built
 for AI agents to work in.**
 
+The Go framework for AI-generated code, with an MCP server that deploys your app:
+
+```bash
+# Deploy a Vite or Next.js static app without an account (live URL + 72-hour claim link)
+npx -y @reliantlabs/forge@latest env deploy prod --claimable
+
+# Use from your agent: an MCP server to deploy your app (Claude Code; Cursor, Codex and Gemini below)
+claude mcp add forge -- npx -y @reliantlabs/forge mcp
+
+# Not sure where to start? forge start prints the one next command for this directory
+forge start
+```
+
+Install `forge`, and the other ways to run it: [Install](#install).
+
 <p align="center">
   <a href="https://reliantlabs.io/products/forge">Website</a>
   ·

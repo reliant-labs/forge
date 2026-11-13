@@ -92,8 +92,9 @@ type claimableDeployResult struct {
 	OK  bool   `json:"ok"`
 	Env string `json:"env"`
 	// Adopted is true when this call added the forge files to an app that
-	// had none (forge.yaml, deploy/kcl/).
-	Adopted bool `json:"adopted,omitempty"`
+	// had none; AdoptedFiles says exactly what it wrote.
+	Adopted      bool   `json:"adopted,omitempty"`
+	AdoptedFiles string `json:"adopted_files,omitempty"`
 	// The claim, as `forge env deploy --claimable --json` reports it. State
 	// is the claim's lifetime (live, suspended, claimed, expired), not the
 	// rollout's: "live" means the unclaimed window is open.
@@ -221,6 +222,7 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 	if err != nil {
 		return failedResult(res, exitWrong, err.Error(), "", nil), nil
 	}
+	before := snapshotAppFiles(abs)
 	adopted, refusal, err := r.adoptForClaimable(ctx, abs, in.Name, progress)
 	if err != nil {
 		return nil, err
@@ -229,6 +231,9 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 		return refusal(res), nil
 	}
 	res.Adopted = adopted
+	if adopted {
+		res.AdoptedFiles = describeAdoption(before, changedAppFiles(abs, before))
+	}
 	res.DirectLLMCalls = findDirectLLMCalls(abs)
 
 	args := []string{"env", "deploy", env, "--claimable", "--json"}
@@ -290,7 +295,7 @@ func (r *mcpRunner) adoptForClaimable(ctx context.Context, dir, name string, pro
 	if !plan.adopt {
 		return false, nil, nil
 	}
-	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (adds forge.yaml and deploy/kcl/; your files are kept)", dir, plan.name))
+	progress.line(fmt.Sprintf("adopting the app in %s as forge project %q (your own files are kept)", dir, plan.name))
 	args := plan.command()
 	out, err := r.execStreamsCombined(ctx, dir, progress.line, args...)
 	if err != nil {
@@ -449,7 +454,7 @@ func claimableToolResult(res *claimableDeployResult) *mcp.CallToolResult {
 				res.ClaimURL, res.State, res.ExpiresAt, res.PurgeAfter)
 		}
 		if res.Adopted {
-			b.WriteString("Adopted:    added forge.yaml and deploy/kcl/ to the app (its own files were not changed)\n")
+			fmt.Fprintf(&b, "Adopted:    %s\n", emptyAs(res.AdoptedFiles, "forge's files were added to the app"))
 		}
 	} else {
 		fmt.Fprintf(&b, "Deploy failed (exit %d", res.ExitCode)

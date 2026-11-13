@@ -27,11 +27,13 @@
 #   - --from-promotion closes "the previous stage moved after QA": a later
 #     deploy to it makes this run's next deploy exit 3 (source_moved).
 #
-# Needs one repository secret: FORGE_CONTROL_PLANE_TOKEN, an ORG automation
-# token with deploy:read,deploy:write. Mint it with:
-#   forge cloud token create --env {{.BuildEnv}} --name github-actions \
-#     --scopes deploy:read,deploy:write --json | jq -r .secret \
-#     | gh secret set FORGE_CONTROL_PLANE_TOKEN
+# Needs one repository secret: FORGE_CONTROL_PLANE_TOKEN, a token with
+# deploy:read,deploy:write. A person signed in to the web app mints it under
+# Settings → API tokens (Reliant cloud: https://forge.reliantlabs.io/settings/tokens),
+# then stores the secret it shows once:
+#   gh secret set FORGE_CONTROL_PLANE_TOKEN
+# (The control plane refuses token minting to a CLI login: `forge cloud token
+# create` under `forge login` exits 9 with reason person_session_required.)
 name: Release
 
 on:

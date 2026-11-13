@@ -54,6 +54,7 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" — production's driver
 
 	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
@@ -1014,7 +1015,43 @@ func splitAppDSN(appDSN string) (name, server string, err error) {
 		q.Set("sslmode", "disable")
 		maint.RawQuery = q.Encode()
 	}
+	if err := sameServerAsDialed(appDSN, name, maint.String()); err != nil {
+		return "", "", err
+	}
 	return name, maint.String(), nil
+}
+
+// sameServerAsDialed checks the split against the connection pgx would
+// actually make. pgx honours host, port and dbname query parameters over the
+// URL's authority and path, and dials every host of a multi-host list in
+// turn: postgres://localhost/app?host=prod-db connects to prod-db. A split
+// read from the URL alone would then CREATE or DROP a database on a server, or
+// under a name, the application never dials — and a caller that vetted the
+// DSN by where it connects would be vetting a different database than the
+// one dropped. So the database pgx connects to must be the one the path names,
+// the maintenance URL must reach the same single server, and that server must
+// be one.
+func sameServerAsDialed(appDSN, name, maint string) error {
+	app, err := pgconn.ParseConfig(appDSN)
+	if err != nil {
+		return fmt.Errorf("pgtest: parse dsn %s: %w", redactDSN(appDSN), err)
+	}
+	if app.Database != name {
+		return fmt.Errorf("pgtest: dsn %s connects to database %q but its path names %q (a dbname parameter overrides the path): name the database in the path alone", redactDSN(appDSN), app.Database, name)
+	}
+	for _, fb := range app.Fallbacks {
+		if fb.Host != app.Host || fb.Port != app.Port {
+			return fmt.Errorf("pgtest: dsn %s lists several hosts: name one server", redactDSN(appDSN))
+		}
+	}
+	m, err := pgconn.ParseConfig(maint)
+	if err != nil {
+		return fmt.Errorf("pgtest: parse maintenance dsn %s: %w", redactDSN(maint), err)
+	}
+	if m.Host != app.Host || m.Port != app.Port || m.Database != "postgres" {
+		return fmt.Errorf("pgtest: dsn %s routes its maintenance connection to %s:%d/%s, not %s:%d/postgres: name the server in the URL alone", redactDSN(appDSN), m.Host, m.Port, m.Database, app.Host, app.Port)
+	}
+	return nil
 }
 
 // quoteIdent double-quotes a postgres identifier, doubling any embedded double

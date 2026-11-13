@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -328,12 +329,16 @@ func pendingOnTarget(ms []compat.Migration, files []dbanalyze.MigrationFile, st 
 // statement_timeout allows. That is the point on a snapshot and an outage on
 // production.
 //
-// A DSN that does not name a server and a database (a key=value string, a
-// bare socket) is refused too: forge cannot tell which database it is.
+// Both sides are compared as pgx resolves them (databaseIdentity): a DSN
+// whose host, port or dbname query parameters route it somewhere other than
+// its URL is judged by where it connects. A DSN that does not resolve to
+// exactly one server and database — none named, several hosts, or not
+// parseable — is refused: forge cannot tell which database it is. A
+// declared DSN with several hosts matches when any of them is the target.
 func refuseDeployedAnalyzeDSN(ctx context.Context, projectDir, dsn string, declared func(context.Context, string, string) string) error {
 	id := databaseIdentity(dsn)
 	if id == "" {
-		return fmt.Errorf("refusing the dsn target %s: it does not name a server and a database (postgres://host:port/name), so forge cannot check that it is not a deployed environment's database", redactDSNForMessage(dsn))
+		return fmt.Errorf("refusing the dsn target %s: it does not resolve to exactly one server and database (it names no database, lists several hosts, or does not parse), so forge cannot check that it is not a deployed environment's database", redactDSNForMessage(dsn))
 	}
 	envs, err := ListEnvs(projectDir)
 	if err != nil {
@@ -343,7 +348,7 @@ func refuseDeployedAnalyzeDSN(ctx context.Context, projectDir, dsn string, decla
 		if seedEnvIsDevIn(projectDir, env) {
 			continue
 		}
-		if d := declared(ctx, projectDir, env); d != "" && databaseIdentity(d) == id {
+		if d := declared(ctx, projectDir, env); d != "" && slices.Contains(databaseEndpoints(d), id) {
 			return fmt.Errorf("refusing the dsn target %s: it is environment %q's database. forge db analyze runs every pending migration on its target (rolled back, but under real locks and for real time): point it at a snapshot, not at %s", id, env, env)
 		}
 	}

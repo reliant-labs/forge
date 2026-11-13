@@ -40,6 +40,14 @@ func TestSplitAppDSN(t *testing.T) {
 		{name: "no database segment", dsn: "postgres://postgres@localhost:5432/", wantErr: true},
 		{name: "no host", dsn: "postgres:///myapp", wantErr: true},
 		{name: "unparseable", dsn: "://not a url", wantErr: true},
+		// pgx dials what the query parameters say, not the URL: a split
+		// read from the URL would drop a database the app never dials.
+		{name: "dbname parameter overrides the path", dsn: "postgres://u@localhost:5432/scratch?dbname=prod", wantErr: true},
+		{name: "several hosts", dsn: "postgres://u@snap:5432,prod-db:5432/app", wantErr: true},
+		// A host or port parameter is carried onto the maintenance URL, so
+		// both connections reach the server the app dials: consistent.
+		{name: "host parameter reaches the same server", dsn: "postgres://u@localhost:5432/app?host=db.internal", wantName: "app",
+			wantServer: "postgres://u@localhost:5432/postgres?host=db.internal&sslmode=disable"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

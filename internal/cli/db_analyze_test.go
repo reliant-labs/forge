@@ -201,8 +201,36 @@ func TestDBAnalyzeRefusesADeployedEnvironmentsDatabase(t *testing.T) {
 			t.Errorf("%s: %v", ok, err)
 		}
 	}
-	if err := refuseDeployedAnalyzeDSN(ctx, projectDir, "host=db.internal dbname=app", lookup); err == nil {
-		t.Error("a DSN with no server/database identity was accepted")
+	// Judged by where pgx connects: a snapshot's authority with routing
+	// parameters that point at prod, or prod spelled as keyword/value, is
+	// prod's database.
+	for _, dsn := range []string{
+		"postgres://u:p@snapshots.internal:5432/app?host=db.internal",
+		"postgres://u:p@db.internal:6543/app?port=5432",
+		"postgres://u:p@db.internal:5432/snapshot?dbname=app",
+		"host=db.internal dbname=app user=reader password=secret",
+	} {
+		err := refuseDeployedAnalyzeDSN(ctx, projectDir, dsn, lookup)
+		if err == nil || !strings.Contains(err.Error(), `environment "prod"`) || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: err = %v", dsn, err)
+		}
+	}
+	// Several hosts have no single identity: refused, whichever they are.
+	if err := refuseDeployedAnalyzeDSN(ctx, projectDir, "postgres://u:p@snapshots.internal:5432,db.internal:5432/app", lookup); err == nil {
+		t.Error("a multi-host DSN was accepted")
+	}
+	if err := refuseDeployedAnalyzeDSN(ctx, projectDir, "host=snapshots.internal", lookup); err == nil {
+		t.Error("a DSN naming no database was accepted")
+	}
+	// A declared multi-host DSN refuses each of its hosts.
+	multi := func(_ context.Context, _, env string) string {
+		if env == "prod" {
+			return "postgres://app@db-a.internal:5432,db-b.internal:5432/app"
+		}
+		return ""
+	}
+	if err := refuseDeployedAnalyzeDSN(ctx, projectDir, "postgres://u@db-b.internal/app", multi); err == nil {
+		t.Error("the second host of prod's multi-host DSN was accepted")
 	}
 }
 

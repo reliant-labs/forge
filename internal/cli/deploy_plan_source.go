@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"sync"
 
@@ -207,11 +208,15 @@ func planUnavailable(err error, env string, errOut io.Writer) (*release.Plan, bo
 	if !errors.Is(err, errControlPlanePredatesBundles) {
 		return nil, false
 	}
+	remedy := " Upgrading the control plane restores the plan."
+	if cloud.ClaimableActive() {
+		remedy = ""
+	}
 	fmt.Fprintf(errOut,
 		"[plan] %s\n"+
 			"[plan]   Env %s is deployed on the pre-bundle path: no server-side plan, and the deploy is gated by\n"+
-			"[plan]   the confirmation alone. Upgrading the control plane restores the plan.\n",
-		errControlPlanePredatesBundles.Error(), env)
+			"[plan]   the confirmation alone.%s\n",
+		controlPlanePredatesBundlesNote(), env, remedy)
 	return nil, true
 }
 

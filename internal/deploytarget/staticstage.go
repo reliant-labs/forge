@@ -438,8 +438,17 @@ func runFrontendBuild(ctx context.Context, runner commandRunner, name, frontendD
 // runInDir inherits the parent process env when the overlay is empty, so
 // an inherited NODE_ENV=production would otherwise leak through and strip
 // the build toolchain (typescript, bundlers) the build phase needs.
+//
+// It also silences npm's audit, funding and update notices: they are advice for
+// the app's author, not part of a deploy, and they bury the lines that matter.
+// Install errors are unaffected.
 func installEnv() map[string]string {
-	return map[string]string{"NODE_ENV": "development"}
+	return map[string]string{
+		"NODE_ENV":                   "development",
+		"npm_config_audit":           "false",
+		"npm_config_fund":            "false",
+		"npm_config_update_notifier": "false",
+	}
 }
 
 // buildTimeEnv layers a frontend's inline env_vars over a forced

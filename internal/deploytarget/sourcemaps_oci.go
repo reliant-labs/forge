@@ -63,6 +63,7 @@ package deploytarget
 import (
 	"context"
 	"fmt"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"os"
 	"path/filepath"
 	"time"
@@ -284,6 +285,9 @@ func FileStageSourcemaps(ctx context.Context, pub SourcemapPublisher, kind, proj
 
 // ReportSourcemapsRecord prints the one line that says where a build's maps went.
 func ReportSourcemapsRecord(kind, name string, rec SourcemapsRecord) {
+	if rec.Pushed() && cloud.ClaimableActive() {
+		return
+	}
 	if rec.Pushed() {
 		fmt.Printf("  [%s] %s: %d source map(s) filed as %s:%s (%s)\n", kind, name, rec.Maps, rec.Repository, rec.Tag, rec.Digest)
 		return

@@ -213,7 +213,7 @@ func chooseDeployReleaseFor(ctx context.Context, q deployReuseQuery) deployRelea
 	case q.Provenance.Tree == "":
 		return cut("this checkout's tree could not be hashed, so no recorded release can be shown to hold the same content")
 	case q.Provenance.Dirty && onlyAdoptedPaths(q.Changes.Paths, q.Adopted):
-		return cut("forge added" + describePaths(q.Adopted) + " to this app a moment ago and git has not seen them yet, so no recorded release can match this tree (commit them, and the next deploy of the same tree reuses its release)")
+		return cut("forge just added its files to this app and git has not seen them yet (commit them, and the next deploy of the same tree reuses its release)")
 	case q.Provenance.Dirty:
 		return cut("the checkout has uncommitted changes" + describePaths(q.Changes.Paths) + ", and only a clean tree — whose hash git can check against its commit — is matched to an existing release")
 	case q.Releases == nil:

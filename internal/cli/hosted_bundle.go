@@ -54,6 +54,16 @@ const (
 // caller could override it.
 var errControlPlanePredatesBundles = errors.New("this control plane predates bundles; upgrade it")
 
+// controlPlanePredatesBundlesNote is errControlPlanePredatesBundles worded for
+// the reader. "Upgrade it" is advice for whoever runs the control plane; an
+// anonymous deploy runs on Reliant's, where there is nothing for its user to do.
+func controlPlanePredatesBundlesNote() string {
+	if cloud.ClaimableActive() {
+		return "this control plane predates bundles"
+	}
+	return errControlPlanePredatesBundles.Error()
+}
+
 // bundlesUnsupported maps an Unimplemented failure to F-15's typed error and
 // leaves every other failure alone. The wire error is wrapped, so a caller
 // that wants the detail still has it through errors.As.

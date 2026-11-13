@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
@@ -21,7 +22,7 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 	if err != nil {
 		return "", err
 	}
-	if res.SourcemapsDir != "" {
+	if res.SourcemapsDir != "" && !cloud.ClaimableActive() {
 		fmt.Printf("[build] %s: %d source map(s) extracted (build id %s) to %s, not part of the site\n",
 			fe.Name, res.Sourcemaps, res.BuildID, res.SourcemapsDir)
 	}

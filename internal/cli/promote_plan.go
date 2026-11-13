@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -1428,6 +1429,13 @@ const (
 
 func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	renderPromotePlanHeadline(out, plan)
+	if plan.Applied && plan.followed && plan.FollowError == "" && plan.Refusal == nil && cloud.ClaimableActive() {
+		// The plan was printed in full before the write. What an anonymous
+		// deploy still owes the reader is what shipped.
+		renderShippedStages(out, plan)
+		return
+	}
+	firstPromote := plan.Direction == promoteDirectionInitial && !plan.Current.Bound
 
 	if plan.Current.Bound {
 		fmt.Fprintf(out, "  current   %s (promoted %s, promotion %s)\n", plan.Current.Release, plan.Current.PromotedAt, plan.Current.PromotionID)
@@ -1445,7 +1453,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	} else {
 		fmt.Fprintf(out, "  current   (never promoted)\n")
 	}
-	if plan.Expected != "" {
+	if plan.Expected != "" && !firstPromote {
 		fmt.Fprintf(out, "  expected  %s  (compare-and-set: the write is refused if the env moved since)\n", plan.Expected)
 	}
 	if r := plan.Refusal; r != nil && r.ActualCurrent != nil {
@@ -1483,7 +1491,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 			plan.Env, plan.Current.Release, plan.Target.Release)
 		fmt.Fprintf(out, "            Recovery is roll forward: prefer cutting a release with the fix and promoting that.\n")
 	}
-	if plan.Current.Note != "" {
+	if plan.Current.Note != "" && !firstPromote {
 		fmt.Fprintf(out, "  note      %s\n", plan.Current.Note)
 	}
 	if plan.SourceNote != "" {
@@ -1523,6 +1531,18 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 		}
 	}
 
+	if !(firstPromote && plan.Commits.State == promoteRangeFirstPromote) {
+		renderPromoteCommits(out, plan)
+	}
+
+	fmt.Fprintln(out)
+	renderPromotePlanFooter(out, plan)
+}
+
+// renderPromoteCommits is the Commits section. It is omitted on a first
+// promote, where there is no earlier release to range from and "no commit
+// range" is all it could say.
+func renderPromoteCommits(out io.Writer, plan promotePlan) {
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Commits  %s\n", plan.Commits.State)
 	switch plan.Commits.State {
@@ -1543,9 +1563,6 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	default:
 		fmt.Fprintf(out, "  %s\n", plan.Commits.Detail)
 	}
-
-	fmt.Fprintln(out)
-	renderPromotePlanFooter(out, plan)
 }
 
 // renderPromotePlanFooter prints where the binding lives and what reached a
@@ -1553,6 +1570,11 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 // effect is a pointer move, and the gap between "promoted" and "running" is
 // the thing `forge env status` had to be written to expose.
 func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
+	if cloud.ClaimableActive() && plan.pending == planApproved && plan.Refusal == nil && !plan.Applied {
+		// Nothing for the reader to do: the deploy goes on to record and
+		// publish, and the binding is the control plane named above.
+		return
+	}
 	fmt.Fprintf(out, "  Binding:  %s\n", plan.Ledger)
 	switch {
 	case plan.Refusal != nil:
@@ -1586,7 +1608,11 @@ func renderPromotePlanFooter(out io.Writer, plan promotePlan) {
 	if !plan.followed && plan.pending == planNotPending {
 		fmt.Fprintf(out, "  Deploy:   forge env deploy %s\n", plan.Env)
 	}
-	fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
+	if !cloud.ClaimableActive() {
+		// An anonymous deploy has no account for `env status` to read with;
+		// its claim block names the command that does work.
+		fmt.Fprintf(out, "  Verify:   forge env status %s\n", plan.Env)
+	}
 }
 
 // renderFrontendPreflightSection names each frontend preflight finding as its

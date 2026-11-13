@@ -37,6 +37,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"io"
 	"os"
 	"path/filepath"
@@ -450,6 +451,9 @@ func checkDeployMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 	if err != nil || rel == nil {
 		// The promote reads the release itself and owns both failures.
 		return nil //nolint:nilerr // see above
+	}
+	if rel.Migrations == nil && cloud.ClaimableActive() {
+		return nil
 	}
 	if rel.Migrations == nil {
 		fmt.Fprintf(out, "[deploy] note: release %s records no migrations (cut before forge recorded them), so its migrations were not checked against what %s has applied\n", version, env)

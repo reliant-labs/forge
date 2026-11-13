@@ -20,10 +20,11 @@ const (
 	// EnvPreview: a persistent env with a TTL.
 	EnvPreview EnvKind = "preview"
 	// EnvSelfManaged: a control plane keeps its ledger, nothing is hosted,
-	// and something runs on a cluster the author operates. forge applies
-	// it; the platform places nothing. Its secrets are write-only, which is
-	// the point of separating it from EnvLocal: a cluster env's secrets must
-	// never be pullable.
+	// and something runs on a cluster the author operates or through the
+	// author's own deploy tooling (forge.OnExternal). forge applies it; the
+	// platform places nothing. Its secrets are write-only, which is the
+	// point of separating it from EnvLocal: such an env's secrets must never
+	// be pullable.
 	EnvSelfManaged EnvKind = "self_managed"
 	// EnvLocal: every workload runs on a developer machine (`forge env
 	// up`). Never a deploy target; its secrets are readable back.

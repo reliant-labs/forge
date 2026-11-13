@@ -232,7 +232,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)
 		}
 		if envAppliesLocally(entities) {
-			return fmt.Errorf("env %q applies part of itself from this machine (a cluster, compose or host part), "+
+			return fmt.Errorf("env %q applies part of itself from this machine (a cluster, compose, host or forge.OnExternal part), "+
 				"which an anonymous deploy cannot do. --claimable publishes only hosted workloads.\n"+
 				"  deploy it to your own account instead: forge login, then %s env deploy %s", envName, Name(), envName)
 		}

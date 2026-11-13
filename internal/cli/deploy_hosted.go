@@ -113,10 +113,18 @@ func deployDeclarationFor(ctx context.Context, envName string, opts deployOption
 }
 
 // envAppliesLocally reports whether any part of the env is applied FROM THIS
-// MACHINE: a Cluster- or Compose-bound workload, host infra, a cluster
-// database, a declared cluster_target (support resources), or a frontend
-// shipped or built by forge from here (OnBucket, OnFirebase, BuildOnly).
+// MACHINE: what forge applies itself (forgeAppliesItselfLocally), or a
+// workload bound to forge.OnExternal, whose deploy hook this machine runs.
 func envAppliesLocally(e *KCLEntities) bool {
+	return forgeAppliesItselfLocally(e) || appliedThroughExternalHooks(e)
+}
+
+// forgeAppliesItselfLocally is the part of envAppliesLocally forge applies
+// with its own tools rather than the author's hooks: a Cluster- or
+// Compose-bound workload, host infra, a cluster database, a declared
+// cluster_target (support resources), or a frontend shipped or built by forge
+// from here (OnBucket, OnFirebase, BuildOnly).
+func forgeAppliesItselfLocally(e *KCLEntities) bool {
 	if len(e.WorkloadsOn(RuntimeCluster)) > 0 || len(e.WorkloadsOn(RuntimeCompose)) > 0 || len(e.Infra) > 0 {
 		return true
 	}

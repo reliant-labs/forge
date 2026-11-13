@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/secrets"
 )
 
 // A LOCAL environment declares control_plane + forge.HostedSecrets but no
@@ -116,6 +117,37 @@ func pulledSecretsFor(e *KCLEntities) (map[string]string, bool) {
 		return nil, false
 	}
 	return armedPulledSecrets.values, true
+}
+
+// hostedSecretsWriteOnly reports an env whose secrets live on its control
+// plane and can never be pulled back: forge.HostedSecrets on any kind but
+// LOCAL (persistent, or self-managed — a cluster or forge.OnExternal env).
+func hostedSecretsWriteOnly(e *KCLEntities) bool {
+	return isHostedSecretEnv(e) && e.ControlPlane != nil && !isLocalControlPlaneEnv(e)
+}
+
+// requiresAnySecret reports whether refs name a secret the workload cannot
+// run without.
+func requiresAnySecret(refs []secrets.SecretRef) bool {
+	for _, r := range refs {
+		if r.EnvName != "" && !r.Optional {
+			return true
+		}
+	}
+	return false
+}
+
+// writeOnlySecretsError refuses to hand a write-only env's secrets to a
+// process on this machine (`forge env exec`, `forge env config --strict`,
+// `forge db query` through a host workload). The value-free hosted provider
+// would otherwise start it without them and say nothing. The wording is the
+// control plane's own refusal of a pull (LocalSecretService), so the two
+// read the same.
+func writeOnlySecretsError(env string, e *KCLEntities, workload string) error {
+	kind := strings.ToUpper(hostedControlPlaneKindName(hostedEnvKindOf(e)))
+	return fmt.Errorf("env %q is %s on its control plane: only LOCAL environments' secrets can be pulled; "+
+		"this environment's secrets are write-only, so forge cannot hand workload %q its secrets on this machine.\n"+
+		"fix: run it where %s runs (`forge env deploy %s`), or declare the values it needs in a LOCAL env", env, kind, workload, env, env)
 }
 
 // armLocalSecretsForUp is `forge env up`'s pull step. A no-op unless the env

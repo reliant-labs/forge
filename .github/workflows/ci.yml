@@ -127,8 +127,9 @@ permissions:
 # request runs is another place to wait. It ran 8 (13 before the pre-commit,
 # license-gate and Library Lint workflows were folded in, 9 once the guards
 # joined it); in the merge queue it runs 4, gate included: test-short (one
-# entry, the flake gate inside it), checks, golangci and the gate. No full
-# guard runs extend those entries. golangci is the one job added back since
+# entry, the flake gate inside it), checks, golangci and the gate. Of the
+# guards, only removalguard's full scan (~10s) extends those entries; the
+# rest stay on main. golangci is the one job added back since
 # (owner, 2026-11-08): a lint step at the end of test-short or checks would
 # have lengthened the slower of them by the lint's own time, and the merge
 # queue's budget is wall time, not runner slots.
@@ -380,7 +381,9 @@ jobs:
   # Whole-program guard scans/renders run in test-short-warm on main/full,
   # not serially after these shards. Their cheap assertions still run under
   # -short here. This deliberately trades premerge whole-repo diagnosis for
-  # the five-minute test budget; full/main retains every assertion.
+  # the five-minute test budget; full/main retains every assertion. The one
+  # exception is internal/removalguard, whose full scan costs ~10s and runs
+  # here too (its step says why).
   #
   # Changed-test repetition runs after the tier in the same job: its compile
   # reuses the tier's, and a second runner cost more in queue than it saved.
@@ -442,6 +445,18 @@ jobs:
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-shard.json
         run: scripts/ci-test-shard.sh ${{ matrix.args }}
+      # internal/removalguard in FULL mode, the one guard whose whole-repo
+      # work runs in the merge tier (owner, 2026-11-13). Its scan was main's
+      # most frequent red (14 runs of TestRemovedFeaturesLeaveNoReferences,
+      # f1f2401f2 among them), and under -short above it skips that scan, so
+      # the queue proved nothing. A literal prefilter took the package from
+      # ~165s to ~10s on a runner, which is what lets it ride here. -count=1:
+      # the guard lists files with `git ls-files`, which Go's test cache
+      # cannot see, so a replayed PASS could miss a file the entry added. The
+      # other guards stay full-mode on main only (test-short-warm).
+      - name: Removal guard (full mode)
+        if: ${{ !cancelled() }}
+        run: go test -count=1 -timeout 10m ./internal/removalguard/
       # The flake gate: every test the pull request adds or edits, three
       # times (scripts/ci-changed-tests.sh says how it finds them, and why no
       # -race). A test that passes once and fails once is caught here, before

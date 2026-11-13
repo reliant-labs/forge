@@ -78,7 +78,8 @@ default is the directory the server was started in, or -C):
 
   read-only   benefits       what forge does for this repo, with the first step
                              and the agent time to each; any repo
-              capabilities   every verb, lint analyzer and marker
+              capabilities   every verb, lint analyzer, marker and schema
+              schema         a published JSON Schema (env: the env document)
               annotations    the entity-authoring vocabulary
               libraries      forge/pkg and web-runtime APIs
               audit          what THIS project currently is

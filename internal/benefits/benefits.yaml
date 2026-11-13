@@ -3082,6 +3082,36 @@ benefits:
       - command: env status
       - skill: deploy/external
 
+  - id: env-document
+    category: ship
+    title: Declare an env in YAML
+    claim: >-
+      An environment is declared in KCL or in a plain YAML/JSON env document
+      (`deploy/envs/<env>.yaml`) that IS what KCL renders to, validated against
+      a generated, versioned JSON Schema with errors that name the path and the
+      field, and every forge command reads either one the same way.
+    availability: forge
+    scope: any
+    use: >-
+      Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1`
+      (`forge project schema env` prints the schema), then use any `forge env`
+      or `forge obs` verb on `prod`.
+    adopt: "write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`"
+    estimate: "~5 min"
+    why: >-
+      A team adopting one piece of forge should not have to learn a
+      configuration language first, and a tool that generates config should not
+      have to emit one. The schema is generated from the Go types forge decodes
+      with, so it cannot drift from what forge reads; forge fills the defaults
+      KCL would (telemetry identity, probes, Workload records) and refuses what
+      a runtime cannot honour.
+    evidence:
+      - command: project schema
+      - path: schema/env.v1.schema.json
+      - path: internal/envdoc
+      - path: docs/design/env-document.md
+      - skill: deploy
+
   - id: env-verify-parity
     category: ship
     title: Prove parity before deploying

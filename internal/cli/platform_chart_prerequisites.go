@@ -28,8 +28,8 @@ var renderPlatformPrerequisitesFn = func(ctx context.Context, env string, entiti
 		kclDir = filepath.Join(projectDir, kclDir)
 	}
 	mainK := filepath.Join(kclDir, env, "main.k")
-	if _, err := os.Stat(mainK); err != nil {
-		return "", fmt.Errorf("environment %q entrypoint %s: %w", env, mainK, err)
+	if !envHasDeclaration(projectDir, env, mainK) {
+		return "", fmt.Errorf("environment %q entrypoint %s: %w", env, mainK, os.ErrNotExist)
 	}
 	namespace := k8sClusterFieldFromEntities(entities, "namespace")
 	if namespace == "" {

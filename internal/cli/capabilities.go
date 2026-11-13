@@ -64,6 +64,8 @@ type CapabilitiesSpec struct {
 	Analyzers         []AnalyzerSpec    `json:"analyzers,omitempty"`
 	Markers           []MarkerSpec      `json:"markers,omitempty"`
 	DeprecatedAliases []DeprecatedAlias `json:"deprecated_aliases,omitempty"`
+	// Schemas are the JSON Schemas forge publishes (`forge project schema`).
+	Schemas []SchemaSpec `json:"schemas,omitempty"`
 }
 
 // newCapabilitiesCmd builds `forge project capabilities`. Like
@@ -82,6 +84,7 @@ Emits forge's whole surface, enumerated from forge itself:
   analyzers   every 'forge lint' analyzer, including the maintainer flags
               hidden from --help
   markers     every // forge:* comment marker the proto scanner reads
+  schemas     every JSON Schema forge publishes (forge project schema)
 
 Read this BEFORE hand-writing something forge already scaffolds. Two
 sibling dumps cover the rest of the vocabulary:
@@ -121,6 +124,7 @@ func buildCapabilitiesSpec() CapabilitiesSpec {
 		Analyzers:         analyzerSpecs(root),
 		Markers:           markerSpecs(),
 		DeprecatedAliases: deprecatedAliases(root),
+		Schemas:           schemaSpecs(),
 	}
 }
 
@@ -241,6 +245,17 @@ func writeCapabilitiesText(w io.Writer, spec CapabilitiesSpec) error {
 				mark = "✱"
 			}
 			if err := p("  %s %-26s %s\n", mark, a.Flag, a.Usage); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(spec.Schemas) > 0 {
+		if err := p("\nSCHEMAS (published JSON Schemas; each is a public, versioned API)\n"); err != nil {
+			return err
+		}
+		for _, s := range spec.Schemas {
+			if err := p("  %-6s %-18s %s — %s\n", s.Name, s.APIVersion, s.Command, s.Describes); err != nil {
 				return err
 			}
 		}

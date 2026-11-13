@@ -220,6 +220,12 @@ type ProjectConfig struct {
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).
+	//
+	// LEGACY SHORTHAND, deprecated in favour of an env document
+	// (deploy/envs/<env>.yaml, `forge project schema env`): forge.yaml is
+	// project and tooling config, not a list of resources. Both keys keep
+	// working under semver 1 and lower into the same model; skills and docs
+	// steer new projects to the document. See docs/design/env-document.md.
 	Envs       []string          `yaml:"envs,omitempty"`
 	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty"`
 }
@@ -781,6 +787,11 @@ type DatabaseConfig struct {
 	// Migrations is `database.migrations:` — where the migrations live and
 	// which tool applies them. Absent, forge's own migrator applies
 	// db/migrations.
+	//
+	// `database.migrations` and `database.migrations_dir` are LEGACY
+	// SHORTHANDS for a database's migrations, deprecated in favour of the
+	// env declaration's databases[] (KCL or an env document,
+	// docs/design/env-document.md). They keep working under semver 1.
 	Migrations      MigrationsConfig      `yaml:"migrations,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// ORM places the generated data layer. Absent, it is internal/db.

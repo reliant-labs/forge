@@ -106,7 +106,7 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = tool
 	}
-	readOnly := []string{"benefits", "capabilities", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
+	readOnly := []string{"benefits", "capabilities", "schema", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
 		"deploy_status", "explain_error"}
 	mutating := []string{"lint", "generate", "report_bug", "deploy_claimable"}
 	if len(got) != len(readOnly)+len(mutating) {
@@ -313,8 +313,8 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 15 {
-		t.Fatalf("tools/list response = %s (err %v), want 15 tools", got[2], err)
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 16 {
+		t.Fatalf("tools/list response = %s (err %v), want 16 tools", got[2], err)
 	}
 }
 

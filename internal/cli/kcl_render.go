@@ -1925,8 +1925,9 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	// (`forge env up -D …`) — opaque to forge, meaningful only to this env's
 	// KCL. nil unless the caller passed one, so every other render is
 	// unchanged. Deliberately NOT added to the manifest render in
-	// internal/cluster: those options are bound by `env up` only, and a
-	// cluster apply must render from the repo alone.
+	// internal/cluster: a cluster apply must render from the repo alone.
+	// (`forge env render -D`, a preview that applies nothing, hands them
+	// to its manifest render itself — withRenderOptionKV.)
 	// Every render READS the resolve_port store, so a port allocated once
 	// stays the same port for every command that asks afterwards.
 	//

@@ -124,7 +124,7 @@ func TestExtractZitadel_FindsTheBinaryInsideThePlatformDirectory(t *testing.T) {
 	writeTarGz(t, archive, map[string]string{
 		"zitadel-darwin-arm64/LICENSE":   "license text",
 		"zitadel-darwin-arm64/README.md": "readme",
-		"zitadel-darwin-arm64/zitadel":   "#!/bin/sh\necho zitadel version v4.19.5\n",
+		"zitadel-darwin-arm64/zitadel":   "#!/bin/sh\necho zitadel version v4.20.3\n",
 	})
 
 	dest := filepath.Join(dir, "out", "zitadel")
@@ -384,8 +384,8 @@ func writeExecutable(t *testing.T, path, body string) {
 
 func TestZitadelWindows_AssetsAndHashes(t *testing.T) {
 	want := map[string]string{
-		"amd64": "d0a50c1279662c14372fe075bf155004f4c9c841c046081e7489cf13988f7c1e",
-		"arm64": "d61acd4626ae0b11914d85955455c474252655995fbe047d0491f5813f81e524",
+		"amd64": "eff2c8f54a323056db34f3716cc8a1885bc9600092737b4357fc020a88bfef7c",
+		"arm64": "ebbf8a2949bd86e06e26c57f5e4d493fdc987ebf18f31cac6a44f862d7c520a5",
 	}
 	for arch, sum := range want {
 		asset, ok := zitadelAsset("windows", arch)

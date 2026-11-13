@@ -319,10 +319,11 @@ const (
 	// secrets are pullable.
 	HostedEnvLocal HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_LOCAL"
 	// HostedEnvSelfManaged is an env whose ledger the control plane keeps
-	// while forge applies it to a cluster the author operates: nothing is
-	// hosted, something runs on a cluster. The platform places nothing, and
-	// its secrets are write-only — a cluster env's secrets must never be
-	// pullable the way a LOCAL env's are.
+	// while forge applies it to a cluster the author operates, or through
+	// the author's own deploy hooks (forge.OnExternal): nothing is hosted,
+	// something runs off this machine. The platform places nothing, and its
+	// secrets are write-only — such an env's secrets must never be pullable
+	// the way a LOCAL env's are.
 	HostedEnvSelfManaged HostedEnvKind = "DEPLOY_ENVIRONMENT_KIND_SELF_MANAGED"
 )
 

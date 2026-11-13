@@ -17,9 +17,11 @@ import (
 // the env's KCL reads `option("<name>")` and decides. That is the whole
 // contract: forge owns the transport, the project owns the meaning.
 //
-// Only `forge env up` binds them. `forge env deploy` deliberately does not:
-// a caller-supplied option that reshapes a cluster render is how a prod apply
-// stops being reproducible from the repo alone.
+// `forge env up`, `forge env build` and `forge env render` bind them; `forge
+// env render` also passes them to its manifest render (withRenderOptionKV), so
+// its preview of an option is the whole env under it. `forge env deploy`
+// deliberately does not: a caller-supplied option that reshapes a cluster
+// render is how a prod apply stops being reproducible from the repo alone.
 //
 // Threaded as a process-global set once before the first render — the same
 // shape internal/devstack uses for the git facts, and for the same reason:
@@ -86,6 +88,26 @@ func parseRenderOptions(values []string) ([]string, error) {
 		out = append(out, name+"="+strconv.Quote(seen[name]))
 	}
 	return out, nil
+}
+
+// withRenderOptionKV adds parsed -D bindings ("name=<quoted value>", as
+// parseRenderOptions returns them) to a manifest render's key/value
+// bindings, which cluster.RenderManifests passes to KCL verbatim. A -D
+// binding wins over a same-named config key: it is the more specific ask.
+func withRenderOptionKV(kv map[string]string, dArgs []string) map[string]string {
+	if len(dArgs) == 0 {
+		return kv
+	}
+	out := make(map[string]string, len(kv)+len(dArgs))
+	for k, v := range kv {
+		out[k] = v
+	}
+	for _, d := range dArgs {
+		if name, value, ok := strings.Cut(d, "="); ok {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 // validateRenderOptions checks the -D names against the options the env's KCL
@@ -161,6 +183,6 @@ func refuseDeployRenderOptions(env string, values []string) error {
 	}
 	return fmt.Errorf("forge env deploy does not take -D (%s): a deploy renders from the repo alone, and a release records no render options, so the bundle and the applied manifests could not agree on it.\n"+
 		"  To change what the env renders, declare the value in deploy/kcl/%s/ and commit it.\n"+
-		"  -D is for 'forge env up %s -D ...' and 'forge env build %s -D ...' (see 'forge env options %s')",
-		strings.Join(values, " "), env, env, env, env)
+		"  -D is for 'forge env up %s -D ...' and 'forge env build %s -D ...', and 'forge env render %s -D ...' previews it (see 'forge env options %s')",
+		strings.Join(values, " "), env, env, env, env, env)
 }

@@ -2146,6 +2146,10 @@ _render_observability = lambda b: Bundle -> any {
         # resolves the defaults and, absent routes, the in-app + Slack fan-out.
         if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes or _o.alerts.receivers:
             "alerts": _render_alerts(_o.alerts)
+        # The project's Events funnels and counts (forge generate merges every
+        # env's into the Product dashboard). Omitted when undeclared.
+        if _o.analytics:
+            "analytics": _render_project_analytics(_o.analytics)
     }
 }
 
@@ -3087,14 +3091,34 @@ _render_browser_telemetry = lambda t: BrowserTelemetry -> any {
         "sourcemaps": t.sourcemaps
         "service_name": t.service_name if t.service_name else None
         "errors": {"ignore": t.errors.ignore}
-        "funnels": [{
-            "id": f.id
-            "title": f.title if f.title else None
-            "steps": f.steps
-            "window": f.window
-            "by": f.by
-        } for f in t.funnels]
+        "funnels": [_render_funnel(f) for f in t.funnels]
     } | ({"analytics": _render_analytics(t.analytics)} if t.analytics else {})
+}
+
+# Render a Funnel. `steps` stays the list of event names every consumer
+# reads; a funnel with any forge.Step adds `step_filters`, one per step
+# ({} for a bare name), so a funnel of bare names renders as it always did.
+_render_funnel = lambda f: Funnel -> any {
+    {
+        "id": f.id
+        "title": f.title if f.title else None
+        "steps": [_step_event(s) for s in f.steps]
+        "window": f.window
+        "by": f.by
+    } | ({"step_filters": [{} if typeof(s) == "str" else ({"where": s.where} if s.where else {}) | ({"within": s.within} if s.within else {}) for s in f.steps]} if not all s in f.steps { typeof(s) == "str" } else {})
+}
+
+# Render a ProjectAnalytics (Observability.analytics).
+_render_project_analytics = lambda a: ProjectAnalytics -> any {
+    {
+        "funnels": [_render_funnel(f) for f in a.funnels]
+        "counts": [{
+            "id": c.id
+            "title": c.title if c.title else None
+            "event": c.event
+            "group_by": c.group_by
+        } for c in a.counts]
+    }
 }
 
 # Render an Analytics to its stable dict form. `activation` and

@@ -69,6 +69,7 @@ import (
 
 	"oras.land/oras-go/v2/content"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -284,6 +285,9 @@ func FileStageSourcemaps(ctx context.Context, pub SourcemapPublisher, kind, proj
 
 // ReportSourcemapsRecord prints the one line that says where a build's maps went.
 func ReportSourcemapsRecord(kind, name string, rec SourcemapsRecord) {
+	if rec.Pushed() && cloud.ClaimableActive() {
+		return
+	}
 	if rec.Pushed() {
 		fmt.Printf("  [%s] %s: %d source map(s) filed as %s:%s (%s)\n", kind, name, rec.Maps, rec.Repository, rec.Tag, rec.Digest)
 		return

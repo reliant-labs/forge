@@ -146,7 +146,7 @@ func TestClaimableDeploy_AdoptsABareViteAppThenDeploys(t *testing.T) {
 func TestAdoptBeforeClaimableDeploy_PrintsOneLine(t *testing.T) {
 	testkit.Slow(t, "scaffolds a site project")
 	dir := filepath.Join(t.TempDir(), "landing")
-	writeAdoptFixture(t, dir, map[string]string{"package.json": `{"devDependencies":{"vite":"^5.0.0"}}`, "index.html": "<h1>hi</h1>\n"})
+	writeAdoptFixture(t, dir, map[string]string{"package.json": `{"devDependencies":{"vite":"^5.0.0"}}`, "index.html": "<h1>hi</h1>\n", ".gitignore": "node_modules\n"})
 	t.Chdir(dir)
 	t.Setenv("FORGE_SKIP_NPM_INSTALL", "1")
 	resetCmdRoute(t)
@@ -160,8 +160,24 @@ func TestAdoptBeforeClaimableDeploy_PrintsOneLine(t *testing.T) {
 		t.Errorf("the adopted paths name the app's files or miss forge's: %v", adopted)
 	}
 	got := strings.TrimRight(out.String(), "\n")
-	if strings.Count(got, "\n") != 0 || !strings.Contains(got, "forge.yaml and deploy/kcl/") || !strings.Contains(got, "untouched") {
-		t.Errorf("want one line naming forge.yaml and deploy/kcl/ and saying the app is untouched, got:\n%s", got)
+	if strings.Count(got, "\n") != 0 || !strings.Contains(got, "untouched") {
+		t.Errorf("want one line saying the app is untouched, got:\n%s", got)
+	}
+	// It lists exactly what the adoption wrote: the files it added (a new
+	// directory once, by name) and the .gitignore it appended to.
+	for _, want := range []string{"added ", "AGENTS.md", "deploy/", "forge.yaml", "appended forge's entries to .gitignore"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the adoption line lacks %q:\n%s", want, got)
+		}
+	}
+	for _, rel := range adopted {
+		top, _, _ := strings.Cut(rel, "/")
+		if top != rel {
+			top += "/"
+		}
+		if top != ".gitignore" && !strings.Contains(got, top) {
+			t.Errorf("the adoption wrote %s but the line does not name %s:\n%s", rel, top, got)
+		}
 	}
 	var again strings.Builder
 	if again2, err := adoptBeforeClaimableDeploy(context.Background(), &again); err != nil || again.Len() != 0 || len(again2) != 0 {

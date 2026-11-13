@@ -21,12 +21,16 @@ const (
 	// FunnelByPerson counts the person key: the signed-in user, else the
 	// same-day visitor one sign-in links to them, else the visitor-day.
 	FunnelByPerson dashspec.FunnelBy = "person"
+	// FunnelByOrg counts the org an event is about (product_events.OrgId:
+	// observe.Track's org.id, the browser's setTelemetryOrg). An org's
+	// journey spans the project's environments, so it is not split by one.
+	FunnelByOrg dashspec.FunnelBy = "org"
 )
 
 // IsProductFunnel reports whether a funnel counted by `by` belongs to the
 // built-in Product dashboard rather than the frontend dashboard.
 func IsProductFunnel(by dashspec.FunnelBy) bool {
-	return by == FunnelByVisitor || by == FunnelByPerson
+	return by == FunnelByVisitor || by == FunnelByPerson || by == FunnelByOrg
 }
 
 // DefaultActivationWindow is how long after signing up a user has to activate
@@ -88,6 +92,47 @@ type Funnel struct {
 	ID    string
 	Title string
 	dashspec.Funnel
+	// StepFilters refine Steps one for one (forge.Step): a step's Where
+	// props must match too, and its Within bounds the time since the
+	// previous step. Nil, or a zero entry, is a bare event name.
+	StepFilters []FunnelStep `json:",omitempty"`
+}
+
+// FunnelStep is what a forge.Step adds to its event name.
+type FunnelStep struct {
+	// Where are props the event must carry, each equal to its value.
+	Where map[string]string `json:",omitempty"`
+	// Within bounds the time since the previous step ("14d"). Set on any
+	// step, the funnel counts a sequence: each step within its Within, or
+	// the funnel's Window, of the step before it.
+	Within string `json:",omitempty"`
+}
+
+// stepFilter is f's filter for step i, zero when it has none.
+func (f Funnel) stepFilter(i int) FunnelStep {
+	if i < len(f.StepFilters) {
+		return f.StepFilters[i]
+	}
+	return FunnelStep{}
+}
+
+// sequenced reports whether any step sets Within.
+func (f Funnel) sequenced() bool {
+	for _, s := range f.StepFilters {
+		if s.Within != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// Count is one declared event count (forge.Count): an event's occurrences in
+// the range, broken down by up to four props.
+type Count struct {
+	ID      string
+	Title   string `json:",omitempty"`
+	Event   string
+	GroupBy []string `json:",omitempty"`
 }
 
 // EffectiveActivationWindow is the declared window, else the default.

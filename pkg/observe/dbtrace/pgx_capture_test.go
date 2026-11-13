@@ -21,6 +21,10 @@ func TestPgxTracerCapturesQueryShapes(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(querycapture.EnvDir, dir)
 	pt := NewPgxTracer()
+	// Close the capture file before t.TempDir's cleanup removes the
+	// directory: Windows refuses to delete a file that is still open.
+	// (Cleanups run last-registered first.)
+	t.Cleanup(func() { _ = pt.capture.Close() })
 	ctx := context.Background()
 	pt.TraceQueryEnd(pt.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "SELECT id FROM chats WHERE id IN ($1, $2)"}), nil, pgx.TraceQueryEndData{})
 	pt.TraceBatchQuery(ctx, nil, pgx.TraceBatchQueryData{SQL: "UPDATE chats SET title = $1 WHERE id = $2"})

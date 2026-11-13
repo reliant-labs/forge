@@ -124,15 +124,16 @@ type NewUser struct {
 // CreateUser creates a human account and returns its id. A rejected
 // password is a *PasswordPolicyError.
 //
-// An unverified account is created WITHOUT credentials: a Password or
-// IDPLinks with EmailVerified false is refused (ErrUnverifiedAccount) before
-// anything is sent, unless ContactOnly (a Password only).
+// On a ProvenCredentialsOnly client an unverified account is created WITHOUT
+// credentials: a Password or IDPLinks with EmailVerified false is refused
+// (ErrUnverifiedAccount) before anything is sent, unless ContactOnly (a
+// Password only).
 func (c *Client) CreateUser(ctx context.Context, u NewUser) (string, error) {
 	email := strings.TrimSpace(u.Email)
 	if email == "" {
 		return "", fmt.Errorf("an email address is required")
 	}
-	if !u.EmailVerified && (len(u.IDPLinks) > 0 || (u.Password != "" && !u.ContactOnly)) {
+	if c.ProvenCredentialsOnly && !u.EmailVerified && (len(u.IDPLinks) > 0 || (u.Password != "" && !u.ContactOnly)) {
 		return "", ErrUnverifiedAccount
 	}
 	username := email

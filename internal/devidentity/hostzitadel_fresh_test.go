@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -64,7 +63,12 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	})
 	for _, s := range []hostinfra.Spec{pgSpec, idpSpec} {
 		if err := hostinfra.Start(ctx, dir, s); err != nil {
-			t.Skipf("host %s is unavailable here: %v", s.Engine, err)
+			// In CI the issuer must start: a skip there would hide a
+			// startup regression. Elsewhere, name what is missing.
+			if os.Getenv("CI") != "" {
+				t.Fatalf("host %s did not start: %v", s.Engine, err)
+			}
+			t.Skipf("skipped: host %s could not start on this machine (missing resource: %v); runs in CI", s.Engine, err)
 		}
 	}
 	base := "http://localhost:" + strconv.Itoa(idpSpec.Port)
@@ -162,10 +166,12 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	mux.HandleFunc("POST /auth/verify", routes.HandleVerify)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	jar, _ := cookiejar.New(nil)
-	browser := &http.Client{Jar: jar}
-	post := func(path string, body any) int {
-		t.Helper()
+	newBrowser := func() *http.Client {
+		jar, _ := cookiejar.New(nil)
+		return &http.Client{Jar: jar}
+	}
+	browser := newBrowser()
+	postAs := func(browser *http.Client, path string, body any) int {
 		b, _ := json.Marshal(body)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+path, bytes.NewReader(b))
 		req.Header.Set("Content-Type", "application/json")
@@ -178,18 +184,33 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
+	post := func(path string, body any) int {
+		t.Helper()
+		return postAs(browser, path, body)
+	}
 
-	// The owner signs up: the issuer accepts a second user with the
-	// address, under a username of its own; the squatted one is untouched.
-	if status := post("/auth/register", map[string]any{"email": address, "password": "Owner-Passw0rd!"}); status != http.StatusAccepted {
-		t.Fatalf("register: %d", status)
+	// The owner signs up — twice at once, as two replicas would see it: the
+	// issuer accepts a second user with the address under the username
+	// derived from the squatted account, refuses the racing create of the
+	// same username, and the loser adopts the winner. One fresh account.
+	statuses := make(chan int, 2)
+	other := newBrowser()
+	for _, b := range []*http.Client{browser, other} {
+		go func() {
+			statuses <- postAs(b, "/auth/register", map[string]any{"email": address, "password": "Owner-Passw0rd!"})
+		}()
+	}
+	for range 2 {
+		if status := testkit.Receive(t, "a sign-up", statuses, testkit.Within(time.Minute)); status != http.StatusAccepted {
+			t.Fatalf("register: %d", status)
+		}
 	}
 	hits, _ := call(http.MethodPost, "/v2/users", map[string]any{"queries": []any{map[string]any{"emailQuery": map[string]any{
 		"emailAddress": address, "method": "TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE"}}}})["result"].([]any)
 	fresh := ""
 	for _, h := range hits {
 		u, _ := h.(map[string]any)
-		if name, _ := u["username"].(string); strings.HasPrefix(name, "forge-fresh-") {
+		if name, _ := u["username"].(string); name == "forge-fresh-"+squatted {
 			fresh, _ = u["userId"].(string)
 		}
 	}

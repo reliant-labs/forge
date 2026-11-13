@@ -200,6 +200,10 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 			// restart; idp_broker_token is the fallback.
 			Token:     cfg.IdpBrokerToken,
 			TokenFile: cfg.IdpBrokerTokenFile,
+			// No call this broker makes may add a credential to an account
+			// whose address is unverified (forge#2121): a sign-up proves the
+			// address before anything is set on it.
+			ProvenCredentialsOnly: true,
 		},
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,

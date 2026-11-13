@@ -54,6 +54,9 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// failUserReads makes that many account reads (GET /v2/users/{id})
+	// fail (500); failMethodReads, that many sign-in-method reads.
+	failUserReads, failMethodReads int
 	// failUsernameChanges makes that many username changes fail (500): a
 	// broker that stops part-way through a takeover.
 	failUsernameChanges int
@@ -488,6 +491,16 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, f.page(b, "result", res))
 	})
 	mux.HandleFunc("GET /v2/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		fail := f.failUserReads > 0
+		if fail {
+			f.failUserReads--
+		}
+		f.mu.Unlock()
+		if fail {
+			zerr(w, 500, "INTERNAL-fake", "the account could not be read")
+			return
+		}
 		u := f.user(r.PathValue("id"))
 		if u == nil {
 			zerr(w, 404, "QUERY-nf", "not found")
@@ -636,6 +649,16 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("GET /v2/users/{id}/authentication_methods", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		fail := f.failMethodReads > 0
+		if fail {
+			f.failMethodReads--
+		}
+		f.mu.Unlock()
+		if fail {
+			zerr(w, 500, "INTERNAL-fake", "the sign-in methods could not be read")
+			return
+		}
 		u := f.user(r.PathValue("id"))
 		types := []string{}
 		if u != nil {

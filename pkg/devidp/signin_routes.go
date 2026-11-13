@@ -213,7 +213,12 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 	if _, err := rand.Read(fallback); err != nil {
 		return nil, err
 	}
-	client := cfg.Client
+	// The routes work on their own copy of the client with
+	// ProvenCredentialsOnly on: no route may add a credential to an
+	// unverified account, whatever the caller's client is set to.
+	client := *cfg.Client
+	client.ProvenCredentialsOnly = true
+	cfg.Client = &client
 	r := &SignInRoutes{
 		cfg:      cfg,
 		origin:   u.Scheme + "://" + u.Host,

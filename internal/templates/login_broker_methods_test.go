@@ -111,6 +111,9 @@ func TestLoginBrokerScaffoldPassesNoProofLock(t *testing.T) {
 			t.Errorf("the broker still wires the retired proof lock: %q", never)
 		}
 	}
+	if !strings.Contains(src, "ProvenCredentialsOnly: true,") {
+		t.Error("the broker's client may add a credential to an unverified account (ProvenCredentialsOnly unset)")
+	}
 }
 
 func TestLoginBrokerScaffoldWithoutLoginPolicyFieldServesTheLegacyPolicy(t *testing.T) {

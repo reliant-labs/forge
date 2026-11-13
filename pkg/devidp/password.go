@@ -131,11 +131,11 @@ func (h humanUser) user() (User, bool) {
 }
 
 // FindUserByEmail resolves an email address to the one human user that has
-// it, case-insensitively. Where several share it, the one whose address is
-// VERIFIED is that user — a proven owner — and with none or several verified
-// there is no single account (ErrUserNotFound). Several share an address
-// while a fresh account takes it over from one holding unproven credentials
-// (see fresh_account.go); the proven one is the one to act on.
+// it, case-insensitively; none, or several, is ErrUserNotFound. On a
+// ProvenCredentialsOnly client, where several share it, the one whose address
+// is VERIFIED is that user — a proven owner. Several share an address while a
+// fresh account takes it over from one holding unproven credentials (see
+// fresh_account.go); the proven one is the one to act on.
 //
 // The broker's login-client credential may search users, so this works with
 // the same token SignIn uses.
@@ -174,6 +174,9 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 	}
 	if len(matches) == 1 {
 		return matches[0], nil
+	}
+	if !c.ProvenCredentialsOnly {
+		return User{}, ErrUserNotFound
 	}
 	// Zitadel does not enforce email uniqueness by default. Zero, or
 	// several with no single verified one, is "no single account to act on".
@@ -355,20 +358,32 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	return classifyResetError(err)
 }
 
-// mayAddPassword refuses (ErrUnverifiedAccount) to give a password to an
-// unverified account that has none: that is a credential added. Replacing
-// the password a contact-only account was created with is its holder's own
-// recovery, and stays allowed. An account that cannot be read is left to the
-// issuer: the reset code is the authority there, and an unknown id answers
-// like a wrong code.
+// mayAddPassword refuses, on a ProvenCredentialsOnly client, to give a
+// password to an unverified account that has none (ErrUnverifiedAccount):
+// that is a credential added. Replacing the password a contact-only account
+// was created with is its holder's own recovery, and stays allowed.
+//
+// It fails CLOSED: an account that cannot be read, or whose sign-in methods
+// cannot be, is refused with that error — nothing is minted or redeemed for
+// it. An unknown account answers as a wrong code does (ErrInvalidResetCode),
+// so a reset form says nothing about which accounts exist.
 func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
+	if !c.ProvenCredentialsOnly {
+		return nil
+	}
 	u, err := c.FindUserByID(ctx, userID)
-	if err != nil || u.EmailVerified {
+	if errors.Is(err, ErrUserNotFound) {
+		return fmt.Errorf("%w: no such account", ErrInvalidResetCode)
+	}
+	if err != nil {
+		return fmt.Errorf("read the account before setting its password: %w", err)
+	}
+	if u.EmailVerified {
 		return nil
 	}
 	has, err := c.HasPassword(ctx, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
 	}
 	if !has {
 		return ErrUnverifiedAccount

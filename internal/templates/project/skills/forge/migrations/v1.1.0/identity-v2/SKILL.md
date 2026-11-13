@@ -225,16 +225,35 @@ line names it.
     Signed-in users sign in once more after the deploy.
 
 12. **Sign-up proves the address before anything is set (forge#2121).**
-    Since this release no credential is ever put on an unverified account,
-    and a proof never verifies an account that holds one. That is
-    `devidp.SignInRoutes`' job, so a broker that mounts them gets it with the
-    forge bump. Three things to re-wire by hand:
+    Since this release no credential is put on an unverified account, and a
+    proof never verifies an account that holds one. `devidp.SignInRoutes`
+    enforces that on its own (it works on a copy of your client with the
+    rule on), so a broker that mounts them gets it with the forge bump.
+    Three things to re-wire by hand:
 
+    - **Turn the rule on for the broker's own calls.** In
+      `RegisterLoginBroker`, add to the `&devidp.Client{…}` literal:
+
+      ```go
+      // No call this broker makes may add a credential to an account
+      // whose address is unverified (forge#2121).
+      ProvenCredentialsOnly: true,
+      ```
+
+      With it, every client call that adds a credential (`SetPassword`,
+      `ResetPassword` for an account with no password, the passkey calls,
+      `AddIDPLink`, `EnsureOTPEmail`, `CreateUser` with a password or links)
+      refuses an unverified account with `devidp.ErrUnverifiedAccount`, and
+      refuses an account it could not read (fail closed; an unknown account
+      still answers like a wrong reset code). It is OFF by default, so code
+      of your own that relies on the old behaviour is unchanged until you
+      opt in. A contact-only account's own password reset still works.
     - **Drop the proof lock** if you applied it from an earlier version of
-      this step: delete `proofLockerFor` (with its `pgx` imports) and the
-      `ProofLocker:` line in `mountSignInMethods`. `ProofLocker` and
-      `devidp.NewPostgresProofLocker` still compile, deprecated, and do
-      nothing: an address proof has nothing left to serialise.
+      this step: delete `proofLockerFor` (with its `pgx` and `dbtrace`
+      imports) and the `ProofLocker:` line in `mountSignInMethods`.
+      `SignInRoutes` ignores the field now. `devidp.NewPostgresProofLocker`
+      and `UnavailableProofLocker` are deprecated but keep working exactly
+      as before for anything else that uses them.
     - **Serve sign-up through the LOGIN_POLICY, with mail.** The legacy
       sign-up (`auth_self_signup` outside development) and a policy whose
       `email` is `delivery = "none"` create the account WITH its password,
@@ -251,7 +270,8 @@ line names it.
       for an invitation naming such an account. Both carry a `message` the
       scaffolded forms already display; a hand-written form must show it.
 
-    No database, table or setting is involved.
+    No database, table or setting is involved. `forge lint` cannot see the
+    client option; check the literal by hand.
 
 ## 3. Add the frontend pages
 

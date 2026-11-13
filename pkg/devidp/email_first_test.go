@@ -3,7 +3,12 @@ package devidp
 import (
 	"context"
 	"errors"
+	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // forge#2121, settled by removing its cause: no credential is ever put on an
@@ -13,10 +18,13 @@ import (
 
 const victimEmail = "victim@acme.com"
 
-// signInGated signs in as the deployed broker does under a verified-email
-// policy: the session is refused while the account's address is unverified.
+// signInGated signs in as the scaffolded broker does under a verified-email
+// policy — its client is ProvenCredentialsOnly — and the session is refused
+// while the account's address is unverified.
 func signInGated(h *harness, login, password string) error {
-	_, err := h.z.client().SignIn(context.Background(),
+	c := h.z.client()
+	c.ProvenCredentialsOnly = true
+	_, err := c.SignIn(context.Background(),
 		FlowConfig{ClientID: "c", RedirectURI: "r", RequireVerifiedEmail: true},
 		Credentials{LoginName: login, Password: password})
 	return err
@@ -100,6 +108,7 @@ func TestEmailFirst_AFailedOrAbandonedSignUpAddsNoCredential(t *testing.T) {
 func TestEmailFirst_NoCredentialCanBeAddedToAnUnverifiedAccount(t *testing.T) {
 	z := newFakeZitadel(t)
 	c := z.client()
+	c.ProvenCredentialsOnly = true
 	ctx := context.Background()
 	u := z.addUser("pending@acme.com", false, "")
 	reset, err := c.MintPasswordResetCode(ctx, u.id) // a code changes nothing by itself
@@ -491,7 +500,172 @@ func TestFindUserByEmail_PrefersTheOneVerifiedAccount(t *testing.T) {
 		t.Fatalf("two unverified accounts: %v, want ErrUserNotFound", err)
 	}
 	v := z.addUser("a@acme.com", true, "")
-	if u, err := z.client().FindUserByEmail(ctx, "a@acme.com"); err != nil || u.ID != v.id {
+	proven := z.client()
+	proven.ProvenCredentialsOnly = true
+	if u, err := proven.FindUserByEmail(ctx, "a@acme.com"); err != nil || u.ID != v.id {
 		t.Fatalf("= %+v, %v; want the verified account", u, err)
+	}
+	// Off (the default), several matches are still none, as before.
+	if _, err := z.client().FindUserByEmail(ctx, "a@acme.com"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("a default client picked one of several accounts: %v", err)
+	}
+}
+
+// forge is semver v1: a client that does not ask for ProvenCredentialsOnly
+// behaves exactly as before — the calls that add a credential do not read
+// the account first and do not refuse an unverified one.
+func TestProvenCredentialsOnly_OffByDefaultChangesNothing(t *testing.T) {
+	z := newFakeZitadel(t)
+	c := z.client()
+	ctx := context.Background()
+	u := z.addUser("legacy@acme.com", false, "")
+	before := z.callCount("GET /v2/users/" + u.id)
+	if err := c.AddIDPLink(ctx, u.id, IDPLink{IdPID: "idp-google", UserID: "g-1", UserName: "x"}); err != nil {
+		t.Fatalf("AddIDPLink on a default client: %v", err)
+	}
+	if err := c.SetPassword(ctx, u.id, "a-long-password"); err != nil {
+		t.Fatalf("SetPassword on a default client: %v", err)
+	}
+	if _, err := c.CreateUser(ctx, NewUser{Email: "other@acme.com", Password: "a-long-password"}); err != nil {
+		t.Fatalf("CreateUser with a password on a default client: %v", err)
+	}
+	if got := z.callCount("GET /v2/users/" + u.id); got != before {
+		t.Fatalf("a default client read the account %d time(s) before adding a credential", got-before)
+	}
+}
+
+// A password is never set on an account that could not be read: a failed
+// read refuses the write before a reset code is minted or redeemed (fail
+// closed), and an unknown account answers like a wrong code (no
+// enumeration at a reset form).
+func TestProvenCredentialsOnly_AFailedReadNeverAuthorizesAPassword(t *testing.T) {
+	ctx := context.Background()
+	for name, fault := range map[string]func(z *fakeZitadel){
+		"the account read fails":        func(z *fakeZitadel) { z.failUserReads = 1 },
+		"the sign-in-method read fails": func(z *fakeZitadel) { z.failMethodReads = 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			z := newFakeZitadel(t)
+			c := z.client()
+			c.ProvenCredentialsOnly = true
+			u := z.addUser("pending@acme.com", false, "")
+			reset, err := c.MintPasswordResetCode(ctx, u.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for call, set := range map[string]func() error{
+				"SetPassword": func() error { return c.SetPassword(ctx, u.id, "a-long-password") },
+				"ResetPassword": func() error {
+					return c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: reset, NewPassword: "a-long-password"})
+				},
+			} {
+				z.mu.Lock()
+				fault(z)
+				z.mu.Unlock()
+				mints, writes := z.callCount("POST /v2/users/"+u.id+"/password_reset"), z.callCount("POST /v2/users/"+u.id+"/password")
+				if err := set(); err == nil || errors.Is(err, ErrUnverifiedAccount) {
+					t.Fatalf("%s with %s: %v, want the read's error", call, name, err)
+				}
+				if z.callCount("POST /v2/users/"+u.id+"/password_reset") != mints || z.callCount("POST /v2/users/"+u.id+"/password") != writes {
+					t.Fatalf("%s minted or redeemed a reset code for an account it could not read", call)
+				}
+			}
+			if z.user(u.id).password != "" {
+				t.Fatal("a password was set on an unreadable unverified account")
+			}
+		})
+	}
+	t.Run("an unknown account", func(t *testing.T) {
+		z := newFakeZitadel(t)
+		c := z.client()
+		c.ProvenCredentialsOnly = true
+		err := c.ResetPassword(ctx, PasswordReset{UserID: "300000000000000999", Code: "x", NewPassword: "a-long-password"})
+		if !errors.Is(err, ErrInvalidResetCode) {
+			t.Fatalf("an unknown account: %v, want it answered like a wrong code", err)
+		}
+		if z.callCount("POST /v2/users/300000000000000999/password") != 0 {
+			t.Fatal("a reset was sent for an unknown account")
+		}
+	})
+}
+
+// forge#2179 review B1: two replicas asked for the same address at once —
+// both past the "is there a fresh account already" read before either
+// creates — converge on ONE fresh account. Its username is derived from the
+// held account, so the issuer takes one create and refuses the other, which
+// then adopts the winner.
+func TestEmailFirst_ConcurrentReplicasConvergeOnOneFreshAccount(t *testing.T) {
+	policy := policyWith(SignupOpen, allMethods)
+	a := newHarness(t, policy)
+	b := newHarnessOn(t, a.z, policy)
+	s := squat(t, a)
+
+	// Hold every account create until both replicas have sent theirs.
+	var arrived atomic.Int32
+	both := make(chan struct{})
+	a.z.mu.Lock()
+	a.z.beforeRequest = func(r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v2/users/human" {
+			if arrived.Add(1) == 2 {
+				close(both)
+			}
+			select {
+			case <-both:
+			case <-time.After(10 * time.Second): // a guard, not a wait: the test fails below if only one arrived
+			}
+		}
+	}
+	a.z.mu.Unlock()
+
+	type answer struct{ status int }
+	done := make(chan answer, 2)
+	for _, h := range []*harness{a, b} {
+		br := h.browser()
+		go func() {
+			status, _ := br.post("/auth/register", map[string]any{"email": victimEmail, "password": "victim-password-1"})
+			done <- answer{status}
+		}()
+	}
+	for range 2 {
+		if got := testkit.Receive(t, "a replica's sign-up", done, testkit.Within(15*time.Second)); got.status != 202 {
+			t.Fatalf("sign-up answered %d, want 202", got.status)
+		}
+	}
+	if n := arrived.Load(); n != 2 {
+		t.Fatalf("%d create(s) reached the issuer, want both replicas racing", n)
+	}
+	accounts := usersWithEmail(a, victimEmail)
+	if len(accounts) != 2 {
+		t.Fatalf("%d accounts for the address, want the squatted one and ONE fresh one", len(accounts))
+	}
+	var fresh *fakeUser
+	for _, u := range accounts {
+		if u.id != s.id {
+			fresh = u
+		}
+	}
+	if fresh.name() != freshUsername(s.id) {
+		t.Fatalf("the fresh account is %q, want %q", fresh.name(), freshUsername(s.id))
+	}
+	if _, err := a.routes.accountFor(context.Background(), victimEmail); err != nil {
+		t.Fatalf("the address is ambiguous after the race: %v", err)
+	}
+	mail := a.z.lastMail(t)
+	if mail.userID != fresh.id {
+		t.Fatalf("the last link proves %s, want the one fresh account %s", mail.userID, fresh.id)
+	}
+	if status, body := a.browser().post("/auth/verify", map[string]any{"userID": fresh.id, "code": mail.code}); status != 200 {
+		t.Fatalf("verify: %d %v", status, body)
+	}
+	verified := 0
+	a.z.mu.Lock()
+	for _, u := range a.z.users {
+		if u.verified {
+			verified++
+		}
+	}
+	a.z.mu.Unlock()
+	if verified != 1 {
+		t.Fatalf("%d verified accounts after the race, want 1", verified)
 	}
 }

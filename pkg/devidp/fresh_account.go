@@ -2,13 +2,12 @@ package devidp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ── A fresh account for an address whose account holds unproven credentials
@@ -19,9 +18,10 @@ import (
 // instead, and that account takes the address over once it is proven:
 //
 //  1. Before the proof: a credential-less account N is created for the
-//     address with a username of its own (forge-fresh-…), so the address's
-//     login name keeps naming the old account S, and N carries
-//     MetaSupersedes = S. The issuer mails N's code. Zitadel accepts a
+//     address with a username of its own, forge-fresh-<S's id>, so the
+//     address's login name keeps naming the old account S, and N carries
+//     MetaSupersedes = S. The username is derived from S, so concurrent
+//     requests converge on one N (freshAccountFor). The issuer mails N's code. Zitadel accepts a
 //     second user with the same email when the usernames differ (checked
 //     against v4.19.5). S is not touched: an unproven request changes
 //     nothing on it, and S cannot sign in meanwhile — an unverified account
@@ -43,12 +43,12 @@ import (
 // one verified account), never to S. Nothing is deleted, and no credential on
 // S is removed: S keeps whatever it holds, under a name nobody types.
 
-// usernames and addresses of the takeover.
-func freshUsername() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return "forge-fresh-" + hex.EncodeToString(b)
-}
+// freshUsername is the username of the fresh account that takes held's
+// address over. It is DERIVED from held, not random: the issuer keeps
+// usernames unique, so of two requests that race to create it — on one
+// replica or several — exactly one succeeds, and the other reads the winner
+// and adopts it. The replacement converges on one account with no lock.
+func freshUsername(heldID string) string { return "forge-fresh-" + heldID }
 
 func supersededUsername(id string) string { return "forge-superseded-" + id }
 func supersededEmail(id string) string    { return "superseded-" + id + "@forge.invalid" }
@@ -153,9 +153,13 @@ func (r *SignInRoutes) accountFor(ctx context.Context, email string) (User, erro
 }
 
 // freshAccountFor is step 1: the credential-less account the owner of held's
-// address proves into, its code mailed with template. A fresh account already
-// waiting for held is reused (its code mailed again), so asking twice does
-// not make two.
+// address proves into, its code mailed with template.
+//
+// It CONVERGES: there is one fresh account per held account, named
+// freshUsername(held.ID). One already there is reused (its code mailed
+// again). Otherwise it is created; if the issuer refuses the username as
+// taken, a concurrent request created it first, and that one is read and
+// adopted. Asking twice, on any replica, never makes two.
 func (r *SignInRoutes) freshAccountFor(ctx context.Context, held User, template string, nu NewUser) (User, error) {
 	if !r.cfg.Policy.MailDelivers() {
 		// No mail can prove an address here: a fresh account could never
@@ -164,31 +168,62 @@ func (r *SignInRoutes) freshAccountFor(ctx context.Context, held User, template 
 	}
 	c := r.cfg.Client
 	email := normalizeEmail(held.Email)
-	users, err := c.usersByEmail(ctx, email)
-	if err != nil {
-		return User{}, err
-	}
-	for _, u := range users {
-		if u.ID == held.ID || u.EmailVerified {
-			continue
+	username := freshUsername(held.ID)
+	adopt := func() (User, bool, error) {
+		users, err := c.usersByEmail(ctx, email)
+		if err != nil {
+			return User{}, false, err
 		}
-		if sup, _, err := c.Metadata(ctx, u.ID, MetaSupersedes); err == nil && sup == held.ID {
-			if err := c.ResendEmailCode(ctx, u.ID, template); err != nil {
-				return User{}, err
+		for _, u := range users {
+			if u.ID != held.ID && strings.EqualFold(u.Username, username) {
+				if !u.EmailVerified {
+					if err := c.ResendEmailCode(ctx, u.ID, template); err != nil {
+						return User{}, false, err
+					}
+				}
+				return u, true, nil
 			}
-			return u, nil
 		}
+		return User{}, false, nil
+	}
+	if u, ok, err := adopt(); err != nil || ok {
+		return u, err
 	}
 	nu.Email, nu.VerifyURLTemplate = email, template
 	nu.EmailVerified, nu.Password, nu.IDPLinks, nu.ContactOnly = false, "", nil, false
-	nu.username, nu.supersedes = freshUsername(), held.ID
+	nu.username, nu.supersedes = username, held.ID
 	id, err := c.CreateUser(ctx, nu)
+	if isAlreadyExists(err) {
+		// Created first by a concurrent request. The issuer's search may
+		// lag its write by a moment, so the winner is looked for a few
+		// times before giving up.
+		for wait := 50 * time.Millisecond; wait <= 800*time.Millisecond; wait *= 2 {
+			if u, ok, aerr := adopt(); aerr != nil || ok {
+				return u, aerr
+			}
+			t := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return User{}, ctx.Err()
+			case <-t.C:
+			}
+		}
+		return User{}, fmt.Errorf("the fresh account for %s exists but cannot be read yet: %w", held.ID, err)
+	}
 	if err != nil {
 		return User{}, err
 	}
 	r.cfg.Logger.InfoContext(ctx, "a fresh account was created for an address whose account holds unproven credentials",
 		"user_id", id, "supersedes", held.ID)
-	return User{ID: id, Email: email}, nil
+	return User{ID: id, Email: email, Username: username}, nil
+}
+
+// isAlreadyExists reports the issuer's "already exists" refusal (gRPC
+// ALREADY_EXISTS, HTTP 409): here, a username another account holds.
+func isAlreadyExists(err error) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr) && (apiErr.status == http.StatusConflict || strings.Contains(apiErr.body, `"code":6`))
 }
 
 // takeAddressOver runs finishFreshAccount for an account a proof just

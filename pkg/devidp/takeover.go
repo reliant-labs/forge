@@ -53,10 +53,10 @@ const maxPasswordBytes = 256
 // fresh account instead (or, for an invitation, by an administrator).
 var errHoldsCredentials = errors.New("the account holds credentials its address never proved")
 
-// ErrUnverifiedAccount is returned by every Client call that would add a
-// credential — a password where there was none, a passkey, a social link, a
-// one-time-code method — to an account whose address is not verified. The
-// call is refused before it writes anything.
+// ErrUnverifiedAccount is returned, on a ProvenCredentialsOnly client, by
+// every call that would add a credential — a password where there was none,
+// a passkey, a social link, a one-time-code method — to an account whose
+// address is not verified. The call is refused before it writes anything.
 var ErrUnverifiedAccount = errors.New("the account's address is not verified: no credential may be added to it")
 
 // proveAddress runs proof — the issuer's check of an emailed code, which also
@@ -100,8 +100,13 @@ func (c *Client) credentialKinds(ctx context.Context, userID string) ([]string, 
 }
 
 // requireVerified refuses (ErrUnverifiedAccount) an account whose address is
-// not verified. Every Client call that adds a credential runs it first.
+// not verified, when the client is ProvenCredentialsOnly. Every Client call
+// that adds a credential runs it first. A read that fails refuses too: an
+// account nobody could read is not known to be verified.
 func (c *Client) requireVerified(ctx context.Context, userID string) error {
+	if !c.ProvenCredentialsOnly {
+		return nil
+	}
 	u, err := c.FindUserByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("read the account before adding a credential: %w", err)

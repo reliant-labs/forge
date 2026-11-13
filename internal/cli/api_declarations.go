@@ -12,6 +12,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,7 +83,11 @@ var openAPI3RE = regexp.MustCompile(`^3\.\d+(\.\d+)?$`)
 func validateAPIs(projectDir string, apis []APIEntity) error {
 	var problems []string
 	for _, a := range apis {
-		p := filepath.Join(projectDir, filepath.FromSlash(a.Spec))
+		p, err := projectContainedPath(projectDir, a.Spec)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("API %q: spec %s %v", a.Name, a.Spec, err))
+			continue
+		}
 		switch a.Kind {
 		case APIKindOpenAPI:
 			info, err := os.Stat(p)
@@ -106,6 +111,36 @@ func validateAPIs(projectDir string, apis []APIEntity) error {
 		return fmt.Errorf("forge.API declarations are wrong:\n  - %s", strings.Join(problems, "\n  - "))
 	}
 	return nil
+}
+
+// errSpecEscapes is projectContainedPath's error for a spec whose resolved
+// path leaves the project.
+var errSpecEscapes = errors.New("resolves outside the project (through a symlink): a spec is a file or directory in the repository")
+
+// projectContainedPath joins rel (project-relative, slash-separated) onto
+// projectDir and refuses it when its target, symlinks resolved, is not inside
+// the project. KCL refuses an absolute or `..` spec lexically; this is the
+// check a symlink cannot get past, made before anything is stat'ed or read.
+// A path that does not exist is returned as joined, so the caller's stat
+// reports it.
+func projectContainedPath(projectDir, rel string) (string, error) {
+	p := filepath.Join(projectDir, filepath.FromSlash(rel))
+	target, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return p, nil
+		}
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return "", err
+	}
+	in, err := filepath.Rel(root, target)
+	if err != nil || in == ".." || strings.HasPrefix(in, ".."+string(filepath.Separator)) || filepath.IsAbs(in) {
+		return "", errSpecEscapes
+	}
+	return target, nil
 }
 
 // API origins, as `forge project audit --json` reports them.

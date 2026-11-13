@@ -74,6 +74,49 @@ func TestValidateAPIs(t *testing.T) {
 	}
 }
 
+// A spec is read only when its target, symlinks resolved, is inside the
+// project: KCL refuses an absolute or `..` spec, and a symlink must not get a
+// file outside the repository read during env loading (review B1 on #2214). A
+// symlink that stays inside, and a project reached through a symlink, pass.
+func TestValidateAPIs_SymlinkCannotLeaveTheProject(t *testing.T) {
+	outside := t.TempDir()
+	writeSpec(t, outside, "secret.yaml", "openapi: 3.1.0\ninfo: {title: x, version: '1'}\npaths: {}\n")
+	writeSpec(t, outside, "protos/svc.proto", "syntax = \"proto3\";\n")
+	real := t.TempDir()
+	writeSpec(t, real, "api/openapi.yaml", "openapi: 3.1.0\ninfo: {title: x, version: '1'}\npaths: {}\n")
+	writeSpec(t, real, "proto/svc/v1/svc.proto", "syntax = \"proto3\";\n")
+	link := func(target, name string) {
+		t.Helper()
+		if err := os.Symlink(target, name); err != nil {
+			t.Skipf("cannot create a symlink here (%v); the containment check needs one", err)
+		}
+	}
+	link(filepath.Join(outside, "secret.yaml"), filepath.Join(real, "api", "escape.yaml"))
+	link(filepath.Join(outside, "protos"), filepath.Join(real, "escape-proto"))
+	link(filepath.Join(real, "api", "openapi.yaml"), filepath.Join(real, "api", "inside.yaml"))
+	viaLink := filepath.Join(t.TempDir(), "project")
+	link(real, viaLink)
+
+	for _, dir := range []string{real, viaLink} {
+		ok := []APIEntity{
+			{Name: "inside", Kind: APIKindOpenAPI, Spec: "api/inside.yaml"},
+			{Name: "proto", Kind: APIKindProto, Spec: "proto"},
+		}
+		if err := validateAPIs(dir, ok); err != nil {
+			t.Errorf("%s: symlinks inside the project refused: %v", dir, err)
+		}
+		for _, a := range []APIEntity{
+			{Name: "escape", Kind: APIKindOpenAPI, Spec: "api/escape.yaml"},
+			{Name: "escapedir", Kind: APIKindProto, Spec: "escape-proto"},
+		} {
+			err := validateAPIs(dir, []APIEntity{a})
+			if err == nil || !strings.Contains(err.Error(), "resolves outside the project") || !strings.Contains(err.Error(), `API "`+a.Name+`"`) {
+				t.Errorf("%s: %s: err = %v, want it refused as outside the project", dir, a.Name, err)
+			}
+		}
+	}
+}
+
 // The derived proto API: a project with proto services and no proto API
 // declared gets {name: <project>, kind: proto, spec: proto}; one that
 // declares a proto API, or has no services, gets none.

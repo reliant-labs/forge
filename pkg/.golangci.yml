@@ -139,6 +139,15 @@ linters:
         linters:
           - forbidigo
 
+      # observe/cliev/env.go is Config.Getenv's default: DO_NOT_TRACK,
+      # <APP>_TELEMETRY and the CI markers are a user-to-every-CLI opt-out
+      # contract, not app configuration (see the file). Scoped to that one
+      # file: the rest of cliev reads the environment only through
+      # Config.Getenv.
+      - path: ^observe/cliev/env\.go$
+        linters:
+          - forbidigo
+
       # The prettier guard over the component library reads CI to decide
       # whether a missing npx is a skip (laptop) or a failure (CI). It is a
       # test-harness switch: it never runs in a shipped binary and changes

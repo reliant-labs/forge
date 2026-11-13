@@ -133,7 +133,7 @@ func New(cfg Config) *Client {
 		cfg.App = filepath.Base(os.Args[0])
 	}
 	if cfg.Getenv == nil {
-		cfg.Getenv = os.Getenv
+		cfg.Getenv = processEnv
 	}
 	if cfg.Stderr == nil {
 		cfg.Stderr = os.Stderr

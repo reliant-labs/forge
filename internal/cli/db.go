@@ -190,7 +190,11 @@ Examples:
   forge db squash --to 20260506_baseline --out-dir db/baselines/
   forge db squash --from-dsn 'postgres://postgres:pw@localhost:5432/goose_built?sslmode=disable'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if h, ok := projectMigrationHook(resolveMigrationsDir(fromDir)); ok {
+			h, ok, herr := projectMigrationHook(resolveMigrationsDir(fromDir))
+			if herr != nil {
+				return herr
+			}
+			if ok {
 				return refuseUnderMigrationHook("squash", h,
 					"a squash writes a forge baseline. To move the project onto forge's migrator, set database.migrations.tool to forge (or delete it) first; to squash "+h.Tool+"'s history, use "+h.Tool)
 			}
@@ -569,13 +573,8 @@ neither reads nor writes. The name defaults to <constraint>_closed_set.`,
 			if err != nil {
 				return err
 			}
-			if h, ok := projectMigrationHook(newDir); ok {
-				name := closedSet + "_closed_set"
-				if len(args) == 1 {
-					name = args[0]
-				}
-				return refuseUnderMigrationHook("migration new", h,
-					"forge's file shape is not "+h.Tool+"'s. Create it with: "+migrationhook.NewMigrationHint(h, name))
+			if err := refuseNewUnderMigrationHook(newDir, closedSet, args); err != nil {
+				return err
 			}
 			if closedSet != "" {
 				if cmd.Flags().Changed("backward-compatible") || cmd.Flags().Changed("breaks-rollback") {
@@ -684,7 +683,11 @@ Examples:
 			if err != nil {
 				return err
 			}
-			if h, ok := projectMigrationHook(dir); ok {
+			h, ok, herr := projectMigrationHook(dir)
+			if herr != nil {
+				return herr
+			}
+			if ok {
 				return refuseUnderMigrationHook("migration rebase", h, "re-number the file the way "+h.Tool+" orders migrations")
 			}
 			paths := make([]string, len(args))
@@ -1008,4 +1011,19 @@ func runDBIntrospect(ctx context.Context, dsn, tableFilter, format string) error
 	}
 
 	return nil
+}
+
+// refuseNewUnderMigrationHook is `forge db migration new`'s refusal when a
+// migration hook applies newDir: the file is the hook's tool's to create.
+func refuseNewUnderMigrationHook(newDir, closedSet string, args []string) error {
+	h, ok, err := projectMigrationHook(newDir)
+	if err != nil || !ok {
+		return err
+	}
+	name := closedSet + "_closed_set"
+	if len(args) == 1 {
+		name = args[0]
+	}
+	return refuseUnderMigrationHook("migration new", h,
+		"forge's file shape is not "+h.Tool+"'s. Create it with: "+migrationhook.NewMigrationHint(h, name))
 }

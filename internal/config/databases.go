@@ -289,6 +289,38 @@ func DatabaseForMigrationsDir(projectDir, absDir string) DatabaseConfig {
 	return primary
 }
 
+// ErrMigrationsDirUnowned is MigrationsDirDatabase's error for a directory no
+// declared database names while several are declared: which tool applies it
+// cannot be told, and guessing the primary's could run the wrong migrator.
+var ErrMigrationsDirUnowned = errors.New("migrations directory belongs to no declared database")
+
+// MigrationsDirDatabase is DatabaseForMigrationsDir for a directory a person
+// named (`forge db --dir`). A directory a declared database names is that
+// database's; with one database (or none declared in the env declaration) any
+// directory is the primary's, as before databases were declared. With several
+// declared, a directory none of them names is refused rather than handed to
+// the primary's tool.
+func MigrationsDirDatabase(projectDir, absDir string) (DatabaseConfig, error) {
+	primary, _ := readDatabaseBlock(projectDir)
+	dbs, err := ProjectDatabases(projectDir)
+	if err != nil || len(dbs) == 0 || dbs[0].Source != DatabaseSourceKCL {
+		return primary, nil //nolint:nilerr // an unreadable declaration keeps the forge.yaml primary, as DatabaseForMigrationsDir does
+	}
+	legacy, _ := readYAMLDatabaseBlock(projectDir)
+	names := make([]string, 0, len(dbs))
+	for _, d := range dbs {
+		if sameDir(projectDir, d.MigrationsPath(), absDir) {
+			return d.Config(legacy), nil
+		}
+		names = append(names, d.Name+" ("+d.MigrationsPath()+")")
+	}
+	if len(dbs) == 1 {
+		return dbs[0].Config(legacy), nil
+	}
+	return DatabaseConfig{}, fmt.Errorf("%w: %s is not the migrations directory of any database the env declaration declares: %s\n"+
+		"fix: pass --db <name> instead of --dir, or point --dir at one of those directories", ErrMigrationsDirUnowned, absDir, strings.Join(names, ", "))
+}
+
 // UseDeclaredDatabases lowers the env declaration's primary database onto
 // c.Database, and re-derives the driver from the directory it names, so every
 // reader of the loaded config sees the database the project declares. A
@@ -308,7 +340,10 @@ func (c *ProjectConfig) UseDeclaredDatabases() error {
 	if err != nil {
 		return err
 	}
-	if dbs[0].Source != DatabaseSourceKCL {
+	// ProjectDatabases falls back to forge.yaml's database when nothing is
+	// declared, so dbs is never empty; the length check keeps an empty result
+	// from a future declarer a no-op rather than a panic.
+	if len(dbs) == 0 || dbs[0].Source != DatabaseSourceKCL {
 		return nil
 	}
 	d, primary := PrimaryDatabase(dbs)

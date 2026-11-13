@@ -1,12 +1,24 @@
-package migrationlint
+// Package sqllex splits SQL text into the statements postgres would run, the
+// way postgres's lexer and psql's statement splitter read it. It is shared by
+// the migration-safety lint (internal/linter/migrationlint), which reads a
+// statement's words, and `forge db analyze` (pkg/dbanalyze), which executes
+// each statement on its own and so needs its exact text.
+//
+// It imports nothing but the standard library.
+package sqllex
 
 import "strings"
 
-// lexedStatement is one top-level statement of a migration file, read the way
-// postgres reads it.
-type lexedStatement struct {
+// Statement is one top-level statement of a SQL file, read the way postgres
+// reads it.
+type Statement struct {
 	// Line is the 1-based line of the statement's first token.
 	Line int
+	// Start and End are the byte offsets of the statement in the source:
+	// src[Start:End] is its text, from its first token up to (not including)
+	// the `;` that ends it, or the end of the source for an unterminated
+	// last statement. A comment before the first token is not part of it.
+	Start, End int
 	// Words is every keyword or identifier in the statement, in order and
 	// lowercased, at any parenthesis depth but never inside a comment, a
 	// string or a dollar-quoted body. A quoted identifier keeps its quotes,
@@ -17,7 +29,7 @@ type lexedStatement struct {
 	Strings []string
 }
 
-// lexStatements splits a migration file into its statements.
+// Split splits a SQL file into its statements.
 //
 // The rules (unlike splitStatements' bare `;` split, which the older rules
 // use) follow postgres's lexer and psql's statement splitter: a `;` ends a
@@ -30,16 +42,16 @@ type lexedStatement struct {
 // Counting statements right is the point. A rule that asks "is this the only
 // statement in its file" must not see two where postgres sees one (a `;`
 // inside a WHERE clause's string), nor one where postgres sees two.
-func lexStatements(src string) []lexedStatement {
+func Split(src string) []Statement {
 	var (
-		out          []lexedStatement
-		cur          *lexedStatement
+		out          []Statement
+		cur          *Statement
 		line         = 1
 		paren, begin int
 	)
-	open := func() {
+	open := func(at int) {
 		if cur == nil {
-			cur = &lexedStatement{Line: line}
+			cur = &Statement{Line: line, Start: at}
 		}
 	}
 	// skip moves past src[i:j], counting the newlines it crosses.
@@ -62,28 +74,28 @@ func lexStatements(src string) []lexedStatement {
 				i = len(src)
 			}
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
-			i = skip(i, blockCommentEnd(src, i))
-		case c == '\'' || ((c == 'E' || c == 'e') && i+1 < len(src) && src[i+1] == '\'' && !identBefore(src, i)):
-			open()
+			i = skip(i, BlockCommentEnd(src, i))
+		case c == '\'' || ((c == 'E' || c == 'e') && i+1 < len(src) && src[i+1] == '\'' && !IdentBefore(src, i)):
+			open(i)
 			q, escapes := i, c != '\''
 			if escapes {
 				q = i + 1
 			}
-			j := quotedEnd(src, q, '\'', escapes)
+			j := QuotedEnd(src, q, '\'', escapes)
 			cur.Strings = append(cur.Strings, unquoteString(src[q:j], escapes))
 			i = skip(i, j)
 		case c == '"':
-			open()
-			j := quotedEnd(src, i, '"', false)
+			open(i)
+			j := QuotedEnd(src, i, '"', false)
 			cur.Words = append(cur.Words, src[i:j])
 			i = skip(i, j)
-		case c == '$' && !identBefore(src, i):
-			open()
-			i = skip(i, dollarQuoteEnd(src, i))
-		case isIdentStart(c):
-			open()
+		case c == '$' && !IdentBefore(src, i):
+			open(i)
+			i = skip(i, DollarQuoteEnd(src, i))
+		case IsIdentStart(c):
+			open(i)
 			j := i + 1
-			for j < len(src) && isIdentByte(src[j]) {
+			for j < len(src) && IsIdentByte(src[j]) {
 				j++
 			}
 			cur.Words = append(cur.Words, strings.ToLower(src[i:j]))
@@ -92,11 +104,11 @@ func lexStatements(src string) []lexedStatement {
 			}
 			i = j
 		case c == '(':
-			open()
+			open(i)
 			paren++
 			i++
 		case c == ')':
-			open()
+			open(i)
 			if paren > 0 {
 				paren--
 			}
@@ -107,14 +119,16 @@ func lexStatements(src string) []lexedStatement {
 				// An empty statement, or a `;` inside a body: not an end.
 				continue
 			}
+			cur.End = i - 1
 			out = append(out, *cur)
 			cur, paren, begin = nil, 0, 0
 		default:
-			open()
+			open(i)
 			i++
 		}
 	}
 	if cur != nil {
+		cur.End = len(src)
 		out = append(out, *cur)
 	}
 	return out
@@ -157,9 +171,9 @@ func routineHeader(words []string) bool {
 	return false
 }
 
-// blockCommentEnd returns the index just past the block comment opening at i.
+// BlockCommentEnd returns the index just past the block comment opening at i.
 // Postgres block comments nest.
-func blockCommentEnd(s string, i int) int {
+func BlockCommentEnd(s string, i int) int {
 	depth := 0
 	for i < len(s) {
 		switch {
@@ -179,10 +193,10 @@ func blockCommentEnd(s string, i int) int {
 	return len(s)
 }
 
-// quotedEnd returns the index just past the quoted run opening at i, where a
+// QuotedEnd returns the index just past the quoted run opening at i, where a
 // doubled quote is an escaped quote and, when backslashes is set (an E'…'
 // string), so is a backslash-escaped byte.
-func quotedEnd(s string, i int, q byte, backslashes bool) int {
+func QuotedEnd(s string, i int, q byte, backslashes bool) int {
 	for j := i + 1; j < len(s); j++ {
 		switch s[j] {
 		case '\\':
@@ -212,9 +226,9 @@ func unquoteString(quoted string, escapes bool) string {
 	return s
 }
 
-// dollarQuoteEnd returns the index just past the dollar-quoted string opening
+// DollarQuoteEnd returns the index just past the dollar-quoted string opening
 // at i, or i+1 when the `$` opens none (a `$1` parameter).
-func dollarQuoteEnd(s string, i int) int {
+func DollarQuoteEnd(s string, i int) int {
 	tag, ok := dollarTag(s, i)
 	if !ok {
 		return i + 1
@@ -243,17 +257,19 @@ func dollarTag(s string, i int) (string, bool) {
 	return "", false
 }
 
-func isIdentStart(c byte) bool {
+// IsIdentStart reports whether c can start an unquoted identifier.
+func IsIdentStart(c byte) bool {
 	return c == '_' || c >= 0x80 || (c|0x20 >= 'a' && c|0x20 <= 'z')
 }
 
-func isIdentByte(c byte) bool {
-	return isIdentStart(c) || c == '$' || (c >= '0' && c <= '9')
+// IsIdentByte reports whether c can continue an unquoted identifier.
+func IsIdentByte(c byte) bool {
+	return IsIdentStart(c) || c == '$' || (c >= '0' && c <= '9')
 }
 
-// identBefore reports whether s[i] continues an identifier: a `$` or a quote
+// IdentBefore reports whether s[i] continues an identifier: a `$` or a quote
 // right after one belongs to it, so it never opens a dollar quote or an E'…'
 // string.
-func identBefore(s string, i int) bool {
-	return i > 0 && isIdentByte(s[i-1])
+func IdentBefore(s string, i int) bool {
+	return i > 0 && IsIdentByte(s[i-1])
 }

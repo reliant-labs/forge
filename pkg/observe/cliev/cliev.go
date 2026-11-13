@@ -203,8 +203,22 @@ func (c *Client) resolve() Status {
 		c.printNotice()
 		doc.NoticeShown = true
 	}
+	// Persist only what this run decided (the id it minted, the notice it
+	// printed) onto the file as it is now: another run may have written it
+	// since the read above, an opt-out included.
+	minted, shown := doc.InstallID, doc.NoticeShown
+	if saved, err := c.state.update(func(d *stateDoc) {
+		if d.InstallID == "" {
+			d.InstallID = minted
+		}
+		d.NoticeShown = d.NoticeShown || shown
+	}); err == nil {
+		doc = saved
+	}
+	if doc.Enabled != nil && !*doc.Enabled {
+		return Status{EnvVar: st.EnvVar, Reason: "opted_out", InstallID: doc.InstallID}
+	}
 	c.noticeOK = doc.NoticeShown
-	c.state.save(doc)
 	st.InstallID = doc.InstallID
 	c.installID = doc.InstallID
 	return st
@@ -232,6 +246,14 @@ func (c *Client) Status() Status {
 // Enabled reports whether this run records events.
 func (c *Client) Enabled() bool { return c != nil && c.status.Enabled }
 
+// Transmits reports whether this run may send anything that identifies the
+// install: Enabled, and the notice has been shown (a quiet first run records
+// events but sends them only once a later run has shown it). Flush sends only
+// when it is true, and so must anything else that sends the install id or its
+// attribution (forge: the X-Forge-Install-Id and X-Reliant-Attribution
+// headers).
+func (c *Client) Transmits() bool { return c.Enabled() && c.noticeOK }
+
 // InstallID is this machine's anonymous install id, "" when telemetry is
 // off and none was ever minted. A program may send it to its own server
 // (forge: the X-Forge-Install-Id header) so server events stitch to it.
@@ -256,12 +278,12 @@ func (c *Client) FirstRun() bool {
 // SetEnabled records the user's choice (`<app> telemetry on|off`). Off also
 // drops this run's pending events.
 func (c *Client) SetEnabled(on bool) error {
-	doc := c.state.load()
-	doc.Enabled = &on
-	if on {
-		doc.NoticeShown = true // the user just read about it
-	}
-	if err := c.state.saveErr(doc); err != nil {
+	if _, err := c.state.update(func(d *stateDoc) {
+		d.Enabled = &on
+		if on {
+			d.NoticeShown = true // the user just read about it
+		}
+	}); err != nil {
 		return err
 	}
 	c.status = c.resolve()
@@ -303,7 +325,7 @@ func (c *Client) Track(ctx context.Context, name string, attrs ...slog.Attr) {
 // and records the first-run event as sent when it was in the batch. Call it
 // once, as the program exits. Failures are dropped silently.
 func (c *Client) Flush(ctx context.Context) {
-	if !c.Enabled() || !c.noticeOK {
+	if !c.Transmits() {
 		return
 	}
 	c.mu.Lock()
@@ -314,6 +336,9 @@ func (c *Client) Flush(ctx context.Context) {
 		return
 	}
 	doc := c.state.load()
+	if doc.Enabled != nil && !*doc.Enabled {
+		return // turned off by another run since this one started
+	}
 	day := c.cfg.Now().UTC().Format("2006-01-02")
 	if doc.Day != day {
 		doc.Day, doc.SentToday = day, 0
@@ -332,13 +357,21 @@ func (c *Client) Flush(ctx context.Context) {
 	if !c.post(ctx, batch) {
 		return
 	}
-	doc.SentToday += len(batch)
+	sentFirstRun := false
 	for _, r := range batch {
 		if r.name == FirstRunEvent(c.cfg.App) {
-			doc.FirstRunSent = true
+			sentFirstRun = true
 		}
 	}
-	c.state.save(doc)
+	// Only the counters: the file is re-read under its lock, so a choice
+	// another run made during the post (`telemetry off`) is kept.
+	_, _ = c.state.update(func(d *stateDoc) {
+		if d.Day != day {
+			d.Day, d.SentToday = day, 0
+		}
+		d.SentToday += len(batch)
+		d.FirstRunSent = d.FirstRunSent || sentFirstRun
+	})
 }
 
 // FirstRunEvent is the name of a program's first-run event:
@@ -409,12 +442,12 @@ func (c *Client) SetInstallAttribution(raw string) error {
 	if len(q) == 0 {
 		return nil
 	}
-	doc := c.state.load()
-	if doc.Attribution != "" {
-		return nil
-	}
-	doc.Attribution = q.Encode()
-	return c.state.saveErr(doc)
+	_, err := c.state.update(func(d *stateDoc) {
+		if d.Attribution == "" {
+			d.Attribution = q.Encode()
+		}
+	})
+	return err
 }
 
 // InstallAttribution is the recorded install attribution; empty while

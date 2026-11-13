@@ -68,10 +68,11 @@ const InstallIDHeader = "X-Forge-Install-Id"
 const AttributionHeader = "X-Reliant-Attribution"
 
 // setInstallIdentity stamps the install id and attribution, only while
-// forge's telemetry is on (DO_NOT_TRACK, FORGE_TELEMETRY=off, CI and `forge
-// telemetry off` all leave both out).
+// forge's telemetry may transmit (cliev Client.Transmits): DO_NOT_TRACK,
+// FORGE_TELEMETRY=off, CI and `forge telemetry off` all leave both out, and so
+// does a quiet first run until a later run has shown the telemetry notice.
 func setInstallIdentity(h http.Header, c *cliev.Client) {
-	if !c.Enabled() || c.InstallID() == "" {
+	if !c.Transmits() || c.InstallID() == "" {
 		return
 	}
 	h.Set(InstallIDHeader, c.InstallID())

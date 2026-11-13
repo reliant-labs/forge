@@ -161,6 +161,39 @@ func TestConsentSourceFailsClosed(t *testing.T) {
 	}
 }
 
+// The consent WARN names only the failure's class: the source's error text
+// and panic value never reach the output, which is telemetry too.
+func TestConsentFailureWarningLeaksNeitherErrorNorPanic(t *testing.T) {
+	t.Cleanup(func() { SetConsentSource(nil); consentRefused.Store(false) })
+	ctx := WithActor(context.Background(), Actor{UserID: "u-1"})
+	for _, tc := range []struct {
+		failure, secret string
+		src             ConsentFunc
+	}{
+		{"error", "ada@example.com password=hunter2", func(context.Context, Actor) (bool, error) {
+			return true, errors.New("lookup for ada@example.com password=hunter2 failed")
+		}},
+		{"panic", "ghp_abcdefghijklmnopqrst", func(context.Context, Actor) (bool, error) {
+			panic("token ghp_abcdefghijklmnopqrst rejected")
+		}},
+	} {
+		consentRefused.Store(false)
+		SetConsentSource(tc.src)
+		recs := trackLines(t, ctx, "project_created")
+		if len(recs) != 1 || recs[0]["level"] != "WARN" || recs[0]["failure"] != tc.failure {
+			t.Errorf("%s: want one WARN with failure=%s, got %v", tc.failure, tc.failure, recs)
+		}
+		for _, r := range recs {
+			out, _ := json.Marshal(r)
+			for _, part := range strings.Fields(tc.secret) {
+				if strings.Contains(string(out), part) {
+					t.Errorf("%s: the warning leaked %q: %s", tc.failure, part, out)
+				}
+			}
+		}
+	}
+}
+
 func TestTrackAuthCarriesActorOrg(t *testing.T) {
 	var buf bytes.Buffer
 	ctx := WithLogger(WithActor(context.Background(), Actor{OrgID: "org-7"}), slog.New(slog.NewJSONHandler(&buf, nil)))

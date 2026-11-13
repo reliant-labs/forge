@@ -329,3 +329,78 @@ func TestCIRunsSendNothing(t *testing.T) {
 		}
 	}
 }
+
+// A run that is mid-Flush when another run turns telemetry off must not write
+// its stale copy of the state file back over the opt-out: the next run stays
+// opted out.
+func TestFlushKeepsAnOptOutMadeByAnotherRunDuringThePost(t *testing.T) {
+	var cfg Config
+	var offErr error
+	posted := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		// Another run of the program (its own Client over the same file)
+		// runs `telemetry off` while this run's batch is in flight.
+		offErr = New(cfg).SetEnabled(false)
+		posted <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	cfg = testConfig(t, srv.URL, nil, &bytes.Buffer{})
+
+	c := New(cfg)
+	c.Track(context.Background(), "forge_cli_command")
+	c.Flush(context.Background())
+	select {
+	case <-posted:
+	default:
+		t.Fatal("the batch was never posted")
+	}
+	if offErr != nil {
+		t.Fatal(offErr)
+	}
+	if got := New(cfg).Status().Reason; got != "opted_out" {
+		t.Errorf("next run reason = %q, want opted_out: Flush wrote its stale state over the other run's opt-out", got)
+	}
+	doc := newState(c.state.path).load()
+	if doc.SentToday != 1 || doc.Enabled == nil || *doc.Enabled {
+		t.Errorf("state after Flush = %+v, want the opt-out kept and the batch counted", doc)
+	}
+}
+
+// A run that started before another run's `telemetry off` sends nothing at
+// Flush: the opt-out is read again before the post.
+func TestFlushSendsNothingAfterAnotherRunOptedOut(t *testing.T) {
+	s, srv := newSink(t)
+	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	c := New(cfg)
+	c.Track(context.Background(), "forge_cli_command")
+	if err := New(cfg).SetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	c.Flush(context.Background())
+	if n := len(s.records()); n != 0 {
+		t.Errorf("sent %d record(s) after another run opted out", n)
+	}
+}
+
+// Transmits is what gates anything that identifies the install: false on a
+// quiet first run (the notice has not been shown), true once it has.
+func TestTransmitsWaitsForTheNotice(t *testing.T) {
+	_, srv := newSink(t)
+	var stderr bytes.Buffer
+	cfg := testConfig(t, srv.URL, nil, &stderr)
+	cfg.Quiet = true
+	quiet := New(cfg)
+	if !quiet.Enabled() || quiet.Transmits() {
+		t.Fatalf("quiet first run: Enabled=%v Transmits=%v, want true/false", quiet.Enabled(), quiet.Transmits())
+	}
+	cfg.Quiet = false
+	if c := New(cfg); !c.Transmits() || stderr.Len() == 0 {
+		t.Errorf("after the notice: Transmits=%v notice=%q", c.Transmits(), stderr.String())
+	}
+	var nilClient *Client
+	if nilClient.Transmits() {
+		t.Error("a nil client transmits")
+	}
+}

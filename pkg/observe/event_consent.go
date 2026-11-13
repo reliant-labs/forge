@@ -2,7 +2,6 @@ package observe
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync/atomic"
 )
@@ -59,20 +58,28 @@ func consentAllows(ctx context.Context, name string, a Actor) (allowed bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			allowed = false
-			warnConsentFailed(ctx, name, fmt.Errorf("consent source panicked: %v", r))
+			warnConsentFailed(ctx, name, consentFailurePanic)
 		}
 	}()
 	ok, err := h.src.ProductEventsAllowed(ctx, a)
 	if err != nil {
-		warnConsentFailed(ctx, name, err)
+		warnConsentFailed(ctx, name, consentFailureError)
 		return false
 	}
 	return ok
 }
 
-func warnConsentFailed(ctx context.Context, name string, err error) {
+// How a consent lookup failed, as its WARN says it. Only the class: the
+// source's error text or panic value can hold whatever it was looking up (a
+// user id, an email, a credential), and this warning is telemetry too.
+const (
+	consentFailureError = "error"
+	consentFailurePanic = "panic"
+)
+
+func warnConsentFailed(ctx context.Context, name, failure string) {
 	if consentRefused.CompareAndSwap(false, true) {
 		FromContext(ctx).WarnContext(ctx, "product event dropped: the consent lookup failed, and consent fails closed",
-			slog.String("event", name), slog.String("error", err.Error()))
+			slog.String("event", name), slog.String("failure", failure))
 	}
 }

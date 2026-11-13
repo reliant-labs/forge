@@ -226,11 +226,15 @@ forge skill load debug               # print one; it always matches the binary y
 claude mcp add forge -- npx -y @reliantlabs/forge mcp   # MCP tools, no install
 ```
 
+Monitoring and releases from any chat app, with no install: the hosted Reliant
+Forge connector (`https://api.reliantapi.com/forge/mcp`, sign in) — `connect`
+has the steps for each client and says which tool lives where.
+
 The playbooks marked `applies: any` are worth reading in any repo: `debug`,
 `testing`, `forge-libraries`, `observability/tracing-lint`,
 `observability/monitoring-only`, `deploy/record`, `deploy/external`,
 `deploy/polyrepo`, `deploy/static-site`, `db/orm-and-safety`,
-`db/own-migration-tool`, `migration/ownership` and this one. The rest describe a forge project:
+`db/own-migration-tool`, `migration/ownership`, `connect` and this one. The rest describe a forge project:
 adapt them, do not obey them blindly.
 
 ## Leaving is easy too

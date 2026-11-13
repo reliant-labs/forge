@@ -257,33 +257,48 @@ func runObsInit(ctx context.Context, d obsInitDeps, args []string, o obsInitOpts
 		return err
 	}
 	doc.OrgID, doc.ControlPlane, doc.ConsoleURL = sess.OrgID, cp, console.Home("")
+	sess.ControlPlane = cp
+	registered, err := registerMonitoredEnvs(ctx, sess, project, envs, console, o)
+	if err != nil {
+		return err
+	}
+	doc.Envs = append(doc.Envs, registered...)
+	return writeObsInit(d, doc, o, "")
+}
+
+// registerMonitoredEnvs is the control-plane half of `forge obs init`, shared
+// with the hosted obs_init tool: it registers each env as SELF_MANAGED, mints
+// its ingest token and returns the OTEL_* variables an app sends with. It
+// reads no forge.yaml and writes nothing locally.
+func registerMonitoredEnvs(ctx context.Context, sess obsSession, project string, envs []string, console cloud.Console, o obsInitOpts) ([]obsInitEnv, error) {
 	// A control plane that predates TelemetryTokenService cannot finish
 	// init: refuse before registering any env on it, not after.
 	if err := requireIngestTokens(ctx, sess); err != nil {
-		return err
+		return nil, err
 	}
+	out := make([]obsInitEnv, 0, len(envs))
 	for _, env := range envs {
 		id, _, err := deploytarget.EnsureHostedEnvironment(ctx, sess.Caller, deploytarget.HostedEnvRef{
 			Project: project, Name: env, Kind: deploytarget.HostedEnvSelfManaged})
 		if err != nil {
-			return obsbackend.MapCloudError(fmt.Errorf("register env %s: %w", env, err))
+			return nil, obsbackend.MapCloudError(fmt.Errorf("register env %s: %w", env, err))
 		}
 		tok, err := createIngestToken(ctx, sess, id, o.tokenName, o.ttl)
 		if err != nil {
-			return fmt.Errorf("env %s: %w", env, err)
+			return nil, fmt.Errorf("env %s: %w", env, err)
 		}
 		if tok.OTLPEndpoint == "" {
-			return obsbackend.Undetermined("the control plane %s has no public OTLP endpoint, so an app outside it has nowhere to send; "+
-				"its operator sets telemetry_token.local_telemetry_endpoint", cp)
+			return nil, obsbackend.Undetermined("the control plane %s has no public OTLP endpoint, so an app outside it has nowhere to send; "+
+				"its operator sets telemetry_token.local_telemetry_endpoint", sess.ControlPlane)
 		}
-		doc.Envs = append(doc.Envs, obsInitEnv{
+		out = append(out, obsInitEnv{
 			Env: env, EnvironmentID: id,
 			Token:        &obsInitToken{ID: tok.Token.ID, Name: tok.Token.Name, ExpiresAt: tok.Token.ExpiresAt},
 			OTelEnv:      otelEnv(tok.OTLPEndpoint, tok.OTLPHeaders, env, project, o.service),
 			DashboardURL: console.Dashboards(env),
 		})
 	}
-	return writeObsInit(d, doc, o, "")
+	return out, nil
 }
 
 // initConfig reads the governing forge.yaml: ("", nil, nil) when there is none.

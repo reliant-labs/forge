@@ -69,7 +69,11 @@ type obsTracesOpts struct {
 	pageToken   string
 }
 
-func newObsTracesCmd() *cobra.Command {
+func newObsTracesCmd() *cobra.Command { return newObsTracesCmdWith(defaultObsDeps) }
+
+// newObsTracesCmdWith is newObsTracesCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsTracesCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsTracesOpts
 	cmd := &cobra.Command{
 		Use:   "traces [env]",
@@ -88,7 +92,7 @@ pages newest-first only); sorted_from says how many were sorted.
 ` + obsTracesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsTraces(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
+			return runObsTraces(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	o.register(cmd, time.Hour, obsquery.DefaultTraceLimit)

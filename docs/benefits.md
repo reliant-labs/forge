@@ -89,6 +89,7 @@ prints this list for the directory you run it in.
 | [Monitoring for any app](#monitoring-any-language)            | `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                                                                                              | ~15 min    |
 | [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                       | ~2 min     |
 | [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                               | ~2 min     |
+| [Hosted MCP connector](#hosted-mcp)                           | Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client.                                                                                                        | ~2 min     |
 | [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                                                                                            | ~2 min     |
 | [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                                                                                            | ~2 min     |
 | [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                         | ~2 min     |
@@ -3997,6 +3998,22 @@ _Enforced · Forge, on any infrastructure_
 - command `forge mcp`
 - source [`internal/cli/mcp_tools.go`](../internal/cli/mcp_tools.go)
 - source [`internal/cli/mcp_deploy.go`](../internal/cli/mcp_deploy.go)
+
+<a id="hosted-mcp"></a>
+
+### Hosted MCP connector
+
+A remote MCP server with nothing to install, https://api.reliantapi.com/forge/mcp: sign in with OAuth from claude.ai, Claude Desktop, ChatGPT, VS Code or Cursor and ask about monitoring (status, issues, logs, traces, release verdicts), releases and environments, record a deploy or start monitoring an app, with the same tool names and inputs as the local server and a console link on every answer.
+
+_Enforced · Reliant harness_
+
+**Works in any repo** (no forge.yaml). **Start:** Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client. **Agent time:** ~2 min.
+
+**Evidence:**
+
+- source [`internal/cli/mcp_hosted.go`](../internal/cli/mcp_hosted.go)
+- source [`cli/hosted_mcp.go`](../cli/hosted_mcp.go)
+- skill `connect` (`forge skill load connect`)
 
 <a id="capabilities-introspection"></a>
 

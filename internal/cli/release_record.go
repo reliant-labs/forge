@@ -346,7 +346,29 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if target.note != "" {
 		fmt.Fprintln(errOut, target.note)
 	}
+	return recordReleaseInto(ctx, target, recordInput{
+		project: project, env: env, version: version, commit: commit,
+		artifacts: artifacts, workloads: workloads, run: run,
+		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
+	})
+}
 
+// recordInput is one record, resolved: what recordReleaseInto writes.
+type recordInput struct {
+	project, env, version, commit string
+	artifacts                     map[string]release.Artifact
+	workloads                     map[string]string
+	run                           release.Run
+	// ci marks a record made inside CI: its promotion's actor is "ci".
+	ci bool
+}
+
+// recordReleaseInto cuts the record-only release and promotes it into the
+// env on target: the write half of `forge release record`, shared with the
+// hosted release_record tool, which resolves its target from the signed-in
+// person instead of this machine.
+func recordReleaseInto(ctx context.Context, target recordLedger, in recordInput) (releaseRecordResult, error) {
+	project, env, version, commit, artifacts, workloads, run := in.project, in.env, in.version, in.commit, in.artifacts, in.workloads, in.run
 	rel := release.Release{
 		Version:    version,
 		Project:    project,
@@ -375,7 +397,7 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	}
 	p := release.NewPromotion(env, rel, release.KindPromote)
 	p.Run = run
-	if runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "" {
+	if in.ci {
 		p.PromotedBy.Actor = releaseRecordActorCI
 	}
 	written, err := target.ledger.Bindings.Append(ctx, p, appendGuard{})

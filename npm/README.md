@@ -20,6 +20,12 @@ claude mcp add forge -- npx -y @reliantlabs/forge mcp
 npx @reliantlabs/forge project benefits   # the same list, in a terminal
 ```
 
+Monitoring and releases in your Reliant account are also a hosted MCP connector
+with nothing to install: add `https://api.reliantapi.com/forge/mcp` as a custom
+connector (claude.ai, Claude Desktop, ChatGPT, VS Code, Cursor) and sign in.
+`npx @reliantlabs/forge skill load connect` has the steps for each client and
+says which tools live where.
+
 As a CLI:
 
 ```sh

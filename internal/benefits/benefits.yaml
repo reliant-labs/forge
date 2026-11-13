@@ -4472,6 +4472,24 @@ benefits:
       - path: internal/cli/mcp_tools.go
       - path: internal/cli/mcp_deploy.go
 
+  - id: hosted-mcp
+    category: agents
+    title: Hosted MCP connector
+    claim: >-
+      A remote MCP server with nothing to install, https://api.reliantapi.com/forge/mcp:
+      sign in with OAuth from claude.ai, Claude Desktop, ChatGPT, VS Code or Cursor and
+      ask about monitoring (status, issues, logs, traces, release verdicts), releases
+      and environments, record a deploy or start monitoring an app, with the same tool
+      names and inputs as the local server and a console link on every answer.
+    availability: reliant
+    scope: any
+    adopt: "Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client."
+    estimate: "~2 min"
+    evidence:
+      - path: internal/cli/mcp_hosted.go
+      - path: cli/hosted_mcp.go
+      - skill: connect
+
   - id: capabilities-introspection
     category: agents
     title: Whole surface in one call

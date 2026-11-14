@@ -31,6 +31,8 @@ import (
 	"path/filepath"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // forgePseudoVersion is the version the scratch module requires forge at; the
@@ -86,8 +88,8 @@ func Write(forgeRoot, dir, module string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), out, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, "go.mod"), out, 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644)
+	return atomicfile.WriteFile(filepath.Join(dir, "go.sum"), sum, 0o644)
 }

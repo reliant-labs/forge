@@ -99,6 +99,7 @@ release_health = forge.ReleaseHealth {
     max_error_rate_increase = 0.01      # a fraction: one percentage point
     max_p95_ratio = 1.5
     new_issue_min_events = 3
+    regressed_issue_min_events = 3      # unset: follows new_issue_min_events; 1 counts every regression
     fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]   # latency, workload_restarts warn
     require_baseline = "any"            # or "every", "none" (observability/release-health)
 }

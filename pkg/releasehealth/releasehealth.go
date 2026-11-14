@@ -33,6 +33,11 @@
 //     workload_restarts, browser_errors, browser_failed_requests,
 //     browser_page_load. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
+//   - Issues count with enough after-window events: new_issue_min_events for
+//     a new issue, regressed_issue_min_events (unset: the same) for a
+//     regressed one. The platform's NewIssue and IssueRegressed alerts are
+//     judged as their issue, not as alert_firing findings, unless critical
+//     (issue_alerts.go).
 //   - Alerts count when they opened in the after window [P, after.To); a
 //     critical one (label severity=critical) fails the release whatever
 //     fail_on says. One that opened after the window is not the release's.
@@ -96,8 +101,11 @@ const (
 	ThresholdMaxErrorRateIncrease = "max_error_rate_increase"
 	ThresholdMaxP95Ratio          = "max_p95_ratio"
 	ThresholdNewIssueMinEvents    = "new_issue_min_events"
-	ThresholdFailOn               = "fail_on"
-	ThresholdRequireBaseline      = "require_baseline"
+	// ThresholdRegressedIssueMinEvents follows new_issue_min_events unless
+	// the env's policy or the request sets it.
+	ThresholdRegressedIssueMinEvents = "regressed_issue_min_events"
+	ThresholdFailOn                  = "fail_on"
+	ThresholdRequireBaseline         = "require_baseline"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -155,7 +163,10 @@ type Thresholds struct {
 	MaxErrorRateIncrease float64
 	MaxP95Ratio          float64
 	NewIssueMinEvents    int
-	FailOn               []string
+	// RegressedIssueMinEvents is the after-window events a regressed issue
+	// needs before it is a finding; NewIssueMinEvents unless set.
+	RegressedIssueMinEvents int
+	FailOn                  []string
 	// RequireBaseline is release.BaselineAny, BaselineEvery or BaselineNone
 	// (baseline.go); empty reads as BaselineAny.
 	RequireBaseline string
@@ -184,7 +195,7 @@ type Options struct {
 }
 
 // OverrideNames are the thresholds a request may override by name.
-var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRequireBaseline}
+var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -234,6 +245,12 @@ func Resolve(o Options) (Thresholds, error) {
 			ThresholdRequireBaseline: src,
 		},
 	}
+	// regressed_issue_min_events follows new_issue_min_events (after any
+	// override of it) unless the policy or the request sets it.
+	regressedSet := base.RegressedIssueMinEvents != 0
+	if regressedSet {
+		t.RegressedIssueMinEvents, t.Sources[ThresholdRegressedIssueMinEvents] = base.RegressedIssueMinEvents, src
+	}
 	if o.Window > 0 {
 		t.Window, t.Sources[ThresholdWindow] = o.Window, SourceRequest
 	}
@@ -247,6 +264,9 @@ func Resolve(o Options) (Thresholds, error) {
 			t.MinRequests, err = strconv.Atoi(v)
 		case ThresholdNewIssueMinEvents:
 			t.NewIssueMinEvents, err = strconv.Atoi(v)
+		case ThresholdRegressedIssueMinEvents:
+			t.RegressedIssueMinEvents, err = strconv.Atoi(v)
+			regressedSet = true
 		case ThresholdMaxErrorRateIncrease:
 			t.MaxErrorRateIncrease, err = strconv.ParseFloat(v, 64)
 		case ThresholdMaxP95Ratio:
@@ -264,6 +284,9 @@ func Resolve(o Options) (Thresholds, error) {
 		}
 		t.Sources[k] = SourceRequest
 	}
+	if !regressedSet {
+		t.RegressedIssueMinEvents, t.Sources[ThresholdRegressedIssueMinEvents] = t.NewIssueMinEvents, t.Sources[ThresholdNewIssueMinEvents]
+	}
 	return t, t.validate()
 }
 
@@ -279,6 +302,8 @@ func (t Thresholds) validate() error {
 		return invalid("max_p95_ratio %v must be above 1", t.MaxP95Ratio)
 	case t.NewIssueMinEvents < 1:
 		return invalid("new_issue_min_events must be at least 1")
+	case t.RegressedIssueMinEvents < 1:
+		return invalid("regressed_issue_min_events must be at least 1")
 	case t.RequireBaseline != "" && !slices.Contains(release.BaselinePolicies, t.RequireBaseline):
 		return invalid("require_baseline %q is not a policy; use %s", t.RequireBaseline, strings.Join(release.BaselinePolicies, ", "))
 	}
@@ -325,6 +350,7 @@ func (t Thresholds) List() []Threshold {
 		{ThresholdMaxErrorRateIncrease, strconv.FormatFloat(t.MaxErrorRateIncrease, 'g', -1, 64), src(ThresholdMaxErrorRateIncrease)},
 		{ThresholdMaxP95Ratio, strconv.FormatFloat(t.MaxP95Ratio, 'g', -1, 64), src(ThresholdMaxP95Ratio)},
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
+		{ThresholdRegressedIssueMinEvents, strconv.Itoa(t.RegressedIssueMinEvents), src(ThresholdRegressedIssueMinEvents)},
 		{ThresholdFailOn, strings.Join(t.FailOn, ","), src(ThresholdFailOn)},
 		{ThresholdRequireBaseline, baselineOr(t.RequireBaseline), src(ThresholdRequireBaseline)},
 	}
@@ -567,6 +593,12 @@ type Report struct {
 	// ExcludedAlerts were firing, but their rule says they are not about the
 	// env's workloads ([LabelReleaseHealth]), so they judged nothing.
 	ExcludedAlerts []Alert `json:"excluded_alerts,omitempty"`
+	// IssueAlerts were firing, but each is a platform issue alert (NewIssue,
+	// IssueRegressed) naming one issue, which release health judges itself
+	// by new_issue and regressed_issue and their thresholds, so the alert
+	// added nothing of its own (issue_alerts.go). A critical one is never
+	// here: it is an alert_firing finding and fails the release.
+	IssueAlerts []Alert `json:"issue_alerts,omitempty"`
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
@@ -660,9 +692,15 @@ func Evaluate(in Input) Report {
 		if !is.RegressedAt.IsZero() && is.RegressedAt.Before(p) {
 			continue
 		}
+		// One stray event of an old, transient signature is not a release
+		// regressing (forge bug, control-plane v1.20.0-rc.4): the bar is
+		// new_issue's unless the env sets its own.
+		if is.Events < int64(t.RegressedIssueMinEvents) {
+			continue
+		}
 		r.RegressedIssues = append(r.RegressedIssues, is)
-		add(Finding{Code: release.HealthRegressedIssue, Service: is.Service, Ref: is.ID, Value: float64(is.Events), Threshold: 1,
-			Message: fmt.Sprintf("issue %s regressed: %s", is.ID, firstNonEmpty(is.Title, is.Culprit))})
+		add(Finding{Code: release.HealthRegressedIssue, Service: is.Service, Ref: is.ID, Value: float64(is.Events), Threshold: float64(t.RegressedIssueMinEvents),
+			Message: fmt.Sprintf("issue %s regressed: %s (%d events)", is.ID, firstNonEmpty(is.Title, is.Culprit), is.Events)})
 	}
 	for _, a := range in.Alerts {
 		if afterWindow(a, in.Windows.After.To) {
@@ -676,6 +714,10 @@ func Evaluate(in Input) Report {
 			if a.Critical() {
 				r.StandingCritical = append(r.StandingCritical, a)
 			}
+			continue
+		}
+		if mirrorsJudgedIssue(a, in.NotEvaluated) {
+			r.IssueAlerts = append(r.IssueAlerts, a) // judged as its issue, above (issue_alerts.go)
 			continue
 		}
 		r.FiringAlerts = append(r.FiringAlerts, a)

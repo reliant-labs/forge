@@ -82,7 +82,7 @@
     {
       "id": "ISS-1",
       "title": "old",
-      "events": 2,
+      "events": 4,
       "regressed_at": "2026-10-22T11:42:00Z"
     }
   ],
@@ -96,6 +96,11 @@
       "name": "fail_on",
       "value": "error_rate,new_issue",
       "source": "release_shape"
+    },
+    {
+      "name": "regressed_issue_min_events",
+      "value": "3",
+      "source": "default"
     }
   ],
   "suggested": [

@@ -6657,8 +6657,13 @@ schema ReleaseHealth:
     Findings: error_rate (the error rate rose by more than
     `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
     latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
-    seen in this release with `new_issue_min_events` events), regressed_issue,
-    alert_firing (an alert opened after the promotion still fires),
+    seen in this release with `new_issue_min_events` events), regressed_issue
+    (a resolved issue came back after the promotion, with
+    `regressed_issue_min_events` events in the after window; unset, the same
+    as `new_issue_min_events`; 1 counts every regression), alert_firing (an
+    alert opened after the promotion still fires; the platform's NewIssue and
+    IssueRegressed alerts are judged as their issue, by the two thresholds
+    above, unless the env made them critical),
     workload_restarts, and, for a frontend that sends browser telemetry,
     browser_errors (JavaScript errors per page view rose by more than
     `max_error_rate_increase`), browser_failed_requests (the share of its
@@ -6677,6 +6682,7 @@ schema ReleaseHealth:
     max_error_rate_increase: float = 0.01
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
+    regressed_issue_min_events?: int
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
     require_baseline: str = "any"
 
@@ -6688,6 +6694,8 @@ schema ReleaseHealth:
             "ReleaseHealth.max_error_rate_increase ${max_error_rate_increase} is a fraction: 0.01 is one percentage point"
         max_p95_ratio > 1, "ReleaseHealth.max_p95_ratio ${max_p95_ratio} must be above 1 (1.5 = 50% slower)"
         new_issue_min_events >= 1, "ReleaseHealth.new_issue_min_events ${new_issue_min_events} must be at least 1"
+        regressed_issue_min_events == Undefined or regressed_issue_min_events == None or regressed_issue_min_events >= 1, \
+            "ReleaseHealth.regressed_issue_min_events ${regressed_issue_min_events} must be at least 1 (1 counts every regression; leave it unset to follow new_issue_min_events)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"

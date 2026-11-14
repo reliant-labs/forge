@@ -101,6 +101,11 @@
       "source": "default"
     },
     {
+      "name": "regressed_issue_min_events",
+      "value": "3",
+      "source": "default"
+    },
+    {
       "name": "fail_on",
       "value": "alert_firing,error_rate,new_issue,probe_failed,regressed_issue",
       "source": "default"

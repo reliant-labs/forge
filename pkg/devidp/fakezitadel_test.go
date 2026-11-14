@@ -57,6 +57,10 @@ type fakeZitadel struct {
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
+	// projectionLag hides a user created through POST /v2/users/human from
+	// that many session creations, which answer QUERY-Dfbg2 as the real
+	// issuer does while its user projection has not caught up (-1: forever).
+	projectionLag int
 }
 
 type fakeUser struct {
@@ -74,6 +78,9 @@ type fakeUser struct {
 	metadata             map[string]string
 	locked               bool
 	totp                 bool
+	// unprojected counts the session creations still to be refused for
+	// this user (projectionLag); negative refuses them all.
+	unprojected int
 }
 
 type fakeSession struct {
@@ -335,16 +342,25 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		uc := sub(b, "checks", "user")
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		var u *fakeUser
+		// The real issuer reads its projection and answers not-found unless
+		// exactly one PROJECTED user matches; an unprojected one is invisible.
+		var matches []*fakeUser
 		for _, cand := range f.users {
 			if cand.id == str(uc, "userId") || (str(uc, "loginName") != "" && cand.loginName == str(uc, "loginName")) {
-				u = cand
+				if cand.unprojected != 0 {
+					if cand.unprojected > 0 {
+						cand.unprojected--
+					}
+					continue
+				}
+				matches = append(matches, cand)
 			}
 		}
-		if u == nil {
+		if len(matches) != 1 {
 			zerr(w, 404, "QUERY-Dfbg2", "User could not be found")
 			return
 		}
+		u := matches[0]
 		sess := &fakeSession{token: f.id("st"), userID: u.id}
 		if pw := sub(b, "checks", "password"); pw != nil {
 			if u.locked {
@@ -462,7 +478,8 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		defer f.mu.Unlock()
 		res := []any{}
 		for _, u := range f.users {
-			if email != "" && strings.EqualFold(u.email, email) {
+			// The search reads the same projection: an unprojected user is not found.
+			if email != "" && strings.EqualFold(u.email, email) && u.unprojected == 0 {
 				res = append(res, humanJSON(u))
 			}
 		}
@@ -488,7 +505,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw, unprojected: f.projectionLag}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")

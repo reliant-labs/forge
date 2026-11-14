@@ -304,6 +304,59 @@ workloads:
 	}
 }
 
+// An immutable render refuses every unbound image slot on every runtime, as
+// kcl/base.k workload_image_ref_for does for the release inputs and sidecars
+// render.k resolves for every workload — not only on the runtimes that pull a
+// main image (cluster, external).
+func TestImmutableRefusesUnboundSlotsOnEveryRuntime(t *testing.T) {
+	for _, rt := range []string{"host", "hosted", "compose"} {
+		t.Run(rt, func(t *testing.T) {
+			sidecars := ""
+			if rt == "hosted" {
+				// host and compose refuse sidecars outright (the runtime mask).
+				sidecars = "\n    spec:\n      sidecars: [{name: proxy, image: ghcr.io/acme/proxy:2}]"
+			}
+			body := fmt.Sprintf(`apiVersion: forge.dev/env/v1
+project: shop
+env: prod
+workloads:
+  - name: web
+    runtime: {type: %s}
+    release_inputs: {migrate: ghcr.io/acme/migrate:1}%s
+`, rt, sidecars)
+			pins := map[string]map[string]string{"web": {"input:migrate": "ghcr.io/acme/migrate@" + digestA}}
+			if rt == "hosted" {
+				pins["web"]["container:proxy"] = "ghcr.io/acme/proxy@" + digestA
+			}
+			out, err := loadWith(t, body, "prod", Options{WorkloadPins: pins, Immutable: true})
+			if err != nil {
+				t.Fatalf("every slot bound: %v", err)
+			}
+			w := out["workloads"].([]any)[0].(map[string]any)
+			if got := w["release_inputs"].(map[string]any)["migrate"]; got != "ghcr.io/acme/migrate@"+digestA {
+				t.Errorf("release input = %v, want its pin", got)
+			}
+			if rt == "hosted" {
+				if got := specOf(w)["sidecars"].([]any)[0].(map[string]any)["image"]; got != "ghcr.io/acme/proxy@"+digestA {
+					t.Errorf("sidecar = %v, want its pin", got)
+				}
+			}
+
+			for slot := range pins["web"] {
+				unbound := map[string]map[string]string{"web": {}}
+				for k, v := range pins["web"] {
+					if k != slot {
+						unbound["web"][k] = v
+					}
+				}
+				if _, err := loadWith(t, body, "prod", Options{WorkloadPins: unbound, Immutable: true}); err == nil || !strings.Contains(err.Error(), "web/"+slot) {
+					t.Errorf("slot %s unbound: err = %v, want it refused", slot, err)
+				}
+			}
+		})
+	}
+}
+
 // TestImageTagDefaultsMatchKCL holds imageTagDefaults to kcl/base.k
 // _IMAGE_TAG_DEFAULTS.
 func TestImageTagDefaultsMatchKCL(t *testing.T) {

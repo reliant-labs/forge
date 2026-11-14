@@ -160,7 +160,11 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 		return fail("%v", err)
 	}
 
-	if h, ok := projectMigrationHook(opts.migDir); ok {
+	h, ok, herr := projectMigrationHook(opts.migDir)
+	if herr != nil {
+		return fail("%v", herr)
+	}
+	if ok {
 		return fail("this project's migrations are applied by %s (database.migrations.tool): forge db analyze reads forge-migrator migrations (<version>_<name>.up.sql) only", h.Tool)
 	}
 	if info, err := os.Stat(opts.migDir); err != nil || !info.IsDir() {

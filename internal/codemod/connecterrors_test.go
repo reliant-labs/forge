@@ -268,7 +268,6 @@ func connectErrorsScratch(t *testing.T) (fixture, dir string) {
 	fixture = filepath.Join("testdata", "connecterrors")
 	dir = t.TempDir()
 	copyTree(t, fixture, dir)
-	copyFile(t, filepath.Join(root, "go.sum"), filepath.Join(dir, "go.sum"))
 	writeScratchGoMod(t, root, dir, "example.com/cescratch")
 	return fixture, dir
 }

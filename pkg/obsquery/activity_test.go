@@ -97,9 +97,18 @@ func TestUserActivityCompilesTheDeclaredRules(t *testing.T) {
 	if n := strings.Count(st.SQL, "EventName IN ('internal_user')"); n != 6 {
 		t.Errorf("the exclusion appears %d times, want 6 (act, seen, nu_cur, nu_prev, nd_cur, nd_prev):\n%s", n, st.SQL)
 	}
-	q.Activity = Activity{NotActivity: []string{"no quotes'"}}
-	if _, err := q.Compile(); !errors.Is(err, ErrInvalid) {
-		t.Errorf("Compile with a bad rule = %v, want ErrInvalid", err)
+	q.Activity.ExcludeUserIDs = []string{"canary-subject"}
+	if st, err = q.Compile(); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(st.SQL, "UserId NOT IN ('canary-subject')"); n != 6 {
+		t.Errorf("the id exclusion appears %d times, want 6:\n%s", n, st.SQL)
+	}
+	for _, bad := range []Activity{{NotActivity: []string{"no quotes'"}}, {ExcludeUserIDs: []string{"staff@example.com"}}} {
+		q.Activity = bad
+		if _, err := q.Compile(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Compile with a bad rule %+v = %v, want ErrInvalid", bad, err)
+		}
 	}
 }
 
@@ -135,5 +144,52 @@ func TestDeprecatedActiveEvidenceKeepsItsValue(t *testing.T) {
 	}
 	if !strings.HasPrefix(UserActivityEvidence, ActiveEvidence+" AND ") {
 		t.Errorf("UserActivityEvidence %q does not extend ActiveEvidence", UserActivityEvidence)
+	}
+}
+
+// A user excluded by id leaves every row of theirs, in every environment, and
+// the id reaches the SQL only as an escaped string literal.
+func TestActiveEvidenceForExcludesUsersByID(t *testing.T) {
+	a := Activity{ExcludeUserIDs: []string{"8d1c0e5e-canary", "auth0|abc"}}
+	got := mustEvidence(t, "product_events", a)
+	if want := UserActivityEvidence + " AND UserId NOT IN ('8d1c0e5e-canary', 'auth0|abc')"; got != want {
+		t.Errorf("ActiveEvidenceFor = %q, want %q", got, want)
+	}
+	if !strings.Contains(mustNewUsers(t, "product_events", "{to:DateTime64(9)}", "", a), "WHERE "+got+" AND Timestamp") {
+		t.Error("NewUsersSourceFor does not leave an excluded id's sign-up and first event out")
+	}
+	// Valid ids are any opaque subject, quotes included: escaped, never raw.
+	if got := mustEvidence(t, "product_events", Activity{ExcludeUserIDs: []string{`o'brien\`}}); !strings.HasSuffix(got, `UserId NOT IN ('o\'brien\\')`) {
+		t.Errorf("ActiveEvidenceFor did not escape the id: %q", got)
+	}
+}
+
+func TestActivityRefusesIDsThatAreNotUserIDs(t *testing.T) {
+	for _, id := range []string{"", "staff@example.com", " padded", "tab\tinside", "new\nline", strings.Repeat("x", 129)} {
+		a := Activity{ExcludeUserIDs: []string{"ok-id", id}}
+		if err := a.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Validate(%q) = %v, want ErrInvalid", id, err)
+		}
+		// Unvalidated, the bad id never reaches the SQL.
+		if got := mustEvidence(t, "product_events", a); !strings.HasSuffix(got, "UserId NOT IN ('ok-id')") {
+			t.Errorf("ActiveEvidenceFor(%q unvalidated) = %q", id, got)
+		}
+	}
+	many := Activity{ExcludeUserIDs: make([]string, MaxExcludedUserIDs+1)}
+	for i := range many.ExcludeUserIDs {
+		many.ExcludeUserIDs[i] = "u"
+	}
+	if err := many.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Errorf("Validate(%d ids) = %v, want ErrInvalid", len(many.ExcludeUserIDs), err)
+	}
+	if err := (Activity{ExcludeUserIDs: []string{"8d1c0e5e", strings.Repeat("x", 128)}}).Validate(); err != nil {
+		t.Errorf("Validate(valid ids) = %v", err)
+	}
+}
+
+func TestActivityMergeUnitesExcludedIDs(t *testing.T) {
+	got := Activity{ExcludeUserIDs: []string{"b"}}.Merge(Activity{ExcludeUserIDs: []string{"a", "b", ""}})
+	if want := []string{"a", "b"}; !reflect.DeepEqual(got.ExcludeUserIDs, want) || got.IsZero() {
+		t.Errorf("Merge = %+v, want ExcludeUserIDs %v", got, want)
 	}
 }

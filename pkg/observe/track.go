@@ -129,9 +129,13 @@ func trackAs(ctx context.Context, name string, actor Actor, client string, attrs
 // ProductEventAttrs builds one product event's record attributes: the
 // contract every emitter shares (event.name, the actor's ids, visitor.day
 // from a trusted edge, app.client, app.version, and the bounded,
-// PII-guarded product.<key> props). It does not validate name or check
-// consent; Track does both before calling it. Exported for emitters that
-// write the record themselves, such as pkg/observe/cliev.
+// PII-guarded product.<key> props). Under WithStateEvents the
+// PropKind = KindState marker is the first prop, written before the
+// MaxProductProps bound is applied to the flattened props, and every
+// caller prop that flattens to PropKind (top-level or inside a group) is
+// dropped, so the record carries exactly one marker. It does not validate
+// name or check consent; Track does both before calling it. Exported for
+// emitters that write the record themselves, such as pkg/observe/cliev.
 func ProductEventAttrs(ctx context.Context, name string, actor Actor, client string, attrs []slog.Attr) []slog.Attr {
 	out := make([]slog.Attr, 0, 6+len(attrs))
 	out = append(out, slog.String(AttrEventName, EventNamePrefix+name))
@@ -146,7 +150,15 @@ func ProductEventAttrs(ctx context.Context, name string, actor Actor, client str
 		out = append(out, slog.String(AttrAppVersion, *v))
 	}
 	props := 0
+	state := StateEventsFrom(ctx)
+	if state {
+		out = append(out, slog.String(AttrPropPrefix+PropKind, KindState))
+		props++
+	}
 	guard := func(key, value string) bool {
+		if state && key == PropKind {
+			return false
+		}
 		if looksLikePII(value) {
 			warnPIIDropped(ctx, name, key)
 			return false

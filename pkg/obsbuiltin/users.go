@@ -74,7 +74,8 @@ func Users(in Input) dashspec.Dashboard {
 		signupsByMethodSQL, bars(true, nil), 12, 8)
 	signupsByMethod.MinStep = "1d"
 	signinsByMethod := chart("auth", "signins-by-method", "Sign-ins by method",
-		"Sign-ins that verified a credential (auth_signed_in with kind = credential) each day, by method. Events, not users: the sign-in attempts that succeeded.",
+		"Sign-ins that verified a credential (auth_signed_in with kind = credential) each day, by method. Events, not users: the sign-in attempts that succeeded. "+
+			"A sign-in recorded as a state event (a synthetic monitor's, under observe.WithStateEvents) and an excluded user's are left out.",
 		signinsByMethodSQL, bars(true, nil), 12, 8)
 	signinsByMethod.MinStep = "1d"
 	verified := figure("auth", "verified-share", "Verified sign-ups", "The share of the range's sign-ups that arrived verified (auth_signed_up verified = true).",
@@ -270,7 +271,7 @@ FROM su GROUP BY day, method ORDER BY day, method`
 
 	signinsByMethodSQL = `SELECT toDate(Timestamp) AS day, if(Props['method'] = '', 'unknown', Props['method']) AS method, count() AS "Sign-ins"
 FROM product_events
-WHERE EventName = 'auth_signed_in' AND Props['kind'] = 'credential' AND ` + scope + `
+WHERE EventName = 'auth_signed_in' AND Props['kind'] = 'credential' AND ` + active + ` AND ` + scope + `
 GROUP BY day, method ORDER BY day, method`
 
 	verifiedShareSQL = with(suCTE(from, to)) + `

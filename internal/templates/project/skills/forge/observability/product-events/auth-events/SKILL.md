@@ -10,8 +10,8 @@ whatever the auth provider. The console counts users over a range from them
 and the rest of the table: **active** = distinct users with any user-attributed
 event (`obsquery.UserActivityEvidence`: every row with a `UserId` except
 `auth_signed_out`, the platform's `auth_accounts` and an `observe.TrackState`
-fact, narrowed by the project's `forge.ProjectAnalytics.not_activity` and
-`exclude_users_with`; a sign-in or the auth middleware's daily heartbeat is
+fact, narrowed by the project's `forge.ProjectAnalytics.not_activity`,
+`exclude_users_with` and `exclude_user_ids`; a sign-in or the auth middleware's daily heartbeat is
 enough); **new** = distinct users with
 `auth_signed_up` in the range, or, in an env that reported no sign-up in the
 90 days before the range's end, the users first seen in the range, except

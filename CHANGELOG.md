@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.6.0] - 2026-11-13
+
+### Added
+
+- **observe:** observe.RequestPurge — delete one subject's product events through the app's own telemetry pipeline ([#2183](https://github.com/reliant-labs/forge/pull/2183))
+
+### Changed
+
+- **readme:** put the no-account deploy, forge mcp and forge start on the first screen ([#2182](https://github.com/reliant-labs/forge/pull/2182))
+- **obs:** say low traffic is obs check exit 2 (final for the promotion), and 8 only the --wait timeout ([#2193](https://github.com/reliant-labs/forge/pull/2193))
+- **security:** use published vulnerability reporting contact ([#2200](https://github.com/reliant-labs/forge/pull/2200))
+- **scaffold:** the auth context test waits for identifyUser instead of racing its effect ([#2202](https://github.com/reliant-labs/forge/pull/2202))
+
+### Fixed
+
+- **cloud:** point CI-token minting at the web app when the control plane requires a person session ([#2184](https://github.com/reliant-labs/forge/pull/2184))
+- **env:** run host processes and frontend dev servers in the -C project dir, not the caller's cwd ([#2187](https://github.com/reliant-labs/forge/pull/2187))
+- **build:** docker builds default to the host arch, like the project image and ShellBuilds ([#2189](https://github.com/reliant-labs/forge/pull/2189))
+- **lint:** a --scope run drops an out-of-scope golangci-lint issue with the lines beneath it ([#2194](https://github.com/reliant-labs/forge/pull/2194))
+- **ci:** the Reliant review check fails a PR labelled hold or needs:human ([#2195](https://github.com/reliant-labs/forge/pull/2195))
+- **release:** keep Gemini extension version aligned with npm ([#2197](https://github.com/reliant-labs/forge/pull/2197))
+- **generate:** restore frontend dependency mutations on failed runs ([#2186](https://github.com/reliant-labs/forge/pull/2186))
+
 ## [v1.5.0] - 2026-11-13
 
 ### Added
@@ -8972,7 +8995,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.6.0...HEAD
+[v1.6.0]: https://github.com/reliant-labs/forge/compare/v1.5.0...v1.6.0
 [v1.5.0]: https://github.com/reliant-labs/forge/compare/v1.4.0...v1.5.0
 [v1.4.0]: https://github.com/reliant-labs/forge/compare/v1.3.0...v1.4.0
 [v1.3.0]: https://github.com/reliant-labs/forge/compare/v1.2.0...v1.3.0

@@ -294,10 +294,13 @@ message Widget {
 	}
 
 	// A good password creates the account and signs in.
-	code, hdr, _, text = call(http.MethodPost, "/auth/register", map[string]string{"email": email, "password": "Password1!"})
+	code, hdr, signedUp, text := call(http.MethodPost, "/auth/register", map[string]string{"email": email, "password": "Password1!"})
 	if code != http.StatusOK || !strings.Contains(strings.Join(hdr.Values("Set-Cookie"), ";"), "pwapp_session=") {
 		t.Fatalf("register with a valid password: HTTP %d cookie=%v: %s\nserver output:\n%s", code, hdr.Values("Set-Cookie"), text, serverOut.String())
 	}
+	// Whose session it is is checked against the reset link below, which
+	// names the account the issuer holds for this address.
+	signedUpSubject, _ := signedUp["subject"].(string)
 
 	// ── 3. Forgot: same answer for a real and an unknown address. ──
 	codeKnown, _, _, textKnown := call(http.MethodPost, "/auth/forgot", map[string]string{"email": email})
@@ -325,6 +328,12 @@ message Widget {
 	}
 	if link == "" {
 		t.Fatalf("no reset link in the server log\nserver output:\n%s", serverOut.String())
+	}
+	// The sign-up's session is the NEW account's — the one the issuer holds
+	// for this address — and not the instance's seeded admin, the one other
+	// account here: the sign-in names it by the id its creation returned.
+	if signedUpSubject != userID {
+		t.Errorf("register signed in subject %q, want %q, the account created for %s", signedUpSubject, userID, email)
 	}
 	if !strings.HasPrefix(link, frontend+"/auth/reset?") {
 		t.Errorf("link = %s, want it rooted at the app's own origin %s", link, frontend)

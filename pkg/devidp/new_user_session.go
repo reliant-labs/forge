@@ -68,6 +68,11 @@ func (c *Client) createSessionForNewUser(ctx context.Context, creds Credentials)
 		if err == nil || !isUserNotFound(err) || !time.Now().Add(delay).Before(deadline) {
 			return s, err
 		}
+		if cerr := ctx.Err(); cerr != nil {
+			// Checked before waiting: a select on a done context and a
+			// timer that has also fired picks either.
+			return Session{}, fmt.Errorf("%w (still waiting for the new account to become visible: %w)", err, cerr)
+		}
 		t := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

@@ -202,6 +202,9 @@ const (
 	notReviewFirst = "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
 	// The checks that read the pull request itself.
 	prOnly = "${{ github.event_name == 'pull_request' }}"
+	// The merge queue's Windows job: the merge queue, and a pull request
+	// labelled ci:windows (not ci:run: a Windows runner is asked for by name).
+	windowsQueueTier = "${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows')) }}"
 )
 
 // The jobs an unlabelled pull request runs before its review (REVIEW FIRST).
@@ -242,7 +245,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
-	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly}
+	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly, windowsQueueTier}
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
 		if name == "gate" {
@@ -264,6 +267,9 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 		if cond != queueTier && cond != notReviewFirst {
 			t.Errorf("job %q has if: %q; the merge tier must run in the merge queue (%q)", name, cond, queueTier)
 		}
+	}
+	if cond := strings.TrimSpace(wf.Jobs["windows-changed"].If); cond != windowsQueueTier {
+		t.Errorf("job %q has if: %q; it must run in the merge queue and on ci:windows (%q)", "windows-changed", cond, windowsQueueTier)
 	}
 }
 

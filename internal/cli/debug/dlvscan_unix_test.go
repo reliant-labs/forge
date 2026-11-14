@@ -6,8 +6,6 @@ import (
 	"context"
 	"os"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestDlvPSLineMatches(t *testing.T) {
@@ -31,7 +29,6 @@ func TestDlvPSLineMatches(t *testing.T) {
 }
 
 func TestIsDlvForAddrRejectsNonDlv(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	if isDlvForAddr(context.Background(), os.Getpid(), "127.0.0.1:2345") {
 		t.Fatal("test binary is not dlv")
 	}

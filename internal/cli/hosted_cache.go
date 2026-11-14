@@ -123,12 +123,6 @@ func (s *hostedStore) remember(ctx context.Context, env string, p release.Promot
 			prev.Release != nil && prev.Window == window {
 			snap.Release, snap.History = prev.Release, prev.History
 			snap.Floors, snap.FloorsRecorded = prev.Floors, prev.FloorsRecorded
-			if !snap.FloorsRecorded {
-				// A copy whose floors are unknown (it predates them, or the
-				// last read failed) reads them again on every refresh, or an
-				// offline deploy would stay refused until the env next moved.
-				s.fillFloors(ctx, env, &snap)
-			}
 		} else {
 			s.fillWindow(ctx, env, p, window, prev, &snap)
 			s.fillFloors(ctx, env, &snap)
@@ -142,18 +136,11 @@ func (s *hostedStore) remember(ctx context.Context, env string, p release.Promot
 // fillFloors records the env's rollback floors in the copy, so an offline
 // deploy can be judged against them before its local apply. Read when the
 // window is refilled (the current promotion moved, which is when a promote
-// raises floors), on any refresh while they are unknown, and after
-// `forge env floor` changes them. A read that fails leaves FloorsRecorded
-// false — "unknown", which the offline deploy refuses rather than reading as
-// "none". A control plane that has no floors
-// (it predates them) records none: its own Promote, which the queued
-// promotion replays through, judges none either.
+// raises floors) and after `forge env floor` changes them; a control plane
+// without floors, or a read that fails, leaves FloorsRecorded false —
+// "unknown", which the offline deploy says rather than reading as "none".
 func (s *hostedStore) fillFloors(ctx context.Context, env string, snap *ledgerfile.HostedSnapshot) {
 	floors, err := s.RollbackFloors(ctx, env, true)
-	if isFloorsUnsupported(err) {
-		snap.Floors, snap.FloorsRecorded = nil, true
-		return
-	}
 	if err != nil {
 		return
 	}

@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // These tests spawn REAL marked processes and then reclaim them, because that
@@ -139,7 +137,6 @@ func entitiesOnPort(port int) *KCLEntities {
 // branch made the reclaim unreachable on every `forge env up`. Eight rounds left
 // 38 orphaned processes, 7.5 GB resident, on 15 ports nothing could name.
 func TestUpPreflight_StopsThePredecessorOnFreePorts(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	requireProcInspection(t)
 	dir, projectID, env := testStack(t)
 
@@ -188,7 +185,6 @@ func TestUpPreflight_StopsThePredecessorOnFreePorts(t *testing.T) {
 // probe is actually for. A port this run needs is held by a process forge did
 // not start — that is an error, and the process is never killed.
 func TestUpPreflight_RefusesAForeignPortHolder(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	requireProcInspection(t)
 	_, projectID, env := testStack(t)
 
@@ -215,7 +211,6 @@ func TestUpPreflight_RefusesAForeignPortHolder(t *testing.T) {
 // render as "nothing was running": that is a guard that cannot fail, and it
 // reported success over a machine holding 38 orphaned processes.
 func TestEnvDown_RefusesWhenItCannotTellWhichProject(t *testing.T) {
-	testkit.Slow(t, "execs git and ps")
 	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir()) // no forge.yaml here or above
 
@@ -244,7 +239,6 @@ func TestEnvDown_RefusesWhenItCannotTellWhichProject(t *testing.T) {
 // cannot be inverted: once the directory was deleted, no forge verb could name
 // the stack, let alone stop it. That is the state this machine was found in.
 func TestStackOutlivingItsProjectDirIsStillReachable(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	requireProcInspection(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -407,7 +401,6 @@ func TestStackTeardownRoots_LedgerIsAFallbackNotAnAuthority(t *testing.T) {
 // `forge env down`, not visible to anything. The record exists from the moment
 // the child does, so no early return can lose it.
 func TestProcRegistry_LedgerExistsAsSoonAsAChildStarts(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	requireProcInspection(t)
 	dir, projectID, env := testStack(t)
 	t.Chdir(dir)

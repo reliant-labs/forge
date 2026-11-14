@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // trapChild starts `sh` holding a marker file it removes from an INT trap
@@ -102,7 +100,6 @@ func TestPlainCommandContextSIGKILLsAndOrphansScratch(t *testing.T) {
 // cancellation, but the signal is one `sh` (and `go`) handles, so the
 // scratch is gone by the time Wait returns.
 func TestGracefulLetsTheChildCleanUp(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX signals and sh are not available on Windows")
 	}

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kclplugin"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // 2026-10-19, control-plane prod: a versioned redeploy from the release's own
@@ -24,7 +23,6 @@ import (
 // pins for a repository IS the digest of `<repo>:<release>`, and a render of
 // that release must know it from the release alone.
 func TestResolveDeployDigests_NamedReleasePinsItsImagesUnderTheReleaseTag(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	ctx := context.Background()
 	const repo = "reg.example.com/acme/otelcol-reliant"

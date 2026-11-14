@@ -6,15 +6,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A project's own set is read from its source by the type checker: members
 // named by constants read as their values, and nothing that is not provably
 // a constant is accepted.
 func TestResolveGo(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	// `go list` reads only the scratch module in t.TempDir(), so the test is
 	// cache-sound, and a dependency-free module type-checks well under 2s.
 	dir := t.TempDir()

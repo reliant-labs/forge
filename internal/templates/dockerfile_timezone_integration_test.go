@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/goexec"
-	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // Build the rendered production stage verbatim, supplying a tiny probe in
@@ -26,7 +25,7 @@ func TestDockerfile_ProductionLoadLocation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-		testdocker.Unavailable(t, "requires a Docker daemon: %v", err)
+		t.Skipf("requires a Docker daemon: %v", err)
 	}
 	dir := t.TempDir()
 	probe := `package main

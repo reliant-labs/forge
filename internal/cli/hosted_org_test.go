@@ -60,33 +60,16 @@ func TestRequireOrg_ResolvesOnlyWhatIsHosted(t *testing.T) {
 		t.Fatalf("an env with no control plane resolved the org: err=%v calls=%d", err, calls)
 	}
 
-	// Hosted, but every image names the platform's own registry: nothing to
-	// compose or mirror, so no call. This is what keeps a build against a
-	// local registry offline.
+	// Hosted, but every image names its registry: nothing to compose, so no
+	// call. This is what keeps a build against a local registry offline.
 	named := &KCLEntities{
-		ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp", RegistryHost: "localhost:5051"},
+		ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp"},
 		Workloads: []WorkloadEntity{hostedWL("api", func(w *WorkloadEntity) {
 			w.Spec.Image = "localhost:5051/org/api"
 		})},
 	}
 	if err := requireOrg(context.Background(), named); err != nil || calls != 0 {
 		t.Fatalf("an env whose images all name a registry resolved the org: err=%v calls=%d", err, calls)
-	}
-
-	// A third-party image forge does not build is mirrored into the push base,
-	// so it needs the org; a BUILT image on a named registry still does not.
-	thirdParty := &KCLEntities{
-		ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp", RegistryHost: "localhost:5051"},
-		Workloads: []WorkloadEntity{hostedWL("whoami", func(w *WorkloadEntity) {
-			w.Spec.Image = "docker.io/traefik/whoami:v1.10.3"
-		})},
-	}
-	if !hostedNeedsPushBase(thirdParty) {
-		t.Error("an unbuilt third-party hosted image must need the push base it is mirrored under")
-	}
-	thirdParty.Workloads[0].Build.Type = "docker"
-	if hostedNeedsPushBase(thirdParty) {
-		t.Error("a BUILT image that names its registry needs no push base")
 	}
 
 	hosted := &KCLEntities{

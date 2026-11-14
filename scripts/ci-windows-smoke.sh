@@ -34,7 +34,7 @@ cd smoke
 forge env render dev
 
 # Windows only: render must have extracted the library into the default
-# location (docs/install.md documents it). KCL_LIB_HOME is deliberately unset
+# location (README "Install" documents it). KCL_LIB_HOME is deliberately unset
 # so this checks the default path.
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)

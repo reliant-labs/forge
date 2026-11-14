@@ -13,7 +13,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // handOffStreamsHelperEnv makes TestHandOffStreamsHelper act as a forge
@@ -36,7 +35,6 @@ const handOffChildStdout = `{"kind":"Deployment","metadata":{"name":"exact-owner
 // forge's stdout, byte for byte. This runs the real hand-off — a forge process
 // that execs the project's .tools/bin/forge — and compares the bytes.
 func TestHandOff_StdoutIsExactlyThePinnedForgesStdout(t *testing.T) {
-	testkit.Slow(t, "execs the forge binary as a child process")
 	if runtime.GOOS == "windows" {
 		t.Skip("the stand-in pinned forge is a POSIX shell script")
 	}

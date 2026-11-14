@@ -13,11 +13,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestProjectGeneratorGenerateCreatesMigrationFirstLayout(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "sample-app")
 	generator := NewProjectGenerator("sample-app", root, "example.com/sample-app")
 
@@ -52,7 +50,6 @@ func TestProjectGeneratorGenerateCreatesMigrationFirstLayout(t *testing.T) {
 }
 
 func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "sample-db")
 	generator := NewProjectGenerator("sample-db", root, "example.com/sample-db")
 
@@ -81,7 +78,6 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 }
 
 func TestProjectGeneratorGenerateWritesScaffoldThatBuildsCleanlyByDefault(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "sample-full")
 	generator := NewProjectGenerator("sample-full", root, "example.com/sample-full")
 	generator.ServiceName = "api"
@@ -355,7 +351,6 @@ func TestProjectGeneratorGenerateZeroServiceCLIOnly(t *testing.T) {
 // CLI-shaped project: cmd/<bin>/main.go exists, server-shaped scaffolding
 // is suppressed, and forge.yaml records the kind.
 func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mycli")
 	gen := NewProjectGenerator("mycli", root, "example.com/mycli")
 	gen.Kind = "cli"
@@ -439,7 +434,6 @@ func TestProjectGeneratorKindCLIScaffold(t *testing.T) {
 // produces a library-shaped project: a doc.go in pkg/<name>/, no cmd/,
 // no server scaffolding, and forge.yaml records the kind.
 func TestProjectGeneratorKindLibraryScaffold(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mylib")
 	gen := NewProjectGenerator("mylib", root, "example.com/mylib")
 	gen.Kind = "library"
@@ -497,7 +491,6 @@ func TestProjectGeneratorKindLibraryScaffold(t *testing.T) {
 // TestProjectGeneratorKindServiceDefault verifies that the default (no Kind
 // set) preserves all current behavior — the regression guard for back-compat.
 func TestProjectGeneratorKindServiceDefault(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mysvc")
 	gen := NewProjectGenerator("mysvc", root, "example.com/mysvc")
 	// No Kind set — should default to "service"
@@ -590,7 +583,6 @@ func TestGoVersionMinor(t *testing.T) {
 }
 
 func TestResolveGoVersionOverride(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	// Override at or above the forge minimum is honored as-is.
 	hi := &ProjectGenerator{GoVersionOverride: "1.99"}
 	if got := hi.resolveGoVersion(); got != "1.99.0" {
@@ -719,7 +711,6 @@ func assertCompositionRootDeferred(t *testing.T, root, bin string) {
 }
 
 func TestProjectGeneratorDoesNotWriteSkillsToDisk(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "skills-app")
 	generator := NewProjectGenerator("skills-app", root, "example.com/skills-app")
 
@@ -744,7 +735,6 @@ func TestProjectGeneratorDoesNotWriteSkillsToDisk(t *testing.T) {
 }
 
 func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "memory-app")
 	generator := NewProjectGenerator("memory-app", root, "example.com/memory-app")
 
@@ -774,7 +764,6 @@ func TestProjectGeneratorWritesReliantMemoryFiles(t *testing.T) {
 }
 
 func TestProjectGeneratorPreservesExistingReliantMemoryFile(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "existing-memory-app")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
@@ -802,7 +791,6 @@ func TestProjectGeneratorPreservesExistingReliantMemoryFile(t *testing.T) {
 }
 
 func TestProjectGeneratorHarnessClaude(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "claude-app")
 	gen := NewProjectGenerator("claude-app", root, "example.com/claude-app")
 	gen.Harness = HarnessClaude
@@ -829,7 +817,6 @@ func TestProjectGeneratorHarnessClaude(t *testing.T) {
 }
 
 func TestProjectGeneratorHarnessCursor(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "cursor-app")
 	gen := NewProjectGenerator("cursor-app", root, "example.com/cursor-app")
 	gen.Harness = HarnessCursor
@@ -853,7 +840,6 @@ func TestProjectGeneratorHarnessCursor(t *testing.T) {
 }
 
 func TestProjectGeneratorHarnessCopilot(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "copilot-app")
 	gen := NewProjectGenerator("copilot-app", root, "example.com/copilot-app")
 	gen.Harness = HarnessCopilot
@@ -901,7 +887,6 @@ func TestProjectGeneratorHarnessCodex(t *testing.T) {
 }
 
 func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "existing-claude-app")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
@@ -928,7 +913,6 @@ func TestProjectGeneratorPreservesExistingMemoryFileNonReliant(t *testing.T) {
 }
 
 func TestProjectGeneratorWritesMCPConfig(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mcp-app")
 	generator := NewProjectGenerator("mcp-app", root, "example.com/mcp-app")
 
@@ -988,7 +972,6 @@ func TestProjectGeneratorWritesMCPConfig(t *testing.T) {
 }
 
 func TestProjectGeneratorPreservesExistingMCPConfig(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "existing-mcp-app")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
@@ -1017,7 +1000,6 @@ func TestProjectGeneratorPreservesExistingMCPConfig(t *testing.T) {
 // files can be regenerated freely because they depend only on the project
 // name, not on any mutable state.
 func TestProjectGeneratorIsIdempotentForforgeOwnedFiles(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "idem-app")
 	generator := NewProjectGenerator("idem-app", root, "example.com/idem-app")
 	if err := generator.Generate(); err != nil {
@@ -1188,7 +1170,6 @@ func TestFeatureFlag_CodegenDisabled(t *testing.T) {
 // "deploy=false strips Dockerfile" behaviour is gone — the runtime
 // gate lives on `forge env deploy` itself.
 func TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "deploy-shape")
 	gen := NewProjectGenerator("deploy-shape", root, "example.com/deploy-shape")
 	gen.ServiceName = "api"
@@ -1212,7 +1193,6 @@ func TestFeatureFlag_DeployScaffoldEmittedRegardlessOfOptIn(t *testing.T) {
 }
 
 func TestFeatureFlag_CIDisabled(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "no-ci")
 	gen := NewProjectGenerator("no-ci", root, "example.com/no-ci")
 	gen.ServiceName = "api"
@@ -1240,7 +1220,6 @@ func TestFeatureFlag_CIDisabled(t *testing.T) {
 }
 
 func TestFeatureFlag_HotReloadDisabled(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "no-hotreload")
 	gen := NewProjectGenerator("no-hotreload", root, "example.com/no-hotreload")
 	gen.ServiceName = "api"
@@ -1260,7 +1239,6 @@ func TestFeatureFlag_HotReloadDisabled(t *testing.T) {
 }
 
 func TestFeatureFlag_ObservabilityDisabled(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "no-observability")
 	gen := NewProjectGenerator("no-observability", root, "example.com/no-observability")
 	gen.ServiceName = "api"
@@ -1286,7 +1264,6 @@ func TestFeatureFlag_ObservabilityDisabled(t *testing.T) {
 }
 
 func TestFeatureFlag_AllEnabled(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "all-features")
 	gen := NewProjectGenerator("all-features", root, "example.com/all-features")
 	gen.ServiceName = "api"
@@ -1359,7 +1336,6 @@ func TestFeatureFlag_AllEnabled(t *testing.T) {
 // the defaults, update this test deliberately (and update the scaffold
 // migration tip in MIGRATION_TIPS.md).
 func TestFreshScaffoldDefaults(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "fresh")
 	gen := NewProjectGenerator("fresh", root, "example.com/fresh")
 	gen.ServiceName = "api"
@@ -1411,7 +1387,6 @@ func TestFreshScaffoldDefaults(t *testing.T) {
 // TestFreshScaffoldDefaultsWithFrontend mirrors TestFreshScaffoldDefaults but
 // with --frontend, where the frontend feature should flip to true.
 func TestFreshScaffoldDefaultsWithFrontend(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "fresh-fe")
 	gen := NewProjectGenerator("fresh-fe", root, "example.com/fresh-fe")
 	gen.ServiceName = "api"
@@ -1434,7 +1409,6 @@ func TestFreshScaffoldDefaultsWithFrontend(t *testing.T) {
 // DATABASE_URL/host dev loop could never find the database without
 // inspecting `docker compose ps`.
 func TestDockerComposePostgresFixedPort(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	g := &ProjectGenerator{Name: "bookmarks", Path: dir}
 	if err := g.generateDockerCompose(); err != nil {

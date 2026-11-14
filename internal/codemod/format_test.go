@@ -9,8 +9,6 @@ import (
 	"testing"
 
 	"golang.org/x/tools/imports"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The shared post-codemod step (format.go). These tests drive it with a fake
@@ -102,7 +100,6 @@ func fakeCodemod(rel, content string) runFunc {
 }
 
 func TestFormatAfter_LeavesWhatACodemodWroteFormattedToTheProjectsGate(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	const module = "github.com/reliant-labs/control-plane"
 	golangci := func(prefixes string) string {
 		return "version: \"2\"\nformatters:\n  enable:\n    - goimports\n" + prefixes

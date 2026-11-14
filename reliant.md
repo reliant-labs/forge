@@ -306,15 +306,8 @@ reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01
   deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work the
   merge tier skips.
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
-  license opinion (Checks covers dependency licenses on every merge-queue entry),
-  `forge ci vuln-scan --go`, the ClickHouse integration tests of `pkg/obsquery` and
-  `pkg/alerting`, and every other package's integration tests (db squash, OpenBao with
-  envtest, docker builds, the scaffolded MinIO and ClickStack, pgstore, blobstore,
-  migratekit; `-tags=integration`, throwaway containers; under `CI` a missing docker
-  fails them, `testdocker.Unavailable`). A step that narrows with `-run` must select
-  every integration test of the packages it names. `internal/ciguard` fails a
-  package with integration-tagged tests that no push-to-main step runs, unless
-  `integrationNotInCI` says why.
+  license opinion (Checks covers dependency licenses on every merge-queue entry), and
+  `forge ci vuln-scan --go`.
 - **Windows** — native: build, vet, the `-short` tier of Unit + internal/cli, and a
   scaffold+render smoke. (The merge tier does not cross-compile for Windows.)
 - **e2e** — `e2e-suite.yml`: `prepare` builds the e2e test binary, forge and the codegen

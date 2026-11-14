@@ -140,10 +140,9 @@ var memoryTaskSpan = regexp.MustCompile("`task ([a-z][a-z0-9:-]*)")
 func TestMemoryTemplateTeachesShortTier(t *testing.T) {
 	t.Parallel()
 	memory, err := ProjectTemplates().Render("reliant.md.tmpl", struct {
-		Name      string
-		CLI       string
-		Site      bool
-		Container bool
+		Name string
+		CLI  string
+		Site bool
 	}{Name: "demo", CLI: "forge"})
 	if err != nil {
 		t.Fatalf("render reliant.md.tmpl: %v", err)

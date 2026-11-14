@@ -54,16 +54,10 @@ type AnalyzerSpec struct {
 }
 
 // CapabilitiesSpec is the whole dump.
-//
-// DeprecatedAliases maps each old spelling of a moved command to its new
-// one (deprecated_aliases.go), so an agent can rewrite a stale spelling
-// mechanically. Both still run; the old ones are hidden from Commands only
-// once they are deprecated in earnest (phase 2).
 type CapabilitiesSpec struct {
-	Commands          []CommandSpec     `json:"commands,omitempty"`
-	Analyzers         []AnalyzerSpec    `json:"analyzers,omitempty"`
-	Markers           []MarkerSpec      `json:"markers,omitempty"`
-	DeprecatedAliases []DeprecatedAlias `json:"deprecated_aliases,omitempty"`
+	Commands  []CommandSpec  `json:"commands,omitempty"`
+	Analyzers []AnalyzerSpec `json:"analyzers,omitempty"`
+	Markers   []MarkerSpec   `json:"markers,omitempty"`
 }
 
 // newCapabilitiesCmd builds `forge project capabilities`. Like
@@ -117,10 +111,9 @@ func runCapabilities(w io.Writer, asJSON bool) error {
 func buildCapabilitiesSpec() CapabilitiesSpec {
 	root := NewRootCmd()
 	return CapabilitiesSpec{
-		Commands:          commandSpecs(root),
-		Analyzers:         analyzerSpecs(root),
-		Markers:           markerSpecs(),
-		DeprecatedAliases: deprecatedAliases(root),
+		Commands:  commandSpecs(root),
+		Analyzers: analyzerSpecs(root),
+		Markers:   markerSpecs(),
 	}
 }
 

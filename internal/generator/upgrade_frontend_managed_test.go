@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The per-frontend lint config as a Tier-2 managed file.
@@ -37,7 +36,6 @@ func managedFrontendCfg() *config.ProjectConfig {
 // TestFrontendESLintIsManaged is the registration itself: the file must be
 // in the managed set, at Tier-2, for both web frontend flavors.
 func TestFrontendESLintIsManaged(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	t.Parallel()
 	for _, tree := range []string{"nextjs", "vite-spa"} {
 		t.Run(tree, func(t *testing.T) {
@@ -81,7 +79,6 @@ func TestFrontendESLintIsManaged(t *testing.T) {
 // STATUS from the same upgrade pass. Comparing the two verdicts (rather
 // than asserting a literal) is what keeps them from diverging again.
 func TestFrontendESLintReportsLikeGolangci(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	cfg := managedFrontendCfg()
 
@@ -150,7 +147,6 @@ func TestFrontendESLintReportsLikeGolangci(t *testing.T) {
 // untouched render must be silent. Without this, every project with a
 // frontend would see a permanent diff on a file it never touched.
 func TestFrontendESLintPristineIsUpToDate(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	cfg := managedFrontendCfg()
 	rel := filepath.Join("frontends", "web", "eslint.config.mjs")

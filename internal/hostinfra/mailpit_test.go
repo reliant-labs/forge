@@ -87,7 +87,6 @@ func TestMailpitStartsCatchesMailAndStops(t *testing.T) {
 	project := t.TempDir()
 	spec := Spec{Name: "mail", Engine: EngineMailpit, Port: mailpitPort(t)}
 	if err := Start(ctx, project, spec); err != nil {
-		skipIfDownloadUnavailable(t, err)
 		t.Fatalf("start: %v", err)
 	}
 	t.Cleanup(func() { _, _ = StopReport(project, spec) })

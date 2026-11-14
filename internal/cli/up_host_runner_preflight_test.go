@@ -69,10 +69,8 @@ func TestProvisionAir(t *testing.T) {
 			{Name: "api", Kind: "service", Runtime: RuntimeEntity{Type: RuntimeHost, Host: h}},
 		}}, h
 	}
-	prevLook, prevInstall, prevDirs, prevVersion, prevOverrides := hostRunnerLookPath, installAirFn, hostToolDirs, airVersionFn, hostToolOverrides
-	t.Cleanup(func() {
-		hostRunnerLookPath, installAirFn, hostToolDirs, airVersionFn, hostToolOverrides = prevLook, prevInstall, prevDirs, prevVersion, prevOverrides
-	})
+	prevLook, prevInstall, prevDirs := hostRunnerLookPath, installAirFn, hostToolDirs
+	t.Cleanup(func() { hostRunnerLookPath, installAirFn, hostToolDirs = prevLook, prevInstall, prevDirs })
 	hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") }
 
 	t.Run("installs the pinned air when PATH has none", func(t *testing.T) {
@@ -111,72 +109,14 @@ func TestProvisionAir(t *testing.T) {
 	})
 
 	t.Run("an air on PATH is used as is", func(t *testing.T) {
-		for _, version := range []string{"1.67.4", ""} { // current, and unreadable
-			hostToolDirs, hostToolOverrides = nil, map[string]string{}
-			hostRunnerLookPath = func(bin string) (string, error) { return "/usr/bin/" + bin, nil }
-			airVersionFn = func(context.Context, string) string { return version }
-			installAirFn = func(context.Context) (string, error) { t.Fatal("must not install when air is on PATH"); return "", nil }
-			e, h := newEntities()
-			provisionAir(context.Background(), e, nil)
-			if h.Runner != "air" {
-				t.Errorf("version %q: runner = %q", version, h.Runner)
-			}
-			cmd := exec.Command("air", "-c", ".air.toml")
-			pinHostToolPath(cmd, "air")
-			if cmd.Path != "/usr/bin/air" {
-				t.Errorf("version %q: cmd.Path = %q, want the air on PATH", version, cmd.Path)
-			}
-		}
-		hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") }
-	})
-
-	// An air below doctor's floor cannot run a config that names its binary
-	// with `entrypoint`: the run would fail at the readiness wait, far from
-	// the cause. forge runs its pinned air instead, and says so.
-	t.Run("an air on PATH below the floor gives way to the pinned air", func(t *testing.T) {
-		hostToolDirs, hostToolOverrides = nil, map[string]string{}
+		hostToolDirs = nil
 		hostRunnerLookPath = func(bin string) (string, error) { return "/usr/bin/" + bin, nil }
 		defer func() { hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") } }()
-		airVersionFn = func(context.Context, string) string { return "1.61.5" }
-		dir := t.TempDir()
-		installAirFn = func(context.Context) (string, error) { return dir, nil }
+		installAirFn = func(context.Context) (string, error) { t.Fatal("must not install when air is on PATH"); return "", nil }
 		e, h := newEntities()
-		out := captureStdout(t, func() { provisionAir(context.Background(), e, nil) })
+		provisionAir(context.Background(), e, nil)
 		if h.Runner != "air" {
-			t.Errorf("runner = %q, want air", h.Runner)
-		}
-		cmd := exec.Command("air", "-c", ".air.toml")
-		pinHostToolPath(cmd, "air")
-		if want := filepath.Join(dir, "air"+exeSuffix()); cmd.Path != want {
-			t.Errorf("cmd.Path = %q, want the pinned air %q", cmd.Path, want)
-		}
-		for _, want := range []string{"air 1.61.5 on PATH", "/usr/bin/air", "pinned " + airPinnedVersion} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output missing %q:\n%s", want, out)
-			}
-		}
-	})
-
-	t.Run("an old air stays, with a warning, when the pin cannot be installed", func(t *testing.T) {
-		hostToolDirs, hostToolOverrides = nil, map[string]string{}
-		hostRunnerLookPath = func(bin string) (string, error) { return "/usr/bin/" + bin, nil }
-		defer func() { hostRunnerLookPath = func(string) (string, error) { return "", errors.New("not found") } }()
-		airVersionFn = func(context.Context, string) string { return "1.61.5" }
-		installAirFn = func(context.Context) (string, error) { return "", errors.New("proxy unreachable") }
-		e, h := newEntities()
-		out := captureStdout(t, func() { provisionAir(context.Background(), e, nil) })
-		if h.Runner != "air" {
-			t.Errorf("runner = %q, want air kept", h.Runner)
-		}
-		cmd := exec.Command("air", "-c", ".air.toml")
-		pinHostToolPath(cmd, "air")
-		if cmd.Path != "/usr/bin/air" {
-			t.Errorf("cmd.Path = %q, want the air on PATH", cmd.Path)
-		}
-		for _, want := range []string{"warning: air 1.61.5", "proxy unreachable", "go install github.com/air-verse/air@latest"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("output missing %q:\n%s", want, out)
-			}
+			t.Errorf("runner = %q", h.Runner)
 		}
 	})
 }

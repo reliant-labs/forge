@@ -13,8 +13,6 @@ import (
 	"text/template"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestBufTemplatesRunEachPluginOnce holds every buf template forge writes — the
@@ -82,7 +80,6 @@ func TestBufTemplatesRunEachPluginOnce(t *testing.T) {
 // TestBufTemplatesRunEachPluginOnce checks, so a new template cannot dodge
 // the guard by living somewhere it does not look.
 func TestEveryBufTemplateEmitterIsGuarded(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 
 	guarded := map[string]bool{
@@ -136,7 +133,6 @@ func TestEveryBufTemplateEmitterIsGuarded(t *testing.T) {
 // TestCheckBufPluginStrategies proves the checker catches each failure mode,
 // so the guard above cannot pass by decoding nothing.
 func TestCheckBufPluginStrategies(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 
 	cases := []struct {

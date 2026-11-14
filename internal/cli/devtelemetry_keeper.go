@@ -63,20 +63,17 @@ const devTelemetryKeeperName = "telemetry-keeper"
 // devTelemetryKeeperSpec is everything the keeper needs, as `env up` decided
 // it. .forge/obs/keeper-<env>.json.
 type devTelemetryKeeperSpec struct {
-	ProjectDir    string                 `json:"project_dir"`
-	Env           string                 `json:"env"`
-	Project       string                 `json:"project"`
-	Endpoint      cloud.Endpoint         `json:"endpoint"`
-	Session       release.LocalSession   `json:"session"`
-	Retention     *devTelemetryRetention `json:"retention,omitempty"`
-	SessionReplay bool                   `json:"session_replay,omitempty"`
-	Frontends     []FrontendEntity       `json:"frontends,omitempty"`
+	ProjectDir string                 `json:"project_dir"`
+	Env        string                 `json:"env"`
+	Project    string                 `json:"project"`
+	Endpoint   cloud.Endpoint         `json:"endpoint"`
+	Session    release.LocalSession   `json:"session"`
+	Retention  *devTelemetryRetention `json:"retention,omitempty"`
 	// The grant the keeper starts from: when the current tokens were
 	// minted and expire, and the retention the control plane granted.
-	MintedAt      time.Time              `json:"minted_at"`
-	ExpiresAt     time.Time              `json:"expires_at"`
-	Granted       devtelemetry.Retention `json:"granted"`
-	GrantedReplay bool                   `json:"granted_replay,omitempty"`
+	MintedAt  time.Time              `json:"minted_at"`
+	ExpiresAt time.Time              `json:"expires_at"`
+	Granted   devtelemetry.Retention `json:"granted"`
 	// InstanceID is the control plane's instance id of the grant. The keeper
 	// runs only while backend-<env>.json still records it (cloud).
 	InstanceID string `json:"instance_id"`
@@ -94,8 +91,7 @@ func (r *devTelemetryRun) keeperSpec() devTelemetryKeeperSpec {
 	return devTelemetryKeeperSpec{
 		ProjectDir: r.projectDir, Env: r.env, Project: r.project,
 		Endpoint: r.endpoint, Session: r.session, Retention: r.retention,
-		SessionReplay: r.sessionReplay, Frontends: r.frontends,
-		MintedAt: g.mintedAt, ExpiresAt: g.expires, Granted: g.Retention, GrantedReplay: g.SessionReplay,
+		MintedAt: g.mintedAt, ExpiresAt: g.expires, Granted: g.Retention,
 		InstanceID: g.Instance.ID,
 	}
 }
@@ -183,9 +179,8 @@ func runDevTelemetryKeeper(ctx context.Context, spec devTelemetryKeeperSpec, cal
 	run := &devTelemetryRun{
 		projectDir: spec.ProjectDir, env: spec.Env, project: spec.Project,
 		client: caller, sessionID: spec.Session.ID, retention: spec.Retention,
-		sessionReplay: spec.SessionReplay, frontends: spec.Frontends, log: log,
 		endpoint: spec.Endpoint, session: spec.Session, stillHosted: owns,
-		grant: devTelemetryGrant{mintedAt: spec.MintedAt, expires: spec.ExpiresAt, Retention: spec.Granted, SessionReplay: spec.GrantedReplay},
+		grant: devTelemetryGrant{mintedAt: spec.MintedAt, expires: spec.ExpiresAt, Retention: spec.Granted},
 	}
 	sess := &upSession{
 		reporter:       ownedReporter{inner: reporter, owns: owns, stop: stop},

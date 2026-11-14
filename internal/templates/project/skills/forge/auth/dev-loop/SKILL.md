@@ -25,14 +25,7 @@ forge env up dev
 
 It is scaffolded only for a project that declares a **frontend** — a project authenticating with API keys, a worker, or a service with no browser never gets it.
 
-**Most of the IdP is DECLARED, not provisioned.** `idp-steps.yaml`, next to the compose file, describes the instance, the organization, the human you sign in as, and a service account; Zitadel converges to it on first boot, writing that service account's personal access token beside the IdP's database (`~/.forge/idp/<host>_<port>_<database>/pat.txt`, so a second clone whose IdP shares that database finds it) and copying it to `.forge/idp/pat.txt`.
-
-**Where the PAT lives, and going back.**
-- Zitadel writes the token only when it initializes its database. forge keeps it beside that database, in `~/.forge/idp/<key>/pat.txt`, where `<key>` is `localhost_<idp_database_port>_<idp_database>` (`ls ~/.forge/idp/` shows it).
-- forge keeps `.forge/idp/pat.txt` as a copy, owner-only. It reads that copy when the shared file is missing, and publishes it to the shared file once it has signed in with it.
-- An older forge reads only `.forge/idp/pat.txt`, so pinning back to one keeps working.
-- To restore a copy by hand: `install -m 600 ~/.forge/idp/<key>/pat.txt .forge/idp/pat.txt`, or the reverse with a token you know works against this database.
-- None of this touches the IdP's database or its users.
+**Most of the IdP is DECLARED, not provisioned.** `idp-steps.yaml`, next to the compose file, describes the instance, the organization, the human you sign in as, and a service account; Zitadel converges to it on first boot, writing that service account's personal access token to `.forge/idp/pat.txt`.
 
 The launch banner prints where to sign in and the credentials. The account is the one `idp-steps.yaml` declares — `admin@<project>.localhost`, password `Password1!` — and that file is where you change it. Editing it later does nothing on its own: the steps run ONCE, when the instance is created (the file says how to rebuild).
 

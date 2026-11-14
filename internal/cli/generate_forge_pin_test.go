@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // forge.yaml's forge_version used to move only under `forge project upgrade`.
@@ -38,7 +37,6 @@ func writePinProject(t *testing.T, forgeYAML, goMod string) (string, *pipelineCo
 }
 
 func TestReconcileForgePin_FollowsGoModRequire(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	const forgeYAML = "# my manifest\nname: app\nmodule_path: example.com/app\nforge_version: v0.1.17 # pinned\n"
 	dir, ctx := writePinProject(t, forgeYAML,
 		"module example.com/app\n\ngo 1.24\n\nrequire (\n\tgithub.com/reliant-labs/forge v0.1.18\n\tgolang.org/x/mod v0.41.0\n)\n")
@@ -85,7 +83,6 @@ func TestReconcileForgePin_NoForgeRequireLeavesPin(t *testing.T) {
 // it. Generate leaves the pin and names both commands. A codemod with
 // nothing to rewrite here holds nothing back.
 func TestReconcileForgePin_HopNeedingUpgradeIsLeftToUpgrade(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	const forgeYAML = "name: app\nmodule_path: example.com/app\nforge_version: v0.1.45\n"
 	const goMod = "module example.com/app\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge v0.1.46\n"
 

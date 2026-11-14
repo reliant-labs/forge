@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kcltest"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // twoRootFixture: AppConfig {port, database_url (required, sensitive),
@@ -79,7 +78,6 @@ func writeRootsKCLProjectModule(t *testing.T, module, main string) string {
 }
 
 func TestRootsKCL_TwoRootsRenderDisjointEnv(t *testing.T) {
-	testkit.Slow(t, "execs kcl")
 	_, roots := twoRootFixture()
 	src := RootsKCL(roots)
 	for _, want := range []string{
@@ -158,7 +156,6 @@ worker_args = _worker.args
 }
 
 func TestRootsKCL_RefusesAnUnknownRootAndAnUnreachedSecret(t *testing.T) {
-	testkit.Slow(t, "execs kcl")
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH")
 	}

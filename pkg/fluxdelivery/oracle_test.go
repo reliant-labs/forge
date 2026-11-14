@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -225,12 +224,6 @@ func fluxOperatorBinary(t *testing.T) string {
 		func(ctx context.Context, stage string) error {
 			return installFluxOperator(ctx, platform, sum, stage)
 		})
-	var unavailable *releaseUnavailableError
-	if errors.As(err, &unavailable) {
-		// GitHub's release download is down (a 5xx or no connection): the
-		// host cannot reach the oracle, which is no fault of Render.
-		t.Skipf("host resource missing: the flux-operator %s release download is unreachable: %v", fluxOperatorVersion, err)
-	}
 	if err != nil {
 		t.Fatalf("installing flux-operator %s: %v", fluxOperatorVersion, err)
 	}
@@ -239,14 +232,6 @@ func fluxOperatorBinary(t *testing.T) string {
 	}
 	return filepath.Join(dir, "flux-operator")
 }
-
-// releaseUnavailableError is a download the host could not complete: no
-// connection, or a 5xx from GitHub. A 4xx (a wrong version) and a checksum
-// mismatch stay real failures.
-type releaseUnavailableError struct{ err error }
-
-func (e *releaseUnavailableError) Error() string { return e.err.Error() }
-func (e *releaseUnavailableError) Unwrap() error { return e.err }
 
 func installFluxOperator(ctx context.Context, platform, sum, stage string) error {
 	url := fmt.Sprintf("https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/v%[1]s/flux-operator_%[1]s_%[2]s.tar.gz",
@@ -257,12 +242,9 @@ func installFluxOperator(ctx context.Context, platform, sum, stage string) error
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return &releaseUnavailableError{err}
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 500 {
-		return &releaseUnavailableError{fmt.Errorf("GET %s: %s", url, resp.Status)}
-	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %s", url, resp.Status)
 	}

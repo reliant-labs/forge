@@ -405,7 +405,6 @@ const filterDefs = [
                      double and cannot hold every int64. */}}
               type="{{if and (eq .Kind "number") (not .IsBigInt)}}number{{else if eq .Kind "number"}}text{{else}}search{{end}}"
               aria-label="Filter by {{.Label | lower}}"
-              inputSize="sm"
               value={ {{.Name}}Input }
               onChange={(e) => {
                 set{{.NamePascal}}Input(e.target.value);

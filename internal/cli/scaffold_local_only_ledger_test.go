@@ -10,7 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const localOnlyStore = "secrets/dev.yaml"
@@ -61,7 +60,6 @@ func readLedgerBytes(t *testing.T, dir string) []byte {
 // file exists in the checkout (a developer's tree) or not (a clean clone, CI) —
 // and a clean clone must still get the store written.
 func TestScaffoldLedger_GitignoredSecretStoreIsNotRecorded(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := scaffoldWorkloadModelProject(t)
 	store := filepath.Join(dir, filepath.FromSlash(localOnlyStore))
 	if _, err := os.Stat(store); err != nil {
@@ -96,7 +94,6 @@ func TestScaffoldLedger_GitignoredSecretStoreIsNotRecorded(t *testing.T) {
 // on its next generate — the entry, and its absent_reported echo, are dropped,
 // and a clean clone that the entry used to leave without a store gets one.
 func TestScaffoldLedger_LegacyLocalOnlyEntryConverges(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := scaffoldWorkloadModelProject(t)
 	clean := readLedgerBytes(t, dir)
 

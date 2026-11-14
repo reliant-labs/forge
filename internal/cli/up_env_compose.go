@@ -62,11 +62,6 @@ type managedProcess struct {
 	pid     int
 	done    chan struct{} // closed after Wait; synchronizes access to waitErr
 	waitErr error
-	// drained is closed once the child's output streams reached EOF and its
-	// log tee is closed; nil when its output goes straight to a file. It is
-	// independent of done: a descendant holding the pipes keeps them open
-	// after the child itself has exited and been reaped.
-	drained chan struct{}
 }
 
 // loadProjectConfigEnv resolves the per-env app config from

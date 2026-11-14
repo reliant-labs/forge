@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // reliantDevFixture is reliant's deploy/kcl/dev (reliant#2412), minimized to
@@ -67,7 +65,6 @@ func TestEnvUpDeployPhaseRunsSignedOutOnALocalControlPlaneEnv(t *testing.T) {
 // The same with a credential and a control plane that is down: the ledger's
 // read fails on the transport, and the local stack starts anyway.
 func TestEnvUpDeployPhaseRunsWithTheControlPlaneUnreachable(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "reliant")
 	declareEnvDir(t, dir, "dev")
 	signedOut(t)
@@ -86,7 +83,6 @@ func TestEnvUpDeployPhaseRunsWithTheControlPlaneUnreachable(t *testing.T) {
 // closed under it, signed out or with the control plane down: there the
 // ledger's pins decide which images ship.
 func TestEnvUpDeployPhaseFailsClosedForAnEnvNotOnlyOnThisMachine(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	host := `{"name":"api","kind":"service","runtime":{"type":"host"}}`
 	for _, tc := range []struct {
 		name, extra string

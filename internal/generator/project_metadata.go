@@ -80,12 +80,6 @@ type ProjectMemoryData struct {
 	// like every other fact about a project's shape, so no flag can disagree
 	// with what is on disk.
 	Site bool
-	// Container reports an adopted app forge did not write: workloads in
-	// deploy/kcl/workloads.k and no Go module (no go.mod, no module_path)
-	// or root frontend — a server in any language deployed from its own
-	// Dockerfile (the `adopt` skill). Its memory is the any-language quick
-	// reference. Derived from the tree like Site (cli.RenderProjectMemory).
-	Container bool
 }
 
 // writeProjectJSON writes the immutable project metadata JSON under .reliant/.

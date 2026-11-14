@@ -12,7 +12,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/configproto"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A scaffold whose writes are generate INPUTS must end with a generate run, or
@@ -46,7 +45,6 @@ func TestRunFrontend_CodegenSwitchedOffWritesNoConfigProto(t *testing.T) {
 }
 
 func TestRunFrontend_EndsWithGenerate(t *testing.T) {
-	testkit.Slow(t, "scaffolds a whole frontend and runs generate")
 	for _, tc := range []struct {
 		name       string
 		noGenerate bool

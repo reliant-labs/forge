@@ -114,9 +114,7 @@ permissions:
 #   test-short-warm   the whole -short tier, then the guards (full mode, -p 1);
 #                     saves the build cache test-short restores and the
 #                     module cache
-#   build             the release build, go-licenses, govulncheck, the
-#                     ClickHouse integration tests (pkg/obsquery, pkg/alerting)
-#                     and the other container-backed integration tests
+#   build             the release build, go-licenses, govulncheck
 #   windows           native Windows: build, vet, -short tests, smoke
 #
 # FEWER JOBS. The org runs at most 20 jobs at once across every repository,
@@ -935,49 +933,6 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
-      # pkg/obsquery's SQL and pkg/alerting's rules evaluated by a real
-      # ClickHouse (the `integration` build tag). No lane ran them until
-      # forge#1870: one was red on main for days and nobody saw it. They start
-      # one throwaway ClickHouse container per test (the runner's docker; the
-      # image pinned by digest in the tests), ~22 of them one after another,
-      # about 8 minutes: too slow for the pull-request tier, and the reason
-      # they are here rather than in `test`. This job ran ~4.5 minutes beside
-      # `test`'s ~19, so it adds a step, not a job and not wall time.
-      # Under CI a missing docker or an image that will not pull FAILS these
-      # tests (testdocker.Unavailable) instead of skipping them green. No
-      # -race: both packages' unit tests run under it in `test`, and this job's
-      # cache scope holds no -race artifacts to start from.
-      # internal/ciguard's TestIntegrationPackagesRunOnMain holds this step to
-      # the push-to-main tier.
-      - name: ClickHouse integration (pkg/obsquery, pkg/alerting)
-        if: ${{ !cancelled() }}
-        run: go test -tags=integration -count=1 -timeout=20m ./pkg/obsquery ./pkg/alerting
-      # The rest of forge's `integration`-tagged tests, which no lane ran
-      # either until decision 17 of the 2026-11-10 triage: db squash against
-      # real Postgres containers, OpenBao (the secret-store writer, and the
-      # cluster-connect issuer login, which also needs envtest's apiserver),
-      # a reproducible docker build, the scaffolded Dockerfile's time zones,
-      # the scaffolded MinIO and ClickStack compose services
-      # (RUN_CLICKSTACK_CONTRACT: ~2 GB of images), pgstore on a real
-      # Postgres, blobstore on MinIO, migratekit behind PgBouncer, and
-      # testkit.Slow's skip in this lane. About 4 minutes locally, the
-      # packages in parallel. -run names the integration tests alone, so
-      # internal/cli's and internal/templates' unit suites (which `test-cli`
-      # and `test` run) are not run again here; internal/ciguard fails the
-      # step if an integration test of a named package is missing from it.
-      # Under CI a missing docker or an image that will not pull FAILS these
-      # (testdocker.Unavailable). setup-envtest is held at go.mod's
-      # controller-runtime, and the assets at the k8s.io/api minor.
-      - name: Container integration (internal/cli, internal/templates, pkg/...)
-        if: ${{ !cancelled() }}
-        env:
-          RUN_CLICKSTACK_CONTRACT: "1"
-        run: |
-          KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use -p path 1.37.0)"
-          export KUBEBUILDER_ASSETS
-          go test -tags=integration -count=1 -timeout=25m \
-            -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
-            ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
 
   # Every check that is not a Go test, in one job (they were the Verify
   # Generated Code and Quick checks jobs, and before those the pre-commit and

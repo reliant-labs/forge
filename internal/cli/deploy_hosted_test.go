@@ -479,37 +479,40 @@ func TestHostedDeployRefusals(t *testing.T) {
 		}
 	})
 
-	// The env declares its registry, and a workload forge does NOT build
-	// names an image on a DIFFERENT one: a third-party image. It used to be
-	// refused here (the platform pulls only from its own registry); now the
-	// cut MIRRORS it into the push base, pinned by digest, and the deploy
-	// publishes the copy (report 2af7cf85). The push-base refusal itself is
-	// covered where it lives (deploytarget: checkImagePushBase), and a BUILT
-	// off-base image is refused at render (env_render_hosted_image_test.go).
-	t.Run("foreign registry is mirrored", func(t *testing.T) {
+	// The env declares its registry, and the workload names an image on a
+	// DIFFERENT one — the mistake ADR-0003 F1 is about. Refused before any
+	// EnsureDeployment or publish, so it costs no write.
+	//
+	// The off-base case is produced by DECLARING a foreign host rather than
+	// by a server reply, because the base is forge's own composition now;
+	// the server advertises none.
+	// MUTATION VERIFIED RED: deleting checkImagePushBase from Deploy.
+	t.Run("foreign registry", func(t *testing.T) {
 		fake, _ := setup(t, `        image = "ghcr.io/elsewhere/api:v1"
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
         env = {GREETING = forge.ManagedSecret {name = "GREETING"}}`)
-		var mirrored []string
-		prev := hostedImageMirror
-		hostedImageMirror = func(_ context.Context, source, destination string) (deploytarget.MirroredImage, error) {
-			mirrored = append(mirrored, source+" -> "+destination)
-			return deploytarget.MirroredImage{Digest: hostedTestDigest, Platforms: []string{"linux/amd64"}}, nil
+		prev := hostedBackendDigestResolver
+		hostedBackendDigestResolver = func(_ context.Context, _ string) (string, []string, error) {
+			return hostedTestDigest, []string{"linux/amd64"}, nil
 		}
-		t.Cleanup(func() { hostedImageMirror = prev })
+		t.Cleanup(func() { hostedBackendDigestResolver = prev })
 		if _, err := runForge(t, "env", "build", "hosted", "--release", "v1", "--no-build"); err != nil {
 			t.Fatal(err)
 		}
-		mirror := testHostedPushBase + "/elsewhere/api"
-		if len(mirrored) != 1 || mirrored[0] != "ghcr.io/elsewhere/api:v1 -> "+mirror {
-			t.Fatalf("mirrored = %v, want the third-party image copied to %s", mirrored, mirror)
+		fake.bodies = nil
+		_, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait")
+		// The fix, as of ADR-0003 F1: the author drops the registry host
+		// and forge composes the platform's base onto the bare name. They
+		// do not push this image anywhere themselves.
+		if err == nil || !strings.Contains(err.Error(), "drop the registry host") ||
+			!strings.Contains(err.Error(), testHostedPushBase+"/api") {
+			t.Fatalf("err = %v, want the push-base refusal naming the drop-the-host fix", err)
 		}
-		rel, ok := fake.releases["v1"]
-		if !ok || len(rel.Artifacts) != 1 || rel.Artifacts[0].Name != mirror || rel.Artifacts[0].Digest != hostedTestDigest {
-			t.Fatalf("cut release = %+v, want one artifact %s@%s", rel, mirror, hostedTestDigest)
-		}
-		if _, err := runForge(t, "env", "deploy", "hosted", "v1", "--yes", "--no-wait"); err != nil {
-			t.Fatalf("a mirrored third-party image must deploy: %v", err)
+		for _, b := range fake.bodies {
+			switch b.Path[strings.LastIndex(b.Path, "/")+1:] {
+			case "EnsureDeployment", "PublishDeploymentConfig":
+				t.Fatalf("%s called before the push-base refusal", b.Path)
+			}
 		}
 	})
 }

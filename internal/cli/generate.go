@@ -709,7 +709,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// unless a step failed soft, in which case its outputs were not
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
-	return softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
+	return softFailureOutcome(os.Stdout, ctx.SoftFailures)
 }
 
 // runPipelineSteps runs, in order, every step whose gate passes and returns
@@ -743,18 +743,9 @@ func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep
 		stepStart := time.Now()
 		// A step that outlives the 15s heartbeat interval says which one it is, on
 		// stderr, so a caller with a no-output cut-off sees the run is alive.
-		// On a terminal that is one status line redrawn in place, so the
-		// step's own lines are held until it ends and the line is erased —
-		// printed meanwhile, they would be glued onto it.
-		err = func() error {
-			// The beat takes the terminal before the hold, and stops
-			// (erasing its line) before the held lines are printed.
-			stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
-			release := cliutil.HoldOutputOnTerminal()
-			defer release()
-			defer stopBeat()
-			return step.Run(ctx)
-		}()
+		stopBeat := cliutil.Heartbeat(os.Stderr, "generate: "+step.Name)
+		err = step.Run(ctx)
+		stopBeat()
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}
@@ -845,22 +836,12 @@ func (e *generateInterruptedError) Unwrap() error { return e.stepErr }
 // them as the last thing the run prints, and fails the run with them. The
 // run's other writes stand, but exit 0 is read as success by every agent,
 // script and CI gate, and this run did not produce everything it should.
-//
-// Each step's cause rides along in both, so a log kept only to its tail
-// still says why the step failed.
-func softFailureOutcome(w io.Writer, failed []string, causes map[string]softFailureCause) error {
+func softFailureOutcome(w io.Writer, failed []string) error {
 	if len(failed) == 0 {
 		return nil
 	}
 	printSoftFailures(w, failed)
-	texts := make([]string, len(failed))
-	for i, step := range failed {
-		texts[i] = causes[step].text()
-		if texts[i] != "" {
-			fmt.Fprintf(w, "   • %s: %s\n", step, texts[i])
-		}
-	}
-	return &factory.StepsFailedError{Steps: slices.Clone(failed), Causes: texts}
+	return &factory.StepsFailedError{Steps: slices.Clone(failed)}
 }
 
 // beginGenerateRun opens the per-run process state a pipeline run owns and

@@ -1,7 +1,6 @@
 import React, { useRef } from "react";
 import SidebarLayout, { type SidebarLayoutProps } from "./sidebar_layout";
-import Modal, { type ModalProps } from "./modal";
-import { useModalDialog } from "./modal_dialog";
+import Modal, { type ModalProps, useModalDialog } from "./modal";
 
 // Existing consumer surfaces remain unchanged; the shared lifecycle is additive.
 const sidebar: SidebarLayoutProps = {

@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestEnvReportsSessionsAgreesWithTheEnvKind is the consistency check.
@@ -77,7 +76,6 @@ func TestEnvReportsSessionsAgreesWithTheEnvKind(t *testing.T) {
 // default: no control plane declared means this machine's ledger, which is
 // the same answer ledgerForEntities gives.
 func TestSessionTargetUsesTheMachineLedgerForASelfManagedProject(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "f6b-machine")
 	entities := &KCLEntities{Workloads: []WorkloadEntity{hostWL("api")}}
 
@@ -112,7 +110,6 @@ func TestSessionTargetUsesTheMachineLedgerForASelfManagedProject(t *testing.T) {
 // client that ledger is ALREADY holding rather than a second resolution of
 // the endpoint and credential.
 func TestSessionTargetFollowsTheHostedLedger(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "f6b-hosted")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 	entities := &KCLEntities{

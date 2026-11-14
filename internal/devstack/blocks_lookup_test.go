@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // LookupBlock is the read-only half of the registry: it answers for a key that
@@ -13,7 +11,6 @@ import (
 // case does it write the registry or create the lock — even past the ceiling,
 // where an allocation would be refused.
 func TestLookupBlockNeverWrites(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	SetMaxStacks(2)
 	t.Cleanup(func() { SetMaxStacks(0) })

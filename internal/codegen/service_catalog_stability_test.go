@@ -18,7 +18,6 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/pkg/servicecatalog"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The committed catalog is merged by a queue: any pull request ahead of yours
@@ -343,7 +342,6 @@ func TestServiceCatalogUnicodeSymbolsRoundTrip(t *testing.T) {
 // inputs. Nothing else in the file (no fingerprint, no certificate in
 // .forge/hashes.json) changes with them.
 func TestServiceCatalogIndependentChangesMergeToTheRender(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

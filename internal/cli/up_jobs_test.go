@@ -12,7 +12,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // job is a HOST-bound job workload whose argv is spec.command (verbatim).
@@ -135,7 +134,6 @@ func TestOrderJobs_StableForIndependentJobs(t *testing.T) {
 // The whole point of the primitive: a job that exits non-zero must STOP
 // the up, naming what it gated, rather than letting the dependents run.
 func TestRunOneHostJob_FailureIsFailClosed(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	j := job("provision", []string{"sh", "-c", "echo provisioning failed >&2; exit 3"}, "api")
 	err := runOneHostJob(context.Background(), nil, j, nil, "")
 	if err == nil {
@@ -149,7 +147,6 @@ func TestRunOneHostJob_FailureIsFailClosed(t *testing.T) {
 }
 
 func TestRunOneHostJob_SuccessRunsToCompletion(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	marker := filepath.Join(t.TempDir(), "ran")
 	j := job("provision", []string{"sh", "-c", "echo done > " + shPath(marker)})
 	if err := runOneHostJob(context.Background(), nil, j, nil, ""); err != nil {
@@ -184,7 +181,6 @@ func TestRunOneHostJob_TimeoutIsReported(t *testing.T) {
 
 // The job's own spec.env reaches the process.
 func TestRunOneHostJob_EnvVarsReachTheProcess(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	marker := filepath.Join(t.TempDir(), "env")
 	j := job("provision", []string{"sh", "-c", "echo $IDP_URL > " + shPath(marker)})
 	j.Spec.Env = []deployv1alpha1.EnvVar{{Name: "IDP_URL", Value: "http://idp:8080"}}
@@ -210,7 +206,6 @@ func TestRunHostJobs_NoJobsIsANoop(t *testing.T) {
 
 // Ordering across a multi-job sequence, observed by the jobs themselves.
 func TestRunHostJobs_RunsInDependencyOrder(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	log := filepath.Join(t.TempDir(), "order")
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		svc("api"),
@@ -234,7 +229,6 @@ func TestRunHostJobs_RunsInDependencyOrder(t *testing.T) {
 
 // A failing job stops the sequence: the jobs after it never run.
 func TestRunHostJobs_StopsAtFirstFailure(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	log := filepath.Join(t.TempDir(), "order")
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		svc("api"),
@@ -307,7 +301,6 @@ func TestValidateJobOrdering_TwoBroadcastJobsAreNotACycle(t *testing.T) {
 // the (empty) name list would score it zero and run the migration after
 // the seed job it is supposed to precede.
 func TestRunHostJobs_BroadcastRunsBeforeOtherJobs(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	log := filepath.Join(t.TempDir(), "order")
 	e := &KCLEntities{Workloads: []WorkloadEntity{
 		svc("api"),
@@ -372,7 +365,6 @@ func slicesEqual(a, b []string) bool {
 // would orphan that grandchild still running, which is a deadline in name
 // only — so the test also proves the whole tree is gone.
 func TestRunOneHostJob_ActiveDeadlineKillsTheProcessTree(t *testing.T) {
-	testkit.Slow(t, "execs sh and ps")
 	if runtime.GOOS == "windows" {
 		// The grandchild's pid comes from sh's $!, which under the Windows
 		// runner's sh (MSYS) is an MSYS pid, not a Windows one — processAlive
@@ -434,7 +426,6 @@ func TestJobDeadline(t *testing.T) {
 // A failed deadline stops the up when the job gates something, exactly like
 // any other job failure: the gated workload's job ordering never proceeds.
 func TestRunHostJobs_DeadlineFailureStopsTheGatedJobs(t *testing.T) {
-	testkit.Slow(t, "execs sh and ps")
 	marker := filepath.Join(t.TempDir(), "second-ran")
 	deadline := int64(1)
 	slow := job("slow", []string{"sh", "-c", "sleep 30"}, "after")
@@ -455,7 +446,6 @@ func TestRunHostJobs_DeadlineFailureStopsTheGatedJobs(t *testing.T) {
 // the summary pointed at migrate.log / idp-provision.log files that did not
 // exist. The output must reach both.
 func TestRunOneHostJob_OutputLandsInTheLogTheSummaryNames(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	projectDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: logs\n"), 0o644); err != nil {
 		t.Fatal(err)

@@ -15,7 +15,6 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 var updateTopologyGoldens = flag.Bool("update-topology", false, "rewrite the forge env status (all-envs) golden files")
@@ -225,7 +224,6 @@ func assertTopologyGolden(t *testing.T, name, got string) {
 }
 
 func TestTopologyGolden(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	cases := []struct {
 		name   string
 		json   bool

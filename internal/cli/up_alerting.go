@@ -57,11 +57,11 @@ type localAlerting struct {
 // evaluator's rules document for env. A no-op when the env runs no local
 // loop. store is the env's secret store (receiver secrets are read from it
 // by key and written as files; their values never reach the config).
-func prepareLocalAlerting(ctx context.Context, projectDir, env string, e *KCLEntities, store map[string]string) (*localAlerting, error) {
+func prepareLocalAlerting(projectDir, env string, e *KCLEntities, store map[string]string) (*localAlerting, error) {
 	if !localAlertingOn(e) {
 		return nil, nil
 	}
-	alerts, routes, err := resolveShapeAlerts(ctx, os.Stderr, projectDir, env, e)
+	alerts, routes, err := resolveShapeAlerts(projectDir, env, e)
 	if err != nil {
 		return nil, err
 	}

@@ -53,12 +53,5 @@ COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS 'forge:closed-set
 		!strings.Contains(f.FixHint, "ADD CONSTRAINT access_tokens_scopes CHECK (scopes <@ ARRAY['deploy:read', 'deploy:write', 'deploy:config:read', 'billing:read', 'cluster:manage'") {
 		t.Errorf("fix hint: %s", f.FixHint)
 	}
-	// A widening's hint carries both migrations: the CHECK added NOT VALID,
-	// then its validation in the migration after.
-	if !strings.Contains(f.FixHint, "]::text[]) NOT VALID;") ||
-		!strings.Contains(f.FixHint, "into the migration after it") ||
-		!strings.Contains(f.FixHint, "ALTER TABLE access_tokens VALIDATE CONSTRAINT access_tokens_scopes;") {
-		t.Errorf("fix hint lacks the NOT VALID + VALIDATE pair: %s", f.FixHint)
-	}
 
 }

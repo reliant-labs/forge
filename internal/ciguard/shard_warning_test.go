@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestShardSurfacesPassingTestWarnings pins scripts/ci-test-shard.sh's
@@ -20,7 +18,6 @@ import (
 // output stays dropped, and the shard still exits with the test command's
 // status.
 func TestShardSurfacesPassingTestWarnings(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	const warning = "::warning title=Skill headroom::deploy is 851 of 1000 bytes (85%, over the 85% headroom line): split a separable section into a sub-skill before it reaches the cap"
 	const noise = "ordinary passing output that must stay suppressed"
 	for _, tc := range []struct {

@@ -4,9 +4,8 @@ import { FormFieldContext } from "./form_field_context";
 
 /**
  * Textarea — generic multi-line text primitive, the `<Input>`'s sibling. Wraps
- * a native <textarea> with the same radius, border, fill, placeholder, focus
- * ring, invalid and disabled styling (input.tsx's header names the one field),
- * so a form that mixes the two reads as one control family. All
+ * a native <textarea> with the same border, focus ring, invalid and disabled
+ * styling, so a form that mixes the two reads as one control family. All
  * standard <textarea> attributes (rows, value, onChange, maxLength, ...) are
  * forwarded; pass `className` to extend or override.
  *
@@ -28,7 +27,7 @@ export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextArea
 }
 
 const sizeStyles: Record<TextareaSize, string> = {
-  sm: "min-h-16 px-2.5 py-1.5 text-sm",
+  sm: "min-h-16 px-2.5 py-1.5 text-xs",
   md: "min-h-20 px-3 py-2 text-sm",
   lg: "min-h-24 px-3.5 py-2.5 text-base",
 };
@@ -49,12 +48,12 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(function T
 
   const composed = [
     "block w-full rounded-md border bg-surface",
-    "text-ink placeholder:text-ink-subtle transition-colors",
-    "focus:outline-none focus-visible:ring-2",
+    "placeholder:text-ink-subtle",
+    "focus:outline-none focus:ring-1",
     "disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-ink-muted",
     invalid
-      ? "border-danger focus-visible:ring-danger"
-      : "border-border-strong hover:border-ink-muted focus-visible:ring-accent",
+      ? "border-danger focus:border-danger focus:ring-danger"
+      : "border-border-strong focus:border-accent focus:ring-accent",
     sizeStyles[textareaSize],
     resizeStyles[resize],
     className ?? "",

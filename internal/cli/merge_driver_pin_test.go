@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The generated-file merge driver merges only as the forge the project pins.
@@ -130,7 +128,6 @@ func runMergeDriver(t *testing.T, repo, relPath, base, ours, theirs string) (mer
 
 // A driver that is not the pinned forge hands the merge to the pinned one.
 func TestMergeGenerated_DelegatesToThePinnedForge(t *testing.T) {
-	testkit.Slow(t, "execs git and sh")
 	repo := pinTestRepo(t)
 	setPinCheck(t, true)
 	pinned := filepath.Join(t.TempDir(), "pinned-forge")
@@ -155,7 +152,6 @@ func TestMergeGenerated_DelegatesToThePinnedForge(t *testing.T) {
 // hands it the merge: a fresh worktree, or a pool checkout whose scripts opt
 // out of the driver wiring, still merges by the pinned forge's rules.
 func TestMergeGenerated_InstallsThePinnedForgeWhenNoneHasRun(t *testing.T) {
-	testkit.Slow(t, "execs git and sh")
 	repo := pinTestRepo(t)
 	setPinCheck(t, true)
 	var installed []string
@@ -183,7 +179,6 @@ func TestMergeGenerated_InstallsThePinnedForgeWhenNoneHasRun(t *testing.T) {
 // leave it unresolved even when the text merges cleanly: the pinned forge
 // never ran. Never apply this driver's own fingerprint rules.
 func TestMergeGenerated_WithoutThePinnedForgeMergesAsGitDoes(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	repo := pinTestRepo(t)
 	setPinCheck(t, true)
 	base := "// forge:hash=aaaa\nx := 1\n"

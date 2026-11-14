@@ -35,10 +35,6 @@ const (
 	forgeUpEnvVar     = "FORGE_UP_ENV"
 	forgeUpServiceVar = "FORGE_UP_SERVICE"
 	forgeUpProjectVar = "FORGE_UP_PROJECT"
-	// forgeUpRunVar names the ONE `forge env up` run that started a process.
-	// The run's own shutdown sweeps for it, so a process its runner detached
-	// is still stopped, and nothing another run started ever is.
-	forgeUpRunVar = "FORGE_UP_RUN"
 )
 
 // projectIDForDir hashes a project directory into a short, stable id that is

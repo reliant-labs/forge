@@ -88,11 +88,6 @@ type fakeDeployService struct {
 	// what a control plane does for a deploy that needs billing the org
 	// has not set up.
 	queueOn []deploytarget.HostedHold
-
-	// evidence, when set, makes this fake a control plane that serves
-	// GetCapabilities and takes evidence snapshot seals (see
-	// env_build_evidence_test.go). Nil is a control plane that predates both.
-	evidence *fakeEvidenceSeals
 }
 
 // hasPromotion reports whether any env holds a promotion of this id. Called
@@ -229,9 +224,6 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		envID := str("environmentId")
 		if envName(envID) == "" {
 			connectErr(w, http.StatusNotFound, "not_found", "no such environment")
-			return
-		}
-		if f.evidence != nil && f.evidence.recordBundle(w, body) {
 			return
 		}
 		manifest, _ := base64.StdEncoding.DecodeString(str("manifest"))
@@ -597,13 +589,6 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rows = []map[string]any{}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"convergences": rows})
-
-	case "/controlplane.v1.DeployService/GetCapabilities":
-		if f.evidence == nil {
-			connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(f.evidence.capabilities())
 
 	default:
 		connectErr(w, http.StatusNotFound, "unimplemented", "no such procedure "+r.URL.Path)

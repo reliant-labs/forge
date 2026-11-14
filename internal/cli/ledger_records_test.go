@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func testRecordStore(t *testing.T, dir string) machineRecordStore {
@@ -61,7 +60,6 @@ func testShape() release.Shape {
 // safely re-runnable (failure mode F-3) — the alternative, two records for
 // one digest, would make "which bundle is applied" ambiguous.
 func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-project")
 	var recorder bundleRecorder = testRecordStore(t, dir)
 	ctx := context.Background()
@@ -115,7 +113,6 @@ func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
 // deliberately distinct from failed, because "we could not look" is its own
 // answer and a stored "assume success" would be a lie (failure mode F-2).
 func TestMachineLedgerApplyStorage_JoinsOutcomesAndDerivesState(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "apply-project")
 	store := testRecordStore(t, dir).store
 	now := time.Now().UTC().Truncate(time.Second)
@@ -186,7 +183,6 @@ func TestMachineLedgerApplyStorage_JoinsOutcomesAndDerivesState(t *testing.T) {
 // every 60s that appended would grow without bound while saying nothing —
 // the useful fact is the current state of each session.
 func TestSessionReporter_CompactsHeartbeats(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "session-project")
 	var reporter sessionReporter = testRecordStore(t, dir)
 	ctx := context.Background()
@@ -242,7 +238,6 @@ func TestSessionReporter_CompactsHeartbeats(t *testing.T) {
 // (release.Promotion documents "a file ledger leaves it empty"). A per-env
 // gates file fixes that without rewriting history.
 func TestMachineLedger_HoldsPostPromoteGates(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "gates-project")
 	store := testStore(t, dir)
 

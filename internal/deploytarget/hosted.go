@@ -683,9 +683,7 @@ func HostedArtifactName(image string) string {
 // under.
 //
 //   - A spec image that names its registry (ghcr.io/acme/api:v1) is an image
-//     built elsewhere: its own repository, as declared — unless it lies
-//     outside the push base, where forge mirrored it at release time and the
-//     artifact key is the mirror's address under the base.
+//     built elsewhere: its own repository, as declared.
 //   - A registry-less spec image (`api`) is one THIS project builds. Its
 //     repository is where the release recorded pushing it: the artifact's
 //     registry + "/" + the artifact name — the same coordinates
@@ -696,14 +694,6 @@ func HostedArtifactName(image string) string {
 func hostedWorkloadRepository(image, artifact string, group ServiceGroup) (string, error) {
 	repo := HostedImageRepository(image)
 	if hostedImageNamesRegistry(repo) {
-		// A THIRD-PARTY image outside the push base was mirrored into it
-		// at release time, and its artifact key IS the mirror's address
-		// (hostedimage.MirrorRepository). Pin the copy: the declared
-		// registry is one the platform does not pull from.
-		if base := strings.TrimSuffix(hostedPushBase(group), "/"); base != "" &&
-			!strings.HasPrefix(repo+"/", base+"/") && strings.HasPrefix(artifact, base+"/") {
-			return artifact, nil
-		}
 		return repo, nil
 	}
 	// AN ARTIFACT KEY THAT NAMES A REGISTRY IS THE REPOSITORY. A bare hosted
@@ -1221,10 +1211,7 @@ func preflightHostedPlan(group ServiceGroup) ([]hostedPlanItem, error) {
 		registries[artifact] = preflightRegistry
 	}
 	g := group
-	// The push base is kept: a third-party image is previewed at the mirror
-	// address the release will pin (hostedWorkloadRepository), not at its
-	// upstream registry, which the platform would refuse.
-	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries, PushBase: hostedPushBase(group)}
+	g.Hosted = &HostedTarget{Release: "(preflight: no release)", Digests: digests, Registries: registries}
 	return planHostedWith(g, digests)
 }
 

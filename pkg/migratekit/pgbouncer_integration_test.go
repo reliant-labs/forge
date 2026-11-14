@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // The shape the session cap was found in, for real: PG 16 behind a
@@ -51,12 +49,12 @@ func sessionPooler(t *testing.T) string {
 		t.Skip("-short: starts a postgres and a pgbouncer container")
 	}
 	if exec.Command("docker", "version").Run() != nil {
-		testdocker.Unavailable(t, "docker is not available")
+		t.Skip("docker is not available")
 	}
 	for _, image := range []string{pgbouncerImage, pgbouncerPG} {
 		if exec.Command("docker", "image", "inspect", image).Run() != nil {
 			if out, err := exec.Command("docker", "pull", image).CombinedOutput(); err != nil {
-				testdocker.Unavailable(t, "cannot pull %s: %v\n%s", image, err, out)
+				t.Skipf("cannot pull %s: %v\n%s", image, err, out)
 			}
 		}
 	}

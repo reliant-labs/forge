@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // THE REGISTRY IS PER-REPO, NOT PER-DIRECTORY.
@@ -123,7 +121,6 @@ func TestCeilingCountsBlocksFromAnotherWorktree(t *testing.T) {
 // TestNonRepoKeepsLocalRegistry: outside a git checkout there is no anchor to
 // resolve, so the registry stays exactly where it always was.
 func TestNonRepoKeepsLocalRegistry(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir() // not git-init'ed
 	if _, err := AllocateBlock(dir, "wt-a"); err != nil {
 		t.Fatalf("AllocateBlock outside a repo: %v", err)

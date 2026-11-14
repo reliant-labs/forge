@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for the compare-and-set a release deploy asserts — `forge env deploy
@@ -357,7 +356,6 @@ func TestPromote_RetryOfALandedPromoteIsANoOp(t *testing.T) {
 // The FILE ledger (self-managed envs) applies the same compare-and-set,
 // against the history it reads at write time.
 func TestFileLedger_CompareAndSet(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	ctx := context.Background()

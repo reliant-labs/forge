@@ -150,7 +150,7 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 
 ### Checking the whole graph, and what each node knows
 
-`forge lint --graph` fails on a node no root reaches (resolution is scoped by reach, so a project declares its roots one at a time) and on a service whose audience its listener's authenticator does not serve. `forge lint --conventions` reads each component's `Deps` against what it calls (least knowledge), and `forge fix narrow-deps` narrows a field. A pre-graph project keeps `Infra` + `NewComponents` until `forge fix composition-graph`. The rules, severities, migration path and construction rollback: load `architecture/graph-checks`.
+`forge lint --graph` fails on a node no root reaches (resolution is scoped by reach, so a project declares its roots one at a time) and on a service whose audience its listener's authenticator does not serve. `forge lint --conventions` reads each component's `Deps` against what it calls (least knowledge), and `forge fix narrow-deps` narrows a field. A pre-graph project keeps `Infra` + `NewComponents` until `forge fix composition-graph`. The rules, severities and the migration path: load `architecture/graph-checks`.
 
 ## Files NOT to Edit
 

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/pkg/migratekit/compat"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // newMigration runs CreateMigration into a fresh directory and returns the
@@ -33,7 +32,6 @@ func newMigration(t *testing.T, opts *MigrationOptions) string {
 // `forge db migration new --backward-compatible/--breaks-rollback <why>`
 // writes a declaration the migrator and the linter both read, with its reason.
 func TestCreateMigration_WritesTheCompatDeclaration(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	body := newMigration(t, &MigrationOptions{BackwardCompatible: "additive\ncolumn"})
 	if c, b := compat.Declarations(body); len(c) != 1 || c[0].Reason != "additive column" || len(b) != 0 {
 		t.Errorf("--backward-compatible wrote %+v / %+v:\n%s", c, b, body)
@@ -60,7 +58,6 @@ func TestCreateMigration_WritesTheCompatDeclaration(t *testing.T) {
 // both choices as examples the author replaces — and the examples are not
 // themselves a declaration.
 func TestCreateMigration_RequiredDeclarationIsLeftForTheAuthor(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	body := newMigration(t, &MigrationOptions{RequireCompatDeclaration: true})
 	if !strings.Contains(body, compat.Directive) || !strings.Contains(body, compat.BreaksRollbackDirective) {
 		t.Errorf("the required-declaration hint does not name both choices:\n%s", body)

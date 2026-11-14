@@ -3,8 +3,6 @@ package devstack
 import (
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // An empty KCL interpolation must not reach the block registry.
@@ -35,7 +33,6 @@ import (
 // malformed key is refused, and — the part that actually caused the incident —
 // it never lands in the registry that generators enumerate.
 func TestAllocateBlockRejectsEmptyInterpolationKey(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 
 	_, err := AllocatePort(dir, 3000, "prod-")
@@ -61,7 +58,6 @@ func TestAllocateBlockRejectsEmptyInterpolationKey(t *testing.T) {
 // second entry point. It has its own registry read/write path, so a guard on
 // AllocateBlock alone would leave this one open.
 func TestAllocatePortAvoidingForeignRejectsEmptyInterpolationKey(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 
 	if _, err := AllocatePortAvoidingForeign(dir, 8080, "prod-", nil); err == nil {

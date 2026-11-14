@@ -35,9 +35,6 @@ var bundleFeatureKeys = map[string][]string{
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
-	// A value feature: it adds the funnel by values "visitor" and "person"
-	// under shape.frontend_telemetry and no key.
-	BundleFeatureFunnelPerson: {},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated

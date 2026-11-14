@@ -597,17 +597,6 @@ export function createMutationHook<Schema extends DescMessage, Response>(
 export interface ServiceMutationCallOptions {
   /** Aborts the RPC. An aborted write rejects and invalidates nothing. */
   signal?: AbortSignal;
-  /**
-   * Replace the generated success invalidation for this call. Use when an
-   * app knows a narrower scope than the generated service/entity key, e.g.
-   * `(qc) => { void invalidateWorktreeQueries(qc, worktreeId); }`.
-   * Omitted: the generated key is invalidated exactly as before.
-   * Called only after RPC success, synchronously; returned promises are not
-   * awaited, just as the default does not wait for refetches. Handle any
-   * async failure inside the callback. A synchronous throw rejects the call
-   * AFTER the server write succeeded; it does not roll back or retry it.
-   */
-  invalidate?: (queryClient: QueryClient) => void;
 }
 
 /**
@@ -645,9 +634,7 @@ export type ServiceMutationDefinition<Schema extends DescMessage, Response> = (
  * invalidates nothing. It does NOT run through React Query's MutationCache,
  * so an app-wide MutationCache onError (the scaffold's error toast) does not
  * see it: the rejection is the caller's to handle, which is what a
- * background caller wants. A per-call `options.invalidate` replaces only the
- * success invalidation when the app knows a narrower scope; omitting it
- * keeps the generated default. It does not change React hooks or retries.
+ * background caller wants.
  */
 export function createMutationCall<Schema extends DescMessage, Response>(
   invalidateKey: ServiceQueryKey,
@@ -655,11 +642,7 @@ export function createMutationCall<Schema extends DescMessage, Response>(
 ): ServiceMutationDefinition<Schema, Response> {
   return (queryClient) => async (req, options) => {
     const response = await call(req, options?.signal);
-    if (options?.invalidate) {
-      options.invalidate(queryClient);
-    } else {
-      void queryClient.invalidateQueries({ queryKey: invalidateKey });
-    }
+    void queryClient.invalidateQueries({ queryKey: invalidateKey });
     return response;
   };
 }

@@ -25,11 +25,6 @@ const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
 
 const procListAlertsCheck = "controlplane.v1.AlertingService/ListAlerts"
 
-const (
-	procListGatesCheck = "controlplane.v1.DeployService/ListGates"
-	procGetIssueCheck  = "controlplane.v1.IssuesService/GetIssue"
-)
-
 func cloudFacts() obsbackend.Facts {
 	return obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasHosted: true, ControlPlane: "https://cp"}
 }
@@ -185,15 +180,8 @@ func TestObsCheckCloudRequestShapeAndDocument(t *testing.T) {
 	if exitCodeForError(err) != 1 {
 		t.Fatalf("err = %v", err)
 	}
-	// The judgement is one GetReleaseHealth; the rest are its attribution
-	// reads (the promotion's gates, each issue's events by version).
-	if len(caller.calls) == 0 || caller.calls[0].procedure != procHealth {
+	if len(caller.calls) != 1 || caller.calls[0].procedure != procHealth {
 		t.Fatalf("calls = %+v", caller.calls)
-	}
-	for _, c := range caller.calls[1:] {
-		if c.procedure != procListGatesCheck && c.procedure != procGetIssueCheck {
-			t.Errorf("unexpected call %s", c.procedure)
-		}
 	}
 	body := caller.calls[0].body
 	for _, want := range []string{`"envIds":["env-prod"]`, `"orgId":"org-1"`, `"releaseVersion":"v2"`, `"window":"1800s"`,
@@ -276,29 +264,6 @@ func TestObsCheckWaitPollsUntilTheWindowFinishes(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "waiting for the after window") {
 		t.Errorf("progress goes to stderr: %q", errOut)
-	}
-}
-
-// The control plane stops an open after window at now, so its end moves with
-// every poll. The progress line names the window's real end, P + window, the
-// same on every poll (forge_cli_report 9fe4605f).
-func TestObsCheckWaitNamesTheWindowsEndNotTheReadTime(t *testing.T) {
-	open := func(readAt string) string {
-		r := healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", "")
-		r = strings.Replace(r, `"end":"2026-10-22T11:55:00Z"`, `"end":"`+readAt+`"`, 1)
-		return strings.Replace(r, `"thresholds":[`, `"thresholds":[{"name":"window","value":"15m","source":"default"},`, 1)
-	}
-	done := healthReply("RELEASE_VERDICT_PASS", true, "", "")
-	caller := &seqCaller{replies: map[string][]string{procHealth: {open("2026-10-22T11:47:40Z"), open("2026-10-22T11:47:55Z"), done}}}
-	_, errOut, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--wait", "--json")
-	if err != nil {
-		t.Fatalf("%v\n%s", err, errOut)
-	}
-	if n := strings.Count(errOut, "(ends 2026-10-22T11:55:00Z)"); n != 2 {
-		t.Errorf("both polls name the window's end 11:55: %q", errOut)
-	}
-	if strings.Contains(errOut, "11:47") {
-		t.Errorf("progress names the read time as the end: %q", errOut)
 	}
 }
 
@@ -815,92 +780,5 @@ func TestObsCheckCriticalAlertInTheAnswerFailsWhenListAlertsFails(t *testing.T) 
 	}
 	if doc := decode(t, out); doc["verdict"] != "FAIL" {
 		t.Errorf("doc = %v", doc)
-	}
-}
-
-// An alert whose rule says it is not about the env's workloads (v1.12.0,
-// 2026-11-09: MachineLoadHigh on the build host failed prod's check) judges
-// nothing, whichever side judged it: the control plane's FAIL on its
-// alert_firing finding becomes the PASS the rest of the answer earns, and the
-// alert is listed as excluded. A counted alert of another rule still fails.
-func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
-	const machine = `{"rule":"MachineLoadHigh","fingerprint":"m1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical","machine":"ws-ws-e164d47d","release_health":"exclude"}}`
-	finding := `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","ref":"MachineLoadHigh","value":1,"threshold":1,"policy":"fail","message":"alert MachineLoadHigh opened after the promotion and is still firing"}`
-	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+machine+`],"verdict"`, 1)
-	caller := &seqCaller{replies: map[string][]string{
-		procHealth:          {reply},
-		procListAlertsCheck: {`{"alerts":[` + strings.Replace(machine, `"rule"`, `"state":"firing","rule"`, 1) + `]}`},
-	}}
-	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
-	if err != nil {
-		t.Fatalf("exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
-	}
-	doc := decode(t, out)
-	if doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") || doc["firing_alerts"] != nil {
-		t.Errorf("doc = %v", doc)
-	}
-	if ex, _ := doc["excluded_alerts"].([]any); len(ex) != 1 || !strings.Contains(fmt.Sprint(ex), "ws-ws-e164d47d") {
-		t.Errorf("excluded_alerts = %v", doc["excluded_alerts"])
-	}
-
-	// An answer with no alert arrays (an older control plane): the alert
-	// state read here names the rule excluded.
-	reply = healthReply("RELEASE_VERDICT_FAIL", true, finding, "")
-	caller = &seqCaller{replies: map[string][]string{
-		procHealth:          {reply},
-		procListAlertsCheck: {`{"alerts":[` + strings.Replace(machine, `"rule"`, `"state":"firing","rule"`, 1) + `]}`},
-	}}
-	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
-	if err != nil {
-		t.Fatalf("no alert arrays: exit = %d (%v), want 0; out = %s", exitCodeForError(err), err, out)
-	}
-	if doc := decode(t, out); doc["verdict"] != "PASS" || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
-		t.Errorf("no alert arrays: doc = %v", doc)
-	}
-
-	down := `{"rule":"Down","fingerprint":"d1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"critical"}}`
-	reply = strings.Replace(healthReply("RELEASE_VERDICT_PASS", true, "", ""), `"verdict"`, `"firingAlerts":[`+machine+`,`+down+`],"verdict"`, 1)
-	caller = &seqCaller{replies: map[string][]string{procHealth: {reply}}}
-	out, _, err = newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
-	if exitCodeForError(err) != exitWrong {
-		t.Fatalf("a counted critical alert beside it: exit = %d (%v), want 1", exitCodeForError(err), err)
-	}
-	if doc := decode(t, out); doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "Down") || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
-		t.Errorf("doc = %v", doc)
-	}
-}
-
-// An app adopted by its Dockerfile exports no OpenTelemetry unless it was
-// instrumented, so the control plane answers with no service at all however
-// much traffic it served. Measured: 120 real requests to an adopted Express
-// app were reported as "no service had at least 50 requests". The verdict
-// stays INCONCLUSIVE (exit 2: not proven good), and the document now says
-// why in a code a gate can branch on and a reason that names the app.
-func TestObsCheckNoRequestTelemetryNamesTheSelfInstrumentedService(t *testing.T) {
-	reply := strings.Replace(healthReply("RELEASE_VERDICT_INCONCLUSIVE", true, "", ""),
-		`"services":[{"service":"api","before":{"requests":"900","errorRate":0.001,"p95Ms":100},"after":{"requests":"1000","errorRate":0.05,"p95Ms":110},"versionShare":1}],`,
-		`"services":[],`, 1)
-	facts := cloudFacts()
-	facts.SelfInstrumented = []string{"app"}
-	caller := &seqCaller{replies: map[string][]string{procHealth: {reply}}}
-	out, _, err := newObsCheckHarness().run(t, facts, caller, nil, "check", "prod", "--json")
-	if got := exitCodeForError(err); got != 2 {
-		t.Fatalf("exit = %d, want 2 (not proven good): %v", got, err)
-	}
-	doc := decode(t, out)
-	if doc["verdict"] != "INCONCLUSIVE" || doc["reason_code"] != "no_request_telemetry" {
-		t.Errorf("verdict %v, reason_code %v; want INCONCLUSIVE / no_request_telemetry", doc["verdict"], doc["reason_code"])
-	}
-	reason := fmt.Sprint(doc["reason"])
-	for _, want := range []string{"no request telemetry", "app exports none unless it is instrumented", "OTEL_EXPORTER_OTLP_ENDPOINT"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("reason does not say %q: %s", want, reason)
-		}
-	}
-	if !strings.Contains(fmt.Sprint(doc["suggested"]), "obs workloads prod") {
-		t.Errorf("suggested = %v, want what forge sees without telemetry (obs workloads)", doc["suggested"])
-	}
-	if !strings.Contains(err.Error(), "no request telemetry") {
-		t.Errorf("the exit message does not carry the reason: %v", err)
 	}
 }

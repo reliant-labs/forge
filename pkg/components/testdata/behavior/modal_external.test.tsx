@@ -278,58 +278,6 @@ test("external cleanup during a reopened Forge lease keeps the counted lock unti
   expect(document.body.style.getPropertyValue("overscroll-behavior")).toBe("contain");
 });
 
-test("same-subtree external passive cleanup cannot re-lock the page after parent closes", async () => {
-  document.body.style.overflow = "scroll";
-  document.body.style.setProperty("overscroll-behavior", "contain", "important");
-  document.body.style.setProperty("padding-right", "7px", "important");
-  const render = (outer: boolean, preview: boolean) =>
-    act(() =>
-      root.render(
-        <Modal open={outer} onClose={() => {}} title="Parent">
-          <input aria-label="Parent field" />
-          <Preview open={preview} onClose={() => {}} />
-        </Modal>,
-      ),
-    );
-  render(true, false);
-  render(true, true);
-  await settle();
-  expect(panel("Preview").contains(document.activeElement)).toBe(true);
-  render(false, true); // both portals leave in the same React commit
-  await settle();
-  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0);
-  expect(document.body.style.overflow).toBe("scroll");
-  expect(document.body.style.getPropertyValue("overscroll-behavior")).toBe("contain");
-  expect(document.body.style.paddingRight).toBe("7px");
-  expect(document.body.style.getPropertyPriority("padding-right")).toBe("important");
-});
-
-test("nested passive settlement never restores over another live Forge owner", async () => {
-  document.body.style.overflow = "auto";
-  const render = (nested: boolean, survivor: boolean) =>
-    act(() =>
-      root.render(
-        <>
-          <Modal open={nested} onClose={() => {}} title="Nested owner">
-            <Preview open onClose={() => {}} />
-          </Modal>
-          <Modal open={survivor} onClose={() => {}} title="Survivor">
-            <input aria-label="Survivor field" />
-          </Modal>
-        </>,
-      ),
-    );
-  render(true, false);
-  await settle();
-  render(false, true); // new owner enters in the commit that removes legacy subtree
-  await settle();
-  expect(document.body.style.overflow).toBe("hidden");
-  expect(document.querySelector('[role="dialog"]')?.contains(document.activeElement)).toBe(true);
-  render(false, false);
-  await settle();
-  expect(document.body.style.overflow).toBe("auto");
-});
-
 test("unrelated lower, hidden or app-inert aria-modal nodes are not exemptions", async () => {
   const lower = document.createElement("div");
   lower.setAttribute("role", "dialog");

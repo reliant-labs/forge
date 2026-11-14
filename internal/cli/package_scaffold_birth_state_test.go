@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/contractcheck"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestScaffoldedPackagesPassTheirOwnConventionRules is the birth-state guard:
@@ -27,7 +26,6 @@ import (
 // The set of shapes is enumerated from the flags themselves, so a shape added
 // later is covered the day the flag accepts it.
 func TestScaffoldedPackagesPassTheirOwnConventionRules(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	shapes := []struct {
 		flag  string // "type" or "kind"
 		value string

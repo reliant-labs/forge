@@ -30,8 +30,6 @@ import (
 	"testing"
 
 	"golang.org/x/tools/go/packages"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // namedTypeFixture writes a module whose `orgpolicy` package declares one
@@ -304,7 +302,6 @@ type Deps struct {
 // assumes no parameter is ever called `zero` is making the same class
 // of guess that produced this bug in the first place.
 func TestZeroReturn_ParamNameCollision(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := writeStubFixtureModule(t, "internal/handlers/orgs", map[string]string{
 		"internal/handlers/orgs/service.go": `package orgs
 

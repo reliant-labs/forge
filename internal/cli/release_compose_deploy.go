@@ -31,21 +31,10 @@ func dispatchSnapshotPromotion(ctx context.Context, env, version string, ledger 
 	if err != nil {
 		return false, err
 	}
-	if !sealedSnapshotRelease(candidate) {
+	if candidate == nil || len(candidate.SnapshotIntents) == 0 {
 		return false, nil
 	}
 	return true, runSnapshotPromote(ctx, env, *candidate, ledger, opts)
-}
-
-// sealedSnapshotRelease reports whether r was cut as a snapshot release
-// (`forge release compose`): one whose intents ARE its desired decision, so it
-// promotes only through runSnapshotPromote and refuses --target and
-// --frontends-only. It keys on the RELEASE, never on whether a bundle carries a
-// snapshot: an env deploy's evidence snapshot (env_build_evidence.go) rides a
-// release cut without intents, and that release deploys and promotes exactly
-// as one with no snapshot does.
-func sealedSnapshotRelease(r *release.Release) bool {
-	return r != nil && len(r.SnapshotIntents) > 0
 }
 
 // runSnapshotPromote never calls legacy release digest flattening or rerenders

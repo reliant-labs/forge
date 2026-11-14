@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // targetScopeEntities is a stack with both sides of the split declared: two
@@ -94,7 +92,6 @@ func TestUpTargetReachesTheBuildPhase(t *testing.T) {
 // pulling whatever image last sat at that tag, and the rollout ran the old
 // code with nothing in the output saying so.
 func TestUpBuildPushesToTheDeclaredRegistry(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	planProject(t, declaredRegistryFixture)
 
 	opts := upBuildOptionsFor("prod", true, nil)
@@ -119,7 +116,6 @@ func TestUpBuildPushesToTheDeclaredRegistry(t *testing.T) {
 // cluster to pull from. Its build must succeed and push nothing — unlike
 // `forge env build <env> --push`, where an undeclared registry is a runbook error.
 func TestUpBuildWithoutDeclaredRegistryBuildsLocally(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	planProject(t, `{
   "output": {
     "workloads": [
@@ -338,7 +334,6 @@ func TestUpPreflight_ScopedTargetLeavesOtherServicesRunning(t *testing.T) {
 // carry-forward it would erase the entries for services it deliberately left
 // running, making them unreachable to `forge env down`.
 func TestPersistCarriesForwardSurvivingEntries(t *testing.T) {
-	testkit.Slow(t, "execs ps")
 	requireProcInspection(t)
 	dir, projectID, env := testStack(t)
 

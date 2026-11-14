@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Nothing forge scaffolds renders KCL behind forge's back.
@@ -20,7 +19,6 @@ import (
 // preflight. Every workflow step and bootstrap script goes through forge
 // (`forge env deploy|render`, `forge ci validate-kcl`) instead.
 func TestScaffoldedWorkflowsNeverRunKCLDirectly(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	g, dir := ciGenerator(t, config.FeaturesConfig{})
 	g.FrontendName = "web"
 	writeCIProjectConfig(t, g)

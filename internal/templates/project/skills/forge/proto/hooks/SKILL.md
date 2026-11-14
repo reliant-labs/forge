@@ -55,11 +55,3 @@ the rpc, then on success the same invalidation `useCreateTask` does (entity
 scope for CRUD, `<svc>Keys.all` otherwise). It resolves with the response,
 rejects with a `ConnectClientError`, and bypasses the MutationCache, so no
 error toast fires. Never hand-write a client call plus `invalidateQueries`.
-
-When the app must preserve a narrower success refresh than the generated key,
-pass `{ invalidate: (qc) => { void invalidateWorktreeQueries(qc, worktreeId); } }`
-as the write's second argument. This **replaces**, not adds to, the generated
-invalidation for that call only; omitted keeps the old default. It runs only
-after RPC success and is not awaited (like the default refetch). Handle async
-failures inside it; a synchronous throw rejects after the server has already
-written, without rollback or retry. Keep non-cache product effects outside it.

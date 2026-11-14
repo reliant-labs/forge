@@ -19,7 +19,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeTestModule lays out a temp Go module with:
@@ -209,7 +208,6 @@ type User struct {
 // struct). The caller falls through to the "field stays nil"
 // behavior, which is correct.
 func TestResolveCrossPkgInterface_NotAnInterface(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": `package repo
 
@@ -249,7 +247,6 @@ func TestResolveCrossPkgInterface_UnknownAlias(t *testing.T) {
 // imported package fails to load (here: import path that doesn't exist
 // in the module), the resolver returns ok=false rather than crashing.
 func TestResolveCrossPkgInterface_UnloadablePackage(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/handlers/billing/service.go": `package billing
 
@@ -514,7 +511,6 @@ func TestGenerateBootstrapTesting_CrossPackageStubImportUsed(t *testing.T) {
 // selector forge can't resolve produces a visible TODO comment in the
 // generated NewTest<Svc> body.
 func TestGenerateBootstrapTesting_UnresolvedSelectorTODO(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "",
 		"internal/handlers/billing/service.go": `package billing
@@ -652,7 +648,6 @@ type Deps struct {
 // behavior; computeAutoStubs records the field on the unresolved
 // slice so the template can emit a TODO comment.
 func TestComputeAutoStubs_UnresolvedSelector(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := writeTestModule(t, map[string]string{
 		"internal/repo/repo.go": "", // remove the would-be target package
 		"internal/handlers/billing/service.go": `package billing

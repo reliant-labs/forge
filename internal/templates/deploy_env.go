@@ -54,9 +54,6 @@ type EnvTemplateData struct {
 	// FrontendPublicDir is where the static build lands, relative to
 	// FrontendPath: "out" for a Next.js static export, "dist" for Vite.
 	FrontendPublicDir string
-	// SessionReplay opts a newly generated browser starter into recording.
-	// False for an existing application adopted without changing its source.
-	SessionReplay bool
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string

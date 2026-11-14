@@ -289,10 +289,8 @@ func audienceDirective(doc *ast.CommentGroup) string {
 	return ""
 }
 
-// commandWordRE is one word of a root's command path. Underscores preserve
-// released Cobra commands during adoption; do not silently kebab-case a public
-// CLI path when replacing its constructor with a generated root command.
-var commandWordRE = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+// commandWordRE is one word of a root's command path.
+var commandWordRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // isGraphGeneratedFile reports whether name is one of forge's generated
 // internal/app files, which discovery never reads as owned declarations.
@@ -574,7 +572,7 @@ func rootOptions(name string, opts []string) (path []string, migrate string, err
 	}
 	for _, w := range path {
 		if !commandWordRE.MatchString(w) {
-			return nil, "", fmt.Errorf("command word %q is not a cobra command name: lower-case letters, digits, dashes and underscores, starting with a letter", w)
+			return nil, "", fmt.Errorf("command word %q is not a cobra command name: lower-case letters, digits and dashes, starting with a letter", w)
 		}
 	}
 	return path, migrate, nil

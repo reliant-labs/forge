@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // cloneSetupRepo is a git clone holding a forge project that every piece of
@@ -55,7 +54,6 @@ func cloneGitSetup(t *testing.T, repo string) map[string]string {
 // so `forge slot run` and `forge env list` rewrote .git/config — shared by
 // every linked worktree, and raced by every agent working in one.
 func TestReadOnlyCommandsLeaveTheCloneGitSetupAlone(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	for _, args := range [][]string{
 		{"slot", "run", "--", "true"},
 		{"env", "list"},

@@ -112,8 +112,7 @@ forge env deploy prod      # build → push → release → plan → apply
 forge env status prod      # then verify
 ```
 
-One static site per person is free (counted across the orgs they own without
-a plan); a second (another env's included) or any
+One static site per org is free; a second (another env's included) or any
 compute (service, worker, job, managed DB, image build) needs billing.
 Without it the deploy is **queued, not refused**: `env deploy` exits **7** with
 the billing link; give it to the user, don't retry. Under Reliant never ask for

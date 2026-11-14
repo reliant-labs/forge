@@ -38,8 +38,7 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 	// Deliberately avoid LoadProject here so reliant doesn't transitively
 	// reject projects with config issues that don't affect memory.
 	var head struct {
-		Name       string `yaml:"name"`
-		ModulePath string `yaml:"module_path"`
+		Name string `yaml:"name"`
 	}
 	if err := yaml.Unmarshal(data, &head); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", cfgPath, err)
@@ -52,13 +51,6 @@ func RenderProjectMemory(projectRoot string) ([]byte, error) {
 	// inventory (config.DiscoverRootFrontend) and the scaffolds use, read
 	// straight off the tree.
 	_, site := config.DiscoverRootFrontend(projectRoot)
-	// An adopted app (the `adopt` skill) — workloads declared in
-	// deploy/kcl/workloads.k, no Go module, no module_path, no root
-	// frontend — gets the any-language memory: the Go one would send an
-	// agent after handlers and protos this project does not have.
-	container := !site && head.ModulePath == "" &&
-		!fileExists(filepath.Join(projectRoot, "go.mod")) &&
-		fileExists(filepath.Join(projectRoot, "deploy", "kcl", "workloads.k"))
-	tmplData := generator.ProjectMemoryData{Name: head.Name, CLI: Name(), Site: site, Container: container}
+	tmplData := generator.ProjectMemoryData{Name: head.Name, CLI: Name(), Site: site}
 	return templates.ProjectTemplates().Render("reliant.md.tmpl", tmplData)
 }

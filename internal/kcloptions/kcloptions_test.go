@@ -8,7 +8,6 @@ import (
 	"kcl-lang.io/kcl-go/pkg/spec/gpyrpc"
 
 	"github.com/reliant-labs/forge/internal/kclvendor"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeEnvProject lays down a project shaped like a real one —
@@ -143,7 +142,6 @@ out = {env = _env, registry = _registry}
 // A project that reads an option from several places declares it once. The
 // merge must not let a bare call site erase metadata declared elsewhere.
 func TestDiscoverMergesDuplicateCallSitesKeepingMetadata(t *testing.T) {
-	testkit.Slow(t, "evaluates KCL")
 	root := writeEnvProject(t, "dev", `import forge
 
 _declared = option("host_runner", type="str", default="air", help="Host launch runner")

@@ -27,7 +27,7 @@ forge version
 ```
 
 (Homebrew, npm, Windows and `go install` are listed under
-[Install](../README.md#install), and CI pinning, release verification and building from a clone in [install.md](install.md). From a clone: `task install && forge version`.)
+[Install](../README.md#install). From a clone: `task install && forge version`.)
 
 Forge installs the proto plugins it needs on first use. If you want to check
 your toolchain up front, `forge doctor` will tell you what is missing and how

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestParseMigrationsForSchema(t *testing.T) {
@@ -161,7 +159,6 @@ func TestGetPreviousMigration(t *testing.T) {
 // forge generated into it. Quoting the whole file made every header embed the
 // one before it, so the comment grew a level deeper with every migration.
 func TestCreateMigration_PreviousMigrationIsOneLevelDeep(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	upFile := func(name string) string {
 		t.Helper()
@@ -227,7 +224,6 @@ func TestGetMigrationHistory(t *testing.T) {
 
 // TestCreateMigrationWithContext: --context writes the full context block.
 func TestCreateMigrationWithContext(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	migDir := filepath.Join(dir, "db/migrations")
 

@@ -1,7 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
-import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
 
 import { devLogPlugin } from "./src/lib/devlog-plugin";
 
@@ -34,7 +33,7 @@ export default defineConfig({
   // installDevLogging() posts from src/main.tsx and prints them to this dev
   // server's stdout, which `forge env up` tees to
   // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
-  plugins: [react(), tailwindcss(), devLogPlugin(), forgeRuntimeConfig(), forgeOtelProxy()],
+  plugins: [react(), tailwindcss(), devLogPlugin()],
   build: {
     // The static export hosted static hosting serves. deploy/kcl/<env>/main.k
     // names this directory as the frontend's public_dir; move both together.

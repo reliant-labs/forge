@@ -4,8 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeTypedProject writes a go.mod plus the given files (path → source) so
@@ -59,7 +57,6 @@ func composeWith(t *testing.T, dir string, pkgs ...string) error {
 // interfaces where they are CONSUMED" rule — must resolve to the one
 // component that satisfies it, not fail with "no provider".
 func TestGenerateCompose_ConsumerNarrowInterfaceResolvesByAssignability(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := writeTypedProject(t, map[string]string{
 		"internal/app/providers.go":   emptyInfra,
 		"internal/stripe/contract.go": stripeContract,
@@ -98,7 +95,6 @@ func New(d Deps) Service { return service{d: d} }
 // A type alias of the producer's contract is the same type to go/types but a
 // different string to the exact-key resolver.
 func TestGenerateCompose_AliasOfProducerContractResolves(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := writeTypedProject(t, map[string]string{
 		"internal/app/providers.go":   emptyInfra,
 		"internal/stripe/contract.go": stripeContract,
@@ -132,7 +128,6 @@ func New(d Deps) Service { return service{} }
 // Two components satisfying one consumer interface is a choice forge must
 // not make silently.
 func TestGenerateCompose_AmbiguousInterfaceProviderIsLoud(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	paypal := strings.ReplaceAll(stripeContract, "package stripe", "package paypal")
 	dir := writeTypedProject(t, map[string]string{
 		"internal/app/providers.go":   emptyInfra,
@@ -169,7 +164,6 @@ func New(d Deps) Service { return service{} }
 // An Infra field satisfying the interface is an explicit binding: it wins
 // over inference (no ambiguity, no producer edge).
 func TestGenerateCompose_InfraBindingBeatsInferredProducer(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := writeTypedProject(t, map[string]string{
 		"internal/app/providers.go": `package app
 

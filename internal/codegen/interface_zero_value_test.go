@@ -23,8 +23,6 @@ package codegen
 import (
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // selfReturningStoreFixture mirrors the real shape: an imported
@@ -75,7 +73,6 @@ type Deps struct {
 // returns the interface, so the stub body must `return nil`;
 // `return store.CrewStore{}` is not valid Go.
 func TestResolveCrossPkgInterface_SelfReturningMethodEmitsNil(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := selfReturningStoreFixture(t)
 
 	res, ok := ResolveCrossPkgInterface(handlerDir, "store", "CrewStore")
@@ -113,7 +110,6 @@ func TestResolveCrossPkgInterface_SelfReturningMethodEmitsNil(t *testing.T) {
 // one level up, at the emitter that actually feeds the template — the
 // resolver being right is only useful if the stub carries it through.
 func TestComputeAutoStubs_SelfReturningMethodEmitsNil(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	handlerDir := selfReturningStoreFixture(t)
 
 	stubs, unresolved := computeAutoStubs(handlerDir, "")

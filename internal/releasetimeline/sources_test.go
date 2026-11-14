@@ -16,7 +16,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ── local ledger ────────────────────────────────────────────────────────────
@@ -398,7 +397,6 @@ func gitRepo(t *testing.T, subjects ...string) (dir string, shas []string) {
 }
 
 func TestGit_ListsARecordedRangeAndItsPullRequests(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, shas := gitRepo(t, "base (#1)", "add a (#2)", "wip", "add b (#3)")
 	g := NewGit(dir)
 	r := CommitRange{FromCommit: shas[0], ToCommit: shas[3]}
@@ -428,7 +426,6 @@ func TestGit_ListsARecordedRangeAndItsPullRequests(t *testing.T) {
 }
 
 func TestGit_FirstReleaseListsTheWholeHistoryAndUnknownCommitsFail(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, shas := gitRepo(t, "one", "two")
 	commits, _, err := CommitsOf(context.Background(), NewGit(dir), CommitRange{ToCommit: shas[1]}, 0)
 	if err != nil || len(commits) != 2 {
@@ -463,7 +460,6 @@ func TestCompareReleases_ScopesToTheEnvironment(t *testing.T) {
 }
 
 func TestGit_ChangedPathsListsTheMigrationsARangeCarried(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, shas := gitRepo(t, "base", "next")
 	add := func(rel, body string) {
 		t.Helper()

@@ -187,16 +187,13 @@ func TestLongLived_DrainClosesAHijackedConnTheHandlerIgnores(t *testing.T) {
 		defer cleanedUp.Store(true)
 		_, _ = conn.Read(make([]byte, 1)) // blocks until the connection closes
 	})))
-	// The hard phase starts at the deadline minus the reserve, so the drain
-	// waits budget-reserve (1s) for a handler that will never return on its
-	// own; the reserve is the time the closed connection gets to unwind it.
-	streams := &serverkit.Streams{DrainReserve: time.Second}
+	streams := &serverkit.Streams{DrainReserve: 2 * time.Second}
 	httpSrv, base := serveOwnListener(t, mux, streams)
 
 	wsDial(t, base+"/ws") // and never close it
 	waitActive(t, streams, 1)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	if err := serverkit.DrainHTTP(ctx, httpSrv, streams); err != nil {
 		t.Fatalf("DrainHTTP = %v: the drain must close a hijacked connection whose handler ignores it", err)

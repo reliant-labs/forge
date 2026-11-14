@@ -14,8 +14,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // release where: hosted answers from GetRelease.current_environment_ids,
@@ -51,7 +49,6 @@ func TestReleaseWhere_Hosted(t *testing.T) {
 }
 
 func TestReleaseWhere_File(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "staging", "v2", map[string]string{"api": sha("b")})
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": sha("a")})

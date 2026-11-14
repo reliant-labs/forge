@@ -250,11 +250,6 @@ func newCmd(_ *factory.Factory) *cobra.Command {
 		Use:   "lint [paths...]",
 		Short: "Run linters on the project (report-only: writes nothing unless --fix)",
 		Long:  lintLongHelp,
-		// The positionals are paths. Said explicitly because `lint fix`
-		// (the codemods, internal/cli/fix) is mounted beneath it, and a
-		// parent with no Args validator is cobra's permissive default
-		// (TestEveryCommandGroupRejectsUnknownSubcommands).
-		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLintCommand(cmd, flags, args)
 		},

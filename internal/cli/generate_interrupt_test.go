@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // An interrupted `forge generate` is a failed one: it must leave the tree as
@@ -22,7 +21,6 @@ import (
 // test knows the run has it before the step ends. A self-signal does not give
 // that guarantee, and the test that used one was deleted as flaky (forge#1633).
 func TestGenerate_InterruptRollsTheTreeBack(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	mockRel := "internal/store/mock_gen.go"
 	stamped, _ := checksums.Stamp(mockRel, []byte("package store\n\n// the committed render\n"))

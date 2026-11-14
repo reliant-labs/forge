@@ -155,12 +155,6 @@ type RuntimeTarget struct {
 	// Pprof is "host:port" of its pprof side-listener (PPROF_ADDR), which
 	// serverkit binds separately from the main mux.
 	Pprof string
-	// Probe is the readiness/liveness contract that service DECLARES
-	// (its workload's `probes`), which the app health check holds it to.
-	// The zero value is forge's own: /healthz answering "ok" and /readyz.
-	// An app forge did not write (adopted by its Dockerfile) serves
-	// neither, so judging it by them failed every healthy one.
-	Probe AppProbe
 	// RemoteOnly is true when the env runs NOTHING on this machine: it
 	// declares no host service and no compose infra — every workload lands
 	// on a cluster or a hosted control plane (a GKE prod, a hosted env).
@@ -171,17 +165,6 @@ type RuntimeTarget struct {
 	// an env nobody runs locally. They SKIP, naming why; the cluster check
 	// still runs.
 	RemoteOnly bool
-}
-
-// AppProbe is a service's declared probe contract (deploy/v1alpha1.Probes):
-// a TCP connect, or the HTTP paths it serves. Empty readiness and liveness
-// paths are forge's own /readyz and /healthz; an empty startup path means the
-// workload declares no startup probe.
-type AppProbe struct {
-	TCP           bool
-	ReadinessPath string
-	LivenessPath  string
-	StartupPath   string
 }
 
 // machineLocalChecks are the runtime checks whose only subject is the

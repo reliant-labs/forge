@@ -57,11 +57,8 @@ func TestScaffoldedShellsCarryBuiltWithForgeCredit(t *testing.T) {
 				t.Errorf("%s: credit link lacks %s:\n%s", shell, want, link)
 			}
 		}
-		// This invariant concerns the credit, not unrelated head scripts
-		// (the blocking runtime configuration must precede the client SDK).
-		footer := src[strings.Index(src, "<footer"):strings.Index(src, "</footer>")]
 		for _, banned := range []string{"next/image", "<img", "<Image", "<script", "dangerouslySetInnerHTML"} {
-			if strings.Contains(footer, banned) {
+			if strings.Contains(src, banned) {
 				t.Errorf("%s: contains %q — the credit is a plain link, no image or script", shell, banned)
 			}
 		}

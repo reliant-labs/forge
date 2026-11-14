@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The SC7 rehearsal (defect D2). A roll-forward after a rollback, and a first
@@ -171,7 +169,6 @@ func someCA(t *testing.T) string {
 // Mutation that fails it: delete the serves_plaintext branch from the widen
 // phase of converge.sh: the Job then dies on the TLS handshake.
 func TestWiden_SkipsAStoreThatStillAnswersInPlaintext(t *testing.T) {
-	testkit.Slow(t, "execs curl and bash")
 	rec := &storeRequests{}
 	srv := httptest.NewServer(healthHandler(rec))
 	defer srv.Close()
@@ -197,7 +194,6 @@ func TestWiden_SkipsAStoreThatStillAnswersInPlaintext(t *testing.T) {
 // listener. The skip must be a property of "answers in plaintext", never of
 // "anything went wrong".
 func TestWiden_StillUsesTheTLSListenerWhenTheStoreHasOne(t *testing.T) {
-	testkit.Slow(t, "execs curl and bash")
 	rec := &storeRequests{}
 	srv := httptest.NewTLSServer(healthHandler(rec))
 	defer srv.Close()

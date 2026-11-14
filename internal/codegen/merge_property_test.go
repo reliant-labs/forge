@@ -9,7 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/mergeproperty"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The merge invariant (internal/mergeproperty) for codegen's aggregate
@@ -20,7 +19,6 @@ import (
 // entries and secret refs are their own sections, with the nats block's in
 // between untouched.
 func TestMergeProperty_ConfigKCL(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	field := func(block, name string, sensitive bool) ConfigField {
 		return ConfigField{
 			Name: name, ProtoType: "string", GoType: "string",
@@ -83,7 +81,6 @@ func TestMergeProperty_ConfigKCL(t *testing.T) {
 // accounts: the shape no single file can merge, measured by
 // TestE2EMergeProperty), and a table dropped beside one born.
 func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	table := func(name string, cols ...string) dbgrants.Table {
 		tb := dbgrants.Table{Schema: "public", Name: name}
 		for _, c := range cols {

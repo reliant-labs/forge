@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // checkoutsFixture is a repository with a remote-tracking main and two
@@ -429,7 +428,6 @@ func TestProjectCheckouts_MarksTheSelectedCheckoutAcrossSymlinks(t *testing.T) {
 // A directory outside git refuses, naming why: Preview renders a checkout,
 // and there is no checkout to render.
 func TestProjectCheckouts_RefusesANonGitDirectory(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	_, err := listCheckouts(context.Background(), t.TempDir(), false)
 	if err == nil {
 		t.Fatal("expected a refusal outside a git checkout")

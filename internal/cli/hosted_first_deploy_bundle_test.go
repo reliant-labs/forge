@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // cutHostedFixtureRelease cuts a release pinning every hosted artifact of the
@@ -38,7 +37,6 @@ func cutHostedFixtureRelease(t *testing.T, dir string, e *KCLEntities, version s
 // A first hosted deploy has a release but no promotion. The bundle is pinned
 // by the release it names, so it is never sealed over placeholder digests.
 func TestHostedBundleObjectsPinToTheNamedReleaseBeforeAnyPromotion(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "hosted")
 	dir := t.TempDir()
 	cutHostedFixtureRelease(t, dir, e, "v0.1.0")
@@ -59,7 +57,6 @@ func TestHostedBundleObjectsPinToTheNamedReleaseBeforeAnyPromotion(t *testing.T)
 
 // Deploying a named release that has no bundle yet projects and records one.
 func TestEnsureHostedReleaseBundleWritesWhenMissing(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "hosted")
 	dir := t.TempDir()
 	cutHostedFixtureRelease(t, dir, e, "v0.1.0")
@@ -88,7 +85,6 @@ func TestEnsureHostedReleaseBundleWritesWhenMissing(t *testing.T) {
 // A hosted deploy plans against the bundle forge recorded in this same
 // command: the machine ledger never holds a hosted env's bundle.
 func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "hosted")
 	dir := t.TempDir()
 	cutHostedFixtureRelease(t, dir, e, "v1.4.0")
@@ -142,7 +138,6 @@ func TestHostedDeployPlansAgainstTheBundleJustRecorded(t *testing.T) {
 // "already recorded" and skip, so the plan looked up a digest the control
 // plane had never seen and the first hosted deploy of the release was blind.
 func TestEnsureHostedReleaseBundleWritesEvenWhenTheMachineLedgerHoldsOne(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	e, _ := loadContract(t, "hosted")
 	dir := t.TempDir()
 	cutHostedFixtureRelease(t, dir, e, "v0.1.0")

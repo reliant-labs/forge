@@ -38,7 +38,7 @@ import (
 )
 
 const (
-	obsTargetVersion = 5
+	obsTargetVersion = 4
 	// obsTargetMaxAge bounds how long a stamp is trusted even when every input
 	// it names is unchanged: a main.k may read a file outside deploy/kcl, which
 	// the stamp cannot see.
@@ -70,11 +70,6 @@ func obsTargetFromEntities(env string, e *KCLEntities) obsTarget {
 	for _, w := range e.Workloads {
 		if w.OnRuntime(RuntimeCluster) {
 			f.HasCluster = true
-		}
-		// forge instruments what it builds (serverkit); anything else
-		// exports telemetry only if the app does.
-		if w.Kind == "service" && w.GoBuild() == nil {
-			f.SelfInstrumented = append(f.SelfInstrumented, w.Name)
 		}
 	}
 	if o := e.Observability; o != nil {
@@ -113,8 +108,6 @@ type obsTargetFile struct {
 	ControlPlane   string                      `json:"control_plane,omitempty"`
 	TokenEnv       string                      `json:"token_env,omitempty"`
 	Health         *release.ShapeReleaseHealth `json:"release_health,omitempty"`
-	// SelfInstrumented is Facts.SelfInstrumented.
-	SelfInstrumented []string `json:"self_instrumented,omitempty"`
 }
 
 func obsTargetPath(projectDir, env string) string {
@@ -212,7 +205,6 @@ func readObsTarget(projectDir, env, fingerprint string) (obsTarget, bool) {
 		Facts: obsbackend.Facts{
 			Env: env, Declared: f.Declared, Enabled: f.Enabled, Destination: f.Destination,
 			HasHosted: f.HasHosted, HasLocal: f.HasLocal, HasCluster: f.HasCluster, LocalLifecycle: f.LocalLifecycle, NoLocalStore: f.NoLocalStore, ControlPlane: f.ControlPlane, ReleaseHealth: f.Health,
-			SelfInstrumented: f.SelfInstrumented,
 		},
 	}, true
 }
@@ -227,7 +219,7 @@ func writeObsTarget(projectDir, env, fingerprint string, t obsTarget) {
 		Version: obsTargetVersion, At: time.Now().UTC(), Fingerprint: fingerprint, Env: env,
 		Declared: t.Facts.Declared, Enabled: t.Facts.Enabled, Destination: t.Facts.Destination,
 		HasHosted: t.Facts.HasHosted, HasLocal: t.Facts.HasLocal, HasCluster: t.Facts.HasCluster, LocalLifecycle: t.Facts.LocalLifecycle, NoLocalStore: t.Facts.NoLocalStore, ControlPlane: t.Facts.ControlPlane, TokenEnv: t.TokenEnv,
-		Health: t.Facts.ReleaseHealth, SelfInstrumented: t.Facts.SelfInstrumented,
+		Health: t.Facts.ReleaseHealth,
 	})
 	if err != nil {
 		return

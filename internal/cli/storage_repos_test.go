@@ -5,12 +5,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestProjectReposFindsBuildContextAndReplaceSiblings(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

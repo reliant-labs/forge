@@ -31,8 +31,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func verifyNPMScriptPath(t *testing.T) string {
@@ -100,7 +98,6 @@ func runVerifyNPM(t *testing.T, viewCmd string, maxSeconds, firstDelay, maxDelay
 // TestVerifyNPMPublished_ServedImmediatelyPasses is the happy path: the
 // registry answers on the first probe and the script exits 0 without waiting.
 func TestVerifyNPMPublished_ServedImmediatelyPasses(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	out, err := runVerifyNPM(t, stubNPMView(t, 1), "600", "5", "30")
 	if err != nil {
 		t.Fatalf("expected success, got %v:\n%s", err, out)
@@ -142,7 +139,6 @@ func TestVerifyNPMPublished_KeepsWaitingPastTheOld60sCeiling(t *testing.T) {
 // version is immutable and the attempt is refused — so the message must not
 // read as "missing artifact", and must not invite a re-publish.
 func TestVerifyNPMPublished_TimeoutAfterSuccessfulPublishSaysNotYetServed(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	out, err := runVerifyNPM(t, stubNPMView(t, 0), "1", "1", "1", "--publish-reported-success")
 	if err == nil {
 		t.Fatalf("a never-served version must fail the check:\n%s", out)
@@ -169,7 +165,6 @@ func TestVerifyNPMPublished_TimeoutAfterSuccessfulPublishSaysNotYetServed(t *tes
 // that defaults to the reassuring diagnosis manufactures confidence at the
 // one moment the answer is unknown.
 func TestVerifyNPMPublished_TimeoutWithoutPublishSuccessSaysNotPublished(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	out, err := runVerifyNPM(t, stubNPMView(t, 0), "1", "1", "1")
 	if err == nil {
 		t.Fatalf("a never-served version must fail the check:\n%s", out)

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestLintDepsAreInterfaces_HelperCallDoesNotDisqualifyData is the
@@ -144,7 +142,6 @@ func New(d Deps) Service { return &service{deps: d} }
 //   - Spawner — its helper starts a goroutine. Purity of the CALLER's own
 //     body is not enough when the callee does work.
 func TestLintDepsAreInterfaces_ImpureHelperStillFires(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	tmp := t.TempDir()
 	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))

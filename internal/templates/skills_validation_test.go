@@ -85,7 +85,6 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
 	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─── shared fixtures ────────────────────────────────────────────────────
@@ -1062,7 +1061,6 @@ func TestSkillsAnnotationFieldReferencesExist(t *testing.T) {
 // extraction or validation logic regresses to a no-op, this trips before
 // the suite silently stops catching drift.
 func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := cli.NewRootCmd()
 	tree := scaffoldTree(t)
 
@@ -2065,7 +2063,6 @@ func validateProtoPackage(block fencedBlock, c protoPkgClaim) string {
 }
 
 func TestSkillsProtoPackagesMatchEmitter(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	emitted := emittedServiceProtoPackage(t)
 	if !servicePkgFormRE.MatchString(emitted) {
 		t.Fatalf("scaffold emits package %q, which no longer matches %s — update the rule, then the skills",

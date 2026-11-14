@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeContract writes contract.go for a package at rolePath under projectDir,
@@ -130,7 +128,6 @@ func TestGenerateCompose_NotAComponentRequiredByServerIsRefused(t *testing.T) {
 // An OPTIONAL consumer already accepts nil — which is exactly what a package
 // the server does not have provides — so it is not a contradiction.
 func TestGenerateCompose_NotAComponentOptionalConsumerIsNil(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeContract(t, dir, "internal/handlers/orders",
 		"package orders\n\nimport \"example.com/proj/internal/cliauth\"\n\ntype Service interface{ Do() }\n\ntype Deps struct {\n\t// forge:optional-dep\n\tAuth cliauth.Service\n}\n\nfunc New(d Deps) Service { return nil }\n")
@@ -149,7 +146,6 @@ func TestGenerateCompose_NotAComponentOptionalConsumerIsNil(t *testing.T) {
 // named as a remedy beside the Infra one. It stays a hint — the same shape is
 // a server package whose consumer is not written yet.
 func TestGenerateCompose_MissingProviderOnUnconsumedPackageNamesTheMarker(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders", "")
 	writeContract(t, dir, "internal/cliauth", cliauthContract(""))
@@ -174,7 +170,6 @@ func TestGenerateCompose_MissingProviderOnUnconsumedPackageNamesTheMarker(t *tes
 // Once a server component consumes the package — directly or through another
 // package — it IS a server package, and the hint would be wrong.
 func TestGenerateCompose_MissingProviderOnConsumedPackageOmitsTheHint(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := newInjectProject(t)
 	writeContract(t, dir, "internal/handlers/orders",
 		"package orders\n\nimport \"example.com/proj/internal/session\"\n\ntype Service interface{ Do() }\n\ntype Deps struct {\n\tSession session.Service\n}\n\nfunc New(d Deps) Service { return nil }\n")

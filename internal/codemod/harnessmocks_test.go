@@ -3,8 +3,6 @@ package codemod
 import (
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // harnessMocksProject is a handler whose Deps names a collaborator of each
@@ -131,7 +129,6 @@ func TestExternal(t *testing.T) {
 }
 
 func TestHarnessMocks_RenamesRetiredStubs(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := writeTree(t, harnessMocksProject)
 	c, ok := Lookup("harness-mocks")
 	if !ok {
@@ -204,7 +201,6 @@ func TestHarnessMocks_RenamesRetiredStubs(t *testing.T) {
 }
 
 func TestHarnessMocks_ScopeRewritesOnlyItsSlice(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := writeTree(t, harnessMocksProject)
 	c, _ := Lookup("harness-mocks")
 	scope, err := ParseScope(dir, []string{"internal/handlers/chat/external_test.go"})

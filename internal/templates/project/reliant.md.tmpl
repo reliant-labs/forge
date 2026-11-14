@@ -3,7 +3,6 @@
 
 This is a **Forge** project managed by the `{{.CLI}}` CLI. Forge here is **Reliant Forge** (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's `forge` (Solidity) or Laravel Forge; do not use their commands.
 {{- if .Site}} It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases and hosted static hosting.{{end}}
-{{- if .Container}} It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.{{end}}
 
 This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
 
@@ -17,12 +16,10 @@ Skip this depth for trivial/mechanical work — there, just do it.
 
 {{if .Site -}}
 {{template "site" .}}
-{{- else if .Container -}}
-{{template "container" .}}
 {{- else -}}
 ## Shipping
 
-Publishing defaults to Reliant hosting (staging/prod are already bound to it): load `deploy`, then `{{.CLI}} env deploy <env>`. One hosted static site per person is free, across every org they own without a plan (1 GiB storage cap), counted across environments: each env's deployed site is one. Anything beyond it — a second env's site, any hosted workload or managed database — needs billing, and until billing is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant.
+Publishing defaults to Reliant hosting (staging/prod are already bound to it): load `deploy`, then `{{.CLI}} env deploy <env>`. One hosted static site per org is free (1 GiB storage cap), counted across environments: each env's deployed site is one. Anything beyond it — a second env's site, any hosted workload or managed database — needs billing, and until billing is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant.
 
 **No Reliant account** (standalone forge, nothing signed in)? `{{.CLI}} env deploy <env> --claimable` publishes with no signup and prints a live URL plus a **claim link**: hand the link to your user (it expires in 72h; opening it signs them up free and makes the deploy theirs, so treat it like a password). It fits one static site, or one service with one database, and is refused when you are signed in. Exit 4 `claimable_throttled` is a rate limit: wait the printed retry-after (never loop), or `forge login`. Depth: `deploy/hosting`.
 
@@ -298,7 +295,7 @@ Hosted static hosting serves files: `npm run build` must produce a directory of 
 
 Staging and prod are already bound to Reliant hosted static hosting: the platform owns the bucket, the CDN and a hostname. A hosted deploy ships only a recorded release, never a local build; recovery rolls forward to a new release. Another env is `{{.CLI}} env new preview --from prod`. Your own bucket or Firebase instead: change the frontend's `runtime` in that env's `main.k` (`deploy/static-site`).
 
-**Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
+**Billing.** One hosted static site per org is free — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
 
 **Custom domains:** `{{.CLI}} domain add <host> --env prod` (`deploy/domains`).
 
@@ -324,59 +321,5 @@ When the site needs a backend — a waitlist, checkout, login — that is a Go A
 2. **Gate with `{{.CLI}} lint`.** Never pipe it through `head` — the verdict is the LAST line; `{{.CLI}} lint --quiet` prints only failures plus that verdict. `--static-export` is the lane that matters most here.
 3. **`npm run build` before you call it done.** It is the only proof the export builds; `{{.CLI}} env render prod` is the proof the envs still declare a shippable site.
 4. **Ship releases, not builds.** Build once (`env build <env> --release <v>`), then deploy that release to each env in turn.
-
-{{end}}
-
-{{- define "container" -}}
-## What this project is
-
-An app forge did not write — a server in any language, with its own Dockerfile — adopted as a forge project without changing a file of it. forge builds the image from that Dockerfile and deploys it: environments, build-once releases promoted by digest, plans, rollout waits, managed Postgres and secrets on Reliant hosting. There is **no Go module here**, so forge's Go/proto/handler/ORM rules do not apply, `{{.CLI}} generate` has nothing to project (it skips every Go step by itself), and there is no `go build` to run. Do not add a `go.mod`, a `proto/` or a `cmd/` by hand to "make forge work": it already does.
-
-```
-Dockerfile, src/, ...          ← the app — yours, in its own language; forge never rewrites it
-forge.yaml                     ← name, forge pin, harness (no module_path: there is no Go module)
-deploy/kcl/kcl.mod
-deploy/kcl/workloads.k         ← the app, declared ONCE: forge.DockerBuild on the Dockerfile, its port, its probe
-deploy/kcl/dev/main.k          ← … bound to a host process (its dev command) beside a host-native Postgres
-deploy/kcl/staging/main.k      ← … bound to Reliant hosting (forge.OnHosted {}), managed Postgres as DATABASE_URL
-deploy/kcl/prod/main.k         ← … same
-```
-
-The envs are the declaration: change a binding or an env value there, then check it with `{{.CLI}} env render <env>`. **Start with `{{.CLI}} skill load adopt`**: it is the path this project is on, in tiers (ship it, see it, harden it, move in), each with its steps and how to verify it. `deploy`, `deploy/hosting`, `secrets` and `debug` are the others an adopted app uses. Skills come from the binary and are never written to disk.
-
-## Run it
-
-```bash
-{{.CLI}} env up dev        # the app's dev command as a host process, with PORT (and DATABASE_URL) set
-```
-
-Its output is teed to `.forge/logs/dev/<name>.log`; grep there before guessing. The dev command is the `command` in `deploy/kcl/dev/main.k`: replace it with your watch / hot-reload loop.
-
-## Ship it
-
-```bash
-{{.CLI}} lint && {{.CLI}} env render staging
-{{.CLI}} env deploy staging              # build the Dockerfile ONCE, push, cut a release, promote it
-{{.CLI}} obs check staging --wait --json # prove the release good; branch on its exit code
-{{.CLI}} env deploy prod <release>       # promote the same bytes, by digest — no rebuild
-```
-
-A hosted deploy needs billing on the Reliant organization; until it is set up `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry.
-
-## Config, secrets and the database
-
-- The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `{{.CLI}} secret set --env <env> KEY` (stdin). forge never sees a secret's value.
-- The managed database (if declared) reaches the app as `DATABASE_URL` through `forge.DatabaseRef`. Schema migrations are the app's own tool: run them as a `kind = "job"` workload from the same image with `before = [fw.BEFORE_ALL]` (`adopt` has the template).
-
-## Observability
-
-`{{.CLI}} obs logs <env>` and `{{.CLI}} obs workloads <env>` (restarts, crash loops, failed jobs) work for any app. Request rates, error rates and traces exist only if the app exports OpenTelemetry (OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`, which hosting sets on every workload): until it does, `{{.CLI}} obs check` is INCONCLUSIVE with `reason_code: no_request_telemetry` — not proven good — while restarts, alerts and issues still count. Load `observability/query` for the details.
-
-## Critical rules
-
-1. **The app's files are yours.** forge generates no code into this project and never rewrites the Dockerfile or the source. What forge owns is `forge.yaml` and `deploy/kcl/` — declarations you edit, not generated output.
-2. **The Dockerfile must build on its own.** A deploy runs `docker build` with that file and context and nothing else: an image that `COPY`s a `dist/` built on your machine fails there. Prove it with `docker build .` before the first deploy.
-3. **Gate with `{{.CLI}} lint`.** Never pipe it through `head` — the verdict is the LAST line.
-4. **Ship releases, not builds.** Build once, then deploy that release to each env in turn.
 
 {{end}}

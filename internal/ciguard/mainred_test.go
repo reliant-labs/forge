@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The script under test, relative to this package. The test reads it itself
@@ -206,7 +204,6 @@ func runMainRed(t *testing.T, c mainRedCase) (string, bool) {
 // cases marked short: the accept path and the two refusals a mistake is most
 // likely to break. task test runs every case.
 func TestMainRedOverride(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	t.Parallel()
 	gate := fakeJob{ID: 9, Name: "CI gate"}
 	mainRed := []fakeJob{failedJob(21, "Test", "Go tests"), failedJob(22, "Lint (golangci-lint, go vet, -tags e2e)", "golangci-lint"), passedJob(23, "Verify Generated Code + Validate KCL")}

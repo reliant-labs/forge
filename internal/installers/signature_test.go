@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The release-signature contract (RF-2, 2026-11-01 security review): who may
@@ -286,7 +284,6 @@ func requireNotInstalled(t *testing.T, res installResult) {
 }
 
 func TestInstallSh_VerifiesTheReleaseSignatureWithGh(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)
@@ -316,7 +313,6 @@ func TestInstallSh_VerifiesTheReleaseSignatureWithGh(t *testing.T) {
 // RF-2's exploit: the archive and checksums.txt are replaced together. The
 // sha256 check passes; the signature check must refuse, with either verifier.
 func TestInstallSh_TamperedReleaseWithMatchingChecksumIsRefused(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	for _, tc := range []struct {
@@ -352,7 +348,6 @@ func TestInstallSh_TamperedReleaseWithMatchingChecksumIsRefused(t *testing.T) {
 }
 
 func TestInstallSh_FallsBackToCosign(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	for _, tc := range []struct {
@@ -386,7 +381,6 @@ func TestInstallSh_FallsBackToCosign(t *testing.T) {
 // A release with no signature (every release cut before signing began)
 // installs with a warning, and never asks a verifier anything.
 func TestInstallSh_MissingSignatureWarns(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)
@@ -406,7 +400,6 @@ func TestInstallSh_MissingSignatureWarns(t *testing.T) {
 }
 
 func TestInstallSh_RequireSignatureRefusesUnsignedRelease(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)
@@ -424,7 +417,6 @@ func TestInstallSh_RequireSignatureRefusesUnsignedRelease(t *testing.T) {
 }
 
 func TestInstallSh_NoVerifierWarnsUnlessRequired(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)
@@ -451,7 +443,6 @@ func TestInstallSh_NoVerifierWarnsUnlessRequired(t *testing.T) {
 }
 
 func TestInstallSh_RejectsBadRequireSignatureValue(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)
@@ -469,7 +460,6 @@ func TestInstallSh_RejectsBadRequireSignatureValue(t *testing.T) {
 // latest): every digest verifies, but the statement names the older release,
 // so the install is refused, with either verifier.
 func TestInstallSh_ReplayedOlderReleaseIsRefused(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	for _, tc := range []struct {
@@ -506,7 +496,6 @@ func TestInstallSh_ReplayedOlderReleaseIsRefused(t *testing.T) {
 // A signed install reports the release the signature was bound to; the latest
 // release is resolved to its tag and downloaded from it.
 func TestInstallSh_LatestIsResolvedAndBound(t *testing.T) {
-	testkit.Slow(t, "execs sh, curl and tar")
 	requireUnix(t)
 	t.Parallel()
 	rel := newRelease(t)

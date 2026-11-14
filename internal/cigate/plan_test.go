@@ -10,7 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func write(t *testing.T, root, rel, body string) {
@@ -64,7 +63,6 @@ func serviceInput(t *testing.T) PlanInput {
 // The order is load-bearing: verify-generated is listed first (after
 // dependency installs), and the KCL checks run last.
 func TestPlan_OrderAndLanes(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	all, err := Plan(serviceInput(t))
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +84,6 @@ func TestPlan_OrderAndLanes(t *testing.T) {
 // `task ci` runs checks then test: the frontend install appears in both lanes
 // and must run once, not twice.
 func TestSelect_DedupesSharedRows(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	all, _ := Plan(serviceInput(t))
 	n := 0
 	for _, c := range Select(all, []Lane{LaneChecks, LaneTest, LaneIntegration}) {
@@ -102,7 +99,6 @@ func TestSelect_DedupesSharedRows(t *testing.T) {
 // The gate follows the same toggles the workflow renders from: a check the
 // project turned off in forge.yaml is not a row at all (not a SKIPPED one).
 func TestPlan_FollowsTheWorkflowToggles(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	in.CI.LintGolangci, in.CI.VulnGo, in.CI.LicenseCheck, in.CI.HasKCL, in.CI.HasFrontends, in.CI.Frontends = false, false, false, false, false, nil
 	all, err := Plan(in)
@@ -155,7 +151,6 @@ func TestHasIntegrationTests(t *testing.T) {
 // A missing dependency directory makes the npm rows SKIPPED with the command
 // that fixes it, never a bare npm failure that reads like a code defect.
 func TestPlan_FrontendRowsNeedTheirDeps(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	all, _ := Plan(in)
 	lint := find(t, all, "lint-web")
@@ -177,7 +172,6 @@ func TestPlan_FrontendRowsNeedTheirDeps(t *testing.T) {
 // every package it loads, so without --ignore a project with no LICENSE file
 // logged "Failed to find license" for each of its own packages.
 func TestPlan_LicenseCheckIgnoresTheProjectsOwnModule(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	write(t, in.Root, "go.mod", "module example.com/shop\n\ngo 1.24\n\nrequire github.com/google/uuid v1.6.0\n")
 	all, err := Plan(in)
@@ -232,7 +226,6 @@ func TestLicenseIgnores(t *testing.T) {
 // ci.race=false in forge.yaml reaches `task test` the way the workflow carries
 // it, so the local gate and CI run the same go test flags.
 func TestPlan_CarriesTheRaceToggleToTask(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	in.CI.TestRace = false
 	all, _ := Plan(in)
@@ -242,7 +235,6 @@ func TestPlan_CarriesTheRaceToggleToTask(t *testing.T) {
 }
 
 func TestPlan_ExtraChecks(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	in.Cfg = &config.ProjectConfig{}
 	in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
@@ -283,7 +275,6 @@ func TestPlan_ExtraChecks(t *testing.T) {
 // ~26-step ci-gate.sh) move onto `forge ci gate`: every scheduling fact a
 // step has must be expressible.
 func TestPlan_ExtraChecksSchema(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	in := serviceInput(t)
 	in.Cfg = &config.ProjectConfig{}
 	no := false
@@ -359,7 +350,6 @@ func TestPlan_ExtraChecksSchema(t *testing.T) {
 
 // Forge's own rows carry the scheduling facts the gate runs them by.
 func TestPlan_SchedulingOfForgesOwnChecks(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	all, err := Plan(serviceInput(t))
 	if err != nil {
 		t.Fatal(err)
@@ -412,7 +402,6 @@ func TestDepsCurrent(t *testing.T) {
 
 // buf is pinned only where verify-generated regenerates with it.
 func TestPlan_BufPinnedOnlyWhereGenerateRunsIt(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	in.CI.RunsBufGenerate = false
 	all, _ := Plan(in)
@@ -430,7 +419,6 @@ func TestPlan_BufPinnedOnlyWhereGenerateRunsIt(t *testing.T) {
 // binary into the project root; the gate discards it instead. With several,
 // go build discards them itself, and -o to a file would be an error.
 func TestPlan_GoBuildWritesNoBinaryIntoTheTree(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	in := serviceInput(t) // cmd/app/main.go
 	all, _ := Plan(in)
 	if got := strings.Join(find(t, all, "go-build").Argv, " "); !strings.Contains(got, "-o "+os.DevNull) {

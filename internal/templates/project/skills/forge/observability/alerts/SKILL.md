@@ -42,7 +42,6 @@ Rules follow the Prometheus shape, with the condition **inside** `expr`: `alert`
 - `for` holds the condition before it fires (default `5m`). It is a KCL keyword, so write it quoted: `"for" = "10m"`.
 - `interval` is the evaluation period, floor `1m`. `keep_firing_for` holds a cleared alert.
 - `severity` is a label: `critical | warning | info`, default `warning`. Add any other labels you route on.
-- `release_health = "exclude"` (a label) says the rule watches something other than the env's own workloads: the machines that build it, a fleet the env monitors. Its alerts still page, but they never judge a release: `forge obs check` and the release-health verdict list them as `excluded_alerts` and count them as no `alert_firing` finding and no standing critical alert. Leave it off any rule about what the env serves.
 - `annotations` are Go templates in the Prometheus convention: `{{ $labels.<col> }}` (or `.Labels.<col>`) and `{{ $value }}` (or `.Value`, six significant digits). Functions: `printf` (`{{ printf "%.0f" $value }}`; a numeric verb also formats a label holding a number), `humanize`, `humanize1024`, `humanizeDuration`, `humanizePercentage`, `toUpper`, `toLower`, the float arithmetic `addf` / `subf` / `mulf` / `divf` (`{{ printf "%.0f" (mulf $value 100.0) }}%`), and text/template's builtins (`if`, `with`, `eq`, `gt`, …). `range`, `define` / `block` / `template`, a printf width or precision over 64, `*` and `%[n]` are refused. A template that fails at evaluation is sent as its raw text and logged; it never stops the alert.
 
 ## What render refuses
@@ -109,9 +108,7 @@ Check: `curl -s localhost:<alertmanager port>/api/v2/alerts` shows what is activ
 
 ## The built-in alerts
 
-`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/alert-service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
-
-**An env that runs another forge project's workloads watches that project's services too.** Each non-tool workload built from another forge project's source (a ShellBuild `cwd` or `source`, a DockerBuild build context, a RemoteBuild `source`) adds that project's `alert-service-*` parts. They are read at the revision this project pins: the GitSource ref, or the go.mod require (go.work and replace honoured, as for a `[forge_projects]` import), else the checkout. Each project owns its own services' alerts, and none keeps a copy of another's. A service both declare is watched once, and this env's `defaults` tune it. If the source can't be read, `env shape` warns and omits it.
+`forge generate` writes `deploy/observability/alert-defaults_gen.json` (the project and frontend the defaults are derived from, and the catalog) and each service's entry in `deploy/observability/spec/service-<svc>_gen.json` — the same input as the dashboards, one file per service so parallel branches never conflict. `forge env shape <env>` renders them per env and records them with `source: default`. Every built-in has an id; **one `forge.Alerts.defaults` map tunes or disables all of them**, whichever signal they read.
 
 | id | alert | signal | fires when (default) | disable |
 |---|---|---|---|---|

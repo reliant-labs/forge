@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestResolveImageTag_DirtyTree exercises the canonical bug case: a
@@ -23,7 +21,6 @@ import (
 // an untracked file alone won't change the tag — so we test the case
 // that actually flips the bit.
 func TestResolveImageTag_DirtyTree(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
 		// Modify the tracked README to dirty the tree.
@@ -44,7 +41,6 @@ func TestResolveImageTag_DirtyTree(t *testing.T) {
 // when the working tree matches HEAD. Complements the dirty case so we
 // know the suffix isn't always-on.
 func TestResolveImageTag_CleanTree(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
 		tag, err := resolveImageTag(context.Background(), "")
@@ -65,7 +61,6 @@ func TestResolveImageTag_CleanTree(t *testing.T) {
 // already wrap with "pass --tag to override" so this is the test that
 // pins the contract the deploy command relies on.
 func TestResolveImageTag_NotAGitRepo(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	withDir(t, dir, func() {
 		tag, err := resolveImageTag(context.Background(), "")
@@ -262,7 +257,6 @@ func TestResolveDeployImageTag_FlagOverrideWins(t *testing.T) {
 // the load-bearing path for the bug fix: build records what it
 // pushed, deploy reads it back unchanged.
 func TestResolveDeployImageTag_StateFileWinsOverFallback(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newGitRepo(t)
 	must := func(err error) {
 		if err != nil {
@@ -289,7 +283,6 @@ func TestResolveDeployImageTag_StateFileWinsOverFallback(t *testing.T) {
 // derived helper. This is the standalone-deploy path — `forge
 // deploy` on a fresh clone with no preceding build still works.
 func TestResolveDeployImageTag_FallbackWhenStateMissing(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newGitRepo(t)
 	withDir(t, dir, func() {
 		tag, _, src, err := resolveDeployImageTag(context.Background(), dir, "dev", "", false)

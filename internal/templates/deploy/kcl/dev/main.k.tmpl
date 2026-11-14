@@ -176,12 +176,7 @@ _profiles_otlp_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-otlp-pr
 _alertmanager_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alertmanager", 9093) if _observability and not _destination else 0
 _alerts_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-alerts", 9095) if _observability and not _destination else 0
 
-{{if .HasFrontend}}# Masked session recording for this environment. It sets the frontend's
-# `telemetry.replay` (forge.BrowserTelemetry), which renders its OTEL_REPLAY
-# and opts the env in to replay ingestion; False stops both. DNT/GPC and the
-# app's consent gate still win.
-_session_replay = True
-{{end}}_observability_decl = forge.Observability {
+_observability_decl = forge.Observability {
     local_port = _otlp_http_port
     alertmanager_port = _alertmanager_port
     alerts_port = _alerts_port
@@ -412,7 +407,6 @@ _telemetry_workloads = ([fw.Workload {
 {{if .HasFrontend}}_{{.FrontendIdent}}_frontend = forge.Frontend {
     name = "{{.FrontendName}}"
     path = "frontends/{{.FrontendName}}"
-    telemetry = forge.BrowserTelemetry {replay = _observability and _session_replay}
 {{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
 {{end}}    port = _frontend_port
 }

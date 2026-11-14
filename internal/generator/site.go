@@ -25,9 +25,6 @@ type SiteFrontend struct {
 	// PublicDir is where its build lands, relative to the root ("dist" for
 	// Vite, "out" for a Next.js static export).
 	PublicDir string
-	// SessionReplay is set only for a freshly generated starter. Adopting
-	// existing application code preserves its prior capture intent (off).
-	SessionReplay bool
 }
 
 // WriteSiteScaffold writes a static site's forge files into dir: forge.yaml,
@@ -97,7 +94,6 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 			FrontendPath:      ".",
 			FrontendType:      fe.Type,
 			FrontendPublicDir: fe.PublicDir,
-			SessionReplay:     fe.SessionReplay,
 		})
 		if err != nil {
 			return fmt.Errorf("render %s env: %w", env, err)

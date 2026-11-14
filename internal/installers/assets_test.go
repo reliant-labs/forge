@@ -13,8 +13,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // buildFixtureAssets runs scripts/build-release-assets.sh against a tiny
@@ -85,7 +83,6 @@ func main() { fmt.Printf("forge version %s (commit %s, built %s)\n", Version, Gi
 // only explicit propagation stops a failed go build whose tar still succeeds
 // from being certified and checksummed.
 func TestReleaseAssets_AFailedBuildStepFailsTheRelease(t *testing.T) {
-	testkit.Slow(t, "execs git and bash")
 	shim := t.TempDir()
 	// go: write the -o output, then exit non-zero (a build tool that leaves an
 	// executable behind and still fails).
@@ -193,7 +190,6 @@ func keys(m map[string][]byte) []string {
 }
 
 func TestRenderHomebrewFormula(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not on PATH")
 	}

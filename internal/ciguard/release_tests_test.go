@@ -6,12 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestReleaseRequiresExactFullGreen(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	body, err := os.ReadFile(filepath.Join("..", "..", "scripts", "check-release-tests.sh"))
 	if err != nil {
 		t.Fatal(err)

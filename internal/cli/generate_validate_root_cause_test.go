@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestRunGoBuildValidate_RootCauseQuotesFirstCompilerError pins the ROOT
@@ -22,7 +20,6 @@ import (
 // down. The line must quote the first compiler error (file:line:col and
 // message) and say whose file it is.
 func TestRunGoBuildValidate_RootCauseQuotesFirstCompilerError(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Setenv("GOWORK", "off") // the temp module must not join an ambient workspace
 	projectDir := t.TempDir()
 	write := func(rel, body string) {
@@ -101,7 +98,6 @@ func TestCompilerErrorLines(t *testing.T) {
 // TestRunGoBuildValidate_RootCauseNamesGeneratedFile: when the first error
 // cites a generated file, the remedy is its inputs, not the file.
 func TestRunGoBuildValidate_RootCauseNamesGeneratedFile(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Setenv("GOWORK", "off")
 	projectDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectDir, "go.mod"), []byte("module example.com/rootcause\n\ngo 1.22\n"), 0o644); err != nil {

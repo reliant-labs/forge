@@ -32,7 +32,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // controlPlaneTripwire is a control plane that must never be called. It
@@ -108,7 +107,6 @@ func captureLedgerOverrideNotices(t *testing.T) *bytes.Buffer {
 // $FORGE_LEDGER_HOME and never reaches the control plane — neither the
 // plan's reads nor the write.
 func TestLedgerImport_MachineOverrideNeverContactsTheDeclaredControlPlane(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	endpoint, hits := controlPlaneTripwire(t)
 	dir := t.TempDir()
 	declareProdControlPlane(t, dir, endpoint)
@@ -151,7 +149,6 @@ func TestLedgerImport_MachineOverrideNeverContactsTheDeclaredControlPlane(t *tes
 // so the selected ledger serving reads locally is what keeps `forge env
 // render prod` hermetic.
 func TestSelectLedger_MachineOverrideReadsNothingFromTheDeclaredControlPlane(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	endpoint, hits := controlPlaneTripwire(t)
 	dir := t.TempDir()
 	declareProdControlPlane(t, dir, endpoint)
@@ -217,7 +214,6 @@ func TestLedgerSelection_UnrecognisedValueRefusesAndContactsNothing(t *testing.T
 // "never promoted" from an empty machine ledger. Selection only — this makes
 // no call.
 func TestLedgerSelection_HomeAloneDoesNotSelectTheMachineLedger(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	endpoint, hits := controlPlaneTripwire(t)
 	dir := t.TempDir()
 	declareProdControlPlane(t, dir, endpoint)
@@ -293,7 +289,6 @@ func TestLedgerImport_PlanLabelsAHostedTargetAndTheHomeVariable(t *testing.T) {
 // `ledger where` reports the override AS an override, with the declaration it
 // displaced — never as an env that declares nothing.
 func TestLedgerWhere_ReportsTheMachineOverride(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	endpoint, hits := controlPlaneTripwire(t)
 	dir := t.TempDir()
 	declareProdControlPlane(t, dir, endpoint)

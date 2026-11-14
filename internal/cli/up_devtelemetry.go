@@ -163,7 +163,6 @@ func devTelemetryRetentionOf(o *ObservabilityEntity) *devTelemetryRetention {
 type devTelemetryGrant struct {
 	ProcessToken  string `json:"processToken"`
 	BrowserToken  string `json:"browserToken"`
-	SessionReplay bool   `json:"sessionReplay"`
 	ExpiresAt     string `json:"expiresAt"`
 	Endpoint      string `json:"endpoint"`
 	OrgID         string `json:"orgId"`
@@ -187,12 +186,8 @@ type devTelemetryGrant struct {
 }
 
 // mintDevTelemetry asks the control plane for this session's two tokens.
-func mintDevTelemetry(ctx context.Context, client cloudCaller, sessionID, project, env string, retention *devTelemetryRetention, now time.Time, sessionReplay bool) (devTelemetryGrant, error) {
-	// Always send false too: a local session must not inherit another stack's
-	// or the deployed environment's replay opt-in. Old servers may ignore the
-	// field, so capture additionally requires an affirmative response below.
-	replay := sessionReplay
-	req := map[string]any{"sessionId": sessionID, "project": project, "environment": env, "sessionReplay": replay}
+func mintDevTelemetry(ctx context.Context, client cloudCaller, sessionID, project, env string, retention *devTelemetryRetention, now time.Time) (devTelemetryGrant, error) {
+	req := map[string]any{"sessionId": sessionID, "project": project, "environment": env}
 	if retention != nil {
 		req["retention"] = retention
 	}
@@ -213,7 +208,6 @@ func mintDevTelemetry(ctx context.Context, client cloudCaller, sessionID, projec
 	if err != nil {
 		return devTelemetryGrant{}, fmt.Errorf("%s answered an unreadable expiresAt %q: %w", procMintLocalTelemetryToken, g.ExpiresAt, err)
 	}
-	g.SessionReplay = replay && g.SessionReplay
 	g.mintedAt, g.expires = now, exp
 	g.Endpoint = strings.TrimRight(g.Endpoint, "/")
 	g.Retention = devtelemetry.Retention{TracesDays: g.WireRet.TracesDays, MetricsDays: g.WireRet.MetricsDays, LogsDays: g.WireRet.LogsDays, BrowserDays: g.WireRet.BrowserDays}
@@ -268,12 +262,11 @@ type devTelemetryFacts struct {
 	CredentialErr error
 	// Session is the stack's session, reported to a control plane; nil
 	// when there is none (SessionSkip says why).
-	Session       *upSession
-	SessionSkip   string
-	Client        cloudCaller
-	Project       string
-	Retention     *devTelemetryRetention
-	SessionReplay bool
+	Session     *upSession
+	SessionSkip string
+	Client      cloudCaller
+	Project     string
+	Retention   *devTelemetryRetention
 }
 
 // devTelemetryDecision is where this run's telemetry goes.
@@ -315,7 +308,7 @@ func decideDevTelemetry(ctx context.Context, f devTelemetryFacts, now time.Time)
 	if err := f.Session.reportLive(now); err != nil {
 		return local("the control plane did not take this stack's session: " + firstLine(err.Error()))
 	}
-	g, err := mintDevTelemetry(ctx, f.Client, f.Session.session.ID, f.Project, f.Env, f.Retention, now, f.SessionReplay)
+	g, err := mintDevTelemetry(ctx, f.Client, f.Session.session.ID, f.Project, f.Env, f.Retention, now)
 	if err != nil {
 		return local(mintRefusal(err))
 	}
@@ -332,9 +325,6 @@ type devTelemetryRun struct {
 	client                   cloudCaller
 	sessionID                string
 	retention                *devTelemetryRetention
-	sessionReplay            bool
-	frontends                []FrontendEntity
-	log                      io.Writer
 	// endpoint and session are what the keeper (devtelemetry_keeper.go)
 	// needs to keep the stack's session live and its tokens current.
 	endpoint cloud.Endpoint
@@ -399,29 +389,14 @@ func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
 	if r.superseded() {
 		return errDevTelemetrySuperseded
 	}
-	g, err := mintDevTelemetry(ctx, r.client, r.sessionID, r.project, r.env, r.retention, now, r.sessionReplay)
+	g, err := mintDevTelemetry(ctx, r.client, r.sessionID, r.project, r.env, r.retention, now)
 	if err == nil {
 		// Asked again after the mint: a decision taken while it was in
 		// flight must not see its cleared tokens written back.
 		if r.superseded() {
 			return errDevTelemetrySuperseded
 		}
-		r.mu.Lock()
-		wasReplay := r.grant.SessionReplay
-		r.mu.Unlock()
 		err = r.write(g, now)
-		if err == nil {
-			// Persistence is the commit point. Capture withdrawal is a
-			// separate effect: it must not roll an active grant back.
-			r.mu.Lock()
-			r.grant = g
-			r.mu.Unlock()
-			if wasReplay && !g.SessionReplay {
-				if withdrawalErr := r.stopReplayForReloads(); withdrawalErr != nil {
-					return r.replayWithdrawalFailed(withdrawalErr, now)
-				}
-			}
-		}
 	}
 	if err != nil {
 		r.mu.Lock()
@@ -433,6 +408,9 @@ func (r *devTelemetryRun) renewNow(ctx context.Context, now time.Time) error {
 		})
 		return err
 	}
+	r.mu.Lock()
+	r.grant = g
+	r.mu.Unlock()
 	return nil
 }
 
@@ -458,7 +436,7 @@ func (r *devTelemetryRun) renewUntil(ctx context.Context, clock devTelemetryCloc
 		case <-clock.After(wait):
 		}
 		if err := r.renewNow(ctx, clock.Now()); err != nil {
-			if ctx.Err() != nil || errors.Is(err, errDevTelemetrySuperseded) || errors.Is(err, errDevReplayWithdrawal) {
+			if ctx.Err() != nil || errors.Is(err, errDevTelemetrySuperseded) {
 				return
 			}
 			switch {
@@ -536,11 +514,6 @@ func applyHostedDevTelemetry(e *KCLEntities, projectDir string, g devTelemetryGr
 		for k, v := range add {
 			h.LaunchEnv[k] = v
 		}
-	}
-	// An old server's missing acknowledgement is fail-closed. Never change
-	// owned declarations or build artifacts, just this run's resolved document.
-	if !g.SessionReplay {
-		disableDevReplay(e)
 	}
 	if e.Observability != nil {
 		o := *e.Observability
@@ -642,11 +615,7 @@ func retentionLabel(r devtelemetry.Retention) string {
 // stack: what is sent, where, for how long, and how to stop it.
 func printDevTelemetryNotice(w io.Writer, env string, g devTelemetryGrant) {
 	fmt.Fprintf(w, "[up] telemetry: this stack's telemetry goes to Reliant's hosted store, not the local ClickStack\n")
-	replay := "no session replay"
-	if g.SessionReplay {
-		replay = "masked session replay; DNT/GPC and consent still apply"
-	}
-	fmt.Fprintf(w, "     what:      traces, metrics and logs of every host process, and the browser's errors, console and network spans (%s)\n", replay)
+	fmt.Fprintf(w, "     what:      traces, metrics and logs of every host process, and the browser's errors, console and network spans (no session replay)\n")
 	fmt.Fprintf(w, "     note:      that includes what your code logs and the query text of database spans; credential-shaped strings are scrubbed before storage\n")
 	fmt.Fprintf(w, "     where:     org %s, instance %s", g.OrgID, emptyAs(g.Instance.Label, g.Instance.ID))
 	if g.Instance.User != "" {
@@ -717,16 +686,15 @@ func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetup
 	}
 	decl := declarationFromEntities(e)
 	facts := devTelemetryFacts{
-		Env:           env,
-		Mode:          mode,
-		TelemetryOn:   e.Observability != nil && e.Observability.Enabled,
-		ControlPlane:  decl != nil,
-		Session:       session,
-		SessionSkip:   target.Skip,
-		Client:        target.Client,
-		Project:       target.Project,
-		Retention:     devTelemetryRetentionOf(e.Observability),
-		SessionReplay: devReplayRequested(e),
+		Env:          env,
+		Mode:         mode,
+		TelemetryOn:  e.Observability != nil && e.Observability.Enabled,
+		ControlPlane: decl != nil,
+		Session:      session,
+		SessionSkip:  target.Skip,
+		Client:       target.Client,
+		Project:      target.Project,
+		Retention:    devTelemetryRetentionOf(e.Observability),
 	}
 	if facts.ControlPlane && mode.Value != devTelemetryLocal {
 		facts.CredentialErr = devTelemetryCredential(env, decl)
@@ -742,7 +710,16 @@ func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetup
 		settleDevTelemetryLocal(projectDir, env, d.Reason, now, w)
 		// Said only when there was a hosted path to fall back FROM: a
 		// standalone project with no control plane has nothing to hear.
-		printLocalReplayAvailability(e, facts, mode, d.Reason, w)
+		if facts.ControlPlane && facts.TelemetryOn {
+			fmt.Fprintf(w, "[up] telemetry: local (%s)\n", d.Reason)
+			if envHasNoTelemetryStore(e) {
+				hint := ""
+				if mode.Value != devTelemetryLocal {
+					hint = fmt.Sprintf("; sign in to Reliant (`%s login`) to ship it to your org's hosted store", Name())
+				}
+				fmt.Fprintf(w, "[up]   this env runs no local store (no container, no ClickStack), so nothing is exported or kept%s\n", hint)
+			}
+		}
 		return nil, nil
 	}
 	session.mu.Lock()
@@ -752,8 +729,6 @@ func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetup
 		projectDir: projectDir, env: env, project: target.Project,
 		client: target.Client, sessionID: snapshot.ID,
 		retention: facts.Retention, grant: d.Grant, session: snapshot,
-		sessionReplay: facts.SessionReplay,
-		frontends:     e.Frontends, log: w,
 	}
 	if ep, eerr := projectEndpoint(env, decl); eerr == nil {
 		run.endpoint = ep
@@ -776,11 +751,6 @@ func setupDevTelemetry(ctx context.Context, e *KCLEntities, in devTelemetrySetup
 		_ = devtelemetry.MarkNoticeShown(projectDir, now)
 	}
 	skipped := applyHostedDevTelemetry(e, projectDir, d.Grant, os.Environ())
-	if facts.SessionReplay && !d.Grant.SessionReplay {
-		fmt.Fprintln(w, "[up] session recording: unavailable (the hosted dev telemetry server did not acknowledge sessionReplay); capture is off, ordinary telemetry continues")
-	} else if d.Grant.SessionReplay {
-		fmt.Fprintln(w, "[up] session recording: masked, subject to DNT/GPC, consent and sampling; set _session_replay = False in this env to stop capture and ingestion")
-	}
 	fmt.Fprintf(w, "[up] telemetry: hosted (org %s, instance %s, %s) → %s\n",
 		d.Grant.OrgID, emptyAs(d.Grant.Instance.Label, d.Grant.Instance.ID), retentionLabel(d.Grant.Retention), d.Grant.Endpoint)
 	if len(skipped) > 0 {

@@ -48,14 +48,11 @@ type Memo[T any] struct {
 
 // Builder is one graph's construction state. The zero value is ready to use.
 type Builder struct {
-	path            []string // the nodes being constructed, outermost first
-	sealed          bool
-	root            string
-	built           []builtNode // completion order: every node after its dependencies
-	progress        Progress
-	rolledBack      bool
-	rollbackManaged bool
-	supervised      bool
+	path     []string // the nodes being constructed, outermost first
+	sealed   bool
+	root     string
+	built    []builtNode // completion order: every node after its dependencies
+	progress Progress
 }
 
 // Progress is told about each node's construction as it happens: Constructing
@@ -107,9 +104,6 @@ var ErrSealed = errors.New("graphkit: the graph is sealed")
 // Build (a hand-written main using the graph unsealed) gets the same panic;
 // Catch turns it into an error.
 func Get[T any](b *Builder, m *Memo[T], name string, ctor func() (T, error), node func(T) lifecyclekit.Node) T {
-	if b.rolledBack {
-		panic(errors.New("graphkit: access after construction rollback"))
-	}
 	if m.done {
 		return m.v
 	}
@@ -189,9 +183,6 @@ func rootSuffix(root string) string {
 // c: <cause>". Building a second root on a sealed graph is an error: one
 // process runs one root.
 func (b *Builder) Build(root string, force func()) error {
-	if b.rolledBack {
-		return errors.New("graphkit: Build after construction rollback")
-	}
 	if b.sealed {
 		return fmt.Errorf("build %s: the graph was already built for root %s; build each root on a graph of its own", root, b.root)
 	}
@@ -255,25 +246,10 @@ func (b *Builder) Nodes() []lifecyclekit.Node {
 // start before every built node and stop after all of them, so they answer
 // for the whole of boot and drain.
 func (b *Builder) Supervise(ctx context.Context, policy lifecyclekit.Policy, probes *serverkit.Probes, first ...lifecyclekit.Node) error {
-	if b.rolledBack {
-		return errors.New("graphkit: Supervise after construction rollback")
-	}
 	if !b.sealed {
 		return errors.New("graphkit: Supervise before Build: build the root first, so nothing is constructed while it runs")
 	}
-	if b.rollbackManaged {
-		if b.supervised {
-			return errors.New("graphkit: rollback-managed graph already transferred to supervision")
-		}
-	}
 	nodes := append(append([]lifecyclekit.Node(nil), first...), b.Nodes()...)
-	// Validate on every graph, rollback-managed or not, before ownership
-	// transfers: a rejected node set started nothing, so the caller still
-	// owns the acquisitions and Rollback remains available.
-	if err := lifecyclekit.ValidateNodes(nodes); err != nil {
-		return err
-	}
-	b.supervised = true
 	if probes != nil {
 		probes.AddReadyCheck(lifecyclekit.ReadyChecks(nodes...)...)
 		if policy.Drainer == nil {

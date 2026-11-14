@@ -10,7 +10,6 @@ import (
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/kclvendor"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const importsKclMod = "[package]\nname = \"%s\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n\n[dependencies]\n"
@@ -91,7 +90,6 @@ func TestRunImportsAForgeProjectAtItsGoModLocation(t *testing.T) {
 }
 
 func TestRunRefusesAnImportPinnedToAnotherForge(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Setenv(forgecompat.SkewOverrideEnv, "")
 	consumer := importsFixture(t, "v0.1.40", "v0.1.47")
 	_, err := kclrender.Run(consumer, filepath.Join(consumer, "deploy", "kcl", "prod"), nil)

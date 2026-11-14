@@ -11,7 +11,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/serverkit"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A freshly scaffolded frontend must reach its freshly scaffolded backend in a
@@ -45,7 +44,6 @@ type devLaunchSite struct {
 // a permissive CORS posture — judged by running serverkit's real gate, not by
 // matching a string the scaffold happens to contain today.
 func TestScaffold_EveryDevLauncherServesPermissiveCORS(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := scaffoldForDevLaunch(t, "corsapp")
 
 	sites := collectDevLaunchSites(t, root, "corsapp")
@@ -81,7 +79,6 @@ func TestScaffold_EveryDevLauncherServesPermissiveCORS(t *testing.T) {
 // would make the test above pass everywhere and open every deployment that
 // forgets to set ENVIRONMENT — a fail-open default is not a fix.
 func TestScaffold_ConfigDefaultEnvironmentStaysClosed(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := scaffoldForDevLaunch(t, "closedapp")
 
 	proto := readFile(t, filepath.Join(root, "proto", filepath.Base(root), "config", "v1", "config.proto"))
@@ -253,7 +250,6 @@ func quotedOptionValue(t *testing.T, block, key string) string {
 // commands through PowerShell: a [build.windows] override with .exe paths, and
 // no POSIX-only constructs (&&, mv, inline VAR=val) in it or in the entrypoint.
 func TestScaffold_AirConfigsAreWindowsRunnable(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := scaffoldForDevLaunch(t, "winair")
 	for _, file := range []string{".air.toml", ".air-debug.toml"} {
 		var cfg struct {

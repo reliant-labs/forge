@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // attemptCaller records every attempt call, as the JSON a control plane
@@ -287,7 +286,6 @@ func TestDeployAttemptTeeKeepsTheTail(t *testing.T) {
 // Heartbeats carry the phase without waiting for the ticker: a phase change
 // nudges one out.
 func TestDeployAttemptPhaseChangeNudgesAHeartbeat(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	c := &attemptCaller{}
 	ctx, a := newTestAttempt("prod", "apply", io.Discard)

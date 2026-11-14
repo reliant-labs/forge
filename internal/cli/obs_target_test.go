@@ -8,14 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/obsbackend"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // obsTargetProject writes a project whose prod env declares a control plane at
@@ -216,11 +214,10 @@ func TestObsTargetUnstampableProjectHasNoFingerprint(t *testing.T) {
 func TestObsTargetCachePreservesClusterLocation(t *testing.T) {
 	dir := obsTargetProject(t, "https://cp.example.com")
 	fp := obsTargetFingerprint(dir, "prod")
-	facts := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com",
-		SelfInstrumented: []string{"app"}}
+	facts := obsbackend.Facts{Env: "prod", Declared: true, Enabled: true, HasCluster: true, ControlPlane: "https://cp.example.com"}
 	writeObsTarget(dir, "prod", fp, obsTarget{Facts: facts})
 	got, ok := readObsTarget(dir, "prod", fp)
-	if !ok || !reflect.DeepEqual(got.Facts, facts) {
+	if !ok || got.Facts != facts {
 		t.Fatalf("cached facts = %+v, hit %v; want %+v", got.Facts, ok, facts)
 	}
 	dec, err := obsbackend.Resolve(got.Facts, "")
@@ -274,7 +271,6 @@ func TestObsTargetIsNotTrustedPastItsAgeOrWithAPathDependency(t *testing.T) {
 // rendered twice per lookup (ledger selection, then the control plane),
 // inside a 10s budget a large env's render alone could exceed.
 func TestReleasesBackendReadsTheStampedTarget(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	srv, _ := obsCloudForbidden(t)
 	obsTargetProject(t, srv.URL)
 	fresh := func() {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -23,138 +22,15 @@ const procExchangeToken = "controlplane.v1.AccessTokenService/ExchangeToken"
 // still be presented. Past it a fresh one is requested.
 const elevationReuseMargin = time.Minute
 
-// elevationCache remembers elevated tokens for this process, and the
-// exchanges the control plane refused, so a refusal is asked for once.
+// elevationCache remembers elevated tokens for this process.
 type elevationCache struct {
 	mu      sync.Mutex
 	entries map[string]elevatedToken
-	refused map[string]error
 }
 
 type elevatedToken struct {
 	token     string
 	expiresAt time.Time
-}
-
-// scopeTable maps a procedure to the scope a call to it needs.
-type scopeTable struct {
-	mu     sync.Mutex
-	byProc map[string]string
-}
-
-func (t *scopeTable) set(procedure, scope string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.byProc == nil {
-		t.byProc = map[string]string{}
-	}
-	t.byProc[strings.TrimPrefix(procedure, "/")] = scope
-}
-
-func (t *scopeTable) get(procedure string) (string, bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	scope, ok := t.byProc[strings.TrimPrefix(procedure, "/")]
-	return scope, ok
-}
-
-// DeclareScope says that a call to each of procedures needs scope, so this
-// client elevates for it BEFORE the first call instead of learning it from a
-// refusal.
-//
-// WHY DECLARE. Learning a scope from a 403 costs every run one refused call
-// per scope: an extra round trip for the command, and a permission denial in
-// the control plane's error rate and audit log for a request that was always
-// going to be elevated (846 refused ObservabilityService calls in a week, all
-// of them `forge obs` runs). A command family knows the scope its procedures
-// need, so it says so where it names them.
-//
-// A declaration is a hint, never an authority: the control plane still
-// decides. A credential that is not elevated (--token, the token env var, a
-// human session) ignores it, and so does one that already reports carrying
-// the scope. A wrong declaration costs a call: when the elevated token is
-// refused for another scope, the call falls back to the base credential and
-// the reactive path. The elevated token lives in this process only, as a
-// reactive one does; nothing is written to the credentials file.
-func (c *Client) DeclareScope(scope string, procedures ...string) {
-	for _, procedure := range procedures {
-		c.scopes.set(procedure, scope)
-	}
-}
-
-// upfrontScope reports the scope procedure is called with an elevated token
-// for: declared, or learned from an earlier refusal on this client, for a
-// credential that can be elevated and does not already carry it.
-func (c *Client) upfrontScope(procedure string) (string, bool) {
-	scope, ok := c.scopes.get(procedure)
-	if !ok || !c.elevatable() || c.carries(scope) {
-		return "", false
-	}
-	return scope, true
-}
-
-// carries reports whether the base credential holds scope, as far as forge
-// knows: the scopes its issuer reported, else the ones `forge login` and the
-// credential helper ask for.
-func (c *Client) carries(scope string) bool {
-	held := c.credential().Scopes
-	if len(held) == 0 {
-		held = LoginScopes()
-	}
-	return slices.Contains(held, scope)
-}
-
-// callDeclared calls procedure with a token elevated for scope from the start.
-// When the elevation is refused, the base credential is presented instead (a
-// declaration is not proof the base lacks the scope), and its refusal carries
-// why the elevation did not help; the cached refusal means the exchange is not
-// asked twice.
-func (c *Client) callDeclared(ctx context.Context, procedure string, req, out any, scope string) error {
-	token, elevErr := c.elevatedToken(ctx, scope)
-	if elevErr != nil {
-		return c.elevateAndRetry(ctx, procedure, req, out, c.callBase(ctx, procedure, req, out))
-	}
-	err := c.callElevated(ctx, procedure, req, out, scope, token)
-	if missing, ok := c.elevationScope(err); ok && missing != scope {
-		// The procedure needs another scope than declared, and the elevated
-		// token carries only the declared one. Start over from the base
-		// credential, which may hold the other, and elevate for it if not.
-		return c.elevateAndRetry(ctx, procedure, req, out, c.callBase(ctx, procedure, req, out))
-	}
-	return err
-}
-
-// elevateAndRetry is the reactive path. err is a call's outcome; when it is a
-// refusal naming a scope this credential can be elevated for, forge exchanges
-// for that scope and repeats the call once. A successful elevation is
-// remembered for procedure, so the client's later calls to it elevate up
-// front: a polling command is refused once, not on every poll.
-func (c *Client) elevateAndRetry(ctx context.Context, procedure string, req, out any, err error) error {
-	scope, ok := c.elevationScope(err)
-	if !ok {
-		return err
-	}
-	token, elevErr := c.elevatedToken(ctx, scope)
-	if elevErr != nil {
-		return c.loginLacksScope(annotateElevation(err, scope, elevErr), scope)
-	}
-	c.scopes.set(procedure, scope)
-	return c.callElevated(ctx, procedure, req, out, scope, token)
-}
-
-// elevatable reports whether this client's credential may be traded for an
-// elevated one: a stored login or a helper's token, never one the user handed
-// forge verbatim and never a human session. elevationScope says why.
-func (c *Client) elevatable() bool {
-	cred := c.credential()
-	if cred.Kind == "human" {
-		return false
-	}
-	switch cred.Source {
-	case SourceLogin, SourceHelper:
-		return true
-	}
-	return false
 }
 
 // elevationScope reports the scope to elevate for when err is a 403 naming a
@@ -173,28 +49,28 @@ func (c *Client) elevatable() bool {
 // forge asks for exactly the scope a command just proved it needs, for an hour,
 // instead of every stored token carrying every permission forever.
 func (c *Client) elevationScope(err error) (string, bool) {
-	if !c.elevatable() {
+	if c.credential().Kind == "human" {
 		return "", false
 	}
 	var apiErr *Error
 	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != 403 {
 		return "", false
 	}
+	switch c.credential().Source {
+	case SourceLogin, SourceHelper:
+	default:
+		return "", false
+	}
 	return apiErr.MissingScope()
 }
 
 // elevatedToken returns a live elevated token for scope, exchanging for one
-// when none is cached. An exchange the control plane refused is not asked
-// again by this client: its answer will not change within one command, and
-// each asking is another refusal in the control plane's audit log.
+// when none is cached.
 func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error) {
 	c.elevated.mu.Lock()
 	defer c.elevated.mu.Unlock()
 	if cached, ok := c.elevated.entries[scope]; ok && time.Until(cached.expiresAt) > elevationReuseMargin {
 		return cached.token, nil
-	}
-	if refused, ok := c.elevated.refused[scope]; ok {
-		return "", refused
 	}
 
 	if tok, ok := c.helperScopedToken(scope); ok {
@@ -214,12 +90,6 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	// The exchange is authenticated by the base credential. It is a plain
 	// call, not Call, so a refusal cannot recurse into another elevation.
 	if err := c.call(ctx, procExchangeToken, map[string]any{"scopes": []string{scope}}, &resp, c.credential().Token); err != nil {
-		if exchangeRefused(err) {
-			if c.elevated.refused == nil {
-				c.elevated.refused = map[string]error{}
-			}
-			c.elevated.refused[scope] = err
-		}
 		return "", err
 	}
 	if strings.TrimSpace(resp.Secret) == "" {
@@ -234,16 +104,6 @@ func (c *Client) elevatedToken(ctx context.Context, scope string) (string, error
 	}
 	c.elevated.entries[scope] = elevatedToken{token: resp.Secret, expiresAt: expires}
 	return resp.Secret, nil
-}
-
-// exchangeRefused reports an exchange the control plane answered with a
-// refusal that asking again cannot change: a 4xx other than 401 (a 401 refuses
-// the base credential, which a refresh may replace). An outage or a dropped
-// connection is not remembered.
-func exchangeRefused(err error) bool {
-	var apiErr *Error
-	return errors.As(err, &apiErr) && apiErr.HTTPStatus >= 400 && apiErr.HTTPStatus < 500 &&
-		!apiErr.Unauthenticated() && apiErr.HTTPStatus != http.StatusTooManyRequests
 }
 
 // helperScopedToken asks the credential helper — the host session behind a

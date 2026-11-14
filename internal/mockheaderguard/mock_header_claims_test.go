@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The generated mock-data header used to open with:
@@ -40,7 +39,6 @@ var dbDirClaimRE = regexp.MustCompile(`\bdb/([a-z_][a-z0-9_-]*)`)
 // template's header comment, extracts every db/<dir> it names, and requires
 // each to exist in a project forge actually generates.
 func TestMockHeaderCitesOnlyDirectoriesForgeScaffolds(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	tmplPath := filepath.Join("..", "templates", "frontend", "mocks", "mock-data.ts.tmpl")
 	//nolint:gocritic // path is repo-relative by design: the guard reads the SHIPPED template.
 	raw, err := os.ReadFile(tmplPath)

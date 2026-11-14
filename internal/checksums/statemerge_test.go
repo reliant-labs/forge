@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func ledgerBytes(t *testing.T, files map[string]ScaffoldEntry, absent ...string) []byte {
@@ -38,7 +36,6 @@ func gitMergeFileConflicts(t *testing.T, base, ours, theirs []byte) bool {
 // same two existing entries: git's line merge conflicts on every such pair.
 // Merged as a map, both land, rendered exactly as forge writes the ledger.
 func TestMergeStateFile_LedgerBirthsFromBothSides(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	e := ScaffoldEntry{BirthHash: "b"}
 	base := ledgerBytes(t, map[string]ScaffoldEntry{".github/workflows/ci.yml": e, "internal/handlers/system/a_test.go": e})
 	ours := ledgerBytes(t, map[string]ScaffoldEntry{".github/workflows/ci.yml": e, "internal/handlers/question/q_test.go": e, "internal/handlers/system/a_test.go": e})

@@ -16,8 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // repoPkgDir is the pkg/ library tree in this checkout. It is a directory in
@@ -259,7 +257,6 @@ func TestWriteLibraries_JSONRoundTrips(t *testing.T) {
 // directory must be this checkout's own pkg/ — which is exactly the dev
 // case an agent working on a forge project hits.
 func TestBuildLibrariesSpec_ResolvesInThisRepo(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	spec, err := buildLibrariesSpec(context.Background())
 	if err != nil {
 		t.Fatalf("buildLibrariesSpec: %v", err)
@@ -294,7 +291,6 @@ func TestBuildLibrariesSpec_ResolvesInThisRepo(t *testing.T) {
 // stay silent, so it is tested in isolation from any real go.mod
 // resolution.
 func TestDetectLibraryDivergence_NoDivergenceWhenResolvedInsideModuleCache(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	modCache, err := goEnv(context.Background(), "GOMODCACHE")
 	if err != nil || modCache == "" {
 		t.Fatalf("goEnv GOMODCACHE: %v (%q)", err, modCache)
@@ -319,7 +315,6 @@ func TestDetectLibraryDivergence_NoDivergenceWhenResolvedInsideModuleCache(t *te
 // and the main module has no version to diverge from. A fixture consumer is
 // what the detector is actually for.
 func TestDetectLibraryDivergence_DetectsGoWorkOverrideInAConsumerProject(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := bridgedConsumerProject(t)
 
 	got := detectLibraryDivergence(context.Background(), dir)
@@ -345,7 +340,6 @@ func TestDetectLibraryDivergence_DetectsGoWorkOverrideInAConsumerProject(t *test
 // field is wired all the way through buildLibrariesSpec, not just reachable
 // via the helper directly.
 func TestBuildLibrariesSpec_PopulatesDivergenceForABridgedProject(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	bridgedConsumerProject(t)
 
 	spec, err := buildLibrariesSpec(context.Background())

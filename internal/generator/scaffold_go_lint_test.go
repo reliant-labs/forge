@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Every Go file a fresh scaffold emits is gofmt-clean and takes its
@@ -35,7 +34,6 @@ import (
 // `-short` run. The full golangci verdict stays with
 // TestE2EFreshScaffoldLintExitsZero.
 func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	for _, tc := range []struct {
 		kind      string
 		service   string
@@ -85,7 +83,6 @@ func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
 // declared addKnownTypes_<Type>, which revive's var-naming rejects.
 // TestE2EScaffoldNounsLeaveLintGreen runs the real `forge lint` after each.
 func TestComponentScaffolds_GoIsFormattedAndNamedForLint(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	const mod = "example.com/compapp"
 	root := filepath.Join(t.TempDir(), "compapp")
 	g := NewProjectGenerator("compapp", root, mod)

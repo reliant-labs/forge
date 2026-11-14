@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"k8s.io/client-go/tools/clientcmd"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestMintServiceAccountKubeconfig_Live exercises the whole mint against a
@@ -25,7 +23,6 @@ import (
 // that the minted kubeconfig AUTHENTICATES — exercised by using it to make
 // a real API call that the declared rules permit.
 func TestMintServiceAccountKubeconfig_Live(t *testing.T) {
-	testkit.Slow(t, "mints a kubeconfig against a live cluster with kubectl")
 	kctx := os.Getenv("FORGE_LIVE_KUBECONFIG_CONTEXT")
 	if kctx == "" {
 		t.Skip("set FORGE_LIVE_KUBECONFIG_CONTEXT to a kubectl context to run the live mint")

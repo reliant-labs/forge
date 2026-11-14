@@ -237,9 +237,6 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	return Result{Findings: findings, Dir: dir, Scanned: files}, nil
 }
 
-// volatileDefaultRe excludes stable now()/CURRENT_TIMESTAMP and statement/
-// transaction timestamps: PostgreSQL 11+ avoids rewriting the table for
-// non-volatile ADD COLUMN defaults.
 var (
 	statementSplitRe  = regexp.MustCompile(`;`)
 	addColumnRe       = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+[^;]*`)
@@ -247,7 +244,7 @@ var (
 	updateRe          = regexp.MustCompile(`(?is)^\s*update\s+(?:"[^"]+"|[a-zA-Z_][\w$.]*)\s+set\s+([^;]+)\bwhere\b[^;]+`)
 	columnSetRe       = regexp.MustCompile(`(?is)(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s*=`)
 	destructiveRe     = regexp.MustCompile(`(?is)\b(drop\s+table|drop\s+schema|drop\s+column|truncate\s+table|alter\s+column\s+[^;]+\s+type\b|rename\s+column|rename\s+to)\b`)
-	volatileDefaultRe = regexp.MustCompile(`(?is)\bdefault\s+(clock_timestamp\s*\(|gen_random_uuid\s*\(|uuid_generate_v4\s*\(|random\s*\()`)
+	volatileDefaultRe = regexp.MustCompile(`(?is)\bdefault\s+(now\s*\(|current_timestamp\b|clock_timestamp\s*\(|statement_timestamp\s*\(|transaction_timestamp\s*\(|gen_random_uuid\s*\(|uuid_generate_v4\s*\(|random\s*\()`)
 	lineCommentRe     = regexp.MustCompile(`(?m)--.*$`)
 	blockCommentRe    = regexp.MustCompile(`(?s)/\*.*?\*/`)
 )

@@ -55,10 +55,6 @@ const GeneratedFromFile = DescriptorDir + "/.generated-from"
 // reads as absent and a stale one is refused.
 var descriptorBuilder func(projectDir string) error
 
-// DescriptorBuilderRegistered reports whether a CLI host installed the
-// descriptor-only extractor. Library users may deliberately leave it absent.
-func DescriptorBuilderRegistered() bool { return descriptorBuilder != nil }
-
 // RegisterDescriptorBuilder installs the extractor LoadDescriptor runs when the
 // descriptor is missing or stale. The extractor lives with the protoc plugin
 // (internal/cli), which imports this package, hence the registration.

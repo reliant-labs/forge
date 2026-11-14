@@ -10,7 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The regression these tests pin: control-plane's v1.7.0 release cut
@@ -185,7 +184,6 @@ func TestBuildPlan_FailsWhereTheCutWouldFail(t *testing.T) {
 // having written an archive, not an executable — so the real build "passes"
 // and the image that COPYs it crash-loops. The plan must call it out.
 func TestPlanGoTarget_RejectsNonMainPackage(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	planProject(t, `{
   "output": {
     "workloads": []
@@ -393,7 +391,6 @@ func TestBuildPlan_HostedStaticSiteIsAStep(t *testing.T) {
 // a build with no --push (a hosted site deploys only by digest). The plan
 // must surface that refusal on the step rather than report OK.
 func TestBuildPlan_HostedStaticSiteRefusesWithoutPush(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := planProject(t, hostedStaticPlanFixture)
 	writeWebFrontend(t, dir)
 
@@ -409,7 +406,6 @@ func TestBuildPlan_HostedStaticSiteRefusesWithoutPush(t *testing.T) {
 // TestBuildPlan_HostedStaticSiteMissingPackageJSON: a hosted frontend whose
 // directory cannot `npm run build` fails the plan on that step.
 func TestBuildPlan_HostedStaticSiteMissingPackageJSON(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	planProject(t, hostedStaticPlanFixture)
 
 	_, err := runBuildCommand(t, "prod", "--plan", "--no-generate", "--tag", "t1", "--push")

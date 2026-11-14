@@ -12,7 +12,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclrender"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // hostedConfigGenStub is the pipeline-generated config projection a fresh
@@ -190,16 +189,12 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 				if len(tc.services) == 0 {
 					// A site with no API names none, but a hosted frontend
 					// ships browser telemetry to the platform's own-origin
-					// ingest by default, with masked session replay on for a
-					// new browser project (#1988). Nothing else.
-					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 2 {
-						t.Errorf("%s: a site with no API names one, or carries more than OTEL_ENDPOINT and OTEL_REPLAY: %#v", env, spec)
+					// ingest by default.
+					if _, hasAPI := spec["API_URL"]; hasAPI || len(spec) != 1 {
+						t.Errorf("%s: a site with no API names one: %#v", env, spec)
 					}
 					if ep, _ := spec["OTEL_ENDPOINT"].(map[string]any); ep["value"] != "/_otel" {
 						t.Errorf("%s: a hosted frontend must default OTEL_ENDPOINT to /_otel, got %#v", env, spec)
-					}
-					if rp, _ := spec["OTEL_REPLAY"].(map[string]any); rp["value"] != "true" {
-						t.Errorf("%s: a new hosted browser project must default OTEL_REPLAY to true, got %#v", env, spec)
 					}
 					continue
 				}
@@ -444,7 +439,6 @@ func devWorkloadJSON(t *testing.T, root string) map[string]string {
 // even a token stored by hand never reached it: /auth/login was a 404 and the
 // README's first sixty seconds ended at a sign-in page nobody could pass.
 func TestDevSignInReachesTheAPI(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 	w := devWorkloadJSON(t, root)
 
@@ -481,7 +475,6 @@ func TestDevSignInReachesTheAPI(t *testing.T) {
 // (Bundle.observability.local_port, the same variable that is the published
 // port), so the two cannot disagree.
 func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := scaffoldForRender(t, "shop", []string{"orders"}, "web")
 	w := devWorkloadJSON(t, root)
 
@@ -546,7 +539,6 @@ func TestDevObservabilityIsOnByDefaultAndDeliversTelemetry(t *testing.T) {
 // and `forge env status` probed whichever process held it and reported THAT
 // process's profiles as this app's.
 func TestDevHostProcessesGetTheirOwnPprofPort(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	w := devWorkloadJSON(t, scaffoldForRender(t, "shop", []string{"orders"}, "web"))
 	if !regexp.MustCompile(`"name":"PPROF_ADDR","value":"127\.0\.0\.1:\d+"`).MatchString(w["api"]) {
 		t.Errorf("the dev API is not given its own loopback PPROF_ADDR:\n%s", w["api"])

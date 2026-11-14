@@ -23,8 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // squashHistory is the history testdata/squash/pg_dump_16.15_inserts.sql was
@@ -57,7 +55,7 @@ func TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun(t *testing.
 		t.Skip("boots a postgres container for squash and a pgtest database")
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		testdocker.Unavailable(t, "no docker daemon: %v", err)
+		t.Skipf("no docker daemon: %v", err)
 	}
 	history := t.TempDir()
 	for name, body := range squashHistory {
@@ -92,7 +90,7 @@ func TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline(t *testing.T) {
 		t.Skip("boots a postgres container for squash and a pgtest database")
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		testdocker.Unavailable(t, "no docker daemon: %v", err)
+		t.Skipf("no docker daemon: %v", err)
 	}
 	history := t.TempDir()
 	for name, body := range squashHistory {
@@ -151,7 +149,7 @@ func TestDBSquash_IsByteForByteReproducible(t *testing.T) {
 		t.Skip("boots two postgres containers for squash")
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		testdocker.Unavailable(t, "no docker daemon: %v", err)
+		t.Skipf("no docker daemon: %v", err)
 	}
 	var baselines [2][]byte
 	for i := range baselines {

@@ -140,7 +140,7 @@ func Eval(req Request) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if !sameDir(cwd, root) {
+		if filepath.Clean(cwd) != filepath.Clean(root) {
 			return Result{}, fmt.Errorf("isolated KCL evaluation cwd %s is not project root %s", cwd, root)
 		}
 		run = kclrender.Run
@@ -154,28 +154,6 @@ func Eval(req Request) (Result, error) {
 		return Result{}, fmt.Errorf("decode the render of %s: %w", req.File, err)
 	}
 	return selectFrom(doc, req.Selectors)
-}
-
-// sameDir reports whether two paths name one directory.
-//
-// The comparison is of the directories, not their spellings: os.Getwd returns
-// the path the kernel resolved, so on macOS a project under /tmp (a symlink to
-// /private/tmp) or under $TMPDIR (/var/folders → /private/var/folders) has a
-// cwd that never equals its root as a string, and `forge project new` there
-// failed its first generate.
-func sameDir(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	ai, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	bi, err := os.Stat(b)
-	if err != nil {
-		return false
-	}
-	return os.SameFile(ai, bi)
 }
 
 // resolveFile turns req.File into an absolute path inside the project, or

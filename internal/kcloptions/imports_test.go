@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kclvendor"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestDiscoverSuppliesForgeProjectImports: an env that imports another forge
@@ -15,7 +14,6 @@ import (
 // unresolved import and reports nothing, which callers read as "discovery
 // failed".
 func TestDiscoverSuppliesForgeProjectImports(t *testing.T) {
-	testkit.Slow(t, "evaluates two forge projects' KCL")
 	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
 	root := t.TempDir()
 	const mod = "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[dependencies]\n"

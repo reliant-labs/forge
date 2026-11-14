@@ -11,7 +11,7 @@ import (
 
 // Each site starter renders a complete, self-contained app: no unrendered
 // template action, nothing of the app frontend's backend wiring (Connect,
-// protobuf), with generated browser telemetry config and the dev-log receiver.
+// protobuf, generated modules), and the reused dev-log receiver.
 func TestWriteSiteStarter(t *testing.T) {
 	for _, tc := range []struct {
 		kind  string
@@ -31,7 +31,7 @@ func TestWriteSiteStarter(t *testing.T) {
 			if err := WriteSiteStarter(dir, "landing", fe); err != nil {
 				t.Fatal(err)
 			}
-			for _, rel := range append(tc.files, "src/lib/otel_gen.ts", "src/lib/apiurl_gen.ts", "public/config.js") {
+			for _, rel := range tc.files {
 				if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 					t.Errorf("starter lacks %s: %v", rel, err)
 				}
@@ -50,7 +50,7 @@ func TestWriteSiteStarter(t *testing.T) {
 				body := string(b)
 				// package.json declares the runtime's peers; no source file
 				// may use them.
-				bads := []string{"{{", `from "./config_gen"`, "@/lib/connect"}
+				bads := []string{"{{", "_gen", "config_gen", "@/lib/connect"}
 				if filepath.Base(path) != "package.json" {
 					bads = append(bads, "@connectrpc", "@bufbuild")
 				}
@@ -64,30 +64,7 @@ func TestWriteSiteStarter(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			otel, _ := os.ReadFile(filepath.Join(dir, "src/lib/otel_gen.ts"))
-			if !strings.Contains(string(otel), `SERVICE_NAME = 'landing-web'`) || !strings.Contains(string(otel), "cfg.OTEL_REPLAY") {
-				t.Fatal("site lacks canonical runtime telemetry configuration")
-			}
-			entry, html, proxy := "src/main.tsx", "index.html", "vite.config.ts"
-			proxyWant := "forgeOtelProxy()"
-			if tc.kind == "nextjs" {
-				entry, html, proxy = "src/app/dev-logging.tsx", "src/app/layout.tsx", "next.config.ts"
-				proxyWant = "startOtelRelay"
-			}
-			for file, want := range map[string]string{entry: "initTelemetry();", html: `src="/config.js"`, proxy: proxyWant} {
-				b, err := os.ReadFile(filepath.Join(dir, file))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(b), want) {
-					t.Errorf("%s missing %s", file, want)
-				}
-			}
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
-			if !strings.Contains(string(pkg), `"@hyperdx/browser": "`+webRuntimePeer("@hyperdx/browser")+`"`) {
-				t.Fatal("site lacks SDK peer")
-			}
-
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {
 				t.Errorf("package.json must declare the web runtime at forge's floor:\n%s", pkg)
 			}

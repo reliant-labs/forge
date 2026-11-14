@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func writeDotenvTestFile(t *testing.T, path string) {
@@ -34,7 +32,6 @@ func TestNoDotenvLint_CleanProjectPasses(t *testing.T) {
 // Every .env* spelling is caught — including the ones a developer is most
 // likely to copy in from an older project.
 func TestNoDotenvLint_CatchesEveryDotenvSpelling(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	for _, name := range []string{
 		".env",
 		".env.dev",
@@ -61,7 +58,6 @@ func TestNoDotenvLint_CatchesEveryDotenvSpelling(t *testing.T) {
 // The message has to say what to do instead, or it just blocks someone
 // with no path forward.
 func TestNoDotenvLint_MessageGivesTheFix(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeDotenvTestFile(t, filepath.Join(root, ".env.dev.secrets"))
 
@@ -92,7 +88,6 @@ func TestNoDotenvLint_SkipsVendoredTrees(t *testing.T) {
 
 // Nested project files are still the project's own.
 func TestNoDotenvLint_CatchesNestedProjectFiles(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeDotenvTestFile(t, filepath.Join(root, "frontends", "web", ".env.local"))
 
@@ -107,7 +102,6 @@ func TestNoDotenvLint_CatchesNestedProjectFiles(t *testing.T) {
 
 // JSON mode reports one finding per file with a stable rule name.
 func TestNoDotenvLint_JSONFindings(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	writeDotenvTestFile(t, filepath.Join(root, ".env"))
 	writeDotenvTestFile(t, filepath.Join(root, ".env.dev"))
@@ -134,7 +128,6 @@ func TestNoDotenvLint_JSONFindings(t *testing.T) {
 // its own name is the untracked dotenv the lint exists for, and a tracked one
 // is in version control — both are still reported.
 func TestNoDotenvLint_RespectsGitignoredDirectories(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

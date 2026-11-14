@@ -13,7 +13,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"github.com/reliant-labs/forge/pkg/topology"
 )
 
@@ -144,7 +143,6 @@ func (m *memReleaseLedger) Location() string { return "memory://releases" }
 // A project that has never been promoted has no log, and asking about an env
 // there is a normal "not bound", not an error.
 func TestFileBindingStore_MissingIsUnbound(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	store := testBindings(t, newLedgerTestProject(t, "scratch"))
 	p, bound, err := store.Current(context.Background(), "prod")
 	if err != nil {
@@ -159,7 +157,6 @@ func TestFileBindingStore_MissingIsUnbound(t *testing.T) {
 // earlier lines are never rewritten. A backend that rewrote the file (the
 // retired env-releases.json behaviour) fails the byte-prefix assertion.
 func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	ctx := context.Background()
@@ -202,7 +199,6 @@ func TestFileBindingStore_AppendsOneLinePerPromotion(t *testing.T) {
 // A retry of the env's current state appends NOTHING and returns the existing
 // entry — the CI-retry rule. v1→v2→v1 is still three real moves.
 func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	ctx := context.Background()
@@ -232,7 +228,6 @@ func TestFileBindingStore_RetryIsNoOp(t *testing.T) {
 // current binding is unchanged by the upgrade, and a new promote appends
 // after them.
 func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "rollback-project")
 	path := testPromotionLogPath(t, dir, "prod")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -276,7 +271,6 @@ func TestFileBindingStore_LegacyRollbackLinesStillParse(t *testing.T) {
 // A line that does not validate poisons the log: its LAST line cannot be
 // trusted as current if an earlier one is unreadable.
 func TestFileBindingStore_CorruptLineIsAnError(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	path := testPromotionLogPath(t, dir, "prod")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
@@ -308,7 +302,6 @@ func TestFileBindingStore_CorruptLineIsAnError(t *testing.T) {
 // directory would mean the ledger had slid back into the tree that produces
 // the artifact it records.
 func TestMachineBindingStore_LocationIsOutsideTheCheckout(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "location-project")
 	got := testBindings(t, dir).Location()
 	if got == "" {
@@ -321,7 +314,6 @@ func TestMachineBindingStore_LocationIsOutsideTheCheckout(t *testing.T) {
 
 // A release version can be re-cut only with the same bytes.
 func TestWriteRelease_Immutable(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	r := ociRelease("v1", map[string]string{"api": sha("a")})
 	if err := testCutRelease(t, dir, r); err != nil {
@@ -354,7 +346,6 @@ func TestWriteRelease_Immutable(t *testing.T) {
 // Mutation: restore the old `|| isLocalControlPlaneEnv(entities)` clause and
 // the LOCAL case below fails.
 func TestLedgerForEntities_DeclarationSelectsTheStoreWhateverTheKind(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "selection-project")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
 
@@ -416,7 +407,6 @@ func TestLedgerForEntities_DeclarationSelectsTheStoreWhateverTheKind(t *testing.
 // bindingStoreFor reads the env's rendered KCL: the same declaration selects
 // hosted end to end.
 func TestBindingStoreFor_ReadsTheEnvDeclaration(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	declareEnvDir(t, dir, "prod")
 	t.Setenv("FORGE_TEST_CP_TOKEN", "rlat_test")
@@ -487,7 +477,6 @@ func TestRunEnvVerify_UnboundAgainstNonFileBackend(t *testing.T) {
 
 // The deploy digest resolver: a bound promotion overrides the build state.
 func TestResolveDeployDigests_AgainstNonFileBackend(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := WriteBuildState(dir, "prod", BuildState{
 		Image: "control-plane", Tag: "old", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("0"),
@@ -509,7 +498,6 @@ func TestResolveDeployDigests_AgainstNonFileBackend(t *testing.T) {
 // runPromote with no injected seams resolves the env's DECLARED backend — for
 // a project with no KCL, the files — and appends there.
 func TestRunPromote_AppendsThroughTheDeclaredStore(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if err := testCutRelease(t, dir, ociRelease("v1.4.0", map[string]string{"control-plane": sha("a")})); err != nil {

@@ -15,8 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func repo(t *testing.T, onMain, onBranch []string) (repoRoot, migDir string) {
@@ -129,7 +127,6 @@ func TestDefaultBranchVersionsSeesCommitsMadeAfterTheBranchWasCut(t *testing.T) 
 // to rename merged history. An error or a zero-that-looks-real here would
 // turn both into silent wrong answers.
 func TestEveryLookupReportsUnknownOutsideAGitRepository(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 
 	if _, ok := MergeBaseMax(RepoRoot(dir), dir); ok {
@@ -196,7 +193,6 @@ func TestLookupsWorkWithARelativeMigrationsDir(t *testing.T) {
 // than a delete plus an untracked add — which is what makes the version
 // change reviewable as one file.
 func TestMoveStagesATrackedRename(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	repoRoot, migDir := repo(t, []string{"20260101120000_add_users.up.sql"}, nil)
 
 	from := filepath.Join(migDir, "20260101120000_add_users.up.sql")
@@ -226,7 +222,6 @@ func TestMoveStagesATrackedRename(t *testing.T) {
 // An untracked file still moves. A migration created but not yet added is the
 // common case for a rebase — the author noticed before committing.
 func TestMoveRenamesAnUntrackedFile(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	repoRoot, migDir := repo(t, []string{"20260101120000_add_users.up.sql"}, nil)
 
 	from := filepath.Join(migDir, "20260201000000_untracked.up.sql")
@@ -361,7 +356,6 @@ func TestNextNStaysWallClockWhenMainsHeadIsInThePast(t *testing.T) {
 
 // Outside git there is nothing to clear but the directory itself.
 func TestNextNWithoutGitFallsBackToTheDirectory(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "21000101000000_x.up.sql"), []byte("SELECT 1;\n"), 0o644); err != nil {
 		t.Fatal(err)

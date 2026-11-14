@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The two Deps rules used to contradict each other, with no way out.
@@ -61,7 +59,6 @@ type Deps struct {
 // The exemption is keyed on the generated-config IMPORT PATH, not on the type
 // name, so a repository does not slip through by being called *FooConfig.
 func TestDepsAreInterfaces_StillFlagsConcreteNonConfig(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	pkgDir := filepath.Join(dir, "internal", "orders")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {

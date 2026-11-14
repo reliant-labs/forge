@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // copyLegacy copies testdata/legacy (a pre-graph scaffold) into a temp dir.
@@ -64,7 +63,6 @@ func exists(dir, rel string) bool {
 }
 
 func TestCompositionGraph_ConvertsTheScaffoldedComposition(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := copyLegacy(t)
 	if codegen.GraphComposition(dir) {
 		t.Fatal("fixture is not on the legacy composition")
@@ -174,7 +172,6 @@ func TestCompositionGraph_ConventionalComposeIsRescaffolded(t *testing.T) {
 // Shapes only the author can map onto roots and providers are listed with
 // their file:line, and nothing is written.
 func TestCompositionGraph_RefusesBespokeShapesAndWritesNothing(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := copyLegacy(t)
 	edit := func(rel, old, new string) {
 		t.Helper()

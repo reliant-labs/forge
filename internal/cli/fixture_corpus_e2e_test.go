@@ -1398,15 +1398,9 @@ func forgeInternalClosure(t *testing.T, repoRoot, root string) []string {
 	return out
 }
 
-// copyForgePackageTree copies repoRoot/rel into dst/rel, skipping .git/,
-// testdata/ and _test.go files. With recurse false it copies only the
-// directory's own files — one package, not the packages nested under it.
-//
-// Test files stay behind because forgeInternalClosure follows non-test
-// imports only, and `go mod tidy` in the project loads the tests of every
-// package it imports: pkg/migratekit's PgBouncer test importing
-// internal/testdocker failed every scaffold fixture with "does not contain
-// package" (forge#2056). No fixture runs forge's own tests from .forge-pkg.
+// copyForgePackageTree copies repoRoot/rel into dst/rel, skipping .git/ and
+// testdata/. With recurse false it copies only the directory's own files —
+// one package, not the packages nested under it.
 func copyForgePackageTree(repoRoot, rel, dst string, recurse bool) error {
 	src := filepath.Join(repoRoot, rel)
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
@@ -1423,7 +1417,7 @@ func copyForgePackageTree(repoRoot, rel, dst string, recurse bool) error {
 			}
 			return os.MkdirAll(filepath.Join(dst, rel, sub), 0o755)
 		}
-		if !d.Type().IsRegular() || strings.HasSuffix(d.Name(), "_test.go") {
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)

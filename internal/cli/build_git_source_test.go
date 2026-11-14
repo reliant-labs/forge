@@ -11,7 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestBuildGitSourcesResolveContextsAndReportPins(t *testing.T) {
@@ -81,7 +80,6 @@ func TestBuildGitSourceRenderBoundary(t *testing.T) {
 }
 
 func TestShellBuildGitSourceRunsInFetchedSubdir(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	project := t.TempDir()
 	repo := t.TempDir()
 	dir := filepath.Join(repo, "src")

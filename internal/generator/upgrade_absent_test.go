@@ -11,7 +11,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // reliant's forge bump (reliant#2327): `forge project upgrade` wrote
@@ -64,7 +63,6 @@ func requireAbsent(t *testing.T, dir, rel string) {
 // A sibling variant is the project's own copy under another name: even a
 // template new across the range is not written beside it.
 func TestUpgrade_NeverWritesAScaffoldBesideTheProjectsOwnVariant(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, cfg := absentFixture(t)
 	writeAbsentFixture(t, dir, "frontends/web/eslint.config.js", "export default [];\n")
 	writeAbsentFixture(t, dir, "compose.yaml", "services: {}\n")
@@ -90,7 +88,6 @@ func TestUpgrade_NeverWritesAScaffoldBesideTheProjectsOwnVariant(t *testing.T) {
 // had, is offered with the diff adding it would apply — and written only when
 // --force names it.
 func TestUpgrade_OffersAnOldScaffoldTheProjectNeverHad(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, cfg := absentFixture(t)
 	const rel = "idp-steps.yaml"
 

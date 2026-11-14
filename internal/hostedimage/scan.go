@@ -31,11 +31,6 @@ var (
 	// does not read as a declaration.
 	nameField  = regexp.MustCompile(`(?m)^\s*name\s*=\s*"([^"]+)"\s*$`)
 	imageField = regexp.MustCompile(`(?m)^\s*image\s*=\s*"([^"]+)"\s*$`)
-	// buildField is a workload's `build = ...`. A literal declaring one is a
-	// workload forge builds; one that declares none names a third-party (or
-	// CI-pushed) image, which forge mirrors rather than refuses
-	// (Item.Unbuilt).
-	buildField = regexp.MustCompile(`(?m)^\s*build\s*=`)
 	// onHostedBinding is a runtime bound to the platform. The name it
 	// applies to is the nearest enclosing `name = "..."`, or — for the
 	// `wl.api | {runtime = forge.OnHosted {}}` override shape — the
@@ -60,7 +55,6 @@ var (
 func ScanTree(dir string) []Item {
 	images := map[string]string{}
 	hosted := map[string]bool{}
-	built := map[string]bool{}
 	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".k") {
 			return nil
@@ -69,15 +63,13 @@ func ScanTree(dir string) []Item {
 		if rerr != nil {
 			return nil
 		}
-		scanSource(string(src), images, hosted, built)
+		scanSource(string(src), images, hosted)
 		return nil
 	})
 	var out []Item
 	for name := range hosted {
 		if image := images[name]; image != "" {
-			// A build the scan cannot see reads as unbuilt, which drops
-			// the finding: under-reporting, never over-reporting.
-			out = append(out, Item{Owner: name, Image: image, Unbuilt: !built[name]})
+			out = append(out, Item{Owner: name, Image: image})
 		}
 	}
 	// Stable order: a lint's output must not reorder between runs.
@@ -89,17 +81,13 @@ func ScanTree(dir string) []Item {
 	return out
 }
 
-func scanSource(src string, images map[string]string, hosted, built map[string]bool) {
+func scanSource(src string, images map[string]string, hosted map[string]bool) {
 	src = stripComments(src)
-	// name → image, from any literal declaring both; and which names declare
-	// a build in that same literal.
+	// name → image, from any literal declaring both.
 	for _, loc := range nameField.FindAllStringSubmatchIndex(src, -1) {
 		name := src[loc[2]:loc[3]]
 		if image := nearestImage(src, loc[0]); image != "" {
 			images[name] = image
-		}
-		if start, end := blockBounds(src, loc[0]); buildField.MatchString(src[start:end]) {
-			built[name] = true
 		}
 	}
 	// Names bound to OnHosted: the nearest enclosing name, or an override's

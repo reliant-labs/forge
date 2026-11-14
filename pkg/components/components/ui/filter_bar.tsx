@@ -37,16 +37,10 @@ interface ActiveFilter {
  *   <FilterBar filters={defs} values={params} onFilterChange={setParams} />
  *
  * The controls are the library's own Input and Select, so restyling those
- * restyles the bar. Both render at `sm`, the one 32px field (input.tsx's
- * header): h-8, rounded-md, the strong border, the surface fill, text-sm and
- * the accent focus ring. The search icon is 14px, 10px in from the edge, and
- * the text starts 32px in, so the search box and the selects read as one
- * family. Size controls you pass in `children` to `sm` too (inputSize="sm",
- * selectSize="sm") so the row stays one height.
- *
- * The row WRAPS: on a phone each facet drops to its own line instead of
- * pushing the page sideways. Controls the bar cannot model (an entity
- * picker, a number range) go in `children` and sit in the same row; pass `onClearAll` and `hasOtherFilters` so "Clear all" resets them too.
+ * restyles the bar. The row WRAPS: on a phone each facet drops to its own
+ * line instead of pushing the page sideways. Controls the bar cannot model
+ * (an entity picker, a number range) go in `children` and sit in the same
+ * row; pass `onClearAll` and `hasOtherFilters` so "Clear all" resets them too.
  */
 interface FilterBarProps {
   filters: FilterDef[];
@@ -131,7 +125,7 @@ export default function FilterBar({
           <div className="relative w-full min-w-0 sm:w-64">
             <svg
               aria-hidden="true"
-              className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-subtle"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-subtle"
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -149,8 +143,7 @@ export default function FilterBar({
               onChange={(e) => updateFilter(searchFilter.key, e.target.value)}
               placeholder={searchFilter.placeholder ?? searchPlaceholder}
               aria-label={searchFilter.label}
-              inputSize="sm"
-              className="pl-8"
+              className="pl-9"
             />
           </div>
         )}
@@ -162,7 +155,6 @@ export default function FilterBar({
               value={values[filter.key] ?? ""}
               onChange={(e) => updateFilter(filter.key, e.target.value)}
               aria-label={`Filter by ${filter.label.toLowerCase()}`}
-              selectSize="sm"
             >
               <option value="">{`All ${filter.label.toLowerCase()}`}</option>
               {filter.options?.map((opt) => (

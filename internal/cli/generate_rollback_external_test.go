@@ -31,7 +31,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // writeTreeFileT writes body to path, creating parent directories.
@@ -141,7 +140,6 @@ func TestGenerate_FailedRunRestoresBufOutput(t *testing.T) {
 // is: a step that writes WITHOUT declaring it leaves the file changed, and
 // the report must say so and name it — not claim the tree is restored.
 func TestGenerate_FailedRunNeverClaimsAnUnverifiedRestore(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "gen", "a.pb.go"), "package a // committed\n")
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
@@ -192,7 +190,6 @@ func TestGenerate_FailedRunNeverClaimsAnUnverifiedRestore(t *testing.T) {
 // write DECLARED: the path is restored and the claim is made. Runs under
 // -short (no tools), so the contract has a fast-tier guard.
 func TestGenerate_DeclaredWritesRestoredAndVerified(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "gen", "a.pb.go"), "package a // committed\n")
 	writeTreeFileT(t, filepath.Join(dir, "gen", "stale.pb.go"), "package a // removed by the tool\n")
@@ -240,7 +237,6 @@ func TestGenerate_DeclaredWritesRestoredAndVerified(t *testing.T) {
 // comparison is over what git shows, so a build cache or dev-server log that
 // changes during the run is not reported as a change the run made.
 func TestRestoreVerification_IgnoresGitIgnoredChurn(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -268,7 +264,6 @@ func TestRestoreVerification_IgnoresGitIgnoredChurn(t *testing.T) {
 // TestRestoreVerification_SameBytesRewriteIsNotAChange: a tool that rewrites
 // every output with identical bytes (new mtime) has changed nothing.
 func TestRestoreVerification_SameBytesRewriteIsNotAChange(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "gen", "a.pb.go"), "package a\n")
 	pre := snapshotWorkTree(dir)

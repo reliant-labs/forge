@@ -43,7 +43,7 @@ func hostedImageItems(e *KCLEntities) []hostedimage.Item {
 			continue
 		}
 		if image := hostedPullReference(w); image != "" {
-			out = append(out, hostedimage.Item{Owner: w.Name, Image: image, Unbuilt: w.Build.Type == ""})
+			out = append(out, hostedimage.Item{Owner: w.Name, Image: image})
 		}
 	}
 	for _, f := range e.Frontends {

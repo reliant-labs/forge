@@ -11,7 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestGenerateServiceStub_ZeroMethods_NoUnusedImports(t *testing.T) {
@@ -978,7 +977,6 @@ func TestGenerateBootstrapTesting_ExternalComponentPackageExcluded(t *testing.T)
 // helper is emitted so tests opt in to the real schema via
 // WithDB(NewMigratedTestDB(t)).
 func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	projectDir := t.TempDir()
 
 	// A service whose Deps carry a DB field (AnyServiceHasDB → true).

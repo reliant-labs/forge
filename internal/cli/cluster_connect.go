@@ -324,9 +324,6 @@ var clusterConnectClient = func(ctx context.Context, envName, token string) (clo
 		return nil, "", err
 	}
 	client := cloud.NewClient(ep, cred)
-	// Connecting and removing a cluster need cluster:manage, which no login
-	// carries; reading one needs deploy:read, which it does.
-	client.DeclareScope("cluster:manage", procConnectCluster, procRemoveCluster)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
 		return nil, "", err

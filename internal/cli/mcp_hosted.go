@@ -760,6 +760,10 @@ func (h *hostedTools) obsInit(ctx context.Context, req *mcp.CallToolRequest, inf
 	if len(in.Envs) == 0 {
 		return hostedRefused(errors.New("envs is required: the environments to monitor, e.g. [\"prod\"]"))
 	}
+	envNames, err := initEnvs(in.Envs, nil)
+	if err != nil {
+		return hostedRefused(err)
+	}
 	o := obsInitOpts{service: in.Service, tokenName: emptyAs(in.TokenName, defaultIngestTokenName)}
 	if in.TTL != "" {
 		ttl, err := parseObsDuration(in.TTL)
@@ -776,14 +780,19 @@ func (h *hostedTools) obsInit(ctx context.Context, req *mcp.CallToolRequest, inf
 	var c hostedCall
 	switch {
 	case err == nil:
-		c, err = h.authorize(ctx, info, client, AccountTarget{OrgID: org, Project: project})
+		if c, err = h.authorize(ctx, info, client, AccountTarget{OrgID: org, Project: project}); err == nil {
+			err = h.authorizeEnvs(ctx, info, c.target, envNames)
+		}
 	case isCloudNotFound(err) && h.opts.NewProjectOrg != nil:
 		// A first obs_init creates the project, in the organization the
-		// host confines this session to — authorized before it exists.
+		// host confines this session to — authorized, with every env it
+		// registers, before it exists.
 		var newOrg string
 		if newOrg, err = h.opts.NewProjectOrg(ctx, req); err == nil {
 			if c, err = h.authorize(ctx, info, client, AccountTarget{OrgID: newOrg, Project: project}); err == nil {
-				err = createHostedProject(ctx, client, project, newOrg)
+				if err = h.authorizeEnvs(ctx, info, c.target, envNames); err == nil {
+					err = createHostedProject(ctx, client, project, newOrg)
+				}
 			}
 		}
 	case isCloudNotFound(err):
@@ -795,7 +804,7 @@ func (h *hostedTools) obsInit(ctx context.Context, req *mcp.CallToolRequest, inf
 		return hostedRefused(err)
 	}
 	sess := obsSession{Caller: c.client, OrgID: c.target.OrgID, ControlPlane: h.url}
-	envs, err := registerMonitoredEnvs(ctx, sess, project, in.Envs, c.console.Console, o)
+	envs, err := registerMonitoredEnvs(ctx, sess, project, envNames, c.console.Console, o)
 	if err != nil {
 		return hostedRefused(err)
 	}
@@ -803,6 +812,22 @@ func (h *hostedTools) obsInit(ctx context.Context, req *mcp.CallToolRequest, inf
 		ConsoleURL: c.console.Home(""), Envs: envs}
 	return structuredResult(doc, "Each token is in OTEL_EXPORTER_OTLP_HEADERS and is shown only now: store it as a secret where the app runs. "+
 		"Then obs_status shows the app's telemetry once it arrives.")
+}
+
+// authorizeEnvs hands Authorize each env obs_init is about to register and
+// mint an ingest token for, on top of the project-wide target: a grant
+// narrowed to some of a project's environments cannot register, or mint
+// credentials for, the others. Every env is authorized before any is
+// written, so one refused env refuses the whole call with nothing created.
+func (h *hostedTools) authorizeEnvs(ctx context.Context, info AccountToolInfo, project AccountTarget, envs []string) error {
+	for _, env := range envs {
+		t := project
+		t.Env = env
+		if err := h.opts.Authorize(ctx, info, t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // createHostedProject creates project in org (DeployService.ResolveHostedProject

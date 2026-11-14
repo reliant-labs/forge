@@ -19,10 +19,11 @@ import (
 // fakeHostedCP is a control plane that knows one project, shop in org-1,
 // with one env, and records who called it how.
 type fakeHostedCP struct {
-	mu    sync.Mutex
-	auth  []string
-	via   []string
-	calls []string
+	mu      sync.Mutex
+	auth    []string
+	via     []string
+	calls   []string
+	creates []string // projects a ResolveHostedProject call asked to create
 }
 
 func (f *fakeHostedCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +33,9 @@ func (f *fakeHostedCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.auth = append(f.auth, r.Header.Get("Authorization"))
 	f.via = append(f.via, r.Header.Get("Forge-Via"))
 	f.calls = append(f.calls, strings.TrimPrefix(r.URL.Path, "/"))
+	if body["create"] == true {
+		f.creates = append(f.creates, fmt.Sprint(body["name"]))
+	}
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
@@ -257,6 +261,61 @@ func TestHostedRefusesBeforeReading(t *testing.T) {
 		if c != "controlplane.v1.DeployService/ResolveHostedProject" {
 			t.Errorf("a refused call reached %s", c)
 		}
+	}
+}
+
+// obs_init registers envs and mints an ingest token for each, so every env
+// it names reaches Authorize before anything is written: a grant that covers
+// the project but not one of its envs refuses the whole call, and no env,
+// token or project is created.
+func TestHostedObsInitAuthorizesEveryEnvBeforeWriting(t *testing.T) {
+	for name, tc := range map[string]struct {
+		project     string
+		envs        []any
+		wantTargets []AccountTarget
+	}{
+		"existing project": {project: "shop", envs: []any{"prod", "staging", "prod"}, wantTargets: []AccountTarget{
+			{OrgID: "org-1", Project: "shop"}, {OrgID: "org-1", Project: "shop", Env: "prod"}, {OrgID: "org-1", Project: "shop", Env: "staging"}}},
+		"new project": {project: "newshop", envs: []any{"prod", "staging"}, wantTargets: []AccountTarget{
+			{OrgID: "org-2", Project: "newshop"}, {OrgID: "org-2", Project: "newshop", Env: "prod"}, {OrgID: "org-2", Project: "newshop", Env: "staging"}}},
+		"not an env name": {project: "shop", envs: []any{"prod", "Staging!"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := &fakeHostedCP{}
+			ts := httptest.NewServer(cp)
+			t.Cleanup(ts.Close)
+			var seen []AccountTarget
+			cs := connectHosted(t, AccountToolsOptions{
+				ControlPlaneURL: ts.URL,
+				Token:           staticToken("t"),
+				NewProjectOrg:   func(context.Context, *mcp.CallToolRequest) (string, error) { return "org-2", nil },
+				// The grant covers the project and its prod env only.
+				Authorize: func(_ context.Context, _ AccountToolInfo, target AccountTarget) error {
+					seen = append(seen, target)
+					if target.Env != "" && target.Env != "prod" {
+						return fmt.Errorf("this connector may not act on %s", target.Env)
+					}
+					return nil
+				},
+			})
+			text, isErr := callMCP(t, cs, "obs_init", map[string]any{"project": tc.project, "envs": tc.envs})
+			if !isErr {
+				t.Fatalf("obs_init answered: %s", text)
+			}
+			if !reflect.DeepEqual(seen, tc.wantTargets) {
+				t.Errorf("authorize saw %+v, want %+v", seen, tc.wantTargets)
+			}
+			cp.mu.Lock()
+			defer cp.mu.Unlock()
+			if len(cp.creates) != 0 {
+				t.Errorf("a refused obs_init created project(s) %v", cp.creates)
+			}
+			for _, c := range cp.calls {
+				if c != "controlplane.v1.DeployService/ResolveHostedProject" {
+					t.Errorf("a refused obs_init reached %s", c)
+				}
+			}
+		})
 	}
 }
 

@@ -70,13 +70,25 @@ func TestMigrationSafety_EveryDeclaredDatabase(t *testing.T) {
 		t.Errorf("finding file %q is absolute; want it relative to the project root, as the single-database pass reports it", primary.File)
 	}
 
-	// One declared database: no prefix.
+	// One declared database: no prefix. It declares no tool and the project
+	// no driver, so forge's own migrator applies it and forge's rules gate
+	// it: the migration-safety pass is never skipped for the default
+	// declaration (review R5.B1 on #2211).
 	dbs = dbs[1:]
-	findings, _, err = collectMigrationSafetyJSON(cfg)
+	if got := dbs[0].Config(config.DatabaseConfig{}).MigrationTool(); got != config.MigrationToolForge {
+		t.Fatalf("a KCL database with no tool resolves to migration tool %q, want %q", got, config.MigrationToolForge)
+	}
+	findings, hasErrors, err = collectMigrationSafetyJSON(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !hasErrors {
+		t.Errorf("one KCL database with the default tool: its DROP TABLE must gate; findings %+v", findings)
+	}
 	for _, f := range findings {
+		if strings.Contains(strings.ToLower(f.Message), "skip") {
+			t.Errorf("the default declaration's migrations were skipped: %q", f.Message)
+		}
 		if strings.HasPrefix(f.Message, "database ") {
 			t.Errorf("a single database's finding is prefixed: %q", f.Message)
 		}

@@ -92,7 +92,7 @@ const (
 )
 
 // signedInColors colours the charts that split signed-in against anonymous.
-var signedInColors = dashspec.SeriesColors{"Signed in": colorActive, "Anonymous": colorAnonymous}
+var signedInColors = map[string]dashspec.ChartColor{"Signed in": colorActive, "Anonymous": colorAnonymous}
 
 // BuildProductUsage is the "Product usage" dashboard: who uses the product and
 // what they do, over the hosted product_events table. Every panel is a sql
@@ -130,8 +130,8 @@ func BuildProductUsage(project string) Dashboard {
 		DefaultCompare: dashspec.ComparePeriod,
 	}
 	const daily = "1d"
-	stackedBars := func(colors dashspec.SeriesColors) *dashspec.Display {
-		return &dashspec.Display{Style: dashspec.StyleBars, Stack: true, Colors: &colors}
+	stackedBars := func(colors map[string]dashspec.ChartColor) *dashspec.Display {
+		return &dashspec.Display{Style: dashspec.StyleBars, Stack: true, Colors: colors}
 	}
 
 	// A headline figure: one row of one value, its trend across the range
@@ -148,17 +148,17 @@ func BuildProductUsage(project string) Dashboard {
 		fmt.Sprintf("Each day's active users in exactly one class: new on the day of their first event, returning after it. "+
 			"First-seen is the first event in the %d days before the end of the range (or since the start of a longer range), "+
 			"so a user idle for longer than that counts as new again on their return.", firstSeenDays),
-		newVsReturningSQL, stackedBars(dashspec.SeriesColors{"New": colorNew, "Returning": colorActive}))
+		newVsReturningSQL, stackedBars(map[string]dashspec.ChartColor{"New": colorNew, "Returning": colorActive}))
 	newVsReturning.MinStep = daily
 	activeOverTime := chart("users", "active-users-over-time", "Active users",
 		"Distinct signed-in users per UTC day, and over the 7 days ending that day (the rolling weekly active users), drawn as areas.",
 		activeUsersOverTimeSQL, &dashspec.Display{Style: dashspec.StyleArea,
-			Colors: &dashspec.SeriesColors{"Weekly active (rolling 7 days)": colorWeekly, "Daily active": colorActive}})
+			Colors: map[string]dashspec.ChartColor{"Weekly active (rolling 7 days)": colorWeekly, "Daily active": colorActive}})
 	activeOverTime.MinStep = daily
 	retentionCurve := chart("retention", "retention-curve", "Retention by cohort: weeks 1, 2, 4 and 8",
 		fmt.Sprintf("For each weekly cohort (users by the Monday, UTC, of their first event, the %d weeks before the end of the range), "+
 			"the share active again 1, 2, 4 and 8 weeks later. A week that has not happened yet is a gap, not a drop.", retentionWeeks),
-		retentionCurveSQL(), &dashspec.Display{Colors: &dashspec.SeriesColors{
+		retentionCurveSQL(), &dashspec.Display{Colors: map[string]dashspec.ChartColor{
 			"Week 1": dashspec.ColorBlue, "Week 2": dashspec.ColorCyan, "Week 4": dashspec.ColorViolet, "Week 8": dashspec.ColorFuchsia}})
 	retentionCurve.Unit = UnitPercent
 	retentionCurve.MinStep = "7d"
@@ -203,7 +203,7 @@ func BuildProductUsage(project string) Dashboard {
 		entityTimeline,
 		chart("activity", "actions-per-entity", "Creates, updates and deletes per entity",
 			"The CRUD mix of each entity in the range: one bar per entity, a colour per action.", actionsPerEntitySQL,
-			stackedBars(dashspec.SeriesColors{"Created": colorCreated, "Updated": colorUpdated, "Deleted": colorDeleted})),
+			stackedBars(map[string]dashspec.ChartColor{"Created": colorCreated, "Updated": colorUpdated, "Deleted": colorDeleted})),
 		chart("activity", "top-pages", "Top pages",
 			"page_viewed events by route, signed-in views against anonymous ones.", topPagesSQL, stackedBars(signedInColors)),
 		chart("activity", "events-by-name", "Events by name",

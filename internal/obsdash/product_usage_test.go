@@ -244,7 +244,7 @@ func TestProductUsageColours(t *testing.T) {
 		if series == "" {
 			return p.Display.Color
 		}
-		c, ok := p.Display.Colors.Color(series)
+		c, ok := p.Display.Colors[series]
 		if !ok {
 			t.Errorf("%s does not colour %q", id, series)
 		}

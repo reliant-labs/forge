@@ -218,23 +218,7 @@ type Display struct {
 	// two series never repaints the rest. At most MaxColors.
 	//
 	//	"colors": {"Signed in": "blue", "Anonymous": "slate"}
-	//
-	// It is a pointer so Display stays comparable, as it was before Colors
-	// existed: == compares which map two Displays point at, not its entries.
-	Colors *SeriesColors `json:"colors,omitempty"`
-}
-
-// SeriesColors maps a series name to its palette colour (Display.Colors).
-type SeriesColors map[string]ChartColor
-
-// Color returns the colour c gives the series name, if it names one. A nil c
-// names none.
-func (c *SeriesColors) Color(name string) (ChartColor, bool) {
-	if c == nil {
-		return "", false
-	}
-	color, ok := (*c)[name]
-	return color, ok
+	Colors map[string]ChartColor `json:"colors,omitempty"`
 }
 
 // Row limits of a table or bar panel (Panel.Limit).

@@ -141,18 +141,10 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 		doc.Finalize()
 		return doc
 	}
-	var acfg config.AnalyzeConfig
-	if cfg != nil {
-		acfg = cfg.Database.Analyze
-	}
-	kind := strings.TrimSpace(opts.target)
-	if kind == "" {
-		kind = acfg.Target.EffectiveKind()
-	}
-	switch kind {
-	case config.AnalyzeTargetScratch, config.AnalyzeTargetDSN:
-	default:
-		return fail("--target %q is not scratch or dsn", kind)
+	acfg := analyzeConfigOf(cfg)
+	kind, err := analyzeTargetKind(opts, acfg)
+	if err != nil {
+		return fail("%v", err)
 	}
 	doc.Target.Kind = dbanalyze.TargetKind(kind)
 	stmtTimeout, lockTimeout, err := acfg.Target.Timeouts()
@@ -160,28 +152,9 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 		return fail("%v", err)
 	}
 
-	h, ok, herr := projectMigrationHook(opts.migDir)
-	if herr != nil {
-		return fail("%v", herr)
-	}
-	if ok {
-		return fail("this project's migrations are applied by %s (database.migrations.tool): forge db analyze reads forge-migrator migrations (<version>_<name>.up.sql) only", h.Tool)
-	}
-	if info, err := os.Stat(opts.migDir); err != nil || !info.IsDir() {
-		return fail("migrations directory %s does not exist", opts.migDir)
-	}
-	ms, err := projectMigrations(opts.migDir)
+	ms, files, err := analyzeMigrationFiles(projectDir, opts.migDir)
 	if err != nil {
-		return fail("read migrations: %v", err)
-	}
-	files := make([]dbanalyze.MigrationFile, 0, len(ms))
-	for _, m := range ms {
-		path := filepath.Join(opts.migDir, m.Name)
-		data, err := os.ReadFile(path) // #nosec G304 -- the project's own migration
-		if err != nil {
-			return fail("read %s: %v", path, err)
-		}
-		files = append(files, dbanalyze.MigrationFile{File: analyzeRelPath(projectDir, path), Version: uint64(m.Version), SQL: string(data)})
+		return fail("%v", err)
 	}
 
 	var (
@@ -200,11 +173,7 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 			doc.Finalize()
 			return doc
 		}
-		if v := cfgPostgresVersion(cfg); v != "" && deps.getenv(pgtest.EnvVersion) == "" {
-			// pgtest reads database.postgres_version from the forge.yaml
-			// above the CWD; -C may name another project.
-			_ = os.Setenv(pgtest.EnvVersion, v)
-		}
+		pinScratchPostgresVersion(cfg, deps)
 		var cleanup func()
 		dsn, cleanup, err = dbanalyze.PrepareScratch(ctx, setup)
 		if err != nil {
@@ -212,12 +181,7 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 		}
 		defer cleanup()
 	case config.AnalyzeTargetDSN:
-		env := firstNonEmptyStr(opts.dsnEnv, acfg.Target.DSNEnv, defaultAnalyzeDSNEnv)
-		dsn = strings.TrimSpace(deps.getenv(env))
-		if dsn == "" {
-			return fail("a dsn target reads its connection string from $%s, which is unset: export it (a snapshot of production, never production itself)", env)
-		}
-		if err := refuseDeployedAnalyzeDSN(ctx, projectDir, dsn, deps.declaredDSN); err != nil {
+		if dsn, err = analyzeTargetDSN(ctx, projectDir, opts, acfg, deps); err != nil {
 			return fail("%v", err)
 		}
 	}
@@ -280,6 +244,83 @@ func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectCon
 	}
 	doc.Finalize()
 	return doc
+}
+
+// analyzeConfigOf is forge.yaml's database.analyze, zero without a forge.yaml.
+func analyzeConfigOf(cfg *config.ProjectConfig) config.AnalyzeConfig {
+	if cfg == nil {
+		return config.AnalyzeConfig{}
+	}
+	return cfg.Database.Analyze
+}
+
+// pinScratchPostgresVersion points pgtest at the project's
+// database.postgres_version: pgtest reads it from the forge.yaml above the CWD,
+// and -C may name another project. An explicit $FORGE_TEST_POSTGRES_VERSION
+// (pgtest.EnvVersion) wins.
+func pinScratchPostgresVersion(cfg *config.ProjectConfig, deps analyzeDeps) {
+	if v := cfgPostgresVersion(cfg); v != "" && deps.getenv(pgtest.EnvVersion) == "" {
+		_ = os.Setenv(pgtest.EnvVersion, v)
+	}
+}
+
+// analyzeTargetKind is --target, else database.analyze.target's kind: scratch
+// or dsn.
+func analyzeTargetKind(opts dbAnalyzeOptions, acfg config.AnalyzeConfig) (string, error) {
+	kind := strings.TrimSpace(opts.target)
+	if kind == "" {
+		kind = acfg.Target.EffectiveKind()
+	}
+	switch kind {
+	case config.AnalyzeTargetScratch, config.AnalyzeTargetDSN:
+		return kind, nil
+	}
+	return "", fmt.Errorf("--target %q is not scratch or dsn", kind)
+}
+
+// analyzeTargetDSN is a dsn target's connection string, read from the env var
+// --dsn-env (else database.analyze.target.dsn_env) names, refusing one a
+// deploy env declares as its database.
+func analyzeTargetDSN(ctx context.Context, projectDir string, opts dbAnalyzeOptions, acfg config.AnalyzeConfig, deps analyzeDeps) (string, error) {
+	env := firstNonEmptyStr(opts.dsnEnv, acfg.Target.DSNEnv, defaultAnalyzeDSNEnv)
+	dsn := strings.TrimSpace(deps.getenv(env))
+	if dsn == "" {
+		return "", fmt.Errorf("a dsn target reads its connection string from $%s, which is unset: export it (a snapshot of production, never production itself)", env)
+	}
+	if err := refuseDeployedAnalyzeDSN(ctx, projectDir, dsn, deps.declaredDSN); err != nil {
+		return "", err
+	}
+	return dsn, nil
+}
+
+// analyzeMigrationFiles reads the forge-migrator migrations under migDir, and
+// their contents for analysis, refusing a project whose migrations another
+// tool applies.
+func analyzeMigrationFiles(projectDir, migDir string) ([]compat.Migration, []dbanalyze.MigrationFile, error) {
+	h, ok, herr := projectMigrationHook(migDir)
+	if herr != nil {
+		return nil, nil, herr
+	}
+	if ok {
+		return nil, nil, fmt.Errorf("this project's migrations are applied by %s (database.migrations.tool): forge db analyze reads forge-migrator migrations (<version>_<name>.up.sql) only", h.Tool)
+	}
+	if info, err := os.Stat(migDir); err != nil || !info.IsDir() {
+		return nil, nil, fmt.Errorf("migrations directory %s does not exist", migDir)
+	}
+	ms, err := projectMigrations(migDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read migrations: %v", err)
+	}
+	files := make([]dbanalyze.MigrationFile, 0, len(ms))
+	for _, m := range ms {
+		path := filepath.Join(migDir, m.Name)
+		data, err := os.ReadFile(path) // #nosec G304 -- the project's own migration
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %v", path, err)
+		}
+		files = append(files, dbanalyze.MigrationFile{File: analyzeRelPath(projectDir, path), Version: uint64(m.Version), SQL: string(data)})
+	}
+	return ms, files, nil
 }
 
 // splitAtBase splits a scratch target's migrations at the base revision:

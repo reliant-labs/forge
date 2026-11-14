@@ -335,6 +335,73 @@ func (h *hostedTools) register(srv *mcp.Server, info AccountToolInfo) {
 	if info.Mutating {
 		tool.Annotations = mutating
 	}
+	if h.registerObs(srv, tool, info) {
+		return
+	}
+	switch info.Name {
+	case "releases_list":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleasesListInput) (*mcp.CallToolResult, any, error) {
+			c, err := h.open(ctx, req, info, in.Project, in.Env)
+			if err != nil {
+				return hostedRefused(err), nil, nil
+			}
+			args := flagArg([]string{in.Env}, "--since", in.Since)
+			if in.Limit > 0 {
+				args = append(args, "--limit", fmt.Sprint(in.Limit))
+			}
+			return h.runCmd(ctx, newEnvReleasesListCmd(h.releasesDeps(c)), args, c.console.Link("/releases", c.target.Env)), nil, nil
+		})
+	case "release_show":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleaseShowInput) (*mcp.CallToolResult, any, error) {
+			if strings.TrimSpace(in.Ref) == "" {
+				return hostedRefused(errors.New("ref is required: a release version or promotion id from releases_list")), nil, nil
+			}
+			c, err := h.open(ctx, req, info, in.Project, in.Env)
+			if err != nil {
+				return hostedRefused(err), nil, nil
+			}
+			return h.runCmd(ctx, newEnvReleasesShowCmd(h.releasesDeps(c)), []string{in.Env, in.Ref}, c.console.Release(in.Ref, c.target.Env)), nil, nil
+		})
+	case "envs_list":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedEnvsListInput) (*mcp.CallToolResult, any, error) {
+			c, err := h.open(ctx, req, info, in.Project, "")
+			if err != nil {
+				return hostedRefused(err), nil, nil
+			}
+			return h.envsList(ctx, c), nil, nil
+		})
+	case "obs_init":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsInitInput) (*mcp.CallToolResult, any, error) {
+			return h.obsInit(ctx, req, info, in), nil, nil
+		})
+	case "release_record":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleaseRecordInput) (*mcp.CallToolResult, any, error) {
+			return h.releaseRecord(ctx, req, info, in), nil, nil
+		})
+	case "benefits":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in benefitsArgs) (*mcp.CallToolResult, any, error) {
+			return hostedBenefits(in), nil, nil
+		})
+	case "skill_list":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillListArgs) (*mcp.CallToolResult, any, error) {
+			return hostedSkillList(in), nil, nil
+		})
+	case "skill_search":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillSearchArgs) (*mcp.CallToolResult, any, error) {
+			return hostedSkillSearch(in), nil, nil
+		})
+	case "skill_load":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillLoadArgs) (*mcp.CallToolResult, any, error) {
+			return hostedSkillLoad(in), nil, nil
+		})
+	case "explain_error":
+		addExplainErrorTool(srv)
+	}
+}
+
+// registerObs registers the obs_* tools, each of which runs one obs verb on
+// one env; false for any other tool.
+func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountToolInfo) bool {
 	obs := func(build func(obsDepsFunc) *cobra.Command, args func() []string, link func(c hostedCall) string) func(context.Context, *mcp.CallToolRequest, hostedTarget) (*mcp.CallToolResult, any, error) {
 		return func(ctx context.Context, req *mcp.CallToolRequest, t hostedTarget) (*mcp.CallToolResult, any, error) {
 			c, err := h.open(ctx, req, info, t.Project, t.Env)
@@ -437,64 +504,10 @@ func (h *hostedTools) register(srv *mcp.Server, info AccountToolInfo) {
 			}
 			return obs(newObsChangesCmdWith, args, func(c hostedCall) string { return c.console.Environment(c.target.Env) })(ctx, req, in.hostedTarget)
 		})
-	case "releases_list":
-		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleasesListInput) (*mcp.CallToolResult, any, error) {
-			c, err := h.open(ctx, req, info, in.Project, in.Env)
-			if err != nil {
-				return hostedRefused(err), nil, nil
-			}
-			args := flagArg([]string{in.Env}, "--since", in.Since)
-			if in.Limit > 0 {
-				args = append(args, "--limit", fmt.Sprint(in.Limit))
-			}
-			return h.runCmd(ctx, newEnvReleasesListCmd(h.releasesDeps(c)), args, c.console.Link("/releases", c.target.Env)), nil, nil
-		})
-	case "release_show":
-		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleaseShowInput) (*mcp.CallToolResult, any, error) {
-			if strings.TrimSpace(in.Ref) == "" {
-				return hostedRefused(errors.New("ref is required: a release version or promotion id from releases_list")), nil, nil
-			}
-			c, err := h.open(ctx, req, info, in.Project, in.Env)
-			if err != nil {
-				return hostedRefused(err), nil, nil
-			}
-			return h.runCmd(ctx, newEnvReleasesShowCmd(h.releasesDeps(c)), []string{in.Env, in.Ref}, c.console.Release(in.Ref, c.target.Env)), nil, nil
-		})
-	case "envs_list":
-		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedEnvsListInput) (*mcp.CallToolResult, any, error) {
-			c, err := h.open(ctx, req, info, in.Project, "")
-			if err != nil {
-				return hostedRefused(err), nil, nil
-			}
-			return h.envsList(ctx, c), nil, nil
-		})
-	case "obs_init":
-		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsInitInput) (*mcp.CallToolResult, any, error) {
-			return h.obsInit(ctx, req, info, in), nil, nil
-		})
-	case "release_record":
-		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedReleaseRecordInput) (*mcp.CallToolResult, any, error) {
-			return h.releaseRecord(ctx, req, info, in), nil, nil
-		})
-	case "benefits":
-		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in benefitsArgs) (*mcp.CallToolResult, any, error) {
-			return hostedBenefits(in), nil, nil
-		})
-	case "skill_list":
-		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillListArgs) (*mcp.CallToolResult, any, error) {
-			return hostedSkillList(in), nil, nil
-		})
-	case "skill_search":
-		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillSearchArgs) (*mcp.CallToolResult, any, error) {
-			return hostedSkillSearch(in), nil, nil
-		})
-	case "skill_load":
-		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillLoadArgs) (*mcp.CallToolResult, any, error) {
-			return hostedSkillLoad(in), nil, nil
-		})
-	case "explain_error":
-		addExplainErrorTool(srv)
+	default:
+		return false
 	}
+	return true
 }
 
 // ── the signed-in call ───────────────────────────────────────────────────

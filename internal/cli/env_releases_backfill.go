@@ -196,19 +196,19 @@ func reconstructReleaseMigrations(ctx context.Context, projectDir string, r rele
 	var m release.MigrationManifest
 	dir, _ := projectMigrationsDir(projectDir)
 	if dir == "" {
-		dir = config.MigrationsPathIn(projectDir)
+		dir = filepath.Join(projectDir, config.DefaultMigrationsDir)
 	}
 	if names, ok := migrationgit.FilesAt(root, dir, commit); ok && len(names) > 0 {
 		rel, ok := migrationgit.RepoRelative(root, dir)
 		if !ok {
-			rel = config.MigrationsDirIn(projectDir)
+			rel = config.DefaultMigrationsDir
 		}
 		m.Sets = append(m.Sets, release.NewMigrationSet(migrationSourceID(repo, hostedProjectName(), rel), commit, names))
 	}
 
 	goMod, goModErr := gitShow(ctx, root, commit+":"+projectGoModPath(root, projectDir))
 	for _, src := range siblings {
-		sdir := config.MigrationsPathIn(src.Dir)
+		sdir := filepath.Join(src.Dir, config.DefaultMigrationsDir)
 		if !isForgeCheckoutWithMigrations(src.Dir) {
 			continue
 		}
@@ -233,7 +233,7 @@ func reconstructReleaseMigrations(ctx context.Context, projectDir string, r rele
 		}
 		rel, ok := migrationgit.RepoRelative(src.Dir, sdir)
 		if !ok {
-			rel = config.MigrationsDirIn(src.Dir)
+			rel = config.DefaultMigrationsDir
 		}
 		m.Sets = append(m.Sets, release.NewMigrationSet(migrationSourceID(src.Repo, filepath.Base(src.Dir), rel), full, names))
 	}

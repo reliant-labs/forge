@@ -69,7 +69,6 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
 | users and sign-in declared in KCL | `deploy/managed-identity` |
 | PDBs, priority classes, StatefulSet volume growth | `deploy/pdb`, `deploy/pod-priority`, `deploy/statefulset-volumes` |
 | a KCL value from a script; another project's `workloads.k` | `deploy/kcl-eval`, `deploy/kcl-imports` |
-| several repos, any language: a shared infra/envs repo, or one deploy repo building N app repos at pinned refs | `deploy/polyrepo` |
 | "never deploy older than X"; a `below_rollback_floor` refusal; declaring an API/feature/data change that cannot be rolled back past | `deploy/rollback-floor` |
 | a cut that died mid-push; control plane unreachable; the k3d registry mirror | `deploy/interrupted-cut`, `deploy/offline-ledger`, `deploy/k3d-registry` |
 
@@ -79,11 +78,9 @@ recovery is a new release that rolls forward. The whole procedure: `deploy/relea
   workload's command, ports or build is a second copy that will drift.
 - Never `kubectl apply` a hand render — everything through `forge env deploy`.
   To read a VALUE KCL declares, `forge kcl eval`; see `deploy/kcl-eval`.
-- Deploying another forge project's workloads? Import its `workloads.k`
-  (`[forge_projects]` in kcl.mod: at the go.mod pin, or by a git pin for a
-  repo that is not a Go dependency) instead of copying it; see
-  `deploy/kcl-imports`. Code in another repo is a pinned `forge.GitSource`,
-  never a `../sibling` path: `deploy/polyrepo`.
+- Deploying another forge project's workloads? Import its `workloads.k` at the
+  go.mod pin (`[forge_projects]` in kcl.mod) instead of copying it; see
+  `deploy/kcl-imports`.
 - Image tags are immutable — commit SHA by default, digest-pinned on deploy.
 - Secrets never live in KCL — it is checked in. Reference them
   (`config_secrets`, `forge.SecretRef`, `forge.ManagedSecret`).

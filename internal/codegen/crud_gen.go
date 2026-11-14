@@ -1818,11 +1818,6 @@ type CRUDTestTemplateData struct {
 	// INTO the package under test — so the external test package sees
 	// these helpers through this ordinary import.
 	ServiceImportPath string
-	// MigrationsDir is the project-relative migrations directory
-	// (database.migrations_dir), and MigrationsDirArgs the same as the
-	// quoted, comma-separated path elements filepath.Join takes.
-	MigrationsDir     string
-	MigrationsDirArgs string
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -2023,7 +2018,6 @@ func removeRetiredScaffoldTest(projectDir, relPath string, cs *checksums.FileChe
 // calls the regenerated New<CreateRequest> factories (see
 // buildCreateRequestFields).
 func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, modulePath, projectDir string, fix *crudTestFixtures) CRUDTestTemplateData {
-	migDir := config.MigrationsDirIn(projectDir)
 	// Synthesized Package/TestHelperName are placeholders only:
 	// GenerateCRUDTests overrides both with disk-resolved values before
 	// rendering — see the call site for the rationale.
@@ -2243,20 +2237,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 		CRUDMethods:    allMethods,
 		NeedsFieldMask: needsFieldMask,
 		TestHelperName: ComputeTestHelperName(pkg, projectDir),
-
-		MigrationsDir:     migDir,
-		MigrationsDirArgs: quotedPathElems(migDir),
 	}
-}
-
-// quotedPathElems renders a slash path as filepath.Join's arguments:
-// "db/migrations" → `"db", "migrations"`.
-func quotedPathElems(p string) string {
-	elems := strings.Split(p, "/")
-	for i, e := range elems {
-		elems[i] = strconv.Quote(e)
-	}
-	return strings.Join(elems, ", ")
 }
 
 // testValueForType returns a Go literal suitable for test data based on the Go type.

@@ -34,7 +34,6 @@ import (
 	"github.com/reliant-labs/forge/pkg/schemadef"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // crudQuintetOps is the full CRUD verb set `forge scaffold entity`
@@ -105,7 +104,7 @@ func runEntityFromProto(args []string, fromProto string, opts entityOpts) error 
 			"name the service as it appears under proto/services/ (e.g. --from-proto tasks.Order)")
 	}
 
-	migDir := config.MigrationsPathIn(root)
+	migDir := filepath.Join(root, "db", "migrations")
 	applied, existing, _ := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 

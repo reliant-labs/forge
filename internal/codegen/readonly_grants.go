@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -41,7 +40,7 @@ func GenerateReadOnlyGrants(projectDir string, services []ServiceDef, cs *checks
 	if !projectHasSQLMigrations(projectDir) {
 		return false, nil
 	}
-	migDir := config.MigrationsPathIn(projectDir)
+	migDir := filepath.Join(projectDir, "db", "migrations")
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		return false, fmt.Errorf("introspect schema for read-only grants: %w", err)
@@ -145,7 +144,7 @@ func ReadOnlyGrantsFile(script string) []byte {
 // projectHasSQLMigrations is the predicate GenerateMigrate's caller uses for
 // db/embed_gen.go, here on the path alone.
 func projectHasSQLMigrations(projectDir string) bool {
-	entries, err := os.ReadDir(config.MigrationsPathIn(projectDir))
+	entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return false
 	}

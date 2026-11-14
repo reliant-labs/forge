@@ -13,7 +13,6 @@ import (
 
 	"github.com/jinzhu/inflection"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -56,7 +55,7 @@ func declaresOwnerMarker(comment string) bool {
 // Tables without CRUD RPCs are plain schema — owned by hand-written
 // code, invisible to the CRUD/frontend projections.
 func BuildSchemaEntities(projectDir string, services []ServiceDef) ([]EntityDef, error) {
-	tables, err := shadowdb.Tables(projectDir, config.MigrationsPathIn(projectDir))
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}
@@ -151,14 +150,14 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 // (config.ORMPackage's PackageDir, "internal/db" by default): the stores it
 // already holds decide which library tables keep theirs, deprecated.
 func BuildORMEntities(projectDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
-	tables, err := shadowdb.Tables(projectDir, config.MigrationsPathIn(projectDir))
+	tables, err := shadowdb.Tables(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}
 	if len(tables) == 0 {
 		return nil, nil
 	}
-	views, err := shadowdb.Views(projectDir, config.MigrationsPathIn(projectDir))
+	views, err := shadowdb.Views(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}

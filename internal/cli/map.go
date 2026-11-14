@@ -32,7 +32,6 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
@@ -117,7 +116,7 @@ func runMap(maxDepth int, filter string, jsonOut bool) error {
 	}
 
 	// Collect entity tables for health flags (proto/db/ vs migrations).
-	migTables := tablesFromMigrations(config.MigrationsPathIn(projectDir))
+	migTables := tablesFromMigrations(filepath.Join(projectDir, "db", "migrations"))
 	entityTables := map[string]struct{}{}
 	if dirExists(filepath.Join(projectDir, "proto")) {
 		if defs, err := codegen.ParseEntityProtos(projectDir); err == nil {

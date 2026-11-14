@@ -172,15 +172,6 @@ type Span struct {
 	Events        []SpanEvent
 }
 
-// SpanGroup is a count of a trace's spans that share a service and name (and,
-// for a sibling run, a parent and status), over the whole trace.
-type SpanGroup struct {
-	ParentID, Service, Name, StatusCode string
-	Count                               int
-	Total, Min, Max, P50, P95           time.Duration
-	Errors                              int
-}
-
 // SpanEvent is an event recorded on a span (exceptions are events).
 type SpanEvent struct {
 	Name       string
@@ -194,25 +185,10 @@ type TraceResult struct {
 	TraceID string
 	Spans   []Span
 	// SpansTruncated says the trace has more spans than the compiler returns.
-	// Spans are read in start order, so what was not read is every span that
-	// starts after the last one read (and perhaps some that start with it).
 	SpansTruncated bool
-
-	// SpansInTrace is how many spans the whole trace has, counted where the
-	// read was truncated; 0 when it was not counted (a complete read, or a
-	// backend that cannot count).
-	SpansInTrace int
-	// SpanNames are the whole trace's spans by service and name, largest
-	// first, and SiblingRuns its runs of two or more identical siblings
-	// (same parent, service, name and status): both counted over every span,
-	// read or not, and only when the read was truncated. *Truncated says a
-	// list stopped at obsquery.MaxTraceSpanGroups.
-	SpanNames, SiblingRuns                   []SpanGroup
-	SpanNamesTruncated, SiblingRunsTruncated bool
-
-	Logs          []LogRecord
-	LogsTruncated bool
-	Statements    []Statement
+	Logs           []LogRecord
+	LogsTruncated  bool
+	Statements     []Statement
 }
 
 // ── endpoints ───────────────────────────────────────────────────────────

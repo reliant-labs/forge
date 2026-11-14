@@ -561,9 +561,9 @@ var ownerMarkerTokenRE = regexp.MustCompile(regexp.QuoteMeta(schemadef.ColumnMar
 // that knows a boundary exists but cannot say which column expresses it
 // can only restate the problem.
 func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]string {
-	migDir := config.MigrationsPathIn(projectDir)
-	if cfg != nil {
-		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.Database.MigrationsPath()))
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if cfg != nil && cfg.Database.MigrationsDir != "" {
+		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
 	}
 
 	out := map[string]string{}

@@ -63,7 +63,7 @@ func TestDeriveFeatures_ServiceWithMigrations(t *testing.T) {
 			t.Errorf("feature %q should derive ON for a service with db/migrations", name)
 		}
 	}
-	if cfg.Database.Driver != "postgres" || cfg.Database.MigrationsPath() != "db/migrations" {
+	if cfg.Database.Driver != "postgres" || cfg.Database.MigrationsDir != "db/migrations" {
 		t.Errorf("database should derive to postgres + db/migrations, got %+v", cfg.Database)
 	}
 	for _, name := range []FeatureName{FeatureIngress, FeatureOperators, FeatureFrontend} {
@@ -224,8 +224,7 @@ func TestFeaturesWith(t *testing.T) {
 	}
 }
 
-// NormalizeForWrite never reintroduces a removed key, nor writes out a value
-// the loader derived (the default migrations directory).
+// NormalizeForWrite never reintroduces a removed key.
 func TestNormalizeForWriteEmitsNoRemovedKeys(t *testing.T) {
 	cfg := loadTree(t, serviceTree(t))
 	out, err := marshalNormalized(cfg)

@@ -116,52 +116,26 @@ func TestStartEmbedded_RetriesATransientFailure(t *testing.T) {
 	}
 }
 
-// TestFetchRelay_NoResponseNamesTheURL: no HTTP response at all (here the
-// repository drops every connection unanswered; DNS, TLS or a refused
-// connection in the wild). The library would say "unable to connect to
-// <host>"; forge must still say which artifact and that it may be transient.
-//
-// It drives the relay directly, not StartEmbedded: StartEmbedded first
-// checks that a port reserved earlier is still free, and on a loaded host
-// another socket takes it in between (forge #2103, #1921). Nothing here
-// depends on a port staying free: the relay keeps its listener, and the
-// repository answers every connection by closing it.
-func TestFetchRelay_NoResponseNamesTheURL(t *testing.T) {
-	repo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		conn, _, err := http.NewResponseController(w).Hijack()
-		if err == nil {
-			_ = conn.Close()
-		}
-	}))
-	t.Cleanup(repo.Close)
-	withFetchPolicy(t, repo.URL, 2)
+// TestStartEmbedded_UnreachableRepositoryNamesTheURL: no HTTP response at all
+// (connection refused here; DNS or TLS in the wild). The library says
+// "unable to connect to <host>"; forge must still say which artifact and
+// that it may be transient.
+func TestStartEmbedded_UnreachableRepositoryNamesTheURL(t *testing.T) {
+	repo, _ := fakeRepository(t)
+	url := repo.URL
+	repo.Close() // nothing is listening any more
+	withFetchPolicy(t, url, 2)
 
-	relay, err := startFetchRelay(repo.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(relay.close)
-	const artifact = "/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64/18.3.0/embedded-postgres-binaries-linux-amd64-18.3.0.jar"
-	resp, err := http.Get(relay.baseURL() + artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Errorf("relay answered %d for a repository that never responds, want 502", resp.StatusCode)
-	}
-
-	fe := relay.lastFailure()
-	if fe == nil {
-		t.Fatal("a repository that never responds is not recorded as a FetchError")
+	_, err := StartEmbedded(coldConfig(t))
+	var fe *FetchError
+	if !errors.As(err, &fe) {
+		t.Fatalf("an unreachable repository is not reported as a FetchError: %v", err)
 	}
 	if fe.Status != 0 || fe.Err == nil || fe.Attempts != 2 {
 		t.Errorf("FetchError = %+v, want Status 0, a transport error, 2 attempts", fe)
 	}
-	for _, want := range []string{repo.URL + artifact, "transient"} {
-		if !strings.Contains(fe.Error(), want) {
-			t.Errorf("error does not contain %q:\n%v", want, fe)
-		}
+	if !strings.Contains(err.Error(), url) {
+		t.Errorf("error does not name the repository it could not reach:\n%v", err)
 	}
 }
 

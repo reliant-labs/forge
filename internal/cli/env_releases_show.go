@@ -11,7 +11,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/internal/releasetimeline"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -215,7 +214,7 @@ func showCommits(ctx context.Context, deps releasesDeps, doc *releasesShowDoc, e
 		if r.Reverts {
 			from, to = to, from
 		}
-		if paths, perr := g.ChangedPaths(ctx, from, to, config.MigrationsDirIn(g.Dir)); perr == nil {
+		if paths, perr := g.ChangedPaths(ctx, from, to, "db/migrations"); perr == nil {
 			doc.Migrations = paths
 		}
 	}

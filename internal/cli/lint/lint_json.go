@@ -512,9 +512,12 @@ func collectConventionsJSON(opts forgeconv.LintOptions) ([]lintJSONFinding, bool
 }
 
 func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, bool, error) {
-	migrationsDir := migrationsDirFor(cfg)
+	migrationsDir := filepath.Join("db", "migrations")
 	ruleConfig := migrationlint.DefaultConfig()
 	if cfg != nil {
+		if cfg.Database.MigrationsDir != "" {
+			migrationsDir = cfg.Database.MigrationsDir
+		}
 		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety)
 	}
 	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)

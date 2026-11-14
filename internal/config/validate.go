@@ -339,6 +339,7 @@ var refusedSchemaKeys = map[string]string{
 		"`forge env smoke <env>` resolves the URL from that workload's route or port in the env.",
 	"database.driver": "delete the key — the driver is derived: a service project with db/migrations uses " +
 		"postgres, one without has no database.",
+	"database.migrations_dir": "delete the key — migrations live in db/migrations.",
 	"database.seed": "delete the block — dev seeding uses fixed defaults (20 rows per table, auto-seed on, " +
 		"scoped to the tables behind CRUD entities). `forge env up --no-seed` skips it for one run.",
 	"database.migration_safety.allowed_destructive": "delete the key and mark each intentional migration in the " +
@@ -842,7 +843,6 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateDevStack(cfg, root)...)
 	out = append(out, validateAPIProtoPackage(cfg, root)...)
 	out = append(out, validateGenerateHooks(cfg, root)...)
-	out = append(out, validateMigrationsDir(cfg, root)...)
 	out = append(out, validateUpgradeConfig(cfg, root)...)
 	out = append(out, validateLintLanes(cfg, root)...)
 	out = append(out, validateScaffoldExclude(cfg, root)...)

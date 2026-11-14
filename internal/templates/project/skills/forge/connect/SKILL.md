@@ -102,8 +102,8 @@ Cursor shows *Needs login* on `reliant-forge`: click it to sign in.
 
 `goose configure` → *Add Extension*:
 
-- local: *Command-line Extension*, command `npx -y @reliantlabs/forge mcp`;
-- hosted: *Remote Extension (Streamable HTTP)*, URL
+- **Local**: *Command-line Extension*, command `npx -y @reliantlabs/forge mcp`;
+- **Hosted**: *Remote Extension (Streamable HTTP)*, URL
   `https://api.reliantapi.com/forge/mcp`; Goose opens the sign-in on first use.
 
 ### Codex

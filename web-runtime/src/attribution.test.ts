@@ -1,7 +1,15 @@
 // The contract of visitor identity and attribution: what is captured from the
 // landing URL, how an outbound link is stamped, when `user_identified` fires,
 // how app.client is chosen, and that none of it runs without consent.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 const RID = "0b8f3c2e-6a1d-4f7e-9c55-2d1e8a7b4c90";
 
@@ -33,6 +41,11 @@ async function load(): Promise<{ a: Attribution; k: Track }> {
     k: await import("./track.js"),
   };
 }
+
+// Transform the module graph once, outside any test: a cold import takes
+// seconds on a loaded machine, and inside the first test it ran against that
+// test's 5s timeout. load() then re-evaluates from the transform cache.
+beforeAll(() => load(), 60_000);
 
 beforeEach(() => stubWindow());
 afterEach(() => vi.unstubAllGlobals());

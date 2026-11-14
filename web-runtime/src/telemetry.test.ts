@@ -114,6 +114,12 @@ function dispatch(type: string, event: unknown) {
   for (const fn of listeners.get(type) ?? []) fn(event);
 }
 
+// Transform the module graph once, outside any test: a cold import of
+// telemetry.js takes seconds on a loaded machine, and inside the first test
+// it ran against that test's 5s timeout. load() then re-evaluates from the
+// transform cache in milliseconds.
+beforeAll(() => load(), 60_000);
+
 beforeEach(() => {
   init.mockReset();
   recordException.mockReset();

@@ -28,7 +28,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -115,8 +114,8 @@ var promoteEnvLedgerFor = promoteEnvLedgerOf
 // resolves two environments, which would be four renders of KCL for two
 // questions.
 func promoteEnvLedgerOf(ctx context.Context, projectDir, env string) (promoteEnvLedger, error) {
-	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err != nil {
-		// No KCL for this env in this checkout, so nothing can declare a
+	if !envHasDeclaration(projectDir, env, filepath.Join(projectDir, "deploy", "kcl", env, "main.k")) {
+		// No KCL (and no env document) for this env in this checkout, so nothing can declare a
 		// control plane: the answer is this machine's ledger.
 		ledger, err := machineLedger(projectDir)
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/pkg/observe/cliev"
 )
 
 // ClientHeader names the coding agent (if any) and CI runner driving this
@@ -53,6 +54,31 @@ func clientHeaderValue(getenv func(string) string, ci bool) string {
 func setClientIdentity(h http.Header) {
 	h.Set("User-Agent", UserAgent())
 	h.Set(ClientHeader, ClientHeaderValue())
+	setInstallIdentity(h, cliev.Default())
+}
+
+// InstallIDHeader carries this machine's anonymous install id (forge's
+// Events, pkg/observe/cliev) so the control plane's events about this
+// install (a claimable deploy, a CLI login) stitch to its first run.
+const InstallIDHeader = "X-Forge-Install-Id"
+
+// AttributionHeader carries where the install came from (the install page's
+// rid and utm_*) and its install id, in the form the control plane reads for
+// first-touch attribution (control-plane internal/signupattr).
+const AttributionHeader = "X-Reliant-Attribution"
+
+// setInstallIdentity stamps the install id and attribution, only while
+// forge's telemetry may transmit (cliev Client.Transmits): DO_NOT_TRACK,
+// FORGE_TELEMETRY=off, CI and `forge telemetry off` all leave both out, and so
+// does a quiet first run until a later run has shown the telemetry notice.
+func setInstallIdentity(h http.Header, c *cliev.Client) {
+	if !c.Transmits() || c.InstallID() == "" {
+		return
+	}
+	h.Set(InstallIDHeader, c.InstallID())
+	q := c.InstallAttribution()
+	q.Set("install_id", c.InstallID())
+	h.Set(AttributionHeader, q.Encode())
 }
 
 // identifiedDoer is an oauth2.HTTPDoer that stamps setClientIdentity on each

@@ -217,21 +217,46 @@ func runObsInit(ctx context.Context, d obsInitDeps, args []string, o obsInitOpts
 		}
 	}
 
-	doc := obsInitDoc{Schema: obsInitSchema, Project: project, Envs: []obsInitEnv{}}
-	wrote, path, err := initWriteConfig(d, cfgPath, project, envs, o)
-	if err != nil {
-		return err
+	// An env an env document declares (deploy/envs/<env>.yaml) is already
+	// declared: init registers it and mints its token, and records nothing
+	// in forge.yaml (whose `envs:` would declare it twice).
+	docDir := "."
+	if cfgPath != "" {
+		docDir = filepath.Dir(cfgPath)
 	}
-	doc.WroteConfig, doc.ConfigPath = wrote, path
-	if wrote {
-		// Re-read what was written: the seam and every later verb read it.
-		if _, cfg, err = initConfig(); err != nil {
+	envDocs, err := envDocumentsFor(docDir, envs)
+	if err != nil {
+		return obsbackend.Wrong("%v", err)
+	}
+	if len(envDocs) > 0 {
+		if project, err = projectFromEnvDocuments(cfg, envDocs); err != nil {
 			return err
 		}
 	}
+
+	doc := obsInitDoc{Schema: obsInitSchema, Project: project, Envs: []obsInitEnv{}}
 	var mon *config.MonitoringConfig
-	if cfg != nil {
-		mon = cfg.Monitoring
+	if len(envDocs) > 0 {
+		mon = envDocs[0].Monitoring
+		if mon == nil {
+			return obsbackend.Wrong("env %s's document declares no observability: add `observability: {enabled: true, destination: {token_from_control_plane: true}}` to %s",
+				envs[0], envDocumentRel(docDir, envs[0]))
+		}
+	} else {
+		wrote, path, err := initWriteConfig(d, cfgPath, project, envs, o)
+		if err != nil {
+			return err
+		}
+		doc.WroteConfig, doc.ConfigPath = wrote, path
+		if wrote {
+			// Re-read what was written: the seam and every later verb read it.
+			if _, cfg, err = initConfig(); err != nil {
+				return err
+			}
+		}
+		if cfg != nil {
+			mon = cfg.Monitoring
+		}
 	}
 	if o := strings.TrimSpace(obsControlPlaneFlag); o != "" {
 		m := config.MonitoringConfig{Enabled: true}
@@ -315,6 +340,24 @@ func initConfig() (string, *config.ProjectConfig, error) {
 		return path, nil, err
 	}
 	return path, cfg, nil
+}
+
+// projectFromEnvDocuments is the project env documents name, which must be
+// one project and agree with forge.yaml / --project when those name one.
+func projectFromEnvDocuments(cfg *config.ProjectConfig, docs []envDocumentDeclaration) (string, error) {
+	p := docs[0].Project
+	for _, d := range docs[1:] {
+		if d.Project != p {
+			return "", obsbackend.Wrong("the env documents name two projects (%q and %q): an init is for one project", p, d.Project)
+		}
+	}
+	if cfg != nil && cfg.Name != "" && cfg.Name != p {
+		return "", obsbackend.Wrong("the env documents name project %q, but forge.yaml's name is %q", p, cfg.Name)
+	}
+	if flag := strings.TrimSpace(obsProjectFlag); flag != "" && flag != p {
+		return "", obsbackend.Wrong("--project %q disagrees with the env documents' project %q", flag, p)
+	}
+	return p, nil
 }
 
 // initProjectName is --project, else forge.yaml `name`, else (no forge.yaml)

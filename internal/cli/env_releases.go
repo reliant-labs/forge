@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -120,7 +119,7 @@ func releasesLedgerDeclaration(ctx context.Context, projectDir, env string) (*cl
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err != nil {
+	if !envHasDeclaration(projectDir, env, filepath.Join(projectDir, "deploy", "kcl", env, "main.k")) {
 		return nil, nil
 	}
 	t, err := resolveObsTarget(ctx, env)

@@ -1826,6 +1826,12 @@ benefits:
         bug_class: >-
           A literal `?` in bun-formatted SQL, which bun consumes as a
           placeholder, so the statement runs against shifted arguments
+      - id: forgeconv-product-event-pii
+        lane: --conventions
+        bug_class: >-
+          A product event property named for personal data (`email`, `name`,
+          `ip`, `url`, `path`, `token`), stored per event for months and
+          joined to a user
       - id: forgeconv-tx-lock-under-serializable
         lane: --conventions
         bug_class: >-
@@ -3023,6 +3029,36 @@ benefits:
       - command: env deploy
       - command: env status
       - skill: deploy/external
+
+  - id: env-document
+    category: ship
+    title: Declare an env in YAML
+    claim: >-
+      An environment is declared in KCL or in a plain YAML/JSON env document
+      (`deploy/envs/<env>.yaml`) that IS what KCL renders to, validated against
+      a generated, versioned JSON Schema with errors that name the path and the
+      field, and every forge command reads either one the same way.
+    availability: forge
+    scope: any
+    use: >-
+      Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1`
+      (`forge project schema env` prints the schema), then use any `forge env`
+      or `forge obs` verb on `prod`.
+    adopt: "write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`"
+    estimate: "~5 min"
+    why: >-
+      A team adopting one piece of forge should not have to learn a
+      configuration language first, and a tool that generates config should not
+      have to emit one. The schema is generated from the Go types forge decodes
+      with, so it cannot drift from what forge reads; forge fills the defaults
+      KCL would (telemetry identity, probes, Workload records) and refuses what
+      a runtime cannot honour.
+    evidence:
+      - command: project schema
+      - path: schema/env.v1.schema.json
+      - path: internal/envdoc
+      - path: docs/design/env-document.md
+      - skill: deploy
 
   - id: env-verify-parity
     category: ship
@@ -4254,6 +4290,29 @@ benefits:
       - library: pkg/obsbuiltin
       - path: pkg/obsbuiltin/population_clickhouse_test.go
       - skill: observability/product-analytics
+
+  - id: builtin-ai-hub
+    category: run
+    title: Built-in LLM and workflow monitoring
+    claim: >-
+      A hosted app's model calls, agent turns, tool calls and workflow runs get
+      dashboards with no code: runs and their success and duration, tokens,
+      latency, errors and retries by workflow, node, agent, model, provider,
+      user and tool, read from OpenTelemetry GenAI spans.
+    status: in-progress
+    availability: hosted
+    use: >-
+      Wrap model calls in `pkg/observe/genai` spans (`StartChat`, and
+      `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans
+      are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
+    why: >-
+      No price table yet: a cost is shown only where the gateway reported one.
+      The console lists the new AI group under Custom until it knows it.
+    evidence:
+      - library: pkg/obsbuiltin
+      - library: pkg/observe/genai
+      - path: pkg/obsbuiltin/ai_clickhouse_test.go
+      - skill: observability/ai
 
   - id: release-markers
     category: run

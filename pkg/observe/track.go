@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
-
-	"github.com/reliant-labs/forge/pkg/authn"
 )
 
 // The product-event contract. A product event is one INFO log record whose
@@ -33,6 +31,9 @@ const (
 
 	// AppClientBackend is the app.client value for events emitted by Track.
 	AppClientBackend = "backend"
+	// AppClientCLI is the app.client value for events a CLI emits
+	// (pkg/observe/cliev).
+	AppClientCLI = "cli"
 
 	// MaxProductProps is the most properties one event keeps; the rest are dropped.
 	MaxProductProps = 32
@@ -83,61 +84,79 @@ func ValidEventName(name string) bool { return eventNameRE.MatchString(name) }
 // Track records one product event: a named, countable thing a user did or that
 // happened to them ("project_created", "subscription_started"). It writes an
 // INFO record through the context's logger (FromContext) carrying
-// event.name="product.<name>", app.client="backend", app.version, user.id when
-// ctx holds an authenticated user (the claims forge's auth interceptor
-// installs), and each attr as product.<key>.
+// event.name="product.<name>", app.client="backend", app.version, the actor's
+// ids (ActorFrom: user.id and org.id from the claims forge's auth interceptor
+// installs, or from WithActor; visitor.id from WithActor), and each attr as
+// product.<key>.
 //
 // Properties are bounded the same way the telemetry pipeline bounds them: at
 // most MaxProductProps are kept and each value is truncated to
 // MaxProductPropValueLen characters. Group attrs are flattened to "group.key".
-// Property values are stringified; keep them low-cardinality and never put
-// secrets or personal data in them.
+// Property values are stringified; keep them low-cardinality. A value that
+// looks like personal data or a credential (LooksLikePII) is dropped, with one
+// WARN per property key that names the key and never the value.
 //
 // Track never fails the caller. A name that is not snake_case is dropped with
-// a warning, because the pipeline would drop it anyway.
+// a warning, because the pipeline would drop it anyway. When the app
+// registered a ConsentSource, an event it refuses (or cannot answer for) is
+// dropped.
 //
 //	observe.Track(ctx, "project_created", slog.String("template", "go"), slog.Int("repos", 2))
 func Track(ctx context.Context, name string, attrs ...slog.Attr) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	userID := ""
-	if claims, ok := authn.ClaimsFromContext(ctx); ok && claims != nil {
-		userID = claims.UserID
-	}
-	trackAs(ctx, name, userID, attrs)
+	trackAs(ctx, name, ActorFrom(ctx), AppClientBackend, attrs)
 }
 
-// trackAs is Track with the user named by the caller rather than read from
-// ctx: the one record shape every product event shares. TrackAuth uses it,
-// because at sign-in the request is still anonymous.
-func trackAs(ctx context.Context, name, userID string, attrs []slog.Attr) {
+// trackAs is Track with the actor and client named by the caller rather than
+// read from ctx: the one record shape every product event shares. TrackAuth
+// uses it, because at sign-in the request is still anonymous; the CLI
+// emitter (cliev) uses its record attributes through ProductEventAttrs.
+func trackAs(ctx context.Context, name string, actor Actor, client string, attrs []slog.Attr) {
 	logger := FromContext(ctx)
 	if !ValidEventName(name) {
 		logger.WarnContext(ctx, "product event dropped: name must be snake_case", slog.String("event", name))
 		return
 	}
-
-	out := make([]slog.Attr, 0, 4+len(attrs))
-	out = append(out, slog.String(AttrEventName, EventNamePrefix+name))
-	if userID != "" {
-		out = append(out, slog.String(AttrUserID, userID))
+	if !consentAllows(ctx, name, actor) {
+		return
 	}
+	out := ProductEventAttrs(ctx, name, actor, client, attrs)
+	logger.LogAttrs(ctx, slog.LevelInfo, EventNamePrefix+name, out...)
+}
+
+// ProductEventAttrs builds one product event's record attributes: the
+// contract every emitter shares (event.name, the actor's ids, visitor.day
+// from a trusted edge, app.client, app.version, and the bounded,
+// PII-guarded product.<key> props). It does not validate name or check
+// consent; Track does both before calling it. Exported for emitters that
+// write the record themselves, such as pkg/observe/cliev.
+func ProductEventAttrs(ctx context.Context, name string, actor Actor, client string, attrs []slog.Attr) []slog.Attr {
+	out := make([]slog.Attr, 0, 6+len(attrs))
+	out = append(out, slog.String(AttrEventName, EventNamePrefix+name))
+	out = actorAttrs(out, actor)
 	// The visitor's daily hash, when the trusted edge stamped this request
 	// (edge_context.go): it links a server-side event to the anonymous visit.
 	if vd := EdgeContextFrom(ctx).VisitorDay; vd != "" {
 		out = append(out, slog.String(AttrVisitorDay, vd))
 	}
-	out = append(out, slog.String(AttrAppClient, AppClientBackend))
+	out = append(out, slog.String(AttrAppClient, client))
 	if v := appVersion.Load(); v != nil && *v != "" {
 		out = append(out, slog.String(AttrAppVersion, *v))
 	}
 	props := 0
-	out = appendProps(out, "", attrs, &props)
-	logger.LogAttrs(ctx, slog.LevelInfo, EventNamePrefix+name, out...)
+	guard := func(key, value string) bool {
+		if looksLikePII(value) {
+			warnPIIDropped(ctx, name, key)
+			return false
+		}
+		return true
+	}
+	return appendProps(out, "", attrs, &props, guard)
 }
 
-func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int) []slog.Attr {
+func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int, keep func(key, value string) bool) []slog.Attr {
 	for _, a := range attrs {
 		v := a.Value.Resolve()
 		if v.Kind() == slog.KindGroup {
@@ -145,7 +164,7 @@ func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int) 
 			if a.Key != "" {
 				p += a.Key + "."
 			}
-			out = appendProps(out, p, v.Group(), props)
+			out = appendProps(out, p, v.Group(), props, keep)
 			continue
 		}
 		if a.Key == "" {
@@ -154,8 +173,12 @@ func appendProps(out []slog.Attr, prefix string, attrs []slog.Attr, props *int) 
 		if *props >= MaxProductProps {
 			return out
 		}
+		val := truncateRunes(v.String(), MaxProductPropValueLen)
+		if !keep(prefix+a.Key, val) {
+			continue
+		}
 		*props++
-		out = append(out, slog.String(AttrPropPrefix+prefix+a.Key, truncateRunes(v.String(), MaxProductPropValueLen)))
+		out = append(out, slog.String(AttrPropPrefix+prefix+a.Key, val))
 	}
 	return out
 }

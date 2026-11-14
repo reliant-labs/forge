@@ -314,3 +314,57 @@ func TestReleasesBackendReadsTheStampedTarget(t *testing.T) {
 		t.Errorf("%s=machine: want the machine ledger, got %s", ledgerSelectionEnv, b.Name)
 	}
 }
+
+// TestObsTargetFingerprintStampsTheEnvDocument: an env document is an input
+// of the target (review B2 on #2216). Adding, editing or removing
+// deploy/envs/<env>.yaml|.json changes the fingerprint both caches key on,
+// even with a cacheable KCL tree beside it; another env's document does not.
+func TestObsTargetFingerprintStampsTheEnvDocument(t *testing.T) {
+	srv, _ := obsCloudForbidden(t)
+	dir := obsTargetProject(t, srv.URL)
+	fp := func() string {
+		t.Helper()
+		f := obsTargetFingerprint(dir, "prod")
+		if f == "" {
+			t.Fatal("the project is not stampable")
+		}
+		return f
+	}
+	write := func(name, body string, at time.Time) {
+		t.Helper()
+		p := filepath.Join(dir, "deploy", "envs", name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := fp()
+	write("staging.yaml", "project: x\n", time.Now())
+	if fp() != base {
+		t.Error("another env's document changed prod's fingerprint")
+	}
+	write("prod.yaml", "project: x\nobservability: {enabled: true, destination: {endpoint: https://a.example}}\n", time.Now())
+	added := fp()
+	if added == base {
+		t.Fatal("adding prod's document left the fingerprint unchanged")
+	}
+	write("prod.yaml", "project: x\nobservability: {enabled: true, destination: {endpoint: https://b.example}}\n", time.Now().Add(time.Minute))
+	if edited := fp(); edited == added {
+		t.Error("editing prod's document left the fingerprint unchanged")
+	}
+	if err := os.Remove(filepath.Join(dir, "deploy", "envs", "prod.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if fp() != base {
+		t.Error("removing prod's document did not restore the document-free fingerprint")
+	}
+	write("prod.json", `{"project":"x"}`, time.Now())
+	if fp() == base {
+		t.Error("a JSON document is not stamped")
+	}
+}

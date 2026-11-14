@@ -82,6 +82,7 @@ prints this list for the directory you run it in.
 | [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                                                                                                     | ~5 min     |
 | [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                        | ~10 min    |
 | [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                                                                                                  | ~30 min    |
+| [Declare an env in YAML](#env-document)                       | write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`                                       | ~5 min     |
 | [Prove parity before deploying](#env-verify-parity)           | `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`.                                   | ~1 hour    |
 | [Record deploys from existing CI](#record-deploys)            | Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.                                              | ~15 min    |
 | [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                                                                                           | ~10 min    |
@@ -1740,6 +1741,7 @@ _Enforced · Forge, on any infrastructure_
 | `forge-time-bucket-session-tz`         | A two-argument `date_trunc` over a `TIMESTAMPTZ` truncates in the session timezone, so every daily total moves with the deploy host                                                             | `--time-bucketing`     |
 | `forgeconv-bun-dollar-placeholder`     | `$1`-style placeholders ported into bun-formatted SQL, which bun does not bind, so the statement fails at runtime                                                                               | `--conventions`        |
 | `forgeconv-bun-literal-question-mark`  | A literal `?` in bun-formatted SQL, which bun consumes as a placeholder, so the statement runs against shifted arguments                                                                        | `--conventions`        |
+| `forgeconv-product-event-pii`          | A product event property named for personal data (`email`, `name`, `ip`, `url`, `path`, `token`), stored per event for months and joined to a user                                              | `--conventions`        |
 | `forgeconv-tx-lock-under-serializable` | A `SELECT … FOR UPDATE` or advisory lock inside a SERIALIZABLE or REPEATABLE READ transaction: the snapshot predates the wait, so each contended wait costs a full rollback or drops the update | `--conventions`        |
 | `forgeconv-service-dir-consistency`    | A proto service name that disagrees with its `proto/services/` directory, so scaffolds and handler directories land where nothing expects them                                                  | `--conventions`        |
 
@@ -2580,6 +2582,28 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env deploy`
 - command `forge env status`
 - skill `deploy/external` (`forge skill load deploy/external`)
+
+<a id="env-document"></a>
+
+### Declare an env in YAML
+
+An environment is declared in KCL or in a plain YAML/JSON env document (`deploy/envs/<env>.yaml`) that IS what KCL renders to, validated against a generated, versioned JSON Schema with errors that name the path and the field, and every forge command reads either one the same way.
+
+_Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`. **Agent time:** ~5 min.
+
+**Use:** Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1` (`forge project schema env` prints the schema), then use any `forge env` or `forge obs` verb on `prod`.
+
+**Why:** A team adopting one piece of forge should not have to learn a configuration language first, and a tool that generates config should not have to emit one. The schema is generated from the Go types forge decodes with, so it cannot drift from what forge reads; forge fills the defaults KCL would (telemetry identity, probes, Workload records) and refuses what a runtime cannot honour.
+
+**Evidence:**
+
+- command `forge project schema`
+- source [`schema/env.v1.schema.json`](../schema/env.v1.schema.json)
+- source [`internal/envdoc`](../internal/envdoc)
+- source [`docs/design/env-document.md`](../docs/design/env-document.md)
+- skill `deploy` (`forge skill load deploy`)
 
 <a id="env-verify-parity"></a>
 
@@ -3766,6 +3790,25 @@ _In progress · Reliant hosting_
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+<a id="builtin-ai-hub"></a>
+
+### Built-in LLM and workflow monitoring
+
+A hosted app's model calls, agent turns, tool calls and workflow runs get dashboards with no code: runs and their success and duration, tokens, latency, errors and retries by workflow, node, agent, model, provider, user and tool, read from OpenTelemetry GenAI spans.
+
+_In progress · Reliant hosting_
+
+**Use:** Wrap model calls in `pkg/observe/genai` spans (`StartChat`, and `StartWorkflow` / `StartAgent` / `StartTool` for agentic work); AI spans are never sampled away. A `<project>-ai-models.json` replaces a dashboard.
+
+**Why:** No price table yet: a cost is shown only where the gateway reported one. The console lists the new AI group under Custom until it knows it.
+
+**Evidence:**
+
+- library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
+- library [`pkg/observe/genai`](../pkg/observe/genai)
+- source [`pkg/obsbuiltin/ai_clickhouse_test.go`](../pkg/obsbuiltin/ai_clickhouse_test.go)
+- skill `observability/ai` (`forge skill load observability/ai`)
 
 <a id="release-markers"></a>
 

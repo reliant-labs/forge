@@ -2,8 +2,10 @@
 # lists, with each command's flags (name[/shorthand]:type). Every path here must
 # keep resolving and running, with at least these flags, until v2
 # (TestCommandSurfaceIsStable). To record additions:
-#   go test ./internal/cli -run TestCommandSurfaceIsStable -update-command-surface
-# The update only adds; a removal is a breaking change and fails the test.
+#   go test ./internal/cli -run TestCommandSurfaceIsStable -update-command-surface \
+#     -command-surface-only "forge <your command>"
+# (without -command-surface-only it records every unrecorded path). The update
+# only adds; a removal is a breaking change and fails the test.
 forge agent	group	project-dir/C:string
 forge agent mcp	cmd	project-dir/C:string
 forge agent report-bug	cmd	actual:string anonymous:bool dry-run:bool evidence:string expected:string json:bool output/o:string project-dir/C:string severity:string summary:string title:string
@@ -101,12 +103,13 @@ forge debug args	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug break	cmd	allow-version-skew:bool cond:string func:string json:bool project-dir/C:string
 forge debug breakpoints	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug clear	cmd	allow-version-skew:bool json:bool project-dir/C:string
-forge debug continue	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge debug connect	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge debug continue	cmd	allow-version-skew:bool json:bool no-wait:bool project-dir/C:string timeout:duration
 forge debug eval	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug goroutines	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug locals	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug stack	cmd	allow-version-skew:bool depth:int json:bool project-dir/C:string
-forge debug start	cmd	allow-version-skew:bool attach:int docker:bool json:bool port:int project-dir/C:string
+forge debug start	cmd	allow-version-skew:bool app-port:int attach:int docker:bool env:string json:bool no-env:bool port:int project-dir/C:string run:bool workload:string
 forge debug step	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug step-in	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge debug step-out	cmd	allow-version-skew:bool json:bool project-dir/C:string
@@ -129,12 +132,13 @@ forge dev debug args	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug break	cmd	allow-version-skew:bool cond:string func:string json:bool project-dir/C:string
 forge dev debug breakpoints	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug clear	cmd	allow-version-skew:bool json:bool project-dir/C:string
-forge dev debug continue	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge dev debug connect	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge dev debug continue	cmd	allow-version-skew:bool json:bool no-wait:bool project-dir/C:string timeout:duration
 forge dev debug eval	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug goroutines	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug locals	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug stack	cmd	allow-version-skew:bool depth:int json:bool project-dir/C:string
-forge dev debug start	cmd	allow-version-skew:bool attach:int docker:bool json:bool port:int project-dir/C:string
+forge dev debug start	cmd	allow-version-skew:bool app-port:int attach:int docker:bool env:string json:bool no-env:bool port:int project-dir/C:string run:bool workload:string
 forge dev debug step	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug step-in	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge dev debug step-out	cmd	allow-version-skew:bool json:bool project-dir/C:string
@@ -153,7 +157,7 @@ forge env	group	allow-version-skew:bool project-dir/C:string
 forge env build	cmd	allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool base-promotion:string bundle-envs:string config-check:string debug:bool docker:bool gate-json:string json:bool no-build:bool no-generate:bool no-run:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string push:bool rebuild:bool release:string run-id:string run-url:string snapshot-bootstrap:bool tag:string target-arch:string target/t:stringArray
 forge env config	cmd	allow-version-skew:bool json:bool project-dir/C:string strict:bool workload:string
 forge env delete	cmd	allow-version-skew:bool endpoint:string id:string keep-data:bool project-dir/C:string token:string yes:bool
-forge env deploy	cmd	acknowledge-destructive:stringSlice actor:string allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool approve:string claimable:bool dry-run:bool expect-current:string expect-unbound:bool explain:bool fail-fast:bool from-promotion:string from:string frontends-only:bool gate:stringArray json:bool live-diff:bool namespace:string no-digest:bool no-run:bool no-wait:bool note:string offline-ledger:bool option/D:stringArray org:string override-health-gate:string plan-only:bool plan:bool project-dir/C:string prune:bool rerecord-bundle:bool rollout-fail-fast:bool rollout-order:stringArray rollout-timeout:duration rollout:string run-id:string run-url:string skip-frontend:bool skip-hub-check:bool skip-preflight:bool supersede:bool tag:string target-arch:string target:stringArray timeout:duration to:string wait:bool yes:bool
+forge env deploy	cmd	acknowledge-destructive:stringSlice actor:string allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool approve:string claimable:bool dry-run:bool expect-current:string expect-unbound:bool explain:bool fail-fast:bool floor:string from-promotion:string from:string frontends-only:bool gate:stringArray json:bool live-diff:bool namespace:string no-digest:bool no-run:bool no-wait:bool note:string offline-ledger:bool option/D:stringArray org:string override-health-gate:string plan-only:bool plan:bool project-dir/C:string prune:bool rerecord-bundle:bool rollout-fail-fast:bool rollout-order:stringArray rollout-timeout:duration rollout:string run-id:string run-url:string skip-frontend:bool skip-hub-check:bool skip-preflight:bool supersede:bool tag:string target-arch:string target:stringArray timeout:duration to:string wait:bool yes:bool
 forge env devstack	group	project-dir/C:string
 forge env devstack key	cmd	project-dir/C:string
 forge env devstack list	cmd	project-dir/C:string stacks-only:bool
@@ -163,12 +167,24 @@ forge env devstack release	cmd	apply:bool project-dir/C:string
 forge env diff	cmd	against:string all:bool allow-version-skew:bool charts:bool json:bool project-dir/C:string
 forge env down	cmd	all:bool allow-version-skew:bool project-dir/C:string
 forge env exec	cmd	allow-version-skew:bool project-dir/C:string workload:string
+forge env floor	group	allow-version-skew:bool project-dir/C:string
+forge env floor check	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge env floor clear	cmd	actor:string allow-version-skew:bool json:bool project-dir/C:string reason:string
+forge env floor lift	cmd	acknowledge:stringArray actor:string allow-version-skew:bool json:bool project-dir/C:string reason:string
+forge env floor lower	cmd	actor:string allow-version-skew:bool json:bool project-dir/C:string reason:string
+forge env floor set	cmd	actor:string allow-version-skew:bool current:bool expect-current:string json:bool project-dir/C:string reason:string
+forge env floor show	cmd	all:bool allow-version-skew:bool json:bool project-dir/C:string
+forge env gc	cmd	allow-version-skew:bool context:stringSlice dry-run:bool from:stringSlice json:bool project-dir/C:string yes:bool
 forge env kcl	group	allow-version-skew:bool project-dir/C:string
 forge env kcl eval	cmd	allow-version-skew:bool format:string materialize:bool option/D:stringArray process-rooted:bool project-dir/C:string render-active:bool render-context:string render-env:string select/S:stringArray
-forge env kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge env kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string refresh:bool
 forge env list	cmd	allow-version-skew:bool endpoint:string orphaned:bool project-dir/C:string token:string
 forge env new	cmd	allow-version-skew:bool bind:stringArray check:bool force:bool from:string project-dir/C:string
 forge env options	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge env preview	group	allow-version-skew:bool project-dir/C:string
+forge env preview create	cmd	allow-version-skew:bool branch:string from:string json:bool name-template:string pr:int project-dir/C:string ttl:string
+forge env preview delete	cmd	allow-version-skew:bool branch:string from:string name-template:string name:string pr:int project-dir/C:string yes:bool
+forge env preview name	cmd	allow-version-skew:bool branch:string from:string name-template:string pr:int project-dir/C:string
 forge env ps	cmd	json:bool project-dir/C:string
 forge env releases	group	allow-version-skew:bool project-dir/C:string
 forge env releases at	cmd	allow-version-skew:bool fields:string json:bool limit:int project-dir/C:string
@@ -197,6 +213,7 @@ forge env start	cmd	allow-version-skew:bool poll-interval:duration project-dir/C
 forge env status	cmd	allow-version-skew:bool before:string claimable:bool fail-fast:bool history:bool include-unpinned:bool interval:duration json:bool limit:int project-dir/C:string promotion:string release:string signal:string stable-for:duration timeout:duration verbose/v:bool verify:bool wait:bool watch-json:bool
 forge env stop	cmd	allow-version-skew:bool poll-interval:duration project-dir/C:string target:string timeout:duration token:string wait:bool
 forge env up	cmd	allow-version-skew:bool background:bool host-ready-timeout:duration no-build:bool no-deploy:bool no-generate:bool no-install:bool no-seed:bool option/D:stringArray project-dir/C:string rebuild:bool target:stringArray telemetry:string watch:bool
+forge env verify	cmd	allow-version-skew:bool image:stringArray json:bool project-dir/C:string workload:stringArray
 forge fix	group	allow-version-skew:bool project-dir/C:string
 forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
@@ -214,7 +231,7 @@ forge gate record	cmd	allow-version-skew:bool from:string json:bool name:string 
 forge generate	cmd	allow-version-skew:bool check:bool dry-run:bool explain-drift:bool explain:bool force-cleanup:bool force/f:bool heal:bool help-dev:bool no-cache:bool no-revert:bool plan:bool project-dir/C:string skip-config-check:bool skip-pre-checks:bool skip-validate:bool steps:string strict:bool templates-only:bool timings:bool verbose/v:bool watch/w:bool
 forge kcl	group	allow-version-skew:bool project-dir/C:string
 forge kcl eval	cmd	allow-version-skew:bool format:string materialize:bool option/D:stringArray process-rooted:bool project-dir/C:string render-active:bool render-context:string render-env:string select/S:stringArray
-forge kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string refresh:bool
 forge ledger	group	allow-version-skew:bool project-dir/C:string
 forge ledger export	cmd	allow-version-skew:bool dir:string env:string project-dir/C:string
 forge ledger import	cmd	allow-version-skew:bool apply:bool from-file-ledger:string from-git:bool project-dir/C:string rev:string
@@ -293,12 +310,14 @@ forge obs tokens revoke	cmd	allow-version-skew:bool control-plane:string project
 forge obs tokens rotate	cmd	allow-version-skew:bool control-plane:string grace:duration json:bool project-dir/C:string project:string ttl:duration
 forge obs trace	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string full:bool instance:string json:bool limit:int logs:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs traces	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string errors:bool explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int min-duration:duration page-token:string print-sql:bool project-dir/C:string project:string route:string service:stringArray since:duration slow:bool to:string user:string
+forge obs users	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string seen-total:bool series:int service:stringArray since:duration to:string user:string
 forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge package	group	allow-version-skew:bool project-dir/C:string
 forge package new	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
 forge project	group	allow-version-skew:bool project-dir/C:string
 forge project annotations	cmd	allow-version-skew:bool json:bool kind:string project-dir/C:string
 forge project audit	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge project benefits	cmd	all:bool allow-version-skew:bool category:string json:bool project-dir/C:string
 forge project capabilities	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge project checkouts	cmd	allow-version-skew:bool json:bool project-dir/C:string tree:bool
 forge project delete	group	allow-version-skew:bool project-dir/C:string
@@ -317,11 +336,14 @@ forge project memory	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge project migrate	group	allow-version-skew:bool project-dir/C:string
 forge project migrate import	cmd	allow-version-skew:bool dest-dir:string dry-run:bool force:bool from:string project-dir/C:string src-dir:string
 forge project migrate tdd	cmd	allow-version-skew:bool dry-run:bool path:string project-dir/C:string
-forge project new	cmd	binary:string buf-plugins:string claimable:bool disable:stringSlice force:bool forge-root:string frontend-kind:string frontend-workspaces:bool frontend:stringSlice go-version:string harness:string in-place:bool kind:string link-forge:bool mod:string name:string output:string path/p:string project-dir/C:string routes:stringSlice service:stringSlice skip-tools:bool verbose/v:bool verify:bool
+forge project new	cmd	binary:string buf-plugins:string claimable:bool disable:stringSlice dry-run:bool force:bool forge-root:string frontend-kind:string frontend-workspaces:bool frontend:stringSlice go-version:string harness:string in-place:bool kind:string link-forge:bool mod:string name:string output:string path/p:string project-dir/C:string routes:stringSlice service:stringSlice skip-tools:bool verbose/v:bool verify:bool
+forge project prune	cmd	allow-version-skew:bool dry-run:bool orphans:bool project-dir/C:string
 forge project rescaffold	cmd	allow-version-skew:bool project-dir/C:string
 forge project scaffolded	cmd	absent:bool allow-version-skew:bool project-dir/C:string
+forge project schema	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge project shapes	cmd	allow-version-skew:bool grep:string kind:string project-dir/C:string service:string unimplemented:bool
 forge project start	cmd	allow-version-skew:bool project-dir/C:string
+forge project start app	cmd	allow-version-skew:bool project-dir/C:string
 forge project upgrade	group	all:bool allow-dirty:bool check:bool dry-run:bool force:bool json:bool project-dir/C:string skip:stringSlice to:string
 forge project upgrade apply	cmd	project-dir/C:string
 forge project upgrade list	cmd	json:bool project-dir/C:string
@@ -342,6 +364,7 @@ forge release ledger import	cmd	allow-version-skew:bool apply:bool from-file-led
 forge release ledger show	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge release ledger where	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge release list	cmd	allow-version-skew:bool fields:string json:bool limit:int project-dir/C:string since:string
+forge release record	cmd	allow-version-skew:bool commit:string env:string image:stringArray json:bool no-run:bool project-dir/C:string run-id:string token:string url:string workload:stringArray
 forge release show	cmd	allow-version-skew:bool fields:string json:bool limit:int project-dir/C:string
 forge release verify	cmd	allow-version-skew:bool concurrency:int json:bool project-dir/C:string strict:bool timeout:duration
 forge release where	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string token:string
@@ -379,6 +402,7 @@ forge slot	group	project-dir/C:string
 forge slot run	cmd	class:string project-dir/C:string slots:int
 forge slot status	cmd	class:string json:bool project-dir/C:string
 forge start	cmd	allow-version-skew:bool project-dir/C:string
+forge start app	cmd	allow-version-skew:bool project-dir/C:string
 forge storage	group	policy:string project-dir/C:string
 forge storage check	cmd	policy:string project-dir/C:string
 forge storage configure-nodes	cmd	apply:bool policy:string project-dir/C:string
@@ -390,6 +414,10 @@ forge storage policy	cmd	policy:string project-dir/C:string
 forge storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
 forge storage status	cmd	policy:string project-dir/C:string
 forge storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string reliant-managed:bool repo:string
+forge telemetry	group	project-dir/C:string
+forge telemetry off	cmd	project-dir/C:string
+forge telemetry on	cmd	project-dir/C:string
+forge telemetry status	cmd	project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
 forge tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string

@@ -298,6 +298,15 @@ runs its own OTel SDK gets the same with
 `scrubUrlAttributes` for its own attributes. The platform's ingest scrubs the
 same attributes again, as defence in depth.
 
+Session replay gets the same treatment. Its opening record (rrweb's Meta event,
+sent again with every full snapshot) holds the page URL as `data.href` in a log
+body rather than in a span attribute, so the recorder is given an rrweb plugin
+that strips the query and fragment from it, with the same `keepUrlQueryParams`,
+before the event is serialized. URLs inside the recorded DOM (links,
+stylesheets) are page content the replay renders, and are left as they are.
+An app that runs rrweb itself can pass `replayUrlScrubPlugin()` in its
+`plugins`.
+
 ## Auth-provider adapters (`/auth/<provider>`)
 
 An app on Supabase, Clerk, Auth0 or Firebase reports who is signed in with one

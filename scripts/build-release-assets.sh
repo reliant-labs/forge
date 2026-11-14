@@ -26,6 +26,11 @@
 #                          (default: the six below). Tests use it to build one.
 #   FORGE_RELEASE_COMMIT   commit to stamp (default: git rev-parse HEAD)
 #   FORGE_RELEASE_DATE     build date to stamp (default: today, UTC)
+#   FORGE_TELEMETRY_ENDPOINT
+#                          OTLP logs URL forge's anonymous usage events go to
+#                          (internal/cli/telemetry.go). Unset: the platform's
+#                          keyed ingest with the forge-cli native key (below);
+#                          set to "" for a build that sends none
 set -euo pipefail
 
 usage() {
@@ -70,6 +75,16 @@ export COPYFILE_DISABLE=1
 # Every step propagates its own failure (`|| return`): build_one runs as the left
 # operand of `&&` below, where bash disables `set -e` for the whole function, so
 # without them a failed go build, cp or chmod is ignored whenever tar succeeds.
+# Where a release's forge sends its anonymous Events (forge_cli_first_run):
+# the platform's keyed ingest with the forge CLI's NATIVE key, declared by
+# control-plane (deploy/kcl/lib/env.k forge_cli_ingest_keys) for the
+# Reliant-owned telemetry org. Publishable, like a browser key: it can only
+# write logs into that environment. A person opts out with DO_NOT_TRACK=1,
+# FORGE_TELEMETRY=off or `forge telemetry off`; on a CI runner telemetry is always off
+# and nothing is sent.
+DEFAULT_TELEMETRY_ENDPOINT="https://ingest.reliantlabs.dev/k/rbk_il4pm2x44f2isoi34dwxj4dut3/v1/logs"
+TELEMETRY_ENDPOINT="${FORGE_TELEMETRY_ENDPOINT-$DEFAULT_TELEMETRY_ENDPOINT}"
+
 build_one() {
   local goos=$1 goarch=$2 bin=forge name dir
   if [ "$goos" = "windows" ]; then bin="forge.exe"; fi
@@ -77,7 +92,7 @@ build_one() {
   dir="$STAGE/$goos-$goarch"
   mkdir -p "$dir" || return
   CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
-    -ldflags "-s -w -X main.Version=$VERSION -X main.GitCommit=$COMMIT -X main.BuildDate=$DATE" \
+    -ldflags "-s -w -X main.Version=$VERSION -X main.GitCommit=$COMMIT -X main.BuildDate=$DATE -X main.TelemetryEndpoint=$TELEMETRY_ENDPOINT" \
     -o "$dir/$bin" ./cmd/forge || return
   cp LICENSE NOTICE "$dir/" || return
   chmod 755 "$dir/$bin" || return

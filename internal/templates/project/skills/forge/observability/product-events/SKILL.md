@@ -20,9 +20,10 @@ table; all of them follow it.
 |---|---|
 | `event.name` | `product.<snake_name>`; required, and the only thing the table selects on |
 | `user.id` | the authenticated user id (the auth subject); empty when anonymous |
-| `visitor.id` | the anonymous visitor id, when known |
+| `org.id` | the org the event is about (`Claims.OrgID`, or `observe.WithActor`); stored in `OrgId` |
+| `visitor.id` | the anonymous visitor id, when known (a consented browser visitor, or a CLI's install id) |
 | `session.id` | the client session id, when known |
-| `app.client` | `backend`, `web`, `electron` or `landing` |
+| `app.client` | `backend`, `cli`, `web`, `electron` or `landing` |
 | `app.version` | the emitting app's version |
 | `product.<key>` | one property per key; stored in `Props` with the `product.` prefix stripped |
 
@@ -42,12 +43,22 @@ observe.Track(ctx, "project_created", slog.String("template", "go"), slog.Int("r
 `observe.Track(ctx, name, attrs...)` writes the record through the context's
 logger (`observe.FromContext`), sets `app.client="backend"` and `app.version`
 (from `observe.Config.ServiceVersion`, or `observe.SetAppVersion`), and takes
-`user.id` from the claims forge's auth interceptor put in `ctx`: a handler
-needs no extra step, a background job has no user and so emits an anonymous
-event. A name that is not snake_case (`^[a-z][a-z0-9_]{0,63}$`) is dropped with
-a warning. Property values become strings; keep them low-cardinality and
-never put secrets or personal data in them. A `slog.Group` flattens to
-`group.key`.
+`user.id` and `org.id` from the claims forge's auth interceptor put in `ctx`: a
+handler needs no extra step. A name that is not snake_case
+(`^[a-z][a-z0-9_]{0,63}$`) is dropped with a warning. Property values become
+strings; keep them low-cardinality. A `slog.Group` flattens to `group.key`.
+
+### The actor, personal data and consent
+
+Naming the actor without claims (`observe.WithActor`), the no-personal-data
+rule, and opt-outs (`observe.SetConsentSource`): load
+`observability/product-events/actor-privacy`.
+
+### From a CLI
+
+A command-line program records events with `pkg/observe/cliev` (an anonymous
+install id, a one-time notice, opt-out, a batch at exit). Load
+`observability/product-events/cli`.
 
 `observe.TrackState` emits a fact about a user that is not activity (a
 snapshot, a marker); the user counts skip it. Load

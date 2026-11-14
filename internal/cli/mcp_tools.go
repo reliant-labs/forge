@@ -17,6 +17,11 @@ type annotationsInput struct {
 	Kind string `json:"kind,omitempty" jsonschema:"limit to one annotation kind: entity, field, column, table, service, method or go (default: all)"`
 }
 
+type schemaInput struct {
+	dirInput
+	Name string `json:"name,omitempty" jsonschema:"the schema to print: env (the env document, forge.dev/env/v1). Omit to list them"`
+}
+
 type librariesInput struct {
 	dirInput
 	Packages []string `json:"packages,omitempty" jsonschema:"packages or symbols to print full signatures for, e.g. crud, svcerr, orm.Context, or all; omit for the index of every library"`
@@ -136,6 +141,8 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 	}, func(in dirInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"project", "capabilities"}}
 	})
+
+	addSchemaTool(srv, r, readOnly)
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "annotations",
@@ -307,3 +314,18 @@ func addCmdTool[In any](srv *mcp.Server, r *mcpRunner, tool *mcp.Tool, spec func
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// addSchemaTool registers the schema tool: the JSON Schemas forge publishes.
+func addSchemaTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
+	addCmdTool(srv, r, &mcp.Tool{
+		Name:        "schema",
+		Description: "A JSON Schema forge publishes. name=env is the env document's (forge.dev/env/v1): the shape of one env's declaration, which is what KCL renders and what a hand-written deploy/envs/<env>.yaml declares instead of KCL — a monitoring-only env is a few lines. Omit name to list the schemas.",
+		Annotations: readOnly,
+	}, func(in schemaInput) cmdSpec {
+		args := []string{"project", "schema"}
+		if in.Name != "" {
+			args = append(args, in.Name)
+		}
+		return cmdSpec{dir: in.Dir, args: args}
+	})
+}

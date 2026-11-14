@@ -88,6 +88,14 @@ stays real at every tier.
   `FORGE_LEDGER=machine` (with a temp `FORGE_LEDGER_HOME`). Setting only
   `FORGE_LEDGER_HOME` does not keep it local. Assert it first:
   `forge ledger where <env> --json` must report `"backend": "machine"`.
+- **Capture the queries your tests run.** `FORGE_QUERY_CAPTURE_DIR=/tmp/qc
+  task test:short` makes every `orm.Client` (and a `dbtrace.NewPgxTracer`
+  pgx pool) built while it is set write each distinct statement shape, once
+  per caller, to `<pid>-<random>.jsonl` in that directory: the SQL as sent
+  (bound values as `$n`, normalized), its fingerprint, and the file:line and
+  test that ran it (`forge/pkg/querycapture`; `querycapture.Read` merges a
+  directory). Unset, nothing is installed. SQL run on a bare `*sql.DB` is not
+  captured, and a query no test runs is never captured, so never analyzed.
 
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`

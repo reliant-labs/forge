@@ -7,8 +7,14 @@ package cli
 //   - KCL: deploy/kcl/<env>/main.k exists. Its render is the declaration
 //     (obsTargetFromEntities), as it always was. KCL is the long-term home of
 //     an environment's topology, so an env with a KCL tree is KCL's.
-//   - forge.yaml: `envs:` names it and there is no deploy/kcl/<env>/ — a
-//     brownfield project that adopted forge for monitoring and never wrote KCL.
+//   - an env document: deploy/envs/<env>.yaml (or .yml / .json) — the
+//     document KCL renders to, written by hand and validated against the env
+//     schema (`forge project schema env`; internal/envdoc). The render seams
+//     read it in place of a KCL evaluation, so every command reads one model.
+//     It is the recommended form for an env with no KCL.
+//   - forge.yaml (LEGACY SHORTHAND): `envs:` names it and there is no
+//     deploy/kcl/<env>/ — a brownfield project that adopted forge for
+//     monitoring before env documents existed, and never wrote KCL.
 //     Its facts are lowered from `monitoring:` (yamlObsTarget) into the SAME
 //     obsbackend.Facts the render fills, so every `forge obs` verb reads one
 //     model whichever file declared the env.
@@ -31,6 +37,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 )
 
@@ -42,6 +49,9 @@ const (
 	envDeclKCL   envDeclSource = "kcl"
 	envDeclYAML  envDeclSource = "forge.yaml"
 	envDeclFlags envDeclSource = "flags"
+	// envDeclDocument is an env document, deploy/envs/<env>.yaml: the render
+	// output written by hand. It is read through the render seam like KCL.
+	envDeclDocument envDeclSource = "document"
 )
 
 // envDecl is one env's declaration, as the seam resolved it.
@@ -82,6 +92,26 @@ func declareEnv(projectDir string, cfg *config.ProjectConfig, env string) (envDe
 	}
 	kcl := projectDir != "" && obsTargetCacheable(env) && fileExists(filepath.Join(projectDir, "deploy", "kcl", env, "main.k"))
 	yamlEnv := cfg.DeclaresEnv(env)
+	docDir := projectDir
+	if docDir == "" {
+		docDir = "." // no forge.yaml: an env document is still found from here
+	}
+	doc, err := envdoc.Path(docDir, env)
+	if err != nil {
+		return d, err
+	}
+	if doc != "" {
+		if err := envdoc.ConflictError(docDir, env, doc); err != nil {
+			return d, err
+		}
+		if yamlEnv {
+			return d, fmt.Errorf("%w: env %q is declared in both forge.yaml (envs:) and %s\n"+
+				"fix: forge.yaml `envs:` is a legacy shorthand: drop %q from it and keep the env document",
+				errEnvDeclaredTwice, env, envDocumentRel(docDir, env), env)
+		}
+		d.Source = envDeclDocument
+		return d, nil
+	}
 
 	switch {
 	case kcl && yamlEnv && cfg.Monitoring != nil:

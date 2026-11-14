@@ -732,6 +732,8 @@ func (c HelmChartEntity) PruneEnabled() bool { return c.Prune == nil || *c.Prune
 // when set, ties this Secret to others that must carry the SAME logical
 // value (the cross-secret byte-match group).
 type ExternalSecretEntity struct {
+	// Type is the render's record tag, "secret".
+	Type      string   `json:"type,omitempty"`
 	Name      string   `json:"name"`
 	Namespace string   `json:"namespace"`
 	Keys      []string `json:"keys"`
@@ -782,6 +784,8 @@ type StoreSourceEntity struct {
 // nor blocks on it. Recorded in the env shape so the control plane knows what
 // to deliver where.
 type ControlPlaneSecretEntity struct {
+	// Type is the render's record tag, "control_plane_secret".
+	Type      string `json:"type,omitempty"`
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	// Cluster is the kube context it lands in; ConnectedCluster is the name
@@ -1242,9 +1246,13 @@ type BuildOnlyDeploy struct {
 
 // BuildVariant describes one binary produced by a build-only service.
 type BuildVariant struct {
-	Name       string            `json:"name"`
-	Ldflags    []string          `json:"ldflags,omitempty"`
-	BuildTags  []string          `json:"build_tags,omitempty"`
+	Name    string   `json:"name"`
+	Ldflags []string `json:"ldflags,omitempty"`
+	// BuildTags are the variant's `go build -tags`. The render names them
+	// `tags` (kcl/render.k _render_build_variant); this field read
+	// `build_tags`, which no render emits, so a variant's tags were dropped
+	// until the env schema's fixture check caught the mismatch.
+	BuildTags  []string          `json:"tags,omitempty"`
 	GOOS       string            `json:"goos,omitempty"`
 	GOARCH     string            `json:"goarch,omitempty"`
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
@@ -1839,6 +1847,10 @@ type ClusterTargetEntity struct {
 	// the name `forge cluster connect` registered. Empty for a k3d cluster,
 	// which forge applies to directly.
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
+	// ImagePullSecrets are the pull Secrets the target declares. Each cluster
+	// workload's runtime carries the list it pulls with (ClusterRuntime), so
+	// this env-wide copy is recorded, not read.
+	ImagePullSecrets []string `json:"image_pull_secrets,omitempty"`
 }
 
 // field returns one env-wide coordinate by the name the "first K8sCluster
@@ -1939,6 +1951,12 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	}
 	if env == "" {
 		return nil, fmt.Errorf("RenderKCL: env required")
+	}
+	// An env declared by an env document (deploy/envs/<env>.yaml) renders to
+	// the document itself, validated and lowered: the same bytes, the same
+	// parser, every command unchanged (env_document.go).
+	if out, ok, err := loadEnvDocument(ctx, projectDir, env); ok || err != nil {
+		return out, err
 	}
 	kclDir := filepath.Join(projectDir, "deploy", "kcl", env)
 	if _, err := os.Stat(kclDir); err != nil {

@@ -15,6 +15,8 @@ import {
   vi,
 } from "vitest";
 
+import type { ReplayRecordPlugin } from "./url-scrub.js";
+
 const init = vi.fn();
 const recordException = vi.fn();
 const addAction = vi.fn();
@@ -725,10 +727,41 @@ describe("buildSdkOptions", () => {
       expect(opts.maskAllText).toBe(true);
       expect(opts.recordCanvas).toBe(false);
       expect(opts.blockSelector).toBe(t.REPLAY_BLOCK_SELECTOR);
-      expect(opts.replay).toEqual({ inlineImages: false, collectFonts: false });
+      expect(opts.replay).toMatchObject({
+        inlineImages: false,
+        collectFonts: false,
+      });
     }
     for (const tag of ["img", "picture", "video", "audio", "iframe"]) {
       expect(t.REPLAY_BLOCK_SELECTOR.split(/,\s*/)).toContain(tag);
+    }
+  });
+
+  it("hands the recorder the replay URL scrub, with the config's kept parameters", async () => {
+    const { t } = await load();
+    const meta = {
+      type: 4,
+      data: {
+        href: `${ORIGIN}/welcome?utm_source=ad&email=j%40x.io#tok`,
+        width: 1,
+        height: 1,
+      },
+      timestamp: 1,
+    };
+    const cases: Array<[{ keepUrlQueryParams?: string[] }, string]> = [
+      [{}, `${ORIGIN}/welcome`],
+      [{ keepUrlQueryParams: ["utm_*"] }, `${ORIGIN}/welcome?utm_source=ad`],
+    ];
+    for (const [config, href] of cases) {
+      const opts = t.buildSdkOptions(
+        { ...base, ...config, replay: true },
+        `${ORIGIN}/_otel`,
+        ORIGIN,
+      );
+      const plugins = (opts.replay as { plugins: ReplayRecordPlugin[] })
+        .plugins;
+      expect(plugins.map((p) => p.name)).toEqual(["forge/replay-url-scrub"]);
+      expect(plugins[0]!.eventProcessor(meta).data.href).toBe(href);
     }
   });
 

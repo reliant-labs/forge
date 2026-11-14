@@ -16,7 +16,8 @@ Most of what forge offers works on the app as it is: forge need not build or
 deploy it. In an existing app, in any language, the server leads with:
 
 - **Monitoring.** After `forge login`, `forge obs init <env>…` (one or more
-  envs) registers each env, mints an ingest token per env and prints its
+  envs) declares each env in its env document (`deploy/envs/<env>.yaml`),
+  registers it, mints an ingest token per env and prints its
   `OTEL_*` variables. Set them where
   the app runs and any OpenTelemetry SDK sends its traces, logs and metrics to
   dashboards, issues and alerts at

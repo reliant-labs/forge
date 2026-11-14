@@ -78,6 +78,10 @@ workloads:
   - name: web                           # a prebuilt image on a cluster you run
     runtime: {type: cluster, cluster: gke_acme_prod, namespace: shop}
     spec: {image: "ghcr.io/acme/web:1.4.2", ports: [{name: http, port: 8080}]}
+  - name: worker                        # built by forge; the cluster pulls it pinned per release
+    image: ghcr.io/acme/worker
+    build: {type: go, cmd: ./cmd/worker}
+    runtime: {type: cluster, cluster: gke_acme_prod, namespace: shop}
 ```
 
 - An env is declared in ONE place: a document, `deploy/kcl/<env>/main.k`, or
@@ -89,9 +93,12 @@ workloads:
   cluster workload — and refuses what a runtime cannot honour, with KCL's own
   reasons. A document states the rest (the wire form of `spec.env`, URLs, raw
   `manifests`).
-- A cluster workload forge **builds** still needs KCL: its image is pinned per
-  release by the render. A document deploys prebuilt cluster images, and any
-  hosted, host, compose, build-only or external workload.
+- A cluster workload forge **builds** names the repository it pushes to in
+  `image` (registry included; `…/api:e2e` pins the build's tag) beside its
+  `build`, and leaves `spec.image` unset: forge pins it per release exactly as
+  a KCL render does — the env's tag, then the digest the push captured, then a
+  recorded release's exact reference on a promotion. A prebuilt image is stated
+  in full in `spec.image`.
 - Errors name the path and the field: `workloads[0].runtime.prot: unknown
   field (did you mean "port"?)`. Every decision and the full lowering table:
   forge's `docs/design/env-document.md`.

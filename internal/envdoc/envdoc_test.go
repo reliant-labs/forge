@@ -3,6 +3,7 @@ package envdoc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -155,19 +156,227 @@ func TestRecordDeploysDocumentLoads(t *testing.T) {
 	}
 }
 
-func TestClusterBuiltWorkloadIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	writeDoc(t, dir, "prod.yaml", `apiVersion: forge.dev/env/v1
+const builtClusterDoc = `apiVersion: forge.dev/env/v1
 project: shop
 env: prod
 workloads:
   - name: api
+    image: %s
     build: {type: go, cmd: ./cmd/api}
     runtime: {type: cluster, cluster: k3d-shop, namespace: shop}
-`)
-	_, _, err := Load(dir, "prod", Options{})
-	if err == nil || !strings.Contains(err.Error(), "needs KCL in env schema v1") {
-		t.Fatalf("err = %v", err)
+`
+
+func loadWith(t *testing.T, body, env string, opts Options) (map[string]any, error) {
+	t.Helper()
+	dir := t.TempDir()
+	writeDoc(t, dir, env+".yaml", body)
+	out, _, err := Load(dir, env, opts)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Output map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(out, &wrapper); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper.Output, nil
+}
+
+// builtImages is the one workload's image, build_image and spec.image, and
+// its Workload record's spec.image.
+func builtImages(t *testing.T, out map[string]any) (image, buildImage, specImage, recordImage string) {
+	t.Helper()
+	w := out["workloads"].([]any)[0].(map[string]any)
+	image, _ = w["image"].(string)
+	buildImage, _ = w["build_image"].(string)
+	specImage, _ = specOf(w)["image"].(string)
+	for _, raw := range asList(out["manifests"]) {
+		m := raw.(map[string]any)
+		if m["kind"] == "Workload" {
+			recordImage, _ = m["spec"].(map[string]any)["image"].(string)
+		}
+	}
+	return image, buildImage, specImage, recordImage
+}
+
+const digestA = "sha256:" + "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+
+// TestClusterBuiltWorkloadIsPinnedPerRelease: a cluster workload forge builds
+// gets its spec.image (and its Workload record's) resolved as render.k
+// _spec_image resolves it: the env's tag, then the binding's tag, then the
+// digest the push captured, then the release snapshot's slot pin.
+func TestClusterBuiltWorkloadIsPinnedPerRelease(t *testing.T) {
+	body := fmt.Sprintf(builtClusterDoc, "ghcr.io/acme/api")
+	for _, c := range []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"the env's default tag", Options{}, "ghcr.io/acme/api:stable"},
+		{"the bound tag", Options{ImageTag: "v1"}, "ghcr.io/acme/api:v1"},
+		{"the pushed digest", Options{ImageTag: "v1", ImageDigests: map[string]string{"ghcr.io/acme/api": digestA}}, "ghcr.io/acme/api@" + digestA},
+		{"the snapshot's pin", Options{
+			ImageDigests: map[string]string{"ghcr.io/acme/api": "sha256:other"},
+			WorkloadPins: map[string]map[string]string{"api": {"container:api": "ghcr.io/acme/api@" + digestA}},
+			Immutable:    true,
+		}, "ghcr.io/acme/api@" + digestA},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			out, err := loadWith(t, body, "prod", c.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			image, built, spec, rec := builtImages(t, out)
+			if image != "ghcr.io/acme/api" || built != "ghcr.io/acme/api" || spec != c.want || rec != c.want {
+				t.Fatalf("image %q, build_image %q, spec.image %q, record %q; want spec.image and record %q", image, built, spec, rec, c.want)
+			}
+		})
+	}
+}
+
+// A build that pins its own tag keeps it, and a digest is looked up under
+// that exact tag (kcl/lib/images.k digest_key).
+func TestClusterBuiltWorkloadKeepsItsPinnedTag(t *testing.T) {
+	out, err := loadWith(t, fmt.Sprintf(builtClusterDoc, "ghcr.io/acme/api:e2e"), "prod",
+		Options{ImageTag: "v1", ImageDigests: map[string]string{"ghcr.io/acme/api": "sha256:untagged", "ghcr.io/acme/api:e2e": digestA}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, built, spec, _ := builtImages(t, out)
+	if image != "ghcr.io/acme/api" || built != "ghcr.io/acme/api:e2e" || spec != "ghcr.io/acme/api:e2e@"+digestA {
+		t.Fatalf("image %q, build_image %q, spec.image %q", image, built, spec)
+	}
+}
+
+func TestClusterBuiltWorkloadRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		opts       Options
+		want       string
+	}{
+		{"no registry", strings.Replace(fmt.Sprintf(builtClusterDoc, "x"), "    image: x\n", "", 1), Options{}, `image "api" names no registry host`},
+		{"a digest it cannot build", fmt.Sprintf(builtClusterDoc, "ghcr.io/acme/api@"+digestA), Options{}, "pins a digest, but the workload also declares a build"},
+		{"a stated spec.image", fmt.Sprintf(builtClusterDoc, "ghcr.io/acme/api") + "    spec: {image: ghcr.io/acme/api:v9}\n", Options{}, `spec.image "ghcr.io/acme/api:v9": forge derives the image`},
+		{"an immutable release without its pin", fmt.Sprintf(builtClusterDoc, "ghcr.io/acme/api"), Options{Immutable: true}, "immutable release requires workload/slot pin api/container:api"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := loadWith(t, c.body, "prod", c.opts); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want %q", err, c.want)
+			}
+		})
+	}
+}
+
+// A stated reference — a prebuilt image, a sidecar — is kept, unless the
+// release snapshot binds its slot; an immutable render refuses one it does
+// not bind.
+func TestStatedImagesTakeTheSnapshotPins(t *testing.T) {
+	body := `apiVersion: forge.dev/env/v1
+project: shop
+env: prod
+workloads:
+  - name: web
+    runtime: {type: cluster, cluster: k3d-shop, namespace: shop}
+    spec:
+      image: ghcr.io/acme/web:1.0
+      sidecars: [{name: proxy, image: ghcr.io/acme/proxy:2, native: true}]
+`
+	out, err := loadWith(t, body, "prod", Options{ImageTag: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := specOf(out["workloads"].([]any)[0].(map[string]any))
+	if spec["image"] != "ghcr.io/acme/web:1.0" || spec["sidecars"].([]any)[0].(map[string]any)["image"] != "ghcr.io/acme/proxy:2" {
+		t.Fatalf("stated references changed: %v", spec)
+	}
+	pins := map[string]map[string]string{"web": {"container:web": "ghcr.io/acme/web@" + digestA, "init:proxy": "ghcr.io/acme/proxy@" + digestA}}
+	if out, err = loadWith(t, body, "prod", Options{WorkloadPins: pins, Immutable: true}); err != nil {
+		t.Fatal(err)
+	}
+	spec = specOf(out["workloads"].([]any)[0].(map[string]any))
+	if spec["image"] != "ghcr.io/acme/web@"+digestA || spec["sidecars"].([]any)[0].(map[string]any)["image"] != "ghcr.io/acme/proxy@"+digestA {
+		t.Fatalf("pins not applied: %v", spec)
+	}
+	delete(pins["web"], "init:proxy")
+	if _, err := loadWith(t, body, "prod", Options{WorkloadPins: pins, Immutable: true}); err == nil || !strings.Contains(err.Error(), "web/init:proxy") {
+		t.Fatalf("err = %v, want the unbound sidecar slot refused", err)
+	}
+}
+
+// An immutable render refuses every unbound image slot on every runtime, as
+// kcl/base.k workload_image_ref_for does for the release inputs and sidecars
+// render.k resolves for every workload — not only on the runtimes that pull a
+// main image (cluster, external).
+func TestImmutableRefusesUnboundSlotsOnEveryRuntime(t *testing.T) {
+	for _, rt := range []string{"host", "hosted", "compose"} {
+		t.Run(rt, func(t *testing.T) {
+			sidecars := ""
+			if rt == "hosted" {
+				// host and compose refuse sidecars outright (the runtime mask).
+				sidecars = "\n    spec:\n      sidecars: [{name: proxy, image: ghcr.io/acme/proxy:2}]"
+			}
+			body := fmt.Sprintf(`apiVersion: forge.dev/env/v1
+project: shop
+env: prod
+workloads:
+  - name: web
+    runtime: {type: %s}
+    release_inputs: {migrate: ghcr.io/acme/migrate:1}%s
+`, rt, sidecars)
+			pins := map[string]map[string]string{"web": {"input:migrate": "ghcr.io/acme/migrate@" + digestA}}
+			if rt == "hosted" {
+				pins["web"]["container:proxy"] = "ghcr.io/acme/proxy@" + digestA
+			}
+			out, err := loadWith(t, body, "prod", Options{WorkloadPins: pins, Immutable: true})
+			if err != nil {
+				t.Fatalf("every slot bound: %v", err)
+			}
+			w := out["workloads"].([]any)[0].(map[string]any)
+			if got := w["release_inputs"].(map[string]any)["migrate"]; got != "ghcr.io/acme/migrate@"+digestA {
+				t.Errorf("release input = %v, want its pin", got)
+			}
+			if rt == "hosted" {
+				if got := specOf(w)["sidecars"].([]any)[0].(map[string]any)["image"]; got != "ghcr.io/acme/proxy@"+digestA {
+					t.Errorf("sidecar = %v, want its pin", got)
+				}
+			}
+
+			for slot := range pins["web"] {
+				unbound := map[string]map[string]string{"web": {}}
+				for k, v := range pins["web"] {
+					if k != slot {
+						unbound["web"][k] = v
+					}
+				}
+				if _, err := loadWith(t, body, "prod", Options{WorkloadPins: unbound, Immutable: true}); err == nil || !strings.Contains(err.Error(), "web/"+slot) {
+					t.Errorf("slot %s unbound: err = %v, want it refused", slot, err)
+				}
+			}
+		})
+	}
+}
+
+// TestImageTagDefaultsMatchKCL holds imageTagDefaults to kcl/base.k
+// _IMAGE_TAG_DEFAULTS.
+func TestImageTagDefaultsMatchKCL(t *testing.T) {
+	src, err := os.ReadFile("../../kcl/base.k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?ms)^_IMAGE_TAG_DEFAULTS: \{str: str\} = \{\n(.*?)\n\}`).FindSubmatch(src)
+	if m == nil {
+		t.Fatal("_IMAGE_TAG_DEFAULTS not found in kcl/base.k")
+	}
+	kcl := map[string]string{}
+	for _, e := range regexp.MustCompile(`(?m)^\s+"([a-z]+)" = "([a-z]+)"`).FindAllSubmatch(m[1], -1) {
+		kcl[string(e[1])] = string(e[2])
+	}
+	if !reflect.DeepEqual(kcl, imageTagDefaults) {
+		t.Fatalf("imageTagDefaults = %v, KCL _IMAGE_TAG_DEFAULTS = %v", imageTagDefaults, kcl)
+	}
+	if !strings.Contains(string(src), `option("image_tag") or _IMAGE_TAG_DEFAULTS[env] or "latest"`) {
+		t.Fatal(`kcl/base.k image_tag no longer falls back to "latest": update statedImageTag`)
 	}
 }
 
@@ -279,7 +488,7 @@ func TestMaskMatchesKCL(t *testing.T) {
 
 // TestLoweringRederivesEveryRenderContract strips what the Go lowering
 // derives from every render-contract golden — the derived telemetry env, the
-// default probes, the Workload records — re-derives it, and requires the KCL
+// default probes, a built image's spec.image, the Workload records — re-derives it, and requires the KCL
 // render's own values back. This is what keeps KCL the single source of each
 // ported default.
 func TestLoweringRederivesEveryRenderContract(t *testing.T) {
@@ -331,6 +540,21 @@ func TestLoweringRederivesEveryRenderContract(t *testing.T) {
 				}
 				stripped["env"] = kept
 				delete(stripped, "probes")
+				// A built image a cluster pulls: spec.image re-derived from
+				// image / build_image and the golden's tag (render.k
+				// _spec_image), with the declaration as KCL's Workload.image.
+				if rt := runtimeType(w); hasBuild(w) && pullsImage[rt] {
+					delete(stripped, "image")
+					decl := map[string]any{"name": name, "build": w["build"], "image": w["build_image"]}
+					tag, _ := doc["image_tag"].(string)
+					if bad := lowerImages(decl, stripped, rt, tag, tag, Options{}); len(bad) > 0 {
+						t.Fatalf("%s: %v", name, bad)
+					}
+					if stripped["image"] != want["image"] || decl["image"] != w["image"] || decl["build_image"] != w["build_image"] {
+						t.Errorf("%s: re-derived image %v / build_image %v / spec.image %v; KCL %v / %v / %v",
+							name, decl["image"], decl["build_image"], stripped["image"], w["image"], w["build_image"], want["image"])
+					}
+				}
 				kind := kindOf(w, stripped)
 				deriveEnv(w, stripped, runtimeType(w), kind, project, env, "")
 				defaultProbes(w, stripped, kind)

@@ -1984,8 +1984,10 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 
 # ReleaseHealth, resolved. The key set is the release shape's
 # `release_health`; the window is in seconds and fail_on is sorted.
-# require_baseline is present only when it is not the default ("any"), so a
-# render that keeps it records the shape it always did.
+# require_baseline is present only when it is not the default ("any"), and
+# regressed_issue_min_events only when it is set and differs from
+# new_issue_min_events (which it follows unset), so a render that keeps them
+# records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -1996,6 +1998,8 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "fail_on": sorted(h.fail_on)
         if h.require_baseline != "any":
             "require_baseline": h.require_baseline
+        if h.regressed_issue_min_events and h.regressed_issue_min_events != h.new_issue_min_events:
+            "regressed_issue_min_events": h.regressed_issue_min_events
     }
 }
 

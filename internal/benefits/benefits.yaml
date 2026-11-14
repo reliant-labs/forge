@@ -3633,8 +3633,11 @@ benefits:
       override one call.
     why: >-
       The thresholds are `window`, `min_requests`, `max_error_rate_increase`,
-      `max_p95_ratio` and `new_issue_min_events`, the failing set is `fail_on`,
-      and the check's document says where each effective value came from. A
+      `max_p95_ratio`, `new_issue_min_events` and `regressed_issue_min_events`
+      (unset, the same as `new_issue_min_events`), the failing set is
+      `fail_on`, and the check's document says where each effective value
+      came from. The NewIssue and IssueRegressed alerts are judged as their
+      issue, not counted a second time, unless they are critical. A
       service is compared only with `min_requests` in both windows, and
       `require_baseline` (`any`, `every`, `none`) says how many services need
       that baseline before a release can pass.

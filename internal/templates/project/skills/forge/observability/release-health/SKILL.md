@@ -1,6 +1,6 @@
 ---
 name: observability/release-health
-description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, and attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release.
+description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — and the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice.
 ---
 
 # Release health: what a release answers for
@@ -68,6 +68,12 @@ the finding standing and says so on stderr: nothing disproved it.
 ```bash
 forge obs check prod --wait --json | jq '{verdict, live: .subject.live_at, version_share, window_not_live, rollout_incomplete, unattributed: [.findings[] | select(.unattributed) | {code, unattributed}]}'
 ```
+
+## Issues and issue alerts: `new_issue_min_events`, `regressed_issue_min_events`
+
+An issue fails a release only with enough after-window events: `new_issue` needs `new_issue_min_events` (default 3) and an issue first seen in the release, `regressed_issue` needs `regressed_issue_min_events` (unset, the same as `new_issue_min_events`) and a regression at or after the promotion. One event of an old, transient signature is not a release regressing. Per call: `--threshold regressed_issue_min_events=1` counts every regression, the rule before the threshold existed.
+
+The platform's `NewIssue` and `IssueRegressed` alerts fire on those same issues with no threshold and no version, so they are judged as their issue: each is listed in `issue_alerts`, not counted again as an `alert_firing` finding. Three exceptions keep a real failure failing: an issue alert whose rule the env made critical (`severity=critical`) fails the release like any critical alert; when the backend could not read issues (`not_evaluated` names `new_issue` or `regressed_issue`) the alert is the only evidence and counts; and every other rule (`IssueSpike`, your own) counts as before. The check holds a control plane's answer to both rules even when that control plane predates them.
 
 ## The baseline: `require_baseline`
 

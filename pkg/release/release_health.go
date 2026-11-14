@@ -19,7 +19,8 @@ const (
 	// HealthNewIssue: an issue first seen in this release, with at least
 	// NewIssueMinEvents events.
 	HealthNewIssue = "new_issue"
-	// HealthRegressedIssue: a resolved issue regressed in the window.
+	// HealthRegressedIssue: a resolved issue regressed in the window, with at
+	// least RegressedIssueMinEvents events in it.
 	HealthRegressedIssue = "regressed_issue"
 	// HealthAlertFiring: an alert opened after the promotion is still firing.
 	HealthAlertFiring = "alert_firing"
@@ -108,6 +109,13 @@ type ShapeReleaseHealth struct {
 	// keeps it encodes as it did before the field (a reader that predates it
 	// is sent none: BundleFeatureReleaseHealthBaseline).
 	RequireBaseline string `json:"require_baseline,omitempty"`
+	// RegressedIssueMinEvents is the after-window events a regressed issue
+	// needs before it counts. 0 means "the same as NewIssueMinEvents", and
+	// is how the default is recorded, so a shape that keeps it encodes as it
+	// did before the field (a reader that predates it is sent none:
+	// BundleFeatureReleaseHealthRegressedMinEvents). 1 counts every
+	// regression, as forge did before the field.
+	RegressedIssueMinEvents int `json:"regressed_issue_min_events,omitempty"`
 }
 
 // Baseline is RequireBaseline with the default filled in.
@@ -116,6 +124,15 @@ func (h ShapeReleaseHealth) Baseline() string {
 		return BaselineAny
 	}
 	return h.RequireBaseline
+}
+
+// RegressedMinEvents is RegressedIssueMinEvents with the default filled in:
+// NewIssueMinEvents.
+func (h ShapeReleaseHealth) RegressedMinEvents() int {
+	if h.RegressedIssueMinEvents == 0 {
+		return h.NewIssueMinEvents
+	}
+	return h.RegressedIssueMinEvents
 }
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
@@ -159,6 +176,9 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	if out.RequireBaseline == BaselineAny {
 		out.RequireBaseline = ""
 	}
+	if out.RegressedIssueMinEvents == out.NewIssueMinEvents {
+		out.RegressedIssueMinEvents = 0
+	}
 	return out
 }
 
@@ -177,6 +197,9 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.NewIssueMinEvents < 1 {
 		return fmt.Errorf("%w: shape release_health new_issue_min_events must be at least 1", ErrInvalid)
+	}
+	if h.RegressedIssueMinEvents < 0 {
+		return fmt.Errorf("%w: shape release_health regressed_issue_min_events must be at least 1 (or absent: the same as new_issue_min_events)", ErrInvalid)
 	}
 	if h.RequireBaseline != "" && !slices.Contains(BaselinePolicies, h.RequireBaseline) {
 		return fmt.Errorf("%w: shape release_health require_baseline %q (expected one of %v)", ErrInvalid, h.RequireBaseline, BaselinePolicies)

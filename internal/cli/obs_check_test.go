@@ -178,7 +178,7 @@ func TestObsCheckExitMatrix(t *testing.T) {
 func TestObsCheckCloudRequestShapeAndDocument(t *testing.T) {
 	reply := healthReply("RELEASE_VERDICT_FAIL", true, errorRateFinding+","+latencyFinding,
 		`"newIssues":[{"id":"ISS-7f3a","service":"api","title":"boom","events":"12","firstSeenAt":"2026-10-22T11:41:00Z","firstVersion":"v2"}],
-		 "regressedIssues":[{"id":"ISS-1","title":"old","events":"2","regressedAt":"2026-10-22T11:42:00Z"}],`)
+		 "regressedIssues":[{"id":"ISS-1","title":"old","events":"4","regressedAt":"2026-10-22T11:42:00Z"}],`)
 	caller := &seqCaller{replies: map[string][]string{procHealth: {reply}}}
 	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil,
 		"check", "prod", "--release", "v2", "--window", "30m", "--threshold", "min_requests=20", "--threshold", "max_p95_ratio=3", "--json")
@@ -872,6 +872,55 @@ func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
 	}
 	if doc := decode(t, out); doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "Down") || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
 		t.Errorf("doc = %v", doc)
+	}
+}
+
+// control-plane v1.20.0-rc.4 (2026-11-14): a control plane that predates
+// regressed_issue_min_events failed prod on one event of an old transient
+// signature, and on the IssueRegressed and NewIssue alerts it and a 1-event
+// issue of an older client build raised. The check holds the answer to the
+// issue thresholds and judges each issue alert as its issue; a regression at
+// the bar, or --threshold regressed_issue_min_events=1, still fails.
+func TestObsCheckIssueBelowItsThresholdAndItsAlertsDoNotFail(t *testing.T) {
+	const alerts = `"firingAlerts":[` +
+		`{"rule":"IssueRegressed","fingerprint":"r1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","issue_id":"ISS-R"}},` +
+		`{"rule":"NewIssue","fingerprint":"n1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","issue_id":"web-1","first_build":"1.18.0"}}],`
+	findings := `{"code":"RELEASE_FINDING_CODE_REGRESSED_ISSUE","value":%d,"threshold":1,"policy":"fail","message":"issue ISS-R regressed: unavailable"},` +
+		`{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert IssueRegressed opened after the promotion and is still firing"},` +
+		`{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert NewIssue opened after the promotion and is still firing"}`
+	reply := func(events int) string {
+		return healthReply("RELEASE_VERDICT_FAIL", true, fmt.Sprintf(findings, events),
+			fmt.Sprintf(`"regressedIssues":[{"id":"ISS-R","service":"daemon","title":"unavailable","events":"%d","regressedAt":"2026-10-22T11:44:00Z"}],`, events)+alerts)
+	}
+	run := func(t *testing.T, events int, args ...string) (map[string]any, error) {
+		t.Helper()
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply(events)}}}
+		out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
+		return decode(t, out), err
+	}
+
+	doc, err := run(t, 1)
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
+	}
+	if doc["verdict"] != "PASS" || len(doc["findings"].([]any)) != 0 || doc["regressed_issues"] != nil || doc["firing_alerts"] != nil {
+		t.Errorf("doc = %v", doc)
+	}
+	if ia, _ := doc["issue_alerts"].([]any); len(ia) != 2 {
+		t.Errorf("issue_alerts = %v", doc["issue_alerts"])
+	}
+	if ths := fmt.Sprint(doc["thresholds"]); !strings.Contains(ths, "map[name:regressed_issue_min_events source:default value:3]") {
+		t.Errorf("thresholds = %s", ths)
+	}
+
+	if doc, err = run(t, 3); exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "regressed_issue") {
+		t.Errorf("a 3-event regression: exit %d doc %v", exitCodeForError(err), doc)
+	}
+	if strings.Contains(fmt.Sprint(doc["findings"]), "alert_firing") {
+		t.Errorf("the regression's alert is counted beside it: %v", doc["findings"])
+	}
+	if doc, err = run(t, 1, "--threshold", "regressed_issue_min_events=1"); exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" {
+		t.Errorf("regressed_issue_min_events=1 is the old rule: exit %d doc %v", exitCodeForError(err), doc)
 	}
 }
 

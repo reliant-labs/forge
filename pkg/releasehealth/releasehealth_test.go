@@ -2,6 +2,8 @@ package releasehealth
 
 import (
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -618,6 +620,295 @@ func TestExcludedAlertsJudgeNoRelease(t *testing.T) {
 		r.Verdict = Inconclusive
 		if w := WithoutExcludedAlerts(r, nil); w.Verdict != Inconclusive {
 			t.Errorf("verdict %s", w.Verdict)
+		}
+	})
+}
+
+// regressedInput is a healthy, comparable release with one regression of
+// `events` after-window events.
+func regressedInput(t *testing.T, events int64) Input {
+	in := input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100))
+	in.RegressedIssues = []Issue{{ID: "ISS-R", Service: "daemon", Title: "unavailable", Events: events, RegressedAt: t0.Add(time.Minute)}}
+	return in
+}
+
+func regressedFindings(r Report) []Finding {
+	var out []Finding
+	for _, f := range r.Findings {
+		if f.Code == release.HealthRegressedIssue {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// control-plane v1.20.0-rc.4 (2026-11-14) was halted by one event of an old,
+// transient `unavailable` signature: a regression needs
+// regressed_issue_min_events after-window events, the new-issue bar unless
+// the env sets its own, and 1 is the old rule.
+func TestRegressedIssueMinEvents(t *testing.T) {
+	with := func(t *testing.T, overrides map[string]string) Thresholds {
+		t.Helper()
+		th, err := Resolve(Options{Overrides: overrides})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return th
+	}
+	tests := []struct {
+		name      string
+		events    int64
+		overrides map[string]string
+		verdict   Verdict
+		finding   bool
+		threshold float64
+	}{
+		{"one event is below the default bar", 1, nil, Pass, false, 0},
+		{"two events are below the default bar", 2, nil, Pass, false, 0},
+		{"exactly the default bar fails", 3, nil, Fail, true, 3},
+		{"min_events=1 is the old rule: one event fails", 1, map[string]string{ThresholdRegressedIssueMinEvents: "1"}, Fail, true, 1},
+		{"it follows new_issue_min_events when unset", 4, map[string]string{ThresholdNewIssueMinEvents: "5"}, Pass, false, 0},
+		{"its own value wins over new_issue_min_events", 4, map[string]string{ThresholdNewIssueMinEvents: "5", ThresholdRegressedIssueMinEvents: "4"}, Fail, true, 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := regressedInput(t, tc.events)
+			in.Thresholds = with(t, tc.overrides)
+			r := Evaluate(in)
+			got := regressedFindings(r)
+			if r.Verdict != tc.verdict || (len(got) == 1) != tc.finding || len(got) > 1 {
+				t.Fatalf("verdict %s regressed findings %+v; want %s, finding %v", r.Verdict, got, tc.verdict, tc.finding)
+			}
+			if !tc.finding {
+				if len(r.RegressedIssues) != 0 {
+					t.Errorf("an issue below the bar is still listed: %+v", r.RegressedIssues)
+				}
+				return
+			}
+			if f := got[0]; f.Policy != PolicyFail || f.Value != float64(tc.events) || f.Threshold != tc.threshold || f.Ref != "ISS-R" {
+				t.Errorf("finding %+v; want value %d, threshold %v", f, tc.events, tc.threshold)
+			}
+			if !strings.Contains(got[0].Message, "issue ISS-R regressed: unavailable") {
+				t.Errorf("message %q", got[0].Message)
+			}
+		})
+	}
+}
+
+func TestRegressedIssueMinEventsThreshold(t *testing.T) {
+	l := fromList(defaults(t).List())
+	if th := l[ThresholdRegressedIssueMinEvents]; th.Value != "3" || th.Source != SourceDefault {
+		t.Errorf("default = %+v, want 3 from default", th)
+	}
+	// Unset, it follows new_issue_min_events, from wherever that came.
+	th, err := Resolve(Options{Overrides: map[string]string{ThresholdNewIssueMinEvents: "7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fromList(th.List())[ThresholdRegressedIssueMinEvents]; th.RegressedIssueMinEvents != 7 || got.Value != "7" || got.Source != SourceRequest {
+		t.Errorf("following an overridden new_issue_min_events: %d %+v", th.RegressedIssueMinEvents, got)
+	}
+	shape := release.DefaultReleaseHealth()
+	shape.RegressedIssueMinEvents = 2
+	if th, err = Resolve(Options{Shape: &shape}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fromList(th.List())[ThresholdRegressedIssueMinEvents]; th.RegressedIssueMinEvents != 2 || got.Source != SourceReleaseShape || fromList(th.List())[ThresholdNewIssueMinEvents].Value != "3" {
+		t.Errorf("from the shape: %d %+v", th.RegressedIssueMinEvents, got)
+	}
+	if th, err = Resolve(Options{Shape: &shape, Overrides: map[string]string{ThresholdRegressedIssueMinEvents: "1"}}); err != nil || th.RegressedIssueMinEvents != 1 ||
+		th.Sources[ThresholdRegressedIssueMinEvents] != SourceRequest {
+		t.Errorf("request over shape: %+v %v", th, err)
+	}
+	for _, v := range []string{"0", "-1", "many"} {
+		if _, err := Resolve(Options{Overrides: map[string]string{ThresholdRegressedIssueMinEvents: v}}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("regressed_issue_min_events=%s: err = %v, want ErrInvalid", v, err)
+		}
+	}
+	if m, err := ParseOverrides([]string{"regressed_issue_min_events=1"}); err != nil || m[ThresholdRegressedIssueMinEvents] != "1" {
+		t.Errorf("ParseOverrides: %v %v", m, err)
+	}
+}
+
+// A regression whose after-window events are all another version's is that
+// version's, not the judged release's: Attribute takes it off the release
+// whatever its count (the events by version, IssueWindowVersions, are what
+// `forge obs check` reads per issue; Issue carries no version of a
+// regression's events).
+func TestRegressedIssueOfAnotherReleaseDoesNotFail(t *testing.T) {
+	r := Evaluate(regressedInput(t, 5))
+	if r.Verdict != Fail {
+		t.Fatalf("verdict %s", r.Verdict)
+	}
+	r.IssueWindowVersions = map[string]map[string]int64{"ISS-R": {"v1": 5}}
+	a := Attribute(r)
+	got := regressedFindings(a)
+	if a.Verdict == Fail || len(got) != 1 || got[0].Policy != PolicyWarn || !strings.Contains(got[0].Unattributed, "tagged v1, not v2") {
+		t.Fatalf("verdict %s regressed %+v", a.Verdict, got)
+	}
+	r.IssueWindowVersions = map[string]map[string]int64{"ISS-R": {"v1": 4, "v2": 1}}
+	if a := Attribute(r); a.Verdict != Fail {
+		t.Errorf("one event of the judged release keeps it the release's: verdict %s", a.Verdict)
+	}
+}
+
+func issueAlert(rule, issueID string, labels ...string) Alert {
+	l := map[string]string{"severity": "warning"}
+	if issueID != "" {
+		l[LabelIssueID] = issueID
+	}
+	for i := 0; i+1 < len(labels); i += 2 {
+		l[labels[i]] = labels[i+1]
+	}
+	return Alert{Rule: rule, Fingerprint: rule + "/" + issueID, FiringAt: t0.Add(2 * time.Minute), Labels: l}
+}
+
+// The platform's NewIssue and IssueRegressed alerts fire on the issues the
+// issue rule judges, with no threshold and no version. Each is judged as its
+// issue, never counted again as an alert_firing finding of its own — unless
+// it is critical, or the issue rule could not run.
+func TestIssueAlertsAreJudgedAsTheirIssue(t *testing.T) {
+	alertFindings := func(r Report) []Finding {
+		var out []Finding
+		for _, f := range r.Findings {
+			if f.Code == release.HealthAlertFiring {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	t.Run("the incident: a 1-event regression and the alerts it raised pass", func(t *testing.T) {
+		in := regressedInput(t, 1)
+		in.Alerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R"), issueAlert(AlertNewIssue, "web-1", "first_build", "1.18.0")}
+		r := Evaluate(in)
+		if r.Verdict != Pass || len(r.Findings) != 0 || len(r.FiringAlerts) != 0 || len(r.IssueAlerts) != 2 {
+			t.Fatalf("verdict %s findings %+v firing %+v issue alerts %+v", r.Verdict, r.Findings, r.FiringAlerts, r.IssueAlerts)
+		}
+	})
+	t.Run("a counted regression fails by its own finding, not twice", func(t *testing.T) {
+		in := regressedInput(t, 3)
+		in.Alerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R")}
+		r := Evaluate(in)
+		if r.Verdict != Fail || len(regressedFindings(r)) != 1 || len(alertFindings(r)) != 0 {
+			t.Fatalf("verdict %s findings %+v", r.Verdict, r.Findings)
+		}
+	})
+	t.Run("a critical issue alert still fails", func(t *testing.T) {
+		in := regressedInput(t, 1)
+		in.Thresholds.FailOn = nil
+		in.Alerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R", "severity", "critical")}
+		r := Evaluate(in)
+		if got := alertFindings(r); r.Verdict != Fail || len(got) != 1 || got[0].Policy != PolicyFail || len(r.IssueAlerts) != 0 {
+			t.Fatalf("verdict %s findings %+v issue alerts %+v", r.Verdict, r.Findings, r.IssueAlerts)
+		}
+		if w := WithIssueThresholds(r, nil); w.Verdict != Fail || len(alertFindings(w)) != 1 {
+			t.Errorf("the fold softened a critical alert: verdict %s findings %+v", w.Verdict, w.Findings)
+		}
+	})
+	t.Run("with the issue rule not evaluated, the alert is the evidence", func(t *testing.T) {
+		in := regressedInput(t, 0)
+		in.RegressedIssues = nil
+		in.NotEvaluated = []string{release.HealthRegressedIssue}
+		in.Alerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R"), issueAlert(AlertNewIssue, "ISS-N")}
+		r := Evaluate(in)
+		got := alertFindings(r)
+		if r.Verdict != Fail || len(got) != 1 || got[0].Ref != AlertIssueRegressed || len(r.IssueAlerts) != 1 || r.IssueAlerts[0].Rule != AlertNewIssue {
+			t.Fatalf("verdict %s findings %+v issue alerts %+v", r.Verdict, r.Findings, r.IssueAlerts)
+		}
+	})
+	t.Run("other rules, and an alert naming no issue, count as before", func(t *testing.T) {
+		in := regressedInput(t, 1)
+		in.Alerts = []Alert{issueAlert("IssueSpike", "ISS-R"), issueAlert(AlertNewIssue, "")}
+		r := Evaluate(in)
+		if r.Verdict != Fail || len(alertFindings(r)) != 2 || len(r.IssueAlerts) != 0 {
+			t.Fatalf("verdict %s findings %+v issue alerts %+v", r.Verdict, r.Findings, r.IssueAlerts)
+		}
+	})
+}
+
+// A control plane that predates regressed_issue_min_events and the
+// issue-alert rule answers as v1.20.0-rc.4's did: a 1-event regression, two
+// 1-event issues of another client build, and an alert_firing finding for
+// each issue alert, refs lost on the wire. `forge obs check` holds it to the
+// rule.
+func TestWithIssueThresholdsHoldsAnOlderAnswerToTheRule(t *testing.T) {
+	answer := func(t *testing.T) Report {
+		r := Evaluate(input(t, true, svc("api", 1000, 1000, 0, 0, 100, 100)))
+		r.Thresholds = slices.DeleteFunc(r.Thresholds, func(th Threshold) bool { return th.Name == ThresholdRegressedIssueMinEvents })
+		r.RegressedIssues = []Issue{{ID: "ISS-R", Events: 1, RegressedAt: t0.Add(time.Minute)}, {ID: "ISS-BIG", Events: 3, RegressedAt: t0.Add(time.Minute)}}
+		r.NewIssues = []Issue{{ID: "web-1", Service: "reliant-web", Events: 1, FirstSeenAt: t0.Add(time.Minute)}}
+		r.FiringAlerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R"), issueAlert(AlertNewIssue, "web-1")}
+		r.Findings = []Finding{
+			{Code: release.HealthNewIssue, Value: 1, Threshold: 1, Policy: PolicyFail, Message: "new issue web-1: TypeError (1 events)"},
+			{Code: release.HealthRegressedIssue, Value: 1, Threshold: 1, Policy: PolicyFail, Message: "issue ISS-R regressed: unavailable"},
+			{Code: release.HealthAlertFiring, Value: 1, Threshold: 1, Policy: PolicyFail, Message: "alert IssueRegressed opened after the promotion and is still firing"},
+			{Code: release.HealthAlertFiring, Value: 1, Threshold: 1, Policy: PolicyFail, Message: "alert NewIssue opened after the promotion and is still firing"},
+		}
+		r.Verdict = Fail
+		return r
+	}
+	t.Run("below every bar it passes", func(t *testing.T) {
+		r := answer(t)
+		r.RegressedIssues = r.RegressedIssues[:1]
+		w := WithIssueThresholds(r, nil)
+		if w.Verdict != Pass || len(w.Findings) != 0 || len(w.RegressedIssues) != 0 || len(w.NewIssues) != 0 || len(w.FiringAlerts) != 0 || len(w.IssueAlerts) != 2 {
+			t.Fatalf("verdict %s findings %+v regressed %+v new %+v firing %+v issue alerts %+v", w.Verdict, w.Findings, w.RegressedIssues, w.NewIssues, w.FiringAlerts, w.IssueAlerts)
+		}
+		if th := fromList(w.Thresholds)[ThresholdRegressedIssueMinEvents]; th.Value != "3" || th.Source != SourceDefault {
+			t.Errorf("the threshold judged by is not listed: %+v", th)
+		}
+		if r.Verdict != Fail || len(r.Findings) != 4 || len(r.FiringAlerts) != 2 || r.IssueAlerts != nil {
+			t.Error("WithIssueThresholds changed its input")
+		}
+	})
+	t.Run("a regression at the bar still fails", func(t *testing.T) {
+		r := answer(t)
+		r.Findings = append(r.Findings, Finding{Code: release.HealthRegressedIssue, Value: 3, Threshold: 1, Policy: PolicyFail, Message: "issue ISS-BIG regressed: boom"})
+		w := WithIssueThresholds(r, nil)
+		if got := regressedFindings(w); w.Verdict != Fail || len(got) != 1 || got[0].Value != 3 || len(w.RegressedIssues) != 1 || w.RegressedIssues[0].ID != "ISS-BIG" {
+			t.Fatalf("verdict %s regressed %+v issues %+v", w.Verdict, got, w.RegressedIssues)
+		}
+	})
+	t.Run("the answer's own thresholds are judged by", func(t *testing.T) {
+		r := answer(t)
+		r.Thresholds = append(r.Thresholds, Threshold{ThresholdRegressedIssueMinEvents, "1", SourceRequest})
+		if w := WithIssueThresholds(r, nil); w.Verdict != Fail || len(regressedFindings(w)) != 1 {
+			t.Errorf("regressed_issue_min_events=1 is the old rule: verdict %s findings %+v", w.Verdict, w.Findings)
+		}
+		r = answer(t)
+		for i, th := range r.Thresholds {
+			if th.Name == ThresholdNewIssueMinEvents {
+				r.Thresholds[i] = Threshold{ThresholdNewIssueMinEvents, "1", SourceReleaseShape}
+			}
+		}
+		w := WithIssueThresholds(r, nil)
+		if th := fromList(w.Thresholds)[ThresholdRegressedIssueMinEvents]; th.Value != "1" || th.Source != SourceReleaseShape {
+			t.Errorf("an answer without it follows its new_issue_min_events: %+v", th)
+		}
+		if w.Verdict != Fail || len(regressedFindings(w)) != 1 {
+			t.Errorf("verdict %s findings %+v", w.Verdict, w.Findings)
+		}
+		// The request's own override wins over an answer that does not echo it.
+		w = WithIssueThresholds(answer(t), map[string]string{ThresholdRegressedIssueMinEvents: "1"})
+		if th := fromList(w.Thresholds)[ThresholdRegressedIssueMinEvents]; w.Verdict != Fail || len(regressedFindings(w)) != 1 || th.Value != "1" || th.Source != SourceRequest {
+			t.Errorf("--threshold regressed_issue_min_events=1: verdict %s findings %+v threshold %+v", w.Verdict, w.Findings, th)
+		}
+	})
+	t.Run("another alert of the rule keeps its finding", func(t *testing.T) {
+		r := answer(t)
+		r.FiringAlerts = append(r.FiringAlerts, issueAlert(AlertIssueRegressed, "", "service", "daemon"))
+		w := WithIssueThresholds(r, nil)
+		if w.Verdict != Fail || len(w.Findings) != 1 || w.Findings[0].Message != "alert IssueRegressed opened after the promotion and is still firing" {
+			t.Errorf("verdict %s findings %+v", w.Verdict, w.Findings)
+		}
+	})
+	t.Run("over Evaluate's own report it changes nothing", func(t *testing.T) {
+		in := regressedInput(t, 3)
+		in.RegressedIssues = append(in.RegressedIssues, Issue{ID: "ISS-S", Events: 1, RegressedAt: t0.Add(time.Minute)})
+		in.Alerts = []Alert{issueAlert(AlertIssueRegressed, "ISS-R"), issueAlert("Down", "")}
+		r := Evaluate(in)
+		if w := WithIssueThresholds(r, nil); !reflect.DeepEqual(w, r) {
+			t.Errorf("not idempotent over Evaluate:\n got  %+v\n want %+v", w, r)
 		}
 	})
 }

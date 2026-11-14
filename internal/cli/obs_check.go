@@ -48,7 +48,7 @@ var obsCheckSchema = obsout.Schema{
 		"services", "services.service", "services.before", "services.after", "services.version_share",
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed",
 		"version_share", "window_not_live", "rollout_incomplete",
-		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "workload_findings",
+		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -87,7 +87,11 @@ type obsCheckDoc struct {
 	StandingCritical []releasehealth.Alert `json:"standing_critical_alerts,omitempty"`
 	// ExcludedAlerts fired, but their rule says they are not about the env's
 	// workloads (label release_health=exclude), so they judged nothing.
-	ExcludedAlerts   []releasehealth.Alert     `json:"excluded_alerts,omitempty"`
+	ExcludedAlerts []releasehealth.Alert `json:"excluded_alerts,omitempty"`
+	// IssueAlerts fired for an issue release health judges itself (the
+	// platform's NewIssue and IssueRegressed alerts), so they are not
+	// counted again as alert_firing findings.
+	IssueAlerts      []releasehealth.Alert     `json:"issue_alerts,omitempty"`
 	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
@@ -357,6 +361,12 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// this itself; a control plane's answer that predates the rule is held
 	// to it here, so the CLI never passes what the updated gate would hold.
 	res.Report = releasehealth.WithThinBaselines(res.Report)
+	// An issue below its min-events threshold is no finding, and a platform
+	// issue alert (NewIssue, IssueRegressed) is judged as its issue, not on
+	// its own. Evaluate applies both; a control plane's answer that predates
+	// regressed_issue_min_events or the issue-alert rule is held to them
+	// here (pkg/releasehealth issue_alerts.go).
+	res.Report = releasehealth.WithIssueThresholds(res.Report, opts.Overrides)
 	// Attribution: a finding the after window cannot pin on the release (a
 	// window that ended before it went liveWin, a rollout the window barely saw,
 	// an issue whose events are another version's) never fails it. Before the
@@ -604,7 +614,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
-	doc.StandingCritical, doc.ExcludedAlerts = r.StandingCritical, r.ExcludedAlerts
+	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -793,6 +803,13 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		for _, a := range doc.ExcludedAlerts {
 			fmt.Fprintf(w, "alert %s firing%s: not counted (its rule says %s=%s: not about this env's workloads)\n",
 				a.Rule, alertSubject(a.Labels), releasehealth.LabelReleaseHealth, releasehealth.ReleaseHealthExclude)
+		}
+	}
+	if len(doc.IssueAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.IssueAlerts {
+			fmt.Fprintf(w, "alert %s firing for issue %s: judged as the issue (%s), not counted again\n",
+				a.Rule, a.Labels[releasehealth.LabelIssueID], a.IssueCode())
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {

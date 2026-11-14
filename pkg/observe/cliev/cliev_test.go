@@ -364,9 +364,12 @@ func TestFlushKeepsAnOptOutMadeByAnotherRunDuringThePost(t *testing.T) {
 	c := New(cfg)
 	c.Track(context.Background(), "forge_cli_command")
 	c.Flush(context.Background())
+	// Wait for the handler rather than assume it finished inside Flush: on a
+	// slow host (Windows CI) the other run's SetEnabled can outlast
+	// FlushTimeout, so Flush returns while the handler is still writing.
 	select {
 	case <-posted:
-	default:
+	case <-time.After(10 * time.Second):
 		t.Fatal("the batch was never posted")
 	}
 	if offErr != nil {

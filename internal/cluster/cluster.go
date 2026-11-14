@@ -51,6 +51,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/deploy/openbao"
@@ -1513,7 +1514,10 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 	}
 	var out []byte
 	var err error
-	if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
+	if doc, ok, derr := envdoc.Load(workDir, env, envDocumentOptions(ctx, imageTag, imageDigests)); ok || derr != nil {
+		// An env document declares this env: it IS the render (internal/envdoc).
+		out, err = doc, derr
+	} else if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
 		out, err = run(ctx, workDir, mainK, env, dArgs)
 	} else {
 		out, err = kclrender.Run(workDir, mainK, dArgs)
@@ -1522,6 +1526,14 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 		return "", nil, err
 	}
 	return extractManifestsIn(ctx, workDir, out)
+}
+
+// envDocumentOptions are the bindings a KCL render receives as `-D` args,
+// for an env document's Go lowering: the release, the tag, the captured
+// digests and a release snapshot's per-slot pins (internal/envdoc image.go).
+func envDocumentOptions(ctx context.Context, imageTag string, imageDigests map[string]string) envdoc.Options {
+	pins, immutable := kclrender.SnapshotPins(ctx)
+	return envdoc.Options{Release: kclrender.Release(ctx), ImageTag: imageTag, ImageDigests: imageDigests, WorkloadPins: pins, Immutable: immutable}
 }
 
 // ExtractManifests is the manifest stream a render's KCL output becomes on
@@ -1715,11 +1727,7 @@ func decodeNetworkPolicy(raw any) (*deploy.EnvNetworkPolicy, error) {
 	if err != nil {
 		return nil, err
 	}
-	var np struct {
-		EgressPorts        []int32 `json:"egress_ports"`
-		TelemetryNamespace string  `json:"telemetry_namespace"`
-		IngressNamespace   string  `json:"ingress_namespace"`
-	}
+	var np NetworkPolicyOutput
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&np); err != nil {

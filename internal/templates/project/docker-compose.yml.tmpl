@@ -241,7 +241,7 @@ services:
   # version under a dev stack turns "login broke today" into an
   # archaeology exercise. Bump deliberately.
   idp:
-    image: ghcr.io/zitadel/zitadel:v4.19.5@sha256:a586456a208e0db4c633db0ba43c427c24b37846138b8b13ff16ad8e003a18d3
+    image: ghcr.io/zitadel/zitadel:v4.20.3@sha256:1b30fea7ed88826dc0a98dacee4e2f2c8b05201fd26f5e4cb5386615b29f7638
     restart: unless-stopped
     # Backed by `idp-db` below — a postgres container of the IdP's OWN,
     # NOT the app's database.

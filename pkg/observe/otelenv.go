@@ -11,7 +11,8 @@
 //   - which wire protocol to build (the SDK has one package per protocol),
 //   - whether the opt-in OTLP logs exporter is on,
 //   - the head-sampling ratio of a trace the server starts itself, which the
-//     SDK applies but does not expose (rootSampleRatio).
+//     SDK applies but does not expose (rootSampleRatio), and the sampler it
+//     names (envSampler), which Setup wraps so AI spans are never sampled.
 //
 // pkg/.golangci.yml exempts exactly this file from the os.Getenv rule.
 
@@ -24,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // Environment variable names of the contract. Exported so docs, doctor checks
@@ -108,6 +111,29 @@ func rootSampleRatio() float64 {
 		return r
 	default:
 		return 1
+	}
+}
+
+// envSampler is the sampler OTEL_TRACES_SAMPLER names, built exactly as the
+// SDK builds it when a provider sets none (sdk/trace samplerFromEnv): Setup
+// sets its own (genai.KeepSampler around this one), and the SDK reads the
+// environment only when the provider sets no sampler. Unset and unsupported
+// values are the SDK default, parentbased_always_on.
+func envSampler() sdktrace.Sampler {
+	ratio := func() sdktrace.Sampler { return sdktrace.TraceIDRatioBased(rootSampleRatio()) }
+	switch strings.ToLower(envValue(EnvTracesSampler)) {
+	case "always_on":
+		return sdktrace.AlwaysSample()
+	case "always_off":
+		return sdktrace.NeverSample()
+	case "traceidratio":
+		return ratio()
+	case "parentbased_always_off":
+		return sdktrace.ParentBased(sdktrace.NeverSample())
+	case "parentbased_traceidratio":
+		return sdktrace.ParentBased(ratio())
+	default:
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	}
 }
 

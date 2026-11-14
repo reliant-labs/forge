@@ -27,6 +27,11 @@
 #   FORGE_VERSION            release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
 #   FORGE_INSTALL_DIR        directory to install into (default: $HOME/.local/bin)
 #   FORGE_REQUIRE_SIGNATURE  1: refuse to install unless the signature verifies
+#   FORGE_INSTALL_ATTRIBUTION  where the install came from, as an install page
+#                            passes it: a query string of rid and utm_* only
+#                            ("rid=...&utm_source=docs"). Kept by forge's
+#                            telemetry (forge telemetry status), never sent
+#                            when it is off (DO_NOT_TRACK=1, FORGE_TELEMETRY=off)
 #                            (no signature, or no gh/cosign, is then an error)
 #
 # Testing seam (not for general use):
@@ -285,8 +290,16 @@ mv -f "$staged" "$dest_dir/forge" || {
 }
 
 say "Installed $dest_dir/forge"
-if installed_version="$("$dest_dir/forge" version 2>/dev/null)"; then
+# FORGE_TELEMETRY_QUIET: this run's output is captured, so forge's one-time
+# telemetry notice waits for the first command the person runs.
+if installed_version="$(FORGE_TELEMETRY_QUIET=1 "$dest_dir/forge" version 2>/dev/null)"; then
   say "$installed_version"
+  if [ -n "${FORGE_INSTALL_ATTRIBUTION:-}" ]; then
+    case "$FORGE_INSTALL_ATTRIBUTION" in
+      *[!A-Za-z0-9_.%+=\&-]*) ;; # not a plain query string: ignored
+      *) FORGE_TELEMETRY_QUIET=1 "$dest_dir/forge" telemetry attribution "$FORGE_INSTALL_ATTRIBUTION" >/dev/null 2>&1 || true ;;
+    esac
+  fi
 else
   say "warning: $dest_dir/forge did not run (is $dest_dir mounted noexec?)" >&2
 fi

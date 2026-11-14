@@ -21,6 +21,7 @@ emit: both
 - **A destructive change is allowed per file, in the file** — `-- forge:allow-destructive` on a line of that migration; there is no forge.yaml allowlist. See `db/orm-and-safety`.
 - **A migration never waits forever for a lock.** Every migration runs under `lock_timeout` (5s) and `statement_timeout` (30m), and a migration whose lock times out is rolled back and retried (5 attempts, growing wait). Override per file with `-- forge:lock-timeout 30s` / `-- forge:statement-timeout 2h` at the top of the file — a long backfill needs the second. See `db/migration-timeouts`.
 - **A migration file runs as one transaction.** So `CREATE INDEX CONCURRENTLY` (and the like) must be its file's only statement, and an enum value a file adds cannot be used in that file. `forge lint` refuses both; see `db/orm-and-safety`.
+- **Measure what a migration locks and rewrites.** `forge lint --migration-safety` reads the SQL as text; `forge db analyze` runs the pending migrations on a real postgres in a rolled-back transaction and reports the locks each statement took, the tables it rewrote or scanned, and how long it ran (`db-analyze-*` rules). It needs postgres, so it is a review/full-gate lane, not a fast one — load `db/analyze`.
 
 <!-- @forge-only:start -->
 ## SQL is the schema language
@@ -125,6 +126,55 @@ To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secr
 
 `forge db seed apply|status|reset` materializes deterministic dev rows from the applied schema, and `db/seeds/vocab.yaml` teaches it your domain's vocabulary — load the `db/seeding` skill before seeding.
 
+## Declaring a database's schema in the env (several per project)
+
+forge.yaml's `database:` block describes ONE database. A project with several
+(a monorepo), or one that keeps its resources in the env declaration, declares
+each database's schema on the database itself in `deploy/kcl/<env>/main.k`:
+
+```python
+databases = [forge.ManagedDatabase {
+    name = "default"                     # the primary: `forge db` acts on it without --db
+    dialect = "postgres"                 # the default; mysql, sqlite, … are refused as not supported yet
+    migrations = forge.DatabaseMigrations {dir = "db/migrations"}   # driver = "forge" by default
+    orm = forge.DatabaseORM {package = "internal/db"}
+}]
+# A database that is neither provisioned nor reached here — declared for lint, the ORM and `forge db` only:
+schema_only_databases = [forge.Database {
+    name = "analytics"
+    migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}
+    orm = forge.DatabaseORM {package = "internal/analyticsdb"}
+    migration_safety = forge.DatabaseMigrationSafety {destructive_change = "warn"}
+}]
+```
+
+`forge.ExternalDatabase` takes the same four fields. The rules:
+
+- **A database declares its schema by setting `migrations`.** One without it is
+  provisioning-only, as before, and forge reads the project's migrations from
+  forge.yaml. `orm` and `migration_safety` need `migrations`.
+- **The schema is a project fact.** forge reads EVERY env and unions the
+  databases; an env that declares one database differently from another is an
+  error. Declare it once in a shared module both envs import.
+- **KCL wins over forge.yaml**, and declaring migrations in both
+  (`database.migrations` / `migrations_dir` and a KCL `migrations`) is an
+  error. forge.yaml's `orm:` and `migration_safety:` still fill what the
+  primary database leaves unset. A project with no KCL `migrations` anywhere
+  reads forge.yaml exactly as it always did.
+- **Names, directories and ORM packages are unique**; paths are
+  repository-relative.
+- **The primary** is the database named `default`, else the only one. With
+  several and none named `default`, `forge generate` refuses (it must know which
+  database the services' CRUD wiring uses) and `forge db` needs `--db`.
+
+What reads every database: `forge lint --migration-safety` (and `forge ci
+migration-safety`) lints each under its own dials and tool, prefixing findings
+with the database's name; `forge db migration|migrate|seed|reset|squash --db
+<name>` acts on the one you name; `forge generate` projects an ORM for each
+database that names an `orm.package` (entity structs and stores; CRUD wiring,
+factories, mocks and auto-seeding stay on the primary — not yet for the others).
+The deploy migrate job is declared per database: `db/deploy-migrations`.
+
 ## Where the rest lives
 
 | You need… | Load |
@@ -135,6 +185,7 @@ To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secr
 | what the generated ORM does, overriding generated CRUD, where custom queries go | `db/generated-orm` |
 | which tables get a store, naming, keys | `db/store` |
 | destructive changes, `//forge:no-orm`, ORM field types | `db/orm-and-safety` |
+| what a migration measurably locks, rewrites and scans on a real postgres (`forge db analyze`) | `db/analyze` |
 | dashboard panels over this database | `db/dashboards` |
 
 ## Forge-specific rules

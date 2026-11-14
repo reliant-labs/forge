@@ -423,3 +423,48 @@ func names(cs []portConflict) []string {
 	}
 	return out
 }
+
+// Forge bug report b95af041: `forge env status dev` in one project showed its
+// reliant-web "up" on :3000 when the listener was ANOTHER project's Next.js
+// dev server (both projects' default port blocks claim 3000). A listener whose
+// ancestry carries another forge stack's marker is named, and the row reads
+// down, not up.
+func TestOtherForgeStackHoldsThePort(t *testing.T) {
+	f := fakeFacts{
+		env: map[int][]string{
+			100: markerProj("projB", "dev", "frontend:web"), // another project's stack
+			201: marker("staging", "api"),                   // this project's other env
+			300: {"PATH=/usr/bin"},                          // not forge's at all
+			400: marker("dev", "api"),                       // ours
+			500: legacyMarker("dev", "api"),                 // pre-fix: says nothing
+		},
+		ppid: map[int]int{100: 1, 200: 201, 201: 1, 300: 1, 400: 1, 500: 1},
+	}
+	if proj, env, ok := otherForgeStackOfPID(100, testProj, "dev", f); !ok || proj != "projB" || env != "dev" {
+		t.Errorf("another project's stack: (%q, %q, %v)", proj, env, ok)
+	}
+	if proj, env, ok := otherForgeStackOfPID(200, testProj, "dev", f); !ok || proj != testProj || env != "staging" {
+		t.Errorf("this project's staging stack, through an ancestor: (%q, %q, %v)", proj, env, ok)
+	}
+	for _, pid := range []int{300, 400, 500} {
+		if _, _, ok := otherForgeStackOfPID(pid, testProj, "dev", f); ok {
+			t.Errorf("pid %d named as another forge stack", pid)
+		}
+	}
+
+	r := upServiceRow{Name: "reliant-web", Port: 3000, Listening: true, PID: 100,
+		HeldBy: otherStackLabel("projB", "dev", testProj)}
+	if got := rowStatus(r, "down", true); got != "down (port held by pid 100 of another forge project's dev stack (project projB))" {
+		t.Errorf("rowStatus = %q", got)
+	}
+	if got := statusGlyph(r, "down"); got != "○" {
+		t.Errorf("statusGlyph = %q, want the hollow dot of a service that is not up", got)
+	}
+	if got := otherStackLabel(testProj, "staging", testProj); got != "this project's staging stack" {
+		t.Errorf("otherStackLabel = %q", got)
+	}
+	r.HeldBy = ""
+	if got := rowStatus(r, "down", true); got != "up (pid 100, not forge-owned)" {
+		t.Errorf("a non-forge holder keeps today's status: %q", got)
+	}
+}

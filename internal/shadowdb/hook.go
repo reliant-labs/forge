@@ -20,7 +20,7 @@ import (
 // handed some other directory (a fixture, a sibling checkout's) gets the
 // replay it always did.
 func migrationSet(projectDir, migDir string) (*schemadef.MigrationSet, error) {
-	h, ok := migrationhook.ResolveIn(projectDir)
+	h, ok := migrationhook.ResolveForDir(projectDir, migDir)
 	if !ok || !sameDir(h.Dir, migDir) {
 		return schemadef.ReadMigrationSet(migDir)
 	}

@@ -233,3 +233,36 @@ func TestForgePinSkew_WarningGivesTheRefusalsRemedy(t *testing.T) {
 		t.Errorf("the embedded warning still advises go install, which does not change the embedded forge:\n%s", embedded)
 	}
 }
+
+// Forge bug report f4e45b77: `forge --allow-version-skew skill load x` parsed
+// the flag at the root, where it is unknown, so it took `skill` for its value
+// and the hand-off sent the line, override ignored, to the pinned forge, which
+// answered "unknown command load". Before the command words the flag is now
+// refused with the line that works; after them it is unchanged.
+func TestAllowVersionSkewBeforeTheCommandIsRefusedWithTheFix(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--allow-version-skew", "skill", "load", "migrations/v1.4.0"}, "skill load migrations/v1.4.0 --allow-version-skew"},
+		{[]string{"-C", "x", "--allow-version-skew=true", "project", "upgrade", "--help"}, "-C x project upgrade --help --allow-version-skew=true"},
+		{[]string{"--allow-version-skew", "ci", "run", "--", "a"}, "ci run --allow-version-skew -- a"},
+	} {
+		err := skewFlagBeforeCommand(tc.args)
+		if err == nil || !strings.Contains(err.Error(), "goes after the command") || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("skewFlagBeforeCommand(%v) = %v; want the refusal naming %q", tc.args, err, tc.want)
+		}
+	}
+	for _, args := range [][]string{
+		{"skill", "load", "x", "--allow-version-skew"},
+		{"skill", "load", "--", "--allow-version-skew"},
+		{"skill", "load", "x"},
+	} {
+		if err := skewFlagBeforeCommand(args); err != nil {
+			t.Errorf("skewFlagBeforeCommand(%v) = %v; want nil", args, err)
+		}
+	}
+	if inv := parseInvocation([]string{"skill", "load", "x", "--allow-version-skew"}); inv.rel != "skill load" || !inv.allow {
+		t.Errorf("the flag after the command: %+v", inv)
+	}
+}

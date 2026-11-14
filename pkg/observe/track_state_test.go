@@ -105,3 +105,48 @@ func TestWithStateEventsMarksEveryEventRecordedUnderIt(t *testing.T) {
 		t.Error("StateEventsFrom does not report WithStateEvents")
 	}
 }
+
+// The marker is written before the MaxProductProps bound is applied to the
+// flattened props, so a group whose leaves alone fill the bound cannot push it
+// out, and a caller prop that flattens to forge.kind (here inside a group)
+// cannot override it.
+func TestWithStateEventsKeepsTheMarkerAheadOfGroupedProps(t *testing.T) {
+	leaves := make([]any, 0, MaxProductProps+1)
+	for i := range MaxProductProps {
+		leaves = append(leaves, slog.Int(fmt.Sprintf("p%02d", i), i))
+	}
+	grouped := []slog.Attr{
+		slog.Group("forge", slog.String("kind", "action")),
+		slog.Group("g", leaves...),
+	}
+	for name, emit := range map[string]func(ctx context.Context){
+		"Track": func(ctx context.Context) {
+			Track(WithStateEvents(authn.ContextWithClaims(ctx, &authn.Claims{UserID: "u-1"})), "project_created", grouped...)
+		},
+		"TrackState": func(ctx context.Context) {
+			TrackState(authn.ContextWithClaims(ctx, &authn.Claims{UserID: "u-1"}), "billing_subscription_state", grouped...)
+		},
+		"TrackStateAs": func(ctx context.Context) {
+			TrackStateAs(ctx, "staff-1", "internal_user", grouped...)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := logLine(t, emit)
+			if m["product."+PropKind] != KindState {
+				t.Errorf("%s = %v, want %q (line %v)", PropKind, m["product."+PropKind], KindState, m)
+			}
+			props := 0
+			for k := range m {
+				if len(k) > len(AttrPropPrefix) && k[:len(AttrPropPrefix)] == AttrPropPrefix {
+					props++
+				}
+			}
+			if props != MaxProductProps {
+				t.Errorf("kept %d props, want %d (the marker plus %d leaves)", props, MaxProductProps, MaxProductProps-1)
+			}
+			if m["product.g.p30"] == nil || m["product.g.p31"] != nil {
+				t.Errorf("bound applied wrongly: g.p30 = %v, g.p31 = %v", m["product.g.p30"], m["product.g.p31"])
+			}
+		})
+	}
+}

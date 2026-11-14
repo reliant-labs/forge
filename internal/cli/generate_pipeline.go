@@ -394,6 +394,10 @@ func generateSteps() []GenStep {
 		// After every refusal: this rewrites .forge-kcl/ (and kcl.mod), and
 		// its writes are journaled so a later failure restores them.
 		{Name: "sync forge KCL module vendor", Gate: always, Run: stepSyncForgeKCL, Tag: "config"},
+		// After the vendor sync, so the env declaration is evaluated against
+		// this forge's schemas; before every step that reads the database.
+		// See generate_declared_databases.go.
+		{Name: "read declared databases", Gate: hasForgeYAML, GateReason: "no forge.yaml (directory-scan fallback)", Run: stepReadDeclaredDatabases, Tag: "config"},
 		{Name: "detect proto directories", Gate: always, Run: stepDetectProtoDirs, Tag: "proto"},
 		{Name: "ensure gen/go.mod", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepEnsureGenModule, Tag: "config", Writes: writesGenGoMod},
 		{Name: "buf generate (Go stubs)", Gate: gateCodegenEnabled, GateReason: "features.codegen=false", Run: stepBufGenerateGo, Tag: "proto", Writes: writesBufGo},
@@ -2079,7 +2083,19 @@ func stepServiceStubs(ctx *pipelineContext) error {
 //
 // The entity set is every applied table (codegen.ParseORMEntities), not the
 // CRUD join: CRUD wiring keys on CRUD rpcs, the store does not.
+//
+// It then projects every other declared database that names an ORM package
+// (stepSecondaryORMs, generate_declared_databases.go).
 func stepInternalDBORM(ctx *pipelineContext) error {
+	if err := generatePrimaryORM(ctx); err != nil {
+		return err
+	}
+	return stepSecondaryORMs(ctx)
+}
+
+// generatePrimaryORM is stepInternalDBORM's projection of the primary
+// database into its ORM package.
+func generatePrimaryORM(ctx *pipelineContext) error {
 	orm := config.ORMPackage(ctx.Cfg)
 	entities, entErr := ctx.ormEntities(orm.PackageDir())
 	if entErr != nil {

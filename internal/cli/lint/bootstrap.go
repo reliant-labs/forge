@@ -38,8 +38,19 @@ func init() { factory.Register(newCmd) }
 // loader package-level (rather than threading a Factory through ~80
 // signatures) keeps the relocation behavior-preserving. It is the same
 // loader the rest of the CLI uses.
+//
+// The loaded config's database is the project's primary one as the env
+// declaration (deploy/kcl) declares it, when it does
+// (config.ProjectConfig.UseDeclaredDatabases), so every lane and feature gate
+// reads the database the project declares. A declaration that cannot be read
+// leaves the config as loaded; the migration-safety lane, which reads every
+// database, reports why.
 func loadProjectStore() (*projectstore.Store, error) {
-	return factory.LoadProjectStore()
+	store, err := factory.LoadProjectStore()
+	if err == nil && store != nil {
+		_ = store.Config().UseDeclaredDatabases()
+	}
+	return store, err
 }
 
 // ErrProjectConfigNotFound is the canonical "forge.yaml not found" sentinel,

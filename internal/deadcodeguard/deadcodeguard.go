@@ -348,10 +348,11 @@ func (s *scan) collectGenerated(pkgs []*packages.Package) {
 	})
 }
 
-// collectFieldDecls records every judgeable struct field. Three kinds of field
+// collectFieldDecls records every judgeable struct field. Four kinds of field
 // are deliberately not judged; each exclusion is a false-positive class that
 // showed up on the real tree.
 func (s *scan) collectFieldDecls(pkgs []*packages.Package) {
+	public := publicAliasTargets(pkgs, s.judge)
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		if p.Types == nil || !strings.HasPrefix(p.PkgPath, s.judge) {
 			return
@@ -369,15 +370,16 @@ func (s *scan) collectFieldDecls(pkgs []*packages.Package) {
 			// (1) A struct carrying ANY encoding tag is a serialization
 			// target: json/yaml/env decoders write its fields by
 			// reflection, which no call graph can see. Judging one field
-			// of such a struct would be judging half the writers.
-			tagged := false
-			for i := 0; i < st.NumFields(); i++ {
-				if strings.TrimSpace(st.Tag(i)) != "" {
-					tagged = true
-					break
-				}
+			// of such a struct would be judging half the writers. So is a
+			// struct that embeds one: the decoder writes the embedded
+			// struct through its promoted, tagged fields.
+			if encodingTarget(st, map[*types.Struct]bool{}) {
+				continue
 			}
-			if tagged {
+			// (4) A struct a public (non-judged) package of the module
+			// re-exports by alias is public API: its writers are the
+			// module's consumers, which no scan of this module sees.
+			if public[p.PkgPath+"."+name] {
 				continue
 			}
 			for i := 0; i < st.NumFields(); i++ {
@@ -403,6 +405,57 @@ func (s *scan) collectFieldDecls(pkgs []*packages.Package) {
 			}
 		}
 	})
+}
+
+// encodingTarget reports whether st, or a struct it embeds, carries an
+// encoding tag on any field.
+func encodingTarget(st *types.Struct, seen map[*types.Struct]bool) bool {
+	if seen[st] {
+		return false
+	}
+	seen[st] = true
+	for i := 0; i < st.NumFields(); i++ {
+		if strings.TrimSpace(st.Tag(i)) != "" {
+			return true
+		}
+		if !st.Field(i).Embedded() {
+			continue
+		}
+		t := st.Field(i).Type()
+		if ptr, ok := t.Underlying().(*types.Pointer); ok {
+			t = ptr.Elem()
+		}
+		if inner, ok := t.Underlying().(*types.Struct); ok && encodingTarget(inner, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+// publicAliasTargets is "pkgpath.Name" of every judged type that a package
+// outside the judged prefix re-exports through an exported alias
+// (`type Options = internalcli.Options`). Only the module's own public
+// packages can name an internal type, so the alias is the module's API.
+func publicAliasTargets(pkgs []*packages.Package, judge string) map[string]bool {
+	out := map[string]bool{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types == nil || strings.HasPrefix(p.PkgPath, judge) {
+			return
+		}
+		sc := p.Types.Scope()
+		for _, name := range sc.Names() {
+			tn, ok := sc.Lookup(name).(*types.TypeName)
+			if !ok || !tn.IsAlias() || !tn.Exported() {
+				continue
+			}
+			named, ok := types.Unalias(tn.Type()).(*types.Named)
+			if !ok || named.Obj().Pkg() == nil || !strings.HasPrefix(named.Obj().Pkg().Path(), judge) {
+				continue
+			}
+			out[named.Obj().Pkg().Path()+"."+named.Obj().Name()] = true
+		}
+	})
+	return out
 }
 
 func (s *scan) collectFieldUses(pkgs []*packages.Package) {

@@ -19,6 +19,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 
+	"github.com/reliant-labs/forge/pkg/observe/genai"
 	"github.com/reliant-labs/forge/pkg/observe/metrics"
 )
 
@@ -141,7 +142,8 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 		if err != nil {
 			return fail(fmt.Errorf("creating trace exporter: %w", err))
 		}
-		tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
+		tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res),
+			sdktrace.WithSampler(genai.KeepSampler(envSampler())))
 		otel.SetTracerProvider(tp)
 		shutdowns = append(shutdowns, tp.Shutdown)
 	}

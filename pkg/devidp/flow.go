@@ -314,14 +314,24 @@ func (c *Client) SignIn(ctx context.Context, cfg FlowConfig, creds Credentials) 
 // leaves the person who just chose a password on a login form retyping it,
 // which is the worst step of most sign-up flows and one this shape removes
 // for free.
+//
+// The sign-in waits, briefly, for the new account to become visible to the
+// issuer's session API (see new_user_session.go). If it still fails, the
+// error wraps ErrSignInAfterSignUp: the account exists, so the caller must
+// not report it as not created.
 func (c *Client) SignUp(ctx context.Context, cfg FlowConfig, reg Registration) (Tokens, error) {
-	if _, err := c.Register(ctx, reg); err != nil {
+	userID, err := c.Register(ctx, reg)
+	if err != nil {
 		return Tokens{}, err
 	}
-	return c.SignIn(ctx, cfg, Credentials{
-		LoginName: reg.Email,
-		Password:  reg.Password,
+	tokens, err := c.signInNewUser(ctx, cfg, Credentials{
+		UserID:   userID,
+		Password: reg.Password,
 	})
+	if err != nil {
+		return Tokens{}, fmt.Errorf("%w: user %s: %w", ErrSignInAfterSignUp, userID, err)
+	}
+	return tokens, nil
 }
 
 // codeFromCallback extracts the authorization code from the callback URL

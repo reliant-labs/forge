@@ -58,6 +58,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/internal/linter/tracinglint"
+	"github.com/reliant-labs/forge/pkg/dbanalyze"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -90,7 +91,7 @@ func gradableRules() []string {
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",
 		"forgeconv-list-filter-optional", "forgeconv-no-container-deps", "forgeconv-no-getenv",
 		"forgeconv-no-handler-error-mapping", "forgeconv-one-service-per-file",
-		"forgeconv-optional-dep-marker-position", "forgeconv-service-dir-consistency",
+		"forgeconv-optional-dep-marker-position", "forgeconv-product-event-pii", "forgeconv-service-dir-consistency",
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
 		string(contractcheck.RuleOutboundIONoRPC), string(contractcheck.RuleInternalPackageMissingContract),
@@ -148,6 +149,8 @@ func gradableRules() []string {
 		// golangci-lint's build-tag passes (rolled out as one unit)
 		rolloutGolangciBuildTags,
 	}
+	// forge db analyze (graded here, reported by its own command)
+	rules = append(rules, dbanalyze.RuleIDs()...)
 	rules = append(rules, staticexport.RuleIDs()...)
 	return rules
 }

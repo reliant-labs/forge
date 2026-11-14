@@ -39,6 +39,7 @@ func newProjectCmd() *cobra.Command {
 	cmd.AddCommand(newAnnotationsCmd())
 	cmd.AddCommand(newCapabilitiesCmd())
 	cmd.AddCommand(newLibrariesCmd())
+	cmd.AddCommand(newProjectSchemaCmd())
 	// `benefits` is the front door's list: what forge does for the repo you
 	// are in, including one that is not a forge project (benefits_cmd.go).
 	cmd.AddCommand(newBenefitsCmd())

@@ -104,7 +104,16 @@ func (c Cloud) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	}
 	// scope.time_range is ignored by the server (the windows come from the
 	// promotion) but is a required field of QueryScope.
-	body := map[string]any{"scope": c.scope(Narrow{Range: Range{From: now.Add(-time.Hour), To: now}})}
+	//
+	// A release is the environment's, and the control plane judges its health
+	// over the whole environment: a dev instance is never promoted, so
+	// GetReleaseHealth drops any instance narrowing and echoes none. The
+	// request therefore carries none, and is sent env-wide whatever the
+	// backend's instance narrowing — narrowing it made every check of an
+	// env on hosted dev telemetry exit 2 waiting for an echo that never comes.
+	scope := c.scope(Narrow{Range: Range{From: now.Add(-time.Hour), To: now}})
+	scope.InstanceIDs, scope.InstanceUsers = nil, nil
+	body := map[string]any{"scope": scope}
 	if o.Window > 0 {
 		body["window"] = fmt.Sprintf("%ds", int64(o.Window.Seconds()))
 	}
@@ -118,7 +127,7 @@ func (c Cloud) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 		body["thresholdOverrides"] = o.Overrides
 	}
 	var w wireReleaseHealth
-	if err := c.call(ctx, procGetReleaseHealth, body, &w); err != nil {
+	if err := c.callEnvWide(ctx, procGetReleaseHealth, body, &w); err != nil {
 		if unimplemented(err) {
 			return HealthResult{}, Undetermined("the control plane does not serve release health yet (GetReleaseHealth is unimplemented); nothing was judged").Cause(err)
 		}

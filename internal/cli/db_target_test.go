@@ -24,6 +24,7 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -150,10 +151,70 @@ func TestDatabaseIdentity_NormalizesHostButKeepsServerAndName(t *testing.T) {
 		{"postgres://u:p@localhost/app", "localhost:5432/app"}, // implicit port
 		{"://not a url", ""},
 		{"postgres://localhost:5432/", ""}, // no database
+		// What pgx connects to, not what the URL's authority and path say.
+		{"postgres://u:p@localhost:5470/app?host=db.example.com", "db.example.com:5470/app"},
+		{"postgres://u:p@localhost:5470/app?port=5432", "localhost:5432/app"},
+		{"postgres://u:p@localhost:5470/scratch?dbname=prod", "localhost:5470/prod"},
+		{"host=DB.example.com port=5433 dbname=app user=u password=secret", "db.example.com:5433/app"},
+		{"host=/var/run/postgresql dbname=app", "/var/run/postgresql:5432/app"},
+		{"postgres://u:p@localhost/app?sslmode=prefer", "localhost:5432/app"}, // a TLS retry is the same server
+		{"postgres://u@snap:5432,db.example.com:5432/app", ""},                // several servers: no single identity
 	}
+	clearPGEnv(t)
 	for _, tc := range cases {
 		if got := databaseIdentity(tc.dsn); got != tc.want {
 			t.Errorf("databaseIdentity(%q) = %q, want %q", tc.dsn, got, tc.want)
+		}
+	}
+}
+
+// clearPGEnv unsets the libpq variables pgx fills a DSN's gaps from, so an
+// identity test reads the DSN alone.
+func clearPGEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGTARGETSESSIONATTRS"} {
+		t.Setenv(k, "")
+	}
+}
+
+// A connection string whose query parameters route it to another server or
+// database is reconciled by where it connects: the URL's authority alone
+// used to pass this guard while the command acted on prod-db.
+func TestReconcileClaimedDSN_HonoursRoutingParameters(t *testing.T) {
+	clearPGEnv(t)
+	const declared = "postgres://postgres:postgres@localhost:5470/docvault3?sslmode=disable"
+	for _, claimed := range []string{
+		"postgres://postgres:postgres@localhost:5470/docvault3?host=prod-db",
+		"postgres://postgres:postgres@localhost:5470/docvault3?port=5432",
+		"postgres://postgres:postgres@localhost:5470/docvault3?dbname=prod",
+		"postgres://postgres:postgres@localhost:5470,prod-db:5470/docvault3",
+	} {
+		if err := reconcileClaimedDSN(claimed, declared, "dev"); err == nil {
+			t.Errorf("reconcileClaimedDSN(%q) = nil; it does not connect to the env's database", claimed)
+		}
+	}
+	if err := reconcileClaimedDSN("host=localhost port=5470 dbname=docvault3 user=postgres", declared, "dev"); err != nil {
+		t.Errorf("a keyword/value DSN naming the env's database was refused: %v", err)
+	}
+}
+
+// The refusals that echo a DSN never echo its secret, however the password
+// parameter is spelled: a multi-host DSN is refused, and its message names it.
+func TestDSNRefusalsNeverEchoAPassword(t *testing.T) {
+	clearPGEnv(t)
+	const declared = "postgres://postgres:postgres@localhost:5470/docvault3?sslmode=disable"
+	for _, dsn := range []string{
+		"postgres://u@snap:5432,prod-db:5432/app?%70assword=hunter2",
+		"postgres://u@snap:5432,prod-db:5432/app?%70assword=hunter2&sslmode=disable",
+		"host=snap,prod-db dbname=app password = 'hunter2'",
+	} {
+		err := reconcileClaimedDSN(dsn, declared, "dev")
+		if err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("reconcileClaimedDSN(%q) = %v", dsn, err)
+		}
+		err = refuseDeployedAnalyzeDSN(context.Background(), t.TempDir(), dsn, func(context.Context, string, string) string { return "" })
+		if err == nil || strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("refuseDeployedAnalyzeDSN(%q) = %v", dsn, err)
 		}
 	}
 }

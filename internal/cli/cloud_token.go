@@ -30,7 +30,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -130,7 +129,7 @@ func (f *cloudTokenFlags) client(ctx context.Context) (cloudCaller, error) {
 // chose WHERE, never what the token may touch.
 func (f *cloudTokenFlags) target(ctx context.Context, projectDir string) (cloud.Endpoint, cloud.Credential, error) {
 	if f.env != "" {
-		if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", f.env, "main.k")); err == nil {
+		if envHasDeclaration(projectDir, f.env, filepath.Join(projectDir, "deploy", "kcl", f.env, "main.k")) {
 			return resolveCloudTarget(ctx, f.env, f.token)
 		}
 	}

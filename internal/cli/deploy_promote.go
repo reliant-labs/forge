@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/user"
 	"path/filepath"
 
@@ -537,7 +536,7 @@ func resolveReleaseLedger(ctx context.Context, projectDir, env string) (envLedge
 	// The one render the ledger selection reads anyway, rendered here so an
 	// `applier = "flux"` env is known as one before anything is built or
 	// recorded: its follow-through points its Flux instead of applying.
-	if _, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env, "main.k")); err == nil {
+	if envHasDeclaration(projectDir, env, filepath.Join(projectDir, "deploy", "kcl", env, "main.k")) {
 		entities, err := RenderKCL(ctx, projectDir, env)
 		if err != nil {
 			return envLedger{}, fmt.Errorf("choose the release ledger for env %q: render deploy/kcl/%s: %w", env, env, err)

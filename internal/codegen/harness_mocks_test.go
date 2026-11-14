@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/scratchmod"
 )
 
 // TestReadForgeMocks_IndexesCompileTimeChecks pins the index: each
@@ -168,12 +169,15 @@ func (s *Service) Sink() runs.Sink { return s.deps.Sink }
 }
 
 // writeMockFixtureModule writes files as a module that requires this
-// forge checkout, generates its mock_gen.go files with forge's real
-// contract generator, and tidies it — the resolver loads packages the way
-// a real project's are, under -mod=readonly, so a package whose mock_gen.go
-// imports forge/pkg/contractkit type-checks only in a tidy module. Every
-// module the fixture needs is in forge's build list, so the tidy runs
-// offline. It returns the module root.
+// forge checkout and generates its mock_gen.go files with forge's real
+// contract generator. Its go.mod carries forge's whole requirement list
+// (internal/scratchmod), so the resolver loads packages the way a real
+// project's are — a package whose mock_gen.go imports forge/pkg/contractkit
+// type-checks with nothing missing from go.mod — and nothing is fetched. It
+// is not an offline `go mod tidy`: that needs every module in the "all"
+// graph, tests of dependencies included (github.com/google/go-cmp for
+// connect's), which no build of forge downloads, so it passed or failed on
+// whatever the module cache held. It returns the module root.
 //
 // GOFLAGS=-mod=mod is for the go test the compile test runs afterwards,
 // which also compiles the harness's own imports.
@@ -183,24 +187,13 @@ func writeMockFixtureModule(t *testing.T, files map[string]string) string {
 	if err != nil {
 		t.Fatalf("resolve forge root: %v", err)
 	}
-	sum, err := os.ReadFile(filepath.Join(forgeRoot, "go.sum"))
-	if err != nil {
-		t.Fatalf("read forge go.sum: %v", err)
-	}
-	files["go.mod"] = "module example.com/proj\n\ngo " + pkgGoVersion(t, forgeRoot) + "\n\n" +
-		"require github.com/reliant-labs/forge v0.0.0\n\n" +
-		"replace github.com/reliant-labs/forge => " + filepath.ToSlash(forgeRoot) + "\n"
-	files["go.sum"] = string(sum)
 	t.Setenv("GOFLAGS", "-mod=mod")
 	t.Setenv("GOWORK", "off")
 	root := writeHarnessFixture(t, files)
-	generateFixtureMocks(t, root)
-	tidy := exec.Command("go", "mod", "tidy")
-	tidy.Dir = root
-	tidy.Env = append(os.Environ(), "GOPROXY=off")
-	if out, err := tidy.CombinedOutput(); err != nil {
-		t.Fatalf("go mod tidy (offline) the fixture: %v\n%s", err, out)
+	if err := scratchmod.Write(forgeRoot, root, "example.com/proj"); err != nil {
+		t.Fatalf("write the fixture's go.mod: %v", err)
 	}
+	generateFixtureMocks(t, root)
 	return root
 }
 

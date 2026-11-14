@@ -100,6 +100,11 @@ type AuditAPI struct {
 	// group consistency.
 	Prerequisites func(cfg *config.ProjectConfig, projectDir string) audittype.Category
 
+	// Resources computes the resources category: the project's databases
+	// and APIs — every env's declarations unioned, forge.yaml's database,
+	// and the derived proto API — each with where it came from.
+	Resources func(cfg *config.ProjectConfig, projectDir string) audittype.Category
+
 	// ListEnvs lists the project's declared environments (deploy/kcl/<env>).
 	ListEnvs func(projectDir string) ([]string, error)
 

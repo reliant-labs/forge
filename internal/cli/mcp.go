@@ -52,7 +52,9 @@ const mcpInstructions = "This is Reliant Forge (github.com/reliant-labs/forge) â
 	"point, and capabilities, annotations, libraries, audit, shapes and generate work on the project. " +
 	"deploy_status shows a claimable deploy again and explain_error turns any forge failure into the next " +
 	"command. Every tool takes an optional dir: the repo to act on (default: the directory the server was " +
-	"started in)."
+	"started in). The account's monitoring and releases (obs_status, obs_issues, obs_check, releases_list, " +
+	"release_record â€¦) are also a hosted connector with no install, https://api.reliantapi.com/forge/mcp " +
+	"(sign in): skill_load name=connect sets it up for each client."
 
 // maxMCPOutput bounds one tool result. Head and tail are both kept because
 // the verdict of lint and generate is the last line.
@@ -78,7 +80,8 @@ default is the directory the server was started in, or -C):
 
   read-only   benefits       what forge does for this repo, with the first step
                              and the agent time to each; any repo
-              capabilities   every verb, lint analyzer and marker
+              capabilities   every verb, lint analyzer, marker and schema
+              schema         a published JSON Schema (env: the env document)
               annotations    the entity-authoring vocabulary
               libraries      forge/pkg and web-runtime APIs
               audit          what THIS project currently is

@@ -153,17 +153,17 @@ func featureReason(cfg *config.ProjectConfig, name config.FeatureName, on bool) 
 		return "(always on)"
 	case config.FeatureMigrations:
 		if on {
-			return "(" + cfg.Database.MigrationsPath() + " exists)"
+			return "(" + cfg.PrimaryDatabase().MigrationsPath() + " exists)"
 		}
-		return "(no " + cfg.Database.MigrationsPath() + ")"
+		return "(no " + cfg.PrimaryDatabase().MigrationsPath() + ")"
 	case config.FeatureORM:
 		if on {
-			return "(" + cfg.Database.MigrationsPath() + " exists)"
+			return "(" + cfg.PrimaryDatabase().MigrationsPath() + " exists)"
 		}
 		if service && cfg.Database.Driver != "" && cfg.Database.Driver != "none" {
-			return "(//forge:no-orm in " + cfg.Database.ORM.PackageDir() + ")"
+			return "(//forge:no-orm in " + cfg.PrimaryDatabase().ORM.PackageDir() + ")"
 		}
-		return "(no " + cfg.Database.MigrationsPath() + ")"
+		return "(no " + cfg.PrimaryDatabase().MigrationsPath() + ")"
 	case config.FeatureFrontend:
 		if on {
 			return "(a frontend exists)"

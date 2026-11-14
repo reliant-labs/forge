@@ -130,6 +130,23 @@ Under GPC / DNT the browser's events carry **no user id** (not even from
 keep working. The contract, and what each tier sends:
 `observability/product-events`.
 
+**Where a visit came from.** In `full`, the stored attribution keeps
+`rid`, `utm_*`, `ref` (the host of the page that sent the visitor, never a URL)
+and `lp` (the entry page's path). The first page load that names neither takes
+them from itself. `withAttribution(url)` passes all of them on, and the first
+sign-in's `user_identified` carries `referrer_host` and `landing_path`. Below
+`full`, `withAttribution` passes on only this page load's `utm_*` and the
+referrer's host: no id, nothing is stored, and only to a link on the page's own
+host or on a site the call names — `withAttribution(url, { sites:
+["example.com"] })` admits `example.com` and its subdomains. A link anywhere
+else is returned unchanged, so wrapping every outbound link never hands a
+campaign or a referrer to a third party.
+
+**The org.** `setTelemetryOrg(orgId | null)` names the org later events are
+about (the `orgId` attribute, stored in `product_events.OrgId`). It follows the
+user id's rule: only in `identified` and `full`, never under GPC / DNT, never an
+email.
+
 ## Page views and the signed-in user, automatically
 
 The generated `otel_gen.ts` turns on two runtime options (both **off** when you

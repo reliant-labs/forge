@@ -26,7 +26,9 @@ var (
 //     reaches both, and the replayed results are keyed the same way.
 //   - it never adds -race or -count=1 itself: the pre-merge tier reuses Go's
 //     test cache, and -race runs on main (the owner's rule for every repo's
-//     pre-merge gate).
+//     pre-merge gate). The one -count=1 is removalguard's full-mode run, by
+//     ci.yml's own command: the guard lists files with git, so a replay
+//     could miss a file the change added.
 //   - it runs the checks job's steps, by the same commands.
 func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 	script := readText(t, premergeScript)
@@ -40,6 +42,7 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 	for _, want := range []string{
 		"scripts/ci-test-shard.sh 0 1",
 		`scripts/ci-changed-tests.sh "$base"`,
+		strings.TrimPrefix(mergeTierGuardStep, "run: "),
 		"scripts/check-changelog-untouched.sh",
 		"go run ./internal/apigate",
 		"forge\" ci verify-generated",
@@ -56,6 +59,7 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 	for _, want := range []string{
 		"scripts/ci-test-shard.sh ${{ matrix.args }}",
 		"scripts/ci-changed-tests.sh HEAD^1\n",
+		mergeTierGuardStep,
 		"scripts/check-changelog-untouched.sh HEAD^1",
 		"go run ./internal/apigate",
 		"forge ci verify-generated",
@@ -72,7 +76,7 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 
 	for _, line := range strings.Split(script, "\n") {
 		code := strings.TrimSpace(line)
-		if strings.HasPrefix(code, "#") {
+		if strings.HasPrefix(code, "#") || strings.Contains(code, strings.TrimPrefix(mergeTierGuardStep, "run: ")) {
 			continue
 		}
 		for _, banned := range []string{"-race", "-count=1"} {

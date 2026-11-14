@@ -269,6 +269,9 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load project config: %w", err)
 			}
+			// The features follow the databases the env declaration declares;
+			// an error reading them is reported below, where they are read.
+			_ = store.Config().UseDeclaredDatabases()
 			if !store.Features().CIEnabled() {
 				return config.DisabledFeatureError(config.FeatureCI)
 			}
@@ -276,31 +279,66 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 				return config.DisabledFeatureError(config.FeatureMigrations)
 			}
 
-			migrationsDir := filepath.FromSlash(store.Database().MigrationsPath())
 			// Resolve against the project root, not the process cwd. The
 			// configured path is project-relative, so running this from any
 			// subdirectory used to stat a directory that does not exist —
 			// and the pass reported "No migration safety warnings!" over a
 			// tree it never opened. A gate whose verdict depends on where
 			// you happened to be standing is not a gate.
-			if !filepath.IsAbs(migrationsDir) {
-				if root, rootErr := projectRoot(); rootErr == nil {
-					migrationsDir = filepath.Join(root, migrationsDir)
+			root, rootErr := projectRoot()
+			resolve := func(rel string) string {
+				dir := filepath.FromSlash(rel)
+				if !filepath.IsAbs(dir) && rootErr == nil {
+					dir = filepath.Join(root, dir)
+				}
+				return dir
+			}
+			type pass struct {
+				prefix string
+				dir    string
+				rules  migrationlint.RuleConfig
+			}
+			// Every database the project declares: forge.yaml's one, or each
+			// the env declaration (deploy/kcl) declares a schema for.
+			passes := []pass{{
+				dir:   resolve(store.Database().MigrationsPath()),
+				rules: migrationlint.ConfigFromProject(store.Database().MigrationSafety).ForTool(store.Database().MigrationTool()),
+			}}
+			if rootErr == nil {
+				dbs, err := config.ProjectDatabases(root)
+				if err != nil {
+					return cliutil.WrapUserErr("forge ci migration-safety", "could not read the project's databases", "",
+						"fix the database declarations the error names", err)
+				}
+				if dbs[0].Source == config.DatabaseSourceKCL {
+					passes = passes[:0]
+					for _, d := range dbs {
+						p := pass{dir: resolve(d.MigrationsPath()),
+							rules: migrationlint.ConfigFromProject(d.MigrationSafety).ForTool(d.Config(config.DatabaseConfig{}).MigrationTool())}
+						if len(dbs) > 1 {
+							p.prefix = "database " + d.Name + ": "
+						}
+						passes = append(passes, p)
+					}
 				}
 			}
-			ruleConfig := migrationlint.ConfigFromProject(store.Database().MigrationSafety).ForTool(store.Database().MigrationTool())
-			result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
-			if err != nil {
-				return cliutil.WrapUserErr("forge ci migration-safety",
-					"could not read the migrations directory "+migrationsDir, "",
-					"check the path and permissions, or point database.migrations.dir in forge.yaml at the right directory", err)
-			}
-			fmt.Print(result.FormatText())
-			if result.HasErrors() {
-				return cliutil.UserErr("forge ci migration-safety",
-					fmt.Sprintf("%d migration safety violation(s) in %s", len(result.Findings), result.Dir),
-					"",
-					migrationlint.PrimaryRemediation(result.Findings))
+			for _, p := range passes {
+				result, err := migrationlint.LintMigrationsDir(p.dir, p.rules)
+				if err != nil {
+					return cliutil.WrapUserErr("forge ci migration-safety",
+						p.prefix+"could not read the migrations directory "+p.dir, "",
+						"check the path and permissions, or point the database's migrations dir at the right directory", err)
+				}
+				if p.prefix != "" {
+					fmt.Println(strings.TrimSuffix(p.prefix, ": "))
+				}
+				fmt.Print(result.FormatText())
+				if result.HasErrors() {
+					return cliutil.UserErr("forge ci migration-safety",
+						fmt.Sprintf("%s%d migration safety violation(s) in %s", p.prefix, len(result.Findings), result.Dir),
+						"",
+						migrationlint.PrimaryRemediation(result.Findings))
+				}
 			}
 			return nil
 		},

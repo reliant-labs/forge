@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -218,31 +219,8 @@ apply to this project's pinned forge_version.`,
 			if jsonOut {
 				return writeSkillsJSON(cmd.OutOrStdout(), skills)
 			}
-			if !all {
-				root, _ := findProjectRoot()
-				return writeGroupedSkillsFor(cmd.OutOrStdout(), skills, root != "")
-			}
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
-			entryPoint := false
-			for _, s := range skills {
-				if s.Path == entryPointSkillPath {
-					entryPoint = true
-				}
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Path, s.Scope, s.Name, s.Description)
-			}
-			if err := w.Flush(); err != nil {
-				return err
-			}
-			// An alphabetical table has no "read this one first", and the
-			// entry-point skill is exactly the one a reader needs before
-			// choosing from the other ninety. Name it, when it is here.
-			if entryPoint {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"\nStart with `%s skill load %s` — it names the commands that print forge's whole surface.\n",
-					cmdutil.Name(), entryPointSkillPath)
-			}
-			return nil
+			root, _ := findProjectRoot()
+			return writeSkillListText(cmd.OutOrStdout(), skills, all, root != "")
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
@@ -250,6 +228,35 @@ apply to this project's pinned forge_version.`,
 	cmd.Flags().BoolVar(&includeMigrations, "include-migrations", false, "Include one-time migration skills (relevance: migration) in the listing")
 	cmd.Flags().BoolVar(&withBodies, "with-bodies", false, "With --json: carry each skill's body, exactly as skill load prints it (one call for a whole catalog)")
 	return cmd
+}
+
+// writeSkillListText is `skill list`'s human view of skills: grouped, or the
+// flat table with all. The hosted MCP skill_list tool renders through it too.
+func writeSkillListText(out io.Writer, skills []skillMeta, all, inProject bool) error {
+	if !all {
+		return writeGroupedSkillsFor(out, skills, inProject)
+	}
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "PATH\tSCOPE\tNAME\tDESCRIPTION")
+	entryPoint := false
+	for _, s := range skills {
+		if s.Path == entryPointSkillPath {
+			entryPoint = true
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.Path, s.Scope, s.Name, s.Description)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	// An alphabetical table has no "read this one first", and the
+	// entry-point skill is exactly the one a reader needs before
+	// choosing from the other ninety. Name it, when it is here.
+	if entryPoint {
+		_, _ = fmt.Fprintf(out,
+			"\nStart with `%s skill load %s` — it names the commands that print forge's whole surface.\n",
+			cmdutil.Name(), entryPointSkillPath)
+	}
+	return nil
 }
 
 // skillsInGroup keeps the skill at group and everything that collapses into it
@@ -325,18 +332,7 @@ func newSkillSearchCmd() *cobra.Command {
 			if jsonOut {
 				return writeSearchJSON(cmd.OutOrStdout(), query, results)
 			}
-			out := cmd.OutOrStdout()
-			if len(results) == 0 {
-				_, _ = fmt.Fprintf(out, "No skills found matching query: %s\n", query)
-				return nil
-			}
-			_, _ = fmt.Fprintf(out, "Skills matching %q:\n\n", query)
-			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "SCORE\tPATH\tSCOPE\tDESCRIPTION")
-			for _, r := range results {
-				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", r.Score, r.Skill.Path, r.Skill.Scope, r.Skill.Description)
-			}
-			return w.Flush()
+			return writeSkillSearchText(cmd.OutOrStdout(), query, results)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output JSON instead of a tab-separated table")
@@ -361,11 +357,30 @@ func searchSkills(query string) ([]skillSearchResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	return searchSkillsIn(skills, query), nil
+}
 
+// writeSkillSearchText is `skill search`'s human view of results.
+func writeSkillSearchText(out io.Writer, query string, results []skillSearchResult) error {
+	if len(results) == 0 {
+		_, _ = fmt.Fprintf(out, "No skills found matching query: %s\n", query)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "Skills matching %q:\n\n", query)
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "SCORE\tPATH\tSCOPE\tDESCRIPTION")
+	for _, r := range results {
+		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", r.Score, r.Skill.Path, r.Skill.Scope, r.Skill.Description)
+	}
+	return w.Flush()
+}
+
+// searchSkillsIn scores skills against query (searchSkills over a given set).
+func searchSkillsIn(skills []skillMeta, query string) []skillSearchResult {
 	queryLower := strings.ToLower(query)
 	queryWords := strings.Fields(queryLower)
 	if len(queryWords) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	var results []skillSearchResult
@@ -407,7 +422,7 @@ func searchSkills(query string) ([]skillSearchResult, error) {
 		}
 		return results[i].Skill.Path < results[j].Skill.Path
 	})
-	return results, nil
+	return results
 }
 
 // SkillMetaPublic is the cross-package view of a skill returned from

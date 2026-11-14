@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/scratchmod"
 )
 
 // The broker's identity-v2 half: the routes a LOGIN_POLICY turns on. Their
@@ -166,14 +167,12 @@ func TestLoginBrokerScaffoldCompilesAndMountsPerPolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	gomod, err := os.ReadFile(filepath.Join(root, "go.mod"))
-	if err != nil {
+	// forge's whole requirement list, not a bare `require forge`: the build
+	// below is offline, and only this makes it need no module file a build
+	// of forge does not (internal/scratchmod).
+	if err := scratchmod.Write(root, dir, "example.com/app"); err != nil {
 		t.Fatal(err)
 	}
-	goVersion := regexp.MustCompile(`(?m)^go (\S+)`).FindStringSubmatch(string(gomod))[1]
-	write("go.mod", "module example.com/app\n\ngo "+goVersion+"\n\nrequire github.com/reliant-labs/forge v0.0.0\n\nreplace github.com/reliant-labs/forge => "+root+"\n")
-	sum, _ := os.ReadFile(filepath.Join(root, "go.sum"))
-	write("go.sum", string(sum))
 	write("pkg/config/config.go", `package config
 
 type Config struct {

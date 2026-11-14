@@ -94,6 +94,7 @@ var mergeCases = map[string]mergeCase{
 	"reconcile forge_version with go.mod":        perInput("one forge.yaml line, a function of the pin: two branches agree or genuinely conflict over the pin"),
 	"announce project":                           noOutput("prints"),
 	"sync forge KCL module vendor":               noOutput("vendors into .forge-kcl/, ignored"),
+	"read declared databases":                    noOutput("reads the env declaration's databases into the loaded config"),
 	"detect proto directories":                   noOutput("in-memory"),
 	"ensure gen/go.mod":                          scaffoldOnce("written when absent"),
 	"buf generate (Go stubs)":                    perInput("one stub file per .proto"),

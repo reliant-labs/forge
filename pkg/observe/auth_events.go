@@ -167,9 +167,12 @@ func TrackAuth(ctx context.Context, ev AuthEvent, userID string, opts ...AuthOpt
 		FromContext(ctx).WarnContext(ctx, "auth event dropped: not a standard auth event", slog.String("event", string(ev)))
 		return
 	}
-	if !ValidAuthUserID(userID) {
+	// ValidActorID too: TrackAuth sets the actor's UserID itself, after
+	// ActorFrom has applied the opaque-id policy, so an IP address or a JWT
+	// must be refused here before it reaches the consent source or user.id.
+	if !ValidAuthUserID(userID) || !ValidActorID(userID) {
 		if authIDRefused.CompareAndSwap(false, true) {
-			FromContext(ctx).WarnContext(ctx, "auth event dropped: the user id must be the provider's opaque subject (not empty, no '@', at most 128 characters)",
+			FromContext(ctx).WarnContext(ctx, "auth event dropped: the user id must be the provider's opaque subject (not empty, no '@', no IP address or token, at most 128 characters)",
 				slog.String("event", string(ev)))
 		}
 		return
@@ -180,7 +183,9 @@ func TrackAuth(ctx context.Context, ev AuthEvent, userID string, opts ...AuthOpt
 			o(&p)
 		}
 	}
-	trackAs(ctx, string(ev), userID, authEventAttrs(ev, p))
+	actor := ActorFrom(ctx)
+	actor.UserID = userID
+	trackAs(ctx, string(ev), actor, AppClientBackend, authEventAttrs(ev, p))
 }
 
 // authEventAttrs bounds p to the vocabulary and drops the props that do not

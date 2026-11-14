@@ -11,6 +11,7 @@ import {
   installSpanExportScrub,
   isUrlAttribute,
   queryParamFilter,
+  replayUrlScrubPlugin,
   scrubbingSpanExporter,
   scrubUrl,
   scrubUrlAttributes,
@@ -313,5 +314,63 @@ describe("installSpanExportScrub", () => {
         },
       }),
     ).toBe(0);
+  });
+});
+
+// rrweb's Meta event exactly as its record() builds it (rrweb 2.1, which
+// @hyperdx/otel-web-session-recorder 4.0.0 bundles): EventType.Meta is 4, and
+// data.href is window.location.href. The plugin inside the real recorder, in
+// Chromium, is pinned by scripts/browser-telemetry-smoke.mjs.
+const metaEvent = (href: string) => ({
+  type: 4,
+  data: { href, width: 1280, height: 720 },
+  timestamp: 1700000000000,
+});
+
+describe("replayUrlScrubPlugin", () => {
+  it("drops the query and fragment from a Meta event's href, copying the event", () => {
+    const event = metaEvent(
+      "https://a.example/reset?token=abc&email=j%40x.io#access_token=t",
+    );
+    const out = replayUrlScrubPlugin().eventProcessor(event);
+    expect(out).toEqual(metaEvent("https://a.example/reset"));
+    expect(out).not.toBe(event);
+    expect(event.data.href).toBe(
+      "https://a.example/reset?token=abc&email=j%40x.io#access_token=t",
+    );
+  });
+
+  it("keeps only the allowed parameters, never the fragment", () => {
+    const plugin = replayUrlScrubPlugin({ keepQueryParams: ["utm_*", "ref"] });
+    expect(
+      plugin.eventProcessor(
+        metaEvent("https://a.example/?utm_source=x&email=e&ref=hn#f"),
+      ).data.href,
+    ).toBe("https://a.example/?utm_source=x&ref=hn");
+  });
+
+  it("passes every other event, and a Meta event it cannot read, as recorded", () => {
+    const plugin = replayUrlScrubPlugin();
+    const clean = metaEvent("https://a.example/p");
+    const others: unknown[] = [
+      clean,
+      // A full snapshot's DOM URLs are page content the replay renders.
+      { type: 2, data: { node: { attributes: { href: "/x?y=1" } } } },
+      { type: 3, data: { source: 2, href: "/x?y=1" } },
+      { type: 4, data: { href: 42 } },
+      { type: 4 },
+      null,
+      "x",
+    ];
+    for (const event of others) {
+      expect(plugin.eventProcessor(event)).toBe(event);
+    }
+  });
+
+  it("is a plugin rrweb's record() accepts: a name and an eventProcessor, no observer", () => {
+    const plugin = replayUrlScrubPlugin();
+    expect(plugin.name).toBe("forge/replay-url-scrub");
+    expect(plugin.options).toEqual({});
+    expect("observer" in plugin).toBe(false);
   });
 });

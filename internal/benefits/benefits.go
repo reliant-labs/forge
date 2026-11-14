@@ -324,8 +324,8 @@ func (r *Registry) Validate() error {
 			} else {
 				ruleOwner[rule.ID] = b.ID
 			}
-			if rule.Lane != "" && !strings.HasPrefix(rule.Lane, "--") {
-				fail("%s: lane %q is not a `forge lint` flag (--<lane>), or \"\" for a rule only a bare `forge lint` runs", rwhere, rule.Lane)
+			if rule.Lane != "" && !strings.HasPrefix(rule.Lane, "--") && !strings.HasPrefix(rule.Lane, "forge ") {
+				fail("%s: lane %q is not a `forge lint` flag (--<lane>), a command that reports the rule (forge <command>), or \"\" for a rule only a bare `forge lint` runs", rwhere, rule.Lane)
 			}
 			if strings.TrimSpace(rule.BugClass) == "" {
 				fail("%s: bug_class is empty", rwhere)

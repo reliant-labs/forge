@@ -53,6 +53,7 @@ const (
 	GroupServices       = dashspec.GroupServices
 	GroupJobs           = dashspec.GroupJobs
 	GroupProduct        = dashspec.GroupProduct
+	GroupAI             = dashspec.GroupAI
 	GroupPlatform       = dashspec.GroupPlatform
 	GroupReleases       = dashspec.GroupReleases
 	GroupCustom         = dashspec.GroupCustom

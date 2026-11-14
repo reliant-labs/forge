@@ -201,7 +201,7 @@ func seedShadowServer(projectDir string) string {
 // hook): a replay of *.up.sql there reads no schema at all, so the applied
 // schema comes from internal/shadowdb, whose shadow that tool migrates.
 func buildLiveSeedPlan(ctx context.Context, db *sql.DB, projectDir, migDir, shadowServer string, cfg seedplan.Config) (*seedplan.Plan, error) {
-	if _, hooked := migrationhook.ResolveIn(projectDir); !hooked {
+	if _, hooked := migrationhook.ResolveForDir(projectDir, migDir); !hooked {
 		return seedplan.BuildLivePlan(ctx, db, migDir, shadowServer, cfg)
 	}
 	tables, err := shadowdb.Tables(projectDir, migDir)
@@ -374,7 +374,7 @@ func openSeedDB(ctx context.Context, o seedOptions, migDir string, checkPending 
 // alone is never proof: a pending data-only migration, or one that failed
 // after its DDL, leaves the schema looking current.
 func seedMigrationsPending(ctx context.Context, db *sql.DB, dsn, projectDir, migDir string) (*seedplan.MigrationBlock, error) {
-	h, hooked := migrationhook.ResolveIn(projectDir)
+	h, hooked := migrationhook.ResolveForDir(projectDir, migDir)
 	if !hooked {
 		return seedplan.MigrationsPending(ctx, db, migDir)
 	}

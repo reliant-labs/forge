@@ -126,7 +126,11 @@ type obsIssuesOpts struct {
 	incidentWindow  time.Duration
 }
 
-func newObsIssuesCmd() *cobra.Command {
+func newObsIssuesCmd() *cobra.Command { return newObsIssuesCmdWith(defaultObsDeps) }
+
+// newObsIssuesCmdWith is newObsIssuesCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsIssuesCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsIssuesOpts
 	cmd := &cobra.Command{
 		Use:   "issues [env]",
@@ -173,7 +177,7 @@ token acts for nobody and is refused FailedPrecondition (exit 2); name a user id
 ` + obsIssuesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsIssues(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
+			return runObsIssues(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	o.register(cmd, 24*time.Hour, obsquery.DefaultIssueLimit)

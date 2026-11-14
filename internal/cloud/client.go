@@ -41,6 +41,10 @@ type Client struct {
 	Endpoint   Endpoint
 	Credential Credential
 	HTTP       *http.Client
+	// Via, when set, is what the client names itself as in the Forge-Via
+	// header (the activity stream's "via"); "" is "cli", or "ci" inside CI.
+	// The hosted MCP connector sends "mcp".
+	Via string
 
 	// elevated holds tokens obtained by ExchangeToken, keyed by the scope that
 	// was missing. In memory only: they live at most an hour and are never
@@ -233,7 +237,11 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 	// Forge-Via names the client to the server's activity stream
 	// (forge/pkg/activity): the same command reads "via CLI" from a
 	// terminal and "via CI" from a pipeline.
-	httpReq.Header.Set(activity.ViaHeader, via())
+	if c.Via != "" {
+		httpReq.Header.Set(activity.ViaHeader, c.Via)
+	} else {
+		httpReq.Header.Set(activity.ViaHeader, via())
+	}
 	// Forge-Version names this release, so a control plane that no longer
 	// serves it refuses it with an upgrade instruction
 	// (ReasonClientUpgradeRequired) instead of running a request whose

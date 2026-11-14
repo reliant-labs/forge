@@ -169,3 +169,49 @@ func TestSetup_HonoursTheSamplerEnvironment(t *testing.T) {
 		t.Error("a sampled parent was dropped: the services of one trace would disagree and split it")
 	}
 }
+
+// An AI span (gen_ai.operation.name at start) is kept whatever the ratio:
+// every token total is a sum over them.
+func TestSetup_NeverSamplesAwayAnAISpan(t *testing.T) {
+	clearOTelEnv(t)
+	snapshotGlobals(t)
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "0")
+	shutdown, _, err := Setup(context.Background(), Config{ServiceName: "svc", OTLPEndpoint: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_ = shutdown(ctx)
+	}()
+	_, ai := otel.Tracer("t").Start(context.Background(), "chat gpt-5", trace.WithAttributes(attribute.String("gen_ai.operation.name", "chat")))
+	defer ai.End()
+	if !ai.SpanContext().IsSampled() {
+		t.Error("ratio 0 dropped a gen_ai span")
+	}
+	_, plain := otel.Tracer("t").Start(context.Background(), "op")
+	defer plain.End()
+	if plain.SpanContext().IsSampled() {
+		t.Error("ratio 0 kept a plain root span: the environment's sampler was lost")
+	}
+}
+
+func TestEnvSamplerMatchesTheSDK(t *testing.T) {
+	for _, tc := range []struct{ sampler, arg, want string }{
+		{"", "", "ParentBased{root:AlwaysOnSampler,remoteParentSampled:AlwaysOnSampler,remoteParentNotSampled:AlwaysOffSampler,localParentSampled:AlwaysOnSampler,localParentNotSampled:AlwaysOffSampler}"},
+		{"always_on", "", "AlwaysOnSampler"},
+		{"always_off", "", "AlwaysOffSampler"},
+		{"traceidratio", "0.25", "TraceIDRatioBased{0.25}"},
+		{"parentbased_always_off", "", "ParentBased{root:AlwaysOffSampler,remoteParentSampled:AlwaysOnSampler,remoteParentNotSampled:AlwaysOffSampler,localParentSampled:AlwaysOnSampler,localParentNotSampled:AlwaysOffSampler}"},
+		{"parentbased_traceidratio", "bogus", "ParentBased{root:TraceIDRatioBased{1},remoteParentSampled:AlwaysOnSampler,remoteParentNotSampled:AlwaysOffSampler,localParentSampled:AlwaysOnSampler,localParentNotSampled:AlwaysOffSampler}"},
+	} {
+		clearOTelEnv(t)
+		t.Setenv("OTEL_TRACES_SAMPLER", tc.sampler)
+		t.Setenv("OTEL_TRACES_SAMPLER_ARG", tc.arg)
+		if got := envSampler().Description(); got != tc.want {
+			t.Errorf("%s(%s) = %s, want %s", tc.sampler, tc.arg, got, tc.want)
+		}
+	}
+}

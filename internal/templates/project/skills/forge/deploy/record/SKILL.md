@@ -34,10 +34,50 @@ That is the whole integration. forge builds nothing and applies nothing.
 
 | Step | Time |
 |---|---|
-| `forge.yaml` with `name: <project>` at the repo root (if there is none) | 1 min |
+| Name the project and the workloads your pipeline deploys in the env's document, `deploy/envs/prod.yaml` (below; `forge obs init prod` writes its first lines). No forge.yaml needed; one with `name:` works too | 2 min |
 | A token with `deploy:write`, minted by a person in the web app (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens; no deploy/kcl needed), stored as the CI secret `FORGE_CONTROL_PLANE_TOKEN` | 5 min |
 | Paste the recipe below after the deploy job | 5 min |
 | Run the pipeline once; `forge obs changes prod` shows the marker | 4 min |
+
+## Which project it is filed under
+
+The project comes from the repo's forge files, by the same precedence `forge
+obs init` uses:
+
+1. `forge.yaml`'s `name:`, when there is one. An env document that names
+   another project is refused: the env's telemetry carries the document's
+   project, so a marker filed elsewhere would line up with no dashboard.
+2. Else the `project:` of the env's own document, `deploy/envs/<env>.yaml`.
+3. Else the one project every env document names.
+
+A repo with none of these is refused with what to add. The command finds the
+files by walking up from where it runs, as it finds forge.yaml, so a CI step
+in a subdirectory works.
+
+An env document that records deploys is the monitoring one plus the workloads
+your pipeline deploys, each bound to the external runtime:
+
+```yaml
+# deploy/envs/prod.yaml
+apiVersion: forge.dev/env/v1
+project: shop
+env: prod
+control_plane: {}            # Reliant cloud; or {endpoint: "https://cp.example.com"}
+observability:
+  enabled: true
+  destination: {token_from_control_plane: true}
+workloads:
+  - name: api
+    runtime: {type: external}
+  - name: worker
+    kind: worker
+    runtime: {type: external}
+```
+
+`forge obs init` writes everything above `workloads:`. Without the workloads,
+the document says where telemetry goes but not who deploys the env, so a
+record into it is refused (`record_only_release`) with a message naming the
+file and the lines to add.
 
 ## What a record is
 
@@ -59,10 +99,11 @@ That is the whole integration. forge builds nothing and applies nothing.
 - **Never posing as forge's own deploy.** The control plane refuses to bind a record-only
   release to an env forge itself deploys (a hosted env, or one bound to a
   cluster forge reconciles): reason `record_only_release`. The command refuses
-  an env that has `deploy/kcl/<env>/main.k` the same way, before it cuts
-  anything, on every ledger — unless every workload in it is bound to
-  `forge.OnExternal` (`deploy/external`): your own tooling deploys that env,
-  so recording what it shipped is the point. When forge takes
+  an env that `deploy/kcl/<env>/main.k` or an env document declares the same
+  way, before it cuts anything, on every ledger — unless every workload in it
+  is bound to `forge.OnExternal` (in a document, `runtime: {type: external}`;
+  `deploy/external`): your own tooling deploys that env, so recording what it
+  shipped is the point. When forge takes
   over deploying an env, its own `forge env deploy` releases follow the
   recorded ones in the same history.
 
@@ -70,8 +111,8 @@ That is the whole integration. forge builds nothing and applies nothing.
 
 | Situation | Ledger |
 |---|---|
-| `deploy/kcl/<env>/main.k` exists, and some workload is not `forge.OnExternal` (or it does not render) | none: refused (`record_only_release`), forge deploys that env |
-| `deploy/kcl/<env>/main.k` binds every workload to `forge.OnExternal` | the control plane the env declares (`forge.ControlPlane`), where it is **self-managed**; Reliant cloud when it declares none. Not signed in, or `FORGE_LEDGER=machine`: this machine, as below |
+| `deploy/kcl/<env>/main.k` or `deploy/envs/<env>.yaml` declares the env, and it has no workloads or some workload is not external (or it does not render) | none: refused (`record_only_release`), forge deploys that env or nothing shows who does |
+| `deploy/kcl/<env>/main.k` or `deploy/envs/<env>.yaml` binds every workload to the external runtime | the control plane the env declares (`forge.ControlPlane`, a document's `control_plane:`), where it is **self-managed**; Reliant cloud when it declares none. Not signed in, or `FORGE_LEDGER=machine`: this machine, as below |
 | signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
 | `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
 
@@ -97,7 +138,7 @@ nothing.
     env:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
     steps:
-      - uses: actions/checkout@v4     # for forge.yaml's name
+      - uses: actions/checkout@v4     # for deploy/envs/prod.yaml (or forge.yaml's name)
       - name: Install forge
         run: |
           curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh

@@ -99,7 +99,11 @@ func runMigrateUp(w io.Writer, dsn, migDir string) error {
 // runMigrateUpWith is runMigrateUp under the given lock and statement
 // timeouts and retry limits (pkg/migratekit/locktimeout.go).
 func runMigrateUpWith(w io.Writer, dsn, migDir string, limits migratekit.Limits) error {
-	if h, ok := projectMigrationHook(migDir); ok {
+	h, ok, herr := projectMigrationHook(migDir)
+	if herr != nil {
+		return herr
+	}
+	if ok {
 		if limits != (migratekit.Limits{}) {
 			_, _ = fmt.Fprintf(w, "note: --lock-timeout / --statement-timeout / --lock-attempts govern forge's migrator; %s runs with its own\n", h.Tool)
 		}
@@ -190,7 +194,11 @@ func reportGrants(w io.Writer, res migratekit.Result) {
 // runMigrateStatus reports the schema's version against the migrations in
 // migDir. An unmigrated database is a normal state, not an error.
 func runMigrateStatus(w io.Writer, dsn, migDir string) error {
-	if h, ok := projectMigrationHook(migDir); ok {
+	h, ok, herr := projectMigrationHook(migDir)
+	if herr != nil {
+		return herr
+	}
+	if ok {
 		return runHookMigrate(w, h, dsn, true)
 	}
 	ms, err := projectMigrations(migDir)
@@ -252,7 +260,11 @@ func squashedBy(m compat.Migration, version uint) bool {
 // for a script to read. No migration applied is an error, as it was from the
 // golang-migrate CLI, so a script never reads a version that does not exist.
 func runMigrateVersion(w io.Writer, dsn, migDir string) error {
-	if h, ok := projectMigrationHook(migDir); ok {
+	h, ok, herr := projectMigrationHook(migDir)
+	if herr != nil {
+		return herr
+	}
+	if ok {
 		// The tool's version is in its own words; forge does not parse it.
 		return runHookMigrate(w, h, dsn, true)
 	}
@@ -279,7 +291,11 @@ func runMigrateVersion(w io.Writer, dsn, migDir string) error {
 // alone, the version had no record row and the next Up refused it as MISSING.
 // -1 is golang-migrate's "no version".
 func runMigrateForce(w io.Writer, dsn, migDir, arg string) error {
-	if h, ok := projectMigrationHook(migDir); ok {
+	h, ok, herr := projectMigrationHook(migDir)
+	if herr != nil {
+		return herr
+	}
+	if ok {
 		return refuseUnderMigrationHook("migrate force", h, "repair the state with "+h.Tool+"'s own command (it keeps its own version table)")
 	}
 	version, err := strconv.Atoi(arg)

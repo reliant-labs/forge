@@ -1981,6 +1981,13 @@ type upServiceRow struct {
 	// listener, or on platforms where the port→pid lookup is a no-op.
 	PID   int  `json:"pid,omitempty"`
 	Owned bool `json:"owned,omitempty"`
+	// HeldBy is set when the listener on Port belongs to ANOTHER forge stack
+	// (its ancestry carries a forge-up marker of another project, or of
+	// another env of this one): the port is taken, and this row's service is
+	// not what answers on it. Two projects' default port blocks can claim the
+	// same port, and a green "up" for the other project's dev server sent an
+	// agent to the wrong app (forge bug report b95af041).
+	HeldBy string `json:"held_by,omitempty"`
 	// Serving lists the live server process(es) actually running this host
 	// service's binary — the LEAF process under its runner (air / go-run),
 	// discovered by sweeping the process table for this project+env's
@@ -2214,6 +2221,8 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 		rows[i].PID = pid
 		if _, ok := forgeOwnerOfPID(pid, projectID, env, facts); ok {
 			rows[i].Owned = true
+		} else if proj, otherEnv, ok := otherForgeStackOfPID(pid, projectID, env, facts); ok {
+			rows[i].HeldBy = otherStackLabel(proj, otherEnv, projectID)
 		}
 	}
 }
@@ -2417,7 +2426,7 @@ func statusGlyph(r upServiceRow, _ string) string {
 	switch {
 	case r.Port <= 0:
 		return "·"
-	case r.Listening:
+	case r.Listening && r.HeldBy == "":
 		return "●"
 	default:
 		return "○"
@@ -2434,6 +2443,9 @@ func rowStatus(r upServiceRow, notReadyLabel string, showOwner bool) string {
 	}
 	if !r.Listening {
 		return notReadyLabel
+	}
+	if r.HeldBy != "" {
+		return fmt.Sprintf("down (port held by pid %d of %s)", r.PID, r.HeldBy)
 	}
 	if !showOwner || r.PID <= 0 {
 		return "up"

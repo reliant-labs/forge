@@ -1,5 +1,19 @@
 {
   "output": {
+    "apis": [
+      {
+        "base_path": "/v1",
+        "database": "analytics",
+        "kind": "openapi",
+        "name": "public",
+        "spec": "api/openapi.yaml"
+      },
+      {
+        "kind": "proto",
+        "name": "acme",
+        "spec": "proto"
+      }
+    ],
     "applier": null,
     "cluster_target": {
       "cluster": "k3d-acme",
@@ -211,6 +225,19 @@
     "required_dns": [],
     "required_secrets": [],
     "runtime_classes": [],
+    "schema_only_databases": [
+      {
+        "dialect": "postgres",
+        "migrations": {
+          "dir": "analytics/migrations",
+          "driver": "goose"
+        },
+        "name": "analytics",
+        "orm": {
+          "package": "internal/analyticsdb"
+        }
+      }
+    ],
     "secret_provider": {
       "path": "secrets/dev.yaml",
       "type": "file"

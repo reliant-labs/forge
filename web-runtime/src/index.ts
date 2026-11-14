@@ -188,6 +188,7 @@ export {
   disableTelemetry,
   KIND_PROP,
   KIND_STATE,
+  setTelemetryOrg,
   setTelemetryUser,
   track,
   type TrackOptions,
@@ -292,6 +293,7 @@ export {
   type AppClient,
   type Attribution,
   type AttributionTouch,
+  type WithAttributionOptions,
 } from "./attribution.js";
 
 /**

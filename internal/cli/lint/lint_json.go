@@ -519,15 +519,60 @@ func collectConventionsJSON(opts forgeconv.LintOptions) ([]lintJSONFinding, bool
 	return out, combined.HasErrors(), nil
 }
 
+// collectMigrationSafetyJSON lints the migrations of EVERY database the
+// project declares (config.ProjectDatabases): forge.yaml's one, or each one
+// the env declaration (deploy/kcl) declares a schema for, under its own
+// dials and migration tool. When there are several, every finding and every
+// skip names its database.
 func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, bool, error) {
-	migrationsDir := migrationsDirFor(cfg)
-	ruleConfig := migrationlint.DefaultConfig()
-	if cfg != nil {
-		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety).ForTool(cfg.Database.MigrationTool())
+	projectDir := cfg.ProjectDir()
+	if projectDir == "" {
+		projectDir = "."
 	}
-	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)
+	dbs, err := config.ProjectDatabases(projectDir)
 	if err != nil {
-		return nil, false, fmt.Errorf("migration safety lint failed: %w", err)
+		return nil, false, fmt.Errorf("migration safety lint: %w", err)
+	}
+	if len(dbs) == 1 && dbs[0].Source == config.DatabaseSourceForgeYAML {
+		// forge.yaml's one database: read from the loaded config, as always.
+		ruleConfig := migrationlint.DefaultConfig()
+		if cfg != nil {
+			ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety).ForTool(cfg.Database.MigrationTool())
+		}
+		return lintMigrationSafetyDir(migrationsDirFor(cfg), ruleConfig, "")
+	}
+	var all []lintJSONFinding
+	hasErrors := false
+	for _, d := range dbs {
+		prefix := ""
+		if len(dbs) > 1 {
+			prefix = "database " + d.Name + ": "
+		}
+		ruleConfig := migrationlint.ConfigFromProject(d.MigrationSafety).ForTool(d.Config(config.DatabaseConfig{}).MigrationTool())
+		dir := filepath.Join(projectDir, filepath.FromSlash(d.MigrationsPath()))
+		// Findings name files as the single-database pass does: relative to
+		// where lint runs (the project root), when the directory is below it.
+		if wd, werr := os.Getwd(); werr == nil {
+			if rel, rerr := filepath.Rel(wd, dir); rerr == nil && !strings.HasPrefix(rel, "..") {
+				dir = rel
+			}
+		}
+		out, errs, err := lintMigrationSafetyDir(dir, ruleConfig, prefix)
+		if err != nil {
+			return nil, false, err
+		}
+		all = append(all, out...)
+		hasErrors = hasErrors || errs
+	}
+	return all, hasErrors, nil
+}
+
+// lintMigrationSafetyDir is one database's migration-safety pass over dir,
+// every message prefixed with prefix (the database, when there are several).
+func lintMigrationSafetyDir(dir string, ruleConfig migrationlint.RuleConfig, prefix string) ([]lintJSONFinding, bool, error) {
+	result, err := migrationlint.LintMigrationsDir(dir, ruleConfig)
+	if err != nil {
+		return nil, false, fmt.Errorf("migration safety lint failed: %s%w", prefix, err)
 	}
 	out := findingsToJSON(result.Findings)
 	// A pass that read nothing, and every rule that did not run under the
@@ -535,10 +580,10 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	// not read as a clean one (forge bug c8b8c6e9).
 	var skipped []lintJSONFinding
 	if result.Skipped != "" {
-		skipped = append(skipped, skippedFinding("migration safety: nothing was checked — "+result.Skipped))
+		skipped = append(skipped, skippedFinding("migration safety: "+prefix+"nothing was checked — "+result.Skipped))
 	}
 	for _, sk := range result.RuleSkips {
-		skipped = append(skipped, skippedFinding("migration safety: "+sk.String()))
+		skipped = append(skipped, skippedFinding("migration safety: "+prefix+sk.String()))
 	}
 	// Per-RULE remediation. These findings carry no Remediation of their
 	// own, and stamping every one with the destructive text told an author
@@ -546,6 +591,7 @@ func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, b
 	// not silence it.
 	for i := range out {
 		out[i].FixHint = migrationlint.RemediationFor(result.Findings[i].Rule)
+		out[i].Message = prefix + out[i].Message
 	}
 	return append(skipped, out...), result.HasErrors(), nil
 }

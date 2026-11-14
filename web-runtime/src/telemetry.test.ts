@@ -15,6 +15,8 @@ import {
   vi,
 } from "vitest";
 
+import type { ReplayRecordPlugin } from "./url-scrub.js";
+
 const init = vi.fn();
 const recordException = vi.fn();
 const addAction = vi.fn();
@@ -111,6 +113,12 @@ function stubDom() {
 function dispatch(type: string, event: unknown) {
   for (const fn of listeners.get(type) ?? []) fn(event);
 }
+
+// Transform the module graph once, outside any test: a cold import of
+// telemetry.js takes seconds on a loaded machine, and inside the first test
+// it ran against that test's 5s timeout. load() then re-evaluates from the
+// transform cache in milliseconds.
+beforeAll(() => load(), 60_000);
 
 beforeEach(() => {
   init.mockReset();
@@ -725,10 +733,41 @@ describe("buildSdkOptions", () => {
       expect(opts.maskAllText).toBe(true);
       expect(opts.recordCanvas).toBe(false);
       expect(opts.blockSelector).toBe(t.REPLAY_BLOCK_SELECTOR);
-      expect(opts.replay).toEqual({ inlineImages: false, collectFonts: false });
+      expect(opts.replay).toMatchObject({
+        inlineImages: false,
+        collectFonts: false,
+      });
     }
     for (const tag of ["img", "picture", "video", "audio", "iframe"]) {
       expect(t.REPLAY_BLOCK_SELECTOR.split(/,\s*/)).toContain(tag);
+    }
+  });
+
+  it("hands the recorder the replay URL scrub, with the config's kept parameters", async () => {
+    const { t } = await load();
+    const meta = {
+      type: 4,
+      data: {
+        href: `${ORIGIN}/welcome?utm_source=ad&email=j%40x.io#tok`,
+        width: 1,
+        height: 1,
+      },
+      timestamp: 1,
+    };
+    const cases: Array<[{ keepUrlQueryParams?: string[] }, string]> = [
+      [{}, `${ORIGIN}/welcome`],
+      [{ keepUrlQueryParams: ["utm_*"] }, `${ORIGIN}/welcome?utm_source=ad`],
+    ];
+    for (const [config, href] of cases) {
+      const opts = t.buildSdkOptions(
+        { ...base, ...config, replay: true },
+        `${ORIGIN}/_otel`,
+        ORIGIN,
+      );
+      const plugins = (opts.replay as { plugins: ReplayRecordPlugin[] })
+        .plugins;
+      expect(plugins.map((p) => p.name)).toEqual(["forge/replay-url-scrub"]);
+      expect(plugins[0]!.eventProcessor(meta).data.href).toBe(href);
     }
   });
 
@@ -2206,8 +2245,15 @@ describe("app.client, visitor.id and user_identified", () => {
       "app.client": "landing",
     });
     expect(store.size).toBe(0);
-    expect(index.withAttribution("https://app.example.com/")).toBe(
-      "https://app.example.com/",
+    // This page load's campaign is passed on to the site's own app; no
+    // visitor id is, and an unrelated site gets nothing.
+    expect(
+      index.withAttribution("https://app.example.com/", {
+        sites: ["app.example.com"],
+      }),
+    ).toBe("https://app.example.com/?utm_source=news");
+    expect(index.withAttribution("https://elsewhere.example.org/")).toBe(
+      "https://elsewhere.example.org/",
     );
     k.setTelemetryUser("user-1");
     expect(

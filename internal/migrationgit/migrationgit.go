@@ -262,6 +262,55 @@ func MergeBaseFiles(repoRoot, migrationsDir string) (map[string]bool, bool) {
 	return files, true
 }
 
+// MergeBase resolves the merge-base between HEAD and the default branch: its
+// commit and the default-branch ref it was computed against. False when
+// either cannot be read (no repository, no default branch, a shallow clone
+// that lacks the history).
+func MergeBase(repoRoot string) (sha, ref string, ok bool) {
+	ref, ok = defaultBranchRef(repoRoot)
+	if !ok {
+		return "", "", false
+	}
+	sha, ok = mergeBaseRev(repoRoot)
+	return sha, ref, ok
+}
+
+// ResolveCommit resolves rev (a ref, a sha, `HEAD~2`) to its commit sha.
+func ResolveCommit(repoRoot, rev string) (string, bool) {
+	out, ok := runGit(repoRoot, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
+}
+
+// ChangedSince lists the base names of the files directly in dir whose
+// working-tree content differs from revision rev: modified, added or deleted
+// since rev. Untracked files are not in it (git diff does not see them); a
+// caller tells a new file from FilesAt. False when rev cannot be read.
+func ChangedSince(repoRoot, dir, rev string) (map[string]bool, bool) {
+	rel, err := repoRelative(repoRoot, dir)
+	if err != nil {
+		return nil, false
+	}
+	out, ok := runGit(repoRoot, "diff", "--name-only", "--no-renames", rev, "--", filepath.ToSlash(rel))
+	if !ok {
+		return nil, false
+	}
+	prefix := strings.TrimSuffix(filepath.ToSlash(rel), "/") + "/"
+	if rel == "." {
+		prefix = ""
+	}
+	changed := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		name, found := strings.CutPrefix(strings.TrimSpace(line), prefix)
+		if found && name != "" && !strings.Contains(name, "/") {
+			changed[name] = true
+		}
+	}
+	return changed, true
+}
+
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {

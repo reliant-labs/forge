@@ -601,7 +601,7 @@ func verifyCluster(ctx context.Context, projectDir, envName string, resolved map
 		// to add a field to deploy/kcl/<env>/main.k names a file they will
 		// not find, which is how a diagnostic costs more time than it saves.
 		mainK := filepath.Join(projectDir, "deploy", "kcl", envName, "main.k")
-		if _, statErr := os.Stat(mainK); statErr != nil {
+		if !envHasDeclaration(projectDir, envName, mainK) {
 			results = unreachableVerifications(resolved, fmt.Errorf(
 				"environment %s is bound in the ledger but not declared in this checkout (%s does not exist) — "+
 					"verify from a checkout that declares it", envName, mainK))

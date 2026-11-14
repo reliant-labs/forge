@@ -33,6 +33,7 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -143,6 +144,16 @@ func obsTargetFingerprint(projectDir, env string) string {
 	// kcl.mod's forge_projects resolve through go.mod's pins.
 	stat(filepath.Join(projectDir, "go.mod"), "go.mod")
 	stat(filepath.Join(projectDir, "go.sum"), "go.sum")
+	// An env document (deploy/envs/<env>.yaml|.json) declares the env instead
+	// of KCL: its presence and its bytes are inputs too, so editing its
+	// endpoint, token_env or destination, or adding or removing it,
+	// invalidates the cached target.
+	for _, p := range envdoc.Candidates(projectDir, env) {
+		rel, _ := filepath.Rel(projectDir, p)
+		if !stat(p, filepath.ToSlash(rel)) {
+			fmt.Fprintf(h, "%s\x00absent\x00", filepath.ToSlash(rel))
+		}
+	}
 	root := filepath.Join(projectDir, "deploy", "kcl")
 	// A path dependency (the sibling forge checkout) is KCL the stamp cannot see.
 	if mod, err := os.ReadFile(filepath.Join(root, "kcl.mod")); err != nil || kclModHasPathDependency(string(mod)) {

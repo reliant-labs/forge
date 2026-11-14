@@ -328,6 +328,8 @@ func TestEveryGeneratedDashboardHasAGroup(t *testing.T) {
 		"overview": GroupOverview, "process-admin-api": GroupServices, "process-workers": GroupServices, "process-workspace": GroupServices,
 		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct,
 		"users": GroupProduct, "product": GroupProduct, "acquisition": GroupProduct,
+		"ai": GroupAI, "ai-workflows": GroupAI, "ai-models": GroupAI, "ai-users": GroupAI,
+		"ai-errors": GroupAI, "ai-tools": GroupAI,
 	}
 	got := map[string]Group{}
 	for _, d := range Build(fleet()).Dashboards {

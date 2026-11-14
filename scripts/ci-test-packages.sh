@@ -26,6 +26,8 @@
 # compile and link time, which a package boundary splits as well as anything
 # finer would. internal/ciguard proves ci.yml's matrix names every index of
 # its shard count, so no shard can drop out of the matrix with its packages.
+# One guard runs whole there too: test-short runs internal/removalguard in full
+# mode after the tier (~10s), because its scan was main's most frequent red.
 #
 # WHY THE GUARDS HAVE THEIR OWN JOB. internal/tierguard renders four whole forge
 # projects, internal/removalguard regex-scans every file in the repository, and

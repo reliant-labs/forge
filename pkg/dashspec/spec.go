@@ -616,13 +616,17 @@ const (
 	GroupServices Group = "services"
 	GroupJobs     Group = "jobs"
 	GroupProduct  Group = "product"
+	// GroupAI is the AI hub: model calls, agents, tools and workflow runs
+	// (pkg/obsbuiltin's AI dashboards). A reader that predates it lists
+	// them under GroupCustom.
+	GroupAI       Group = "ai"
 	GroupPlatform Group = "platform"
 	GroupReleases Group = "releases"
 	GroupCustom   Group = "custom"
 )
 
 // Groups lists every group in display order.
-var Groups = []Group{GroupOverview, GroupServices, GroupJobs, GroupProduct, GroupPlatform, GroupReleases, GroupCustom}
+var Groups = []Group{GroupOverview, GroupServices, GroupJobs, GroupProduct, GroupAI, GroupPlatform, GroupReleases, GroupCustom}
 
 // MaxTags bounds Dashboard.Tags.
 const MaxTags = 8

@@ -33,7 +33,7 @@ const (
 //
 //	observe.TrackState(ctx, "billing_subscription_state", slog.String("plan", "pro"))
 func TrackState(ctx context.Context, name string, attrs ...slog.Attr) {
-	Track(ctx, name, StateAttrs(attrs)...)
+	Track(WithStateEvents(ctx), name, attrs...)
 }
 
 // TrackStateAs is TrackState for a caller with no signed-in user to read: it
@@ -45,7 +45,7 @@ func TrackStateAs(ctx context.Context, userID, name string, attrs ...slog.Attr) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	trackAs(ctx, name, userID, StateAttrs(attrs))
+	trackAs(WithStateEvents(ctx), name, Actor{UserID: userID}, AppClientBackend, attrs)
 }
 
 type stateEventsKey struct{}

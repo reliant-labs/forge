@@ -28,7 +28,10 @@
 
 package lint
 
-import "github.com/reliant-labs/forge/internal/linter/testwait"
+import (
+	"github.com/reliant-labs/forge/internal/linter/testwait"
+	"github.com/reliant-labs/forge/pkg/dbanalyze"
+)
 
 // rolloutGroup is a set of rules that share a declaration.
 type rolloutGroup struct {
@@ -230,6 +233,13 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 	}},
+	// A product event property whose key names personal data (email, name,
+	// ip, url, path, token). Advisory; --strict raises it.
+	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{"forgeconv-product-event-pii"}},
+	// forge db analyze: what a migration measurably does on a real
+	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
+	// under write-blocking locks, blocking index builds, timeouts.
+	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.RuleIDs()},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

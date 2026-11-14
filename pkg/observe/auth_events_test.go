@@ -127,7 +127,8 @@ func TestTrackAuthRefusesIDsThatAreNotOpaqueSubjects(t *testing.T) {
 	authIDRefused.Store(false)
 	t.Cleanup(func() { authIDRefused.Store(false) })
 
-	for i, id := range []string{"", "ada@example.com", strings.Repeat("x", MaxAuthUserIDLen+1)} {
+	for i, id := range []string{"", "ada@example.com", strings.Repeat("x", MaxAuthUserIDLen+1),
+		"203.0.113.7", "::1", "[2001:db8::1]", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1LTEifQ.c2lnbmF0dXJl"} {
 		lines := authLines(t, context.Background(), AuthSignedIn, id)
 		for _, m := range lines {
 			if _, ok := m["event.name"]; ok {
@@ -144,6 +145,32 @@ func TestTrackAuthRefusesIDsThatAreNotOpaqueSubjects(t *testing.T) {
 	}
 	if !ValidAuthUserID(strings.Repeat("x", MaxAuthUserIDLen)) {
 		t.Error("a 128-character id was refused")
+	}
+}
+
+// An IP address or a JWT passed as the subject is refused before the consent
+// source sees it, not only before user.id is written.
+func TestTrackAuthNeverHandsANonOpaqueIDToTheConsentSource(t *testing.T) {
+	authIDRefused.Store(false)
+	t.Cleanup(func() { authIDRefused.Store(false); SetConsentSource(nil) })
+	var seen []string
+	SetConsentSource(ConsentFunc(func(_ context.Context, a Actor) (bool, error) {
+		seen = append(seen, a.UserID)
+		return true, nil
+	}))
+	for _, id := range []string{"198.51.100.4", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1LTEifQ.c2lnbmF0dXJl"} {
+		for _, m := range authLines(t, context.Background(), AuthSignedIn, id) {
+			if m["event.name"] != nil || m["user.id"] != nil {
+				t.Errorf("id %q was recorded: %v", id, m)
+			}
+		}
+	}
+	if len(seen) != 0 {
+		t.Errorf("the consent source was asked about %q", seen)
+	}
+	authLines(t, context.Background(), AuthSignedIn, "u-opaque")
+	if len(seen) != 1 || seen[0] != "u-opaque" {
+		t.Errorf("an opaque subject must reach the consent source once, saw %q", seen)
 	}
 }
 

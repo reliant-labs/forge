@@ -8,6 +8,8 @@
 #
 # Environment:
 #   FORGE_VERSION      release to install, e.g. v1.0.0 or 1.0.0 (default: latest)
+#   FORGE_INSTALL_ATTRIBUTION  where the install came from (an install page's rid and
+#                      utm_*, as a query string); kept by forge's telemetry only while it is on
 #   FORGE_INSTALL_DIR  directory to install into (default: $HOME\.local\bin)
 #
 # Testing seam: FORGE_RELEASE_BASE_URL replaces https://github.com/reliant-labs/forge/releases.
@@ -68,6 +70,11 @@ try {
   Copy-Item -Force (Join-Path $unpacked 'forge.exe') (Join-Path $destDir 'forge.exe')
   Write-Host "Installed $(Join-Path $destDir 'forge.exe')"
   & (Join-Path $destDir 'forge.exe') version
+  # Where the install came from, as an install page passes it (rid and utm_*
+  # only; forge keeps what is well formed, and nothing while its telemetry is off).
+  if ($env:FORGE_INSTALL_ATTRIBUTION -and $env:FORGE_INSTALL_ATTRIBUTION -match '^[A-Za-z0-9_.%+=&-]+$') {
+    & (Join-Path $destDir 'forge.exe') telemetry attribution $env:FORGE_INSTALL_ATTRIBUTION *> $null
+  }
 
   $onPath = ($env:PATH -split ';') -contains $destDir
   if (-not $onPath) {

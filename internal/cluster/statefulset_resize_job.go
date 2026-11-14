@@ -231,11 +231,7 @@ func decodeStatefulSetResize(raw any) (disabled bool, image, releaseOwner string
 	if err != nil {
 		return false, "", "", err
 	}
-	var v struct {
-		Disabled     bool   `json:"disabled"`
-		Image        string `json:"image"`
-		ReleaseOwner string `json:"release_owner"`
-	}
+	var v StatefulSetResizeOutput
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&v); err != nil {

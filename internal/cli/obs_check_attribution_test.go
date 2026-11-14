@@ -83,7 +83,10 @@ func TestObsCheckAttribution(t *testing.T) {
         "v1.12.0-rc.12": 3
       }`,
 				`"window_not_live": "the judged after window [2026-11-10T03:47:30Z, 2026-11-10T04:02:30Z) ended before the release went live at 2026-11-10T04:48:49Z`,
-				`"unattributed": "the after window is not the live release's"`, `"policy": "warn"`, `"version_share": 0.0005473453749315818`},
+				`"unattributed": "the after window is not the live release's"`, `"policy": "warn"`, `"version_share": 0.0005473453749315818`,
+				// The remedy: a window from promoted_at that the release was
+				// live for most of (61m19s late: twice that, rounded up).
+				`"forge obs check prod --promotion 94bf7fc8 --window 123m"`},
 		},
 		{
 			name: "without the gates, the window's version share keeps it from failing",

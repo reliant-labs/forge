@@ -41,6 +41,10 @@ func Execute() error {
 	if handed, err := HandOffToPinned(context.Background(), os.Args[1:], os.Stderr); err != nil || handed {
 		return err
 	}
+	// forge's own Events (telemetry.go): after the hand-off, so a run handed
+	// to the pinned forge is that forge's to count.
+	flush := startTelemetry(os.Args[1:])
+	defer flush()
 	return NewRootCmd().Execute()
 }
 
@@ -318,6 +322,8 @@ path from an empty directory to authored protos, in one call.`,
 	// `report-bug` files a defect in forge itself with the Reliant team. It
 	// is the only way forge ever sends a report (internal/bugreport).
 	rootCmd.AddCommand(newReportBugCmd())
+	// `telemetry` turns forge's anonymous usage events on or off (telemetry.go).
+	rootCmd.AddCommand(newTelemetryCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newProtocGenForgeCmd())
 	// `component` migrated to the internal/cli/component group (registered

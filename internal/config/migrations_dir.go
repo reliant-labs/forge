@@ -55,10 +55,39 @@ func MigrationsDirIn(projectDir string) string {
 	return db.MigrationsPath()
 }
 
-// readDatabaseBlock decodes forge.yaml's `database:` block alone. ok is false
-// when there is no readable, parseable forge.yaml; the zero block is then
-// every default.
+// readDatabaseBlock is the project's primary database as the leaf readers
+// consume it: forge.yaml's `database:` block, with the env declaration's
+// primary database lowered onto it when the project declares one
+// (primaryOverlay; see databases.go). ok is false when there is neither a
+// readable forge.yaml nor a declared database; the zero block is then every
+// default.
 func readDatabaseBlock(projectDir string) (DatabaseConfig, bool) {
+	db, ok := readYAMLDatabaseBlock(projectDir)
+	if dbs, err := ProjectDatabases(projectDir); err == nil {
+		if d, primary := PrimaryDatabase(dbs); primary && d.Source == DatabaseSourceKCL {
+			return d.Config(db), true
+		}
+	}
+	return db, ok
+}
+
+// sameDir reports whether rel (project-relative) and abs name one directory.
+func sameDir(projectDir, rel, abs string) bool {
+	a, err := filepath.Abs(filepath.Join(projectDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return false
+	}
+	b, err := filepath.Abs(abs)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// readYAMLDatabaseBlock decodes forge.yaml's `database:` block alone. ok is
+// false when there is no readable, parseable forge.yaml; the zero block is
+// then every default.
+func readYAMLDatabaseBlock(projectDir string) (DatabaseConfig, bool) {
 	data, err := os.ReadFile(filepath.Join(projectDir, ProjectConfigFile)) //nolint:gosec // project dir + fixed filename
 	if err != nil {
 		return DatabaseConfig{}, false

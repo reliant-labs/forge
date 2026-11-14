@@ -11,6 +11,18 @@ import (
 
 type snapshotKey struct{}
 
+// snapshotPinsKey holds the same pins as a map, for the Go renderer of an env
+// document (internal/envdoc), which binds them without a KCL evaluation.
+type snapshotPinsKey struct{}
+
+// SnapshotPins are the per-workload, per-slot references WithSnapshot bound to
+// ctx (workload → slot → reference), and whether the render is immutable
+// (every slot must be bound). ok is false when no snapshot is bound.
+func SnapshotPins(ctx context.Context) (pins map[string]map[string]string, ok bool) {
+	pins, ok = ctx.Value(snapshotPinsKey{}).(map[string]map[string]string)
+	return pins, ok
+}
+
 // WithSnapshot validates and freezes the complete render pin context. Duplicate
 // workload names across destinations with differing pins refuse because today's
 // KCL binding is workload-relative; render those destinations separately instead.
@@ -37,6 +49,7 @@ func WithSnapshot(ctx context.Context, s release.Snapshot) (context.Context, err
 	if err != nil {
 		return ctx, err
 	}
+	ctx = context.WithValue(ctx, snapshotPinsKey{}, pins)
 	return context.WithValue(ctx, snapshotKey{}, []string{"forge_workload_image_digests=" + strconv.Quote(string(data)), "forge_immutable_release=true"}), nil
 }
 

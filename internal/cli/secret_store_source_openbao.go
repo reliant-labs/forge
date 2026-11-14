@@ -105,6 +105,9 @@ type OpenBaoEntity struct {
 	// Bootstrap is the delivery the component renders under a
 	// GCPSecretManager source: nil under any other.
 	Bootstrap *OpenBaoBootstrapEntity `json:"bootstrap,omitempty"`
+	// Warnings are the render's notes about the component's configuration
+	// (the recovery escrow, kcl/lib/openbao.k), shown with the render.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // OpenBaoBootstrapEntity is the resolved Secret Manager delivery: the Google

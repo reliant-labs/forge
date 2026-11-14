@@ -249,6 +249,14 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   well under the tier's other jobs; `internal/cli` is the slow case. Run it locally with
   `scripts/ci-golangci-changed.sh` (base: the merge base with `origin/main`; `--plan` lists
   the packages). Packages the diff did not touch stay with **Lint** on main.
+- **Windows (changed packages, -short)** (`windows-changed`; owner, 2026-11-13, after four
+  Windows-only reds reached main in a day): a native Windows runner runs `go test -short`
+  over `scripts/ci-changed-packages.sh HEAD^1` — the packages the entry changed plus their
+  direct importers, guards dropped; go.mod/go.sum runs every package. About five minutes
+  for a small `pkg/` diff, 10-15 when it reaches `internal/cli` or `internal/generator`:
+  the one merge-tier job over the budget, on purpose. Capped at 20 minutes. Label a pull
+  request **`ci:windows`** (read on the next push) to run it before review. Main's full
+  **Windows** job still runs every package.
 - **Review marker** — every pull request in the group must carry `pr-review`'s pass marker
   for its current head (`scripts/ci-review-marker.sh`), so a head pushed after a pass cannot
   ride an armed auto-merge in.

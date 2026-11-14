@@ -30,48 +30,93 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/reliant-labs/forge/pkg/redact"
 )
 
 // databaseIdentity reduces a DSN to the pair that decides WHICH DATABASE it
 // names: normalized server coordinates and the database name, as
-// "host:port/database". Credentials and query parameters are deliberately
+// "host:port/database". Credentials and TLS settings are deliberately
 // excluded — connecting as a different role, or with a different sslmode,
 // does not make it a different database.
+//
+// It is read from the EFFECTIVE connection config, by pgx's own parser — the
+// one every forge connection dials with — never from the URL's authority and
+// path alone. pgx honours host, port and dbname query parameters over the
+// URL's (postgres://snapshot/app?host=prod-db connects to prod-db), reads
+// keyword/value DSNs, and fills what the DSN leaves out from PGHOST, PGPORT,
+// PGDATABASE and its defaults. An identity that read the URL instead
+// described a database the connection never reached, which let a DSN past a
+// guard that was looking at a different database than the one acted on.
+//
+// A DSN that can reach more than one server (a multi-host list) has no single
+// identity and yields "": which of them a connection lands on is decided at
+// connect time, so no comparison made beforehand can stand for it. pgx's TLS
+// fallback for sslmode=prefer retries the SAME server and is not a second one.
 //
 // Host normalization folds every spelling of "this machine" onto localhost,
 // including the docker/k3d gateway aliases: a DSN written from a POD's point
 // of view reaches the developer's machine through host.k3d.internal, and it
-// denotes the very database a loopback DSN would. An absent port is the
-// postgres default, 5432, so the implicit and explicit spellings agree.
+// denotes the very database a loopback DSN would. A unix-socket directory is
+// kept as it is: it names a server only on this machine, by its path.
 //
-// A DSN that will not parse, names no host, or names no database yields "" —
-// the caller must treat that as "cannot be reconciled", never as a match.
+// A DSN that will not parse, names no database, or names several servers
+// yields "" — the caller must treat that as "cannot be reconciled", never as
+// a match.
 func databaseIdentity(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.Hostname() == "" {
+	ids := databaseEndpoints(dsn)
+	if len(ids) != 1 {
 		return ""
 	}
-	name := strings.TrimPrefix(u.Path, "/")
-	if name == "" || strings.Contains(name, "/") {
-		return ""
+	return ids[0]
+}
+
+// databaseEndpoints is every "host:port/database" identity a DSN can connect
+// to, in pgx's order, without duplicates: one for an ordinary DSN, several for
+// a multi-host one, none for a DSN pgx cannot parse or that names no database.
+// A guard asking "could this DSN reach database X" checks X against all of
+// them; one asking "which database is this" needs exactly one
+// (databaseIdentity).
+func databaseEndpoints(dsn string) []string {
+	cfg, err := pgconn.ParseConfig(dsn)
+	if err != nil || cfg.Database == "" {
+		return nil
 	}
-	host := u.Hostname()
-	switch host {
-	case "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", k3dHostGatewayAlias:
-		host = "localhost"
+	var out []string
+	add := func(host string, port uint16) {
+		id := normalizePGHost(host) + ":" + strconv.Itoa(int(port)) + "/" + cfg.Database
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
 	}
-	port := u.Port()
-	if port == "" {
-		port = "5432"
+	add(cfg.Host, cfg.Port)
+	for _, fb := range cfg.Fallbacks {
+		add(fb.Host, fb.Port)
 	}
-	return host + ":" + port + "/" + name
+	return out
+}
+
+// normalizePGHost folds the spellings of this machine onto localhost and
+// lower-cases a hostname (DNS is case-insensitive); a unix-socket directory,
+// a path, is kept verbatim.
+func normalizePGHost(host string) string {
+	if strings.HasPrefix(host, "/") {
+		return host
+	}
+	switch h := strings.ToLower(host); h {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal", k3dHostGatewayAlias:
+		return "localhost"
+	default:
+		return h
+	}
 }
 
 // reconcileClaimedDSN reports whether the DSN a command is about to act on is
@@ -87,7 +132,7 @@ func reconcileClaimedDSN(claimed, declared, env string) error {
 	claimedID := databaseIdentity(claimed)
 	if claimedID == "" {
 		return fmt.Errorf("refusing to act on %s: it does not name a server and database, so forge cannot tell which database it would affect",
-			redactDSNForMessage(claimed))
+			redact.DSN(claimed))
 	}
 
 	if declared == "" {
@@ -110,7 +155,7 @@ Give the environment a database to be reconciled against: declare DATABASE_URL i
 	declaredID := databaseIdentity(declared)
 	if declaredID == "" {
 		return fmt.Errorf("refusing to act on %s: environment %q declares a database URL forge cannot parse (%s), so the two cannot be reconciled",
-			claimedID, env, redactDSNForMessage(declared))
+			claimedID, env, redact.DSN(declared))
 	}
 
 	if claimedID == declaredID {
@@ -127,22 +172,6 @@ These are different databases. Environment %q was confirmed from deploy/kcl/%s/c
 
 If the connection string is right, the environment is wrong (pass --env). If the environment is right, drop --dsn and unset DATABASE_URL so forge uses what %q declares.`,
 		env, claimedID, env+" declares:", declaredID, env, env, env)
-}
-
-// redactDSNForMessage masks a password before a DSN reaches an error message.
-// A DSN that will not parse is reported opaquely rather than echoed, since an
-// unparseable string is exactly the one whose shape is unknown.
-func redactDSNForMessage(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "the given connection string"
-	}
-	if u.User != nil {
-		if _, hasPassword := u.User.Password(); hasPassword {
-			u.User = url.UserPassword(u.User.Username(), "xxxxx")
-		}
-	}
-	return u.String()
 }
 
 // declaredEnvDSN resolves the DATABASE_URL the ENVIRONMENT declares — the
@@ -293,7 +322,7 @@ func resolveSeedWriteDSN(ctx context.Context, flagDSN, projectDir, env string, a
 --dsn may name ANY loopback database — localhost, 127.0.0.1, ::1 or a unix socket, on any port — so a throwaway postgres needs no flag. A remote server is refused unless it is the env's own, because the one remote DSN most likely to be pasted into a seed command is production's.
 
 If you do mean to seed that server, pass --allow-remote-dsn (the environment must still be dev).`,
-		redactDSNForMessage(flagDSN), env, env, declaredNote)
+		redact.DSN(flagDSN), env, env, declaredNote)
 }
 
 // isLoopbackDSN reports whether every server a DSN can connect to is on this

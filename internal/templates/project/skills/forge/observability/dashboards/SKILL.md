@@ -5,7 +5,7 @@ description: Process/role dashboards derived from deployed executable and compos
 
 # Observability: generated dashboards
 
-Every dashboard declares a `group` (overview, services, jobs, product, platform, releases or custom) and optional `tags`, which only a list view reads; `replaces` lists the ids a renamed generated dashboard supersedes, so a reader can carry stars and copies over. A process dashboard is named for the forge workload (`admin-api`), never the rendered Job/command/hash. An env that deploys no process (a static site) gets only its frontend dashboard, and the frontend dashboard follows the frontends that env serves.
+Every dashboard declares a `group` (overview, services, jobs, product, ai, platform, releases or custom; a reader that predates `ai` lists it under custom) and optional `tags`, which only a list view reads; `replaces` lists the ids a renamed generated dashboard supersedes, so a reader can carry stars and copies over. A process dashboard is named for the forge workload (`admin-api`), never the rendered Job/command/hash. An env that deploys no process (a static site) gets only its frontend dashboard, and the frontend dashboard follows the frontends that env serves.
 
 `forge generate` writes reusable RPC, frontend and metric dashboard fragments
 and alert inputs without claiming process ownership. It scopes the overview to

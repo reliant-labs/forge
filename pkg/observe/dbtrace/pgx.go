@@ -8,6 +8,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/reliant-labs/forge/pkg/querycapture"
 )
 
 // PgxTracer traces a native pgx / pgxpool connection with the same spans
@@ -25,10 +27,16 @@ import (
 // It implements pgx.QueryTracer, BatchTracer, CopyFromTracer and
 // ConnectTracer; a batch is one BATCH span with an event per statement.
 // Prepare is not traced, for the reason OpenDB leaves it off.
-type PgxTracer struct{}
+//
+// A tracer from NewPgxTracer also records each statement's shape for
+// `forge db analyze` when FORGE_QUERY_CAPTURE_DIR is set (pkg/querycapture).
+type PgxTracer struct {
+	capture *querycapture.Recorder
+}
 
-// NewPgxTracer returns the tracer to assign to a pgx ConnConfig.Tracer.
-func NewPgxTracer() *PgxTracer { return &PgxTracer{} }
+// NewPgxTracer returns the tracer to assign to a pgx ConnConfig.Tracer. It
+// captures statements when FORGE_QUERY_CAPTURE_DIR is set now.
+func NewPgxTracer() *PgxTracer { return &PgxTracer{capture: querycapture.FromEnv()} }
 
 const pgxTracerName = "github.com/reliant-labs/forge/pkg/observe/dbtrace"
 
@@ -103,6 +111,9 @@ func statementAttributes(query string) []attribute.KeyValue {
 
 // TraceQueryStart implements pgx.QueryTracer.
 func (t *PgxTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if t.capture != nil {
+		t.capture.Record(data.SQL)
+	}
 	return t.start(ctx, statementName(data.SQL), statementAttributes(data.SQL)...)
 }
 
@@ -118,7 +129,10 @@ func (t *PgxTracer) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.Trac
 
 // TraceBatchQuery implements pgx.BatchTracer. Each statement is an event on
 // the batch span, carrying the same sanitized text a query span would.
-func (*PgxTracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+func (t *PgxTracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	if t.capture != nil {
+		t.capture.Record(data.SQL)
+	}
 	span := ownSpan(ctx)
 	if span == nil {
 		return

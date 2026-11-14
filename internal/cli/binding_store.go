@@ -28,7 +28,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -360,8 +359,8 @@ func selectLedgerRendered(ctx context.Context, projectDir, env string, entities 
 		return envLedger{}, err
 	}
 	mainK := filepath.Join(projectDir, "deploy", "kcl", env, "main.k")
-	if _, err := os.Stat(mainK); err != nil {
-		// No KCL for this env in this checkout — nothing can declare a
+	if !envHasDeclaration(projectDir, env, mainK) {
+		// No KCL (and no env document) for this env in this checkout — nothing can declare a
 		// control plane, so the answer is this machine's ledger. This
 		// is how a test project, and an env named only on the command
 		// line, keep working.

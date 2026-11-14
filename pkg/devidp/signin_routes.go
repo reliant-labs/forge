@@ -1086,8 +1086,11 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 	// this provider (auth_events.go).
 	ctx = withSocialMethod(ctx, social.Type)
 	req = req.WithContext(ctx)
-	signIn := func(userID string) {
-		s, err := c.CreateSession(ctx, Credentials{UserID: userID, IDPIntent: intent})
+	// signInWith creates the session with create: CreateSession for an
+	// existing account, createSessionForNewUser for one created just now,
+	// which the session API may not see yet (new_user_session.go).
+	signInWith := func(userID string, create func(context.Context, Credentials) (Session, error)) {
+		s, err := create(ctx, Credentials{UserID: userID, IDPIntent: intent})
 		if err != nil {
 			r.cfg.Logger.WarnContext(ctx, "social sign-in: session refused", "user_id", userID, "error", err)
 			writeErr(w, http.StatusUnauthorized, CodeSocialFailed, msgSocialFailed)
@@ -1097,6 +1100,7 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			writeJSON(w, http.StatusOK, map[string]any{"identity": r.cfg.SignedIn(w, tokens), "returnTo": b.ReturnTo})
 		})
 	}
+	signIn := func(userID string) { signInWith(userID, c.CreateSession) }
 	if b.InviteUserID != "" {
 		r.acceptInviteBySocial(w, req, b, res, social, signIn)
 		return
@@ -1154,7 +1158,7 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			return
 		}
 		r.grantSignupRoleIfSelfSignup(ctx, id, email)
-		signIn(id)
+		signInWith(id, c.createSessionForNewUser)
 	}
 }
 
@@ -1746,7 +1750,10 @@ func (r *SignInRoutes) registerWithoutMail(w http.ResponseWriter, req *http.Requ
 	r.cfg.Logger.InfoContext(ctx, "account created (no mail delivery; signed in unverified)", "user_id", id)
 	reportSignUp(ctx, id, observe.AuthMethodPassword, false)
 	r.grantSignupRole(ctx, id)
-	tokens, err := c.SignIn(ctx, r.cfg.Flow, Credentials{LoginName: email, Password: body.Password})
+	// By id, waiting for the new account to become visible to the session
+	// API (new_user_session.go): a sign-in right after the creation can
+	// otherwise be told the account it just created does not exist.
+	tokens, err := c.signInNewUser(ctx, r.cfg.Flow, Credentials{UserID: id, Password: body.Password})
 	if err != nil {
 		r.unavailable(ctx, w, "sign-up: sign in", err)
 		return

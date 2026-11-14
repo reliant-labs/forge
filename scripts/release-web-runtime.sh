@@ -345,6 +345,38 @@ if [ -n "$FLOOR" ] && ! caret_satisfies "$R_VERSION" "$FLOOR"; then
   fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, which does not admit the $R_VERSION this commit releases (a ${R_BUMP} bump): a forge released from it would scaffold a range that cannot install the runtime its generated code needs. In the pull request that makes the breaking change, raise webRuntimePublishedRange to ^$R_VERSION and $PKG_DIR/package.json's version to $R_VERSION"
 fi
 
+# ── Superseded: a LATER commit already released a version at least this one ──
+# The release train publishes for the forge commit a set pins (F), which can be older than
+# a commit the runtime was already released from by hand or by an earlier set: v1.17.0-rc.1
+# computed 0.13.14 for f389bc3008c7 while web-runtime/v0.13.14 was on db0e90cdd, a
+# descendant, and the cut failed ("that version is taken"), stalling every set until the
+# pin moved. A release from a descendant ships everything this commit's runtime does, so
+# when one is at or above the computed version and inside this commit's caret floor, it
+# IS this commit's runtime: nothing is published (npm's latest never moves back), and in
+# a release npm must serve it.
+verify_served_version() { bash "$SCRIPT_DIR/verify-npm-published.sh" --name "$R_PACKAGE" --version "$1"; }
+SUPER_VERSION="" SUPER_COMMIT=""
+if [ "$R_CHANGED" = true ]; then
+  while read -r ref target; do
+    v="${ref#"$NS/tags/$TAG_PREFIX"}"
+    [[ "$v" =~ $SEMVER_RE ]] || continue
+    [ "$target" != "$COMMIT" ] || continue
+    git merge-base --is-ancestor "$COMMIT" "$target" 2>/dev/null || continue
+    ver_ge "$v" "$R_VERSION" || continue
+    caret_satisfies "$v" "${FLOOR:-$R_VERSION}" || continue
+    if [ -z "$SUPER_VERSION" ] || ! ver_ge "$SUPER_VERSION" "$v"; then SUPER_VERSION="$v"; SUPER_COMMIT="$target"; fi
+  done < <(git for-each-ref --format='%(refname) %(*objectname)%(objectname)' "$NS/tags/" | awk '{print $1, substr($2, 1, 40)}')
+fi
+if [ -n "$SUPER_VERSION" ]; then
+  R_VERSION="$SUPER_VERSION"; R_TAG="$TAG_PREFIX$SUPER_VERSION"; R_CHANGED=false; R_BUMP=none
+  why="$R_TAG was released from ${SUPER_COMMIT:0:12}, which descends from ${COMMIT:0:12} and ships all of its runtime"
+  echo "→ $R_PACKAGE: superseded: $why; nothing to publish"
+  [ "$MODE" = release ] || finish "$([ "$MODE" = plan ] && echo planned || echo validated)" "superseded: $why"
+  if [ -z "$GITHUB_REPO" ]; then finish present "superseded: $why (origin is not on github.com, so npm is not asked)"; fi
+  if verify_served_version "$SUPER_VERSION"; then finish present "superseded: $why; npm serves $R_PACKAGE@$SUPER_VERSION"; fi
+  fail "superseded by $R_TAG, but npm does not serve $R_PACKAGE@$SUPER_VERSION: its publish failed. Re-run that tag's $WORKFLOW_FILE run; never move the tag"
+fi
+
 if [ "$R_CHANGED" = true ]; then
   echo "→ $R_PACKAGE: $R_VERSION (${R_BUMP} over ${R_PREVIOUS:-<no release>}), from $(git log -1 --format='%h %s' "$COMMIT")"
 else

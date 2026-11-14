@@ -24,8 +24,17 @@ import (
 // Record it with -update-command-surface, which only ever ADDS lines and
 // flags, so it cannot paper over a removal. Moving a command to a new noun is
 // a row in deprecated_aliases.go; the old path stays here, and stays working.
+//
+// Because adding is free, main's file can lag the tree, and a bare
+// -update-command-surface then records every command other changes shipped
+// unrecorded. -command-surface-only names the paths to record (comma
+// separated, each with the commands beneath it), so a change records its own
+// lines and nothing else.
 var updateCommandSurface = flag.Bool("update-command-surface", false,
 	"add the current command tree's paths and flags to testdata/command_surface.txt (never removes)")
+
+var commandSurfaceOnly = flag.String("command-surface-only", "",
+	"with -update-command-surface: record only these comma-separated command paths (\"forge db analyze\") and the commands beneath them")
 
 const commandSurfaceFile = "command_surface.txt"
 
@@ -33,8 +42,10 @@ const commandSurfaceHeader = `# forge's v1 command surface: every path 'forge pr
 # lists, with each command's flags (name[/shorthand]:type). Every path here must
 # keep resolving and running, with at least these flags, until v2
 # (TestCommandSurfaceIsStable). To record additions:
-#   go test ./internal/cli -run TestCommandSurfaceIsStable -update-command-surface
-# The update only adds; a removal is a breaking change and fails the test.
+#   go test ./internal/cli -run TestCommandSurfaceIsStable -update-command-surface \
+#     -command-surface-only "forge <your command>"
+# (without -command-surface-only it records every unrecorded path). The update
+# only adds; a removal is a breaking change and fails the test.
 `
 
 // surfaceEntry is one frozen command.
@@ -148,6 +159,30 @@ func writeCommandSurface(t *testing.T, entries map[string]surfaceEntry) {
 	}
 }
 
+// onlySurface keeps the entries of current at or beneath one of the
+// comma-separated paths in only; all of current when only is empty.
+func onlySurface(current map[string]surfaceEntry, only string) map[string]surfaceEntry {
+	var roots []string
+	for _, p := range strings.Split(only, ",") {
+		if p = strings.Join(strings.Fields(p), " "); p != "" {
+			roots = append(roots, p)
+		}
+	}
+	if len(roots) == 0 {
+		return current
+	}
+	out := map[string]surfaceEntry{}
+	for p, e := range current {
+		for _, r := range roots {
+			if p == r || strings.HasPrefix(p, r+" ") {
+				out[p] = e
+				break
+			}
+		}
+	}
+	return out
+}
+
 // mergeSurface is frozen plus everything current adds: new paths, and new
 // flags on frozen paths. Nothing frozen is dropped.
 func mergeSurface(frozen, current map[string]surfaceEntry) map[string]surfaceEntry {
@@ -188,7 +223,7 @@ func TestCommandSurfaceIsStable(t *testing.T) {
 		if _, err := os.Stat(filepath.Join("testdata", commandSurfaceFile)); err == nil {
 			frozen = readCommandSurface(t)
 		}
-		writeCommandSurface(t, mergeSurface(frozen, currentSurface(root)))
+		writeCommandSurface(t, mergeSurface(frozen, onlySurface(currentSurface(root), *commandSurfaceOnly)))
 	}
 	frozen := readCommandSurface(t)
 	if len(frozen) < 200 {
@@ -238,5 +273,26 @@ func TestResolveSurfacePathIsExact(t *testing.T) {
 		if got := resolveSurfacePath(root, tc.path) != nil; got != tc.ok {
 			t.Errorf("resolveSurfacePath(%q) = %v, want %v", tc.path, got, tc.ok)
 		}
+	}
+}
+
+// TestOnlySurfaceRecordsTheNamedPaths: -command-surface-only keeps a path and
+// the commands beneath it, never a sibling that merely shares a prefix.
+func TestOnlySurfaceRecordsTheNamedPaths(t *testing.T) {
+	current := map[string]surfaceEntry{}
+	for _, p := range []string{"forge db", "forge db analyze", "forge db analyze x", "forge dbx", "forge obs users"} {
+		current[p] = surfaceEntry{path: p}
+	}
+	got := onlySurface(current, " forge  db analyze ,forge obs users")
+	var paths []string
+	for p := range got {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	if want := "forge db analyze|forge db analyze x|forge obs users"; strings.Join(paths, "|") != want {
+		t.Errorf("onlySurface = %v, want %s", paths, want)
+	}
+	if len(onlySurface(current, "")) != len(current) {
+		t.Error("an empty -command-surface-only must record everything")
 	}
 }

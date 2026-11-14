@@ -111,7 +111,21 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "DatabaseConfig",
 			typ:  reflect.TypeFor[DatabaseConfig](),
 			// migrations: the migration tool hook (MigrationsConfig).
-			want: []string{"migration_safety", "migrations", "migrations_dir", "orm", "postgres_version"},
+			// analyze: read by `forge db analyze` (internal/cli/db_analyze.go).
+			want: []string{"analyze", "migration_safety", "migrations", "migrations_dir", "orm", "postgres_version"},
+		},
+		{
+			// Every key is read by `forge db analyze`
+			// (internal/cli/db_analyze.go): the target it runs on, the
+			// size hints and thresholds it judges findings by.
+			name: "AnalyzeConfig",
+			typ:  reflect.TypeFor[AnalyzeConfig](),
+			want: []string{"large_table_rows", "small_table_rows", "table_rows", "target"},
+		},
+		{
+			name: "AnalyzeTargetConfig",
+			typ:  reflect.TypeFor[AnalyzeTargetConfig](),
+			want: []string{"dsn_env", "kind", "lock_timeout", "statement_timeout"},
 		},
 		{
 			// orm.package: where the generated data layer lands, read by

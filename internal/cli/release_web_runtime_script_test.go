@@ -583,6 +583,38 @@ func TestReleaseWebRuntime_RefusesAVersionTakenElsewhere(t *testing.T) {
 	}
 }
 
+// TestReleaseWebRuntime_ALaterCommitsReleaseSupersedes: the release train
+// publishes for an older forge commit F than one the runtime was already
+// released from (v1.17.0-rc.1: 0.13.14 computed for F, web-runtime/v0.13.14 on
+// a descendant). That release ships all of F's runtime, so F's is present:
+// nothing is tagged or published, never "that version is taken".
+func TestReleaseWebRuntime_ALaterCommitsReleaseSupersedes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the web-runtime release script over a fixture git repo")
+	}
+	repo := newWebRuntimeReleaseRepo(t)
+	f := commitAndPush(t, repo, "fix(web-runtime): at F", map[string]string{"web-runtime/src/index.ts": "export const f = 1;\n"})
+	commitAndPush(t, repo, "fix(web-runtime): after F", map[string]string{"web-runtime/src/index.ts": "export const f = 2;\n"})
+	tagWebRuntime(t, repo, "0.13.2")
+
+	res, stderr, err := runWebRuntimeScript(t, repo, webRuntimeEnv(t), "--plan", "--commit", f)
+	if err != nil || res.State != "planned" || res.Version != "0.13.2" || res.Changed || !strings.Contains(res.Detail, "superseded") {
+		t.Errorf("plan: want planned, superseded by 0.13.2, got err=%v %+v\n%s", err, res, stderr)
+	}
+	log := filepath.Join(t.TempDir(), "npm.log")
+	res, stderr, err = runWebRuntimeScript(t, repo, webRuntimeEnv(t, "FORGE_RELEASE_GITHUB_REPO=reliant-labs/forge", "FAKE_NPM_SERVES=1", "FAKE_NPM_LOG="+log), "--commit", f)
+	if err != nil || res.State != "present" || res.Version != "0.13.2" || !strings.Contains(res.Detail, "superseded") {
+		t.Errorf("release: want present (superseded, npm serves it), got err=%v %+v\n%s", err, res, stderr)
+	}
+	if tags := gitOut(t, fixtureOrigin(t, repo), "tag", "-l", "web-runtime/*"); tags != "web-runtime/v0.13.1\nweb-runtime/v0.13.2" {
+		t.Errorf("a superseded commit got a tag: %q", tags)
+	}
+	res, stderr, err = runWebRuntimeScript(t, repo, webRuntimeEnv(t, "FORGE_RELEASE_GITHUB_REPO=reliant-labs/forge"), "--commit", f)
+	if err == nil || res.State != "failed" {
+		t.Errorf("superseded but npm does not serve it: want failed, got err=%v %+v\n%s", err, res, stderr)
+	}
+}
+
 // commitAndPushTo is commitAndPush onto another branch.
 func commitAndPushTo(t *testing.T, repo, branch, msg string, files map[string]string) {
 	t.Helper()

@@ -336,6 +336,8 @@ func TestExemptionsAreLoadBearing(t *testing.T) {
 		{"deadcodeguardfixture/internal/noop.New", "returns a real value"},
 		{"deadcodeguardfixture/internal/phantom.queryOpts.panelFlags", "embedded, and written through its promoted field (`&o.agg`)"},
 		{"deadcodeguardfixture/internal/phantom.queryOpts.common", "embedded, and written by a promoted pointer-receiver method"},
+		{"deadcodeguardfixture/internal/phantom.ToolInput.wireArgs", "embeds a json-tagged struct; the decoder writes it through the promoted fields"},
+		{"deadcodeguardfixture/internal/phantom.Options.URL", "re-exported by alias from public package pub: the module's consumers write it"},
 		{"deadcodeguardfixture/internal/fakes.Row.Value", "test support: only test files import package fakes"},
 		{"deadcodeguardfixture/internal/fakes.Runner.Rows", "same test-support package"},
 		{"deadcodeguardfixture/internal/fakes.Echo", "a test-support package's no-op is test code"},

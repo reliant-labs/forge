@@ -721,7 +721,14 @@ func collectGoCodeConventionFindings(opts forgeconv.LintOptions) ([]forgeconv.Fi
 	if err != nil {
 		return nil, fmt.Errorf("forge convention lint (tx lock under serializable) failed: %w", err)
 	}
-	return append(findings, txLockRes.Findings...), nil
+	findings = append(findings, txLockRes.Findings...)
+	// A product event property whose key names personal data (email, name,
+	// ip, url, path, token). Warning; an error under --strict.
+	piiRes, err := forgeconv.LintProductEventPII(".", opts)
+	if err != nil {
+		return nil, fmt.Errorf("forge convention lint (product event pii) failed: %w", err)
+	}
+	return append(findings, piiRes.Findings...), nil
 }
 
 // collectFrontendConventionFindings runs the frontend rules. hasFrontends

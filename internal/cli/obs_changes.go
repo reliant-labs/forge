@@ -45,7 +45,11 @@ type obsChangesOpts struct {
 	from, to string
 }
 
-func newObsChangesCmd() *cobra.Command {
+func newObsChangesCmd() *cobra.Command { return newObsChangesCmdWith(defaultObsDeps) }
+
+// newObsChangesCmdWith is newObsChangesCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsChangesCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsChangesOpts
 	cmd := &cobra.Command{
 		Use:   "changes [env]",
@@ -61,7 +65,7 @@ failed applies and the times the dev stack started.
 ` + obsChangesSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsChanges(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
+			return runObsChanges(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	f := cmd.Flags()
@@ -94,7 +98,7 @@ func runObsChanges(ctx context.Context, d obsDeps, env string, o obsChangesOpts)
 	if !ok {
 		return fail(obsbackend.Undetermined("the %s backend cannot list changes", b.Info().Backend))
 	}
-	res, err := reader.Changes(ctx, obsbackend.ChangesRequest{Env: env, Range: rng, Limit: o.out.Limit, Project: obsProjectName()})
+	res, err := reader.Changes(ctx, obsbackend.ChangesRequest{Env: env, Range: rng, Limit: o.out.Limit, Project: d.project()})
 	if err != nil {
 		return fail(err)
 	}

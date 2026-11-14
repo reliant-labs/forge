@@ -328,7 +328,7 @@ SET
    cannot help because the row count they divide is ~0.
 2. **A few real rows** (D): 1 actual block × (1e7/1e5) = 100 rows estimate; status n_distinct=5 → rows=20;
    still Seq Scan. The scaling is exactly the feared one.
-3. **Padding** (G): 736 dead blocks + restored density → org_id uses the index (rows=15) and status
+3. **Padding** (G): 736 dead blocks + restored density → `org_id` uses the index (rows=15) and status
    seq-scans (rows=14720). Plan _shape_ is right, but magnitudes are 100x off unless you materialize
    the real page count. Costs ~6 MB/table for a 1/100 scale model; impractical at full scale, and
    deletes leave bloat that autovacuum (disabled here) would truncate away.

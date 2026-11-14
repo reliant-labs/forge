@@ -74,6 +74,7 @@ prints this list for the directory you run it in.
 | [Adopt an existing app](#adopt-existing-project)              | In the app's directory, `forge project new --in-place --kind app --dry-run` prints what it would write from the Dockerfile and compose file; without `--dry-run` it writes forge.yaml and deploy/kcl and touches none of the app's files.                                        | ~1 hour    |
 | [Bring your OpenAPI spec](#bring-openapi-spec)                | Add `apis = [forge.API {name = "api", kind = "openapi", spec = "openapi.yaml"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`.                                                                            | ~10 min    |
 | [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`.                                                                                                                | ~5 min     |
+| [Measured migration locks and rewrites](#migration-analysis)  | Run `forge db analyze` in a project whose migrations forge's migrator applies; it needs no database of yours.                                                                                                                                                                    | ~5 min     |
 | [Keep your migration tool](#keep-your-migration-tool)         | Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`.                                                                                                                                | ~10 min    |
 | [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                                                                                                                                   | ~15 min    |
 | [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                                                                                                                                        | ~15 min    |
@@ -565,6 +566,35 @@ _Enforced · Forge, on any infrastructure_
 | `migration-compat-conflict`           | A migration that declares both `forge:backward-compatible` and `forge:breaks-rollback`                                                             | `--migration-safety` |
 | `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                            | `--migration-safety` |
 | `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read        | `--migration-safety` |
+
+<a id="migration-analysis"></a>
+
+### Measured migration locks and rewrites
+
+`forge db analyze` runs each pending migration statement by statement, file by file as forge's migrator applies them, on a disposable copy of a real Postgres database (an embedded one, or a snapshot you name and mark, such as an anonymized production snapshot, which is only read and copied), and reports the locks it took, the tables it rewrote or scanned, and how long it ran.
+
+_Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** Run `forge db analyze` in a project whose migrations forge's migrator applies; it needs no database of yours. **Agent time:** ~5 min.
+
+**Use:** Run `forge db analyze` (an embedded Postgres migrated to the merge-base), or point it at an anonymized snapshot with `database.analyze.target` and `--target dsn`; `--json` is the document a reviewer reads.
+
+**Why:** Whether `ALTER COLUMN … TYPE` rewrites a table or a constraint scans one depends on the column types, the existing schema and the Postgres version, which no reading of the SQL text can know.
+
+**Evidence:**
+
+- command `forge db analyze`
+- source [`pkg/dbanalyze`](../pkg/dbanalyze)
+- source [`internal/cli/db_analyze.go`](../internal/cli/db_analyze.go)
+- skill `db/analyze` (`forge skill load db/analyze`)
+
+| Rule                               | Bug class it prevents                                                                                                     | Lane               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| `db-analyze-table-rewrite`         | A migration that copies every row of a populated table under ACCESS EXCLUSIVE, an outage as long as the copy              | `forge db analyze` |
+| `db-analyze-access-exclusive-lock` | ACCESS EXCLUSIVE held across a full scan or rewrite, blocking every read and write of the table for its duration          | `forge db analyze` |
+| `db-analyze-validation-scan`       | A constraint validated by a full scan under a lock that blocks writes, where NOT VALID then VALIDATE would not block them | `forge db analyze` |
+| `db-analyze-blocking-index-build`  | An index built without CONCURRENTLY on a populated table, blocking writes until the build finishes                        | `forge db analyze` |
+| `db-analyze-statement-timeout`     | A statement that does not finish within statement_timeout on production-shaped data                                       | `forge db analyze` |
 
 <a id="keep-your-migration-tool"></a>
 

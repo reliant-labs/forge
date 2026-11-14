@@ -21,6 +21,7 @@ emit: both
 - **A destructive change is allowed per file, in the file** — `-- forge:allow-destructive` on a line of that migration; there is no forge.yaml allowlist. See `db/orm-and-safety`.
 - **A migration never waits forever for a lock.** Every migration runs under `lock_timeout` (5s) and `statement_timeout` (30m), and a migration whose lock times out is rolled back and retried (5 attempts, growing wait). Override per file with `-- forge:lock-timeout 30s` / `-- forge:statement-timeout 2h` at the top of the file — a long backfill needs the second. See `db/migration-timeouts`.
 - **A migration file runs as one transaction.** So `CREATE INDEX CONCURRENTLY` (and the like) must be its file's only statement, and an enum value a file adds cannot be used in that file. `forge lint` refuses both; see `db/orm-and-safety`.
+- **Measure what a migration locks and rewrites.** `forge lint --migration-safety` reads the SQL as text; `forge db analyze` runs the pending migrations on a real postgres in a rolled-back transaction and reports the locks each statement took, the tables it rewrote or scanned, and how long it ran (`db-analyze-*` rules). It needs postgres, so it is a review/full-gate lane, not a fast one — load `db/analyze`.
 
 <!-- @forge-only:start -->
 ## SQL is the schema language
@@ -184,6 +185,7 @@ The deploy migrate job is declared per database: `db/deploy-migrations`.
 | what the generated ORM does, overriding generated CRUD, where custom queries go | `db/generated-orm` |
 | which tables get a store, naming, keys | `db/store` |
 | destructive changes, `//forge:no-orm`, ORM field types | `db/orm-and-safety` |
+| what a migration measurably locks, rewrites and scans on a real postgres (`forge db analyze`) | `db/analyze` |
 | dashboard panels over this database | `db/dashboards` |
 
 ## Forge-specific rules

@@ -184,6 +184,15 @@ type KCLEntities struct {
 	// does not run (forge.ExternalDatabase): routes for `forge db query`,
 	// never rendered. See ExternalDatabaseEntity.
 	ExternalDatabases []ExternalDatabaseEntity `json:"external_databases,omitempty"`
+	// SchemaOnlyDatabases are the databases the env declares for their
+	// schema only (a bare forge.Database): migrations, ORM and migration
+	// safety for forge's readers, with nothing run or reached. See
+	// SchemaOnlyDatabaseEntity and DatabaseSchemaEntity.
+	SchemaOnlyDatabases []SchemaOnlyDatabaseEntity `json:"schema_only_databases,omitempty"`
+	// APIs are the APIs the env declares the project serves (forge.API), each
+	// by its contract. Groundwork: validated (validateAPIs) and listed, nothing
+	// generated from them yet. See APIEntity.
+	APIs []APIEntity `json:"apis,omitempty"`
 	// Buckets are the env's buckets forge manages (a forge.Bucket on
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
@@ -1194,6 +1203,8 @@ type DatabaseEntity struct {
 	Cluster   string                             `json:"cluster,omitempty"`
 	Namespace string                             `json:"namespace,omitempty"`
 	Spec      deployv1alpha1.ManagedDatabaseSpec `json:"spec"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // Hosted reports whether the control plane runs this database.
@@ -1234,6 +1245,8 @@ type ExternalDatabaseEntity struct {
 	Reach string `json:"reach,omitempty"`
 	// Port is the Service port, 0 when undeclared.
 	Port int `json:"port,omitempty"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and
@@ -1664,6 +1677,8 @@ type kclRenderRaw struct {
 	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
+	SchemaOnlyDatabases      []SchemaOnlyDatabaseEntity                `json:"schema_only_databases,omitempty"`
+	APIs                     []APIEntity                               `json:"apis,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
 	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
@@ -1929,6 +1944,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := checkFrontendRuntimeConfigKeys(projectDir, entities.Frontends); err != nil {
 		return nil, err
 	}
+	// Refused here too: an OpenAPI spec KCL cannot read cheaply is checked
+	// the moment the env is loaded (validateAPIs).
+	if err := validateAPIs(projectDir, entities.APIs); err != nil {
+		return nil, err
+	}
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2052,6 +2072,8 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:               raw.HelmCharts,
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
+		SchemaOnlyDatabases:      raw.SchemaOnlyDatabases,
+		APIs:                     raw.APIs,
 		Buckets:                  raw.Buckets,
 		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,

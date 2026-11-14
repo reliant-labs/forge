@@ -76,6 +76,7 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | `features` | `resolved{}` (every feature → bool), `enabled[]`, `disabled[]`. Features are derived from the repo, never configured. Informational — always `ok`. |
 | `ingress` | `gateways`, `http_routes`, `grpc_routes`, `services_without_route`, `findings[]` |
 | `environments` | `environments[]` (each `{name, status}` — one per `deploy/kcl/<env>/main.k`) |
+| `resources` | `databases[]` (`{name, dialect, migrations_dir, driver, orm_package, origin, primary, envs?}`) and `apis[]` (`{name, kind, spec, base_path?, database?, origin, envs?}`). `origin` is `kcl` (an env declaration; `envs` lists which), `forge.yaml` (the legacy `database:` block) or `derived` (db/migrations on disk; the proto API of a project with proto services and none declared). `error` only when the declarations cannot be read. |
 | `external_builds` | `enabled`, `services[]` |
 | `prerequisites` | `external_secrets`, `dns_records`, `byte_match_groups`, `undeclared_secret_mounts`, `findings[]` |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |

@@ -113,7 +113,11 @@ func runDBSquashFromDSN(ctx context.Context, w io.Writer, opts squashOptions) er
 	}
 	outDir := opts.OutDir
 	if outDir == "" {
-		outDir = resolveMigrationsDir("")
+		dir, err := selectMigrationsDir("")
+		if err != nil {
+			return err
+		}
+		outDir = dir
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create --out-dir %q: %w", outDir, err)

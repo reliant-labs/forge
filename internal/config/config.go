@@ -764,6 +764,12 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 
 // DatabaseConfig holds database-related settings.
 //
+// Its migrations, ORM and migration-safety keys describe ONE database. The
+// env declaration (deploy/kcl) can declare each database's schema on the
+// database itself, several per project, and is the long-term home of that
+// fact; these keys keep working as the shorthand for a project that declares
+// none there (see databases.go, ProjectDatabases).
+//
 // The driver is DERIVED: a project whose tree has its migrations directory
 // (database.migrations_dir, default db/migrations) uses postgres, and one
 // without it has no database (driver "none"). The dev seed has no config at
@@ -844,7 +850,7 @@ func ORMPackage(cfg *ProjectConfig) ORMConfig {
 	if cfg == nil {
 		return ORMConfig{}
 	}
-	return cfg.Database.ORM
+	return cfg.PrimaryDatabase().ORM
 }
 
 // MigrationSafetyConfig controls migrationlint's three severity dials

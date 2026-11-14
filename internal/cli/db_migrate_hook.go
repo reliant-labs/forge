@@ -22,14 +22,23 @@ import (
 	"github.com/reliant-labs/forge/internal/migrationhook"
 )
 
-// projectMigrationHook returns the migration hook of the project the db
-// commands act on, with its directory set to migDir (the resolved --dir, or
-// the configured one), and false when forge's own migrator applies the
-// project's migrations.
-func projectMigrationHook(migDir string) (migrationhook.Hook, bool) {
+// projectMigrationHook returns the migration hook of the database the db
+// commands act on — the one whose migrations live in migDir (the resolved
+// --dir, or the --db database's), else the primary — with its directory set
+// to migDir, and false when forge's own migrator applies them. With several
+// declared databases, a migDir none of them names is an error
+// (config.ErrMigrationsDirUnowned): handing it to the primary's tool could run
+// the wrong migrator over another tool's files.
+func projectMigrationHook(migDir string) (migrationhook.Hook, bool, error) {
 	h, ok := migrationhook.ResolveIn(dbProjectRoot())
+	if migDir != "" {
+		var err error
+		if h, ok, err = migrationhook.ResolveForNamedDir(dbProjectRoot(), migDir); err != nil {
+			return h, false, err
+		}
+	}
 	if !ok {
-		return h, false
+		return h, false, nil
 	}
 	if migDir != "" {
 		if abs, err := filepath.Abs(migDir); err == nil {
@@ -39,7 +48,7 @@ func projectMigrationHook(migDir string) (migrationhook.Hook, bool) {
 			}
 		}
 	}
-	return h, true
+	return h, true, nil
 }
 
 // runHookMigrate runs the hook's apply (status false) or status argv against

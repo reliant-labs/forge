@@ -209,6 +209,51 @@ func TestEmailFirst_APresentedResetCodeProvesTheAddress(t *testing.T) {
 	}
 }
 
+// A first password whose verification fails after the issuer installed it
+// (the code is consumed by then) is recoverable on the SAME account: a new
+// presented reset code sets the password again and marks the address
+// verified. A code the broker mints itself (SetPassword) never does.
+func TestEmailFirst_AFailedVerificationAfterTheFirstPasswordIsRecoverable(t *testing.T) {
+	ctx := context.Background()
+	z := newFakeZitadel(t)
+	c := z.client()
+	c.ProvenCredentialsOnly = true
+	u := z.addUser("pending@acme.com", false, "")
+	reset, err := z.client().MintPasswordResetCode(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	z.mu.Lock()
+	z.failEmailResends = 1
+	z.mu.Unlock()
+	if err := c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: reset, NewPassword: "a-long-password"}); err == nil {
+		t.Fatal("a failed verification after the password was set reported success")
+	}
+	if verified, pw := z.passwordState(u.id); verified || pw != "a-long-password" {
+		t.Fatalf("after the failed verification: verified=%v password set=%v, want an unverified account with the password", verified, pw != "")
+	}
+
+	// The broker's own code proves nothing: replacing the password leaves
+	// the address unverified.
+	if err := c.SetPassword(ctx, u.id, "another-long-password"); err != nil {
+		t.Fatalf("replacing the password of a password-only account: %v", err)
+	}
+	if verified, _ := z.passwordState(u.id); verified {
+		t.Fatal("a broker-minted code marked the address verified")
+	}
+
+	next, err := z.client().MintPasswordResetCode(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: next, NewPassword: "a-third-long-password"}); err != nil {
+		t.Fatalf("the recovery code: %v", err)
+	}
+	if verified, pw := z.passwordState(u.id); !verified || pw != "a-third-long-password" {
+		t.Fatalf("after recovery: verified=%v password set=%v, want the same account verified", verified, pw != "")
+	}
+}
+
 // ── 3. Social sign-in with an unverified provider address ──────────────
 
 func TestEmailFirst_AnUnverifiedProviderAddressLinksNothingUntilItsOwnBrowserProvesIt(t *testing.T) {

@@ -209,7 +209,7 @@ func (c *Client) SetPassword(ctx context.Context, userID, password string) error
 	if err != nil {
 		return err
 	}
-	return c.ResetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: password})
+	return c.resetPassword(ctx, PasswordReset{UserID: userID, Code: code, NewPassword: password}, false)
 }
 
 // LockUser locks an account so nothing can sign in to it. An account that

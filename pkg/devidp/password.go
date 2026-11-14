@@ -330,6 +330,14 @@ type PasswordReset struct {
 // Anything else is the issuer or the credential failing, and is returned
 // with the issuer's own message.
 func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
+	return c.resetPassword(ctx, r, true)
+}
+
+// resetPassword redeems r. proves says whether the code is one a person
+// presented or the broker minted after a proof of the address: only then does
+// the redemption mark an unverified account's address verified. SetPassword
+// passes false, because the code it redeems is its own and proves nothing.
+func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool) error {
 	userID := strings.TrimSpace(r.UserID)
 	code := strings.TrimSpace(r.Code)
 	switch {
@@ -341,7 +349,7 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	case r.NewPassword == "":
 		return fmt.Errorf("a new password is required")
 	}
-	pending, err := c.passwordGate(ctx, userID)
+	gate, err := c.passwordGate(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -356,15 +364,23 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	if err != nil {
 		return classifyResetError(err)
 	}
-	if !pending {
+	if gate == gateOpen || !proves {
 		return nil
 	}
 	// The issuer accepted the code, and a reset code reaches a person only
 	// in a mail to the account's address or from an administrator who
 	// issued it (a console invitation): either way the address is now
 	// proven, so it is marked verified, as AdoptPendingAccount would.
-	if err := c.markAddressVerified(ctx, userID); err != nil {
-		return fmt.Errorf("the password was set, but the address its reset code proved could not be marked verified: %w", err)
+	//
+	// The password is already set, so this must not be lost to the request
+	// going away: it runs without the caller's cancellation (each issuer call
+	// keeps its own timeout). If it fails anyway, the account is unverified
+	// and holds only a password, which passwordGate reports as
+	// gateUnverifiedPassword: redeeming a fresh reset code on the SAME
+	// account marks it verified then, so nothing is stranded (forge#2121).
+	if err := c.markAddressVerified(context.WithoutCancel(ctx), userID); err != nil {
+		return fmt.Errorf("the password was set, but the address its reset code proved could not be marked verified "+
+			"(redeeming a new reset code completes it): %w", err)
 	}
 	return nil
 }
@@ -377,55 +393,85 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 // SetPassword runs it: the code it redeems is one the broker minted itself,
 // which proves nothing about the address.
 func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
-	pending, err := c.passwordGate(ctx, userID)
+	gate, err := c.passwordGate(ctx, userID)
 	if err != nil {
 		return err
 	}
-	if pending {
+	if gate == gateFirstPassword {
 		return ErrUnverifiedAccount
 	}
 	return nil
 }
 
+// passwordState is what passwordGate found about an account.
+type passwordState int
+
+const (
+	// gateOpen: nothing to verify — the address is verified, the client
+	// does not require proven credentials, or the account holds a password
+	// beside another credential. Setting a password changes nothing else.
+	gateOpen passwordState = iota
+	// gateFirstPassword: unverified, holding NO credential. Only a reset
+	// code the person presented may set its password, and that marks the
+	// address verified.
+	gateFirstPassword
+	// gateUnverifiedPassword: unverified, holding a password and nothing
+	// else — a contact-only account created with one, or a first password
+	// whose verification failed after it was set. Its holder may replace
+	// it; a presented reset code also marks the address verified.
+	gateUnverifiedPassword
+)
+
 // passwordGate is the ProvenCredentialsOnly check before a password is set.
 // It refuses (ErrUnverifiedAccount) an unverified account holding a
-// credential other than a password, and reports pending for an unverified
-// account holding NO credential at all: a password may be set on that one
-// only with a reset code the person PRESENTED (ResetPassword), and the
-// redemption then marks the address verified — a reset code is delivered
-// only to the address or by an administrator who issued it (forge#2121).
+// credential other than a password, and otherwise reports the account's
+// passwordState: a presented reset code redeemed on an unverified account
+// marks the address verified — a reset code is delivered only to the address
+// or by an administrator who issued it (forge#2121).
 //
 // It fails CLOSED: an account that cannot be read, or whose sign-in methods
 // cannot be, is refused with that error — nothing is minted or redeemed for
 // it. An unknown account answers as a wrong code does (ErrInvalidResetCode),
 // so a reset form says nothing about which accounts exist.
-func (c *Client) passwordGate(ctx context.Context, userID string) (pending bool, err error) {
+func (c *Client) passwordGate(ctx context.Context, userID string) (passwordState, error) {
 	if !c.ProvenCredentialsOnly {
-		return false, nil
+		return gateOpen, nil
 	}
 	u, err := c.FindUserByID(ctx, userID)
 	if errors.Is(err, ErrUserNotFound) {
-		return false, fmt.Errorf("%w: no such account", ErrInvalidResetCode)
+		return gateOpen, fmt.Errorf("%w: no such account", ErrInvalidResetCode)
 	}
 	if err != nil {
-		return false, fmt.Errorf("read the account before setting its password: %w", err)
+		return gateOpen, fmt.Errorf("read the account before setting its password: %w", err)
 	}
 	if u.EmailVerified {
-		return false, nil
+		return gateOpen, nil
 	}
 	kinds, err := c.credentialKinds(ctx, userID)
 	if err != nil {
-		return false, fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
+		return gateOpen, fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
 	}
 	if len(kinds) == 0 {
-		return true, nil
+		return gateFirstPassword, nil
 	}
+	hasPassword, onlyPassword := false, true
 	for _, k := range kinds {
 		if k == "AUTHENTICATION_METHOD_TYPE_PASSWORD" {
-			return false, nil
+			hasPassword = true
+		} else {
+			onlyPassword = false
 		}
 	}
-	return false, ErrUnverifiedAccount
+	switch {
+	case onlyPassword:
+		return gateUnverifiedPassword, nil
+	case hasPassword:
+		// A password beside a credential nobody proved: replacing the
+		// password stays the holder's recovery, but nothing is verified,
+		// which would vouch for the other credential.
+		return gateOpen, nil
+	}
+	return gateOpen, ErrUnverifiedAccount
 }
 
 // Zitadel's stable ids for the two rejections a reset form must tell apart.

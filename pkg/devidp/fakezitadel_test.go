@@ -37,6 +37,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
+	// failEmailResends makes that many verification-code mints
+	// (POST /v2/users/{id}/email/resend) fail (500).
+	failEmailResends int
 	// failLinks makes the link listing fail (a revocation that cannot
 	// complete).
 	failLinks bool
@@ -647,6 +650,11 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/resend", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failEmailResends > 0 {
+			f.failEmailResends--
+			zerr(w, 500, "INTERNAL-fake", "the verification code could not be minted")
+			return
+		}
 		u.emailCode = f.id("ev")
 		if sub(b, "returnCode") != nil {
 			ok(w, map[string]any{"verificationCode": u.emailCode})

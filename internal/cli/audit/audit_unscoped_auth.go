@@ -563,7 +563,7 @@ var ownerMarkerTokenRE = regexp.MustCompile(regexp.QuoteMeta(schemadef.ColumnMar
 func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]string {
 	migDir := config.MigrationsPathIn(projectDir)
 	if cfg != nil {
-		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.Database.MigrationsPath()))
+		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.PrimaryDatabase().MigrationsPath()))
 	}
 
 	out := map[string]string{}

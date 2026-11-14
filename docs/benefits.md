@@ -72,6 +72,7 @@ prints this list for the directory you run it in.
 | Benefit                                                       | Start with                                                                                                                                                                                                                                | Agent time |
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
 | [Adopt an existing app](#adopt-existing-project)              | In the app's directory, `forge project new --in-place --kind app --dry-run` prints what it would write from the Dockerfile and compose file; without `--dry-run` it writes forge.yaml and deploy/kcl and touches none of the app's files. | ~1 hour    |
+| [Bring your OpenAPI spec](#bring-openapi-spec)                | Add `apis = [forge.API {name = "api", kind = "openapi", spec = "openapi.yaml"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`.                                     | ~10 min    |
 | [Migration safety checks](#migration-safety)                  | Run `forge lint --migration-safety` at the repo root; it reads `db/migrations/*.up.sql` only and flags each `.down.sql`, so scope it to new files with `--scope`.                                                                         | ~5 min     |
 | [Keep your migration tool](#keep-your-migration-tool)         | Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`.                                                                                         | ~10 min    |
 | [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                                                                                            | ~15 min    |
@@ -271,6 +272,26 @@ _Enforced · Forge, on any infrastructure_
 - skill `api-rest` (`forge skill load api-rest`)
 - command `forge api curl`
 - skill `api/http` (`forge skill load api/http`)
+
+<a id="bring-openapi-spec"></a>
+
+### Bring your OpenAPI spec
+
+An API whose contract is an OpenAPI 3 document is declared as a `forge.API`, checked as OpenAPI 3 whenever the env loads (a Swagger 2 document is refused with how to convert it) and listed with the project's databases in `forge project audit --json`; nothing is generated from it yet.
+
+_Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** Add `apis = [forge.API {name = "api", kind = "openapi", spec = "openapi.yaml"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`. **Agent time:** ~10 min.
+
+**Use:** `apis = [forge.API {name = "billing", kind = "openapi", spec = "api/openapi.yaml"}]` in `deploy/kcl/<env>/main.k`; read `.categories.resources.details.apis` of `forge project audit --json`.
+
+**Why:** Declaring each API by its contract records which APIs a project serves and where their specs live, so a later feature reads one declaration instead of guessing; a Swagger 2 spec is caught the day it is declared.
+
+**Evidence:**
+
+- source [`internal/cli/api_declarations.go`](../internal/cli/api_declarations.go)
+- command `forge project audit`
+- skill `api-openapi` (`forge skill load api-openapi`)
 
 <a id="service-catalog"></a>
 
@@ -565,6 +586,26 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/linter/migrationlint/tools.go`](../internal/linter/migrationlint/tools.go)
 - command `forge db migrate up`
 - skill `db/own-migration-tool` (`forge skill load db/own-migration-tool`)
+
+<a id="several-databases"></a>
+
+### Several databases, declared per database
+
+Each database declares its own dialect, migrations directory and tool, ORM package and migration-safety dials in the env declaration, so a monorepo with several databases gets every one linted, `forge db --db <name>` for each, and an ORM projected per database.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}` on a `forge.ManagedDatabase`, `forge.ExternalDatabase` or schema-only `forge.Database` in deploy/kcl.
+
+**Why:** forge.yaml's `database:` block describes one database. Declaring the schema on the database itself puts it beside what runs it, and lets every reader act on each database with its own tool and dials.
+
+**Evidence:**
+
+- source [`internal/config/databases.go`](../internal/config/databases.go)
+- source [`internal/cli/database_declarations.go`](../internal/cli/database_declarations.go)
+- lint lane `forge lint --migration-safety`
+- command `forge db migrate up`
+- skill `db` (`forge skill load db`)
 
 <a id="managed-postgres-backups"></a>
 

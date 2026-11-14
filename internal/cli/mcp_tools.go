@@ -35,14 +35,25 @@ type shapesInput struct {
 	Unimplemented bool   `json:"unimplemented,omitempty" jsonschema:"list declared rpcs that have no handler, or only forge's unwired stub"`
 }
 
+// The input of each tool the hosted connector shares (benefits, skill_*) is
+// its args struct; the local tool's adds only the repo-only dir, so the two
+// schemas cannot drift (mcp_hosted.go).
 type benefitsInput struct {
 	dirInput
+	benefitsArgs
+}
+
+type benefitsArgs struct {
 	All      bool   `json:"all,omitempty" jsonschema:"every shipped benefit, not only the ones that apply to dir"`
 	Category string `json:"category,omitempty" jsonschema:"one category: build, data, test, dev, guardrails, security, ship, host, run or agents"`
 }
 
 type skillListInput struct {
 	dirInput
+	skillListArgs
+}
+
+type skillListArgs struct {
 	Group             string `json:"group,omitempty" jsonschema:"list this skill group's parent and every sub-skill with full paths, e.g. db or observability"`
 	All               bool   `json:"all,omitempty" jsonschema:"print the exhaustive flat table instead of the grouped view"`
 	IncludeMigrations bool   `json:"include_migrations,omitempty" jsonschema:"include one-time migration playbooks"`
@@ -50,11 +61,19 @@ type skillListInput struct {
 
 type skillSearchInput struct {
 	dirInput
+	skillSearchArgs
+}
+
+type skillSearchArgs struct {
 	Query string `json:"query" jsonschema:"keywords; scores skill paths, descriptions and bodies"`
 }
 
 type skillLoadInput struct {
 	dirInput
+	skillLoadArgs
+}
+
+type skillLoadArgs struct {
 	Name string `json:"name" jsonschema:"skill path from skill_list or skill_search, e.g. forge, db, db/seeding"`
 }
 
@@ -79,11 +98,19 @@ type reportBugInput struct {
 	Evidence string `json:"evidence,omitempty" jsonschema:"how to reproduce it: commands run, their output, file paths"`
 }
 
+// Descriptions of the tools the hosted connector shares with this server.
+const (
+	mcpDescBenefits    = "What forge does for the repo at dir, as JSON. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate), to quote to your user. In a forge project: every shipped benefit. Then skill_load name=adopt."
+	mcpDescSkillList   = "The skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge."
+	mcpDescSkillSearch = "Find skills by keyword. Scores paths, descriptions and bodies, so it finds a skill whose title never mentions your term."
+	mcpDescSkillLoad   = "Print one skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: the entry point that names the rest. Skills quote the forge CLI; each command has the tool of the same name here."
+)
+
 // addBenefitsTool registers benefits: what forge does for the repo at dir.
 func addBenefitsTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "benefits",
-		Description: "What forge does for the repo at dir, as JSON. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate), to quote to your user. In a forge project: every shipped benefit. Then skill_load name=adopt.",
+		Description: mcpDescBenefits,
 		Annotations: readOnly,
 	}, func(in benefitsInput) cmdSpec {
 		args := []string{"project", "benefits", "--json"}
@@ -168,7 +195,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_list",
-		Description: "The skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge.",
+		Description: mcpDescSkillList,
 		Annotations: readOnly,
 	}, func(in skillListInput) cmdSpec {
 		args := []string{"skill", "list"}
@@ -186,7 +213,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_search",
-		Description: "Find skills by keyword. Scores paths, descriptions and bodies, so it finds a skill whose title never mentions your term.",
+		Description: mcpDescSkillSearch,
 		Annotations: readOnly,
 	}, func(in skillSearchInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"skill", "search", in.Query}}
@@ -194,7 +221,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_load",
-		Description: "Print one skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: the entry point that names the rest. Skills quote the forge CLI; each command has the tool of the same name here.",
+		Description: mcpDescSkillLoad,
 		Annotations: readOnly,
 	}, func(in skillLoadInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"skill", "load", in.Name}}

@@ -139,7 +139,11 @@ type obsStatusOpts struct {
 	inst     obsInstanceFlags
 }
 
-func newObsStatusCmd() *cobra.Command {
+func newObsStatusCmd() *cobra.Command { return newObsStatusCmdWith(defaultObsDeps) }
+
+// newObsStatusCmdWith is newObsStatusCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsStatusCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsStatusOpts
 	cmd := &cobra.Command{
 		Use:   "status [env]",
@@ -166,7 +170,7 @@ A complete read exits 0; this is not a health verdict (use
 ` + obsStatusSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsStatus(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
+			return runObsStatus(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	f := cmd.Flags()
@@ -209,7 +213,7 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 	narrow := obsbackend.Narrow{Range: rng, Services: o.services}
 	doc := obsStatusDoc{Scope: obsScope(info, narrow), QueryMode: QueryModeStructured}
 
-	sections, notEvaluated := statusSections(b, env, narrow, o.out.Limit)
+	sections, notEvaluated := statusSections(b, env, d.project(), narrow, o.out.Limit)
 	doc.NotEvaluated = notEvaluated
 	errs := make([]error, len(sections))
 	parts := make([]obsStatusDoc, len(sections))
@@ -261,7 +265,7 @@ func runObsStatus(ctx context.Context, d obsDeps, env string, o obsStatusOpts) e
 }
 
 // statusSections are the reads b can answer, and the sections it cannot.
-func statusSections(b obsbackend.Backend, env string, n obsbackend.Narrow, issueLimit int) ([]statusSection, []string) {
+func statusSections(b obsbackend.Backend, env, project string, n obsbackend.Narrow, issueLimit int) ([]statusSection, []string) {
 	var secs []statusSection
 	var notEvaluated []string
 	if r, ok := b.(obsbackend.OverviewReader); ok {
@@ -337,7 +341,7 @@ func statusSections(b obsbackend.Backend, env string, n obsbackend.Narrow, issue
 		secs = append(secs, statusSection{statusChanges, func(ctx context.Context, doc *obsStatusDoc) error {
 			res, err := r.Changes(ctx, obsbackend.ChangesRequest{
 				Env: env, Range: obsbackend.Range{From: n.Range.To.Add(-statusChangesLookback), To: n.Range.To},
-				Limit: statusChangesLimit, Project: obsProjectName(),
+				Limit: statusChangesLimit, Project: project,
 			})
 			if err != nil {
 				return err

@@ -52,6 +52,34 @@ type obsDeps struct {
 	Now func() time.Time
 	// Stdout and Stderr are the verb's writers.
 	Stdout, Stderr io.Writer
+	// Project is the forge project the verb reads. "" is `forge obs
+	// --project`, else forge.yaml `name` (obsProjectName); the hosted MCP
+	// tools set it, since they have neither.
+	Project string
+	// Suspects lists the commits that may have raised an issue. nil reads
+	// this checkout with git (suspectCommits); the hosted MCP tools have no
+	// checkout.
+	Suspects func(ctx context.Context, errOut io.Writer, res obsbackend.GetIssueResult, commitRange string) ([]obsSuspectDoc, string)
+}
+
+// obsDepsFunc builds a verb's deps from its command. defaultObsDeps is the
+// CLI's; the hosted MCP tools pass their own.
+type obsDepsFunc func(cmd *cobra.Command) obsDeps
+
+// project is the forge project the verb reads.
+func (d obsDeps) project() string {
+	if d.Project != "" {
+		return d.Project
+	}
+	return obsProjectName()
+}
+
+// suspects is the suspect-commit lister in use.
+func (d obsDeps) suspects() func(context.Context, io.Writer, obsbackend.GetIssueResult, string) ([]obsSuspectDoc, string) {
+	if d.Suspects != nil {
+		return d.Suspects
+	}
+	return suspectCommits
 }
 
 var obsDepsOverride *obsDeps
@@ -109,6 +137,12 @@ func overrideObsDeps(d *obsDeps, o *obsDeps) {
 	}
 	if o.Stderr != nil {
 		d.Stderr = o.Stderr
+	}
+	if o.Project != "" {
+		d.Project = o.Project
+	}
+	if o.Suspects != nil {
+		d.Suspects = o.Suspects
 	}
 }
 

@@ -72,7 +72,11 @@ type obsLogsOpts struct {
 	rangeSet bool
 }
 
-func newObsLogsCmd() *cobra.Command {
+func newObsLogsCmd() *cobra.Command { return newObsLogsCmdWith(defaultObsDeps) }
+
+// newObsLogsCmdWith is newObsLogsCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsLogsCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsLogsOpts
 	cmd := &cobra.Command{
 		Use:   "logs [env] [query]",
@@ -117,7 +121,7 @@ Each line shows its error, cause and code after the message.
 			case 2:
 				env, query = args[0], args[1]
 			}
-			return runObsLogs(cmd.Context(), defaultObsDeps(cmd), env, query, o)
+			return runObsLogs(cmd.Context(), deps(cmd), env, query, o)
 		},
 	}
 	o.register(cmd, 15*time.Minute, obsquery.DefaultLogLimit)

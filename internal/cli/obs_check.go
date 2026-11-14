@@ -160,7 +160,11 @@ var obsLocalSessionStart = func(env string) (time.Time, bool, error) {
 	return latest, !latest.IsZero(), nil
 }
 
-func newObsCheckCmd() *cobra.Command {
+func newObsCheckCmd() *cobra.Command { return newObsCheckCmdWith(defaultObsDeps) }
+
+// newObsCheckCmdWith is newObsCheckCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsCheckCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsCheckOpts
 	cmd := &cobra.Command{
 		Use:   "check [env]",
@@ -206,7 +210,7 @@ regressed issues, alerts and restarts fail a release whatever the baseline.
 ` + obsCheckSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsCheck(cmd.Context(), defaultObsDeps(cmd), obsEnvArg(args, 0), o)
+			return runObsCheck(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	f := cmd.Flags()

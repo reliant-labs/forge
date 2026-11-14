@@ -126,7 +126,7 @@ func TestObsInit_InARepoWithANameOnlyForgeYAML(t *testing.T) {
 		t.Errorf("forge.yaml was rewritten:\n%s", raw)
 	}
 	docPath := filepath.Join(dir, "deploy", "envs", "prod.yaml")
-	if doc.ConfigPath != docPath || len(doc.WroteFiles) != 1 || e.Declaration != filepath.Join("deploy", "envs", "prod.yaml") {
+	if doc.ConfigPath != docPath || len(doc.WroteFiles) != 1 || e.Declaration != "deploy/envs/prod.yaml" {
 		t.Errorf("config_path = %q, wrote_files = %v, declaration = %q; want the env document", doc.ConfigPath, doc.WroteFiles, e.Declaration)
 	}
 	cfg, err := loadProjectConfigFrom(filepath.Join(dir, "forge.yaml"))

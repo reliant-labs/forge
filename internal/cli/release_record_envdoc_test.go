@@ -132,7 +132,7 @@ func TestReleaseRecord_MonitoringOnlyDocumentSaysWhatToAdd(t *testing.T) {
 	if !errors.As(err, &refused) || refused.Reason != reasonRecordOnlyRelease {
 		t.Fatalf("err = %v, want the record_only_release refusal", err)
 	}
-	for _, want := range []string{filepath.Join("deploy", "envs", "prod.yaml"), "no workloads", "runtime: {type: external}"} {
+	for _, want := range []string{"deploy/envs/prod.yaml", "no workloads", "runtime: {type: external}"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal lacks %q:\n%v", want, err)
 		}
@@ -163,7 +163,7 @@ func TestResolveRecordProject(t *testing.T) {
 		name:   "forge.yaml name and the env's document disagree",
 		files:  map[string]string{"forge.yaml": "name: store\n", "deploy/envs/prod.yaml": recordDocExternal},
 		env:    "prod",
-		errHas: []string{filepath.Join("deploy", "envs", "prod.yaml"), `"shop"`, `"store"`},
+		errHas: []string{"deploy/envs/prod.yaml", `"shop"`, `"store"`},
 	}, {
 		name:    "a forge.yaml without name: takes the env's document",
 		files:   map[string]string{"forge.yaml": "lint: {}\n", "deploy/envs/prod.yaml": recordDocExternal},

@@ -1569,3 +1569,41 @@ func TestAuditBucketsAreCountedPerSeries(t *testing.T) {
 		}
 	}
 }
+
+// Forge bug report 4e298764: a whole-env audit ran for more than ten minutes
+// with no output, then spent the org's hourly query allowance. The audit makes
+// at most --max-queries reads, says which panels it skipped and why, and
+// reports each finished dashboard on stderr.
+func TestAuditStaysInsideItsQueryBudgetAndShowsProgress(t *testing.T) {
+	cp := &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("a"), linePanel("b"), linePanel("c"), linePanel("d"), linePanel("e"), linePanel("f"))},
+		panel: func(auditQuery) (string, error) { return respData, nil }}
+	out, stderr, err := auditRun(t, cp, "--no-probe", "--max-queries", "3")
+	if exitcode.Of(err) != 1 {
+		t.Fatalf("exit = %d, want 1 (panels left unread)", exitcode.Of(err))
+	}
+	if sent := cp.count(func(q auditQuery) bool { return q.Proc == cpQueryPanel || q.Proc == cpGetDashboard }); sent > 3 {
+		t.Errorf("%d reads past a budget of 3", sent)
+	}
+	doc := decodeAudit(t, out)
+	if doc.Summary.Panels != 6 || doc.Summary.Error == 0 || doc.Summary.OK == 0 {
+		t.Errorf("summary %+v, want some panels read and the rest skipped", doc.Summary)
+	}
+	for _, p := range doc.Dashboards[0].Panels {
+		if p.Status == "error" && (p.Error == nil || p.Error.Class != string(classBudget)) {
+			t.Errorf("panel %s: error %+v, want class budget", p.ID, p.Error)
+		}
+	}
+	if !strings.Contains(out, "budget of 3 queries was spent (--max-queries)") {
+		t.Errorf("no note names the budget:\n%s", out)
+	}
+	if !strings.Contains(stderr, "audited d1 (1/1 dashboards)") {
+		t.Errorf("no progress line on stderr:\n%s", stderr)
+	}
+
+	// 0 lifts the budget.
+	cp = &auditCP{dashboards: auditIndex, specs: map[string]string{"d1": auditSpec(linePanel("a"), linePanel("b"), linePanel("c"), linePanel("d"))},
+		panel: func(auditQuery) (string, error) { return respData, nil }}
+	if out, _, err := auditRun(t, cp, "--no-probe", "--max-queries", "0"); err != nil || decodeAudit(t, out).Summary.OK != 4 {
+		t.Errorf("--max-queries 0: %v\n%s", err, out)
+	}
+}

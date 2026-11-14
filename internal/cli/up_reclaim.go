@@ -210,6 +210,38 @@ func forgeOwnerOfPID(pid int, projectID, envName string, f procFacts) (service s
 	return "", false
 }
 
+// otherForgeStackOfPID reports whether pid — or an ancestor — carries the
+// forge-up marker of a stack OTHER than (projectID, envName): another
+// project's `forge env up`, or another env of this project. It is the
+// positive half forgeOwnerOfPID leaves out: "not ours" alone also covers any
+// process forge never started, while this names a forge stack that holds the
+// port. A marker with no project id (a pre-fix forge) says nothing about
+// whose stack it is and is skipped.
+func otherForgeStackOfPID(pid int, projectID, envName string, f procFacts) (otherProject, otherEnv string, ok bool) {
+	for depth := 0; pid > 1 && depth < maxAncestryDepth; depth++ {
+		if env, readable := f.environ(pid); readable {
+			name, _, proj := markerFields(env)
+			if proj != "" && name != "" && (proj != projectID || name != envName) {
+				return proj, name, true
+			}
+		}
+		ppid, known := f.parent(pid)
+		if !known || ppid == pid || ppid <= 1 {
+			break
+		}
+		pid = ppid
+	}
+	return "", "", false
+}
+
+// otherStackLabel names the stack otherForgeStackOfPID found.
+func otherStackLabel(otherProject, otherEnv, projectID string) string {
+	if otherProject == projectID {
+		return fmt.Sprintf("this project's %s stack", otherEnv)
+	}
+	return fmt.Sprintf("another forge project's %s stack (project %s)", otherEnv, otherProject)
+}
+
 // classifyPortConflicts splits the pre-flight port conflicts into the ones
 // held by a forge-owned process for env (OURS — reclaimable) and the ones
 // held by anything else (FOREIGN — never touched). The holder pid is

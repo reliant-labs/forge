@@ -241,13 +241,17 @@ line names it.
       ```
 
       With it, every client call that adds a credential (`SetPassword`,
-      `ResetPassword` for an account with no password, the passkey calls,
-      `AddIDPLink`, `EnsureOTPEmail`, `CreateUser` with a password or links)
-      refuses an unverified account with `devidp.ErrUnverifiedAccount`, and
-      refuses an account it could not read (fail closed; an unknown account
-      still answers like a wrong reset code). It is OFF by default, so code
-      of your own that relies on the old behaviour is unchanged until you
-      opt in. A contact-only account's own password reset still works.
+      the passkey calls, `AddIDPLink`, `EnsureOTPEmail`, `CreateUser` with a
+      password or links) refuses an unverified account with
+      `devidp.ErrUnverifiedAccount`, and refuses an account it could not
+      read (fail closed; an unknown account still answers like a wrong reset
+      code). It is OFF by default, so code of your own that relies on the old
+      behaviour is unchanged until you opt in. A contact-only account's own
+      password reset still works, and so does a reset code the person
+      presents for an unverified account holding NO credential (a mailed
+      reset link, or a console invitation's first-password code): the code
+      proves the address, so `ResetPassword` sets the password and marks the
+      address verified. One holding a credential nobody proved is refused.
     - **Adopt before you invite.** Code of your own that hands an EXISTING
       account its first sign-in path — an invitation or console flow that
       reuses a user found by email and then issues a password-reset or
@@ -255,12 +259,12 @@ line names it.
       userID)` first. It marks an unverified, credential-less account's
       address verified (the administrator asserts it, as when creating the
       account verified) and refuses, unchanged, one that holds credentials
-      (`devidp.ErrAccountHoldsCredentials`: a squatter; move it aside). Skip
-      it and that first-password link stops working once the broker's
-      client is `ProvenCredentialsOnly`: the broker sets no password on an
-      unverified account. Known caller: control-plane's
-      `identityapi` Invite. forge's own identity converge already does this
-      for declared members.
+      (`devidp.ErrAccountHoldsCredentials`: a squatter; move it aside). A
+      first-password reset code still redeems without it (above), but a
+      passkey code or a social link does not, and adopting first is what
+      surfaces a squatter to the administrator instead of to the invitee.
+      Known caller: control-plane's `identityapi` Invite. forge's own
+      identity converge already does this for declared members.
     - **Drop the proof lock** if you applied it from an earlier version of
       this step: delete `proofLockerFor` (with its `pgx` and `dbtrace`
       imports) and the `ProofLocker:` line in `mountSignInMethods`.

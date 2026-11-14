@@ -14,8 +14,16 @@
     "databases": [
       {
         "cluster": null,
+        "dialect": "postgres",
+        "migrations": {
+          "dir": "db/migrations",
+          "driver": "forge"
+        },
         "name": "db",
         "namespace": null,
+        "orm": {
+          "package": "internal/db"
+        },
         "runtime": "hosted",
         "spec": {
           "deletionPolicy": "retain",

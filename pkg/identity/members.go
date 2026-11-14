@@ -294,9 +294,9 @@ func (p *run) findHuman(ctx context.Context, email string) (string, error) {
 // declared address adopts as verified — what converge does for an account it
 // creates ("isVerified": true), and for the same reason: the address comes
 // from reviewed config, not from a sign-up form. Without it the account's
-// first sign-in code could not set a password: the login broker adds no
-// credential to an unverified account (devidp ProvenCredentialsOnly,
-// forge#2121). It is devidp.Client.AdoptPendingAccount, the step every
+// first sign-in path could add no passkey or social link: the login broker
+// adds no credential to an unverified account but a presented reset code's
+// password (devidp ProvenCredentialsOnly, forge#2121). It is devidp.Client.AdoptPendingAccount, the step every
 // administrator's flow shares: only a CREDENTIAL-LESS account is ever
 // verified, and one holding credentials is refused (here it is superseded
 // instead, by supersedeUnproven).

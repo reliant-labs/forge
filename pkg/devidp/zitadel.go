@@ -55,8 +55,10 @@ type Client struct {
 
 	// ProvenCredentialsOnly makes every call that ADDS a credential refuse
 	// an account whose address is unverified (ErrUnverifiedAccount), before
-	// it writes anything: a password where there was none (SetPassword,
-	// ResetPassword), a passkey (MintPasskeyRegistrationCode,
+	// it writes anything: a password where there was none (SetPassword;
+	// ResetPassword too, unless the account holds no credential at all —
+	// a reset code the person presents proves the address, which the
+	// redemption then marks verified), a passkey (MintPasskeyRegistrationCode,
 	// RegisterPasskey, VerifyPasskeyRegistration), a social link
 	// (AddIDPLink, CreateUser's IDPLinks), the one-time-code method
 	// (EnsureOTPEmail), and CreateUser with a Password unless ContactOnly. An

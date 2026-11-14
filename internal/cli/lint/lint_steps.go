@@ -131,7 +131,7 @@ type linterStep struct {
 // they tracked removed linters and are preserved for diffability against
 // git history).
 //
-//nolint:funlen // declarative 14-entry linter registry, not branching complexity
+//nolint:funlen,gocognit // declarative linter registry: its closures, not branching, add the complexity
 func lintPipeline() []linterStep {
 	return []linterStep{
 		// 1. Standard Go linters (golangci-lint).

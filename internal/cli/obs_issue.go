@@ -190,7 +190,11 @@ type obsIssueOpts struct {
 	timelineLimit int
 }
 
-func newObsIssueCmd() *cobra.Command {
+func newObsIssueCmd() *cobra.Command { return newObsIssueCmdWith(defaultObsDeps) }
+
+// newObsIssueCmdWith is newObsIssueCmd reading the world through deps: the
+// CLI passes defaultObsDeps, the hosted MCP tools their own (mcp_hosted.go).
+func newObsIssueCmdWith(deps obsDepsFunc) *cobra.Command {
 	var o obsIssueOpts
 	cmd := &cobra.Command{
 		Use:   "issue <id> [env]",
@@ -220,7 +224,7 @@ Triage needs a hosted env: a local issue is a query over logs and has no state.
 ` + obsIssueSchema.Help(),
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsIssue(cmd.Context(), defaultObsDeps(cmd), args[0], obsEnvArg(args, 1), o)
+			return runObsIssue(cmd.Context(), deps(cmd), args[0], obsEnvArg(args, 1), o)
 		},
 	}
 	o.register(cmd, 72*time.Hour, 0)
@@ -311,7 +315,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	if doc.FirstRelease != nil {
 		commitRange = doc.FirstRelease.CommitRange
 	}
-	doc.Suspects, doc.SuspectNote = suspectCommits(ctx, d.Stderr, res, commitRange)
+	doc.Suspects, doc.SuspectNote = d.suspects()(ctx, d.Stderr, res, commitRange)
 	doc.Suggested = o.inst.carrySuggested(issueSuggestions(env, res))
 	doc.Stamp(schemaObsIssue, nil)
 	if done, err := o.out.Emit(d.Stdout, obsIssueSchema, doc, fields); done || err != nil {

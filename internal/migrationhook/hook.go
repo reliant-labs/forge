@@ -103,6 +103,27 @@ func ResolveIn(projectDir string) (Hook, bool) {
 	return Resolve(projectDir, config.DatabaseIn(projectDir))
 }
 
+// ResolveForDir is Resolve over the database whose migrations live in migDir
+// (config.DatabaseForMigrationsDir): when the env declaration declares
+// several databases, each directory is applied by its own database's tool. A
+// directory no database declares resolves as the primary's (ResolveIn).
+func ResolveForDir(projectDir, migDir string) (Hook, bool) {
+	return Resolve(projectDir, config.DatabaseForMigrationsDir(projectDir, migDir))
+}
+
+// ResolveForNamedDir is ResolveForDir for a directory a person named
+// (`forge db --dir`): with several declared databases, a directory none of
+// them names is an error (config.MigrationsDirDatabase), never the primary's
+// hook.
+func ResolveForNamedDir(projectDir, migDir string) (Hook, bool, error) {
+	db, err := config.MigrationsDirDatabase(projectDir, migDir)
+	if err != nil {
+		return Hook{}, false, err
+	}
+	h, ok := Resolve(projectDir, db)
+	return h, ok, nil
+}
+
 // Preset returns a built-in tool's default apply and status argv. Custom and
 // forge have none. Every preset names its paths through the `${...}`
 // variables, so the same argv runs against the shadow database and the env's.

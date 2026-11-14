@@ -341,21 +341,32 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	case r.NewPassword == "":
 		return fmt.Errorf("a new password is required")
 	}
-	if err := c.mayAddPassword(ctx, userID); err != nil {
+	pending, err := c.passwordGate(ctx, userID)
+	if err != nil {
 		return err
 	}
 
-	_, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
+	_, err = c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
 		"newPassword": map[string]any{
 			"password":       r.NewPassword,
 			"changeRequired": false,
 		},
 		"verificationCode": code,
 	})
-	if err == nil {
+	if err != nil {
+		return classifyResetError(err)
+	}
+	if !pending {
 		return nil
 	}
-	return classifyResetError(err)
+	// The issuer accepted the code, and a reset code reaches a person only
+	// in a mail to the account's address or from an administrator who
+	// issued it (a console invitation): either way the address is now
+	// proven, so it is marked verified, as AdoptPendingAccount would.
+	if err := c.markAddressVerified(ctx, userID); err != nil {
+		return fmt.Errorf("the password was set, but the address its reset code proved could not be marked verified: %w", err)
+	}
+	return nil
 }
 
 // mayAddPassword refuses, on a ProvenCredentialsOnly client, to give a
@@ -363,32 +374,58 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 // that is a credential added. Replacing the password a contact-only account
 // was created with is its holder's own recovery, and stays allowed.
 //
+// SetPassword runs it: the code it redeems is one the broker minted itself,
+// which proves nothing about the address.
+func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
+	pending, err := c.passwordGate(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return ErrUnverifiedAccount
+	}
+	return nil
+}
+
+// passwordGate is the ProvenCredentialsOnly check before a password is set.
+// It refuses (ErrUnverifiedAccount) an unverified account holding a
+// credential other than a password, and reports pending for an unverified
+// account holding NO credential at all: a password may be set on that one
+// only with a reset code the person PRESENTED (ResetPassword), and the
+// redemption then marks the address verified — a reset code is delivered
+// only to the address or by an administrator who issued it (forge#2121).
+//
 // It fails CLOSED: an account that cannot be read, or whose sign-in methods
 // cannot be, is refused with that error — nothing is minted or redeemed for
 // it. An unknown account answers as a wrong code does (ErrInvalidResetCode),
 // so a reset form says nothing about which accounts exist.
-func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
+func (c *Client) passwordGate(ctx context.Context, userID string) (pending bool, err error) {
 	if !c.ProvenCredentialsOnly {
-		return nil
+		return false, nil
 	}
 	u, err := c.FindUserByID(ctx, userID)
 	if errors.Is(err, ErrUserNotFound) {
-		return fmt.Errorf("%w: no such account", ErrInvalidResetCode)
+		return false, fmt.Errorf("%w: no such account", ErrInvalidResetCode)
 	}
 	if err != nil {
-		return fmt.Errorf("read the account before setting its password: %w", err)
+		return false, fmt.Errorf("read the account before setting its password: %w", err)
 	}
 	if u.EmailVerified {
-		return nil
+		return false, nil
 	}
-	has, err := c.HasPassword(ctx, userID)
+	kinds, err := c.credentialKinds(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
+		return false, fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
 	}
-	if !has {
-		return ErrUnverifiedAccount
+	if len(kinds) == 0 {
+		return true, nil
 	}
-	return nil
+	for _, k := range kinds {
+		if k == "AUTHENTICATION_METHOD_TYPE_PASSWORD" {
+			return false, nil
+		}
+	}
+	return false, ErrUnverifiedAccount
 }
 
 // Zitadel's stable ids for the two rejections a reset form must tell apart.

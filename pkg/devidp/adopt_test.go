@@ -10,49 +10,35 @@ import (
 // return code), mirrored: an administrator's client issues a first-password
 // code for an EXISTING unverified, credential-less account, and the person
 // redeems it through the login broker, whose client is ProvenCredentialsOnly.
-// Without AdoptPendingAccount first, the broker refuses it; with it, the
-// password is set. A squatter's account holding credentials is refused and
-// left as it is.
+// The console's caller does not adopt the account first today, so the
+// redemption itself must work: the code proves the address, which it marks
+// verified. Adopted first, it works the same way.
 func TestAdoptPendingAccount_TheConsoleInviteFlowSetsTheFirstPassword(t *testing.T) {
 	ctx := context.Background()
-	invite := func(t *testing.T, adopt bool) (*fakeZitadel, *fakeUser, error) {
-		z := newFakeZitadel(t)
-		admin := z.client() // the console's client: no ProvenCredentialsOnly
-		broker := z.client()
-		broker.ProvenCredentialsOnly = true
-		u := z.addUser("invitee@acme.com", false, "")
-		if adopt {
-			if ok, err := admin.AdoptPendingAccount(ctx, u.id); err != nil || !ok {
-				t.Fatalf("AdoptPendingAccount = %v, %v; want adopted", ok, err)
+	for name, adopt := range map[string]bool{"without adoption": false, "adopted first": true} {
+		t.Run(name, func(t *testing.T) {
+			z := newFakeZitadel(t)
+			admin := z.client() // the console's client: no ProvenCredentialsOnly
+			broker := z.client()
+			broker.ProvenCredentialsOnly = true
+			u := z.addUser("invitee@acme.com", false, "")
+			if adopt {
+				if ok, err := admin.AdoptPendingAccount(ctx, u.id); err != nil || !ok {
+					t.Fatalf("AdoptPendingAccount = %v, %v; want adopted", ok, err)
+				}
 			}
-		}
-		code, err := admin.MintPasswordResetCode(ctx, u.id) // the return-code invitation
-		if err != nil {
-			t.Fatal(err)
-		}
-		return z, u, broker.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: code, NewPassword: "invitee-password-1"})
+			code, err := admin.MintPasswordResetCode(ctx, u.id) // the return-code invitation
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := broker.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: code, NewPassword: "invitee-password-1"}); err != nil {
+				t.Fatalf("redemption: %v", err)
+			}
+			if verified, pw := z.passwordState(u.id); !verified || pw != "invitee-password-1" {
+				t.Fatalf("the invitee: verified=%v password set=%v", verified, pw != "")
+			}
+		})
 	}
-	t.Run("without adoption the broker refuses", func(t *testing.T) {
-		z, u, err := invite(t, false)
-		if !errors.Is(err, ErrUnverifiedAccount) {
-			t.Fatalf("redemption = %v, want ErrUnverifiedAccount", err)
-		}
-		if z.user(u.id).password != "" {
-			t.Fatal("a password was set on an unverified account")
-		}
-	})
-	t.Run("adopted first, the code sets the password", func(t *testing.T) {
-		z, u, err := invite(t, true)
-		if err != nil {
-			t.Fatalf("redemption: %v", err)
-		}
-		got := z.user(u.id)
-		z.mu.Lock()
-		defer z.mu.Unlock()
-		if !got.verified || got.password != "invitee-password-1" {
-			t.Fatalf("the invitee: verified=%v password set=%v", got.verified, got.password != "")
-		}
-	})
 }
 
 func TestAdoptPendingAccount_RefusesASquatterAndLeavesTheVerifiedAlone(t *testing.T) {

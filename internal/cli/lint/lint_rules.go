@@ -58,6 +58,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/internal/linter/tracinglint"
+	"github.com/reliant-labs/forge/pkg/dbanalyze"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -148,6 +149,8 @@ func gradableRules() []string {
 		// golangci-lint's build-tag passes (rolled out as one unit)
 		rolloutGolangciBuildTags,
 	}
+	// forge db analyze (graded here, reported by its own command)
+	rules = append(rules, dbanalyze.RuleIDs()...)
 	rules = append(rules, staticexport.RuleIDs()...)
 	return rules
 }

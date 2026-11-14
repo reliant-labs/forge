@@ -23,9 +23,15 @@ package cli
 // exactly what the binding is for. It is recorded on the control plane the
 // env declares, under the kind its render derives (SELF_MANAGED).
 //
-// IT NEEDS NO deploy/kcl. forge.yaml `name:` is the project; the env is
-// ensured on the control plane as SELF_MANAGED (forge keeps its ledger, the
-// team's pipeline deploys it). Where the record goes:
+// IT NEEDS NO deploy/kcl, AND NO forge.yaml. The project is forge.yaml's
+// `name:`, else the `project` of the env's env document (deploy/envs/<env>.yaml,
+// what `forge obs init` writes), by obs init's precedence
+// (resolveRecordProject). An env document declares an env exactly as
+// deploy/kcl does, so the admission above applies to it unchanged: its every
+// workload must be bound to the external runtime, and it records on the
+// control plane the document declares. The env is ensured on the control
+// plane as SELF_MANAGED (forge keeps its ledger, the team's pipeline deploys
+// it). Where the record goes:
 //
 //   - signed in (forge login, FORGE_CONTROL_PLANE_TOKEN, a credential
 //     helper), and FORGE_LEDGER is not machine: Reliant cloud;
@@ -53,9 +59,12 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -118,12 +127,16 @@ into the env, which is the deploy marker ` + "`forge obs changes`" + ` lists,
 ` + "`forge obs check`" + ` judges, and the console's Releases page shows as
 "recorded by CI".
 
-No deploy/kcl is needed: forge.yaml's ` + "`name:`" + ` is the project, and the env is
-created on the control plane as self-managed on first use. A version alone is
+No deploy/kcl is needed, and no forge.yaml: the project is forge.yaml's ` + "`name:`" + `,
+else the one the env's document names (deploy/envs/<env>.yaml, which
+` + "`forge obs init`" + ` writes). The env is created on the control plane as
+self-managed on first use. A version alone is
 enough (--version, with the commit detected from CI); pass --workload/--image
 pairs to record the digests your pipeline shipped.
 
-Where it records: an env with deploy/kcl uses the ledger its KCL selects.
+Where it records: an env declared by deploy/kcl or an env document records
+only when every workload in it is bound to the external runtime, on the
+control plane it declares.
 Otherwise, signed in (forge login, or a CI token with deploy:write in
 FORGE_CONTROL_PLANE_TOKEN, minted in the web app's Settings → API tokens) it records on Reliant cloud;
 not signed in, on this machine's ledger, which monitoring cannot see.
@@ -228,8 +241,9 @@ const reasonRecordOnlyRelease = "record_only_release"
 var renderRecordEnv = RenderKCL
 
 // admitDeclaredEnv decides, before anything is cut, whether a record may go
-// into an env forge's own KCL declares, and returns that env's render (nil for
-// an env with no declaration, which always records).
+// into an env the project declares (deploy/kcl/<env>/main.k or an env
+// document, read through the same render), and returns that env's render
+// (nil for an env with no declaration, which always records).
 //
 // A declared env is one forge applies, so a record-only release must not
 // become its current promotion, on any ledger. The control plane refuses it
@@ -256,10 +270,27 @@ func admitDeclaredEnv(ctx context.Context, projectDir, env string) (*KCLEntities
 	if err == nil && externalOnlyEnv(entities) {
 		return entities, nil
 	}
+	// The binding to ask for, in the vocabulary of the file that declares
+	// the env: an env document spells OnExternal as the external runtime.
+	external := "forge.OnExternal"
+	if doc := envDocumentRel(projectDir, env); doc != "" {
+		decl, external = doc, "`runtime: {type: external}`"
+	}
 	detail := fmt.Sprintf("environment %q is declared in %s, so forge deploys it; `%s release record` records "+
 		"deploys an outside pipeline makes. Deploy it with `%s env deploy %s`, record into an env forge does not declare, "+
-		"or bind every workload of %s to forge.OnExternal so your own tooling deploys it (deploy/external)",
-		env, decl, Name(), Name(), env, env)
+		"or bind every workload of %s to %s so your own tooling deploys it (deploy/external)",
+		env, decl, Name(), Name(), env, env, external)
+	if err == nil && entities != nil && len(entities.Workloads) == 0 {
+		// A monitoring-only declaration (what `forge obs init` writes) says
+		// where telemetry goes, not what runs, so nothing in it shows that
+		// outside tooling deploys the env.
+		detail = fmt.Sprintf("environment %q is declared in %s with no workloads, so nothing shows that your own tooling "+
+			"deploys it; `%s release record` records into a declared env whose every workload is bound to %s. "+
+			"Name the workloads your pipeline deploys there (deploy/record)", env, decl, Name(), external)
+		if external != "forge.OnExternal" {
+			detail += ", e.g. `workloads: [{name: api, runtime: {type: external}}]`"
+		}
+	}
 	if err != nil {
 		detail += fmt.Sprintf(". It does not render, so forge cannot tell whether it is all OnExternal: %v", err)
 	}
@@ -292,16 +323,109 @@ func runReleaseRecord(ctx context.Context, o releaseRecordOptions, out, errOut i
 }
 
 func recordRelease(ctx context.Context, o releaseRecordOptions, errOut io.Writer) (releaseRecordResult, error) {
-	cfgPath, err := findProjectConfigFile()
+	start, err := cmdutil.ResolutionRoot()
 	if err != nil {
-		return releaseRecordResult{}, fmt.Errorf("forge release record needs a forge.yaml with the project's `name:` "+
-			"(the project its releases are filed under): %w", err)
+		return releaseRecordResult{}, fmt.Errorf("get working directory: %w", err)
 	}
-	project := hostedProjectName()
+	projectDir, project, err := resolveRecordProject(start, strings.TrimSpace(o.env))
+	if err != nil {
+		return releaseRecordResult{}, err
+	}
+	return recordReleaseIn(ctx, o, recordScope{projectDir: projectDir, project: project, getenv: os.Getenv}, errOut)
+}
+
+// resolveRecordProject is the project a record is filed under, and the
+// directory its declarations live in, by `forge obs init`'s precedence:
+// forge.yaml `name:`, else the env's own env document's `project`, else the
+// one project every env document names. So a repo whose only forge files are
+// deploy/envs/<env>.yaml documents records with no forge.yaml at all.
+//
+// forge.yaml's `name:` wins, but an env document naming another project is
+// refused, as obs init refuses it: the document's render stamps its project on
+// the env's telemetry (service.namespace), so a record filed under another
+// project would be a marker no dashboard lines up with.
+func resolveRecordProject(start, env string) (projectDir, project string, err error) {
+	cfgPath, err := findProjectConfigFile()
+	switch {
+	case err == nil:
+		projectDir = filepath.Dir(cfgPath)
+		if project, err = recordConfigName(cfgPath); err != nil {
+			return "", "", err
+		}
+	case errors.Is(err, ErrProjectConfigNotFound):
+		projectDir = envDocumentRoot(start)
+	default:
+		return "", "", err
+	}
+	if env != "" {
+		doc, ok, derr := readEnvDocumentDeclaration(projectDir, env)
+		if derr != nil {
+			return "", "", derr
+		}
+		switch {
+		case !ok || doc.Project == "":
+		case project == "":
+			project = doc.Project
+		case doc.Project != project:
+			return "", "", fmt.Errorf("%s names project %q, but forge.yaml's name is %q: a release is filed under one project, so make them agree",
+				envDocumentRel(projectDir, env), doc.Project, project)
+		}
+	}
 	if project == "" {
-		return releaseRecordResult{}, fmt.Errorf("%s has no `name:`; add one — it is the project this release is filed under", cfgPath)
+		project = envDocumentsProject(projectDir)
 	}
-	return recordReleaseIn(ctx, o, recordScope{projectDir: filepath.Dir(cfgPath), project: project, getenv: os.Getenv}, errOut)
+	if project == "" {
+		return "", "", fmt.Errorf("forge release record cannot tell which project to file this release under: "+
+			"declare the env in %s/%s.yaml (`%s obs init %s` writes one; `%s project schema env` prints its schema), "+
+			"or add `name: <project>` to forge.yaml", envdoc.Dir, envOrPlaceholder(env), Name(), envOrPlaceholder(env), Name())
+	}
+	return projectDir, project, nil
+}
+
+// recordConfigName is forge.yaml's `name:`, "" when it has none. A forge.yaml
+// with no name fails the full load (name is required of a forge project), but
+// a record needs nothing else from it, so such a file defers to the env
+// documents rather than refusing. Any other load error is the file's, and is
+// returned.
+func recordConfigName(cfgPath string) (string, error) {
+	cfg, err := loadProjectConfigFrom(cfgPath)
+	if err == nil {
+		return strings.TrimSpace(cfg.Name), nil
+	}
+	raw, rerr := os.ReadFile(cfgPath) //nolint:gosec // the project's own forge.yaml
+	if rerr != nil {
+		return "", err
+	}
+	var named struct {
+		Name string `yaml:"name"`
+	}
+	if yaml.Unmarshal(raw, &named) == nil && strings.TrimSpace(named.Name) == "" {
+		return "", nil
+	}
+	return "", err
+}
+
+func envOrPlaceholder(env string) string {
+	if env == "" {
+		return "<env>"
+	}
+	return env
+}
+
+// envDocumentRoot is the project directory of a repo with no forge.yaml: the
+// nearest directory at or above start holding env documents (deploy/envs/),
+// the way forge.yaml is found by walking up. start when there is none.
+func envDocumentRoot(start string) string {
+	for dir := start; ; {
+		if fi, err := os.Stat(filepath.Join(dir, envdoc.Dir)); err == nil && fi.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return start
+		}
+		dir = parent
+	}
 }
 
 // recordScope is what a record reads from its surroundings: the project and
@@ -346,7 +470,29 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if target.note != "" {
 		fmt.Fprintln(errOut, target.note)
 	}
+	return recordReleaseInto(ctx, target, recordInput{
+		project: project, env: env, version: version, commit: commit,
+		artifacts: artifacts, workloads: workloads, run: run,
+		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
+	})
+}
 
+// recordInput is one record, resolved: what recordReleaseInto writes.
+type recordInput struct {
+	project, env, version, commit string
+	artifacts                     map[string]release.Artifact
+	workloads                     map[string]string
+	run                           release.Run
+	// ci marks a record made inside CI: its promotion's actor is "ci".
+	ci bool
+}
+
+// recordReleaseInto cuts the record-only release and promotes it into the
+// env on target: the write half of `forge release record`, shared with the
+// hosted release_record tool, which resolves its target from the signed-in
+// person instead of this machine.
+func recordReleaseInto(ctx context.Context, target recordLedger, in recordInput) (releaseRecordResult, error) {
+	project, env, version, commit, artifacts, workloads, run := in.project, in.env, in.version, in.commit, in.artifacts, in.workloads, in.run
 	rel := release.Release{
 		Version:    version,
 		Project:    project,
@@ -375,7 +521,7 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	}
 	p := release.NewPromotion(env, rel, release.KindPromote)
 	p.Run = run
-	if runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "" {
+	if in.ci {
 		p.PromotedBy.Actor = releaseRecordActorCI
 	}
 	written, err := target.ledger.Bindings.Append(ctx, p, appendGuard{})

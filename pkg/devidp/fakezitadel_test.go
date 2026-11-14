@@ -66,6 +66,10 @@ type fakeZitadel struct {
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
+	// projectionLag hides a user created through POST /v2/users/human from
+	// that many session creations, which answer QUERY-Dfbg2 as the real
+	// issuer does while its user projection has not caught up (-1: forever).
+	projectionLag int
 }
 
 type fakeUser struct {
@@ -84,7 +88,12 @@ type fakeUser struct {
 	locked               bool
 	totp                 bool
 	otpSMS               bool
-	// username is what loginName derives from; "" reads as loginName.
+	// unprojected counts the session creations still to be refused for
+	// this user (projectionLag); negative refuses them all.
+	unprojected int
+	// username is what loginName derives from (a username change moves
+	// both); "" reads as loginName. Only usernames are unique; a test may
+	// give loginName a value of its own (an org-domain-suffixed one).
 	username string
 }
 
@@ -178,7 +187,7 @@ func (f *fakeZitadel) id(prefix string) string {
 func (f *fakeZitadel) addUser(email string, verified bool, password string) *fakeUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	u := &fakeUser{id: f.userID(), email: email, loginName: email, verified: verified, password: password}
+	u := &fakeUser{id: f.userID(), email: email, loginName: email, username: email, verified: verified, password: password}
 	f.users[u.id] = u
 	return u
 }
@@ -187,6 +196,15 @@ func (f *fakeZitadel) user(id string) *fakeUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.users[id]
+}
+
+// passwordState reports whether the account's address is verified and the
+// password it holds, read under the lock.
+func (f *fakeZitadel) passwordState(id string) (verified bool, password string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[id]
+	return u.verified, u.password
 }
 
 func (f *fakeZitadel) userByEmail(email string) *fakeUser {
@@ -312,7 +330,7 @@ func humanJSON(u *fakeUser) map[string]any {
 	if u.locked {
 		state = "USER_STATE_LOCKED"
 	}
-	return map[string]any{"userId": u.id, "preferredLoginName": u.name(), "username": u.name(), "state": state,
+	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "username": u.name(), "state": state,
 		"human": map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}}
 }
 
@@ -355,16 +373,25 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		uc := sub(b, "checks", "user")
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		var u *fakeUser
+		// The real issuer reads its projection and answers not-found unless
+		// exactly one PROJECTED user matches; an unprojected one is invisible.
+		var matches []*fakeUser
 		for _, cand := range f.users {
-			if cand.id == str(uc, "userId") || (str(uc, "loginName") != "" && cand.name() == str(uc, "loginName")) {
-				u = cand
+			if cand.id == str(uc, "userId") || (str(uc, "loginName") != "" && cand.loginName == str(uc, "loginName")) {
+				if cand.unprojected != 0 {
+					if cand.unprojected > 0 {
+						cand.unprojected--
+					}
+					continue
+				}
+				matches = append(matches, cand)
 			}
 		}
-		if u == nil {
+		if len(matches) != 1 {
 			zerr(w, 404, "QUERY-Dfbg2", "User could not be found")
 			return
 		}
+		u := matches[0]
 		sess := &fakeSession{token: f.id("st"), userID: u.id}
 		if pw := sub(b, "checks", "password"); pw != nil {
 			if u.locked {
@@ -487,7 +514,8 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		sort.Strings(ids)
 		res := []any{}
 		for _, id := range ids {
-			if u := f.users[id]; email == "" || strings.EqualFold(u.email, email) {
+			// The search reads the same projection: an unprojected user is not found.
+			if u := f.users[id]; (email == "" || strings.EqualFold(u.email, email)) && u.unprojected == 0 {
 				res = append(res, humanJSON(u))
 			}
 		}
@@ -533,7 +561,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 				return
 			}
 		}
-		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw, unprojected: f.projectionLag}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")

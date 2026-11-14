@@ -1,6 +1,6 @@
 ---
 name: api-openapi
-description: Emit OpenAPI 3 specs from your proto services as a buf pipeline step — opt-in via `api.openapi: true` in forge.yaml. The spec is a projection of proto, so the proto file stays the single source of truth.
+description: Emit OpenAPI 3 specs from your proto services as a buf pipeline step — opt-in via `api.openapi: true` in forge.yaml. The spec is a projection of proto, so the proto file stays the single source of truth. Also — bring your own OpenAPI 3 spec: declare it as a `forge.API` and forge validates and lists it (what works today, and what does not yet).
 ---
 
 # OpenAPI Specs from Proto
@@ -14,6 +14,40 @@ service gets its own self-contained file under `openapi/`.
 This is a **projection** of proto — every shape in the yaml is derived
 from the proto file. Hand-editing the yaml is never the right answer;
 edit the proto and regenerate.
+
+## Bring your OpenAPI spec (an API that is not proto)
+
+An API whose contract is an OpenAPI document you already have is declared as
+a `forge.API` in the env (`deploy/kcl/<env>/main.k`):
+
+```python
+apis = [forge.API {
+    name = "billing"
+    kind = "openapi"
+    spec = "api/openapi.yaml"   # repository-relative, YAML or JSON
+    base_path = "/billing"      # optional, starts with "/"
+    database = "default"        # optional: a database the env declares
+}]
+```
+
+**What works today (~10 min):**
+
+- **Validation when the env loads.** Every command that loads the env reads the
+  spec. It must be a file whose top-level `openapi` is `3.x`. A Swagger 2
+  document is refused with "convert it to OpenAPI 3" (`npx swagger2openapi`
+  does it). A missing file, a missing version or another version are refused
+  too, naming the API.
+- **Listing.** `forge project audit --json`, `.categories.resources.details.apis[]`,
+  lists every API with `origin` `kcl` and the envs that declare it. A project
+  with proto services and no proto API declared gets one derived:
+  `{name: <project>, kind: proto, spec: proto, origin: derived}`.
+- KCL checks the rest: `kind` is `proto` or `openapi`, names are unique, `spec`
+  is inside the repository, and `database` names a declared database.
+
+**Not yet:** forge generates nothing from an OpenAPI spec, and serves,
+routes and lints nothing from it. No handlers, clients, hooks, mocks or
+contract tests come from it. Today the declaration is groundwork: it records
+which APIs the project has, and later features read it from there.
 
 ## Enable it
 

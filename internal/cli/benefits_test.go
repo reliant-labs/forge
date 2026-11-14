@@ -79,8 +79,15 @@ func TestBenefitsEvidenceExists(t *testing.T) {
 			}
 		}
 		// A rule's lane is the flag that runs it alone; "" is a rule only
-		// a bare `forge lint` runs.
+		// a bare `forge lint` runs; "forge <command>" a rule another
+		// command reports.
 		for _, r := range b.Rules {
+			if cmdPath, ok := strings.CutPrefix(r.Lane, "forge "); ok {
+				if msg := resolveCommandEvidence(root, cmdPath); msg != "" {
+					t.Errorf("benefit %q: rule %q: lane %q: %s", b.ID, r.ID, r.Lane, msg)
+				}
+				continue
+			}
 			if r.Lane != "" && lintCmd.Flags().Lookup(strings.TrimPrefix(r.Lane, "--")) == nil {
 				t.Errorf("benefit %q: rule %q: lane %q is not a `forge lint` flag", b.ID, r.ID, r.Lane)
 			}

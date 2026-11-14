@@ -9,9 +9,13 @@ package cli
 //
 //  1. requires sign-in (`forge login`, or a token): there is no anonymous
 //     path for observability;
-//  2. names the project (forge.yaml `name`, --project, or a minimal forge.yaml
-//     it offers to write) and records the envs in forge.yaml `envs:` with
-//     `monitoring:` on — the env-declaration seam every `forge obs` verb reads;
+//  2. names the project (forge.yaml `name`, --project, the env documents, or
+//     the directory) and declares each env that nothing declares yet in its
+//     env document, deploy/envs/<env>.yaml — the minimal monitoring-only one
+//     (docs/design/env-document.md §4), read through the env-declaration
+//     seam every `forge obs` verb reads. An env forge.yaml `envs:` already
+//     declares (the legacy shorthand) stays there; forge.yaml is never a
+//     new env's home;
 //  3. registers each env on the control plane as SELF_MANAGED (the platform
 //     never deploys there);
 //  4. mints a per-env telemetry ingest token (TelemetryTokenService), shown
@@ -32,6 +36,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +49,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envdoc"
 	"github.com/reliant-labs/forge/internal/obsbackend"
 )
 
@@ -73,23 +79,31 @@ type obsInitOpts struct {
 
 // obsInitDoc is the --json document (contract: forge.obs.init/v1).
 type obsInitDoc struct {
-	Schema       string       `json:"schema"`
-	Project      string       `json:"project"`
-	OrgID        string       `json:"org_id,omitempty"`
-	ControlPlane string       `json:"control_plane,omitempty"`
-	ConsoleURL   string       `json:"console_url,omitempty"`
-	WroteConfig  bool         `json:"wrote_config"`
-	ConfigPath   string       `json:"config_path,omitempty"`
-	Envs         []obsInitEnv `json:"envs"`
+	Schema       string `json:"schema"`
+	Project      string `json:"project"`
+	OrgID        string `json:"org_id,omitempty"`
+	ControlPlane string `json:"control_plane,omitempty"`
+	ConsoleURL   string `json:"console_url,omitempty"`
+	// WroteConfig reports that init wrote a declaration (an env document,
+	// or forge.yaml for a legacy env); ConfigPath is the first file it wrote,
+	// else the governing forge.yaml. WroteFiles lists every file written.
+	WroteConfig bool         `json:"wrote_config"`
+	ConfigPath  string       `json:"config_path,omitempty"`
+	WroteFiles  []string     `json:"wrote_files,omitempty"`
+	Envs        []obsInitEnv `json:"envs"`
 }
 
 // obsInitEnv is one env's result.
 type obsInitEnv struct {
-	Env           string            `json:"env"`
-	EnvironmentID string            `json:"environment_id,omitempty"`
-	Token         *obsInitToken     `json:"token,omitempty"`
-	OTelEnv       map[string]string `json:"otel_env"`
-	DashboardURL  string            `json:"dashboard_url,omitempty"`
+	Env           string `json:"env"`
+	EnvironmentID string `json:"environment_id,omitempty"`
+	// Declaration is the file that declares the env, relative to the
+	// project: deploy/envs/<env>.yaml, or forge.yaml for a legacy env; ""
+	// when only flags do.
+	Declaration  string            `json:"declaration,omitempty"`
+	Token        *obsInitToken     `json:"token,omitempty"`
+	OTelEnv      map[string]string `json:"otel_env"`
+	DashboardURL string            `json:"dashboard_url,omitempty"`
 }
 
 // obsInitToken is the minted token's metadata. The JWT is in OTelEnv only.
@@ -153,9 +167,13 @@ standard OpenTelemetry variables your app needs — nothing forge-specific:
   OTEL_SERVICE_NAME             one per deployable (api, worker, web)
   OTEL_RESOURCE_ATTRIBUTES      deployment.environment.name=<env>,service.version=<your version>
 
-It records the envs in forge.yaml (` + "`envs:`" + ` with ` + "`monitoring: true`" + `), writing a
-minimal forge.yaml when there is none (it asks first; --write-config to skip the
-question, --no-write to keep the directory untouched and pass --project).
+It declares each env nothing declares yet in an env document,
+deploy/envs/<env>.yaml (apiVersion forge.dev/env/v1: the project, the env and
+where its telemetry goes; ` + "`forge project schema env`" + ` prints the schema). It needs
+no forge.yaml. In a directory with no forge files it asks first (--write-config
+to skip the question, --no-write to keep the directory untouched and pass
+--project). An env document already there is read, never rewritten; an env
+forge.yaml ` + "`envs:`" + ` declares (the legacy shorthand) stays in forge.yaml.
 
   forge login
   forge obs init prod staging
@@ -173,8 +191,8 @@ Language-by-language setup: forge skill load observability (section "Monitoring 
 	f.StringVar(&o.tokenName, "token-name", defaultIngestTokenName, "the ingest token's label (ci, laptop, prod-k8s)")
 	f.DurationVar(&o.ttl, "ttl", 0, "the ingest token's lifetime (default and maximum 90 days, at least 1h)")
 	f.StringVar(&o.org, "org", "", "the organization a NEW project is created in (default: your only one)")
-	f.BoolVar(&o.writeConfig, "write-config", false, "write or update forge.yaml without asking")
-	f.BoolVar(&o.noWrite, "no-write", false, "never write forge.yaml (name the project with --project)")
+	f.BoolVar(&o.writeConfig, "write-config", false, "write the env document (deploy/envs/<env>.yaml) without asking")
+	f.BoolVar(&o.noWrite, "no-write", false, "write no file: no env document, no forge.yaml (name the project with --project)")
 	f.BoolVar(&o.jsonOut, "json", false, "print the result as a "+obsInitSchema+" document")
 	return cmd
 }
@@ -198,80 +216,69 @@ func runObsInit(ctx context.Context, d obsInitDeps, args []string, o obsInitOpts
 	if err != nil {
 		return err
 	}
-	project, err := initProjectName(cfg, d)
-	if err != nil {
-		return err
-	}
-	envs, err := initEnvs(args, cfg)
-	if err != nil {
-		return err
-	}
-	// An env deploy/kcl declares is KCL's: forge env deploy wires its
-	// telemetry, and adding it to forge.yaml would declare it twice.
+	projectDir := ""
 	if cfgPath != "" {
-		for _, env := range envs {
-			if fileExists(filepath.Join(filepath.Dir(cfgPath), "deploy", "kcl", env, "main.k")) {
-				return obsbackend.Wrong("env %s is declared in deploy/kcl/%s/main.k: `forge env deploy %s` wires its telemetry. "+
-					"For a token an app outside forge's deploys sends with, use `forge obs tokens create %s`", env, env, env, env)
-			}
+		projectDir = filepath.Dir(cfgPath)
+	} else if projectDir, err = d.Getwd(); err != nil {
+		return err
+	}
+	project, err := initProjectName(cfg, d, projectDir)
+	if err != nil {
+		return err
+	}
+	envs, err := initEnvs(args, cfg, projectDir)
+	if err != nil {
+		return err
+	}
+	decls, err := initDeclarations(projectDir, cfg, envs)
+	if err != nil {
+		return err
+	}
+	var docs []envDocumentDeclaration
+	for _, dl := range decls {
+		if dl.source == envDeclDocument {
+			docs = append(docs, dl.document)
 		}
 	}
-
-	// An env an env document declares (deploy/envs/<env>.yaml) is already
-	// declared: init registers it and mints its token, and records nothing
-	// in forge.yaml (whose `envs:` would declare it twice).
-	docDir := "."
-	if cfgPath != "" {
-		docDir = filepath.Dir(cfgPath)
-	}
-	envDocs, err := envDocumentsFor(docDir, envs)
-	if err != nil {
-		return obsbackend.Wrong("%v", err)
-	}
-	if len(envDocs) > 0 {
-		if project, err = projectFromEnvDocuments(cfg, envDocs); err != nil {
+	if len(docs) > 0 {
+		if project, err = projectFromEnvDocuments(cfg, docs); err != nil {
 			return err
 		}
 	}
 
 	doc := obsInitDoc{Schema: obsInitSchema, Project: project, Envs: []obsInitEnv{}}
-	var mon *config.MonitoringConfig
-	if len(envDocs) > 0 {
-		mon = envDocs[0].Monitoring
-		if mon == nil {
-			return obsbackend.Wrong("env %s's document declares no observability: add `observability: {enabled: true, destination: {token_from_control_plane: true}}` to %s",
-				envs[0], envDocumentRel(docDir, envs[0]))
-		}
-	} else {
-		wrote, path, err := initWriteConfig(d, cfgPath, project, envs, o)
-		if err != nil {
+	written, err := initWriteDeclarations(d, cfgPath, projectDir, project, cfg, decls, o)
+	if err != nil {
+		return err
+	}
+	doc.WroteFiles = written
+	doc.WroteConfig = len(written) > 0
+	switch {
+	case len(written) > 0:
+		doc.ConfigPath = written[0]
+	case cfgPath != "":
+		doc.ConfigPath = cfgPath
+	}
+	if len(written) > 0 && cfgPath != "" {
+		// Re-read what was written: the seam and every later verb read it.
+		if _, cfg, err = initConfig(); err != nil {
 			return err
 		}
-		doc.WroteConfig, doc.ConfigPath = wrote, path
-		if wrote {
-			// Re-read what was written: the seam and every later verb read it.
-			if _, cfg, err = initConfig(); err != nil {
-				return err
-			}
-		}
-		if cfg != nil {
-			mon = cfg.Monitoring
-		}
 	}
-	if o := strings.TrimSpace(obsControlPlaneFlag); o != "" {
-		m := config.MonitoringConfig{Enabled: true}
-		if mon != nil {
-			m = *mon
-		}
-		m.ControlPlane = o
-		mon = &m
+	mon, err := initMonitoring(cfg, decls)
+	if err != nil {
+		return err
 	}
 	console := cloud.NewConsole(cloud.ConsoleBase(monitoringConsoleURL(mon)), project)
+	declaredIn := map[string]string{}
+	for _, dl := range decls {
+		declaredIn[dl.env] = dl.path
+	}
 
 	if ep := monitoringEndpoint(mon); ep != "" {
 		// A self-hosted backend: nothing to register, nothing to mint.
 		for _, env := range envs {
-			doc.Envs = append(doc.Envs, obsInitEnv{Env: env, OTelEnv: otelEnv(ep, "", env, project, o.service)})
+			doc.Envs = append(doc.Envs, obsInitEnv{Env: env, Declaration: declaredIn[env], OTelEnv: otelEnv(ep, "", env, project, o.service)})
 		}
 		return writeObsInit(d, doc, o, ep)
 	}
@@ -282,33 +289,51 @@ func runObsInit(ctx context.Context, d obsInitDeps, args []string, o obsInitOpts
 		return err
 	}
 	doc.OrgID, doc.ControlPlane, doc.ConsoleURL = sess.OrgID, cp, console.Home("")
+	sess.ControlPlane = cp
+	registered, err := registerMonitoredEnvs(ctx, sess, project, envs, console, o)
+	if err != nil {
+		return err
+	}
+	for i := range registered {
+		registered[i].Declaration = declaredIn[registered[i].Env]
+	}
+	doc.Envs = append(doc.Envs, registered...)
+	return writeObsInit(d, doc, o, "")
+}
+
+// registerMonitoredEnvs is the control-plane half of `forge obs init`, shared
+// with the hosted obs_init tool: it registers each env as SELF_MANAGED, mints
+// its ingest token and returns the OTEL_* variables an app sends with. It
+// reads no forge.yaml and writes nothing locally.
+func registerMonitoredEnvs(ctx context.Context, sess obsSession, project string, envs []string, console cloud.Console, o obsInitOpts) ([]obsInitEnv, error) {
 	// A control plane that predates TelemetryTokenService cannot finish
 	// init: refuse before registering any env on it, not after.
 	if err := requireIngestTokens(ctx, sess); err != nil {
-		return err
+		return nil, err
 	}
+	out := make([]obsInitEnv, 0, len(envs))
 	for _, env := range envs {
 		id, _, err := deploytarget.EnsureHostedEnvironment(ctx, sess.Caller, deploytarget.HostedEnvRef{
 			Project: project, Name: env, Kind: deploytarget.HostedEnvSelfManaged})
 		if err != nil {
-			return obsbackend.MapCloudError(fmt.Errorf("register env %s: %w", env, err))
+			return nil, obsbackend.MapCloudError(fmt.Errorf("register env %s: %w", env, err))
 		}
 		tok, err := createIngestToken(ctx, sess, id, o.tokenName, o.ttl)
 		if err != nil {
-			return fmt.Errorf("env %s: %w", env, err)
+			return nil, fmt.Errorf("env %s: %w", env, err)
 		}
 		if tok.OTLPEndpoint == "" {
-			return obsbackend.Undetermined("the control plane %s has no public OTLP endpoint, so an app outside it has nowhere to send; "+
-				"its operator sets telemetry_token.local_telemetry_endpoint", cp)
+			return nil, obsbackend.Undetermined("the control plane %s has no public OTLP endpoint, so an app outside it has nowhere to send; "+
+				"its operator sets telemetry_token.local_telemetry_endpoint", sess.ControlPlane)
 		}
-		doc.Envs = append(doc.Envs, obsInitEnv{
+		out = append(out, obsInitEnv{
 			Env: env, EnvironmentID: id,
 			Token:        &obsInitToken{ID: tok.Token.ID, Name: tok.Token.Name, ExpiresAt: tok.Token.ExpiresAt},
 			OTelEnv:      otelEnv(tok.OTLPEndpoint, tok.OTLPHeaders, env, project, o.service),
 			DashboardURL: console.Dashboards(env),
 		})
 	}
-	return writeObsInit(d, doc, o, "")
+	return out, nil
 }
 
 // initConfig reads the governing forge.yaml: ("", nil, nil) when there is none.
@@ -346,8 +371,9 @@ func projectFromEnvDocuments(cfg *config.ProjectConfig, docs []envDocumentDeclar
 }
 
 // initProjectName is --project, else forge.yaml `name`, else (no forge.yaml)
-// the directory's name, made a valid project name.
-func initProjectName(cfg *config.ProjectConfig, d obsInitDeps) (string, error) {
+// the project the env documents under projectDir name, else the directory's
+// name, made a valid project name.
+func initProjectName(cfg *config.ProjectConfig, d obsInitDeps, projectDir string) (string, error) {
 	flag := strings.TrimSpace(obsProjectFlag)
 	if cfg != nil {
 		if flag != "" && cfg.Name != "" && flag != cfg.Name {
@@ -362,6 +388,9 @@ func initProjectName(cfg *config.ProjectConfig, d obsInitDeps) (string, error) {
 			return "", obsbackend.Wrong("--project %q is not a project name: lowercase letters, digits and '-', starting with a letter", flag)
 		}
 		return flag, nil
+	}
+	if p := envDocumentsProject(projectDir); p != "" {
+		return p, nil
 	}
 	wd, err := d.Getwd()
 	if err != nil {
@@ -402,11 +431,20 @@ func projectNameFromDir(dir string) string {
 	return name
 }
 
-// initEnvs is the positional envs, else forge.yaml `envs:`.
-func initEnvs(args []string, cfg *config.ProjectConfig) ([]string, error) {
+// initEnvs is the positional envs, else the envs that declare monitoring:
+// forge.yaml `envs:` and the env documents with an observability block.
+func initEnvs(args []string, cfg *config.ProjectConfig, projectDir string) ([]string, error) {
 	envs := args
-	if len(envs) == 0 && cfg != nil {
-		envs = cfg.Envs
+	if len(envs) == 0 {
+		if cfg != nil {
+			envs = append(envs, cfg.Envs...)
+		}
+		documented, _ := envdoc.List(projectDir)
+		for _, env := range documented {
+			if d, ok, err := readEnvDocumentDeclaration(projectDir, env); err == nil && ok && d.Monitoring != nil {
+				envs = append(envs, env)
+			}
+		}
 	}
 	if len(envs) == 0 {
 		return nil, obsbackend.Wrong("name the env(s) your app runs in: forge obs init prod [staging …]")
@@ -425,50 +463,250 @@ func initEnvs(args []string, cfg *config.ProjectConfig) ([]string, error) {
 	return out, nil
 }
 
-// initWriteConfig records project, envs and `monitoring: true` in forge.yaml,
-// creating it in the working directory when there is none and the user agrees.
-// It reports whether it wrote, and the path.
-func initWriteConfig(d obsInitDeps, cfgPath, project string, envs []string, o obsInitOpts) (bool, string, error) {
-	if o.noWrite {
-		if cfgPath == "" && strings.TrimSpace(obsProjectFlag) == "" {
-			return false, "", obsbackend.Wrong("with --no-write and no forge.yaml, name the project: forge obs init --project <name> …")
-		}
-		return false, cfgPath, nil
-	}
-	if cfgPath == "" {
-		path, err := initNewConfigPath(d, project, envs, o)
-		if err != nil || path == "" {
-			return false, "", err
-		}
-		cfgPath = path
-	}
-	changed, err := upsertMonitoringConfig(cfgPath, project, envs, goModulePath(filepath.Dir(cfgPath)))
-	return changed, cfgPath, err
+// initDecl is where one env init touches is declared.
+type initDecl struct {
+	env string
+	// source is envDeclDocument (deploy/envs/<env>.yaml), envDeclYAML (the
+	// legacy forge.yaml `envs:`), or envDeclNone: nothing declares it yet,
+	// and init writes its env document.
+	source envDeclSource
+	// document is the env document's declaration, when source is one.
+	document envDocumentDeclaration
+	// path is the declaring file, relative to the project; "" when nothing
+	// declares the env (flags only).
+	path string
 }
 
-// initNewConfigPath is where a new forge.yaml goes, once the user agrees (or
-// passed --write-config); "" with no error when they declined and --project
-// names the project instead.
-func initNewConfigPath(d obsInitDeps, project string, envs []string, o obsInitOpts) (string, error) {
-	wd, err := d.Getwd()
-	if err != nil {
-		return "", err
+// initDeclarations resolves each env's declaration through the seam. An env
+// deploy/kcl declares is refused: forge env deploy wires its telemetry, and a
+// second declaration would declare it twice. An env document that declares no
+// observability is refused too: init would register an env whose declaration
+// says nothing about where its telemetry goes.
+func initDeclarations(projectDir string, cfg *config.ProjectConfig, envs []string) ([]initDecl, error) {
+	out := make([]initDecl, 0, len(envs))
+	for _, env := range envs {
+		ed, err := declareEnv(projectDir, cfg, env)
+		if err != nil {
+			return nil, obsbackend.Wrong("%v", err)
+		}
+		dl := initDecl{env: env, source: ed.Source}
+		switch ed.Source {
+		case envDeclKCL:
+			return nil, obsbackend.Wrong("env %s is declared in deploy/kcl/%s/main.k: `forge env deploy %s` wires its telemetry. "+
+				"For a token an app outside forge's deploys sends with, use `forge obs tokens create %s`", env, env, env, env)
+		case envDeclDocument:
+			doc, _, err := readEnvDocumentDeclaration(projectDir, env)
+			if err != nil {
+				return nil, obsbackend.Wrong("%v", err)
+			}
+			dl.document, dl.path = doc, envDocumentRel(projectDir, env)
+			if doc.Monitoring == nil {
+				return nil, obsbackend.Wrong("env %s's document declares no observability: add `observability: {enabled: true, destination: {token_from_control_plane: true}}` to %s",
+					env, dl.path)
+			}
+		case envDeclYAML:
+			dl.path = defaultProjectConfigFile
+		default:
+			dl.source = envDeclNone
+		}
+		out = append(out, dl)
 	}
-	path := filepath.Join(wd, "forge.yaml")
-	if o.writeConfig {
-		return path, nil
+	return out, nil
+}
+
+// initWriteDeclarations declares what is not declared yet, and returns the
+// files it wrote. An env nothing declares gets its env document,
+// deploy/envs/<env>.yaml (writeMonitoringDocument): forge.yaml stays project
+// and tooling config. An env forge.yaml `envs:` already declares (the legacy
+// shorthand) stays there: init only switches `monitoring:` on when the file
+// lacks it, and never moves the env.
+//
+// It asks before writing into a directory with no forge files (no forge.yaml,
+// no env document); --write-config skips the question and --no-write writes
+// nothing.
+func initWriteDeclarations(d obsInitDeps, cfgPath, projectDir, project string, cfg *config.ProjectConfig, decls []initDecl, o obsInitOpts) ([]string, error) {
+	var legacy []string
+	var fresh []*initDecl
+	for i := range decls {
+		switch decls[i].source {
+		case envDeclYAML:
+			legacy = append(legacy, decls[i].env)
+		case envDeclNone:
+			fresh = append(fresh, &decls[i])
+		}
 	}
-	yes, ok := d.Confirm(fmt.Sprintf("No forge.yaml here. Write a minimal one (name: %s, envs: %s, monitoring: true) to %s?", project, strings.Join(envs, ", "), path))
-	switch {
-	case yes:
-		return path, nil
-	case strings.TrimSpace(obsProjectFlag) != "":
-		return "", nil
-	case !ok:
-		return "", obsbackend.Wrong("no forge.yaml here, and nobody to ask: pass --write-config to write a minimal one, or --project <name> --no-write")
-	default:
-		return "", obsbackend.Wrong("not writing forge.yaml: name the project with --project <name> (and --no-write)")
+	flagProject := strings.TrimSpace(obsProjectFlag) != ""
+	if o.noWrite {
+		if len(fresh) > 0 && cfgPath == "" && !flagProject && envDocumentsProject(projectDir) == "" {
+			return nil, obsbackend.Wrong("with --no-write and no forge files, name the project: forge obs init --project <name> …")
+		}
+		return nil, nil
 	}
+	var written []string
+	if len(legacy) > 0 {
+		changed, err := upsertMonitoringConfig(cfgPath, project, legacy, goModulePath(projectDir))
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			written = append(written, cfgPath)
+		}
+	}
+	if len(fresh) == 0 {
+		return written, nil
+	}
+	paths := make([]string, len(fresh))
+	for i, dl := range fresh {
+		paths[i] = filepath.Join(projectDir, envdoc.Dir, dl.env+".yaml")
+	}
+	if existing, _ := envdoc.List(projectDir); cfgPath == "" && len(existing) == 0 && !o.writeConfig {
+		yes, ok := d.Confirm(fmt.Sprintf("No forge files here. Write %s, declaring the env (project: %s, monitoring on)?", strings.Join(paths, ", "), project))
+		switch {
+		case yes:
+		case flagProject:
+			// --project names the project for this run; nothing is written.
+			return written, nil
+		case !ok:
+			return nil, obsbackend.Wrong("no forge files here, and nobody to ask: pass --write-config to write the env document (%s), or --project <name> --no-write",
+				filepath.ToSlash(filepath.Join(envdoc.Dir, fresh[0].env+".yaml")))
+		default:
+			return nil, obsbackend.Wrong("not writing the env document: name the project with --project <name> (and --no-write)")
+		}
+	}
+	mon := newDocumentMonitoring(cfg)
+	for i, dl := range fresh {
+		if err := writeMonitoringDocument(paths[i], project, dl.env, mon); err != nil {
+			return nil, err
+		}
+		written = append(written, paths[i])
+		// Read it back through the loader: what init wrote is what every
+		// later verb reads, and it must validate.
+		doc, ok, err := readEnvDocumentDeclaration(projectDir, dl.env)
+		if err != nil || !ok {
+			return nil, fmt.Errorf("the env document init wrote does not load (a forge bug): %s: %v", paths[i], err)
+		}
+		dl.source, dl.document, dl.path = envDeclDocument, doc, envDocumentRel(projectDir, dl.env)
+	}
+	// A forge.yaml with no `name:` would hide the documents' project from
+	// every verb (forge.yaml names the project when there is one).
+	if cfg != nil && cfg.Name == "" {
+		changed, err := upsertMonitoringConfig(cfgPath, project, nil, "")
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			written = append(written, cfgPath)
+		}
+	}
+	return written, nil
+}
+
+// newDocumentMonitoring is the monitoring a new env document declares: what
+// forge.yaml's legacy `monitoring:` says (so a project's envs agree on where
+// telemetry goes), else Reliant's control plane; --control-plane overrides.
+func newDocumentMonitoring(cfg *config.ProjectConfig) config.MonitoringConfig {
+	m := config.MonitoringConfig{}
+	if cfg != nil && cfg.Monitoring != nil {
+		m = *cfg.Monitoring
+	}
+	m.Enabled = true
+	if cp := strings.TrimSpace(obsControlPlaneFlag); cp != "" {
+		m.ControlPlane = cp
+	}
+	return m
+}
+
+// writeMonitoringDocument writes the minimal monitoring-only env document
+// (docs/design/env-document.md §4) to path: the project, the env, its control
+// plane and where its telemetry goes. A self-hosted endpoint is written as the
+// destination; otherwise the telemetry goes to the control plane, which mints
+// its token.
+func writeMonitoringDocument(path, project, env string, m config.MonitoringConfig) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# The %s env's declaration, written by `forge obs init`: an env document,\n", env)
+	b.WriteString("# validated against the env schema (`forge project schema env`). It grows with\n")
+	b.WriteString("# the adoption: add `workloads:` to record deploys (forge skill load deploy/record).\n")
+	fmt.Fprintf(&b, "# yaml-language-server: $schema=%s\n", envSchemaID)
+	// Quoted: a project or env named `on`, `2026` or `true` is a valid name
+	// that a plain YAML scalar would turn into a boolean or a number.
+	fmt.Fprintf(&b, "apiVersion: %s\nproject: %s\nenv: %s\n", envdoc.APIVersion, strconv.Quote(project), strconv.Quote(env))
+	if ep := monitoringEndpoint(&m); ep != "" {
+		fmt.Fprintf(&b, "observability:\n  enabled: true\n  destination:\n    endpoint: %s\n", strconv.Quote(ep))
+	} else {
+		if cp := strings.TrimSpace(m.ControlPlane); cp != "" {
+			fmt.Fprintf(&b, "control_plane:\n  endpoint: %s\n", strconv.Quote(strings.TrimRight(cp, "/")))
+		} else {
+			b.WriteString("control_plane: {}  # Reliant's control plane\n")
+		}
+		b.WriteString("observability:\n  enabled: true\n  destination: {token_from_control_plane: true}\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // deploy/envs is a checked-in project directory
+		return err
+	}
+	return atomicfile.WriteFile(path, []byte(b.String()), 0o644) //nolint:gosec // an env document is a checked-in project file
+}
+
+// initMonitoring is the monitoring the envs of one init share: one control
+// plane (or one self-hosted endpoint) per init, since init signs in once.
+// --control-plane overrides every env's.
+func initMonitoring(cfg *config.ProjectConfig, decls []initDecl) (*config.MonitoringConfig, error) {
+	var mon *config.MonitoringConfig
+	first := ""
+	for _, dl := range decls {
+		var m *config.MonitoringConfig
+		if dl.source == envDeclDocument {
+			m = dl.document.Monitoring
+		} else if cfg != nil {
+			m = cfg.Monitoring
+		}
+		if cp := strings.TrimSpace(obsControlPlaneFlag); cp != "" {
+			c := config.MonitoringConfig{Enabled: true}
+			if m != nil {
+				c = *m
+			}
+			c.ControlPlane = cp
+			m = &c
+		}
+		if first == "" {
+			mon, first = m, dl.env
+			continue
+		}
+		if !sameTelemetryDestination(m, mon) {
+			return nil, obsbackend.Wrong("envs %s and %s send telemetry to different places (%s and %s): init them separately",
+				first, dl.env, monitoringPlace(mon), monitoringPlace(m))
+		}
+	}
+	// console_url is forge.yaml's alone.
+	if cfg != nil && cfg.Monitoring != nil && cfg.Monitoring.ConsoleURL != "" && (mon == nil || mon.ConsoleURL == "") {
+		c := config.MonitoringConfig{Enabled: true}
+		if mon != nil {
+			c = *mon
+		}
+		c.ConsoleURL = cfg.Monitoring.ConsoleURL
+		mon = &c
+	}
+	return mon, nil
+}
+
+// sameTelemetryDestination reports whether a and b send telemetry to one
+// place. A self-hosted endpoint is the destination when either names one, so
+// two declarations of one endpoint agree whatever control plane each also
+// names (the endpoint path never signs in); only two control-plane
+// destinations compare their control planes.
+func sameTelemetryDestination(a, b *config.MonitoringConfig) bool {
+	ea, eb := monitoringEndpoint(a), monitoringEndpoint(b)
+	if ea != "" || eb != "" {
+		return ea == eb
+	}
+	return monitoringControlPlane(a) == monitoringControlPlane(b)
+}
+
+// monitoringPlace names where a monitoring declaration's telemetry goes.
+func monitoringPlace(m *config.MonitoringConfig) string {
+	if ep := monitoringEndpoint(m); ep != "" {
+		return ep
+	}
+	return monitoringControlPlane(m)
 }
 
 // goModulePath is dir/go.mod's module path, "" when there is none.
@@ -613,8 +851,11 @@ func writeObsInit(d obsInitDeps, doc obsInitDoc, o obsInitOpts, selfHosted strin
 		return enc.Encode(doc)
 	}
 	w := d.Stdout
-	if doc.WroteConfig {
-		fmt.Fprintf(w, "wrote %s (envs + monitoring: on) — commit it\n\n", doc.ConfigPath)
+	for _, p := range doc.WroteFiles {
+		fmt.Fprintf(w, "wrote %s (the env's declaration, monitoring on) — commit it\n", p)
+	}
+	if len(doc.WroteFiles) > 0 {
+		fmt.Fprintln(w)
 	}
 	for _, e := range doc.Envs {
 		if selfHosted != "" {

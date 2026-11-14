@@ -100,12 +100,14 @@ func columnMarkerFixHint(f columnMarkerFinding) string {
 }
 
 // migrationsDirFor resolves the migrations directory every lint lane reads:
-// forge.yaml's database.migrations_dir, or the db/migrations default.
+// the primary database's (forge.yaml's database.migrations_dir, or the env
+// declaration's primary database), or the db/migrations default. Only
+// --migration-safety reads every declared database.
 func migrationsDirFor(cfg *config.ProjectConfig) string {
 	if cfg == nil {
 		return filepath.FromSlash(config.DefaultMigrationsDir)
 	}
-	return filepath.FromSlash(cfg.Database.MigrationsPath())
+	return filepath.FromSlash(cfg.PrimaryDatabase().MigrationsPath())
 }
 
 // collectColumnMarkerFindings is the shared engine behind text mode and

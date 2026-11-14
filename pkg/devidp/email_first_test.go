@@ -111,15 +111,10 @@ func TestEmailFirst_NoCredentialCanBeAddedToAnUnverifiedAccount(t *testing.T) {
 	c.ProvenCredentialsOnly = true
 	ctx := context.Background()
 	u := z.addUser("pending@acme.com", false, "")
-	reset, err := c.MintPasswordResetCode(ctx, u.id) // a code changes nothing by itself
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A reset code the person presents is not here: redeeming one proves
+	// the address (TestEmailFirst_APresentedResetCodeProvesTheAddress).
 	before := z.snapshot(u.id)
 	for name, add := range map[string]func() error{
-		"password (reset code)": func() error {
-			return c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: reset, NewPassword: "a-long-password"})
-		},
 		"password (SetPassword)": func() error { return c.SetPassword(ctx, u.id, "a-long-password") },
 		"social link": func() error {
 			return c.AddIDPLink(ctx, u.id, IDPLink{IdPID: "idp-google", UserID: "g-1", UserName: "x"})
@@ -166,6 +161,51 @@ func TestEmailFirst_NoCredentialCanBeAddedToAnUnverifiedAccount(t *testing.T) {
 	z.mu.Unlock()
 	if err := c.SetPassword(ctx, u.id, "a-long-password"); err != nil {
 		t.Fatalf("a verified account's first password: %v", err)
+	}
+}
+
+// A reset code reaches a person only in a mail to the account's address or
+// from an administrator who issued it (a console invitation), so redeeming
+// one for an unverified account holding NO credential sets the password and
+// marks the address verified. One holding a credential nobody proved is
+// refused, and nothing is written.
+func TestEmailFirst_APresentedResetCodeProvesTheAddress(t *testing.T) {
+	ctx := context.Background()
+	z := newFakeZitadel(t)
+	c := z.client()
+	c.ProvenCredentialsOnly = true
+	u := z.addUser("pending@acme.com", false, "")
+	reset, err := z.client().MintPasswordResetCode(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: "wrong-code", NewPassword: "a-long-password"}); !errors.Is(err, ErrInvalidResetCode) {
+		t.Fatalf("a wrong code: %v, want ErrInvalidResetCode", err)
+	}
+	if verified, pw := z.passwordState(u.id); verified || pw != "" {
+		t.Fatal("a wrong code verified the address or set a password")
+	}
+	if err := c.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: reset, NewPassword: "a-long-password"}); err != nil {
+		t.Fatalf("the presented code: %v", err)
+	}
+	if verified, pw := z.passwordState(u.id); !verified || pw != "a-long-password" {
+		t.Fatalf("after the presented code: verified=%v password set=%v", verified, pw != "")
+	}
+
+	held := z.addUser("held@acme.com", false, "")
+	z.mu.Lock()
+	held.links = []IDPLink{{IdPID: "idp-google", UserID: "g-held", UserName: "held@acme.com"}}
+	z.mu.Unlock()
+	code, err := z.client().MintPasswordResetCode(ctx, held.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := z.snapshot(held.id)
+	if err := c.ResetPassword(ctx, PasswordReset{UserID: held.id, Code: code, NewPassword: "a-long-password"}); !errors.Is(err, ErrUnverifiedAccount) {
+		t.Fatalf("an account holding an unproven link: %v, want ErrUnverifiedAccount", err)
+	}
+	if after := z.snapshot(held.id); after != before {
+		t.Fatalf("a refused redemption wrote to the account:\n before %s\n after  %s", before, after)
 	}
 }
 

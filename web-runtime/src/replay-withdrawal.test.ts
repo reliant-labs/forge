@@ -13,7 +13,15 @@
 // the same against the real SDK in Chromium.
 import { gunzipSync, gzipSync } from "node:zlib";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 const ORIGIN = "https://shop.example.com";
 const LOGS_URL = `${ORIGIN}/_otel/v1/logs`;
@@ -284,6 +292,16 @@ function replayAfter(since: number): Exported[] {
         (e.kind === "span" && e.scope === "rum.rr-web")),
   );
 }
+
+// Transform the module graph once, outside any test: a cold import of
+// telemetry.js takes seconds on a loaded machine, and inside the first test
+// it ran against that test's 5s timeout. startRecording() then re-evaluates
+// from the transform cache in milliseconds.
+beforeAll(async () => {
+  await import("@opentelemetry/api");
+  await import("./telemetry.js");
+  await import("./track.js");
+}, 60_000);
 
 beforeEach(() => {
   exported.length = 0;

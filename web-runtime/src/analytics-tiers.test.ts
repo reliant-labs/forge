@@ -9,7 +9,15 @@
 // The headline is "stores nothing": in the default `aggregate` tier, after
 // every emitter the runtime has has run, document.cookie, localStorage and
 // sessionStorage are exactly as empty as they started.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 const init = vi.fn();
 const addAction = vi.fn();
@@ -147,6 +155,13 @@ async function load() {
   const index = await import("./index.js");
   return { t, index };
 }
+
+// Transform the module graph once, outside any test: a cold import of
+// index.js takes seconds on a loaded machine, and inside the first test it
+// ran against that test's 5s timeout (and the timed-out test, still running,
+// then added its events to the next one's). load() then re-evaluates from
+// the transform cache in milliseconds.
+beforeAll(() => load(), 60_000);
 
 function actions(name: string): unknown[][] {
   return addAction.mock.calls.filter(([n]) => n === name);

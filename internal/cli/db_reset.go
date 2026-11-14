@@ -67,6 +67,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/database"
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/redact"
 	"github.com/reliant-labs/forge/pkg/seedplan"
 )
 
@@ -179,7 +180,7 @@ func requireDevResetTargetIn(projectDir, env string) error {
 func resetConfirmationPrompt(dsn string) string {
 	identity := databaseIdentity(dsn)
 	if identity == "" {
-		identity = redactDSNForMessage(dsn)
+		identity = redact.DSN(dsn)
 	}
 	name := databaseNameOf(dsn)
 	return fmt.Sprintf(`About to DROP and rebuild:
@@ -231,7 +232,7 @@ func runDBReset(ctx context.Context, opts resetOptions) error {
 
 	name := databaseNameOf(dsn)
 	if name == "" {
-		return fmt.Errorf("refusing to reset: %s names no database", redactDSNForMessage(dsn))
+		return fmt.Errorf("refusing to reset: %s names no database", redact.DSN(dsn))
 	}
 
 	// 3. Print the target and confirm. The DSN has been reconciled by now, so

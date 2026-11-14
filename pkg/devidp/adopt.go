@@ -29,9 +29,10 @@ var ErrAccountHoldsCredentials = errors.New("the account's address is unverified
 // refuses (fail closed).
 //
 // Why it is needed: a broker client with ProvenCredentialsOnly — every
-// scaffolded login broker — adds no credential to an unverified account, so
-// a first-password code issued for an adopted, unverified, password-less
-// account would be refused at redemption (forge#2121).
+// scaffolded login broker — adds no credential to an unverified account. A
+// first-password RESET code is the exception (ResetPassword: redeeming one
+// proves the address), but a passkey code or a social link is not, so an
+// administrator's flow adopts first whatever it issues.
 //
 // The address is verified the issuer's way: a verification code is minted
 // (returned, never mailed) and redeemed at once, since Zitadel refuses to
@@ -56,21 +57,29 @@ func (c *Client) AdoptPendingAccount(ctx context.Context, userID string) (adopte
 	if len(kinds) > 0 {
 		return false, fmt.Errorf("%w (%s)", ErrAccountHoldsCredentials, strings.Join(kinds, ", "))
 	}
+	if err := c.markAddressVerified(ctx, userID); err != nil {
+		return false, fmt.Errorf("verify the adopted address: %w", err)
+	}
+	return true, nil
+}
+
+// markAddressVerified marks the account's current address verified the
+// issuer's way: a verification code is minted (returned, never mailed) and
+// redeemed at once, since Zitadel refuses to "set" an unchanged address as
+// verified. Call it only once the address is asserted or proven.
+func (c *Client) markAddressVerified(ctx context.Context, userID string) error {
 	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/email/resend", map[string]any{"returnCode": map[string]any{}})
 	if err != nil {
-		return false, fmt.Errorf("mint a code to verify the adopted address: %w", err)
+		return fmt.Errorf("mint a verification code: %w", err)
 	}
 	var out struct {
 		VerificationCode string `json:"verificationCode"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return false, fmt.Errorf("decode the adopted address's verification code: %w", err)
+		return fmt.Errorf("decode the verification code: %w", err)
 	}
 	if out.VerificationCode == "" {
-		return false, errors.New("the issuer returned no code to verify the adopted address")
+		return errors.New("the issuer returned no verification code")
 	}
-	if err := c.VerifyEmail(ctx, userID, out.VerificationCode); err != nil {
-		return false, fmt.Errorf("verify the adopted address: %w", err)
-	}
-	return true, nil
+	return c.VerifyEmail(ctx, userID, out.VerificationCode)
 }

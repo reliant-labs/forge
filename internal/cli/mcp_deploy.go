@@ -163,6 +163,12 @@ func addDeployTools(srv *mcp.Server, r *mcpRunner) {
 		return claimableToolResult(res), nil, nil
 	})
 
+	addExplainErrorTool(srv)
+}
+
+// addExplainErrorTool registers explain_error; the hosted connector serves
+// the same tool (mcp_hosted.go).
+func addExplainErrorTool(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "explain_error",
 		Description: "Turn a forge failure into what it means and the exact command to run next. Pass error_reason and exit_code from a --json document when you have them, else the error text.",

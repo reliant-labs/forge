@@ -317,8 +317,13 @@ func TestAnExpiredStatementIsItsContextsVerdict(t *testing.T) {
 func TestAConnectionFailureIsNotADeadline(t *testing.T) {
 	parent, rec := underSpan(t)
 
-	// A real dial timeout: a 1ns budget expires before the SYN is sent.
-	_, dialTimeout := net.DialTimeout("tcp", "10.255.255.1:9000", time.Nanosecond)
+	// A real dial timeout: the dial's deadline has already passed, so net
+	// refuses before any syscall with its own timeout error — the same one
+	// on every OS. (A 1ns net.DialTimeout raced the OS: on Windows the
+	// connect could return the poller's i/o timeout instead.)
+	past, cancelPast := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelPast()
+	_, dialTimeout := (&net.Dialer{}).DialContext(past, "tcp", "10.255.255.1:9000")
 	if !errors.Is(dialTimeout, context.DeadlineExceeded) {
 		t.Fatalf("dial timeout %v does not satisfy errors.Is(context.DeadlineExceeded): the test no longer pins the confusion", dialTimeout)
 	}

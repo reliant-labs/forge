@@ -1001,6 +1001,60 @@ func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssu
 		})
 	}
 
+	out = append(out, validateAnalyze(root, cfg.Database.Analyze)...)
+
+	return out
+}
+
+// envVarNameRE is the shape of an environment variable's name.
+var envVarNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateAnalyze checks database.analyze. The one rule with teeth is that
+// a dsn target names an env VARIABLE, never a connection string: a DSN in
+// forge.yaml is a credential in git.
+func validateAnalyze(root *yaml.Node, a AnalyzeConfig) []validationIssue {
+	var out []validationIssue
+	at := func(path ...string) (int, int) {
+		return findNodePos(root, append([]string{"database", "analyze"}, path...))
+	}
+	t := a.Target
+	switch k := t.EffectiveKind(); k {
+	case AnalyzeTargetScratch, AnalyzeTargetDSN:
+	default:
+		line, col := at("target", "kind")
+		out = append(out, validationIssue{line: line, column: col,
+			msg: fmt.Sprintf("'database.analyze.target.kind' value %q is not scratch or dsn", t.Kind),
+			fix: "use 'scratch' (the default: an embedded postgres migrated to the base) or 'dsn' (a database you provide)."})
+	}
+	if v := strings.TrimSpace(t.DSNEnv); v != "" && !envVarNameRE.MatchString(v) {
+		line, col := at("target", "dsn_env")
+		out = append(out, validationIssue{line: line, column: col,
+			msg: "'database.analyze.target.dsn_env' must be the NAME of an environment variable, not a connection string",
+			fix: "set dsn_env: FORGE_ANALYZE_DATABASE_URL and export the DSN in that variable; a DSN in forge.yaml is a credential in git."})
+	}
+	if _, _, err := t.Timeouts(); err != nil {
+		key := "statement_timeout"
+		if strings.Contains(err.Error(), "lock_timeout") {
+			key = "lock_timeout"
+		}
+		line, col := at("target", key)
+		out = append(out, validationIssue{line: line, column: col, msg: "'" + err.Error() + "'",
+			fix: "use a Go duration such as \"60s\" or \"5m\"."})
+	}
+	for name, rows := range a.TableRows {
+		if rows < 0 {
+			line, col := at("table_rows", name)
+			out = append(out, validationIssue{line: line, column: col,
+				msg: fmt.Sprintf("'database.analyze.table_rows.%s' is negative (%d)", name, rows),
+				fix: "give the table's row count in production, or delete the entry."})
+		}
+	}
+	if a.LargeTableRows < 0 || a.SmallTableRows < 0 {
+		line, col := at()
+		out = append(out, validationIssue{line: line, column: col,
+			msg: "'database.analyze.large_table_rows' and 'small_table_rows' must not be negative",
+			fix: "delete them for the defaults (1000000 and 10000)."})
+	}
 	return out
 }
 

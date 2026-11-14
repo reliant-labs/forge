@@ -301,6 +301,33 @@ benefits:
       - command: api curl
       - skill: api/http
 
+  - id: bring-openapi-spec
+    category: build
+    title: Bring your OpenAPI spec
+    claim: >-
+      An API whose contract is an OpenAPI 3 document is declared as a
+      `forge.API`, checked as OpenAPI 3 whenever the env loads (a Swagger 2
+      document is refused with how to convert it) and listed with the project's
+      databases in `forge project audit --json`; nothing is generated from it
+      yet.
+    availability: forge
+    headline: false
+    use: >-
+      `apis = [forge.API {name = "billing", kind = "openapi", spec =
+      "api/openapi.yaml"}]` in `deploy/kcl/<env>/main.k`; read
+      `.categories.resources.details.apis` of `forge project audit --json`.
+    why: >-
+      Declaring each API by its contract records which APIs a project serves
+      and where their specs live, so a later feature reads one declaration
+      instead of guessing; a Swagger 2 spec is caught the day it is declared.
+    scope: any
+    adopt: 'Add `apis = [forge.API {name = "api", kind = "openapi", spec = "openapi.yaml"}]` to a `forge.Bundle` in `deploy/kcl/<env>/main.k`, then read `.categories.resources` of `forge project audit --json`.'
+    estimate: "~10 min"
+    evidence:
+      - path: internal/cli/api_declarations.go
+      - command: project audit
+      - skill: api-openapi
+
   - id: service-catalog
     category: build
     title: Browsable API inventory
@@ -613,6 +640,61 @@ benefits:
           `forge:breaks-rollback`, which a rollback decision and the release
           guard read
 
+  - id: migration-analysis
+    category: data
+    title: Measured migration locks and rewrites
+    claim: >-
+      `forge db analyze` runs each pending migration statement by statement,
+      file by file as forge's migrator applies them, on a disposable copy of a
+      real Postgres database (an embedded one, or a snapshot you name and mark,
+      such as an anonymized production snapshot, which is only read and
+      copied), and reports the locks it took, the tables it rewrote or
+      scanned, and how long it ran.
+    availability: forge
+    headline: false
+    use: >-
+      Run `forge db analyze` (an embedded Postgres migrated to the merge-base),
+      or point it at an anonymized snapshot with `database.analyze.target` and
+      `--target dsn`; `--json` is the document a reviewer reads.
+    why: >-
+      Whether `ALTER COLUMN … TYPE` rewrites a table or a constraint scans one
+      depends on the column types, the existing schema and the Postgres
+      version, which no reading of the SQL text can know.
+    scope: any
+    adopt: "Run `forge db analyze` in a project whose migrations forge's migrator applies; it needs no database of yours."
+    estimate: "~5 min"
+    evidence:
+      - command: db analyze
+      - path: pkg/dbanalyze
+      - path: internal/cli/db_analyze.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-table-rewrite
+        lane: "forge db analyze"
+        bug_class: >-
+          A migration that copies every row of a populated table under ACCESS
+          EXCLUSIVE, an outage as long as the copy
+      - id: db-analyze-access-exclusive-lock
+        lane: "forge db analyze"
+        bug_class: >-
+          ACCESS EXCLUSIVE held across a full scan or rewrite, blocking every
+          read and write of the table for its duration
+      - id: db-analyze-validation-scan
+        lane: "forge db analyze"
+        bug_class: >-
+          A constraint validated by a full scan under a lock that blocks writes,
+          where NOT VALID then VALIDATE would not block them
+      - id: db-analyze-blocking-index-build
+        lane: "forge db analyze"
+        bug_class: >-
+          An index built without CONCURRENTLY on a populated table, blocking
+          writes until the build finishes
+      - id: db-analyze-statement-timeout
+        lane: "forge db analyze"
+        bug_class: >-
+          A statement that does not finish within statement_timeout on
+          production-shaped data
+
   - id: keep-your-migration-tool
     category: data
     title: Keep your migration tool
@@ -640,6 +722,31 @@ benefits:
       - path: internal/linter/migrationlint/tools.go
       - command: db migrate up
       - skill: db/own-migration-tool
+
+  - id: several-databases
+    category: data
+    title: Several databases, declared per database
+    claim: >-
+      Each database declares its own dialect, migrations directory and tool, ORM
+      package and migration-safety dials in the env declaration, so a monorepo
+      with several databases gets every one linted, `forge db --db <name>` for
+      each, and an ORM projected per database.
+    availability: forge
+    headline: false
+    use: >-
+      `migrations = forge.DatabaseMigrations {dir = "analytics/migrations",
+      driver = "goose"}` on a `forge.ManagedDatabase`, `forge.ExternalDatabase`
+      or schema-only `forge.Database` in deploy/kcl.
+    why: >-
+      forge.yaml's `database:` block describes one database. Declaring the
+      schema on the database itself puts it beside what runs it, and lets every
+      reader act on each database with its own tool and dials.
+    evidence:
+      - path: internal/config/databases.go
+      - path: internal/cli/database_declarations.go
+      - analyzer: --migration-safety
+      - command: db migrate up
+      - skill: db
 
   - id: managed-postgres-backups
     category: data
@@ -3044,7 +3151,7 @@ benefits:
       Write `deploy/envs/prod.yaml` starting with `apiVersion: forge.dev/env/v1`
       (`forge project schema env` prints the schema), then use any `forge env`
       or `forge obs` verb on `prod`.
-    adopt: "write `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability: {destination: {token_from_control_plane: true}}`), then `forge obs init prod`"
+    adopt: "`forge obs init prod` writes the monitoring-only `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability`); grow it by hand from there"
     estimate: "~5 min"
     why: >-
       A team adopting one piece of forge should not have to learn a
@@ -3176,14 +3283,17 @@ benefits:
       forge.
     availability: forge
     use: >-
-      Works in any repo: add `forge.yaml` with `name:`, store a token with
-      deploy:write, minted in the web app (Settings → API tokens), as
-      `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge
-      release record --env prod --version "$TAG" [--workload api --image
-      ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG"
-      --wait`. Easy, about 15 minutes: forge.yaml 1 min, CI secret 5 min, the
-      step 5 min, a first run 4 min. Recipes for GitHub Actions, GitLab CI and
-      Buildkite are in `forge skill load deploy/record`.
+      Works in any repo, with no forge.yaml: list the workloads your pipeline
+      deploys as `runtime: {type: external}` in the env's document
+      (`deploy/envs/prod.yaml`, which `forge obs init` writes; it names the
+      project), store a token with deploy:write, minted in the web app
+      (Settings → API tokens), as `FORGE_CONTROL_PLANE_TOKEN`, then after the
+      deploy step run `forge release record --env prod --version "$TAG"
+      [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check
+      prod --release "$TAG" --wait`. Easy, about 15 minutes: the env document
+      2 min, CI secret 5 min, the step 5 min, a first run 3 min. Recipes for
+      GitHub Actions, GitLab CI and Buildkite are in `forge skill load
+      deploy/record`.
     why: >-
       The release is record-only: it may name no artifacts (a version and a
       commit), it is labelled "recorded by CI" in `forge obs changes` and the
@@ -3192,7 +3302,7 @@ benefits:
       records once, and the same version with other digests is a conflict, not
       an overwrite. Not signed in, it records on this machine's ledger.
     scope: any
-    adopt: 'Add a forge.yaml with `name:`, then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.'
+    adopt: 'List your deployed workloads as `runtime: {type: external}` in deploy/envs/prod.yaml (from `forge obs init prod`), then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set.'
     estimate: "~15 min"
     evidence:
       - command: release record
@@ -4410,7 +4520,7 @@ benefits:
       variables, and `forge obs` reads its issues, logs and release health.
     availability: hosted
     scope: any
-    use: "`forge login`, then `forge obs init prod`: it registers the env, mints an ingest token and prints the `OTEL_*` variables."
+    use: "`forge login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables."
     adopt: "`forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment"
     estimate: "~15 min"
     why: >-
@@ -4530,6 +4640,24 @@ benefits:
       - command: mcp
       - path: internal/cli/mcp_tools.go
       - path: internal/cli/mcp_deploy.go
+
+  - id: hosted-mcp
+    category: agents
+    title: Hosted MCP connector
+    claim: >-
+      A remote MCP server with nothing to install, https://api.reliantapi.com/forge/mcp:
+      sign in with OAuth from claude.ai, Claude Desktop, ChatGPT, VS Code or Cursor and
+      ask about monitoring (status, issues, logs, traces, release verdicts), releases
+      and environments, record a deploy or start monitoring an app, with the same tool
+      names and inputs as the local server and a console link on every answer.
+    availability: reliant
+    scope: any
+    adopt: "Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client."
+    estimate: "~2 min"
+    evidence:
+      - path: internal/cli/mcp_hosted.go
+      - path: cli/hosted_mcp.go
+      - skill: connect
 
   - id: capabilities-introspection
     category: agents

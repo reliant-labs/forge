@@ -82,6 +82,39 @@ func TestMergeBaseMaxIsTheStateTheBranchWasCutFrom(t *testing.T) {
 	}
 }
 
+// `forge db analyze` splits the migrations at the merge-base: what changed
+// since it — committed on the branch, edited in the working tree, or not yet
+// added — is analyzed.
+func TestMergeBaseAndChangedSince(t *testing.T) {
+	testkit.Slow(t, "builds a real git repository")
+	repoRoot, migDir := repo(t,
+		[]string{"20260101120000_add_users.up.sql", "20260102000000_add_teams.up.sql"},
+		[]string{"20260501000000_add_sessions.up.sql"},
+	)
+	root := RepoRoot(repoRoot)
+	sha, ref, ok := MergeBase(root)
+	if !ok || ref != "main" || len(sha) != 40 {
+		t.Fatalf("MergeBase = %q, %q, %v", sha, ref, ok)
+	}
+	if head, ok := ResolveCommit(root, "main"); !ok || head != sha {
+		t.Errorf("ResolveCommit(main) = %q, %v; want the merge-base %q", head, ok, sha)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "20260102000000_add_teams.up.sql"), []byte("SELECT 2;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(migDir, "20260601000000_untracked.up.sql"), []byte("SELECT 3;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, ok := ChangedSince(root, migDir, sha)
+	if !ok {
+		t.Fatal("ChangedSince: unknown")
+	}
+	want := map[string]bool{"20260102000000_add_teams.up.sql": true, "20260501000000_add_sessions.up.sql": true}
+	if len(changed) != len(want) || !changed["20260102000000_add_teams.up.sql"] || !changed["20260501000000_add_sessions.up.sql"] {
+		t.Errorf("ChangedSince = %v, want %v (an untracked file is FilesAt's to tell)", changed, want)
+	}
+}
+
 // The default branch's TIP, not the merge-base: a migration that landed on
 // main after this branch was cut is just as merged, and renaming it is just
 // as wrong.

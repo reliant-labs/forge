@@ -592,10 +592,23 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 		// person filling in the form must read to fix it, and neither
 		// leaks anything a sign-up form does not already reveal by
 		// accepting or rejecting the address.
+		//
+		// The issuer's own error is logged in full, here and only here: the
+		// browser gets a sentence, and "could not be created" names no cause.
 		b.logger.WarnContext(r.Context(), "registration rejected", "email", req.Email, "error", err)
 		var policyErr *devidp.PasswordPolicyError
 		if errors.As(err, &policyErr) {
 			b.writePasswordRejection(r.Context(), w, req.Password, policyErr)
+			return
+		}
+		if errors.Is(err, devidp.ErrSignInAfterSignUp) {
+			// The account EXISTS; only the sign-in after it failed. Saying
+			// "could not be created" would send the person back to sign up,
+			// where the address is now "already registered".
+			writeAuthJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "Your account was created, but signing you in failed. Sign in with the password you chose.",
+				"code":  "signed_up_not_signed_in",
+			})
 			return
 		}
 		writeAuthError(w, http.StatusBadRequest, registrationMessage(err))

@@ -176,6 +176,9 @@ connection lost).
 		},
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if f := cmd.Flags().Lookup("db"); f != nil && f.Changed {
+				return fmt.Errorf("forge db query reads an env's database: name it with --database <name>, not --db (which picks the project database the migration verbs act on)")
+			}
 			o.env = args[0]
 			o.workloadSet = cmd.Flags().Changed("workload")
 			if len(args) == 2 {

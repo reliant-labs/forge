@@ -18,12 +18,14 @@ package envdoc
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/hostedimage"
+	"github.com/reliant-labs/forge/internal/schemagen"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -54,6 +56,8 @@ func Lower(doc map[string]any, opts Options) error {
 	env, _ := doc["env"].(string)
 	lowerControlPlane(doc)
 	lowerObservability(doc)
+	statedTag, tag := statedImageTag(doc, env), imageTag(doc, env, opts)
+	doc["image_tag"] = tag
 	workloads, _ := doc["workloads"].([]any)
 	names := map[string]bool{}
 	for _, raw := range workloads {
@@ -64,6 +68,11 @@ func Lower(doc map[string]any, opts Options) error {
 	}
 	var problems []string
 	var records []any
+	// stated is each workload's spec as the document stated it, before the
+	// lowering: a Workload record the document carries for it is the
+	// derived one when it equals this (syncRecords).
+	stated := map[string]map[string]any{}
+	lowered := map[string]map[string]any{}
 	for _, raw := range workloads {
 		w, ok := raw.(map[string]any)
 		if !ok {
@@ -75,10 +84,6 @@ func Lower(doc map[string]any, opts Options) error {
 		kind := kindOf(w, spec)
 		problems = append(problems, maskViolations(w, spec, rt, kind)...)
 		problems = append(problems, danglingRefs(name, spec, w, names)...)
-		if rt == "cluster" && hasBuild(w) {
-			problems = append(problems, fmt.Sprintf("workload %q: a cluster workload that forge builds needs KCL in env schema v1 — its image is resolved per release "+
-				"(the tag and the pushed digest) by the KCL render; declare it in deploy/kcl/<env>/main.k, or deploy a prebuilt image: drop `build` and set spec.image to the full reference", name))
-		}
 		// The hosted mask is Go's already: the deploy path runs
 		// Workload.Validate(ProfileRestricted) on the PINNED spec
 		// (deploytarget.PreflightHosted), for a document as for KCL. Running
@@ -88,6 +93,8 @@ func Lower(doc map[string]any, opts Options) error {
 			spec = map[string]any{}
 			w["spec"] = spec
 		}
+		stated[name] = cloneSpec(spec)
+		problems = append(problems, lowerImages(w, spec, rt, statedTag, tag, opts)...)
 		// The workload's kind is stated once; the spec carries it (the
 		// parser refuses the two disagreeing).
 		if k, _ := w["kind"].(string); k != "" && k != string(deployv1alpha1.DefaultWorkloadKind) {
@@ -97,8 +104,10 @@ func Lower(doc map[string]any, opts Options) error {
 		defaultProbes(w, spec, kind)
 		if rt == "cluster" && kind != "tool" {
 			records = append(records, workloadRecord(w, spec, project, env, opts.Release))
+			lowered[name] = spec
 		}
 	}
+	problems = append(problems, syncRecords(doc, stated, lowered)...)
 	if len(problems) > 0 {
 		return fmt.Errorf("the document declares what this runtime cannot honour:\n  - %s", strings.Join(problems, "\n  - "))
 	}
@@ -442,6 +451,52 @@ func addWorkloadRecords(doc map[string]any, records []any) {
 		}
 	}
 	doc["manifests"] = manifests
+}
+
+// syncRecords keeps a Workload record the document carries (a render saved
+// as a document does) equal to its workload's lowered spec, the
+// render-contract invariant: a record whose spec is the workload's stated
+// spec takes the lowered one, so a re-derived image (a new tag, a pushed
+// digest, a snapshot pin) reaches the applied stream. A record that differs
+// from its workload while the lowering changed the workload is refused: the
+// two would deploy different things.
+func syncRecords(doc map[string]any, stated, lowered map[string]map[string]any) []string {
+	manifests, _ := doc["manifests"].([]any)
+	var problems []string
+	for _, raw := range manifests {
+		m, _ := raw.(map[string]any)
+		if m["kind"] != "Workload" {
+			continue
+		}
+		md, _ := m["metadata"].(map[string]any)
+		name, _ := md["name"].(string)
+		spec, ok := lowered[name]
+		if !ok {
+			continue
+		}
+		switch rec, _ := m["spec"].(map[string]any); {
+		case reflect.DeepEqual(rec, stated[name]):
+			m["spec"] = spec
+		case !reflect.DeepEqual(spec, stated[name]) && !reflect.DeepEqual(rec, spec):
+			problems = append(problems, fmt.Sprintf("workload %q: its Workload record in manifests[] states a different spec than workloads[]: "+
+				"drop the record — forge derives it from the workload", name))
+		}
+	}
+	return problems
+}
+
+// cloneSpec deep-copies a decoded JSON object.
+func cloneSpec(m map[string]any) map[string]any {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	v, err := schemagen.DecodeJSON(b)
+	if err != nil {
+		return nil
+	}
+	out, _ := v.(map[string]any)
+	return out
 }
 
 // --- checks: render.k _check_requires / _check_before ------------------------

@@ -192,6 +192,8 @@ Exit status:
      reads the same window; for an env that is always quiet, lower
      min_requests in its release_health (or --threshold min_requests=N) or
      widen --window. window_open (no --wait): check again, or use --wait.
+     window_not_live: the release went live (its deploy gates) after the
+     after window ended; suggested[] names the --window that covers it.
   8  --wait ran out (--timeout) before the after window finished: check
      again later. Low traffic is never 8.
 
@@ -617,7 +619,51 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 		// What forge can see of an uninstrumented app: its logs and its
 		// workloads' health.
 		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "workloads", env), obsout.Command("forge", "obs", "logs", env), obsout.Command("forge", "skill", "load", "observability"))
+	} else if r.Verdict == releasehealth.Inconclusive && releasehealth.InconclusiveCode(r) == releasehealth.ReasonWindowNotLive {
+		if cmd := liveWindowCheck(env, r); cmd != "" {
+			doc.Suggested = obsout.Suggest(cmd)
+		}
 	}
+}
+
+// liveWindowCheck is the check that judges a window the release was live for,
+// when the judged after window ended before it went live (window_not_live): a
+// control plane anchors the after window at the promotion's promoted_at, and a
+// release whose deploy gates took it live later was measured before it. The
+// window, which starts at promoted_at, must run past the live time by a whole
+// window, and must be at least twice the delay so the release serves at least
+// [releasehealth.MinVersionShare] of it. "" when the release has no live time
+// or that window is wider than a check may judge.
+func liveWindowCheck(env string, r releasehealth.Report) string {
+	from := r.After.From
+	if from.IsZero() {
+		from = r.Subject.PromotedAt
+	}
+	live := r.Subject.LiveAt
+	if from.IsZero() || live.IsZero() || !live.After(from) {
+		return ""
+	}
+	delay := live.Sub(from)
+	w := max(delay+r.AfterEnds().Sub(from), 2*delay)
+	if w <= 0 {
+		return ""
+	}
+	minutes := int64((w + time.Minute - 1) / time.Minute)
+	if time.Duration(minutes)*time.Minute > release.MaxHealthWindow {
+		return ""
+	}
+	width := fmt.Sprintf("%dm", minutes)
+	if minutes%60 == 0 {
+		width = fmt.Sprintf("%dh", minutes/60)
+	}
+	args := []string{"forge", "obs", "check", env}
+	switch {
+	case r.Subject.PromotionID != "":
+		args = append(args, "--promotion", r.Subject.PromotionID)
+	case r.Subject.Release != "":
+		args = append(args, "--release", r.Subject.Release)
+	}
+	return obsout.Command(append(args, "--window", width)...)
 }
 
 // checkSuggestions are the next commands after a FAIL: each new or regressed

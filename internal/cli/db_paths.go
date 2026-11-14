@@ -30,8 +30,9 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
-	"github.com/reliant-labs/forge/internal/config"
 )
+
+const defaultMigrationsDir = "db/migrations"
 
 // migrationsDirFlagUsage is the --dir help shared by every db subcommand, so
 // the resolution rule is stated once and reads the same everywhere.
@@ -64,7 +65,10 @@ func dbProjectPath(p string) string {
 func resolveMigrationsDir(flagDir string) string {
 	dir := flagDir
 	if dir == "" {
-		dir = config.MigrationsDirIn(dbProjectRoot())
+		dir = defaultMigrationsDir
+		if store, err := loadProjectStore(); err == nil && store.Database().MigrationsDir != "" {
+			dir = store.Database().MigrationsDir
+		}
 	}
 	return dbProjectPath(dir)
 }

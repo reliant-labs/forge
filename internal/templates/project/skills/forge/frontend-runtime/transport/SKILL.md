@@ -123,22 +123,3 @@ Generated hooks (`use<Rpc>` in `src/hooks/`) declare their error as
 `ConnectClientError`, so `.reason` is reachable at the call site with no cast.
 Outside a hook — a raw transport call, an error boundary, a `catch` — run the
 value through `normalizeError(err)` first.
-
-## Failed RPCs in the dev log
-
-`errorNormalizeInterceptor` reports every failed RPC except a cancelled one
-(navigation, unmount, a superseded query) to a sink. In dev,
-`installDevLogging` installs one that writes an error line into
-`.forge/logs/<env>/frontend_<name>.log`, worded like the server's own
-`rpc failed` line so one grep of the trace id finds both:
-
-```
-[browser:error] rpc failed procedure=/pkg.v1.Svc/Method code=not_found reason=not_found message="no such task" trace_id=<32 hex>
-```
-
-It is written whatever the page does with the error, so a toast, an inline
-banner or a swallowed failure all leave the same line. With no sink —
-production, React Native, dev logging not installed — nothing is written:
-browser telemetry already records the failed request. `setRpcFailureSink(fn)`
-installs your own (it receives `{procedure, codeName, reason, message,
-traceId}`; `formatRpcFailure` spells the line); a sink that throws is ignored.

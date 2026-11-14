@@ -73,7 +73,7 @@ func GenerateWorkerFiles(root, modulePath, workerName, kind, schedule string) er
 		Module:      modulePath,
 		Schedule:    schedule,
 		HasConfig:   codegen.ProjectHasTypedConfig(root),
-		HasDatabase: isDir(config.MigrationsPathIn(root)),
+		HasDatabase: isDir(filepath.Join(root, config.DefaultMigrationsDir)),
 	}
 
 	// -- worker.go --

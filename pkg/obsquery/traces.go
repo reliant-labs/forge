@@ -521,73 +521,17 @@ func (q TraceSpans) Compile() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
+	conds := []string{b.rangeCond("Timestamp", q.Scope), "TraceId = " + b.str(id)}
+	if e := b.envCond(q.Scope); e != "" {
+		conds = append(conds, e)
+	}
+	if e := b.instanceCond(q.Scope); e != "" {
+		conds = append(conds, e)
+	}
 	return b.stmt("SELECT Timestamp, SpanId, ParentSpanId, SpanName, SpanKind, ServiceName, Duration, StatusCode, StatusMessage,\n" +
 		"       SpanAttributes, ResourceAttributes, `Events.Timestamp`, `Events.Name`, `Events.Attributes`, `Links.TraceId`, `Links.SpanId`\n" +
-		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(traceSpanConds(b, q.Scope, id)) + "\n" +
+		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(conds) + "\n" +
 		"ORDER BY Timestamp, SpanId\nLIMIT " + strconv.Itoa(MaxSpansPerTrace+1)), nil
-}
-
-// traceSpanConds selects one trace's spans in the scope's range, env and
-// instance: what every per-trace statement reads.
-func traceSpanConds(b *builder, sc Scope, id string) []string {
-	conds := []string{b.rangeCond("Timestamp", sc), "TraceId = " + b.str(id)}
-	if e := b.envCond(sc); e != "" {
-		conds = append(conds, e)
-	}
-	if e := b.instanceCond(sc); e != "" {
-		conds = append(conds, e)
-	}
-	return conds
-}
-
-// MaxTraceSpanGroups caps the rows TraceSpanGroups returns.
-const MaxTraceSpanGroups = 50
-
-// TraceSpanGroups counts the spans of one whole trace, however many there
-// are: TraceSpans stops at MaxSpansPerTrace, and a request that ran an N+1
-// loop until its deadline has far more. Counting is cheap where reading every
-// span is not, so a reader of the capped tree still learns what the trace
-// holds beyond the read.
-type TraceSpanGroups struct {
-	Scope   Scope
-	TraceID string
-	// Siblings groups by parent span, name and status: each row is a run of
-	// identical siblings under one parent (two or more), as the trace tree
-	// collapses them ("×79427 UPDATE orders"). Without it the rows are the
-	// trace's spans by service and name, wherever they hang.
-	Siblings bool
-}
-
-// Compile builds the statement, largest group first, at most
-// MaxTraceSpanGroups+1 rows (one more than the cap says it was hit).
-// Columns: ParentSpanId, ServiceName, SpanName, StatusCode (the first and last
-// empty without Siblings), spans in the group, the sum of every row's spans
-// before the LIMIT (without Siblings: every span of the trace; with it, the
-// spans in runs), sum / min / max of their Duration, quantiles(0.5, 0.95) of
-// it, failing spans.
-func (q TraceSpanGroups) Compile() (Stmt, error) {
-	if err := q.Scope.validate(MaxRangeTraces); err != nil {
-		return Stmt{}, err
-	}
-	id, err := NormalizeTraceID(q.TraceID)
-	if err != nil {
-		return Stmt{}, err
-	}
-	b := newBuilder(q.Scope)
-	keys, by, having := "'' AS parent, ServiceName, SpanName, '' AS status", "ServiceName, SpanName", ""
-	if q.Siblings {
-		// A run is two or more: a parent's lone child is not repetition, and
-		// an N+1's per-row children (one UPDATE under each wrapper) would
-		// otherwise be one row each.
-		keys, by, having = "ParentSpanId AS parent, ServiceName, SpanName, StatusCode AS status", "ParentSpanId, ServiceName, SpanName, StatusCode", "\nHAVING n > 1"
-	}
-	return b.stmt("SELECT " + keys + ",\n" +
-		"       count() AS n, sum(count()) OVER () AS trace_spans,\n" +
-		"       sum(Duration) AS total_ns, min(Duration) AS min_ns, max(Duration) AS max_ns,\n" +
-		"       quantiles(0.5, 0.95)(Duration) AS q_ns, countIf(" + spanErrorExpr + ") AS errors\n" +
-		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(traceSpanConds(b, q.Scope, id)) + "\n" +
-		"GROUP BY " + by + having + "\n" +
-		"ORDER BY n DESC, " + by + "\nLIMIT " + strconv.Itoa(MaxTraceSpanGroups+1)), nil
 }
 
 // ── Service overview ────────────────────────────────────────────────────

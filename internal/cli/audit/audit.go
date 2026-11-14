@@ -1192,9 +1192,9 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 // directive (informational — someone consciously opted that file out of the
 // destructive-change guard, and it is worth re-reviewing).
 func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
-	migDir := config.MigrationsPathIn(projectDir)
-	if cfg != nil {
-		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.Database.MigrationsPath()))
+	migDir := filepath.Join(projectDir, "db", "migrations")
+	if cfg != nil && cfg.Database.MigrationsDir != "" {
+		migDir = filepath.Join(projectDir, cfg.Database.MigrationsDir)
 	}
 	hasMigrations := dirExists(migDir)
 	if !hasMigrations {

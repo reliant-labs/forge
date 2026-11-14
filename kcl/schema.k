@@ -2947,12 +2947,7 @@ schema DockerBuild(Build):
     pin them with `FROM …@sha256:…` in the Dockerfile if reproducibility is
     wanted."""
     type: str = "docker"
-    # The Dockerfile: a path relative to the project root — or, when
-    # `context` is a GitSource, relative to that resolved context, so a
-    # deploy repo builds another repo's own Dockerfile by default. A
-    # GitSource here pins a Dockerfile in any repository; its `subdir` names
-    # the FILE (`subdir = "docker/api.Dockerfile"`).
-    dockerfile: str | GitSource = "Dockerfile"
+    dockerfile: str = "Dockerfile"
     # The MAIN build context — the directory `docker build` sends as its
     # context, relative to the project root. Empty is the project root, so
     # an unset context builds exactly as before. Set it when the Dockerfile
@@ -2962,18 +2957,7 @@ schema DockerBuild(Build):
     # `--build-context name=value` entries a `COPY --from=name` consumes.
     # `dockerfile` need not live under `context` — docker allows `-f`
     # outside the context.
-    #
-    # A GitSource builds code that lives in ANOTHER repository — the polyrepo
-    # deploy repo that declares workloads from N app repos:
-    #
-    #     build = forge.DockerBuild {
-    #         context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
-    #     }
-    #
-    # It resolves through the same repo+ref cache and local overrides
-    # (.forge/source-overrides.yaml) as a frontend, and the build state and
-    # release ledger record the repo and commit the image was built from.
-    context: str | GitSource = ""
+    context: str = ""
     platform: str = ""
     target: str = ""
     build_args: {str: str} = {}
@@ -6176,7 +6160,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6218,10 +6202,7 @@ schema ReleaseHealth:
     `max_error_rate_increase`), browser_failed_requests (the share of its
     fetch/XHR requests that failed rose by as much) and browser_page_load (p95
     page load grew by more than `max_p95_ratio`). The browser findings warn
-    unless listed in `fail_on`. For an env with release probes (forge.Probe),
-    probe_failed (a probe failed after the promotion; fails by default) and
-    probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
-    default, as latency does).
+    unless listed in `fail_on`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.
@@ -6231,7 +6212,7 @@ schema ReleaseHealth:
     max_error_rate_increase: float = 0.01
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]
     require_baseline: str = "any"
 
     check:

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,7 +21,7 @@ var obsLogsSchema = obsout.Schema{
 	Name: schemaObsLogs,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
-		"query", "query_mode", "trace_range",
+		"query", "query_mode",
 		"logs", "logs.time", "logs.severity", "logs.service", "logs.body", "logs.trace_id", "logs.span_id", "logs.attributes.*",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -45,14 +44,9 @@ func logDoc(r obsbackend.LogRecord) obsLogRecordDoc {
 
 type obsLogsDoc struct {
 	obsout.Head
-	Scope     obsout.Scope `json:"scope"`
-	Query     string       `json:"query,omitempty"`
-	QueryMode string       `json:"query_mode"`
-	// TraceRange says where a --trace read's range came from when no
-	// --since / --from / --to named one: "spans" (the trace's own spans,
-	// padded by traceLogPad) or "wide" (no span of it was found, so the
-	// widest range the logs allow, searched by the trace id).
-	TraceRange string                 `json:"trace_range,omitempty"`
+	Scope      obsout.Scope           `json:"scope"`
+	Query      string                 `json:"query,omitempty"`
+	QueryMode  string                 `json:"query_mode"`
 	Logs       []obsLogRecordDoc      `json:"logs"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	obsout.Page
@@ -67,9 +61,6 @@ type obsLogsOpts struct {
 	pageToken  string
 	follow     bool
 	interval   time.Duration
-	// rangeSet is whether --since, --from or --to was given: a --trace read
-	// then keeps that range instead of the trace's own.
-	rangeSet bool
 }
 
 func newObsLogsCmd() *cobra.Command {
@@ -93,17 +84,9 @@ language (the same one the control plane serves):
 Newest first; --oldest reverses. --follow polls forward from now and, with
 --json, writes NDJSON: one log record per line, ending with an envelope line.
 
---trace reads the range from the trace itself: its spans' first start to last
-end, a minute either side, however long ago it ran (spans are looked up over
-the last 72h). A trace with no span found is searched by its id over the
-widest range the logs allow (7d). --since / --from / --to override both.
-Each line shows its error, cause and code after the message.
-
 ` + obsLogsSchema.Help(),
 		Args: cobra.RangeArgs(0, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			f := cmd.Flags()
-			o.rangeSet = f.Changed("since") || f.Changed("from") || f.Changed("to")
 			env, query := "dev", ""
 			switch len(args) {
 			case 1:
@@ -166,12 +149,6 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	if err != nil {
 		return fail(err)
 	}
-	traceRange := ""
-	if o.trace != "" && !o.rangeSet && o.pageToken == "" && !o.follow && !n.Explain {
-		if n.Range, traceRange, err = traceLogRange(ctx, d, b, n.Range, o.trace); err != nil {
-			return fail(err)
-		}
-	}
 	req := obsbackend.LogsRequest{
 		Narrow: n, Query: query, Severities: o.severities, TraceID: o.trace,
 		Oldest: o.oldest, Limit: o.out.Limit, PageToken: pageToken,
@@ -184,7 +161,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 		return fail(err)
 	}
 	res.NextPageToken = wrapPageToken(n.Range, res.NextPageToken)
-	doc := obsLogsDoc{Scope: obsScope(b.Info(), n), Query: query, QueryMode: QueryModeStructured, TraceRange: traceRange, Logs: []obsLogRecordDoc{}}
+	doc := obsLogsDoc{Scope: obsScope(b.Info(), n), Query: query, QueryMode: QueryModeStructured, Logs: []obsLogRecordDoc{}}
 	if n.Explain {
 		doc.Statements = res.Statements
 	}
@@ -192,7 +169,7 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 		doc.Logs = append(doc.Logs, logDoc(r))
 	}
 	doc.Page = obsout.Page{Truncated: res.NextPageToken != "", NextPageToken: res.NextPageToken}
-	doc.Suggested = o.inst.carrySuggested(logsSuggestions(env, o, res, traceRange != ""))
+	doc.Suggested = o.inst.carrySuggested(logsSuggestions(env, o, res))
 	doc.Stamp(schemaObsLogs, nil)
 	if done, err := o.out.Emit(d.Stdout, obsLogsSchema, doc, fields); done || err != nil {
 		return err
@@ -205,87 +182,20 @@ func runObsLogs(ctx context.Context, d obsDeps, env, query string, o obsLogsOpts
 	if res.NextPageToken != "" {
 		fmt.Fprintf(d.Stdout, "\n(more: --page-token %s)\n", res.NextPageToken)
 	}
-	if traceRange != "" {
-		fmt.Fprintf(d.Stdout, "\n(%s)\n", traceRangeNote(o.trace, traceRange, n.Range, len(res.Logs)))
-	}
 	return nil
 }
 
-// Where `obs logs --trace` looks for a trace's spans, and how far either side
-// of them it reads its logs: a record is written a little before its span
-// starts or after it ends (the "rpc failed" line after the handler returns).
-const (
-	traceLogLookback = 72 * time.Hour
-	traceLogPad      = time.Minute
-)
-
-// traceExtentReader reads when a trace ran. Both backends implement it.
-type traceExtentReader interface {
-	TraceExtent(ctx context.Context, req obsbackend.TraceRequest) (obsbackend.TraceExtent, error)
-}
-
-// traceLogRange is the range `obs logs --trace` reads when none was named: the
-// trace's own, from its spans, so the logs of yesterday's trace are found
-// without guessing --since. With no span of it found (sampled out, never
-// exported, or past the span lookback) it is the widest range the logs allow,
-// searched by the id. A backend that cannot say when a trace ran keeps def.
-func traceLogRange(ctx context.Context, d obsDeps, b obsbackend.Backend, def obsbackend.Range, traceID string) (obsbackend.Range, string, error) {
-	r, ok := b.(traceExtentReader)
-	if !ok {
-		return def, "", nil
-	}
-	if _, err := obsquery.NormalizeTraceID(traceID); err != nil {
-		return def, "", obsbackend.Wrong("--trace %q: %s", traceID, strings.TrimPrefix(err.Error(), obsquery.ErrInvalid.Error()+": "))
-	}
-	now := d.Now().UTC()
-	ext, err := r.TraceExtent(ctx, obsbackend.TraceRequest{Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: now.Add(-traceLogLookback), To: now}}, TraceID: traceID})
-	if err != nil {
-		return def, "", err
-	}
-	if ext.Spans == 0 {
-		return obsbackend.Range{From: now.Add(-obsquery.MaxRangeLogs), To: now}, "wide", nil
-	}
-	rng := obsbackend.Range{From: ext.Start.Add(-traceLogPad), To: ext.End.Add(traceLogPad)}
-	if rng.To.Sub(rng.From) > obsquery.MaxRangeLogs {
-		rng.From = rng.To.Add(-obsquery.MaxRangeLogs)
-	}
-	return rng, "spans", nil
-}
-
-// traceRangeNote says which range a --trace read chose, under its table.
-func traceRangeNote(traceID, source string, r obsbackend.Range, n int) string {
-	span := r.From.UTC().Format(time.RFC3339) + " → " + r.To.UTC().Format(time.RFC3339)
-	what := fmt.Sprintf("%d log lines of trace %s", n, traceID)
-	switch n {
-	case 0:
-		what = "no log line carries trace " + traceID
-	case 1:
-		what = "1 log line of trace " + traceID
-	}
-	if source == "wide" {
-		return fmt.Sprintf("%s, %s: no span of it was found in the last %dh, so the widest range was searched by its id; --since / --from narrow it",
-			what, span, int(traceLogLookback.Hours()))
-	}
-	return fmt.Sprintf("%s, %s: the trace's own range, from its spans, a minute either side; --since / --from override it", what, span)
-}
-
-// renderLogs writes the table, each record's error, cause and code after its
-// body: an "rpc failed" line without its cause is half an answer.
 func renderLogs(w io.Writer, logs []obsbackend.LogRecord) {
 	rows := make([][]string, len(logs))
 	for i, l := range logs {
-		body := l.Body
-		if r := obsbackend.LogReason(l.Attributes); len(r) > 0 {
-			body += "  " + obsbackend.FormatKVs(r)
-		}
-		rows[i] = []string{l.Time.UTC().Format("15:04:05.000"), l.Severity, l.Service, body}
+		rows[i] = []string{l.Time.UTC().Format("15:04:05.000"), l.Severity, l.Service, l.Body}
 	}
-	obsout.Table(w, []string{"TIME", "SEVERITY", "SERVICE", "BODY"}, rows, 200)
+	obsout.Table(w, []string{"TIME", "SEVERITY", "SERVICE", "BODY"}, rows, 160)
 }
 
 // logsSuggestions offers the next commands: the first trace id seen leads to
 // its tree; errors narrow; an empty window widens.
-func logsSuggestions(env string, o obsLogsOpts, res obsbackend.LogsResult, traceRanged bool) []string {
+func logsSuggestions(env string, o obsLogsOpts, res obsbackend.LogsResult) []string {
 	var cmds []string
 	for _, l := range res.Logs {
 		if l.TraceID != "" && o.trace == "" {
@@ -293,7 +203,7 @@ func logsSuggestions(env string, o obsLogsOpts, res obsbackend.LogsResult, trace
 			break
 		}
 	}
-	if len(res.Logs) == 0 && o.since < 24*time.Hour && !traceRanged {
+	if len(res.Logs) == 0 && o.since < 24*time.Hour {
 		cmds = append(cmds, obsout.Command("forge", "obs", "logs", env, "--since", "24h"))
 	}
 	if res.NextPageToken != "" {

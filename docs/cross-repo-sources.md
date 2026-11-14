@@ -23,8 +23,6 @@ The implementation lives in:
 - `internal/config/config.go` — the shared `GitSource` type
 - `kcl/schema.k` — the KCL schema (`forge.GitSource`)
 - `internal/cli/frontend_source.go` — the build/deploy resolution seam
-- `internal/cli/build_docker_source.go` — DockerBuild `context` / `dockerfile` pins
-- `internal/kclprojects/gitimport.go` — git-pinned KCL imports
 
 ## The problem is reproducibility, not just CI
 
@@ -236,46 +234,11 @@ docker:
       subdir: src
 ```
 
-**A DockerBuild's main context and Dockerfile** accept a pin too, so a
-deploy repo can declare workloads whose code lives in other repositories:
-
-```python
-build = forge.DockerBuild {
-    context = forge.GitSource {repo = "github.com/acme/billing", ref = "v2.3.1"}
-}
-```
-
-Under a pinned context a string `dockerfile` is read inside the resolved
-context (default `<context>/Dockerfile`, the other repo's own); a GitSource
-`dockerfile` names a file in its own pinned repo (`subdir` is the file). The
-checkout the context resolved to is recorded in the workload's build state and,
-from there, as the release artifact's `built_from` (repo + commit). A release
-refuses to cut while a DockerBuild pin is served by a local override, as it
-does for a pinned frontend. A deploy repo that wants its OWN Dockerfile over
-another repo's code keeps its context and names the other repo as a named
-context instead.
-
 Both use the same cache and explicit local overrides as frontends. Per-workload
 contexts still replace (not merge with) the project defaults. Resolving code
 never rewrites a declaration into a machine-local path. `forge doctor --verbose`
 reports pins versus filesystem/BuildKit references across environments without
 fetching any sources.
-
-**Another repository's KCL** — a shared infra/envs repo — is imported by a git
-pin in `deploy/kcl/kcl.mod`, with no go.mod involved:
-
-```toml
-[forge_projects]
-infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "8f2c1e0b9d4a" }
-```
-
-It resolves through the same cache and override file, so a render offline
-needs only an earlier fetch (`forge kcl imports` fetches every pin;
-`--refresh` re-fetches). `commit` is the optional lock: a ref resolving to any
-other commit is refused as a pin mismatch, and a full-sha `ref` is its own
-lock. A release refuses to cut while such an import is overridden. The
-`module = "<go module>"` form, read at the go.mod pin, is unchanged; the two
-are mutually exclusive per import (`internal/kclprojects`).
 
 The Forge KCL module itself is supplied by the rendering binary; projects no
 longer need a sibling `forge/kcl` dependency in `kcl.mod`.

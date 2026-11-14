@@ -1,8 +1,8 @@
 ---
 name: v1.4.0
-description: Upgrade a project to forge v1.4.0. Session replay is a per-frontend, per-environment switch, forge.BrowserTelemetry {replay = True}, which renders the frontend's OTEL_REPLAY and opts the env in to replay ingestion. The env-wide Observability.signals.replay is deprecated (it still opts in) and an explicit runtime_config OTEL_REPLAY outranks the new switch. Use when a deploy/kcl env declares ObservabilitySignals {replay = …} or a frontend's runtime_config OTEL_REPLAY, as environments scaffolded with _session_replay before v1.4.0 do. Also: the Next.js dev API proxy (/_api) now outlives the API's deadline (experimental.proxyTimeout), so the browser gets the server's deadline_exceeded instead of a bare HTTP 500; use when a frontend's next.config.ts proxies /_api and sets no proxyTimeout.
+description: Upgrade a project to forge v1.4.0. Session replay is a per-frontend, per-environment switch, forge.BrowserTelemetry {replay = True}, which renders the frontend's OTEL_REPLAY and opts the env in to replay ingestion. The env-wide Observability.signals.replay is deprecated (it still opts in) and an explicit runtime_config OTEL_REPLAY outranks the new switch. Use when a deploy/kcl env declares ObservabilitySignals {replay = …} or a frontend's runtime_config OTEL_REPLAY, as environments scaffolded with _session_replay before v1.4.0 do.
 version: v1.4.0
-detection: grep -rqsE 'ObservabilitySignals *\{[^}]*replay *=|OTEL_REPLAY *=' --include='*.k' deploy/kcl && exit 0; for f in frontends/*/next.config.ts; do test -f "$f" && grep -qs 'devApiProxy' "$f" && ! grep -qsE 'proxyTimeout[[:space:]]*:' "$f" && exit 0; done; exit 1
+detection: grep -rqsE 'ObservabilitySignals *\{[^}]*replay *=|OTEL_REPLAY *=' --include='*.k' deploy/kcl && exit 0; exit 1
 ---
 
 # Upgrading to v1.4.0
@@ -55,52 +55,3 @@ In each env that uses `_session_replay` (or replay at all):
 Then `forge env render <env>` and check the frontend's `runtime_config` (or
 `runtime_config_spec` when hosted) carries `OTEL_REPLAY = "true"` exactly when
 `_session_replay` is True, and `observability.policy.opt_in` lists `replay`.
-
-## 2. The Next.js dev API proxy outlives the API's deadline
-
-**Use when** a Next.js frontend's `next.config.ts` proxies `/_api` to the API
-(it declares `devApiProxy`) and sets no `proxyTimeout:` key. Every Next.js frontend
-scaffolded before v1.4.0 does. Vite frontends are unaffected: Vite's dev proxy
-sets no timeout.
-
-### What changed
-
-Next's dev proxy gives up on an upstream after 30 seconds
-(`experimental.proxyTimeout`), the same as the API's default unary deadline
-(`observe.DefaultUnaryDeadline`). The proxy's clock starts first, so on a
-deadline the proxy hangs up first: the browser gets a bare `HTTP 500`, the dev
-log says `Failed to proxy … Error: socket hang up`, and the server's answer —
-`504 {"code":"deadline_exceeded",…}` with a `traceresponse` naming the trace —
-never arrives. An rpc whose `(forge.v1.method).timeout` is longer than 30s is
-cut off at 30s in dev for the same reason.
-
-The scaffold now sets the proxy's timeout to an hour, in the dev-only block, so
-the server is always the one that answers. It is an idle-socket timeout: a
-stream that keeps sending is never cut by it. Nothing changes in any build:
-there is no proxy outside `next dev`.
-
-`next.config.ts` is yours, so `forge generate` does not edit it.
-
-### What to do
-
-In each `frontends/<name>/next.config.ts`:
-
-1. Below `const devApiProxy = …`, add
-
-   ```ts
-   const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
-   ```
-
-2. In the `process.env.NODE_ENV === "development" ? { … } : {}` block that
-   holds `async rewrites()`, add a key after `rewrites()`:
-
-   ```ts
-           experimental: { proxyTimeout: DEV_API_PROXY_TIMEOUT_MS },
-   ```
-
-   If the config already has an `experimental` object, put `proxyTimeout` in
-   it instead: a second `experimental` key in the spread replaces the first.
-
-Restart `next dev`: Next reads its config only when it starts. To check: an rpc that runs past its deadline now shows the server's
-code in the page (`deadline exceeded`, not `HTTP 500`), and
-`grep 'socket hang up' .forge/logs/dev/frontend_<name>.log` stays empty.

@@ -4,10 +4,9 @@ package cli
 // scaffolded `alerts` host workload. It evaluates the rules document
 // `forge env up` renders, continuously, against the local ClickStack (the
 // same Querier `check` uses), posts what fires to the local Alertmanager, and
-// receives the in-app receiver's deliveries, logging one record per alert: the
-// process's output is .forge/logs/<env>/alerts.log (JSON lines, which the
-// local collector ships at their own level), the local stand-in for in-app
-// notifications.
+// receives the in-app receiver's deliveries, printing one line per alert: the
+// process's output is .forge/logs/<env>/alerts.log, the local stand-in for
+// in-app notifications.
 
 import (
 	"context"
@@ -93,13 +92,14 @@ func runObsAlertsRun(ctx context.Context, stdout io.Writer, o obsAlertsRunOpts) 
 	}
 	token := strings.TrimSpace(string(raw))
 
-	log := newAlertsRunLogger(stdout)
+	out := &syncWriter{w: stdout}
+	log := slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ln, err := net.Listen("tcp", o.listen)
 	if err != nil {
 		return fmt.Errorf("the in-app sink cannot listen on %s: %w", o.listen, err)
 	}
-	srv := &http.Server{Handler: alertSinkHandler(token, log), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: alertSinkHandler(token, out), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("in-app sink stopped", "error", err)
@@ -152,26 +152,11 @@ type amWebhook struct {
 	} `json:"alerts"`
 }
 
-// newAlertsRunLogger is the one logger the process writes through: the
-// evaluator's records and the sink's delivered alerts alike. It writes JSON
-// lines, the shape every forge runtime writes, because alerts.log is tailed
-// by the local collector: it reads a JSON line's `level` as the record's
-// severity, and hands any other line to ClickStack's fallback, which infers
-// severity from the body's first keyword — where "alert" means FATAL, so a
-// logfmt "alert rules loaded" became a fatal issue on every fresh stack.
-func newAlertsRunLogger(w io.Writer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(&syncWriter{w: w}, &slog.HandlerOptions{Level: slog.LevelInfo}))
-}
-
-// alertSinkHandler receives the in-app receiver's deliveries and logs one
-// record per alert, whose message is the line a human reads:
+// alertSinkHandler receives the in-app receiver's deliveries and prints one
+// line per alert:
 //
 //	ALERT firing   CheckoutSlow severity=critical service=api — checkout p95 is 1.2s
-//
-// At INFO: a delivery is this process working. The alert's own severity is a
-// label in the message, and the fault it reports has its own records under
-// the service that failed.
-func alertSinkHandler(token string, log *slog.Logger) http.Handler {
+func alertSinkHandler(token string, out io.Writer) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("POST "+clickstack.AlertsSinkPath, func(w http.ResponseWriter, r *http.Request) {
@@ -185,8 +170,7 @@ func alertSinkHandler(token string, log *slog.Logger) http.Handler {
 			return
 		}
 		for _, a := range p.Alerts {
-			log.InfoContext(r.Context(), alertLine(a.Status, a.Labels, a.Annotations),
-				"alertname", a.Labels["alertname"], "status", a.Status)
+			fmt.Fprintln(out, alertLine(a.Status, a.Labels, a.Annotations))
 		}
 		w.WriteHeader(http.StatusOK)
 	})

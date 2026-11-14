@@ -119,13 +119,10 @@ describe("the ./interceptors entry point", () => {
     // should be made deliberately, not inherited from a stray import.
     // interaction-context.ts is the open-interaction registry the trace
     // interceptor parents calls on; it imports @opentelemetry/api alone.
-    // rpc-failure-log.ts is the dependency-free registry failed RPCs are
-    // reported to (the dev log installs its sink); it imports nothing.
     expect(files.sort()).toEqual([
       "src/errors.ts",
       "src/interaction-context.ts",
       "src/interceptors.ts",
-      "src/rpc-failure-log.ts",
       "src/telemetry-gate.ts",
       "src/trace.ts",
     ]);

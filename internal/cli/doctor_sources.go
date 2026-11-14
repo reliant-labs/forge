@@ -39,12 +39,6 @@ func buildSourceDeclarations(cfg *config.ProjectConfig, entities *KCLEntities) [
 			out = append(out, sourceDeclaration{name: "ShellBuild " + w.Name, path: sh.Cwd, source: sh.Source})
 		}
 		if d := w.Build.Docker; d != nil {
-			if d.ContextSource != nil {
-				out = append(out, sourceDeclaration{name: "DockerBuild " + w.Name + ".context", source: d.ContextSource})
-			}
-			if d.DockerfileSource != nil {
-				out = append(out, sourceDeclaration{name: "DockerBuild " + w.Name + ".dockerfile", source: d.DockerfileSource})
-			}
 			addContexts("DockerBuild "+w.Name+".build_contexts.", d.BuildContexts)
 		}
 	}

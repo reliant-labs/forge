@@ -7,61 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [v1.4.0] - 2026-11-11
-
-### Added
-
-- **orm:** initialize an existing-pool client with a request context ([#1967](https://github.com/reliant-labs/forge/pull/1967))
-- **release:** rollback floors — the Floor rule in pkg/release and declared floors captured at the cut ([#1972](https://github.com/reliant-labs/forge/pull/1972))
-- **observability:** automatic CRUD product events and a generated Product usage dashboard ([#1965](https://github.com/reliant-labs/forge/pull/1965))
-- **dbquery:** authenticate external database TLS with explicit trust ([#1976](https://github.com/reliant-labs/forge/pull/1976))
-- **sidebar:** support independent initial group expansion ([#1984](https://github.com/reliant-labs/forge/pull/1984))
-- **components:** Status takes a busy prop for in-progress states ([#1985](https://github.com/reliant-labs/forge/pull/1985))
-- **web-runtime:** allow per-call scoped mutation invalidation ([#1989](https://github.com/reliant-labs/forge/pull/1989))
-- **observability:** enable masked session recording for new browser projects ([#1988](https://github.com/reliant-labs/forge/pull/1988))
-- **cli:** group forge's commands under 14 nouns (old spellings keep working) ([#1998](https://github.com/reliant-labs/forge/pull/1998))
-- **graphkit:** add opt-in construction rollback ownership ([#1997](https://github.com/reliant-labs/forge/pull/1997))
-- **serverkit:** support outer context interceptors and explicit RPC meters ([#2000](https://github.com/reliant-labs/forge/pull/2000))
-- **deploy:** env deploy records a snapshot of the environment when the control plane supports it ([#1999](https://github.com/reliant-labs/forge/pull/1999))
-- **components:** sidebar_layout groups take defaultOpen / controlled open state ([#2011](https://github.com/reliant-labs/forge/pull/2011))
-- **observability:** per-frontend session replay through runtime config ([#1983](https://github.com/reliant-labs/forge/pull/1983))
-
-### Changed
-
-- golangci-lint on changed packages before merge (parallel job) ([#1959](https://github.com/reliant-labs/forge/pull/1959))
-- **obsquery:** filter by a materialized EnvId column when present ([#1973](https://github.com/reliant-labs/forge/pull/1973))
-- forge benefits catalog ([#1974](https://github.com/reliant-labs/forge/pull/1974))
-- **storage:** the build-space test skips on a host short of its reserve, and measures a temp home ([#1992](https://github.com/reliant-labs/forge/pull/1992))
-- **env:** assert the PAT file mode only where POSIX modes exist ([#1995](https://github.com/reliant-labs/forge/pull/1995))
-- gate slow tests out of the -short tier ([#1981](https://github.com/reliant-labs/forge/pull/1981))
-- **hostlaunch:** the outside-tmp_dir case uses a path that is absolute on Windows too ([#1996](https://github.com/reliant-labs/forge/pull/1996))
-- forge main is green after #1988 and #1998 (replay default in the hosted-env test; the dev noun in the removal guard) ([#2001](https://github.com/reliant-labs/forge/pull/2001))
-- **cli:** platform chart tests stub the CRD bundle fetch instead of downloading from GitHub ([#2003](https://github.com/reliant-labs/forge/pull/2003))
-- **generator:** TestHookRuntimeExportFloor derives its newer-consumer case from the published range ([#2004](https://github.com/reliant-labs/forge/pull/2004))
-- **fluxdelivery:** the flux-operator oracle skips when GitHub's release download is down ([#2006](https://github.com/reliant-labs/forge/pull/2006))
-- **hostinfra:** engine start tests skip when the release download is down; a 5xx is marked unavailable ([#2007](https://github.com/reliant-labs/forge/pull/2007))
-
-### Fixed
-
-- **obsquery:** insert LatestVersions test spans at full precision ([#1961](https://github.com/reliant-labs/forge/pull/1961))
-- **obs:** tag ClickHouse connection failures apart from query deadlines ([#1963](https://github.com/reliant-labs/forge/pull/1963))
-- **cli:** keep codegen tool diagnostics off JSON stdout ([#1964](https://github.com/reliant-labs/forge/pull/1964))
-- **obsquery:** judge ServiceAnomaly on whole past weeks, with a baseline as wide at every alignment ([#1962](https://github.com/reliant-labs/forge/pull/1962))
-- **sidebar:** make mobile navigation an accessible modal drawer ([#1971](https://github.com/reliant-labs/forge/pull/1971))
-- **frontend:** exclude browser log URLs from Next access logging ([#1969](https://github.com/reliant-labs/forge/pull/1969))
-- **components:** the sidebar drawer closes on a link through a native listener, so a scaffold's lint passes ([#1978](https://github.com/reliant-labs/forge/pull/1978))
-- **cli:** every project command runs the forge version the project pins ([#1975](https://github.com/reliant-labs/forge/pull/1975))
-- **modal:** preserve external dialog overlay compatibility ([#1980](https://github.com/reliant-labs/forge/pull/1980))
-- **modal:** settle nested legacy scroll cleanup after passive effects ([#1986](https://github.com/reliant-labs/forge/pull/1986))
-- **components:** the modal reads its dialog ancestors from a ref, so a scaffold's lint has no exhaustive-deps warning ([#1991](https://github.com/reliant-labs/forge/pull/1991))
-- **env:** stopping a dev stack also stops the processes its runners detached ([#1979](https://github.com/reliant-labs/forge/pull/1979))
-- **components:** useModalDialog lives in its own module, so a scaffold's lint has no fast-refresh warning ([#1993](https://github.com/reliant-labs/forge/pull/1993))
-- **env:** bring a fresh checkout's dev stack up (air tmp_dir, shared IdP PAT, compose clone owner) ([#1977](https://github.com/reliant-labs/forge/pull/1977))
-- **env:** never signal a process group whose leader can't be re-verified ([#1994](https://github.com/reliant-labs/forge/pull/1994))
-- **test:** tripwire reaper keys ownership on a lock, not a PID, so sandboxes sharing /tmp stop deleting each other's dirs ([#2012](https://github.com/reliant-labs/forge/pull/2012))
-- **roots:** preserve released underscore command paths ([#2013](https://github.com/reliant-labs/forge/pull/2013))
-- **components:** useModalDialog wraps Tab and keeps an empty panel focused ([#2015](https://github.com/reliant-labs/forge/pull/2015))
-
 ## [v1.3.0] - 2026-11-09
 
 ### Added
@@ -8822,8 +8767,7 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.4.0...HEAD
-[v1.4.0]: https://github.com/reliant-labs/forge/compare/v1.3.0...v1.4.0
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.3.0...HEAD
 [v1.3.0]: https://github.com/reliant-labs/forge/compare/v1.2.0...v1.3.0
 [v1.2.0]: https://github.com/reliant-labs/forge/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/reliant-labs/forge/compare/v1.0.16...v1.1.0

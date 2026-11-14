@@ -2,12 +2,12 @@ package codegen
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -128,7 +128,7 @@ var openAppliedSchema = shadowdb.Open
 // difference: "nothing to emit" and "could not look" call for different
 // actions on a file that already exists.
 func loadCRUDTestFixtures(projectDir string, methods []CRUDMethod) (*crudTestFixtures, error) {
-	tables, shadow, err := openAppliedSchema(projectDir, config.MigrationsPathIn(projectDir))
+	tables, shadow, err := openAppliedSchema(projectDir, filepath.Join(projectDir, "db", "migrations"))
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +143,7 @@ func loadCRUDTestFixtures(projectDir string, methods []CRUDMethod) (*crudTestFix
 	// The domain-vocabulary overlay flows into the fixture seed plans too.
 	// Load problems are non-fatal at generate time — the seed CLI is where
 	// vocab errors/warnings surface; here a bad file just means built-ins.
-	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(config.MigrationsPathIn(projectDir)))
+	vocab, _ := seedplan.LoadVocab(seedplan.VocabPath(filepath.Join(projectDir, "db", "migrations")))
 	fx := &crudTestFixtures{
 		tables:  byName,
 		pools:   seedplan.PoolsFromTables(tables),

@@ -76,10 +76,6 @@ type lintRunCtx struct {
 	// forge.yaml lint.allow_skip), lane name → reason. See lint_skip.go.
 	allowSkip skipAllowances
 
-	// lanesOff are the lanes forge.yaml's lint.lanes switches off
-	// (lint_lanes.go).
-	lanesOff map[string]bool
-
 	// targeted reports that the lane was named on the command line
 	// (`forge lint --tracing`) rather than run by the full sweep. The
 	// tracing lane fixes its warnings too when it was named.

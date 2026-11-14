@@ -47,9 +47,8 @@ StatefulSets, DaemonSets, CronJobs):
 
 1. Everything a release sends ahead of its workloads goes first, for every unit
    at once, exactly as without units: CRDs and Namespaces, ConfigMaps and
-   Secrets, the secret-store stages, Services, ServiceAccounts, Roles and
-   RoleBindings and the other support objects, and the pre-rollout Jobs (a
-   migration still completes before any new code).
+   Secrets, the secret-store stages, Services/RBAC/other support objects, and the
+   pre-rollout Jobs (a migration still completes before any new code).
 2. Then the units' workloads, wave by wave: a unit's workloads are applied on
    every cluster and awaited Ready on every cluster before any unit `after` it is
    applied.

@@ -163,12 +163,9 @@ func TestEnvironmentPredicateUsesTheEnvIdColumnOnlyWhenTheScopeSaysItExists(t *t
 				"trace wide":   TraceQuery{Scope: sc, Limit: 5, UserID: "u1"}.Compile,
 				"trace RED":    TraceQuery{Scope: sc}.CompileRED,
 				"trace spans":  TraceSpans{Scope: sc, TraceID: "abc"}.Compile,
-				"trace names":  TraceSpanGroups{Scope: sc, TraceID: "abc"}.Compile,
-				"trace runs":   TraceSpanGroups{Scope: sc, TraceID: "abc", Siblings: true}.Compile,
 				"overview RED": ov.RED,
 				"overview log": ov.Logs,
 				"logs":         LogQuery{Scope: sc, Limit: 5}.Compile,
-				"trace extent": TraceExtent{Scope: sc, TraceID: "abc"}.Compile,
 				"metric":       MetricLookup{Scope: sc, Name: "m"}.Compile,
 			}
 			for name, f := range stmts {

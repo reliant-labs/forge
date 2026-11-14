@@ -41,24 +41,9 @@ func TestResolveMigrationsDir_AnchorsAtTheProjectRoot(t *testing.T) {
 		t.Errorf("bare migration filename = %q, want it inside the migrations dir %q", got, want)
 	}
 
-	// forge.yaml's database.migrations_dir moves the default, resolved from
-	// the -C project; --dir still wins.
-	body := "name: anchored\nmodule_path: github.com/example/anchored\ndatabase:\n  migrations_dir: sql/schema\n"
-	if err := os.WriteFile(filepath.Join(proj, "forge.yaml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := resolveMigrationsDir(""), filepath.Join(proj, "sql", "schema"); got != want {
-		t.Errorf("migrations dir with database.migrations_dir = %q, want %q", got, want)
-	}
-	if got, want := resolveMigrationsDir("other"), filepath.Join(proj, "other"); got != want {
-		t.Errorf("--dir over database.migrations_dir = %q, want %q", got, want)
-	}
-	if _, err := requireMigrationsDir(""); err == nil || !strings.Contains(err.Error(), filepath.Join(proj, "sql", "schema")) {
-		t.Errorf("requireMigrationsDir on a missing declared dir = %v; want an error naming it", err)
-	}
-
-	// Without the key it is db/migrations.
-	body = "name: anchored\nmodule_path: github.com/example/anchored\n"
+	// The migrations directory is db/migrations, resolved from the -C project.
+	// There is no database.migrations_dir to point elsewhere.
+	body := "name: anchored\nmodule_path: github.com/example/anchored\n"
 	if err := os.WriteFile(filepath.Join(proj, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}

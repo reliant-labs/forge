@@ -1,6 +1,6 @@
 ---
 name: ci/lint-rollout
-description: The project's lint dials — `lint.lanes` to switch a whole lane off, `lint.rules` for one rule's severity, `lint.allow_skip` for a lane that could not run — and why a new or tightened `forge lint` rule is a warning for one release before it gates - introduced_in / gates_from, how your forge.yaml forge_version decides, the "new in vX; gates from vY" note and the verdict line that counts it, --json's grace object, lint.rules to gate early or extend the grace period, and how a forge author declares a new rule's rollout. Use when a lint finding says "gates from", before bumping the forge pin, or when adding a lint rule to forge.
+description: Why a new or tightened `forge lint` rule is a warning for one release before it gates - introduced_in / gates_from, how your forge.yaml forge_version decides, the "new in vX; gates from vY" note and the verdict line that counts it, --json's grace object, lint.rules to gate early or extend the grace period, and how a forge author declares a new rule's rollout. Use when a lint finding says "gates from", before bumping the forge pin, or when adding a lint rule to forge.
 ---
 
 # New lint rules warn before they gate
@@ -42,28 +42,3 @@ same way, under the key `golangci-build-tags`.
 Adding a rule to forge? Add it to `gradableRules` and to the rollout table with
 `introduced_in` = the release it ships in and `gates_from` = the one after;
 `TestEveryGradableRuleDeclaresItsRollout` fails until you do.
-
-## Switching a whole lane off: `lint.lanes`
-
-A repository adopting forge often lints its frontend with its own toolchain,
-migrates its schema with another tool, or has no database grants for forge to
-check. Switch those lanes off once, in forge.yaml:
-
-```yaml
-lint:
-  lanes:
-    frontend: off # frontend lint, typecheck and lockfile
-    migration-safety: off
-    db-grants: off
-```
-
-A key is a lane's flag spelling with or without `-lint` (`migration-safety`,
-`db-grants-lint`), its verdict name, `format`, or the `frontend` alias; an
-unknown one fails `forge lint` with the list. An off lane never runs and is
-never silently missing: the report prints `○ frontend lint — off (forge.yaml
-lint.lanes)`, the verdict counts it (`✅ 12 gating linter(s) passed; 3 off
-(forge.yaml lint.lanes): …`), and `--json` carries it as a `skipped` finding.
-Naming the lane on the command line (`forge lint --migration-safety`) still runs
-it. The three dials, coarsest first: `lint.lanes` (a lane is not this project's
-concern), `lint.rules` (one rule's severity), `lint.allow_skip` (a lane that
-could not run here, accepted with a reason).

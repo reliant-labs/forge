@@ -67,8 +67,8 @@ func TestProjectGeneratorGenerateWritesDatabaseConfigAndCompose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadProjectConfig: %v", err)
 	}
-	if cfg.Database.MigrationsPath() != "db/migrations" {
-		t.Fatalf("loaded config Database.MigrationsPath() = %q, want db/migrations (the default)", cfg.Database.MigrationsPath())
+	if cfg.Database.MigrationsDir != "db/migrations" {
+		t.Fatalf("loaded config Database.MigrationsDir = %q, want db/migrations (derived)", cfg.Database.MigrationsDir)
 	}
 	if cfg.Database.Driver != "postgres" {
 		t.Fatalf("loaded config Database.Driver = %q, want postgres (derived)", cfg.Database.Driver)

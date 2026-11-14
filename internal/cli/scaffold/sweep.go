@@ -52,7 +52,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/pkg/schemadef"
@@ -196,7 +195,7 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 	declared, _ := codegen.ParseDeclaredServices(root)
 	services := codegen.ManagedServices(declared)
 
-	migDir := config.MigrationsPathIn(root)
+	migDir := filepath.Join(root, "db", "migrations")
 	applied, existing, appliedTables := appliedSchema(migDir)
 	fkReg := newFKRegistry(existing)
 	summary := &sweepSummary{}

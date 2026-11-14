@@ -288,28 +288,15 @@ func collectLintJSON(ctx context.Context, flags lintFlags, paths []string) (*lin
 	if err != nil {
 		return nil, err
 	}
-	off, err := lanesOff(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return collectAllLintersJSON(ctx, jsonRunOptions(flags, allow, off, paths, cfg, scope), cwd)
-}
-
-// jsonRunOptions is --json's run: the same frontend skips as text mode
-// (frontendSkips), so `frontend-lint: off` still runs and gates on typecheck.
-func jsonRunOptions(flags lintFlags, allow skipAllowances, off map[string]bool, paths []string, cfg *config.ProjectConfig, scope *lintScope) lintRunOptions {
-	run, format := frontendSkips(flags.skipFrontends, off)
-	return lintRunOptions{
-		reportFormat:        !flags.autoFix(),
-		strict:              flags.strict,
-		skipFrontends:       run,
-		formatSkipFrontends: format,
-		allowSkip:           allow,
-		lanesOff:            off,
-		paths:               paths,
-		cfg:                 cfg,
-		scope:               scope,
-	}
+	return collectAllLintersJSON(ctx, lintRunOptions{
+		reportFormat:  !flags.autoFix(),
+		strict:        flags.strict,
+		skipFrontends: flags.skipFrontends,
+		allowSkip:     allow,
+		paths:         paths,
+		cfg:           cfg,
+		scope:         scope,
+	}, cwd)
 }
 
 // collectSingleLinterJSON runs the ONE linter flags select — callers narrow
@@ -446,17 +433,13 @@ func collectAllLintersJSON(ctx context.Context, opts lintRunOptions, cwd string)
 		strict:        opts.strict,
 		skipFrontends: opts.skipFrontends,
 		allowSkip:     opts.allowSkip,
-		lanesOff:      opts.lanesOff,
 		paths:         opts.paths,
 		cfg:           opts.cfg,
 		cwd:           cwd,
 		scope:         opts.scope,
 	})
-	switch {
-	case opts.lanesOff[formatLaneName]:
-		outcomes = append(outcomes, offOutcome(formatLaneName, true))
-	case opts.reportFormat:
-		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends || opts.formatSkipFrontends))
+	if opts.reportFormat {
+		outcomes = append(outcomes, formatOutcome(ctx, cwd, opts.cfg, opts.scope, opts.paths, opts.skipFrontends))
 	}
 	findings, gated := flattenLintOutcomes(outcomes)
 	return buildLintJSONReport(findings, gated), nil
@@ -512,9 +495,12 @@ func collectConventionsJSON(opts forgeconv.LintOptions) ([]lintJSONFinding, bool
 }
 
 func collectMigrationSafetyJSON(cfg *config.ProjectConfig) ([]lintJSONFinding, bool, error) {
-	migrationsDir := migrationsDirFor(cfg)
+	migrationsDir := filepath.Join("db", "migrations")
 	ruleConfig := migrationlint.DefaultConfig()
 	if cfg != nil {
+		if cfg.Database.MigrationsDir != "" {
+			migrationsDir = cfg.Database.MigrationsDir
+		}
 		ruleConfig = migrationlint.ConfigFromProject(cfg.Database.MigrationSafety)
 	}
 	result, err := migrationlint.LintMigrationsDir(migrationsDir, ruleConfig)

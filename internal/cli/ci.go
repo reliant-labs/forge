@@ -273,7 +273,10 @@ func newCIMigrationSafetyCmd() *cobra.Command {
 				return config.DisabledFeatureError(config.FeatureMigrations)
 			}
 
-			migrationsDir := filepath.FromSlash(store.Database().MigrationsPath())
+			migrationsDir := store.Database().MigrationsDir
+			if migrationsDir == "" {
+				migrationsDir = filepath.Join("db", "migrations")
+			}
 			// Resolve against the project root, not the process cwd. The
 			// configured path is project-relative, so running this from any
 			// subdirectory used to stat a directory that does not exist —

@@ -72,10 +72,6 @@ func fullyDeclaredShape() release.Shape {
 			Reach: release.ExternalDatabaseReachDirect, Port: 6432,
 		}},
 		UptimeChecks: []release.ShapeUptimeCheck{{Name: "web", Target: "web", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: release.UptimeSourceDefault}},
-		ReleaseProbes: []release.ShapeReleaseProbe{{
-			Target: "web", Kind: release.ReleaseProbeKindFrontend, Paths: []string{"/"}, Method: "GET",
-			RatePerMin: 4, TimeoutSeconds: 10, Source: release.ReleaseProbeSourceDefault,
-		}},
 		ReleaseHealth: &release.ShapeReleaseHealth{
 			WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2,
 			NewIssueMinEvents: 5, FailOn: []string{release.HealthErrorRate, release.HealthLatency},

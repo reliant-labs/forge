@@ -1287,21 +1287,6 @@ _Enforced · Forge, on any infrastructure_
 - command `forge lint --allow-skip`
 - command `forge lint --strict`
 
-<a id="lint-lanes-off"></a>
-
-### Switch a lint lane off
-
-`lint.lanes` in forge.yaml switches whole `forge lint` lanes off (frontend, migration safety, db grants, ...) for a repo that checks them another way, and the verdict still names every lane that is off.
-
-_Enforced · Forge, on any infrastructure_
-
-**Use:** `lint: {lanes: {frontend: off, migration-safety: off}}`
-
-**Evidence:**
-
-- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
-- source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
-
 <a id="lint-autofix"></a>
 
 ### Type-checked auto-fixes
@@ -2576,27 +2561,6 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/deploy_plan_gate.go`](../internal/cli/deploy_plan_gate.go)
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
 - skill `deploy/plan` (`forge skill load deploy/plan`)
-
-<a id="polyrepo-pinned-sources"></a>
-
-### Polyrepo, pinned, any language
-
-Teams outside a monorepo, in any language, share an infra repo's KCL by a git pin in kcl.mod and build other repos' images from a pinned `DockerBuild.context`, with no go.mod and no CI checkout step; a release records each image's source repo and commit.
-
-_Enforced · Forge, on any infrastructure_
-
-**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
-
-**Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
-
-**Evidence:**
-
-- command `forge kcl imports --refresh`
-- source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
-- source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
-- source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
-- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
-- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
 
 <a id="hosted-deploy-plan"></a>
 

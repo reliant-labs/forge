@@ -29,7 +29,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/internal/cluster"
-	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
@@ -1519,10 +1518,10 @@ func autoMigrateEnabled(objects []k8sObject) bool {
 // and let the first request that touches a new column be the discovery
 // mechanism.
 func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
-	migrationsDir := config.MigrationsPathIn(env.ProjectDir)
+	migrationsDir := filepath.Join(env.ProjectDir, "db", "migrations")
 	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
-		return CheckResult{Status: StatusSkip, Message: "no " + config.MigrationsDirIn(env.ProjectDir) + " — nothing to apply"}
+		return CheckResult{Status: StatusSkip, Message: "no db/migrations — nothing to apply"}
 	}
 	sqlCount := 0
 	for _, e := range entries {
@@ -1531,7 +1530,7 @@ func CheckDeployMigrations(_ context.Context, env *Environment) CheckResult {
 		}
 	}
 	if sqlCount == 0 {
-		return CheckResult{Status: StatusSkip, Message: config.MigrationsDirIn(env.ProjectDir) + " is empty — nothing to apply"}
+		return CheckResult{Status: StatusSkip, Message: "db/migrations is empty — nothing to apply"}
 	}
 
 	return examineRendered(env, "migrations", func(renders []envRender) CheckResult {

@@ -78,9 +78,6 @@ func resolveBuildSources(ctx context.Context, projectDir string, cfg *config.Pro
 			if err := resolveNamedBuildContexts(ctx, projectDir, d.BuildContexts); err != nil {
 				return fmt.Errorf("workload %q: %w", w.Name, err)
 			}
-			if err := resolveDockerBuildSources(ctx, projectDir, w.Name, d); err != nil {
-				return fmt.Errorf("workload %q: %w", w.Name, err)
-			}
 		}
 	}
 	return nil

@@ -33,6 +33,15 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
           spec    — v1alpha1.WorkloadSpec JSON (the generated
                     tiers.workload_json), identical to the record's spec
     infra[], frontends[], databases[]
+    apis[]                    the APIs the project serves (forge.API):
+                              {name, kind: proto|openapi, spec, base_path,
+                              database}, present only when declared
+    schema_only_databases[]   databases declared for their schema only
+                              (forge.Database), present only when declared.
+                              A database of any kind that declares
+                              `migrations` also carries {dialect, migrations
+                              {dir, driver, apply, status, check}, orm
+                              {package}, migration_safety}
     config_maps, gateways, http_routes, grpc_routes, runtime_classes,
     helm_charts, required_secrets, required_dns, secret_provider,
     rendered_secrets, control_plane
@@ -2197,6 +2206,42 @@ _render_managed_database_record = lambda db: any, part_of: str -> any {
     }
 }
 
+# A database's schema half (forge.Database): its dialect, migrations, ORM
+# and migration safety, in the vocabulary forge.yaml's `database:` block
+# uses, for the readers that act on it (`forge lint --migration-safety`,
+# `forge db --db`, the ORM, the seeder). Only a database that declares
+# `migrations` carries it, so one declared for provisioning or querying alone
+# renders exactly as it did. Paths are normalised (_repo_rel_path).
+_render_database_schema = lambda db: any -> {str:} {
+    {
+        "dialect": db.dialect
+        "migrations": {
+            "dir": _repo_rel_path(db.migrations.dir)
+            "driver": db.migrations.driver
+            if db.migrations.apply:
+                "apply": db.migrations.apply
+            if db.migrations.status:
+                "status": db.migrations.status
+            if db.migrations.$check:
+                "check": db.migrations.$check
+        }
+        if db.orm:
+            "orm": {"package": _repo_rel_path(db.orm.package)}
+        if db.migration_safety:
+            "migration_safety": {
+                "enabled": db.migration_safety.enabled
+                if db.migration_safety.unsafe_add_column:
+                    "unsafe_add_column": db.migration_safety.unsafe_add_column
+                if db.migration_safety.destructive_change:
+                    "destructive_change": db.migration_safety.destructive_change
+                if db.migration_safety.volatile_default:
+                    "volatile_default": db.migration_safety.volatile_default
+                if db.migration_safety.require_compat_declaration:
+                    "require_compat_declaration": True
+            }
+    } if db.migrations else {}
+}
+
 # A database's placement: its runtime, else the primary cluster target.
 _render_database = lambda db: any, bundle: Bundle -> any {
     _rt = _db_runtime(db)
@@ -2207,7 +2252,13 @@ _render_database = lambda db: any, bundle: Bundle -> any {
         "cluster": _target.cluster if _target else None
         "namespace": (db.namespace if db.namespace else _target.namespace) if _target else None
         "spec": tiers.managed_database_json(db.spec) | ({"dashboards": _dashboards_spec(db.dashboards)} if db.dashboards else {})
-    }
+    } | _render_database_schema(db)
+}
+
+# A schema-only database (Bundle.schema_only_databases): its name and its
+# schema. Nothing runs or is reached for it, so it carries no placement.
+_render_schema_only_database = lambda d: any -> any {
+    {"name": d.name} | _render_database_schema(d)
 }
 
 # A hosted forge.Bucket as its forge.dev ManagedBucket: the name, and the
@@ -2264,7 +2315,7 @@ _render_external_database = lambda x: any, bundle: Bundle -> any {
             "tls_server_name": x.tls_server_name
         "reach": x.reach
         "port": x.port
-    }
+    } | _render_database_schema(x)
 }
 
 # The Namespaces the cluster runtime deploys into, one per (cluster,
@@ -2491,6 +2542,21 @@ render = lambda bundle: Bundle -> any {
             "declared_buckets": [_render_declared_bucket(b) for b in bundle.buckets]
         if bundle.external_databases:
             "external_databases": [_render_external_database(x, bundle) for x in bundle.external_databases]
+        # The APIs the project serves (forge.API): present only when declared,
+        # so an env without one renders as before. Go derives the proto API of
+        # a project that declares none, and checks an OpenAPI spec's version.
+        if bundle.apis:
+            "apis": [{k: _v for k, _v in {
+                "name": a.name
+                "kind": a.kind
+                "spec": _repo_rel_path(a.spec)
+                "base_path": a.base_path
+                "database": a.database
+            } if _v} for a in bundle.apis]
+        # Databases declared for their schema only (forge.Database): present
+        # only when declared, so an env without one renders as before.
+        if bundle.schema_only_databases:
+            "schema_only_databases": [_render_schema_only_database(d) for d in bundle.schema_only_databases]
         "config_maps": [_render_config_map(cm) for cm in bundle.config_maps]
         "gateways": [_render_gateway(g) for g in _gateways_rendered(bundle)]
         "http_routes": [_render_http_route(r) for r in bundle.http_routes]

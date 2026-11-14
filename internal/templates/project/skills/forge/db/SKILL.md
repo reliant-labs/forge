@@ -126,6 +126,55 @@ To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secr
 
 `forge db seed apply|status|reset` materializes deterministic dev rows from the applied schema, and `db/seeds/vocab.yaml` teaches it your domain's vocabulary — load the `db/seeding` skill before seeding.
 
+## Declaring a database's schema in the env (several per project)
+
+forge.yaml's `database:` block describes ONE database. A project with several
+(a monorepo), or one that keeps its resources in the env declaration, declares
+each database's schema on the database itself in `deploy/kcl/<env>/main.k`:
+
+```python
+databases = [forge.ManagedDatabase {
+    name = "default"                     # the primary: `forge db` acts on it without --db
+    dialect = "postgres"                 # the default; mysql, sqlite, … are refused as not supported yet
+    migrations = forge.DatabaseMigrations {dir = "db/migrations"}   # driver = "forge" by default
+    orm = forge.DatabaseORM {package = "internal/db"}
+}]
+# A database that is neither provisioned nor reached here — declared for lint, the ORM and `forge db` only:
+schema_only_databases = [forge.Database {
+    name = "analytics"
+    migrations = forge.DatabaseMigrations {dir = "analytics/migrations", driver = "goose"}
+    orm = forge.DatabaseORM {package = "internal/analyticsdb"}
+    migration_safety = forge.DatabaseMigrationSafety {destructive_change = "warn"}
+}]
+```
+
+`forge.ExternalDatabase` takes the same four fields. The rules:
+
+- **A database declares its schema by setting `migrations`.** One without it is
+  provisioning-only, as before, and forge reads the project's migrations from
+  forge.yaml. `orm` and `migration_safety` need `migrations`.
+- **The schema is a project fact.** forge reads EVERY env and unions the
+  databases; an env that declares one database differently from another is an
+  error. Declare it once in a shared module both envs import.
+- **KCL wins over forge.yaml**, and declaring migrations in both
+  (`database.migrations` / `migrations_dir` and a KCL `migrations`) is an
+  error. forge.yaml's `orm:` and `migration_safety:` still fill what the
+  primary database leaves unset. A project with no KCL `migrations` anywhere
+  reads forge.yaml exactly as it always did.
+- **Names, directories and ORM packages are unique**; paths are
+  repository-relative.
+- **The primary** is the database named `default`, else the only one. With
+  several and none named `default`, `forge generate` refuses (it must know which
+  database the services' CRUD wiring uses) and `forge db` needs `--db`.
+
+What reads every database: `forge lint --migration-safety` (and `forge ci
+migration-safety`) lints each under its own dials and tool, prefixing findings
+with the database's name; `forge db migration|migrate|seed|reset|squash --db
+<name>` acts on the one you name; `forge generate` projects an ORM for each
+database that names an `orm.package` (entity structs and stores; CRUD wiring,
+factories, mocks and auto-seeding stay on the primary — not yet for the others).
+The deploy migrate job is declared per database: `db/deploy-migrations`.
+
 ## Where the rest lives
 
 | You need… | Load |

@@ -171,7 +171,21 @@ const (
 	auditAttempts = 3
 	// auditMaxWait caps one retry wait.
 	auditMaxWait = 10 * time.Second
+	// auditDefaultMaxQueries bounds the reads one audit makes (--max-queries).
+	// Every panel is a read and every empty one up to four more (its probes),
+	// so an unbounded audit of a whole env ran for more than ten minutes at a
+	// CLI credential's ~60 reads a minute and then spent the org's hourly
+	// query allowance, blocking every other obs read in the org (forge bug
+	// report 4e298764). The budget keeps a whole-env audit to a few minutes
+	// and well under the allowance; --dashboard narrows it, --max-queries 0
+	// lifts it.
+	auditDefaultMaxQueries = 200
 )
+
+// classBudget is a read the audit did not make because its own query budget
+// (--max-queries) was spent: not the org's allowance, and not a failure of the
+// control plane.
+const classBudget obsbackend.FailureClass = "budget"
 
 // auditSleep waits d or until ctx ends; tests replace it.
 var auditSleep = func(ctx context.Context, d time.Duration) {
@@ -320,6 +334,7 @@ type obsDashboardsAuditOpts struct {
 	probeSince time.Duration
 	noProbe    bool
 	all        bool
+	maxQueries int
 }
 
 func newObsDashboardsAuditCmd() *cobra.Command {
@@ -357,6 +372,10 @@ data_in_other_env_without_filters, metric_never_seen or no_data_anywhere. A
 dashboard is replayed in its own scope: an org dashboard names no project, a
 platform one drops the env predicate (and has no other env to probe).
 
+An audit makes at most --max-queries reads (default 200: the panels, then
+their probes); the reads past it are reported as skipped (class budget), and a
+line per finished dashboard on stderr shows how far it got.
+
 Failures are listed first. EXIT: 0 every panel ok; 2 any panel empty or partial;
 1 any panel could not be read. The env's telemetry must be stored by the control
 plane (a local ClickStack has no dashboards to replay).
@@ -381,6 +400,7 @@ plane (a local ClickStack has no dashboards to replay).
 	f.DurationVar(&o.probeSince, "probe-window", auditProbeWindow, "the wider window an empty panel is probed over (widened to 4x the panel's window when that is not wider)")
 	f.BoolVar(&o.noProbe, "no-probe", false, "do not probe empty panels")
 	f.BoolVar(&o.all, "all", false, "list the ok panels too (text output; --json always lists every panel)")
+	f.IntVar(&o.maxQueries, "max-queries", auditDefaultMaxQueries, "the most control-plane reads this audit makes (panels and their probes); the rest are reported as skipped. 0: no limit")
 	return cmd
 }
 
@@ -395,6 +415,9 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsDashboardsAudit, err) }
 	if o.since < 0 {
 		return fail(obsbackend.Wrong("--since must be positive"))
+	}
+	if o.maxQueries < 0 {
+		return fail(obsbackend.Wrong("--max-queries must be 0 (no limit) or more"))
 	}
 	base, source := o.since, auditWindowSince
 	if base == 0 {
@@ -441,7 +464,7 @@ func runObsDashboardsAudit(ctx context.Context, d obsDeps, env string, o obsDash
 		return fail(err)
 	}
 
-	a := &dashAudit{dr: dr, b: b, ctx: ctx, now: rng.To, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[catalogKey]*catalogEntry{}}
+	a := &dashAudit{dr: dr, b: b, ctx: ctx, now: rng.To, opts: o, project: project, sem: make(chan struct{}, auditConcurrency), catalog: map[catalogKey]*catalogEntry{}, progress: d.Stderr}
 	doc.Dashboard = a.run(picked)
 	if o.panel != "" && doc.panelCount() == 0 {
 		return fail(obsbackend.Wrong("no panel %q in the selected dashboard(s)", o.panel).
@@ -514,12 +537,23 @@ type dashAudit struct {
 	quota   *obsbackend.Failure
 	catalog map[catalogKey]*catalogEntry
 	skipped int
+	// queries counts the reads made, against opts.maxQueries; overBudget the
+	// reads skipped once it was spent.
+	queries    int
+	overBudget int
+	// progress receives one line per audited dashboard (stderr), so a long
+	// audit shows it is moving; nil prints nothing.
+	progress io.Writer
+	done     int
 }
 
 func (a *dashAudit) notes() []string {
 	var out []string
 	if a.skipped > 0 {
 		out = append(out, fmt.Sprintf("%d read(s) were skipped after the query allowance ran out; they are reported as quota errors", a.skipped))
+	}
+	if a.overBudget > 0 {
+		out = append(out, fmt.Sprintf("%d read(s) were skipped after this audit's budget of %d queries was spent (--max-queries); audit one dashboard with --dashboard, or raise --max-queries", a.overBudget, a.opts.maxQueries))
 	}
 	return out
 }
@@ -532,10 +566,35 @@ func (a *dashAudit) run(picked []obsbackend.DashboardInfo) []auditDashboard {
 		go func() {
 			defer wg.Done()
 			out[i] = a.dashboard(di)
+			a.reportProgress(out[i], len(picked))
 		}()
 	}
 	wg.Wait()
 	return out
+}
+
+// reportProgress writes one line for a dashboard the audit finished.
+func (a *dashAudit) reportProgress(ad auditDashboard, total int) {
+	if a.progress == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.done++
+	fmt.Fprintf(a.progress, "audited %s (%d/%d dashboards): %d panel(s), %s; %d queries so far\n",
+		ad.ID, a.done, total, len(ad.Panels), ad.Status, a.queries)
+}
+
+// spend takes one read from the audit's budget; false when it is spent.
+func (a *dashAudit) spend() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.opts.maxQueries > 0 && a.queries >= a.opts.maxQueries {
+		a.overBudget++
+		return false
+	}
+	a.queries++
+	return true
 }
 
 func (a *dashAudit) dashboard(di obsbackend.DashboardInfo) auditDashboard {
@@ -614,6 +673,10 @@ func (a *dashAudit) guarded(fn func() error) (attempts int, err error) {
 			a.skipped++
 			a.mu.Unlock()
 			return attempts - 1, &skippedError{f: *q}
+		}
+		if !a.spend() {
+			return attempts - 1, &skippedError{f: obsbackend.Failure{Class: classBudget,
+				Message: fmt.Sprintf("this audit's budget of %d queries is spent (--max-queries)", a.opts.maxQueries)}}
 		}
 		err = fn()
 		if err == nil {
@@ -1085,6 +1148,8 @@ func failureCause(f obsbackend.Failure, rng obsbackend.Range) string {
 			when = " until " + f.ResetsAt.Format(time.RFC3339)
 		}
 		return "the org's hourly telemetry query allowance is spent" + when + ": reads are paused, which says nothing about the data; retry after it refills"
+	case classBudget:
+		return "not read: this audit's query budget (--max-queries) was spent before it; says nothing about the data. Audit fewer panels at a time (--dashboard) or raise --max-queries"
 	case obsbackend.ClassRateLimited:
 		return "this credential's own request budget is spent (retried; still refused): wait a minute and audit fewer panels at a time (--dashboard)"
 	case obsbackend.ClassInFlight:

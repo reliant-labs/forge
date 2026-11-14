@@ -44,7 +44,12 @@ output = forge.render(forge.Bundle {
             runtime = forge.OnHosted {}
         }
     ]
-    databases = [forge.ManagedDatabase {name = "db", runtime = forge.OnHosted {}}]
+    databases = [forge.ManagedDatabase {
+        name = "db"
+        runtime = forge.OnHosted {}
+        migrations = forge.DatabaseMigrations {dir = "db/migrations"}
+        orm = forge.DatabaseORM {package = "internal/db"}
+    }]
     frontends = [forge.Frontend {
         name = "web"
         image = "ghcr.io/acme/web"

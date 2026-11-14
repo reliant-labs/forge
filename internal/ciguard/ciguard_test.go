@@ -202,6 +202,9 @@ const (
 	notReviewFirst = "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}"
 	// The checks that read the pull request itself.
 	prOnly = "${{ github.event_name == 'pull_request' }}"
+	// The merge queue's Windows job: the merge queue, and a pull request
+	// labelled ci:windows (not ci:run: a Windows runner is asked for by name).
+	windowsQueueTier = "${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:windows')) }}"
 )
 
 // The jobs an unlabelled pull request runs before its review (REVIEW FIRST).
@@ -242,7 +245,7 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			}
 		}
 	}
-	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly}
+	allowed := []string{queueTier, mainTier, notReviewFirst, prOnly, windowsQueueTier}
 	for name, j := range wf.Jobs {
 		cond := strings.TrimSpace(j.If)
 		if name == "gate" {
@@ -265,13 +268,23 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 			t.Errorf("job %q has if: %q; the merge tier must run in the merge queue (%q)", name, cond, queueTier)
 		}
 	}
+	if cond := strings.TrimSpace(wf.Jobs["windows-changed"].If); cond != windowsQueueTier {
+		t.Errorf("job %q has if: %q; it must run in the merge queue and on ci:windows (%q)", "windows-changed", cond, windowsQueueTier)
+	}
 }
 
 // The guard packages, as scripts/ci-test-packages.sh declares them.
 var guardScript = filepath.Join("..", "..", "scripts", "ci-test-packages.sh")
 
+// mergeTierGuardStep is the merge tier's one full-mode guard run:
+// internal/removalguard, main's most frequent red, whose scan is cheap enough
+// (~10s) for the queue. The other guards' whole-program loads and renders are
+// not.
+const mergeTierGuardStep = "run: go test -count=1 -timeout 10m ./internal/removalguard/"
+
 // Whole-program loads and native KCL renders belong to the full tier. PRs
-// still compile and run each guard package's cheap -short assertions.
+// still compile and run each guard package's cheap -short assertions, and
+// removalguard alone runs in full mode in the merge tier as well.
 func TestWholeRepoGuardsRunOnlyInFullTier(t *testing.T) {
 	raw, err := os.ReadFile(guardScript)
 	if err != nil {
@@ -309,4 +322,47 @@ func TestWholeRepoGuardsRunOnlyInFullTier(t *testing.T) {
 	if !strings.Contains(string(body), "run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)") {
 		t.Fatalf("all %d declared full guards must still run through their authoritative package set", len(declared))
 	}
+	if !slices.Contains(declared, "removalguard") {
+		t.Fatalf("%s no longer declares removalguard a guard; update mergeTierGuardStep", guardScript)
+	}
+
+	// The merge tier's full-mode removalguard step: in test-short (the merge
+	// tier's job, so the queue runs it), named once in the file, and no other
+	// guard package beside it.
+	if n := strings.Count(string(body), mergeTierGuardStep); n != 1 {
+		t.Errorf("%s runs %q %d times, want once (test-short): removalguard's full scan gates the merge queue", ciWorkflow, mergeTierGuardStep, n)
+	}
+	steps := jobStepRuns(t, "test-short")
+	if !slices.Contains(steps, strings.TrimPrefix(mergeTierGuardStep, "run: ")) {
+		t.Errorf("test-short does not run %q: the merge tier must run removalguard in full mode", mergeTierGuardStep)
+	}
+	for _, run := range steps {
+		for _, g := range declared {
+			if g != "removalguard" && strings.Contains(run, "internal/"+g) {
+				t.Errorf("test-short runs %q: %s's whole-repo work is main's, not the merge tier's", run, g)
+			}
+		}
+	}
+}
+
+// jobStepRuns returns the `run:` of every step of the named ci.yml job.
+func jobStepRuns(t *testing.T, name string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(ciWorkflow)
+	if err != nil {
+		t.Fatalf("read %s: %v", ciWorkflow, err)
+	}
+	var wf stepsWorkflow
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciWorkflow, err)
+	}
+	j, ok := wf.Jobs[name]
+	if !ok {
+		t.Fatalf("%s has no %s job", ciWorkflow, name)
+	}
+	var runs []string
+	for _, s := range j.Steps {
+		runs = append(runs, strings.TrimSpace(s.Run))
+	}
+	return runs
 }

@@ -70,6 +70,7 @@ adopts it; the rest are for any repo.
 | ---------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `benefits` (`all`, `category`)                                   | `forge project benefits --json`                               | no                                                                                                                               |
 | `capabilities`                                                   | `forge project capabilities`                                  | no                                                                                                                               |
+| `schema` (`name`)                                                | `forge project schema [env]`                                  | no                                                                                                                               |
 | `annotations` (`kind`), _codegen_                                | `forge project annotations`                                   | no                                                                                                                               |
 | `libraries` (`packages`)                                         | `forge project libraries [pkg...]`                            | no                                                                                                                               |
 | `audit`, _codegen_                                               | `forge project audit --json`                                  | no                                                                                                                               |
@@ -261,3 +262,41 @@ args = ["mcp"]
 
 When forge is embedded, register the embedding binary's subcommand instead:
 `claude mcp add forge -- reliant forge mcp`.
+
+## The hosted connector: Reliant Forge
+
+The same tools for what lives in your Reliant account are also served by a
+remote MCP server, with nothing to install: **`https://api.reliantapi.com/forge/mcp`**
+(streamable HTTP; legacy SSE at `/forge/sse`). It is for monitoring and release
+questions from any client, including claude.ai, ChatGPT and phones, which run no
+local server. Add it as a custom connector and sign in with OAuth; Reliant then
+asks which organization (and optionally which projects and tools) the connector
+may use. That grant is its authority, and Settings → Access tokens (Reliant Forge connectors) narrows or
+revokes it.
+
+| Tool                                                                                       | CLI equivalent                               | Changes anything                    |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------- | ----------------------------------- |
+| `obs_status` (`project`, `env`, `since`, `services`, `limit`)                              | `forge obs status <env> --json`              | no                                  |
+| `obs_issues` (… `status`, `since_release`, `sort`, `page_token`)                           | `forge obs issues <env> --json`              | no                                  |
+| `obs_issue` (`project`, `env`, `id`, `events`)                                             | `forge obs issue <id> <env> --json`          | no                                  |
+| `obs_logs` (… `query`, `severity`, `trace`, `oldest`, `page_token`)                        | `forge obs logs <env> <query> --json`        | no                                  |
+| `obs_traces` (… `errors`, `slow`, `min_duration`, `route`, `page_token`)                   | `forge obs traces <env> --json`              | no                                  |
+| `obs_check` (`project`, `env`, `release`, `promotion`, `window`)                           | `forge obs check <env> --json`               | no                                  |
+| `obs_changes` (`project`, `env`, `since`, `limit`)                                         | `forge obs changes <env> --json`             | no                                  |
+| `releases_list` (`project`, `env`, `since`, `limit`)                                       | `forge env releases list <env> --json`       | no                                  |
+| `release_show` (`project`, `env`, `ref`)                                                   | `forge env releases show <env> <ref> --json` | no                                  |
+| `envs_list` (`project`)                                                                    | the console's environments                   | no                                  |
+| `obs_init` (`project`, `envs`, `service`, `token_name`, `ttl`)                             | `forge obs init <env…> --no-write --json`    | registers envs, mints ingest tokens |
+| `release_record` (`project`, `env`, `version`, `commit`, `workloads`, `run_url`, `run_id`) | `forge release record`                       | records a release and its promotion |
+| `benefits`, `skill_list`, `skill_search`, `skill_load`, `explain_error`                    | as above                                     | no                                  |
+
+Every result is the CLI's `--json` document plus `console_url`, the page at
+https://forge.reliantlabs.io that shows it, as structured content and as text.
+A tool both servers serve has one name and one input schema; the local one adds
+only `dir`. The hosted catalog tools serve the skills built into forge, with
+commands written for `forge`. Repo tools (`lint`, `generate`, `shapes`, `audit`,
+…) stay local: they need the repo.
+
+`forge skill load connect` has the setup for each client (Claude, ChatGPT,
+VS Code, Cursor, Goose, Codex, Reliant). A host embeds the same tools with
+`github.com/reliant-labs/forge/cli.AddHostedTools`.

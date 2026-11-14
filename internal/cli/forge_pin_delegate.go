@@ -56,6 +56,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -239,6 +240,9 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 	if isDelegate() || pinDelegationDisabled {
 		return false, nil
 	}
+	if err := skewFlagBeforeCommand(args); err != nil {
+		return false, err
+	}
 	inv := parseInvocation(args)
 	if handOffModeFor(inv.rel, inv.machineWide) == runHere {
 		return false, nil
@@ -249,6 +253,43 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		return false, nil
 	}
 	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.allow, root, args)
+}
+
+// skewFlagBeforeCommand refuses --allow-version-skew written before the
+// command words (`forge --allow-version-skew skill load x`). The flag is the
+// command's own, not the root's: parsed at the root it is unknown, so it took
+// the next word for its value and the line read as `forge load x`. The
+// hand-off then sent that line, override ignored, to the pinned forge, which
+// answered "unknown command load" (forge bug report f4e45b77). The refusal
+// names the line that works.
+func skewFlagBeforeCommand(args []string) error {
+	isSkew := func(a string) bool {
+		return a == "--"+allowVersionSkewFlag || strings.HasPrefix(a, "--"+allowVersionSkewFlag+"=")
+	}
+	if !slices.ContainsFunc(args, isSkew) {
+		return nil
+	}
+	end := commandWordIndex(NewRootCmd(), args)
+	if end < 0 {
+		end = len(args)
+	}
+	for i, a := range args[:end] {
+		if a == "--" {
+			return nil
+		}
+		if !isSkew(a) {
+			continue
+		}
+		fixed := append(slices.Clone(args[:i]), args[i+1:]...)
+		if dd := slices.Index(fixed, "--"); dd >= 0 {
+			fixed = slices.Insert(fixed, dd, a)
+		} else {
+			fixed = append(fixed, a)
+		}
+		return fmt.Errorf("--%s goes after the command, not before it: %s %s (or set %s=1)",
+			allowVersionSkewFlag, Name(), strings.Join(fixed, " "), allowVersionSkewEnv)
+	}
+	return nil
 }
 
 // invocation is what the hand-off needs from a command line it has not run.
@@ -313,6 +354,14 @@ func firstWord(args []string) string {
 // `version` (a project directory that happens to be called that). An unknown
 // flag is taken to stand alone: this forge cannot know its arity.
 func firstCommandWord(root *cobra.Command, args []string) string {
+	if i := commandWordIndex(root, args); i >= 0 {
+		return args[i]
+	}
+	return ""
+}
+
+// commandWordIndex is the index of firstCommandWord's word, or -1.
+func commandWordIndex(root *cobra.Command, args []string) int {
 	takesValue := func(name string, short bool) bool {
 		var f *pflag.Flag
 		if short {
@@ -329,7 +378,7 @@ func firstCommandWord(root *cobra.Command, args []string) string {
 		a := args[i]
 		switch {
 		case a == "--":
-			return ""
+			return -1
 		case strings.HasPrefix(a, "--"):
 			if !strings.Contains(a, "=") && takesValue(strings.TrimPrefix(a, "--"), false) {
 				i++
@@ -340,10 +389,10 @@ func firstCommandWord(root *cobra.Command, args []string) string {
 				i++
 			}
 		default:
-			return a
+			return i
 		}
 	}
-	return ""
+	return -1
 }
 
 // scanProjectDir finds -C / --project-dir in args the tree could not parse,

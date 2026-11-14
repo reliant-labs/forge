@@ -184,6 +184,15 @@ type KCLEntities struct {
 	// does not run (forge.ExternalDatabase): routes for `forge db query`,
 	// never rendered. See ExternalDatabaseEntity.
 	ExternalDatabases []ExternalDatabaseEntity `json:"external_databases,omitempty"`
+	// SchemaOnlyDatabases are the databases the env declares for their
+	// schema only (a bare forge.Database): migrations, ORM and migration
+	// safety for forge's readers, with nothing run or reached. See
+	// SchemaOnlyDatabaseEntity and DatabaseSchemaEntity.
+	SchemaOnlyDatabases []SchemaOnlyDatabaseEntity `json:"schema_only_databases,omitempty"`
+	// APIs are the APIs the env declares the project serves (forge.API), each
+	// by its contract. Groundwork: validated (validateAPIs) and listed, nothing
+	// generated from them yet. See APIEntity.
+	APIs []APIEntity `json:"apis,omitempty"`
 	// Buckets are the env's buckets forge manages (a forge.Bucket on
 	// forge.OnHosted), each published as a ManagedBucket. A MinIO or
 	// BucketOnS3 bucket is not one: it reaches its workloads as literals.
@@ -732,6 +741,8 @@ func (c HelmChartEntity) PruneEnabled() bool { return c.Prune == nil || *c.Prune
 // when set, ties this Secret to others that must carry the SAME logical
 // value (the cross-secret byte-match group).
 type ExternalSecretEntity struct {
+	// Type is the render's record tag, "secret".
+	Type      string   `json:"type,omitempty"`
 	Name      string   `json:"name"`
 	Namespace string   `json:"namespace"`
 	Keys      []string `json:"keys"`
@@ -782,6 +793,8 @@ type StoreSourceEntity struct {
 // nor blocks on it. Recorded in the env shape so the control plane knows what
 // to deliver where.
 type ControlPlaneSecretEntity struct {
+	// Type is the render's record tag, "control_plane_secret".
+	Type      string `json:"type,omitempty"`
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	// Cluster is the kube context it lands in; ConnectedCluster is the name
@@ -1190,6 +1203,8 @@ type DatabaseEntity struct {
 	Cluster   string                             `json:"cluster,omitempty"`
 	Namespace string                             `json:"namespace,omitempty"`
 	Spec      deployv1alpha1.ManagedDatabaseSpec `json:"spec"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // Hosted reports whether the control plane runs this database.
@@ -1230,6 +1245,8 @@ type ExternalDatabaseEntity struct {
 	Reach string `json:"reach,omitempty"`
 	// Port is the Service port, 0 when undeclared.
 	Port int `json:"port,omitempty"`
+	// The database's schema, when it declares migrations.
+	DatabaseSchemaEntity
 }
 
 // BuildOnlyDeploy is the forge.BuildOnly runtime: the workload is built and
@@ -1242,9 +1259,13 @@ type BuildOnlyDeploy struct {
 
 // BuildVariant describes one binary produced by a build-only service.
 type BuildVariant struct {
-	Name       string            `json:"name"`
-	Ldflags    []string          `json:"ldflags,omitempty"`
-	BuildTags  []string          `json:"build_tags,omitempty"`
+	Name    string   `json:"name"`
+	Ldflags []string `json:"ldflags,omitempty"`
+	// BuildTags are the variant's `go build -tags`. The render names them
+	// `tags` (kcl/render.k _render_build_variant); this field read
+	// `build_tags`, which no render emits, so a variant's tags were dropped
+	// until the env schema's fixture check caught the mismatch.
+	BuildTags  []string          `json:"tags,omitempty"`
 	GOOS       string            `json:"goos,omitempty"`
 	GOARCH     string            `json:"goarch,omitempty"`
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
@@ -1656,6 +1677,8 @@ type kclRenderRaw struct {
 	GRPCRoutes               []GRPCRouteEntity                         `json:"grpc_routes,omitempty"`
 	Databases                []DatabaseEntity                          `json:"databases,omitempty"`
 	ExternalDatabases        []ExternalDatabaseEntity                  `json:"external_databases,omitempty"`
+	SchemaOnlyDatabases      []SchemaOnlyDatabaseEntity                `json:"schema_only_databases,omitempty"`
+	APIs                     []APIEntity                               `json:"apis,omitempty"`
 	Buckets                  []BucketEntity                            `json:"buckets,omitempty"`
 	DeclaredBuckets          []release.ShapeBucket                     `json:"declared_buckets,omitempty"`
 	HelmCharts               []HelmChartEntity                         `json:"helm_charts,omitempty"`
@@ -1839,6 +1862,10 @@ type ClusterTargetEntity struct {
 	// the name `forge cluster connect` registered. Empty for a k3d cluster,
 	// which forge applies to directly.
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
+	// ImagePullSecrets are the pull Secrets the target declares. Each cluster
+	// workload's runtime carries the list it pulls with (ClusterRuntime), so
+	// this env-wide copy is recorded, not read.
+	ImagePullSecrets []string `json:"image_pull_secrets,omitempty"`
 }
 
 // field returns one env-wide coordinate by the name the "first K8sCluster
@@ -1917,6 +1944,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := checkFrontendRuntimeConfigKeys(projectDir, entities.Frontends); err != nil {
 		return nil, err
 	}
+	// Refused here too: an OpenAPI spec KCL cannot read cheaply is checked
+	// the moment the env is loaded (validateAPIs).
+	if err := validateAPIs(projectDir, entities.APIs); err != nil {
+		return nil, err
+	}
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -1939,6 +1971,12 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	}
 	if env == "" {
 		return nil, fmt.Errorf("RenderKCL: env required")
+	}
+	// An env declared by an env document (deploy/envs/<env>.yaml) renders to
+	// the document itself, validated and lowered: the same bytes, the same
+	// parser, every command unchanged (env_document.go).
+	if out, ok, err := loadEnvDocument(ctx, projectDir, env); ok || err != nil {
+		return out, err
 	}
 	kclDir := filepath.Join(projectDir, "deploy", "kcl", env)
 	if _, err := os.Stat(kclDir); err != nil {
@@ -2034,6 +2072,8 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		HelmCharts:               raw.HelmCharts,
 		Databases:                raw.Databases,
 		ExternalDatabases:        raw.ExternalDatabases,
+		SchemaOnlyDatabases:      raw.SchemaOnlyDatabases,
+		APIs:                     raw.APIs,
 		Buckets:                  raw.Buckets,
 		DeclaredBuckets:          raw.DeclaredBuckets,
 		SecretProvider:           raw.SecretProvider,

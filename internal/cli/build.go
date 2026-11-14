@@ -1385,7 +1385,7 @@ func bindBuildRenderOptions(opts buildOptions) error {
 func renderBuildKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
 	if os.Getenv("FORGE_KCL_RENDER_FIXTURE") == "" {
 		kclDir := filepath.Join(projectDir, "deploy", "kcl", env)
-		if _, err := os.Stat(kclDir); errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(kclDir); errors.Is(err, fs.ErrNotExist) && !envHasDeclaration(projectDir, env, "") {
 			fmt.Printf("[build]   Note: skipping KCL filter (no %s)\n", projectRelPath(projectDir, kclDir))
 			return nil, nil
 		}

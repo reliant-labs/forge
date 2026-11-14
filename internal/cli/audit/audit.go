@@ -93,6 +93,7 @@ var auditCategoryOrder = []string{
 	"features",
 	"ingress",
 	"environments",
+	"resources",
 	"external_builds",
 	"prerequisites",
 	"conventions",
@@ -211,6 +212,9 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 		report.Categories["ingress"] = f.Audit.Ingress(cfg, abs)
 	}
 	report.Categories["environments"] = auditEnvironments(f, abs)
+	if f.Audit.Resources != nil {
+		report.Categories["resources"] = f.Audit.Resources(cfg, abs)
+	}
 	report.Categories["external_builds"] = f.Audit.ExternalBuilds(cfg, abs)
 	if f.Audit.Prerequisites != nil {
 		report.Categories["prerequisites"] = f.Audit.Prerequisites(cfg, abs)
@@ -1194,7 +1198,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittype.Category {
 	migDir := config.MigrationsPathIn(projectDir)
 	if cfg != nil {
-		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.Database.MigrationsPath()))
+		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.PrimaryDatabase().MigrationsPath()))
 	}
 	hasMigrations := dirExists(migDir)
 	if !hasMigrations {
@@ -1233,7 +1237,7 @@ func auditMigrationSafety(cfg *config.ProjectConfig, projectDir string) audittyp
 	allowed := migrationlint.AllowDestructiveFiles(migDir)
 	severity := "error"
 	if cfg != nil {
-		severity = cfg.Database.MigrationSafety.EffectiveDestructiveChange()
+		severity = cfg.PrimaryDatabase().MigrationSafety.EffectiveDestructiveChange()
 	}
 	details["destructive_change_severity"] = severity
 	if len(allowed) > 0 {

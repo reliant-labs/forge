@@ -221,6 +221,12 @@ type ProjectConfig struct {
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).
+	//
+	// LEGACY SHORTHAND, deprecated in favour of an env document
+	// (deploy/envs/<env>.yaml, `forge project schema env`): forge.yaml is
+	// project and tooling config, not a list of resources. Both keys keep
+	// working under semver 1 and lower into the same model; skills and docs
+	// steer new projects to the document. See docs/design/env-document.md.
 	Envs       []string          `yaml:"envs,omitempty"`
 	Monitoring *MonitoringConfig `yaml:"monitoring,omitempty"`
 }
@@ -759,6 +765,12 @@ func (c ProjectConfig) HasReactNativeFrontend() bool {
 
 // DatabaseConfig holds database-related settings.
 //
+// Its migrations, ORM and migration-safety keys describe ONE database. The
+// env declaration (deploy/kcl) can declare each database's schema on the
+// database itself, several per project, and is the long-term home of that
+// fact; these keys keep working as the shorthand for a project that declares
+// none there (see databases.go, ProjectDatabases).
+//
 // The driver is DERIVED: a project whose tree has its migrations directory
 // (database.migrations_dir, default db/migrations) uses postgres, and one
 // without it has no database (driver "none"). The dev seed has no config at
@@ -776,6 +788,11 @@ type DatabaseConfig struct {
 	// Migrations is `database.migrations:` — where the migrations live and
 	// which tool applies them. Absent, forge's own migrator applies
 	// db/migrations.
+	//
+	// `database.migrations` and `database.migrations_dir` are LEGACY
+	// SHORTHANDS for a database's migrations, deprecated in favour of the
+	// env declaration's databases[] (KCL or an env document,
+	// docs/design/env-document.md). They keep working under semver 1.
 	Migrations      MigrationsConfig      `yaml:"migrations,omitempty"`
 	MigrationSafety MigrationSafetyConfig `yaml:"migration_safety,omitempty"`
 	// Analyze configures `forge db analyze`: the database it runs on and the
@@ -837,7 +854,7 @@ func ORMPackage(cfg *ProjectConfig) ORMConfig {
 	if cfg == nil {
 		return ORMConfig{}
 	}
-	return cfg.Database.ORM
+	return cfg.PrimaryDatabase().ORM
 }
 
 // MigrationSafetyConfig controls migrationlint's three severity dials

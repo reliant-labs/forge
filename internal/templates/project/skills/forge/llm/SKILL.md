@@ -1,6 +1,6 @@
 ---
 name: llm
-description: Using an LLM from a forge app's Go backend — the decision first (agentic or judgement work belongs in a Reliant workflow and keeps the app LLM-free; small inline classify, summarise or extract calls may use the gateway), then the call itself with the official anthropic-go and openai-go clients unmodified, model names, who pays, and the errors (out of credit, budget, video routes). Declaring the gateway in KCL is deploy/llm.
+description: Using an LLM from a forge app's Go backend — the decision first (agentic or judgement work belongs in a Reliant workflow and keeps the app LLM-free; small inline classify, summarise or extract calls may use the gateway), then the call itself with the official anthropic-go and openai-go clients unmodified, model names, who pays, the errors (out of credit, budget, video routes), and tracing each call with pkg/observe/genai so the console's AI hub shows it. Declaring the gateway in KCL is deploy/llm.
 ---
 
 # LLM in a forge app
@@ -96,9 +96,36 @@ if errors.As(err, &apierr) && apierr.StatusCode == http.StatusTooManyRequests &&
 
 (`openai.Error` has the same `StatusCode` and `RawJSON()`.)
 
+## 5. Trace it: the AI hub
+
+Neither SDK emits spans. Wrap each call in a `pkg/observe/genai` span and the
+console's **AI** dashboards (calls, tokens, latency, errors and retries by
+model, provider, workflow and user) draw it with nothing else declared:
+
+```go
+ctx, span := genai.StartChat(ctx, genai.Chat{Provider: "anthropic", Model: string(params.Model)})
+msg, err := client.Messages.New(ctx, params)
+if err == nil {
+    u := msg.Usage
+    genai.SetResponse(span, genai.Response{Model: string(msg.Model), ID: msg.ID,
+        FinishReasons: []string{string(msg.StopReason)},
+        Usage: genai.Usage{ // Anthropic's input_tokens leaves out the cache; the conventions count it in
+            InputTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens, OutputTokens: u.OutputTokens,
+            CacheReadInputTokens: u.CacheReadInputTokens, CacheCreationInputTokens: u.CacheCreationInputTokens}})
+}
+genai.End(span, err) // a cancellation is error.type=canceled, not a failure
+```
+
+The openai-go mapping, agent/tool/workflow spans, `genai.WithScope` for the
+user and org, and the 429 backoff event (`genai.RetryWait`, when you retry
+yourself as section 4 says) are in the package doc and `observability/ai`.
+AI spans are never sampled away. Record no prompt or completion text on a
+span: content capture is a later, opt-in phase.
+
 ## Rules
 
 - The app holds no provider key, ever, and the frontend never calls a model.
 - Treat model output as untrusted input; validate before it touches data.
 - Hard rules live in code, not in a prompt.
 - Judgement or multi-step work goes to a workflow, not a loop in a handler.
+- Trace every call with `pkg/observe/genai`; never put prompt or completion text on a span.

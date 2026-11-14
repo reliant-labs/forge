@@ -59,7 +59,7 @@ const envStatusCheckTimeout = 15 * time.Second
 func runtimeTargetFor(e *KCLEntities, rows []upServiceRow) doctor.RuntimeTarget {
 	t := doctor.RuntimeTarget{RemoteOnly: e != nil && !entitiesTargetThisMachine(e)}
 	for _, r := range rows {
-		if r.Kind != "host" || !r.Listening || r.Port <= 0 {
+		if r.Kind != "host" || !r.Listening || r.HeldBy != "" || r.Port <= 0 {
 			continue
 		}
 		t.Service = r.Name

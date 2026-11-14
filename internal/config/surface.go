@@ -42,7 +42,8 @@ type Surface struct {
 	RootFrontend bool
 	// Envs and Monitoring are forge.yaml's brownfield switches `envs:` and
 	// `monitoring:` (a bare boolean, or a mapping whose `enabled` defaults
-	// to true).
+	// to true). Both are legacy shorthands, deprecated in favour of an env
+	// document (deploy/envs/<env>.yaml); they keep working.
 	Envs       []string
 	Monitoring bool
 	// MigrationTool and MigrationsDir are forge.yaml

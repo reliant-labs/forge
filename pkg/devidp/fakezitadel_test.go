@@ -57,6 +57,10 @@ type fakeZitadel struct {
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
+	// projectionLag hides a user created through POST /v2/users/human from
+	// that many session creations, which answer QUERY-Dfbg2 as the real
+	// issuer does while its user projection has not caught up (-1: forever).
+	projectionLag int
 }
 
 type fakeUser struct {
@@ -74,6 +78,9 @@ type fakeUser struct {
 	metadata             map[string]string
 	locked               bool
 	totp                 bool
+	// unprojected counts the session creations still to be refused for
+	// this user (projectionLag); negative refuses them all.
+	unprojected int
 }
 
 type fakeSession struct {
@@ -341,6 +348,12 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 				u = cand
 			}
 		}
+		if u != nil && u.unprojected != 0 {
+			if u.unprojected > 0 {
+				u.unprojected--
+			}
+			u = nil
+		}
 		if u == nil {
 			zerr(w, 404, "QUERY-Dfbg2", "User could not be found")
 			return
@@ -488,7 +501,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw, unprojected: f.projectionLag}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")

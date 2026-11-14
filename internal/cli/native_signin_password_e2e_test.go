@@ -296,7 +296,7 @@ message Widget {
 	// A good password creates the account and signs in.
 	code, hdr, _, text = call(http.MethodPost, "/auth/register", map[string]string{"email": email, "password": "Password1!"})
 	if code != http.StatusOK || !strings.Contains(strings.Join(hdr.Values("Set-Cookie"), ";"), "pwapp_session=") {
-		t.Fatalf("register with a valid password: HTTP %d cookie=%v: %s", code, hdr.Values("Set-Cookie"), text)
+		t.Fatalf("register with a valid password: HTTP %d cookie=%v: %s\nserver output:\n%s", code, hdr.Values("Set-Cookie"), text, serverOut.String())
 	}
 
 	// ── 3. Forgot: same answer for a real and an unknown address. ──

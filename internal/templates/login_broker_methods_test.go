@@ -102,35 +102,18 @@ func TestLoginBrokerScaffoldMountsEachMethodOnlyWhenOffered(t *testing.T) {
 	}
 }
 
-// forge#2121: with database_url declared, the broker serialises an account's
-// address proofs across replicas on the app's own database; without it, it
-// says how to, and reads no field it lacks.
-func TestLoginBrokerScaffoldSharesTheProofLockOnTheAppsDatabase(t *testing.T) {
-	src := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "DatabaseURLField": true}))
-	for _, want := range []string{
-		"ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger)",
-		"pc, err := pgx.ParseConfig(dsn)",
-		"return devidp.UnavailableProofLocker(err)",
-		"db := dbtrace.OpenDB(stdlib.GetConnector(*pc))",
-		`"github.com/reliant-labs/forge/pkg/observe/dbtrace"`,
-		"return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})",
-		`"github.com/jackc/pgx/v5/stdlib"`,
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("the broker lacks %q", want)
+// forge#2121: the broker no longer passes a proof lock — an address proof has
+// nothing to serialise — and keeps compiling against a config that declares
+// database_url.
+func TestLoginBrokerScaffoldPassesNoProofLock(t *testing.T) {
+	src := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true}))
+	for _, never := range []string{"ProofLocker", "proofLockerFor", "NewPostgresProofLocker", "cfg.DatabaseUrl"} {
+		if strings.Contains(src, never) {
+			t.Errorf("the broker still wires the retired proof lock: %q", never)
 		}
 	}
-	// forge-tracing-raw-sql-open: an untraced pool fails the project's own
-	// lint the moment it is scaffolded (TestE2EProjectUpgradeConvergesAcrossARange).
-	if strings.Contains(src, "stdlib.OpenDB(") {
-		t.Error("the broker opens the proof lock's pool untraced (stdlib.OpenDB); use dbtrace.OpenDB")
-	}
-	without := renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true}))
-	if strings.Contains(without, "cfg.DatabaseUrl") || strings.Contains(without, `"github.com/jackc/pgx/v5"`) {
-		t.Error("a broker whose config declares no database_url reads it")
-	}
-	if !strings.Contains(without, "ProofLocker: devidp.NewPostgresProofLocker") {
-		t.Error("a broker without database_url does not say how to share the proof lock")
+	if !strings.Contains(src, "ProvenCredentialsOnly: true,") {
+		t.Error("the broker's client may add a credential to an unverified account (ProvenCredentialsOnly unset)")
 	}
 }
 
@@ -185,7 +168,7 @@ type Config struct {
 `)
 	write("pkg/middleware/middleware.go", "package middleware\n\nconst SessionCookieName = \"app_session\"\n\nconst SecureSessionCookieName = \"__Host-\" + SessionCookieName\n")
 	write("internal/app/login_broker.go", renderBroker(t, brokerData(map[string]any{"LoginPolicyField": true, "AudienceField": true, "TrustedProxyHopsField": true,
-		"MiddlewareDeclaresSecureSessionCookie": true, "DatabaseURLField": true})))
+		"MiddlewareDeclaresSecureSessionCookie": true})))
 	write("internal/app/login_broker_mount_test.go", `package app
 
 import (

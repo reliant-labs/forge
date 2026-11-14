@@ -61,14 +61,9 @@ type SignInRoutes struct {
 	registerByIP    *limiter
 	socialStartByIP *limiter
 
-	// proofs runs address proofs of one account one at a time (proveAddress)
-	// in this process: the locker unless the config supplies one.
-	proofs keyedMutex
-	// locker serialises an account's proofs and the installs after one
-	// (ProofLocker). sharedLock: it is the config's, shared by every
-	// replica, so the pre-proof window is lockedPreProofWindow.
-	locker     ProofLocker
-	sharedLock bool
+	// locker is the config's ProofLocker (deprecated), nil when none was
+	// supplied: then nothing is locked (see lockAccount).
+	locker ProofLocker
 }
 
 // The routes. The scaffolded broker mounts each with
@@ -108,6 +103,13 @@ const (
 	CodeSocialTaken        = "social_taken"
 	CodeCrossSite          = "cross_site"
 	CodePasswordTooLong    = "password_too_long"
+	// CodeNewLinkRequired: the link names an account whose address can no
+	// longer be proven into (it holds credentials nobody proved); asking
+	// again mails a link that works.
+	CodeNewLinkRequired = "new_link_required"
+	// CodeNeedsAdmin: an invitation names an account that holds credentials
+	// nobody proved, so it cannot be accepted; whoever invited decides.
+	CodeNeedsAdmin = "account_needs_admin"
 )
 
 // The sentences the browser is shown. None says whether an address has an
@@ -130,6 +132,9 @@ const (
 	msgMethod        = "That sign-in method is not offered here."
 	msgAccountExists = "That address already has an account. Sign in instead."
 	msgSocialTaken   = "That %s account is already connected to another user. Use another one, or another way to sign in."
+	msgNewLink       = "This link can no longer be used. Ask for a new one, and use the link in that email."
+	msgFreshLinkSent = "This link can no longer be used. We sent a new one to the same address: use the link in that email."
+	msgNeedsAdmin    = "This address needs an administrator before it can be used here. Contact whoever invited you."
 )
 
 // SignInRoutesConfig is what the app's broker supplies.
@@ -172,15 +177,14 @@ type SignInRoutesConfig struct {
 	PasswordPolicy func(context.Context) (PasswordPolicy, error)
 	RejectPassword func(ctx context.Context, w http.ResponseWriter, password string, err *PasswordPolicyError)
 
-	// ProofLocker serialises an account's address proofs and the credential
-	// installs after one across every replica of the broker
-	// (NewPostgresProofLocker, on the app's database). nil keeps the
-	// in-process lock, which is enough for one replica; with more, the
-	// #2098 time fence is then all that keeps a failed proof on one replica
-	// from revoking a credential the owner just set on another (forge#2121).
-	// While the shared lock cannot be taken (its database is down), proofs,
-	// verification and passkey enrolment answer "unavailable"; sign-in with
-	// an existing credential does not take it.
+	// ProofLocker, when set, is still taken exactly where it was: around an
+	// address proof, around a verification together with the credentials
+	// it installs, and around a passkey enrolment. A lock that cannot be
+	// taken still refuses the request ("unavailable"). nil takes no lock.
+	//
+	// Deprecated: an address proof writes nothing but the issuer's own
+	// verification of a credential-less account, so nothing needs
+	// serialising across replicas any more (forge#2121). Leave it nil.
 	ProofLocker ProofLocker
 }
 
@@ -217,7 +221,12 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 	if _, err := rand.Read(fallback); err != nil {
 		return nil, err
 	}
-	client := cfg.Client
+	// The routes work on their own copy of the client with
+	// ProvenCredentialsOnly on: no route may add a credential to an
+	// unverified account, whatever the caller's client is set to.
+	client := *cfg.Client
+	client.ProvenCredentialsOnly = true
+	cfg.Client = &client
 	r := &SignInRoutes{
 		cfg:      cfg,
 		origin:   u.Scheme + "://" + u.Host,
@@ -241,17 +250,17 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 		registerByIP:    newLimiter(20, time.Hour),
 		socialStartByIP: newLimiter(60, 15*time.Minute),
 	}
-	r.locker, r.sharedLock = cfg.ProofLocker, cfg.ProofLocker != nil
-	if r.locker == nil {
-		r.locker = &r.proofs
-	}
+	r.locker = cfg.ProofLocker
 	return r, nil
 }
 
-// lockAccount takes the account's proof lock (see ProofLocker). Its release
-// may be called more than once. An error is the caller's refusal: the work
-// it guards is not run without the lock.
+// lockAccount takes the deprecated ProofLocker for userID, where one was
+// supplied, and returns its release (safe to call twice). An error refuses
+// the work it guards, as it always did. With no locker it holds nothing.
 func (r *SignInRoutes) lockAccount(ctx context.Context, userID string) (func(), error) {
+	if r.locker == nil {
+		return func() {}, nil
+	}
 	release, err := r.locker.LockAccount(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("the account's proof lock: %w", err)
@@ -695,6 +704,10 @@ func (r *SignInRoutes) HandlePasskeyRegisterBegin(w http.ResponseWriter, req *ht
 		return
 	}
 	reg, err := r.cfg.Client.RegisterPasskey(ctx, userID, r.rpID, code)
+	if errors.Is(err, ErrUnverifiedAccount) {
+		writeErr(w, http.StatusForbidden, CodeEmailUnverified, msgUnverified)
+		return
+	}
 	if err != nil {
 		r.unavailable(ctx, w, "passkey registration could not start", err)
 		return
@@ -724,9 +737,8 @@ func (r *SignInRoutes) HandlePasskeyRegisterFinish(w http.ResponseWriter, req *h
 		writeErr(w, http.StatusBadRequest, CodePasskeyFailed, "That passkey could not be registered.")
 		return
 	}
-	// A passkey is a credential install: no proof of this account, on any
-	// replica, may run beside it (forge#2121). Without the lock the binding
-	// is kept, so the browser can finish once the lock can be taken.
+	// A supplied (deprecated) ProofLocker still guards an enrolment; one
+	// that cannot be taken refuses it and keeps the binding for a retry.
 	release, err := r.lockAccount(ctx, userID)
 	if err != nil {
 		r.unavailable(ctx, w, "passkey registration: the account's proof lock could not be taken", err)
@@ -821,11 +833,24 @@ func (r *SignInRoutes) magicAttemptKey(email string) string {
 
 func (r *SignInRoutes) startMagic(ctx context.Context, email string) magicBinding {
 	c := r.cfg.Client
-	user, err := c.FindUserByEmail(ctx, email)
+	user, err := r.accountFor(ctx, email)
 	switch {
 	case err == nil && user.EmailVerified:
 		return r.magicForVerified(ctx, user.ID)
 	case err == nil:
+		// An account holding credentials nobody proved is never proven
+		// into: the owner gets a fresh account (fresh_account.go).
+		if held, herr := r.holdsCredentials(ctx, user); herr != nil {
+			r.cfg.Logger.ErrorContext(ctx, "magic link: could not read the account's credentials", "user_id", user.ID, "error", herr)
+			return magicBinding{Kind: "n"}
+		} else if held {
+			fresh, ferr := r.freshAccountFor(ctx, user, r.magicTemplate(), NewUser{SelfSignup: true})
+			if ferr != nil {
+				r.cfg.Logger.ErrorContext(ctx, "magic link: could not create a fresh account", "user_id", user.ID, "error", ferr)
+				return magicBinding{Kind: "n"}
+			}
+			return magicBinding{Kind: "v", UserID: fresh.ID}
+		}
 		if err := c.ResendEmailCode(ctx, user.ID, r.magicTemplate()); err != nil {
 			r.cfg.Logger.ErrorContext(ctx, "magic link: could not mail a verification code", "user_id", user.ID, "error", err)
 			return magicBinding{Kind: "n"}
@@ -916,6 +941,14 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 		writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 		return
 	}
+	if errors.Is(err, errHoldsCredentials) {
+		// A link mailed for an account that holds credentials nobody
+		// proved (before forge#2121's fix): it is never proven into. A new
+		// request mails a link for a fresh account.
+		r.clearBinding(w, magicCookie)
+		writeErr(w, http.StatusConflict, CodeNewLinkRequired, msgNewLink)
+		return
+	}
 	if err != nil {
 		r.unavailable(ctx, w, "magic link could not be redeemed", err)
 		return
@@ -927,11 +960,11 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 
 // sessionFromVerification turns a proven email-verification code into a
 // session. PROOF FIRST: VerifyEmail must succeed for this user in this
-// request. Then any credential the account held from before the proof is
-// revoked (proveAddress): nothing proves who set it. Only then does the broker
-// mint a one-time code with its own credential and redeem it at once — the
-// address is now verified, so the issuer allows the method, and the person
-// already proved the inbox.
+// request, and it is refused for an account that holds credentials nobody
+// proved (proveAddress). A fresh account then takes its address over
+// (finishFreshAccount). Only then does the broker mint a one-time code with
+// its own credential and redeem it at once — the address is now verified, so
+// the issuer allows the method, and the person already proved the inbox.
 //
 // The signup_role follows the address's first proof, as in HandleVerify:
 // it is read from the account (MetaSelfSignup), not carried in the browser
@@ -943,9 +976,10 @@ func (r *SignInRoutes) sessionFromVerification(ctx context.Context, userID, code
 	if err != nil {
 		return Session{}, err
 	}
-	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) }); err != nil {
+	if err := r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) }); err != nil {
 		return Session{}, err
 	}
+	r.takeAddressOver(ctx, userID)
 	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
 	if err := c.EnsureOTPEmail(ctx, userID); err != nil {
 		return Session{}, err
@@ -1113,9 +1147,11 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 	var existing User
 	err = ErrUserNotFound
 	if email != "" {
-		existing, err = c.FindUserByEmail(ctx, email)
+		existing, err = r.accountFor(ctx, email)
 	}
 	switch {
+	case errors.Is(err, errAmbiguousAddress):
+		writeErr(w, http.StatusConflict, CodeSocialLinkRequired, fmt.Sprintf(msgSocialLink, social.Label))
 	case err == nil:
 		if !res.EmailVerified || !existing.EmailVerified {
 			r.cfg.Logger.InfoContext(ctx, "social sign-in: not linking an unverified address", "user_id", existing.ID,
@@ -1191,16 +1227,8 @@ func (r *SignInRoutes) acceptInviteBySocial(w http.ResponseWriter, req *http.Req
 		r.unavailable(ctx, w, "invitation: read account", err)
 		return
 	}
-	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, b.InviteCode) }); err != nil {
-		if errors.Is(err, ErrInvalidCode) {
-			r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
-			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
-			return
-		}
-		if !errors.Is(err, errRevokeFailed) {
-			r.codeByUser.refund(userID)
-		}
-		r.unavailable(ctx, w, "invitation could not be checked", err)
+	if err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, b.InviteCode) }); err != nil {
+		r.inviteRefused(w, req, userID, err)
 		return
 	}
 	r.codeByUser.forget(userID)
@@ -1276,18 +1304,11 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 		r.unavailable(ctx, w, "invitation: read account", err)
 		return
 	}
-	// Someone may have registered this address before the invitation: what
-	// they set must not survive the invitee's proof (proveAddress).
-	if _, err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, code) }); err != nil {
-		if errors.Is(err, ErrInvalidCode) {
-			r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
-			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
-			return
-		}
-		if !errors.Is(err, errRevokeFailed) {
-			r.codeByUser.refund(userID)
-		}
-		r.unavailable(ctx, w, "invitation could not be checked", err)
+	// Someone may have registered this address before the invitation: an
+	// account holding credentials nobody proved is never proven into
+	// (proveAddress), and the invitation names that account.
+	if err := r.proveAddress(ctx, before, func() error { return c.VerifyInviteCode(ctx, userID, code) }); err != nil {
+		r.inviteRefused(w, req, userID, err)
 		return
 	}
 	r.codeByUser.forget(userID)
@@ -1310,6 +1331,28 @@ func (r *SignInRoutes) HandleInviteAccept(w http.ResponseWriter, req *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"message": "A sign-in link is on its way to your email."})
+	}
+}
+
+// inviteRefused answers an invitation whose proof did not run or failed.
+//
+// An invitation names one account. When that account holds credentials
+// nobody proved, it is not proven into, and a fresh account cannot take the
+// invitation over (its code is the named account's): whoever invited decides
+// (CodeNeedsAdmin). Nothing on the account changed.
+func (r *SignInRoutes) inviteRefused(w http.ResponseWriter, req *http.Request, userID string, err error) {
+	ctx := req.Context()
+	switch {
+	case errors.Is(err, ErrInvalidCode):
+		r.cfg.Logger.WarnContext(ctx, "invitation rejected", "user_id", userID, "error", err)
+		writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
+	case errors.Is(err, errHoldsCredentials):
+		r.codeByUser.refund(userID)
+		r.cfg.Logger.WarnContext(ctx, "invitation refused: the invited account holds credentials nobody proved; an administrator decides", "user_id", userID)
+		writeErr(w, http.StatusConflict, CodeNeedsAdmin, msgNeedsAdmin)
+	default:
+		r.codeByUser.refund(userID)
+		r.unavailable(ctx, w, "invitation could not be checked", err)
 	}
 }
 
@@ -1431,16 +1474,18 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 		r.unavailable(ctx, w, "verification: read account", err)
 		return
 	}
-	// Order matters: the proof takes back whatever the account held from
-	// before it (nothing proves who set it) with the account locked
-	// throughout (proveAddress), THEN this browser's pending social link and
-	// password are attached.
-	//
-	// One hold of the account's proof lock covers both: no other proof of
-	// this account, on any replica, runs between this proof and the
-	// credentials it installs (forge#2121). Taken before the proof, so a
-	// lock that cannot be had refuses the code rather than spending it on
-	// an address whose password then cannot be set.
+	if before.EmailVerified {
+		// A retried link: a takeover this account's proof decided may not
+		// have finished. Completing it needs no new proof (and installs
+		// nothing: that waits for a proof in this request).
+		r.takeAddressOver(ctx, userID)
+	}
+	// Order matters: the proof runs only on a credential-less account and
+	// writes nothing but the verification (proveAddress); THEN the address
+	// is taken over if this is a fresh account, and this browser's pending
+	// social link and password are attached — to a verified account.
+	// A supplied (deprecated) ProofLocker is held across the proof AND the
+	// credentials installed after it, as it always was.
 	release, err := r.lockAccount(ctx, userID)
 	if err != nil {
 		r.codeByUser.refund(userID)
@@ -1448,23 +1493,44 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer release()
-	reset, err := r.proveAddressHeld(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
+	err = r.proveAddressHeld(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
+	if errors.Is(err, errHoldsCredentials) {
+		// A link for an account holding credentials nobody proved (mailed
+		// before forge#2121's fix): it is never proven into, and nothing on
+		// it changed. The owner proves into a fresh account; its link is on
+		// the way.
+		r.codeByUser.refund(userID)
+		self, _ := c.HasMetadata(ctx, userID, MetaSelfSignup)
+		_, ferr := r.freshAccountFor(ctx, before, r.verifyTemplate(), NewUser{SelfSignup: self})
+		if errors.Is(ferr, errNoMailToProve) {
+			// A contact-only account where nothing is mailed: no proof
+			// claims it, and there is nothing to send.
+			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
+			return
+		}
+		if ferr != nil {
+			r.unavailable(ctx, w, "verification: a fresh account could not be created", ferr)
+			return
+		}
+		writeErr(w, http.StatusConflict, CodeNewLinkRequired, msgFreshLinkSent)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, ErrInvalidCode) {
 			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 			return
 		}
-		if !errors.Is(err, errRevokeFailed) {
-			r.codeByUser.refund(userID)
-		}
+		r.codeByUser.refund(userID)
 		r.unavailable(ctx, w, "verification could not be completed", err)
 		return
 	}
 	r.codeByUser.forget(userID)
 	r.cfg.Logger.InfoContext(ctx, "email address verified", "user_id", userID)
+	// reset: this account replaced one whose credentials were not this
+	// browser's; what was set there stays there.
+	reset := r.takeAddressOver(ctx, userID)
 	r.attachPendingLink(w, req, userID)
 	pw := r.setPendingPassword(w, req, userID)
-	release()
 	r.grantSignupRoleIfSelfSignup(ctx, userID, before.Email)
 	if pw.set {
 		reset = false
@@ -1587,13 +1653,37 @@ func (r *SignInRoutes) HandleVerifyResend(w http.ResponseWriter, req *http.Reque
 	defer holdUntil(ctx, time.Now(), r.cfg.ResponseFloor)
 	email := normalizeEmail(body.Email)
 	if email != "" && r.verifyResendIP.reserve(r.ip(req)) && r.verifyResendBy.reserve(email) {
-		if u, err := r.cfg.Client.FindUserByEmail(ctx, email); err == nil && !u.EmailVerified {
-			if err := r.cfg.Client.ResendEmailCode(ctx, u.ID, r.verifyTemplate()); err != nil {
-				r.cfg.Logger.ErrorContext(ctx, "verification resend failed", "user_id", u.ID, "error", err)
-			}
+		if u, err := r.accountFor(ctx, email); err == nil && !u.EmailVerified {
+			r.mailVerification(ctx, u)
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": msgVerifyResent})
+}
+
+// mailVerification mails a verification link for u, an unverified account,
+// and returns the account the link proves: u itself when it holds nothing,
+// else the fresh account its owner proves into instead (fresh_account.go).
+// "" when nothing could be mailed (logged).
+func (r *SignInRoutes) mailVerification(ctx context.Context, u User) string {
+	held, err := r.holdsCredentials(ctx, u)
+	if err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "verification: could not read the account's credentials", "user_id", u.ID, "error", err)
+		return ""
+	}
+	if held {
+		self, _ := r.cfg.Client.HasMetadata(ctx, u.ID, MetaSelfSignup)
+		fresh, err := r.freshAccountFor(ctx, u, r.verifyTemplate(), NewUser{SelfSignup: self})
+		if err != nil {
+			r.cfg.Logger.ErrorContext(ctx, "verification: could not create a fresh account", "user_id", u.ID, "error", err)
+			return ""
+		}
+		return fresh.ID
+	}
+	if err := r.cfg.Client.ResendEmailCode(ctx, u.ID, r.verifyTemplate()); err != nil {
+		r.cfg.Logger.ErrorContext(ctx, "verification resend failed", "user_id", u.ID, "error", err)
+		return ""
+	}
+	return u.ID
 }
 
 // ── Sign-up ────────────────────────────────────────────────────────────
@@ -1683,17 +1773,19 @@ func (r *SignInRoutes) HandleRegister(w http.ResponseWriter, req *http.Request) 
 	// victim confirmed it.
 	c := r.cfg.Client
 	pending := pendingPasswordBinding{Password: []byte(body.Password)}
-	user, err := c.FindUserByEmail(ctx, email)
+	user, err := r.accountFor(ctx, email)
 	switch {
+	case errors.Is(err, errAmbiguousAddress):
+		// Several accounts and none to act on: nothing is created, and the
+		// answer is the same as for any address.
+		r.cfg.Logger.WarnContext(ctx, "sign-up for an address several accounts share; nothing done")
 	case err == nil:
 		// NEVER touch an existing account here. This registrant's password
-		// waits, sealed in their own browser, for their proof; whatever the
-		// account held from before is revoked then (proveAddress).
+		// waits, sealed in their own browser, for their proof. An account
+		// holding credentials nobody proved is never proven into: the
+		// verification mailed is a fresh account's (mailVerification).
 		if !user.EmailVerified {
-			pending.UserID = user.ID
-			if err := c.ResendEmailCode(ctx, user.ID, r.verifyTemplate()); err != nil {
-				r.cfg.Logger.ErrorContext(ctx, "sign-up: resend for an existing account failed", "user_id", user.ID, "error", err)
-			}
+			pending.UserID = r.mailVerification(ctx, user)
 		}
 		r.cfg.Logger.InfoContext(ctx, "sign-up for an address that already has an account", "user_id", user.ID)
 	case errors.Is(err, ErrUserNotFound):
@@ -1736,8 +1828,11 @@ func (r *SignInRoutes) registerWithoutMail(w http.ResponseWriter, req *http.Requ
 		r.unavailable(ctx, w, "sign-up: user lookup", err)
 		return
 	}
+	// A contact-only account: created WITH its password, because no mail
+	// can prove the address, and so never claimed by a later proof
+	// (MetaContactOnly; see proveAddress).
 	id, err := c.CreateUser(ctx, NewUser{Email: email, Password: body.Password, GivenName: body.GivenName,
-		FamilyName: body.FamilyName})
+		FamilyName: body.FamilyName, ContactOnly: true})
 	var policyErr *PasswordPolicyError
 	if errors.As(err, &policyErr) {
 		r.rejectPassword(ctx, w, body.Password, policyErr)

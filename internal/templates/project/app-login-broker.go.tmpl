@@ -58,17 +58,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-{{- if .DatabaseURLField}}
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
-{{- end}}
 
 	"github.com/reliant-labs/forge/pkg/devidp"
 	"github.com/reliant-labs/forge/pkg/observe"
-{{- if .DatabaseURLField}}
-	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
-{{- end}}
 
 	"{{.Module}}/pkg/config"
 {{- if .MiddlewareDeclaresSessionCookie}}
@@ -208,6 +200,10 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 			// restart; idp_broker_token is the fallback.
 			Token:     cfg.IdpBrokerToken,
 			TokenFile: cfg.IdpBrokerTokenFile,
+			// No call this broker makes may add a credential to an account
+			// whose address is unverified (forge#2121): a sign-up proves the
+			// address before anything is set on it.
+			ProvenCredentialsOnly: true,
 		},
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,
@@ -438,18 +434,6 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 		},
 		PasswordPolicy: b.passwordPolicy,
 		RejectPassword: b.writePasswordRejection,
-{{- if .DatabaseURLField}}
-		// Address proofs of one account, and the credentials installed after
-		// one, run one at a time across EVERY replica of this server, on
-		// this app's own database (see proofLockerFor).
-		ProofLocker: proofLockerFor(cfg.DatabaseUrl, b.logger),
-{{- else}}
-		// Your config declares no database_url, so address proofs of one
-		// account are serialised in this process only, and between replicas
-		// only by a time fence (forge#2121). With more than one replica, set
-		// ProofLocker: devidp.NewPostgresProofLocker on a database every
-		// replica shares (`forge skill load migrations/v1.1.0/identity-v2`).
-{{- end}}
 	})
 	if err != nil {
 		// Fail CLOSED rather than serve half a policy: password sign-in
@@ -483,43 +467,6 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 	mux.Handle(VerifyPath, http.HandlerFunc(methods.HandleVerify))
 	mux.Handle(VerifyResendPath, http.HandlerFunc(methods.HandleVerifyResend))
 }
-{{- if .DatabaseURLField}}
-
-// proofLockerFor is the lock every replica of this server shares around an
-// account's address proof and the credentials installed after it (a
-// verified sign-up's password, a passkey enrolment). Without it, a failed
-// proof on one replica that the issuer serves late can revoke a credential
-// the owner just set through another (forge#2121).
-//
-// It is Postgres advisory locks on the app's own database: no table, no
-// migration, no new setting, and a replica that crashes releases its lock
-// with its connection. Its own small pool, so a proof waiting on another
-// never queues behind the app's queries. While the database is down, proofs,
-// verification and passkey enrolment answer "unavailable" (fail closed);
-// signing in with a credential the account already has does not need it.
-// A database_url that cannot be parsed fails closed the same way: falling
-// back to the in-process lock would let every replica accept proofs without
-// the serialisation the configuration asked for.
-func proofLockerFor(dsn string, logger *slog.Logger) devidp.ProofLocker {
-	if dsn == "" {
-		logger.Warn("no database_url: address proofs are serialised in this process only; run one replica of this server until it is set")
-		return nil
-	}
-	// Parsed here, not by sql.Open, which defers it to the first
-	// connection: a malformed database_url is then reported at startup.
-	pc, err := pgx.ParseConfig(dsn)
-	if err != nil {
-		logger.Error("the proof lock's database_url cannot be parsed: address proofs, verification and passkey enrolment are refused until it is fixed", "error", err)
-		return devidp.UnavailableProofLocker(err)
-	}
-	// Traced like every other pool the app opens: each lock statement is a
-	// span on the request that took the lock.
-	db := dbtrace.OpenDB(stdlib.GetConnector(*pc))
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(2)
-	return devidp.NewPostgresProofLocker(db, devidp.PostgresProofLockerOptions{Logger: logger})
-}
-{{- end}}
 
 // identity is the ONLY thing the browser learns about the session: who is
 // signed in, for rendering. Never a token.

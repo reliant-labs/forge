@@ -131,7 +131,7 @@ type linterStep struct {
 // they tracked removed linters and are preserved for diffability against
 // git history).
 //
-//nolint:funlen // declarative 14-entry linter registry, not branching complexity
+//nolint:funlen,gocognit // declarative linter registry: its closures, not branching, add the complexity
 func lintPipeline() []linterStep {
 	return []linterStep{
 		// 1. Standard Go linters (golangci-lint).
@@ -990,6 +990,23 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectIdentityMethodsJSON(rc.cwd)
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 14a-quater. Unproven sign-up — a deployed sign-up that creates
+		// accounts whose address nobody proves (email delivery "none", or
+		// auth_self_signup outside development; see
+		// lint_unproven_signup.go). Errors, graded by the rollout table.
+		{
+			name:  "unproven-signup lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "deploy", "kcl")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectUnprovenSignupJSON(rc.cwd)
 				return fs, len(fs) > 0, err
 			},
 		},

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/secrets"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A host job may publish into the env's FILE store — idp-provision keeps the
@@ -15,7 +14,6 @@ import (
 // or a fresh project's first `forge env up` starts an API without the token
 // it was just given and native sign-in 404s.
 func TestReloadSecretsAfterJobs_SeesWhatAJobWrote(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projectDir := t.TempDir()
 	store := filepath.Join(projectDir, "secrets", "dev.yaml")
 	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {

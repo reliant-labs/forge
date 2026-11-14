@@ -14,12 +14,9 @@ func (v *validator) sectionTargets(d map[string]any, panels []any, panelIds map[
 			if !ok {
 				continue
 			}
-			v.known(path, o, "id", "title", "description")
+			v.known(path, o, "id", "title")
 			id := v.str(path, o, "id", true)
 			v.str(path, o, "title", true)
-			if len(v.str(path, o, "description", false)) > MaxSectionDescriptionBytes {
-				v.add(childPath(path, "description"), "is longer than %d bytes", MaxSectionDescriptionBytes)
-			}
 			if id == "" {
 				continue
 			}

@@ -4,7 +4,7 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import Link from "./link";
-import { useModalDialog } from "./modal_dialog";
+import { useModalDialog } from "./modal";
 
 /**
  * What a nav entry shows after its label. Structured rather than a ReactNode
@@ -35,19 +35,6 @@ export interface SidebarNavItem {
    * Omit to retain legacy route-driven expansion (nested lists stay visible).
    */
   defaultExpanded?: boolean;
-  /**
-   * Controlled disclosure: whether the group is expanded, owned by the caller
-   * (to remember the reader's choice across visits). Opts the entry into the
-   * same disclosure control as `defaultExpanded`, but this value wins outright:
-   * over an active descendant and across route changes. Pair with onOpenChange.
-   */
-  open?: boolean;
-  /**
-   * Called with the next state when the reader expands or collapses a
-   * disclosure group (one with `defaultExpanded` or `open`) — by its chevron,
-   * or by following the row of a collapsed group, which opens it.
-   */
-  onOpenChange?: (open: boolean) => void;
   icon?: React.ReactNode;
   /** This entry's own page is the current route. */
   active?: boolean;
@@ -64,8 +51,7 @@ export interface SidebarNavItem {
    * (`href`); the group containing the active route opens automatically.
    * Groups without href toggle locally, but an active descendant holds them
    * open. Nested lists remain visible whenever their parent is open.
-   * Set defaultExpanded (or the controlled `open`) to opt this entry into
-   * independent disclosure control.
+   * Set defaultExpanded to opt this entry into independent disclosure control.
    */
   children?: SidebarNavItem[];
 }
@@ -167,11 +153,6 @@ function activeHrefs(items: SidebarNavItem[]): string[] {
   ]);
 }
 
-/** The entry opted into independent disclosure control, controlled or not. */
-function hasDisclosure(item: SidebarNavItem): boolean {
-  return item.defaultExpanded !== undefined || item.open !== undefined;
-}
-
 function containsActive(item: SidebarNavItem): boolean {
   return !!item.active || (item.children ?? []).some(containsActive);
 }
@@ -254,18 +235,6 @@ function Chevron({ open }: { open: boolean }) {
  *   >
  *     {page}
  *   </SidebarLayout>
- *
- * A group can instead keep its own disclosure state, independent of the route:
- *
- *   { label: "Observability", href: "/obs", children, defaultExpanded: true }
- *   { label: "Observability", href: "/obs", children, open, onOpenChange: setOpen }
- *
- * `defaultExpanded` keeps the reader's toggle in the layout (until the route
- * changes); `open` + `onOpenChange` hand it to the caller, to remember it
- * across visits. Either way the chevron becomes a button of its own beside
- * the row link, a collapsed group marks its parent while its current sub-page
- * is hidden, and following a collapsed group's row opens it. An entry that
- * sets none of them is the accordion above, unchanged.
  *
  * Collapsed, the nav is a 56px icon rail: labels, sub-pages and section labels
  * give way to icons (each with its label as a tooltip and accessible name)
@@ -391,7 +360,7 @@ export default function SidebarLayout({
     "relative flex items-center rounded-lg text-sm text-ink transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent [@media(pointer:coarse)]:min-h-[44px]";
 
   function renderChild(item: SidebarNavItem, parent: string, depth = 1): React.ReactNode {
-    if (hasDisclosure(item)) return renderItem(item, parent, depth);
+    if (item.defaultExpanded !== undefined) return renderItem(item, parent, depth);
     const key = itemKey(item, parent);
     return (
       <li key={key}>
@@ -409,7 +378,7 @@ export default function SidebarLayout({
         {item.children && item.children.length > 0 && (
           <ul className="flex flex-col gap-px">
             {item.children.map((grandchild) =>
-              hasDisclosure(grandchild) ? (
+              grandchild.defaultExpanded !== undefined ? (
                 renderItem(grandchild, key, depth + 1)
               ) : (
                 <li key={itemKey(grandchild, key)}>
@@ -436,37 +405,30 @@ export default function SidebarLayout({
   function renderItem(item: SidebarNavItem, parent: string, depth = 0): React.ReactNode {
     const key = itemKey(item, parent);
     const hasChildren = !!item.children && item.children.length > 0;
-    const localDisclosure = hasDisclosure(item);
+    const localDisclosure = item.defaultExpanded !== undefined;
     const choice = seeded[key];
     const open =
       hasChildren &&
-      (item.open !== undefined
-        ? item.open
-        : localDisclosure
-          ? (choice?.override ?? (containsActive(item) || !!choice?.initial))
-          : containsActive(item) || (!item.href && !!openLocal[key]));
+      (localDisclosure
+        ? (choice?.override ?? (containsActive(item) || !!choice?.initial))
+        : containsActive(item) || (!item.href && !!openLocal[key]));
     const groupId = `${navId}-${encodeURIComponent(key)}`;
-    // A disclosure group's reader choice: kept here unless the caller owns it.
-    const setOpen = (next: boolean) => {
-      if (item.open === undefined) {
+    const toggle = () => {
+      if (localDisclosure) {
         setExpansion((prev) => ({
           ...prev,
           items: {
             ...prev.items,
-            [key]: { initial: prev.items[key]?.initial ?? !!item.defaultExpanded, override: next },
+            [key]: { initial: prev.items[key]?.initial ?? !!item.defaultExpanded, override: !open },
           },
         }));
+      } else {
+        setOpenLocal((prev) => ({ ...prev, [key]: !prev[key] }));
       }
-      item.onOpenChange?.(next);
     };
-    const toggle = () => {
-      if (localDisclosure) setOpen(!open);
-      else setOpenLocal((prev) => ({ ...prev, [key]: !prev[key] }));
-    };
-    // On the rail, or in a collapsed disclosure group, the sub-pages are
-    // hidden, so the parent stands in for whichever of them is current.
-    const marked =
-      collapsed || (localDisclosure && hasChildren && !open) ? containsActive(item) : !!item.active;
+    // On the rail the sub-pages are hidden, so the parent stands in for
+    // whichever of them is current.
+    const marked = collapsed ? containsActive(item) : !!item.active;
     const inner = (
       <>
         {item.icon && (
@@ -502,8 +464,6 @@ export default function SidebarLayout({
             <Link
               href={item.href}
               aria-current={item.active ? "page" : undefined}
-              // Following a collapsed group's row opens it, as an accordion's does.
-              onClick={open ? undefined : () => setOpen(true)}
               className={`${cls} min-w-0 flex-1`}
             >
               {inner}

@@ -94,7 +94,6 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			PrimaryWorkload: codegen.APIWorkloadName,
 			IngressEnabled:  true,
 			HasFrontend:     hasFrontend,
-			SessionReplay:   hasFrontend,
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
 			FrontendRoutes:  g.FrontendRoutes,

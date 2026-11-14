@@ -67,20 +67,26 @@ func runContinue(timeout time.Duration, noWait, jsonOutput bool) error {
 		return nil
 	}
 
-	if st, err := dbg.State(); st == dbgsvc.TargetExited {
+	st, err := dbg.State()
+	if st == dbgsvc.TargetExited {
 		return fmt.Errorf("target has exited: %w", err)
-	} else if err != nil {
+	}
+	if err != nil {
 		return err
 	}
-	// An earlier command resumed the target and returned, so its next stop
-	// is still unobserved: only wait for it. WaitForStop never resumes, so
-	// a stop that lands at any moment — before this command or during it —
-	// is reported, not skipped. Otherwise resume to the next stop.
-	wait := dbg.ContinueFor
-	if session.Resumed {
-		wait = dbg.WaitForStop
+	// The target stopped after an earlier command resumed it and returned:
+	// nobody has seen this stop yet. Report it rather than resume past it.
+	if st == dbgsvc.TargetHalted && session.Resumed {
+		state, err := dbg.CurrentStop()
+		if err != nil {
+			return fmt.Errorf("reading current stop: %w", err)
+		}
+		setResumed(session, false)
+		printStopState(state, jsonOutput)
+		return nil
 	}
-	state, err := wait(timeout)
+
+	state, err := dbg.ContinueFor(timeout)
 	if errors.Is(err, dbgsvc.ErrStillRunning) {
 		setResumed(session, true)
 		return fmt.Errorf("no stop within %s: the target is still running (the next 'forge debug continue' waits for its next stop)", timeout)

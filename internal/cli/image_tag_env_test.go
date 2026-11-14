@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestPinnedTagOf: a resolved ref answers its tag only for the artifact
@@ -96,7 +95,6 @@ func TestImagePinFor_ReadsTheBuildIdentity(t *testing.T) {
 // the SAME tag `forge env deploy staging` references, instead of pushing
 // git-describe and deploying "staging" → ImagePullBackOff.
 func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 	ents, err := parseKCLEntities([]byte(envImageTagFixture))
 	if err != nil {
@@ -140,7 +138,6 @@ func TestBuildExternalServices_TagDefaultsToEnvImageTag(t *testing.T) {
 // what the daemon pods pull. This is the property that keeps
 // `forge env up e2e` building the tags it deploys.
 func TestBuildExternalServices_PerServicePinWins(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 	// The env's tag is :staging, but the workload's resolved image pins
 	// "dev-per-daemon".

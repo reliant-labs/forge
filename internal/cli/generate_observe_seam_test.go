@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestGenerate_PackageWithoutSeamGetsADefaultChainDecorator: a hand-written
@@ -19,7 +18,6 @@ import (
 // package declares the seam, the decorator calls it instead and generate
 // leaves it alone.
 func TestGenerate_PackageWithoutSeamGetsADefaultChainDecorator(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	// A RELATIVE project root, the way `forge generate` runs it (projectDir
 	// ".").
 	t.Chdir(t.TempDir())

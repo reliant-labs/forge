@@ -3,8 +3,6 @@ package devstack
 import (
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A LONG WORKTREE NAME MUST NOT MAKE AN ENVIRONMENT UNRENDERABLE.
@@ -35,7 +33,6 @@ import (
 // TestAllocateBlockAcceptsLongComposedKey is the regression lock for the
 // reported failure, using the exact key from the incident.
 func TestAllocateBlockAcceptsLongComposedKey(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	// 21 characters — an ordinary auto-generated worktree name, and 2 past
 	// the 19 the old bound allowed once "prod-" was prepended.
 	const worktree = "forge-deploy-882e308d"
@@ -87,7 +84,6 @@ func TestAllocateBlockAcceptsLongComposedKey(t *testing.T) {
 // with no error anywhere. That is worse than the refusal it would replace,
 // because it converts a loud failure into a silent one.
 func TestLongKeysThatTruncateAlikeStayDistinct(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	a := "prod-implement-billing-webhooks-a"
 	b := "prod-implement-billing-webhooks-b"
 
@@ -149,7 +145,6 @@ func TestOverlongKeyReportsLengthNotShape(t *testing.T) {
 // fragment is still a fragment at any length; that is the original "prod-"
 // incident's guard, checked at a length the old code could never reach.
 func TestShapeGuardStillFiresOnLongMalformedKeys(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	for _, key := range []string{
 		"prod-forge-deploy-882e308d-", // trailing dash: empty interpolation
 		"prod-forge_deploy_882e308d",  // underscores
@@ -182,7 +177,6 @@ func TestShapeGuardStillFiresOnLongMalformedKeys(t *testing.T) {
 // directory name is. Only a COMPOSED key ("prod-" + fact) can exceed the fact
 // budget, which is exactly the case that must not be bounded by it.
 func TestDevStackKeyIsBoundedByTheFactBudget(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	// A directory name far past the budget, of the shape reliant generates.
 	raw := "forge-deploy-" + strings.Repeat("x", 60) + "-882e308d"
 

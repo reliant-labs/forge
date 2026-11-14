@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // git runs a git command in dir, failing the test on error.
@@ -84,7 +82,6 @@ func TestRelativeProjectDirResolvesLikeAbsolute(t *testing.T) {
 // The branch fact is still reported (for a consumer that wants it) but it
 // must NOT leak into worktree.
 func TestPrimaryCheckoutOnNamedBranchWorktreeEmpty(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	dir := t.TempDir()
 	initRepoOnBranch(t, dir)
@@ -135,7 +132,6 @@ func TestLinkedWorktreeResolvesFromDirBasename(t *testing.T) {
 
 // TestNonRepoResolvesEmpty: outside any git repo → both facts "".
 func TestNonRepoResolvesEmpty(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	dir := t.TempDir() // not git-init'ed
 	o := Resolve(dir)

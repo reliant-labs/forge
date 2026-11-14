@@ -334,16 +334,11 @@ jobs:
       # user has latest". They no longer do: a scaffolded project installs the
       # pinned version, so the pin IS what a real user has. `latest` here
       # only made this lane's verdict change without a commit.
-      #
-      # Through install-release-tool (cached, retried, API fallback,
-      # sha256-checked; its pin is TestReleaseToolPinsMatchForge's), not
-      # golangci-lint's install.sh: on 2026-11-09 that script's release
-      # download answered 504 and all four nightly shards failed before
-      # running a test (forge #948).
       - name: Install golangci-lint
-        uses: ./.github/actions/install-release-tool
-        with:
-          tool: golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.14.0/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
+          golangci-lint --version
 
       # The package managers' stores: pnpm's (scaffolded frontends) and npm's
       # (web-runtime's own install). setup-node's `cache:` keys on a

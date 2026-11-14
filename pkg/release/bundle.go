@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -879,23 +878,10 @@ type ShapeFunnel struct {
 	Title string `json:"title,omitempty"`
 	// Steps are product event names, in order.
 	Steps []string `json:"steps"`
-	// Window and By are always set; the KCL schema defaults them. By is one
-	// of the FunnelBy* values; FunnelByVisitor and FunnelByPerson are
-	// [BundleFeatureFunnelPerson].
+	// Window and By are always set; the KCL schema defaults them.
 	Window string `json:"window"`
 	By     string `json:"by"`
 }
-
-// What identifies one funnel journey, [ShapeFunnel.By].
-const (
-	FunnelBySession = "session"
-	FunnelByUser    = "user"
-	// FunnelByVisitor is the cookieless daily visitor: one per UTC day.
-	FunnelByVisitor = "visitor"
-	// FunnelByPerson is the signed-in user, or the same-day visitor a
-	// sign-in links to them.
-	FunnelByPerson = "person"
-)
 
 // IsDefault reports whether the entry declares nothing a reader would act on.
 func (t ShapeFrontendTelemetry) IsDefault() bool {
@@ -946,8 +932,8 @@ func (t ShapeFrontendTelemetry) validate() error {
 			return fmt.Errorf("%w: shape frontend %q names funnel %q twice", ErrInvalid, t.Frontend, f.ID)
 		case len(f.Steps) < minShapeFunnelSteps || len(f.Steps) > maxShapeFunnelSteps:
 			return fmt.Errorf("%w: shape funnel %q has %d steps (expected %d..%d)", ErrInvalid, f.ID, len(f.Steps), minShapeFunnelSteps, maxShapeFunnelSteps)
-		case strings.TrimSpace(f.Window) == "" || !slices.Contains([]string{FunnelBySession, FunnelByUser, FunnelByVisitor, FunnelByPerson}, f.By):
-			return fmt.Errorf("%w: shape funnel %q needs a window and a by of session, user, visitor or person", ErrInvalid, f.ID)
+		case strings.TrimSpace(f.Window) == "" || (f.By != "session" && f.By != "user"):
+			return fmt.Errorf("%w: shape funnel %q needs a window and a by of session or user", ErrInvalid, f.ID)
 		}
 		ids[f.ID] = true
 		for _, step := range f.Steps {

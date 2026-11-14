@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The block registry serves two purposes that look identical on disk:
@@ -44,7 +42,6 @@ func setActiveWorktree(t *testing.T, wt string) {
 // composed port-block key must never appear in the dev-stack roster, even
 // though it legitimately holds a block in the same registry.
 func TestPortBlockKeyIsNotAStack(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setActiveWorktree(t, "") // primary checkout, exactly as when prod is rendered
 
@@ -76,7 +73,6 @@ func TestPortBlockKeyIsNotAStack(t *testing.T) {
 // TestWorktreeKeyIsAStack is the other half: the roster must still contain
 // real stacks, or scoping it would just break per-stack config generation.
 func TestWorktreeKeyIsAStack(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setActiveWorktree(t, "wt-feat")
 
@@ -99,7 +95,6 @@ func TestWorktreeKeyIsAStack(t *testing.T) {
 // worktree name — so it must not be mistaken for the stack that shares its
 // suffix.
 func TestProdKeyInWorktreeIsNotAStack(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setActiveWorktree(t, "wt-feat")
 
@@ -127,7 +122,6 @@ func TestProdKeyInWorktreeIsNotAStack(t *testing.T) {
 // therefore preserve every index EXACTLY — a "helpful" re-allocation would
 // break sign-in and cluster ingress on an existing checkout.
 func TestLegacyRegistryKeepsBlocks(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
 		t.Fatal(err)
@@ -174,7 +168,6 @@ func TestLegacyRegistryKeepsBlocks(t *testing.T) {
 // TestRegistryRoundTripsNewFormat pins the on-disk shape, since it is read by
 // a future forge and must stay decodable.
 func TestRegistryRoundTripsNewFormat(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setActiveWorktree(t, "wt-a")
 	if _, err := AllocatePort(dir, 3000, "wt-a"); err != nil {
@@ -199,7 +192,6 @@ func TestRegistryRoundTripsNewFormat(t *testing.T) {
 // stack during a read-only render — which is what lets fp.dev_stacks() return
 // empty there and keeps a generated tracked file identical across machines.
 func TestUnarmedRenderMarksNothing(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	setActiveWorktree(t, "") // unset, as on the generate path
 

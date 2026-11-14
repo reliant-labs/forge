@@ -9,8 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -64,7 +62,6 @@ func repo(t *testing.T) (dir string, shas []string) {
 }
 
 func TestFindRestrictsToTheRangeAndTheCulpritFiles(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, sh := repo(t)
 	got, err := Finder{Dir: dir}.Find(context.Background(), sh[1]+".."+sh[4], []string{"/app/internal/store/db.go"})
 	if err != nil {
@@ -87,7 +84,6 @@ func TestFindRestrictsToTheRangeAndTheCulpritFiles(t *testing.T) {
 }
 
 func TestFindWithoutARangeIsTheHistoryOfHead(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir, _ := repo(t)
 	all, err := Finder{Dir: dir}.Find(context.Background(), "", []string{"internal/store/db.go"})
 	if err != nil || len(all) != 4 || all[0].Subject != "tweak" || all[2].PR != 11 {
@@ -96,7 +92,6 @@ func TestFindWithoutARangeIsTheHistoryOfHead(t *testing.T) {
 }
 
 func TestFindDegradesOutsideACheckoutAndForUntrackedFiles(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}

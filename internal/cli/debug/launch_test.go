@@ -110,31 +110,18 @@ func TestLayerEnv(t *testing.T) {
 	}
 }
 
-// TestLaunchSpecPort pins which PORT a launched service binds. --app-port
-// sets it for any binary, a plain main package included. Without it, --port
-// still sets a cobra service's PORT, as it did before --app-port existed;
-// with neither, the configured PORT stands.
-func TestLaunchSpecPort(t *testing.T) {
+// TestServiceRunSpecPortIsTheAppPort pins defect 5: the PORT the service
+// binds is --app-port, never Delve's --port. Without --app-port no PORT is
+// injected and the configured one stands.
+func TestServiceRunSpecPortIsTheAppPort(t *testing.T) {
 	dir := t.TempDir()
 	writeMain(t, filepath.Join(dir, "cmd", "app", "main.go"))
 	writeFile(t, filepath.Join(dir, "cmd", "app", "cmd", "server.go"), "package cmd\n\nvar c = cobra.Command{\n\tUse: \"server\",\n}\n")
-	writeMain(t, filepath.Join(dir, "cmd", "standalone", "main.go"))
 	withWD(t, dir, func() {
-		cases := []struct {
-			name, buildPath string
-			o               startOptions
-			want            string
-		}{
-			{"neither", "./cmd/app", startOptions{}, ""},
-			{"app-port", "./cmd/app", startOptions{port: 2345, appPort: 18080}, "18080"},
-			{"legacy --port", "./cmd/app", startOptions{port: 2345}, "2345"},
-			{"app-port on a plain main", "./cmd/standalone", startOptions{appPort: 18080}, "18080"},
-			{"--port on a plain main", "./cmd/standalone", startOptions{port: 2345}, ""},
-		}
-		for _, tc := range cases {
-			_, env := launchSpec("api", tc.buildPath, tc.o)
-			if got := envValue(env, "PORT"); got != tc.want {
-				t.Errorf("%s: PORT = %q (env %v), want %q", tc.name, got, env, tc.want)
+		_, env := serviceRunSpec("api", "./cmd/app", 0)
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "PORT=") {
+				t.Fatalf("no --app-port, yet PORT injected: %v", env)
 			}
 		}
 	})

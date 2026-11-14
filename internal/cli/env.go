@@ -48,39 +48,6 @@ func newEnvCmd() *cobra.Command {
 	return cmdutil.StrictGroup(cmd)
 }
 
-// envCommandGroups sorts `forge env --help` into four sections: with build,
-// kcl and secret under it (deprecated_aliases.go) env has some thirty
-// subcommands, and one alphabetical list of them hid the lifecycle verbs
-// people come for. A subcommand missing here is listed under "Additional
-// Commands"; TestEnvHelpGroupsEverySubcommand keeps that from happening.
-var envCommandGroups = []struct {
-	id, title string
-	verbs     []string
-}{
-	{"lifecycle", "Lifecycle:", []string{"new", "up", "down", "start", "stop", "status", "ps", "exec", "list", "delete", "deploy", "smoke", "devstack"}},
-	{"build", "Build and release:", []string{"build", "releases"}},
-	{"config", "Configuration:", []string{"config", "options", "render", "diff", "shape", "kcl"}},
-	{"secrets", "Secrets:", []string{"secrets", "secret"}},
-}
-
-// groupEnvCommands assigns env's subcommands to envCommandGroups. It runs
-// once the whole tree is assembled, because kcl and secret are mounted
-// under env after newEnvCmd returns.
-func groupEnvCommands(env *cobra.Command) {
-	byName := map[string]string{}
-	for _, g := range envCommandGroups {
-		env.AddGroup(&cobra.Group{ID: g.id, Title: g.title})
-		for _, v := range g.verbs {
-			byName[v] = g.id
-		}
-	}
-	for _, c := range env.Commands() {
-		if id, ok := byName[c.Name()]; ok {
-			c.GroupID = id
-		}
-	}
-}
-
 // newEnvListCmd enumerates the environments declared under deploy/kcl/ —
 // one directory per env, each carrying a main.k.
 func newEnvListCmd() *cobra.Command {

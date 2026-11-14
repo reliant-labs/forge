@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // envConfigFixture is a rendered KCL contract with one service, one job and
@@ -119,7 +117,6 @@ func runEnvConfig(t *testing.T, args ...string) string {
 // an environment is a real shape (migrations-only envs), and omitting jobs
 // would report that environment as having no database at all.
 func TestEnvConfigReportsEveryWorkloadKind(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, envConfigFixture)
 
 	var report envConfigReport
@@ -160,7 +157,6 @@ func TestEnvConfigReportsEveryWorkloadKind(t *testing.T) {
 // the report has to carry variables forge has no special knowledge of, and
 // must not drop or rename anything.
 func TestEnvConfigIsTechnologyAgnostic(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, `{
   "output": {
     "workloads": [
@@ -210,7 +206,6 @@ func TestEnvConfigIsTechnologyAgnostic(t *testing.T) {
 // process. Reading only one of them under-reports what the process is
 // actually launched with, which is the whole question this command answers.
 func TestEnvConfigMergesHostDeployEnv(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, `{
   "output": {
     "workloads": [
@@ -255,7 +250,6 @@ func TestEnvConfigMergesHostDeployEnv(t *testing.T) {
 // a name the environment does not declare (silently printing nothing would
 // read as "this workload has no config").
 func TestEnvConfigFiltersByWorkload(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, envConfigFixture)
 
 	out := runEnvConfig(t, "dev", "--workload", "migrate", "--json")
@@ -283,7 +277,6 @@ func TestEnvConfigFiltersByWorkload(t *testing.T) {
 // TestEnvConfigTableIsGrouped covers the human view: a workload header plus
 // its variables, sorted so successive runs diff cleanly.
 func TestEnvConfigTableIsGrouped(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, envConfigFixture)
 
 	out := runEnvConfig(t, "dev")
@@ -307,7 +300,6 @@ func TestEnvConfigTableIsGrouped(t *testing.T) {
 // document. A frontend whose env_vars shadow a typed config value makes the
 // render warn, and that warning used to land on stdout above the JSON.
 func TestEnvConfigJSONStdoutIsTheDocumentAlone(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, `{"output": {"frontends": [{
 	  "name": "web", "type": "vite-spa",
 	  "config": {"api_url": "http://localhost:8080"},

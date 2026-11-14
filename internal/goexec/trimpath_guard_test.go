@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/repowalk"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // goflagsExempt names the functions that write a GOFLAGS value into an
@@ -47,7 +46,6 @@ var goflagsExempt = map[string]string{
 // The scan covers test files too: tests are where most of these children are
 // built, and a t.TempDir() project is the worst case — a new key every run.
 func TestGOFLAGSOverridesKeepTrimpath(t *testing.T) {
-	testkit.Slow(t, "parses every Go file in the repository")
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

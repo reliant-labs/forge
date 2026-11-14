@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestShellBuild_CwdAndVerbatimCmd verifies the ShellBuild contract through the
@@ -90,7 +88,6 @@ func TestShellBuild_CwdAndVerbatimCmd(t *testing.T) {
 // working, so it is worth proving end-to-end through a real shell rather than
 // only at the unit level.
 func TestShellBuild_DeclaredEnvResolvesInTheShell(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 	cmd := "printf 'arch=%s\\n' \"${TARGETARCH}\" > observed.txt"
 	svcs := []WorkloadEntity{shellSvc("gw", "my-gw", cmd, "", map[string]string{"TARGETARCH": "arm64"})}

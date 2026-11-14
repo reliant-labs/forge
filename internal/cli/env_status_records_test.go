@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func recordsNow() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }
@@ -332,7 +331,6 @@ func TestEnvStatusDocumentRecordsAreAdditive(t *testing.T) {
 // through the SAME reader `forge ledger show` uses — and NO convergence,
 // because an env with no control plane has no reconciler.
 func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "f6b-records")
 	store := testStore(t, dir)
 	now := recordsNow()
@@ -410,7 +408,6 @@ func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 // TestReadMachineEnvRecordsOnAnEmptyLedger proves the empty state again, at
 // the reader rather than the renderer: no records is not an error.
 func TestReadMachineEnvRecordsOnAnEmptyLedger(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "f6b-empty")
 	testStore(t, dir) // create it
 
@@ -432,7 +429,6 @@ func TestReadMachineEnvRecordsOnAnEmptyLedger(t *testing.T) {
 // TestReadMachineEnvRecordsCarriesTheSessionSkipReason proves a non-local env
 // reaches the view with its reason attached rather than as an empty list.
 func TestReadMachineEnvRecordsCarriesTheSessionSkipReason(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "f6b-skip")
 	testStore(t, dir)
 

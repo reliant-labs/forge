@@ -325,11 +325,10 @@ func TestLive_LaunchRunsAndBreaksWhileRunning(t *testing.T) {
 	if _, err := d.SetFunctionBreakpoint("main.compute", ""); err != nil {
 		t.Fatalf("SetFunctionBreakpoint on a running target: %v", err)
 	}
-	// The breakpoint set resumed the target, which may hit it at once:
-	// wait without resuming, so a hit already reached is the one reported.
-	hit, err := d.WaitForStop(10 * time.Second)
+	waitRunning(t, d)
+	hit, err := d.ContinueFor(10 * time.Second)
 	if err != nil {
-		t.Fatalf("WaitForStop: %v", err)
+		t.Fatalf("ContinueFor: %v", err)
 	}
 	if hit.Reason != "breakpoint" || hit.Function != "main.compute" {
 		t.Fatalf("stopped at %+v, want a breakpoint in main.compute", hit)

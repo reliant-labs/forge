@@ -10,7 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestWriteProjectConfig_StampsForgeVersion verifies that scaffolding a
@@ -62,7 +61,6 @@ func TestWriteProjectConfig_StampsForgeVersion(t *testing.T) {
 // "warn", so existing projects upgrade without a flag-day). The explicit
 // "error" must survive write-time normalization and round-trip on load.
 func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	tmp := t.TempDir()
 	g := NewProjectGenerator("guard-scaffold", tmp, "example.com/guard-scaffold")
 	g.ServiceName = "api"
@@ -102,7 +100,6 @@ func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
 // advisory, written explicitly so the user flips it where it is recorded,
 // and the .golangci.yml render agrees.
 func TestWriteProjectConfig_AdoptingScaffoldsTypedAccessWarn(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	tmp := t.TempDir()
 	g := NewProjectGenerator("guard-adopt", tmp, "example.com/guard-adopt")
 	g.ServiceName = "api"
@@ -301,7 +298,6 @@ func TestWriteProjectConfig_NonServiceKindsStillStampForgeVersion(t *testing.T) 
 // and renders go.mod / gen/go.mod against it — forge_version is a projection
 // of go.mod's forge require.
 func TestWriteProjectConfig_AdoptedForgePinWins(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	const pin = "v0.1.44-0.20261007193810-e75c74afb46e"
 	tmp := t.TempDir()
 	g := NewProjectGenerator("adopted", tmp, "github.com/example/adopted")

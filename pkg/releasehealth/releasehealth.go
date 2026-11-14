@@ -34,12 +34,6 @@
 //     still firing (the release was promoted into it, so nothing proves it
 //     good); else PASS. A clear failure is a failure even while the window is
 //     still open.
-//   - Attribution (attribution.go): P is when the release went live, which a
-//     retried promotion reaches after its first promoted_at ([LiveAt]); a
-//     finding the after window cannot pin on the judged release (its version
-//     served too little of the traffic, the issue's events are all another
-//     version's) never fails it, and a window that is not the live release's
-//     is INCONCLUSIVE.
 package releasehealth
 
 import (
@@ -419,26 +413,6 @@ type Alert struct {
 // Critical reports whether the alert is labelled severity=critical.
 func (a Alert) Critical() bool { return strings.EqualFold(a.Labels["severity"], "critical") }
 
-// LabelReleaseHealth is the alert label that says whether a rule's alerts judge
-// the env's releases. Set to [ReleaseHealthExclude] (`labels = {release_health =
-// "exclude"}` on the forge.AlertRule), it says the rule watches something other
-// than the env's own workloads: the machines that build it, a fleet the env
-// monitors. Such an alert is the env's to page on, never a release's doing: it
-// is not a finding, not a standing critical alert, and it never fails or holds
-// a promotion. It is listed as ExcludedAlerts instead, so the report still
-// says it was firing. Any other value, or none, counts as before.
-const LabelReleaseHealth = "release_health"
-
-// ReleaseHealthExclude is the [LabelReleaseHealth] value that keeps an alert
-// out of release health.
-const ReleaseHealthExclude = "exclude"
-
-// Excluded reports whether the alert's rule keeps it out of release health
-// ([LabelReleaseHealth]).
-func (a Alert) Excluded() bool {
-	return strings.EqualFold(strings.TrimSpace(a.Labels[LabelReleaseHealth]), ReleaseHealthExclude)
-}
-
 // Workload is a restart or OOM kill during the after window.
 type Workload struct {
 	Workload             string `json:"workload"`
@@ -453,10 +427,6 @@ type Subject struct {
 	GitCommit       string    `json:"git_commit,omitempty"`
 	PromotedAt      time.Time `json:"promoted_at"`
 	PreviousRelease string    `json:"previous_release,omitempty"`
-	// LiveAt is when an attempt of the promotion shipped its release
-	// ([LiveAt]), when its deploy gates say so: later than PromotedAt for a
-	// promotion whose first attempt failed.
-	LiveAt time.Time `json:"live_at,omitzero"`
 }
 
 // Input is everything [Evaluate] reads, already fetched.
@@ -496,9 +466,6 @@ type Finding struct {
 	// Policy is PolicyFail or PolicyWarn.
 	Policy  string `json:"policy"`
 	Message string `json:"message"`
-	// Unattributed says why the finding is not the judged release's doing
-	// ([Attribute]); such a finding is a warn whatever fail_on says.
-	Unattributed string `json:"unattributed,omitempty"`
 }
 
 // Report is a judged release: the facts and the verdict.
@@ -516,39 +483,15 @@ type Report struct {
 	// findings, but a release promoted into one is not proven good: they make
 	// a PASS INCONCLUSIVE.
 	StandingCritical []Alert `json:"standing_critical_alerts,omitempty"`
-	// ExcludedAlerts were firing, but their rule says they are not about the
-	// env's workloads ([LabelReleaseHealth]), so they judged nothing.
-	ExcludedAlerts []Alert `json:"excluded_alerts,omitempty"`
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
-	AlertStateUnread string     `json:"alert_state_unread,omitempty"`
-	Workloads        []Workload `json:"workload_findings,omitempty"`
-	// Uninstrumented names the env's services whose request telemetry is
-	// their own to export — built from their own Dockerfile or command, or a
-	// third-party image, not by forge, which instruments what it builds
-	// (WithUninstrumented). Read only to say why a report with no request
-	// telemetry could not be judged; it never changes a verdict.
-	Uninstrumented []string    `json:"uninstrumented_services,omitempty"`
-	Verdict        Verdict     `json:"verdict"`
-	Findings       []Finding   `json:"findings"`
-	Thresholds     []Threshold `json:"thresholds"`
-	NotEvaluated   []string    `json:"not_evaluated,omitempty"`
-	// VersionShare is the judged release's share (0..1) of the after
-	// window's traffic, over the services whose share was measured; nil when
-	// none was.
-	VersionShare *float64 `json:"version_share,omitempty"`
-	// WindowNotLive says why the after window is not the live release's
-	// ([WithLiveAt]); RolloutIncomplete why the release served too little
-	// of it ([MinVersionShare]). Either makes a PASS INCONCLUSIVE.
-	WindowNotLive     string `json:"window_not_live,omitempty"`
-	RolloutIncomplete string `json:"rollout_incomplete,omitempty"`
-	// IssueWindowVersions are each issue's after-window events by
-	// service.version, keyed by issue id, for the issues the judge read them
-	// for: what attributes an issue to the judged release or to another
-	// ([Attribute]). An issue with no entry was not read. It lives here, not
-	// on [Issue], so Issue stays a comparable value.
-	IssueWindowVersions map[string]map[string]int64 `json:"issue_window_versions,omitempty"`
+	AlertStateUnread string      `json:"alert_state_unread,omitempty"`
+	Workloads        []Workload  `json:"workload_findings,omitempty"`
+	Verdict          Verdict     `json:"verdict"`
+	Findings         []Finding   `json:"findings"`
+	Thresholds       []Threshold `json:"thresholds"`
+	NotEvaluated     []string    `json:"not_evaluated,omitempty"`
 }
 
 // ── evaluation ──────────────────────────────────────────────────────────
@@ -613,10 +556,6 @@ func Evaluate(in Input) Report {
 		if afterWindow(a, in.Windows.After.To) {
 			continue // a later promotion's, or later still: not this release's
 		}
-		if a.Excluded() {
-			r.ExcludedAlerts = append(r.ExcludedAlerts, a)
-			continue
-		}
 		if !a.FiringAt.IsZero() && a.FiringAt.Before(p) {
 			if a.Critical() {
 				r.StandingCritical = append(r.StandingCritical, a)
@@ -642,15 +581,12 @@ func Evaluate(in Input) Report {
 
 	sortFindings(r.Findings)
 	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.MinRequests, r.unproven())
-	return Attribute(r)
+	return r
 }
 
 // unproven reports whether something outside the findings keeps a PASS from
-// being proven: a standing critical alert, alert state that was not read, or
-// an after window that is not the live release's or that it barely served.
-func (r Report) unproven() bool {
-	return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" || r.WindowNotLive != "" || r.RolloutIncomplete != ""
-}
+// being proven: a standing critical alert, or alert state that was not read.
+func (r Report) unproven() bool { return len(r.StandingCritical) > 0 || r.AlertStateUnread != "" }
 
 // WithStandingAlerts applies the critical-alert rule to a judged report from
 // the alerts firing now, read by the caller (`forge obs check` reads them
@@ -673,7 +609,7 @@ func WithStandingAlerts(r Report, firing []Alert) Report {
 		// An alert with no opening time cannot be placed against the
 		// promotion, and one that opened after the judged after window (a
 		// later promotion's, or later still) is not this release's.
-		if !a.Critical() || a.Excluded() || a.FiringAt.IsZero() || !a.FiringAt.Before(r.After.To) || seen[alertKey(a)] {
+		if !a.Critical() || a.FiringAt.IsZero() || !a.FiringAt.Before(r.After.To) || seen[alertKey(a)] {
 			continue
 		}
 		seen[alertKey(a)] = true
@@ -707,98 +643,12 @@ func worse(a, b Verdict) Verdict {
 func failAlert(fs []Finding, rule string) []Finding {
 	for i, f := range fs {
 		if f.Code == release.HealthAlertFiring && (f.Ref == rule || (f.Ref == "" && strings.Contains(f.Message, "alert "+rule+" "))) {
-			if f.Unattributed != "" {
-				return fs // not the live release's window (Attribute): INCONCLUSIVE, critical or not
-			}
 			fs[i].Ref, fs[i].Policy = rule, PolicyFail
 			return fs
 		}
 	}
 	return append(fs, Finding{Code: release.HealthAlertFiring, Ref: rule, Value: 1, Threshold: 1, Policy: PolicyFail,
 		Message: fmt.Sprintf("critical alert %s opened after the promotion and is still firing", rule)})
-}
-
-// WithoutExcludedAlerts takes the alerts whose rule keeps them out of release
-// health ([LabelReleaseHealth]) out of a judged report: from FiringAlerts and
-// StandingCritical into ExcludedAlerts (listed once each), with the
-// alert_firing finding of each such rule that has no counted alert left. live
-// is the env's alert state read now, or nil: it names an excluded rule the
-// report itself does not list (a control plane that omits its alert arrays),
-// and a counted alert of that rule in it keeps the finding. A finding is
-// removed only when its rule is known to be excluded and no counted alert of
-// it remains. The verdict is recomputed from what is left, so it can improve:
-// the excluded alerts were never the release's evidence. It is how the rule
-// reaches a control plane's answer judged without it (`forge obs check`
-// applies it before its own alert read).
-func WithoutExcludedAlerts(r Report, live []Alert) Report {
-	out := r
-	out.ExcludedAlerts = nil
-	seen := map[string]bool{}
-	excluded := map[string]bool{}
-	counted := map[string]bool{}
-	exclude := func(a Alert) {
-		excluded[a.Rule] = true
-		if !seen[alertKey(a)] {
-			seen[alertKey(a)] = true
-			out.ExcludedAlerts = append(out.ExcludedAlerts, a)
-		}
-	}
-	keep := func(as []Alert) []Alert {
-		var kept []Alert
-		for _, a := range as {
-			if a.Excluded() {
-				exclude(a)
-				continue
-			}
-			kept = append(kept, a)
-		}
-		return kept
-	}
-	for _, a := range r.ExcludedAlerts {
-		exclude(a)
-	}
-	out.FiringAlerts = keep(r.FiringAlerts)
-	out.StandingCritical = keep(r.StandingCritical)
-	for _, a := range out.FiringAlerts {
-		counted[a.Rule] = true
-	}
-	for _, a := range live {
-		switch {
-		case afterWindow(a, r.After.To):
-			// a later promotion's, or later still: not this release's
-		case a.Excluded():
-			exclude(a)
-		default:
-			counted[a.Rule] = true
-		}
-	}
-	findingRule := func(f Finding) string {
-		if f.Ref != "" {
-			return f.Ref
-		}
-		for rule := range excluded {
-			if strings.Contains(f.Message, "alert "+rule+" ") {
-				return rule
-			}
-		}
-		return ""
-	}
-	out.Findings = slices.DeleteFunc(slices.Clone(r.Findings), func(f Finding) bool {
-		if f.Code != release.HealthAlertFiring {
-			return false
-		}
-		rule := findingRule(f)
-		return excluded[rule] && !counted[rule]
-	})
-	if len(out.Findings) == len(r.Findings) && len(out.StandingCritical) == len(r.StandingCritical) {
-		// Nothing the verdict rests on changed: the verdict as judged.
-		if len(out.FiringAlerts) == len(r.FiringAlerts) && len(out.ExcludedAlerts) == len(r.ExcludedAlerts) {
-			return r // nothing excluded here: the report as judged
-		}
-		return out
-	}
-	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
-	return out
 }
 
 // WithAlertStateUnread records that the alert state could not be read, so a
@@ -833,7 +683,7 @@ func afterWindow(a Alert, end time.Time) bool {
 func criticalRules(alerts []Alert, p, end time.Time) map[string]bool {
 	out := map[string]bool{}
 	for _, a := range alerts {
-		if a.Critical() && !a.Excluded() && !afterWindow(a, end) && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
+		if a.Critical() && !afterWindow(a, end) && (a.FiringAt.IsZero() || !a.FiringAt.Before(p)) {
 			out[a.Rule] = true
 		}
 	}
@@ -858,9 +708,7 @@ func Rejudge(r Report, failOn []string) Report {
 	out.Findings = make([]Finding, len(r.Findings))
 	critical := criticalRules(r.FiringAlerts, r.Subject.PromotedAt, r.After.To)
 	for i, f := range r.Findings {
-		if f.Unattributed == "" {
-			f.Policy = findingPolicy(f, failOn, critical)
-		}
+		f.Policy = findingPolicy(f, failOn, critical)
 		out.Findings[i] = f
 	}
 	out.Thresholds = slices.Clone(r.Thresholds)
@@ -876,37 +724,6 @@ func Rejudge(r Report, failOn []string) Report {
 	}
 	out.Verdict = verdictOf(out.Findings, out.AfterComplete, out.Services, minRequestsOf(out.Thresholds), out.unproven())
 	return out
-}
-
-// AfterEnds is when the after window finishes: After.To once the window is
-// complete, else the window's start plus the window the report was judged
-// with. While the window is open After.To is the moment it was read (Plan
-// stops the window at now), so it advances with every read and is not the end
-// to wait for. The start is After.From, which a judge anchoring at the live
-// time ([LiveAt]) puts after the promotion's promoted_at.
-func (r Report) AfterEnds() time.Time {
-	if r.AfterComplete {
-		return r.After.To
-	}
-	from := r.After.From
-	if from.IsZero() {
-		from = r.Subject.PromotedAt
-	}
-	if from.IsZero() {
-		return r.After.To
-	}
-	return from.Add(windowOf(r.Thresholds))
-}
-
-func windowOf(ths []Threshold) time.Duration {
-	for _, th := range ths {
-		if th.Name == ThresholdWindow {
-			if d, err := time.ParseDuration(th.Value); err == nil && d > 0 {
-				return d
-			}
-		}
-	}
-	return release.DefaultReleaseHealth().Window()
 }
 
 func minRequestsOf(ths []Threshold) int {
@@ -944,69 +761,8 @@ func verdictOf(findings []Finding, afterComplete bool, services []ServiceHealth,
 	return Inconclusive
 }
 
-// Why a report is INCONCLUSIVE, as a stable code (InconclusiveCode) a gate
-// or an agent can branch on; InconclusiveWhy is the same in a sentence.
-const (
-	ReasonWindowNotLive      = "window_not_live"
-	ReasonRolloutIncomplete  = "rollout_incomplete"
-	ReasonAlertStateUnread   = "alert_state_unread"
-	ReasonStandingCritical   = "standing_critical_alert"
-	ReasonWindowOpen         = "window_open"
-	ReasonNoRequestTelemetry = "no_request_telemetry"
-	ReasonLowTraffic         = "low_traffic"
-)
-
-// NoRequestTelemetry reports whether not one service sent a request in
-// either window: there is no request data at all, which is not the same as
-// too little of it. Release health measures requests from each service's
-// own OpenTelemetry server spans, so an app that exports none looks like
-// this however much traffic it serves — as does an instrumented one nobody
-// called.
-func (r Report) NoRequestTelemetry() bool {
-	for _, s := range r.Services {
-		if s.Before.Requests > 0 || s.After.Requests > 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// WithUninstrumented records the env's services whose telemetry is their
-// own to export (Report.Uninstrumented), sorted. The verdict is unchanged.
-func WithUninstrumented(r Report, services []string) Report {
-	out := r
-	out.Uninstrumented = normalizeCodes(services)
-	return out
-}
-
-// InconclusiveCode is why a report is INCONCLUSIVE, as one of the Reason*
-// codes, in the precedence InconclusiveWhy explains it.
-func InconclusiveCode(r Report) string {
-	switch {
-	case r.WindowNotLive != "":
-		return ReasonWindowNotLive
-	case r.RolloutIncomplete != "":
-		return ReasonRolloutIncomplete
-	case r.AlertStateUnread != "":
-		return ReasonAlertStateUnread
-	case len(r.StandingCritical) > 0:
-		return ReasonStandingCritical
-	case !r.AfterComplete:
-		return ReasonWindowOpen
-	case r.NoRequestTelemetry():
-		return ReasonNoRequestTelemetry
-	}
-	return ReasonLowTraffic
-}
-
 // InconclusiveWhy says why a report is INCONCLUSIVE, in one line.
 func InconclusiveWhy(r Report) string {
-	if r.WindowNotLive != "" {
-		return r.WindowNotLive
-	}
-	if r.RolloutIncomplete != "" {
-		return r.RolloutIncomplete
-	}
 	if r.AlertStateUnread != "" {
 		return "the env's alert state could not be read, so a firing critical alert cannot be ruled out: " + r.AlertStateUnread
 	}
@@ -1020,41 +776,9 @@ func InconclusiveWhy(r Report) string {
 		return fmt.Sprintf("promoted into %d firing critical alert(s) (%s) that opened before the promotion; resolve them, then check again", n, strings.Join(rules, ", "))
 	}
 	if !r.AfterComplete {
-		return fmt.Sprintf("the after window has not finished (it ends %s)", r.AfterEnds().UTC().Format(time.RFC3339))
-	}
-	if r.NoRequestTelemetry() {
-		return noRequestTelemetryWhy(r)
+		return fmt.Sprintf("the after window has not finished (it ends %s)", r.After.To.UTC().Format(time.RFC3339))
 	}
 	return fmt.Sprintf("no service had at least %d requests after the promotion, so there is not enough traffic to judge", minRequestsOf(r.Thresholds))
-}
-
-// noRequestTelemetryWhy is InconclusiveWhy for a report with no request data
-// at all. It says what is missing and how to supply it, and what WAS judged
-// without it, rather than reading as "not enough traffic" to someone whose
-// app served plenty.
-func noRequestTelemetryWhy(r Report) string {
-	var b strings.Builder
-	b.WriteString("no request telemetry: no service sent a single server span in either window, so error rate and latency could not be judged. ")
-	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces")
-	if n := len(r.Uninstrumented); n > 0 {
-		verb := "exports"
-		if n > 1 {
-			verb = "export"
-		}
-		fmt.Fprintf(&b, ", and %s %s none unless it is instrumented: forge did not build it, so it did not instrument it", strings.Join(r.Uninstrumented, ", "), verb)
-	}
-	b.WriteString(". Add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
-	b.WriteString("if the app already does, send it traffic and check again. ")
-	checked := "workload restarts, alerts and issues"
-	if len(r.NotEvaluated) > 0 {
-		checked += " (not evaluated here: " + strings.Join(r.NotEvaluated, ", ") + ")"
-	}
-	if len(r.Findings) == 0 {
-		b.WriteString("What forge sees without it — " + checked + " — found nothing against the release")
-	} else {
-		fmt.Fprintf(&b, "What forge sees without it — %s — found %d warning(s), listed in findings", checked, len(r.Findings))
-	}
-	return b.String()
 }
 
 func sortFindings(fs []Finding) {

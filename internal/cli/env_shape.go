@@ -396,7 +396,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if serr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, serr)
 	}
-	alerts, alertRoutes, aerr := resolveShapeAlerts(ctx, errOut, projectDir, envName, entities)
+	alerts, alertRoutes, aerr := resolveShapeAlerts(projectDir, envName, entities)
 	if aerr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, aerr)
 	}

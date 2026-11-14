@@ -50,11 +50,10 @@
 // auth must have the proxy in front of it strip that header or replace it
 // with the real key — never the bundle.
 //
-// Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config
+// Session replay is OFF. `OTEL_REPLAY = "true"` in the runtime config (a
+// `runtime_config` entry, so each environment decides without a rebuild)
 // enables it, and then masks every input and all text; there is no setting
-// that records unmasked. The frontend's KCL sets it per environment with
-// `telemetry = forge.BrowserTelemetry {replay = True}`, which also opts the
-// environment's observability policy in, so the platform keeps the events.
+// that records unmasked.
 //
 // The NEXT_PUBLIC_OTEL_ENDPOINT / NEXT_PUBLIC_ENVIRONMENT /
 // NEXT_PUBLIC_OTEL_REPLAY build variables are DEPRECATED. A frontend's KCL
@@ -116,7 +115,6 @@ function runtimeOrBuild(
   return build;
 }
 
-{{browserReplayPrivacyGuard}}
 let warnedBuildFallback = false;
 
 // One warning per page load, however often initTelemetry runs (StrictMode's
@@ -177,7 +175,7 @@ export function initTelemetry(): void {
     cfg.OTEL_REPLAY,
     "NEXT_PUBLIC_OTEL_REPLAY",
     process.env.NEXT_PUBLIC_OTEL_REPLAY,
-    "telemetry.replay = True",
+    'runtime_config.OTEL_REPLAY = "true"',
   );
   warnBuildFallback(used);
 
@@ -195,7 +193,7 @@ export function initTelemetry(): void {
     apiOrigins: [
       text(cfg.API_URL) || process.env.NEXT_PUBLIC_API_URL || DEV_API_URL,
     ],
-    replay: replay === "true" && replayPrivacyAllows(),
+    replay: replay === "true",
   });
 }
 

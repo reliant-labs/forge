@@ -14,25 +14,17 @@ const (
 	testProject      = "acme"
 )
 
-// hostedImageProject writes a deploy tree with one OnHosted workload forge
-// BUILDS, carrying image. The org is the credential's, so the tree names none.
+// hostedImageProject writes a deploy tree with one OnHosted workload carrying
+// image. The org is the credential's, so the tree names none.
 func hostedImageProject(t *testing.T, image string) string {
-	return hostedImageProjectBuild(t, image, `
-    build = forge.DockerBuild {dockerfile = "Dockerfile"}`)
-}
-
-// hostedImageProjectBuild is hostedImageProject with the workload's build
-// line stated ("" for a workload forge does not build).
-func hostedImageProjectBuild(t *testing.T, image, build string) string {
 	t.Helper()
 	dir := t.TempDir()
 	write(t, dir, "deploy/kcl/workloads.k", `
-import forge
 import forge.workloads as fw
 
 api = fw.Workload {
     name = "api"
-    image = "`+image+`"`+build+`
+    image = "`+image+`"
 }
 `)
 	controlPlane := `forge.ControlPlane {endpoint = "https://cp.example", registry_host = "` + testRegistryHost + `"}`
@@ -76,15 +68,6 @@ func TestHostedImageBaseLint_BareImageIsClean(t *testing.T) {
 	dir := hostedImageProject(t, "api")
 	if findings := hostedImageBaseFindings(dir, testCfg()); len(findings) != 0 {
 		t.Fatalf("a bare hosted image produced findings: %+v", findings)
-	}
-}
-
-// A third-party image on a workload forge does NOT build is mirrored into the
-// push base at release time, so it is not a finding (report 2af7cf85).
-func TestHostedImageBaseLint_UnbuiltThirdPartyImageIsClean(t *testing.T) {
-	dir := hostedImageProjectBuild(t, "docker.io/traefik/whoami:v1.10.3", "")
-	if findings := hostedImageBaseFindings(dir, testCfg()); len(findings) != 0 {
-		t.Fatalf("an unbuilt third-party hosted image produced findings: %+v", findings)
 	}
 }
 

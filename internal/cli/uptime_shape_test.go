@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,7 +114,7 @@ func TestUptimeChecksArmTheAlertDefaults(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
 	rules := func(e *KCLEntities) map[string]release.ShapeAlert {
 		t.Helper()
-		got, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "prod", e)
+		got, _, err := resolveShapeAlerts(dir, "prod", e)
 		if err != nil {
 			t.Fatal(err)
 		}

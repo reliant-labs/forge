@@ -195,7 +195,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print the raw output behind a step forge summarizes in one line (e.g. git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
 }
@@ -416,8 +416,14 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	// and never declare the app; say so instead, unless --kind or --service
 	// asked for a backend explicitly.
 	if inPlace && strings.TrimSpace(kindFlag) == "" && len(serviceNames) == 0 && len(frontendNames) == 0 {
-		if err := refuseNonGoInPlaceTarget(targetPath); err != nil {
-			return err
+		if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
+			if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
+				return cliutil.UserErr("forge project new --in-place",
+					fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
+					"",
+					"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
+						"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
+			}
 		}
 	}
 	// An in-place target may be a module that already requires forge. Its
@@ -477,46 +483,31 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 	defer scaffold.undoUnlessFinished()
 
-	steps := cliutil.NewStepRunner(Name()+" project new", verbose)
-	defer steps.Close() //nolint:errcheck // the log is best-effort
-	var merged inPlaceMergeResult
-	err = steps.Run(cliutil.Step{
-		Title: "project files",
-		Run: func() error {
-			var werr error
-			merged, werr = writeScaffoldFiles(scaffoldFilesInput{
-				gen: newGeneratorConfig{
-					projectName:        projectName,
-					targetPath:         targetPath,
-					modulePath:         modulePath,
-					kind:               kindNormalized,
-					binary:             binaryNormalized,
-					serviceNames:       serviceNames,
-					frontendNames:      frontendNames,
-					frontendOutput:     frontend.output,
-					frontendRoutes:     frontend.routes,
-					goVersion:          goVersion,
-					frontendWorkspaces: frontendWorkspaces,
-					harness:            harness,
-					disableFeatures:    disableFeatures,
-					forgePin:           forgePin,
-					genInRootModule:    genInRootModule,
-					adopting:           adopting,
-				},
-				bufPlugins: bufPluginsNormalized,
-				inPlace:    inPlace,
-				force:      force,
-			})
-			return werr
+	merged, err := writeScaffoldFiles(scaffoldFilesInput{
+		gen: newGeneratorConfig{
+			projectName:        projectName,
+			targetPath:         targetPath,
+			modulePath:         modulePath,
+			kind:               kindNormalized,
+			binary:             binaryNormalized,
+			serviceNames:       serviceNames,
+			frontendNames:      frontendNames,
+			frontendOutput:     frontend.output,
+			frontendRoutes:     frontend.routes,
+			goVersion:          goVersion,
+			frontendWorkspaces: frontendWorkspaces,
+			harness:            harness,
+			disableFeatures:    disableFeatures,
+			forgePin:           forgePin,
+			genInRootModule:    genInRootModule,
+			adopting:           adopting,
 		},
+		bufPlugins: bufPluginsNormalized,
+		inPlace:    inPlace,
+		force:      force,
 	})
 	if err != nil {
 		return err
-	}
-	// The project's directory now stays whatever happens next (the steps
-	// below only warn), so its log can live in it.
-	if err := steps.MoveLog(filepath.Join(targetPath, newProjectLog)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not move the step log into the project: %v\n", err)
 	}
 
 	// Local-forge bridge, only with --link-forge: a gitignored go.work
@@ -540,9 +531,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		markerPath:    scaffold.markerPath,
 		verbose:       verbose,
 		verify:        verify,
-		steps:         steps,
 	})
-	printStepLog(steps)
 
 	// Finished either way: a failed bootstrap generate keeps the files.
 	scaffold.finish()
@@ -553,34 +542,6 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	printNewProjectNotes(targetPath, existingRepo, merged, existingApps)
 	if genErr != nil {
 		return newBootstrapFailedErr(projectName, targetPath, inPlace, genErr)
-	}
-	return nil
-}
-
-// refuseNonGoInPlaceTarget refuses an in-place target with no Go module that
-// is a frontend app at its root or an app in another language: the service
-// scaffold would write a Go server into it.
-func refuseNonGoInPlaceTarget(targetPath string) error {
-	if _, statErr := os.Stat(filepath.Join(targetPath, "go.mod")); os.IsNotExist(statErr) {
-		if apps := detectExistingFrontendAppsIn(targetPath, []string{"."}); len(apps) > 0 {
-			return cliutil.UserErr("forge project new --in-place",
-				fmt.Sprintf("%s is a %s app at its root, with no Go module", targetPath, apps[0].framework()),
-				"",
-				"adopt it as a static site: forge project new --in-place --kind site --name <name>. "+
-					"To scaffold a Go backend beside it instead, pass --kind service (or --service <entity>)")
-		}
-		// A Dockerfile and no Go module is an app in another language.
-		// The Go scaffold would write ~40 files into it (and a
-		// .dockerignore its own image build trips over). Adopting it is
-		// a handful of declarations an agent writes from the `adopt`
-		// skill, not a scaffold; say so before anything is written.
-		if _, err := os.Stat(filepath.Join(targetPath, "Dockerfile")); err == nil {
-			return cliutil.UserErr("forge project new --in-place",
-				fmt.Sprintf("%s has a Dockerfile and no Go module: an app in another language, which the Go service scaffold would write a Go server into. Nothing was written", targetPath),
-				"",
-				"adopt it as it is — forge.yaml and deploy/kcl declaring its Dockerfile, none of its files touched — by following "+Name()+" skill load adopt. "+
-					"To scaffold a Go backend into it instead, pass --kind service (or --service <entity>)")
-		}
 	}
 	return nil
 }
@@ -965,9 +926,6 @@ type newFinalizeInput struct {
 	verbose bool
 	// verify keeps the bootstrap generate's compile check (--verify).
 	verify bool
-	// steps reports each step as one line and captures its output; nil
-	// makes one (a test calling finalizeNewProject alone).
-	steps *cliutil.StepRunner
 }
 
 // finalizeNewProject runs the post-generation phase: install proto codegen
@@ -992,16 +950,11 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// Auto-install required proto plugins for the default local-plugin
 	// workflow. Skipped for --skip-tools, remote plugins (no local binaries),
 	// and non-service kinds.
-	steps := in.steps
-	if steps == nil {
-		steps = cliutil.NewStepRunner(Name()+" project new", in.verbose)
-	}
 	if !in.skipTools && in.bufPlugins == "local" && in.kind == config.ProjectKindService {
-		err := steps.Run(cliutil.Step{
-			Title:  "proto codegen plugins",
-			Header: "\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...",
-			Run:    func() error { return runToolsInstall(ctx, "latest", false) },
-		})
+		fmt.Println("\n🔧 Ensuring proto codegen plugins are installed (use --skip-tools to skip)...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: installing proto codegen plugins")
+		err := runToolsInstall(ctx, "latest", false)
+		stopBeat()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Plugin install incomplete: %v\n", err)
 			fmt.Fprintf(os.Stderr, "    Run '%s tools install' manually before '%s generate'.\n", Name(), Name())
@@ -1012,30 +965,24 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// runs, because the scaffolded buf.gen.yaml uses a `local:` plugin path
 	// pointing at frontends/<name>/node_modules/.bin/protoc-gen-es.
 	if len(in.frontendNames) > 0 {
-		err := steps.Run(cliutil.Step{
-			Title:   "frontend dependencies",
-			Header:  "🔧 Installing frontend dependencies (this writes each frontend's lockfile)...",
-			Summary: installSummary,
-			Run: func() error {
-				err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
-				// The install just decided the node_modules layout AND made
-				// each pinned package's manifest readable, so this is the one
-				// moment the tsconfig peer pins can be aimed at real
-				// declaration files. Until then the template could only name
-				// package DIRECTORIES, which Next's webpack resolver honours
-				// for app code, splitting every pinned package with an
-				// exports/module mismatch into two module instances
-				// (prerender: "No QueryClient set"). `forge scaffold frontend`
-				// runs the same pass after its install.
-				generator.ReconcileFrontendTsconfigPeers(in.targetPath)
-				return err
-			},
-		})
+		fmt.Println("🔧 Installing frontend dependencies (this writes each frontend's lockfile)...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: frontend install")
+		err := runFrontendInstalls(ctx, in.targetPath, in.frontendNames)
+		stopBeat()
 		if err != nil {
 			fmt.Printf("Warning: frontend install failed: %v\n", err)
 			fmt.Println("    @bufbuild/protoc-gen-es will be missing — run 'pnpm install' in each frontends/<name>/ before 'forge generate'.")
 			fmt.Println("    CI also requires each frontend's pnpm-lock.yaml to exist.")
 		}
+		// The install just decided the node_modules layout AND made each
+		// pinned package's manifest readable, so this is the one moment the
+		// tsconfig peer pins can be aimed at real declaration files. Until
+		// then the template could only name package DIRECTORIES, which
+		// Next's webpack resolver honours for app code, splitting every
+		// pinned package with an exports/module mismatch into two module
+		// instances (prerender: "No QueryClient set"). `forge scaffold
+		// frontend` runs the same pass after its install.
+		generator.ReconcileFrontendTsconfigPeers(in.targetPath)
 	}
 
 	// Service projects bootstrap proto/Connect codegen immediately so the
@@ -1050,12 +997,10 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	// not stop the steps below (git init, go mod tidy): the project they
 	// leave is the one the re-run completes. It is reported, not swallowed.
 	if in.kind == config.ProjectKindService {
-		genErr = steps.Run(cliutil.Step{
-			Title:   "generate code",
-			Header:  "\n🔧 Bootstrapping generated proto code...",
-			Summary: generateSummary,
-			Run:     func() error { return bootstrapGenerate(in.targetPath, in.verify) },
-		})
+		fmt.Println("\n🔧 Bootstrapping generated proto code...")
+		stopBeat := cliutil.Heartbeat(os.Stderr, "project new: bootstrap generate")
+		genErr = bootstrapGenerate(in.targetPath, in.verify)
+		stopBeat()
 	}
 
 	// Re-record frozen-file checksums after bootstrap (goimports -w reformats
@@ -1071,14 +1016,17 @@ func finalizeNewProject(ctx context.Context, in newFinalizeInput) (existingRepo 
 	if top, inRepo := gitWorkTreeRoot(ctx, in.targetPath); inRepo {
 		existingRepo = top
 	} else {
-		initGitStep(ctx, steps, in.targetPath, true, in.verbose)
+		fmt.Println("\n🔧 Initializing git repository...")
+		if err := initGitRepository(ctx, in.targetPath); err != nil {
+			reportGitInitError(os.Stdout, err, in.verbose)
+		}
 	}
 
-	if err := steps.Run(cliutil.Step{
-		Title:  "go mod tidy",
-		Header: "🔧 Running go mod tidy...",
-		Run:    func() error { return runGoModTidy(ctx, in.targetPath) },
-	}); err != nil {
+	fmt.Println("🔧 Running go mod tidy...")
+	stopTidyBeat := cliutil.Heartbeat(os.Stderr, "project new: go mod tidy")
+	tidyErr := runGoModTidy(ctx, in.targetPath)
+	stopTidyBeat()
+	if err := tidyErr; err != nil {
 		fmt.Printf("Warning: go mod tidy failed: %v\n", err)
 		fmt.Println("You can run 'go mod tidy' manually later")
 	}
@@ -1517,9 +1465,14 @@ func scaffoldForgeResolution(kind, pinnedVersion, bridgeRoot, linkableRoot strin
 }
 
 // initGitRepository initializes a git repository, activates forge's
-// committed hooks unless activateHooks is false (a static site ships no
-// .githooks/ to point core.hooksPath at), and makes the initial commit.
-func initGitRepository(ctx context.Context, path string, activateHooks bool) error {
+// committed hooks, and makes the initial commit.
+func initGitRepository(ctx context.Context, path string) error {
+	return initGitRepositoryWith(ctx, path, true)
+}
+
+// initGitRepositoryWith is initGitRepository with the hook activation
+// optional: a static site ships no .githooks/ to point core.hooksPath at.
+func initGitRepositoryWith(ctx context.Context, path string, activateHooks bool) error {
 	cmd := exec.CommandContext(ctx, "git", "init")
 	cmd.Dir = path
 	if output, err := cmd.CombinedOutput(); err != nil {

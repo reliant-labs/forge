@@ -29,7 +29,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─── The mode surface ────────────────────────────────────────────────────────
@@ -239,7 +238,6 @@ func TestEnvStatusWait_ExitCodesAreUnchanged(t *testing.T) {
 // --history pages the promotion ledger, newest first, through the same reader
 // both backends implement.
 func TestEnvStatusHistory_PagesTheLedger(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	for _, v := range []string{"v1", "v2", "v3"} {
@@ -271,7 +269,6 @@ func TestEnvStatusHistory_PagesTheLedger(t *testing.T) {
 // because it is plausible. Asserted through the command's own flag parsing,
 // which is the only place the relay happens.
 func TestEnvStatusHistory_ReleaseFilterReachesTheQuery(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"),
 		[]byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
@@ -323,7 +320,6 @@ func TestEnvStatusHistory_DeclaresEveryHistoryFlag(t *testing.T) {
 // output, and a status view that dropped them would send the reader back to a
 // command that no longer exists.
 func TestEnvStatus_CarriesTheReleaseHalf(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1", map[string]string{"ghcr.io/acme/api": sha("a")})
 	store := testBindings(t, dir)
@@ -351,7 +347,6 @@ func TestEnvStatus_CarriesTheReleaseHalf(t *testing.T) {
 // that reported a VPN drop and a drifted release with the same code gets
 // switched off the first week it is wrong about one of them.
 func TestEnvStatus_ReleaseHalfKeepsVerifyExitCodes(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	cases := []struct {
 		name    string
 		running []cluster.WorkloadImage
@@ -460,7 +455,6 @@ func TestEnvStatus_StaleLedgerIsUndetermined(t *testing.T) {
 // ok:true from a document whose process exited 1 has no way to discover which
 // half is lying, which is the bug the envelope exists to prevent.
 func TestEnvStatusJSON_CarriesTheF0Envelope(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeBinding(t, dir, "prod", "v1", map[string]string{"ghcr.io/acme/api": sha("a")})
 
@@ -585,7 +579,6 @@ func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
 // was compared against any cluster, and a consumer rendering that as `match`
 // shows a green screen over environments nobody looked at.
 func TestEnvStatus_AllEnvsIsLedgerOnlyByDefault(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	declareEnvDir(t, dir, "prod")
 	writeBinding(t, dir, "prod", "v1", map[string]string{"api": dg("a")})
@@ -605,7 +598,6 @@ func TestEnvStatus_AllEnvsIsLedgerOnlyByDefault(t *testing.T) {
 // The additive F7 fields survive: promotion_id, from_env and gates_summary,
 // which is what lets a reader badge a row without walking its gates.
 func TestEnvStatus_AllEnvsCarriesF7Fields(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	store := testBindings(t, dir)
 	got, err := store.Append(context.Background(), release.Promotion{

@@ -78,7 +78,7 @@ func TestTelemetryBuildVariableFallbackBehaviour(t *testing.T) {
 				for _, part := range []string{
 					prefix + "OTEL_ENDPOINT (declare it as config.otel_endpoint)",
 					prefix + "ENVIRONMENT (declare it as config.environment)",
-					prefix + "OTEL_REPLAY (declare it as telemetry.replay = True)",
+					prefix + `OTEL_REPLAY (declare it as runtime_config.OTEL_REPLAY = "true")`,
 					"runtime config",
 					"deprecated",
 					"next major version of forge",
@@ -202,7 +202,6 @@ export function getTracer() { return {}; }
 		"main.mjs": `const build = JSON.parse(process.env.FORGE_TEST_BUILD || "{}");
 globalThis.__viteEnv = { ...build, DEV: process.env.FORGE_TEST_DEV === "1" };
 globalThis.window = { __FORGE_CONFIG__: JSON.parse(process.env.FORGE_TEST_RUNTIME || "null") || {} };
-Object.defineProperty(globalThis, "navigator", {value: JSON.parse(process.env.FORGE_TEST_PRIVACY || "{}"), configurable: true});
 const warns = [];
 console.warn = (...args) => warns.push(args.join(" "));
 const mod = await import("./otel_gen.ts");

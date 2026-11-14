@@ -6,15 +6,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge generate` migrates a project scaffolded while the descriptor was
 // committed: its .gitignore gains the rule once, and an ignored descriptor is
 // left alone.
 func TestEnsureDescriptorIgnored_AddsTheRuleOnce(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

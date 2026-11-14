@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 )
@@ -191,7 +190,6 @@ func TestObjects_ManifestsAreCleanDocuments(t *testing.T) {
 
 // The script is the one thing in the Job that no compiler checks.
 func TestScript_IsValidShell(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")

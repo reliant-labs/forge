@@ -8,7 +8,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The upgrade command writes its report straight to os.Stdout, and for a
@@ -26,7 +25,6 @@ func forceTestConfig() *config.ProjectConfig {
 // whole-project form, and the per-path form that lets a user adopt one
 // template without stomping every other file they have customized.
 func TestResolveForceSelection(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	cfg := forceTestConfig()
 
 	sel, err := resolveForceSelection(t.TempDir(), cfg, false, nil)
@@ -76,7 +74,6 @@ func TestResolveForceSelection_PathsNeedForce(t *testing.T) {
 // upgrade does not manage would report "nothing forced" while the user
 // believes the file was adopted.
 func TestResolveForceSelection_UnknownPathRejected(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	_, err := resolveForceSelection(t.TempDir(), forceTestConfig(), true, []string{"internal/app/setup.go"})
 	if err == nil {
 		t.Fatal("expected an error for a path upgrade does not manage")
@@ -96,7 +93,6 @@ func TestResolveForceSelection_UnknownPathRejected(t *testing.T) {
 // a per-service project's cmd/<name>/cmd/commands.go is a legitimate --force
 // argument.
 func TestResolveForceSelection_ManagedPathsAreProjectShaped(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	cfg := forceTestConfig()
 	rel := filepath.Join("cmd", "test-project", "cmd", "commands.go")
 	sel, err := resolveForceSelection(t.TempDir(), cfg, true, []string{rel})
@@ -129,7 +125,6 @@ func TestResolveForceSelection_ManagedPathsAreProjectShaped(t *testing.T) {
 // naming a specific migration dies with that migration while the property it
 // was protecting — never offering one that doesn't apply — still needs a guard.
 func TestRunUpgradeCheck_DevPinnedProjectGetsATruthfulAnswer(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	const devPin = "v0.0.4-0.20260724212501-dfb85daf8474+dirty"
 	dir := newTestProjectWithVersion(t, devPin)
 
@@ -182,7 +177,6 @@ func TestRunUpgradeCheck_DevPinnedProjectGetsATruthfulAnswer(t *testing.T) {
 // screen — adopt this specific file, or claim it permanently. `disown` was
 // already the durable answer; nothing said so when it mattered.
 func TestRunUpgradeCheck_NamesBothRemedies(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newTestProjectWithVersion(t, "v0.0.3")
 	// An unmarked, non-template Dockerfile reads as user-modified.
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
@@ -219,7 +213,6 @@ func TestRunUpgradeCheck_NamesBothRemedies(t *testing.T) {
 // two hand-edited managed files, one named after --force. Only the named file
 // may change on disk.
 func TestRunUpgrade_PerPathForceLeavesOtherEditsAlone(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newTestProjectWithVersion(t, "v0.0.3")
 	const forced = "Dockerfile"
 	const spared = "docker-compose.yml"

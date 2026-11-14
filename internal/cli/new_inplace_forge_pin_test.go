@@ -9,7 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge project new --in-place` into a module whose go.mod already requires
@@ -63,7 +62,6 @@ func TestInspectAdoptedForge(t *testing.T) {
 // The generator side: an adopted pin is what forge.yaml records and what a
 // (--force-)rendered go.mod requires.
 func TestWriteScaffoldFiles_InPlaceRecordsAdoptedForgePin(t *testing.T) {
-	testkit.Slow(t, "execs go and git")
 	target := t.TempDir()
 	userGoMod := "module example.com/adopted\n\ngo 1.24\n\nrequire github.com/reliant-labs/forge " + reliantForgePin + "\n"
 	writeGoModIn(t, target, userGoMod)

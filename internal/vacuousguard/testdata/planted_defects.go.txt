@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // ── vacuous-loop: WANT ───────────────────────────────────────────────────────
@@ -277,16 +275,6 @@ func TestProbeThenFail(t *testing.T) {
 		t.Fatalf("kcl not on PATH — CI must provision it")
 	}
 	runCmd(t, dir, "kcl", "run", "main.k")
-}
-
-// TestProbeThenUnavailable is honest both ways at once: testdocker.Unavailable
-// skips on a laptop and fails under CI.
-func TestProbeThenUnavailable(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := exec.LookPath("docker"); err != nil {
-		testdocker.Unavailable(t, "docker not on PATH")
-	}
-	runCmd(t, dir, "docker", "build", ".")
 }
 
 // TestProbeIsBookkeeping collects what is missing on the way to ONE decision.

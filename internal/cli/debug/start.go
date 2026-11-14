@@ -21,16 +21,16 @@ import (
 
 // startOptions are `forge debug start`'s flags.
 type startOptions struct {
-	attachPID  int
-	port       int
-	appPort    int
-	env        string
-	envSet     bool
-	workload   string
-	noEnv      bool
-	run        bool
-	jsonOutput bool
-	dockerMode bool
+	attachPID   int
+	port        int
+	appPort     int
+	env         string
+	envSet      bool
+	workload    string
+	noEnv       bool
+	stopOnStart bool
+	jsonOutput  bool
+	dockerMode  bool
 }
 
 func newStartCmd(f *factory.Factory) *cobra.Command {
@@ -42,9 +42,9 @@ func newStartCmd(f *factory.Factory) *cobra.Command {
 		Long: `Start a debug session for a Go service.
 
 The binary is built with debug flags (-gcflags=all=-N -l) and launched under
-a headless Delve server on 127.0.0.1, halted at its entry point: set
-breakpoints, then 'forge debug continue'. --run lets it run from the start
-instead, so it serves while you set breakpoints against it.
+a headless Delve server on 127.0.0.1. The service RUNS from the start, so it
+serves while you set breakpoints; --stop-on-start halts it at its entry
+point instead.
 
 The service gets its environment's configuration the way 'forge env exec'
 resolves it: the workload's declared values for --env (default dev) layered
@@ -59,18 +59,15 @@ back to "server").
 
 --port is Delve's listen port. --app-port sets the service's PORT, overriding
 the configured one — needed when 'forge env up' already serves that port.
-Without --app-port, --port also sets the PORT of a service launched with a
-cobra subcommand, as it always has (deprecated: pass --app-port).
 
---attach <pid> attaches to a running process instead, leaving it halted where
-attach found it (--run resumes it at once). forge does not own it: 'stop'
-detaches and leaves it running. To drive a dlv server forge did not
+--attach <pid> attaches to a running process instead (forge does not own it:
+'stop' detaches and leaves it running). To drive a dlv server forge did not
 start — an env's delve runner — use 'forge debug connect <addr>'.
 
 Examples:
   forge debug start api
-  forge debug start api --run --app-port 18080
-  forge debug start --attach 12345 --run
+  forge debug start api --app-port 18080
+  forge debug start --attach 12345
   forge debug start --port 2345 --env dev api
   forge debug start ./cmd/server --no-env`,
 		Args: cobra.MaximumNArgs(1),
@@ -95,7 +92,7 @@ Examples:
 	cmd.Flags().StringVar(&o.env, "env", "dev", "Environment whose workload configuration the service runs with")
 	cmd.Flags().StringVar(&o.workload, "workload", "", "Workload whose configuration to use (default: <service> if declared, else api)")
 	cmd.Flags().BoolVar(&o.noEnv, "no-env", false, "Launch with the shell environment only; resolve no env configuration")
-	cmd.Flags().BoolVar(&o.run, "run", false, "Let the target run (resume an attached process) instead of leaving it halted")
+	cmd.Flags().BoolVar(&o.stopOnStart, "stop-on-start", false, "Leave the target halted (at entry, or where attach found it) instead of running")
 	cmd.Flags().BoolVar(&o.jsonOutput, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&o.dockerMode, "docker", false, "Start debug session in Docker container")
 
@@ -106,7 +103,7 @@ func runDebugStartAttach(ctx context.Context, o startOptions) error {
 	pid := o.attachPID
 	d := dbgsvc.NewDelveDebugger()
 	logPath := filepath.Join(".forge", "debug", fmt.Sprintf("dlv-attach-%d.log", pid))
-	if err := d.Attach(ctx, dbgsvc.AttachOptions{PID: pid, ListenPort: o.port, OutputPath: logPath, StopOnStart: !o.run}); err != nil {
+	if err := d.Attach(ctx, dbgsvc.AttachOptions{PID: pid, ListenPort: o.port, OutputPath: logPath, StopOnStart: o.stopOnStart}); err != nil {
 		return fmt.Errorf("attaching to PID %d: %w", pid, err)
 	}
 
@@ -119,7 +116,7 @@ func runDebugStartAttach(ctx context.Context, o startOptions) error {
 		// ATTACH: forge does NOT own this process. `stop` must detach and
 		// leave it running — never kill it.
 		Owned:   false,
-		Resumed: o.run,
+		Resumed: !o.stopOnStart,
 		Started: time.Now(),
 	}
 	if err := debugSvc().SaveSession(".", session); err != nil {
@@ -132,7 +129,7 @@ func runDebugStartAttach(ctx context.Context, o startOptions) error {
 	}
 	fmt.Printf("Attached to PID %d (forge does not own this process; 'stop' will detach, not kill)\n", pid)
 	fmt.Printf("Delve listening at %s\n", d.Addr())
-	printRunState(!o.run, "where attach found it")
+	printRunState(o.stopOnStart, "where attach found it")
 	return nil
 }
 
@@ -199,7 +196,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	// instead of exiting 0 on a usage message: the service's own cobra
 	// subcommand when the tree declares one, else the all-services `server`.
 	// See serviceRunSpec. Its PORT is checked before the build too.
-	binArgs, extraEnv := launchSpec(target, buildPath, o)
+	binArgs, extraEnv := serviceRunSpec(target, buildPath, o.appPort)
 	childEnv := layerEnv(baseEnv, extraEnv)
 	if err := checkAppPortFree(childEnv, o.appPort > 0); err != nil {
 		return err
@@ -233,7 +230,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	d := dbgsvc.NewDelveDebugger()
 	if err := d.Launch(ctx, dbgsvc.LaunchOptions{
 		Binary: absBinary, Args: binArgs, Env: childEnv, ListenPort: o.port,
-		OutputPath: logPath, StopOnStart: !o.run,
+		OutputPath: logPath, StopOnStart: o.stopOnStart,
 	}); err != nil {
 		return fmt.Errorf("starting Delve: %w", err)
 	}
@@ -246,11 +243,11 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 		Binary: absBinary,
 		// forge launched this process — `stop` may kill it.
 		Owned:   true,
-		Resumed: o.run,
+		Resumed: !o.stopOnStart,
 		LogPath: logPath,
 		Started: time.Now(),
 	}
-	if o.run {
+	if !o.stopOnStart {
 		// A service that dies on boot (a missing config field, a port in
 		// use) must say so now, not at the first `continue`.
 		if err := checkLaunchSurvived(d.Addr(), logPath); err != nil {
@@ -275,7 +272,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 	}
 	fmt.Printf("Delve listening at %s\n", d.Addr())
 	fmt.Printf("Program output: %s\n", logPath)
-	printRunState(!o.run, "at its entry point")
+	printRunState(o.stopOnStart, "at its entry point")
 	return nil
 }
 
@@ -614,26 +611,6 @@ func mainPackagesUnderCmd() []string {
 	return out
 }
 
-// launchSpec is the argv and extra env of a launched service. --app-port
-// sets PORT whatever the binary looks like, a cobra service or a plain main
-// package. Without it, --port still sets the PORT of a cobra-launched service,
-// as it did before --app-port existed: deprecated, since dlv listens on that
-// port too.
-func launchSpec(target, buildPath string, o startOptions) (args, env []string) {
-	legacyPort := 0
-	if o.appPort == 0 {
-		legacyPort = o.port
-	}
-	args, env = serviceRunSpec(target, buildPath, legacyPort)
-	if o.appPort > 0 {
-		return args, append(env, fmt.Sprintf("PORT=%d", o.appPort))
-	}
-	if legacyPort > 0 && envValue(env, "PORT") != "" {
-		fmt.Fprintf(os.Stderr, "Deprecated: --port also sets the service's PORT=%d (Delve listens on it too); pass --app-port <port> to set the service's port\n", legacyPort)
-	}
-	return args, env
-}
-
 // serviceRunSpec returns the args + extra env a debugged service binary
 // needs to actually SERVE rather than exit 0 on a usage message.
 //
@@ -652,9 +629,6 @@ func launchSpec(target, buildPath string, o startOptions) (args, env []string) {
 // sets SERVICE_NAME to the PROJECT name, not the component's. OTEL_SERVICE_NAME
 // is the per-process identity knob — the same one the per-env main.k sets per
 // component — and PORT binds the listener.
-//
-// port is the PORT a subcommand-launched service binds: what --port supplied
-// before --app-port existed (launchSpec keeps that).
 func serviceRunSpec(service, buildPath string, port int) (args []string, env []string) {
 	switch {
 	case hasSubcommand(buildPath, service):

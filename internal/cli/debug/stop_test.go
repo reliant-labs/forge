@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"sync"
 	"syscall"
@@ -148,7 +147,7 @@ func TestAttachStopLeavesTargetAlive(t *testing.T) {
 
 	// Attach exactly as `forge debug start --attach` does: the target keeps
 	// running.
-	if err := runDebugStartAttach(ctx, startOptions{attachPID: targetPID, run: true}); err != nil {
+	if err := runDebugStartAttach(ctx, startOptions{attachPID: targetPID}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	session, err := debugSvc().LoadSession(".")
@@ -285,20 +284,4 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return true
-}
-
-// A repeated connect to the same server carries the breakpoints the replaced
-// session created, so stop still clears them; a server now serving another
-// target (restarted) holds none of them.
-func TestCarriedBreakpoints(t *testing.T) {
-	prev := &dbgsvc.SessionInfo{Connected: true, Addr: "127.0.0.1:2345", PID: 41, BreakpointIDs: []int{3, 5}}
-	if got := carriedBreakpoints(prev, 41); !slices.Equal(got, []int{3, 5}) {
-		t.Fatalf("same target: carried %v, want [3 5]", got)
-	}
-	if got := carriedBreakpoints(prev, 42); got != nil {
-		t.Fatalf("restarted target: carried %v, want none", got)
-	}
-	if got := carriedBreakpoints(nil, 41); got != nil {
-		t.Fatalf("first connect: carried %v, want none", got)
-	}
 }

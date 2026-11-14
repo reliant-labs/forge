@@ -15,7 +15,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/storage"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // stubConvergeStorage captures the facts a touch point derived instead of
@@ -82,7 +81,6 @@ func TestRegistryFactsFromConfig_CreateIsNoop(t *testing.T) {
 // config names reach the policy as a side effect of the cluster phase, with no
 // `forge storage register` anywhere.
 func TestEnsureDeclaredCluster_ConvergesStorageFacts(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withReadyNewNodes(t)
 	origState := clusterRuntimeStateFn
 	origCreate := createDeclaredClusterFn
@@ -145,7 +143,6 @@ func TestEnsureDeclaredCluster_ConvergesStorageFacts(t *testing.T) {
 // would never run on the long-lived clusters that actually have the disk
 // problem.
 func TestEnsureDeclaredCluster_ConvergesOnWarmCluster(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	origState := clusterRuntimeStateFn
 	origLB := ensureClusterLBFreshFn
 	origHealthy := ensureRunningClusterHealthyFn
@@ -178,7 +175,6 @@ func TestEnsureDeclaredCluster_ConvergesOnWarmCluster(t *testing.T) {
 // registry never does, and the registry container is read from the cluster's
 // k3d config.
 func TestRegisterBuildStorage_ConvergesLocalRepositories(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	project := t.TempDir()
 	configPath := filepath.Join(project, "k3d.yaml")
 	if err := os.WriteFile(configPath, []byte(k3dUseConfig), 0o644); err != nil {

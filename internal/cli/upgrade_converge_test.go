@@ -13,7 +13,6 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ── fixture ──────────────────────────────────────────────────────────────────
@@ -114,7 +113,6 @@ func noGo(string, ...string) ([]byte, error) { return nil, nil }
 // ── the range: one codemod, one lock refresh, then regenerate and lint ───────
 
 func TestUpgradeConverge_AppliesTheRangeWithNoHandEdits(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -205,7 +203,6 @@ func TestUpgradeCodemods_PrereleaseTargetReachesItsOwnRelease(t *testing.T) {
 // ── what is left for a human ─────────────────────────────────────────────────
 
 func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: `{"findings":[
@@ -255,7 +252,6 @@ const goimportsLintDoc = `{"findings":[
 ],"summary":{"errors":11,"warnings":0,"infos":0,"total":11},"ok":false}`
 
 func TestUpgradeConverge_OneLintFindingIsOneItemForAHuman(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: goimportsLintDoc}
@@ -294,7 +290,6 @@ func TestUpgradeConverge_OneLintFindingIsOneItemForAHuman(t *testing.T) {
 }
 
 func TestUpgradeConverge_AFailedGenerateIsAFailureNotAHandoff(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{genErr: errors.New("buf exploded")}
@@ -321,7 +316,6 @@ func TestUpgradeConverge_AFailedGenerateIsAFailureNotAHandoff(t *testing.T) {
 }
 
 func TestUpgradeConverge_LintThatCannotBeReadIsUndetermined(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: "not json"}
@@ -333,7 +327,6 @@ func TestUpgradeConverge_LintThatCannotBeReadIsUndetermined(t *testing.T) {
 
 // --check changes nothing and runs neither generate nor lint, but still says what it would do.
 func TestUpgradeConverge_CheckWritesNothing(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -353,7 +346,6 @@ func TestUpgradeConverge_CheckWritesNothing(t *testing.T) {
 }
 
 func TestUpgradeConverge_SkipNamesPhasesNotRun(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	ranIn := fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -376,7 +368,6 @@ func TestUpgradeConverge_SkipNamesPhasesNotRun(t *testing.T) {
 // which ones, and still runs everything else. The pin moves in the same run, so
 // the report is the only record that they were not applied.
 func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -415,7 +406,6 @@ func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
 // --skip playbooks is how a consumer splits them into a PR of their own. The
 // skipped phase names them.
 func TestUpgradeConverge_SkipPlaybooksNamesTheCodemodsItLeftForYou(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	upgradeWrite(t, filepath.Join(dir, "needs-fix.txt"), "old\n")
@@ -445,7 +435,6 @@ func TestUpgradeConverge_SkipPlaybooksNamesTheCodemodsItLeftForYou(t *testing.T)
 // ── playbooks: automate what they declare, hand over what remains ────────────
 
 func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	upgradeWrite(t, filepath.Join(dir, "needs-fix.txt"), "old\n")
@@ -494,7 +483,6 @@ func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *
 }
 
 func TestUpgradeConverge_ABlockedAutomationStepIsReportedWithItsReasons(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	upgradeWrite(t, filepath.Join(dir, "marker.txt"), "x\n")
@@ -575,7 +563,6 @@ func vendoredFixture(t *testing.T, report string) string {
 }
 
 func TestUpgradeConverge_RevendorsADeclaredContractThatLags(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := vendoredFixture(t, vendoredLagReport)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -606,7 +593,6 @@ func containsEnv(env []string, kv string) bool {
 }
 
 func TestUpgradeConverge_VendoredContractThatIsInSyncOrAbsentRunsNothing(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	for name, report := range map[string]string{
 		"in-sync": `{"schema":"reliant-vendored-proto/v1","status":"in-sync"}`,
 		"absent":  "",
@@ -630,7 +616,6 @@ func TestUpgradeConverge_VendoredContractThatIsInSyncOrAbsentRunsNothing(t *test
 }
 
 func TestUpgradeConverge_VendoredReportOfAnotherSchemaIsForAHuman(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := vendoredFixture(t, `{"schema":"something-else/v9","status":"lag"}`)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -649,7 +634,6 @@ func TestUpgradeConverge_VendoredReportOfAnotherSchemaIsForAHuman(t *testing.T) 
 // ── the command: --json is one document, exit codes are the contract ─────────
 
 func TestUpgradeCmd_JSONIsOneDocumentOnStdout(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
@@ -714,7 +698,6 @@ func TestUpgradeExitCodesAreDistinct(t *testing.T) {
 // (they did not compile: `undefined: version`). A scaffold-once file the
 // ledger records as deleted must stay deleted through the whole verb.
 func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newConvergeFixture(t)
 	fakeUpgradeNPM(t)
 	checksums.ResetScaffoldLedgerCache()
@@ -752,7 +735,6 @@ func TestUpgradeConverge_LeavesLedgerDeletedScaffoldOnceFilesDeleted(t *testing.
 // is years older, so the project going without it is the project's choice, and
 // upgrade offers it instead, naming the command that adds it.
 func TestUpgradeConverge_AddsOnlyScaffoldsNewAcrossTheRangeAndOffersTheRest(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := newTestProjectWithVersion(t, "v0.1.44")
 	checksums.ResetScaffoldLedgerCache()
 	t.Cleanup(checksums.ResetScaffoldLedgerCache)

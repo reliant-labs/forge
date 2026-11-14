@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // SharedProjectDir is where machine-shared compose infrastructure runs from
@@ -16,7 +14,6 @@ import (
 // containers under every other stack.
 
 func TestSharedProjectDirIsThePrimaryFromALinkedWorktree(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	initRepoOnBranch(t, primary)
@@ -64,7 +61,6 @@ func TestSharedProjectDirKeepsTheProjectsOffsetInTheRepo(t *testing.T) {
 }
 
 func TestSharedProjectDirOutsideARepoIsItself(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	dir := t.TempDir()
 	if got := SharedProjectDir(dir); !sameDir(got, dir) {

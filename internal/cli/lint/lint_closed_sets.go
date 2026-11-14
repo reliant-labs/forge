@@ -46,11 +46,6 @@ func closedSetFixHint(f closedset.Finding) string {
 	if f.Fix == nil {
 		return "fix the COMMENT ON CONSTRAINT or the CHECK it names (`forge project annotations --kind column` documents forge:closed-set)"
 	}
-	if v := f.Fix.Validate; v != nil {
-		return fmt.Sprintf("write the fix with `forge db migration new --closed-set %s`, or paste this into a new migration:\n%s\n"+
-			"    and this into the migration after it (its own transaction, so the scan runs outside the first one's lock):\n%s",
-			f.Constraint, indent(f.Fix.Migration, "        "), indent(v.Migration, "        "))
-	}
 	return fmt.Sprintf("write the fix with `forge db migration new --closed-set %s`, or paste this into a new migration:\n%s",
 		f.Constraint, indent(f.Fix.Migration, "        "))
 }

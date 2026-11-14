@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // pinnedFixture lays out what pnpm 10 leaves behind when it switches to a
@@ -90,7 +88,6 @@ func TestVerifyPinnedRunnerAcceptsThePin(t *testing.T) {
 // The owner's failure: the switch target is a placeholder. Running the
 // package's own install step (what npm would have) makes it the real binary.
 func TestVerifyPinnedRunnerRepairsAPlaceholderOnce(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	f := newPinnedFixture(t, "", `printf 'echo 12.15.0\n' > pnpm`)
 	if err := VerifyPinnedRunner(context.Background(), f.project, "pnpm"); err != nil {
 		t.Fatalf("the repaired pin was refused: %v", err)
@@ -103,7 +100,6 @@ func TestVerifyPinnedRunnerRepairsAPlaceholderOnce(t *testing.T) {
 // A repair that does not take is reported, with the fix, after ONE attempt:
 // the broken executable is never handed to an install, nor retried.
 func TestVerifyPinnedRunnerFailsActionablyWhenTheRepairDoesNotTake(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	f := newPinnedFixture(t, "", "true")
 	err := VerifyPinnedRunner(context.Background(), f.project, "pnpm")
 	if !errors.Is(err, ErrRunnerUnusable) {

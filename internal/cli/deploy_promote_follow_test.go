@@ -10,7 +10,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for the APPLY and WAIT halves of `forge env deploy <env> vX`
@@ -406,7 +405,6 @@ func mixedLedger(store *hostedStore) envLedger {
 // client-side apply for what forge owns, and the hosted wait for what the
 // control plane owns.
 func TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	var wait capturedWait
 	var apply capturedClientDeploy
 	wait.install(t)
@@ -434,7 +432,6 @@ func TestDeployRelease_MixedEnvAppliesItsClusterHalfAndWaits(t *testing.T) {
 // command owns has already failed costs the pipeline the time and tells it
 // nothing it did not know.
 func TestDeployRelease_MixedEnvApplyFailureSkipsTheHostedWait(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	var wait capturedWait
 	wait.install(t)
 	apply := capturedClientDeploy{err: &exitCodeError{code: exitWrong, msg: "worker: CrashLoopBackOff"}}
@@ -457,7 +454,6 @@ func TestDeployRelease_MixedEnvApplyFailureSkipsTheHostedWait(t *testing.T) {
 // deploy, and the cluster half does not ship at all unless this command sends
 // it.
 func TestDeployRelease_MixedEnvNoWaitStillApplies(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	var wait capturedWait
 	var apply capturedClientDeploy
 	wait.install(t)
@@ -724,7 +720,6 @@ func splitLedger(store *hostedStore) envLedger {
 // converges. Either half alone would report a release live while the other half
 // still ran the previous one.
 func TestDeployRelease_SplitEnvAppliesItsUnitsThenWaitsOnTheHub(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	var order []string
 	var wait capturedWait
 	var apply capturedClientDeploy

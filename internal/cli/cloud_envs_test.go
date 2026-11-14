@@ -22,7 +22,6 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/secrets"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
@@ -220,7 +219,6 @@ func TestSecretList_NoProviderReportsDeclarations(t *testing.T) {
 }
 
 func TestSecretList_RenderedProviderResolvesSources(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
 		t.Fatal(err)

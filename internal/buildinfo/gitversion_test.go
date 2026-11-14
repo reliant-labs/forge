@@ -9,8 +9,6 @@ import (
 
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestNextPatch(t *testing.T) {
@@ -72,7 +70,6 @@ func fixtureRepo(t *testing.T, tag string) string {
 // PRE-release of v0.1.15 and therefore sorts BEFORE the tag it is three
 // commits ahead of — the exact inversion this test would catch.
 func TestDeriveGitVersion_TaggedSortsBetweenReleases(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	got := deriveGitVersion(fixtureRepo(t, "v0.1.15"))
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean tagged repo")
@@ -150,7 +147,6 @@ func trimBuild(v string) string {
 // The embedded VERSION file always ships in the binary and always names the
 // last release, so it answers precisely when git cannot.
 func TestDeriveGitVersion_UntaggedFallsBackToTheEmbeddedVersion(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	got := deriveGitVersion(fixtureRepo(t, ""))
 	if got == "" {
 		t.Fatal("deriveGitVersion returned empty for a clean untagged repo")
@@ -196,7 +192,6 @@ func assertUsableVersion(t *testing.T, v string) {
 // A dirty tree is not the commit it names, and both IsDevVersion and
 // InstallableVersion key on the "+" to stay honest about that.
 func TestDeriveGitVersion_DirtyIsMarked(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := fixtureRepo(t, "v0.1.15")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -222,7 +217,6 @@ func TestDeriveGitVersion_DirtyIsMarked(t *testing.T) {
 // The caller's whole contract is that "" means "fall through", and a guess
 // here is what the old VERSION-file floor did wrong.
 func TestDeriveGitVersion_RefusesToGuess(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if got := deriveGitVersion(""); got != "" {
 		t.Errorf("deriveGitVersion(\"\") = %q, want \"\"", got)
 	}

@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"sort"
 
 	"github.com/reliant-labs/forge/internal/obsdash"
@@ -70,14 +68,9 @@ func alertDefaultsInput(projectDir string) (obsdash.AlertInput, bool, error) {
 // them: its own enabled rules plus the generated defaults it did not disable,
 // and its routes (the in-app + Slack fan-out when it declares none).
 //
-// The defaults watch the project's own services and those of every other
-// forge project the env deploys workloads from, read at the revision this
-// project pins it to (composedAlertSources). A composed source whose
-// inventory cannot be read is reported on warn, which may be nil.
-//
 // An env whose observability is off or undeclared evaluates nothing, so it
 // records nothing.
-func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName string, e *KCLEntities) ([]release.ShapeAlert, []release.ShapeAlertRoute, error) {
+func resolveShapeAlerts(projectDir, envName string, e *KCLEntities) ([]release.ShapeAlert, []release.ShapeAlertRoute, error) {
 	if e == nil || e.Observability == nil || !e.Observability.Enabled {
 		return nil, nil, nil
 	}
@@ -98,20 +91,6 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 	}
 	var defaults []obsdash.AlertRule
 	if have {
-		sources, notes, err := composedAlertSources(ctx, projectDir, e)
-		if err != nil {
-			return nil, nil, err
-		}
-		if warn != nil {
-			for _, n := range notes {
-				fmt.Fprintf(warn, "warning: %s\n", n)
-			}
-		}
-		composed, err := composedAlertServices(sources)
-		if err != nil {
-			return nil, nil, err
-		}
-		in.Services = obsdash.ComposeAlertServices(in.Services, composed...)
 		for _, c := range e.UptimeChecks {
 			in.UptimeChecks = append(in.UptimeChecks, c.Name)
 		}

@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A FileSecrets provider projects every Secret a CLUSTER workload declares by
@@ -77,7 +76,6 @@ func writeDevSecretStore(t *testing.T) {
 // Mutation that fails it: apply the projection once, to the env-wide
 // kubeContext, as forge did before (the edge cluster then receives nothing).
 func TestApplyK8sSecretsFromProvider_ProjectsIntoEveryConsumingCluster(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	writeDevSecretStore(t)
 	entities, groups := twoClusterFileSecretsEntities()
 
@@ -119,7 +117,6 @@ func TestApplyK8sSecretsFromProvider_ProjectsIntoEveryConsumingCluster(t *testin
 
 // A dry run shows a Secret's shape and never its content.
 func TestApplyK8sSecretsFromProvider_DryRunPrintsNoValue(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	writeDevSecretStore(t)
 	entities, groups := twoClusterFileSecretsEntities()
 	out := captureStdout(t, func() {
@@ -179,7 +176,6 @@ func TestPlaceProviderSecretRefs_UngroupedWorkloadUsesTheEnvTarget(t *testing.T)
 // with no cluster to land in is an error, never an apply to whatever kubectl
 // context happens to be current.
 func TestApplyK8sSecretsFromProvider_RefusesAPlacementWithNoCluster(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	writeDevSecretStore(t)
 	entities, _ := twoClusterFileSecretsEntities()
 	err := applyK8sSecretsFromProvider(context.Background(), entities, nil, "env-ns", "", "dev", false)

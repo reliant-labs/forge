@@ -31,7 +31,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -480,7 +479,6 @@ func TestEnvBuildBundle_AnUnreachableRegistryFailsAHubConvergedEnvOnly(t *testin
 // End to end through the default seam: realm, push, and the record, with the
 // docker store holding a stale entry the whole time.
 func TestEnvBuildBundle_HostedPushThroughTheRealmIsRecorded(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	reg := newFakeRealmRegistry(t, bundleTestToken)
 	dir := newLedgerTestProject(t, "bundle-realm-project")
 	stubEnvShape(t, "bundle-realm-project")

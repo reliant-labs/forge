@@ -9,14 +9,12 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/mergeproperty"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The ledger is one entry file per path, so two branches that scaffold
 // different files — each lane adopting its own service, the P3b shape —
 // merge with plain git into exactly the ledger forge writes for both.
 func TestScaffoldLedger_PlainGitMergeOfIndependentBirths(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	births := map[string][]string{
 		"base":   {".github/workflows/ci.yml", "internal/handlers/system/a_test.go"},
 		"ours":   {".github/workflows/ci.yml", "internal/handlers/question/q_test.go", "internal/handlers/system/a_test.go"},

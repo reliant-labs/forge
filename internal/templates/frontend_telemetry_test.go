@@ -40,12 +40,12 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 		"nextjs": {
 			tmpl:       "nextjs/src/lib/otel_gen.ts.tmpl",
 			devDefault: "`${BASE_PATH}/_otel`",
-			replay:     `replay: replay === "true" && replayPrivacyAllows(),`,
+			replay:     `replay: replay === "true",`,
 		},
 		"vite-spa": {
 			tmpl:       "vite-spa/src/lib/otel_gen.ts.tmpl",
 			devDefault: `"/_otel"`,
-			replay:     `replay: replay === "true" && replayPrivacyAllows(),`,
+			replay:     `replay: replay === "true",`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -101,7 +101,7 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 			for key, field := range map[string]string{
 				"OTEL_ENDPOINT": `"config.otel_endpoint"`,
 				"ENVIRONMENT":   `"config.environment"`,
-				"OTEL_REPLAY":   `"telemetry.replay = True"`,
+				"OTEL_REPLAY":   `'runtime_config.OTEL_REPLAY = "true"'`,
 			} {
 				build := tc.prefix + key
 				re := regexp.MustCompile(`runtimeOrBuild\(\s*used,\s*cfg\.` + key + `,\s*"` + build +
@@ -119,7 +119,7 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 				"console.warn(",
 				"next major version of forge",
 				"environment: environment || undefined,",
-				`replay: replay === "true" && replayPrivacyAllows(),`,
+				`replay: replay === "true",`,
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("missing %q:\n%s", want, s)

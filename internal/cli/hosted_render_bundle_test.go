@@ -60,10 +60,7 @@ output = forge.render(forge.Bundle {
 	// This render has no control plane to read a release from, so the
 	// records are shown over PLACEHOLDER digests — obviously fake, and a
 	// bundle refuses to seal them (see TestHostedBundleObjectsFlagPlaceholderDigests).
-	// The registry half is the push base when the credential's org is known
-	// (a bare unbuilt image is read there), else the placeholder registry;
-	// the digest is the placeholder either way.
-	if !strings.Contains(stdout, "/hounders@sha256:"+strings.Repeat("0", 64)) {
+	if !strings.Contains(stdout, "preflight.forge.invalid/hounders@sha256:"+strings.Repeat("0", 64)) {
 		t.Errorf("an unpinned hosted render must show placeholder digests, not invent a pin:\n%s", stdout)
 	}
 	for _, forbidden := range []string{"forge.dev/org-id", "forge.dev/deployment-id", "namespace:"} {

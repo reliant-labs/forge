@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/openfiles"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // gitRepoWithWorktree builds a real repository whose only commit is 60 days
@@ -737,7 +736,6 @@ func TestWorktreeRecheckCatchesUseAfterBatchClassification(t *testing.T) {
 // Commits made on a detached HEAD, or only in a worktree's reflog, are
 // unreachable once the worktree is removed.
 func TestWorktreeHoldsUnreachableCommits(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	t.Run("detached HEAD commit", func(t *testing.T) {
 		repo, worktree := gitRepoWithWorktree(t)
 		runGit(t, worktree, "checkout", "-q", "--detach")
@@ -795,7 +793,6 @@ func TestWorktreeHoldsUnreachableCommits(t *testing.T) {
 // A file written into the worktree after the batch classification, while the
 // worktree is quarantined, must keep the worktree.
 func TestWorktreeQuarantineCatchesWriteDuringWindow(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	repo, worktree := gitRepoWithWorktree(t)
 	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 	ageDir(t, worktree)
@@ -825,7 +822,6 @@ func TestWorktreeQuarantineCatchesWriteDuringWindow(t *testing.T) {
 }
 
 func TestWorktreeQuarantineLeftoverIsReportedAndNeverDeleted(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	repo, worktree := gitRepoWithWorktree(t)
 	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "main")
 	ageDir(t, worktree)

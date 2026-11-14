@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/kcleval"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // orderSource declares every key out of alphabetical order, at every level:
@@ -124,7 +123,6 @@ func TestEvalYAMLKeepsDeclaredOrder(t *testing.T) {
 // so the golden above cannot drift from what kcl prints. Skipped without one:
 // forge itself needs no kcl binary.
 func TestEvalJSONMatchesKclRun(t *testing.T) {
-	testkit.Slow(t, "execs kcl")
 	kcl, err := exec.LookPath("kcl")
 	if err != nil {
 		t.Skip("no kcl on PATH; orderGolden pins its output")

@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A new migration's header points at the schema instead of copying it. It
@@ -16,7 +14,6 @@ import (
 // every filename: 4,658 lines on reliant, whose previous migration was the
 // baseline it had just squashed, above three lines of SQL.
 func TestCreateMigration_HeaderIsShortWhateverTheHistory(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	var baseline strings.Builder
 	for i := 0; i < 400; i++ {
@@ -91,7 +88,6 @@ func readNewest(t *testing.T, dir, name string) string {
 // or the required-declaration choices) sits above the short header, and the
 // file stays short.
 func TestCreateMigration_CompatDeclarationWithTheShortHeader(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "00001_init.up.sql"), []byte("CREATE TABLE plans (id INT);\n"), 0o644); err != nil {
 		t.Fatal(err)

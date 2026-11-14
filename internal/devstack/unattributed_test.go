@@ -3,8 +3,6 @@ package devstack
 import (
 	"os"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // THE TERMINAL CASE OF THE CONSERVATIVE MIGRATION.
@@ -29,7 +27,6 @@ import (
 // TestUnattributedReportsLegacyEntriesWithNoOrigin: the blocks forge cannot
 // classify are surfaced rather than silently occupying the ceiling.
 func TestUnattributedReportsLegacyEntriesWithNoOrigin(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -70,7 +67,6 @@ func TestUnattributedReportsLegacyEntriesWithNoOrigin(t *testing.T) {
 // help a human decide, so an entry that matches a LIVE worktree must be marked
 // as likely in use — that is the one they must not release.
 func TestUnattributedFlagsKeysMatchingALiveWorktree(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -105,7 +101,6 @@ func TestUnattributedFlagsKeysMatchingALiveWorktree(t *testing.T) {
 // shows you the problem and quietly moves a port while doing so is worse than
 // no command.
 func TestUnattributedIsReportOnly(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -132,7 +127,6 @@ func TestUnattributedIsReportOnly(t *testing.T) {
 // TestReleaseKeyFreesExactlyTheNamedBlock: release acts on one key the caller
 // named, and on nothing else — the property that makes it safe to expose at all.
 func TestReleaseKeyFreesExactlyTheNamedBlock(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -164,7 +158,6 @@ func TestReleaseKeyFreesExactlyTheNamedBlock(t *testing.T) {
 // TestReleaseKeyRefusesUnknownKeyAndDefault: a typo must not read as success,
 // and block 0 is not a thing you can release.
 func TestReleaseKeyRefusesUnknownKeyAndDefault(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -185,7 +178,6 @@ func TestReleaseKeyRefusesUnknownKeyAndDefault(t *testing.T) {
 // if the freed index is actually handed to the next key, which is what gets a
 // project back under the ceiling.
 func TestFreedBlockIsReusedDensely(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)

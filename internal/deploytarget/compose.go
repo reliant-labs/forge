@@ -311,7 +311,7 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	// 0. Ownership — refuse to take over containers another checkout is
 	//    running, BEFORE anything can recreate them. See
 	//    checkComposeOwnership.
-	if err := checkComposeOwnership(ctx, runner, envOverlay, spec, svc.Name, group.Env); err != nil {
+	if err := checkComposeOwnership(ctx, runner, envOverlay, spec, svc.Name); err != nil {
 		return err
 	}
 

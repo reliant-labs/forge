@@ -21,7 +21,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/kclvendor"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // legacyVendorKclMod is a deploy/kcl/kcl.mod in the pre-module-from-binary
@@ -98,7 +97,6 @@ func diffTrees(before, after map[string]string) []string {
 }
 
 func TestGenerate_RefusedVersionCompatWritesNothing(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	dir := t.TempDir()
 	seedStaleVendoredProject(t, dir, "v0.1.15")
 

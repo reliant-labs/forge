@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -107,6 +108,63 @@ func TestNew_SucceedsAfterTheSharedServerLosesItsData(t *testing.T) {
 	}
 	if now := readPoolState(); now.Port == st.Port {
 		t.Errorf("the pool still records the broken server on %d", st.Port)
+	}
+}
+
+// A shared server whose postmaster died (the OOM killer, the init of the pid
+// namespace that ran it exiting) refuses every connection. The process's next
+// New re-attaches and gets a replacement, instead of returning "connection
+// refused" for every test it has left (control-plane#2189: 15 reliant merge
+// gates in one day failed that way partway through).
+func TestNew_SucceedsAfterTheSharedServerDies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots two embedded postgres servers; runs in task test")
+	}
+	privatePool(t)
+	Shutdown()
+	t.Cleanup(Shutdown)
+
+	db, cleanup, err := New()
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	cleanup()
+	_ = db.Close()
+	st := readPoolState()
+	pid, alive := postmaster(filepath.Join(runtimeDir(st.Port), "data", "postmaster.pid"))
+	if st.Port == 0 || !alive {
+		t.Fatalf("no live shared server after New (state %+v)", st)
+	}
+	// The next create dials, as the creates of a burst of parallel tests do
+	// beyond the maintenance pool's idle connections. (An idle connection
+	// reads its backend's parting FATAL 57P01 instead, which already healed.)
+	s, err := boot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.baseDB.SetMaxIdleConns(0)
+	// A crash, not a stop: nothing gets to tidy the pool state or the pid
+	// file. The listening socket is the postmaster's alone (a backend closes
+	// its copy at fork), so once the postmaster has exited the dial is
+	// refused, whenever its orphaned backends notice and follow it.
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitExit(pid); err != nil {
+		t.Fatalf("wait for the postmaster %d to exit: %v", pid, err)
+	}
+
+	db, cleanup, err = New()
+	if err != nil {
+		t.Fatalf("New after the shared server's postmaster died: %v", err)
+	}
+	defer cleanup()
+	defer func() { _ = db.Close() }()
+	if err := db.Ping(); err != nil {
+		t.Fatalf("ping the scratch database on the replacement: %v", err)
+	}
+	if now := readPoolState(); now.Port == st.Port {
+		t.Errorf("the pool still records the dead server on %d", st.Port)
 	}
 }
 

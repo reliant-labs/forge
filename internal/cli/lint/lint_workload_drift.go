@@ -204,16 +204,8 @@ func collectComponentDrift(projectDir string, cfg *config.ProjectConfig) ([]comp
 	// The other direction. Entries with no Go component behind them are
 	// reported far more gently: declaring infrastructure forge never
 	// generated is a SUPPORTED use of this file, not a mistake.
-	//
-	// A project with no Go at all (an Express app adopted in place: a
-	// forge.yaml and deploy/kcl/, no go.mod) has no component for ANY entry
-	// to match, so every workload read as an orphan (report e623e539). There
-	// is no drift to report between Go and KCL when one side does not exist.
 	var orphans []string
 	for name := range declared {
-		if cfg.ModulePath == "" && !hasGoModule(projectDir) {
-			break
-		}
 		if inCode[naming.KCLIdentifier(name)] {
 			continue
 		}

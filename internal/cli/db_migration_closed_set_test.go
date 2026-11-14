@@ -40,25 +40,11 @@ COMMENT ON CONSTRAINT grants_kind ON grants IS 'forge:closed-set accesstoken.All
 	body, _ := os.ReadFile(written[0])
 	for _, want := range []string{
 		"-- forge:backward-compatible — widens grants_kind",
-		"ADD CONSTRAINT grants_kind CHECK (kind IN ('daemon', 'port', 'connector', 'environment')) NOT VALID;",
+		"ADD CONSTRAINT grants_kind CHECK (kind IN ('daemon', 'port', 'connector', 'environment'));",
 		"COMMENT ON CONSTRAINT grants_kind ON grants IS\n    'forge:closed-set accesstoken.AllResourceKinds';",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("migration lacks %q:\n%s", want, body)
-		}
-	}
-	// A widening validates in the migration after it, outside its lock.
-	validate, _ := filepath.Glob(filepath.Join(mig, "*_grants_kind_closed_set_validate.up.sql"))
-	if len(validate) != 1 || filepath.Base(validate[0]) <= filepath.Base(written[0]) {
-		t.Fatalf("want one validate migration after %s, got %v", written[0], validate)
-	}
-	vbody, _ := os.ReadFile(validate[0])
-	for _, want := range []string{
-		"-- forge:backward-compatible — validates existing rows against the widened grants_kind",
-		"ALTER TABLE grants VALIDATE CONSTRAINT grants_kind;",
-	} {
-		if !strings.Contains(string(vbody), want) {
-			t.Errorf("validate migration lacks %q:\n%s", want, vbody)
 		}
 	}
 

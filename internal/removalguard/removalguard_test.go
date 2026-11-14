@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/commitpolicy"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1498,10 +1497,9 @@ var removals = []removal{
 	},
 	{
 		Name: "the `forge dev` command group",
-		Why: "The k3d lifecycle and dev-state introspection verbs left the flat `forge dev <verb>` " +
-			"spelling: they are `forge dev cluster up|down|reset|reload|status|logs|info|urls|" +
-			"instances` since the 14-noun grouping (#1998; `forge cluster …` stays an alias). " +
-			"A verb straight under `forge dev` names nothing. " +
+		Why: "The k3d lifecycle and dev-state introspection verbs were promoted flat out of the " +
+			"`dev` namespace onto `forge cluster`: `forge cluster up|down|reset|reload|status|" +
+			"logs|info|urls|instances`. `forge dev` itself is not a command — nothing resolves it. " +
 			"`forge dev port-forward` did not move at all: host port-forwarding was RETIRED in " +
 			"favour of the Gateway API ingress model, where a service is reachable through a " +
 			"declared route or not at all, so a doc that still names it promises a way out that " +
@@ -1517,9 +1515,7 @@ var removals = []removal{
 			// that cries wolf gets weakened, which would defeat this guard for
 			// every removal in the table. Naming a subcommand that cannot be
 			// invoked is the harm; that is what is caught here.
-			// `forge dev cluster …`, `forge dev debug` and `forge dev curl` are
-			// live since the 14-noun grouping, so `cluster` is not in the list.
-			regexp.MustCompile(`\bforge\s+dev\s+(?:status|info|logs|urls|instances|port-forward|up|down|reset|reload)\b`),
+			regexp.MustCompile(`\bforge\s+dev\s+(?:cluster|status|info|logs|urls|instances|port-forward|up|down|reset|reload)\b`),
 		},
 	},
 	{
@@ -2482,7 +2478,6 @@ func survivingReferences(t *testing.T, root string) map[string][]finding {
 // and the untracked-but-not-ignored one must both still fail. Skipping
 // everything outside the index would hide a straggler until its first commit.
 func TestGuardScansOnlyWhatGitWouldCommit(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	// A developer's global excludes or config must not decide what this
 	// test's repository ignores.
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -2752,7 +2747,6 @@ func removalNamed(t *testing.T, name string) removal {
 // silently drops one of these, this fails instead of the guard quietly
 // scanning less.
 func TestScanSurfaceReachesEveryForgeSurface(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	surfaces := map[string]struct {
 		why   string
 		match func(rel string) bool

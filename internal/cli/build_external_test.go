@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // shellSvc is a test helper building a WorkloadEntity whose effective
@@ -292,7 +291,6 @@ func TestBuildExternalServices_FailsWhenCwdMissing(t *testing.T) {
 // keep pinning deploy to a stale image (the wrong image or one the registry
 // no longer has → ImagePullBackOff, surfacing as a deploy exit 1).
 func TestBuildExternalServices_RegistryMissOverwritesPriorDigest(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 
 	const priorDigest = "sha256:" + "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -421,7 +419,6 @@ func TestResolveBuildArchForImage_Precedence(t *testing.T) {
 // was queried with the exact ${REGISTRY}/${IMAGE}:${TAG} ref the build_cmd
 // pushed.
 func TestBuildExternalServices_CapturesDigest(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 
 	const wantDigest = "sha256:" + "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabc00"
@@ -501,7 +498,6 @@ func TestBuildExternalServices_CapturesDigest(t *testing.T) {
 // exactly as before. A digest lookup failure must never break the build or
 // the local-registry/e2e path.
 func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 
 	orig := externalImageDigestResolver
@@ -564,7 +560,6 @@ func TestBuildExternalServices_NoDigestSafeFallback(t *testing.T) {
 // itself was correct; what was wrong was forge's record OF it, which left a
 // release cut with nothing to pin and a deploy on the mutable tag.
 func TestBuildExternalServices_ResolvesBareHostedImageAgainstPushBase(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	projDir := t.TempDir()
 
 	const (

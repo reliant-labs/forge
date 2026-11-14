@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/secrets"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestEnvExecHelper is a hermetic local subprocess fixture; its inputs are
@@ -96,7 +95,6 @@ func executeEnvFixture(t *testing.T, prefix, argv []string) (string, string, err
 }
 
 func TestEnvExecMatchesConfigAndLiteralArgv(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, envConfigFixture)
 	t.Setenv("FORGE_EXEC_HELPER", "1")
 	t.Setenv("LOG_LEVEL", "ambient-must-lose")
@@ -150,7 +148,6 @@ func TestEnvExecMatchesConfigAndLiteralArgv(t *testing.T) {
 }
 
 func TestEnvExecRuntimeRefusalBeforeSecrets(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	for _, rt := range []string{"hosted", "cluster", "build-only"} {
 		t.Run(rt, func(t *testing.T) {
 			// An invalid provider must never be instantiated for a remote workload.
@@ -207,7 +204,6 @@ func TestEnvExecRegistered(t *testing.T) {
 }
 
 func TestEnvExecDefaultAndValidation(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, strings.ReplaceAll(envConfigFixture, `"api"`, `"renamed-api"`))
 	_, _, err := executeEnvFixture(t, []string{"dev"}, []string{"must-not-run"})
 	if err == nil || !strings.Contains(err.Error(), "--workload") {
@@ -229,7 +225,6 @@ func TestEnvExecDefaultAndValidation(t *testing.T) {
 }
 
 func TestEnvExecComposeUsesHostLauncherValues(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, `{"output":{"workloads":[{"name":"api","kind":"service","runtime":{"type":"compose","env_file":"local.env","env":{"DATABASE_URL":"postgres://127.0.0.1:15432/dev","COMPOSE_PORT":"15432"}},"spec":{"kind":"service","env":[{"name":"DATABASE_URL","value":"postgres://container-dns:5432/dev"}]}}]}}`)
 	if err := os.WriteFile("local.env", []byte("FROM_FILE=file\nDATABASE_URL=not-the-declared-one\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -259,7 +254,6 @@ func TestEnvExecComposeUsesHostLauncherValues(t *testing.T) {
 }
 
 func TestEnvExecConfigMatchesUpAndScopedSecrets(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	withKCLFixture(t, `{"output":{"secret_provider":{"type":"file","path":"secrets.yaml"},"workloads":[{"name":"api","kind":"service","runtime":{"type":"host","launch_env":{"PORT":"8181"}},"spec":{"kind":"service","env":[{"name":"TOKEN","secretRef":{"name":"app","key":"TOKEN"}},{"name":"EMPTY","value":""}]}}]}}`)
 	if err := os.WriteFile("secrets.yaml", []byte("TOKEN: local-secret\nUNDECLARED: hidden\n"), 0600); err != nil {
 		t.Fatal(err)

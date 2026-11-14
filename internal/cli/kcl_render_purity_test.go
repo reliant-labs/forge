@@ -5,8 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge generate` renders KCL only to READ from it, but evaluating a module
@@ -76,7 +74,6 @@ func readGuardFile(t *testing.T, dir, rel string) string {
 // purpose — a render dropping a new gitignored file into .forge/ is ordinary,
 // and treating it as a violation would make the guard fire constantly.
 func TestDirtyTrackedFiles_SeesModifiedTrackedFileOnly(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	initGitRepo(t, dir, map[string]string{
 		"deploy/nats/nats.conf": "accounts { CP_DEFAULT: {} }\n",
@@ -104,7 +101,6 @@ func TestDirtyTrackedFiles_SeesModifiedTrackedFileOnly(t *testing.T) {
 // entirely. forge has to stay usable in a plain directory, and this is a
 // diagnostic rather than a gate.
 func TestDirtyTrackedFiles_NonRepoDisarms(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if dirty := dirtyTrackedFiles(t.TempDir()); dirty != nil {
 		t.Errorf("dirtyTrackedFiles outside a repo = %v, want nil (guard disarmed)", dirty)
 	}
@@ -114,7 +110,6 @@ func TestDirtyTrackedFiles_NonRepoDisarms(t *testing.T) {
 // exact shape of the incident — an extra NATS account appended to a tracked
 // conf — is undone byte-for-byte from HEAD.
 func TestRestoreTrackedFileFromHEAD_RevertsTheSideEffect(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	const committed = "accounts {\n  CP_DEFAULT: {}\n}\n"
 	dir := t.TempDir()
 	initGitRepo(t, dir, map[string]string{"deploy/nats/nats.conf": committed})
@@ -141,7 +136,6 @@ func TestRestoreTrackedFileFromHEAD_RevertsTheSideEffect(t *testing.T) {
 // and "restored" them from HEAD. A module with no file.write cannot have
 // written them: someone else did, and the guard must leave their bytes.
 func TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	const scaffold = "package content_test\n\n// WantScaffoldStub row\n"
 	initGitRepo(t, dir, map[string]string{
@@ -167,7 +161,6 @@ func TestRestoreImpureKCLWrites_PureModuleLeavesConcurrentEdits(t *testing.T) {
 // while making it lossless: a named file is reverted only once a second
 // render writes the same bytes again, which proves they are its output.
 func TestRestoreImpureKCLWrites_WritingModuleRevertsProvenWrite(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	const committed = "accounts { CP_DEFAULT: {} }\n"
 	initGitRepo(t, dir, map[string]string{
@@ -197,7 +190,6 @@ func TestRestoreImpureKCLWrites_WritingModuleRevertsProvenWrite(t *testing.T) {
 // file during the render must survive: the second render leaves it at HEAD,
 // which proves the dirty bytes were not the render's.
 func TestRestoreImpureKCLWrites_NamedButUnwrittenEditSurvives(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	const committed = "# docs\n"
 	initGitRepo(t, dir, map[string]string{
@@ -226,7 +218,6 @@ func TestRestoreImpureKCLWrites_NamedButUnwrittenEditSurvives(t *testing.T) {
 // mid-proof), nothing proves what is on disk is the render's, so it stays and
 // the first bytes are kept aside.
 func TestRestoreImpureKCLWrites_UnprovenBytesStay(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	initGitRepo(t, dir, map[string]string{
 		"deploy/kcl/dev/main.k": "import file\n\n_w = file.write(\"out.conf\", _conf)\n",
@@ -256,7 +247,6 @@ func TestRestoreImpureKCLWrites_UnprovenBytesStay(t *testing.T) {
 // edit to any other tracked file during the render is someone else's work,
 // so it is left as is while the named write beside it is still undone.
 func TestRestoreImpureKCLWrites_WritingModuleLeavesUnnamedEdits(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	const committed = "accounts { CP_DEFAULT: {} }\n"
 	const scaffold = "package content_test\n\n// WantScaffoldStub row\n"
@@ -320,7 +310,6 @@ func TestKCLFileWriteTargets(t *testing.T) {
 // would need the KCL toolchain; the logic under test is the before/after set
 // difference, and that is what this reproduces.
 func TestRenderKCLPure_LeavesPreexistingEditsAlone(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	initGitRepo(t, dir, map[string]string{
 		"deploy/nats/nats.conf": "accounts { CP_DEFAULT: {} }\n",
@@ -363,7 +352,6 @@ func TestRenderKCLPure_LeavesPreexistingEditsAlone(t *testing.T) {
 // and before it reset the file to HEAD someone edited it again. That newer
 // edit is in neither the read nor the copy, so the reset must not happen.
 func TestRestoreImpureKCLWrites_EditAfterTheReadIsNeverOverwritten(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	initGitRepo(t, dir, map[string]string{
 		"deploy/kcl/dev/main.k": "import file\n\n_w = file.write(\"deploy/nats/nats.conf\", _conf)\n",

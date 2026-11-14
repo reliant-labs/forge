@@ -145,10 +145,7 @@ Typed per-env config lives in `deploy/kcl/<env>/config.k` (an `AppConfig`
 instance); `config_gen.appConfigEnvMap(cfg, w.config_secrets)` projects it
 into a workload's `env` map. A `sensitive` field reaches only workloads that
 list it in `config_secrets`, so one feature's missing Secret key cannot stall
-every pod. `config_secrets` itself renders nothing: a name the final `env` does
-not carry fails the render. A workload with no generated config (an app in any
-other language) delivers each one itself, from the env's secret store:
-`env = {JWT_SECRET = forge.ManagedSecret {name = "JWT_SECRET"}}`. A workload bound to a composition-graph root (`| config_gen.root_of("worker")`)
+every pod. A workload bound to a composition-graph root (`| config_gen.root_of("worker")`)
 takes `config_gen.workloadEnvMap(cfg, w)` instead: exactly the config its root
 reaches — the scaffolded envs already call it (`architecture`, "Roots and
 commands"). Anything else is a literal in the workload's `env`:

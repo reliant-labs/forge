@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -435,7 +434,6 @@ func TestBootstrap_EveryObjectIsOwnedAndManaged(t *testing.T) {
 // ${VAR:-default} swallows the rest of the file. Syntax is checked at unit
 // level so it does not wait for the docker smoke.
 func TestBootstrap_EscrowScriptParses(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash is not available")

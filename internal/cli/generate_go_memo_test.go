@@ -10,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // goMemoFixture is a two-module project: the root requires ./gen through a
@@ -297,7 +295,6 @@ func TestMemoizedGoTidyRecordsWhatTidyLeft(t *testing.T) {
 }
 
 func TestMemoizedGoValidateRecordsOnlyAPass(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := goMemoFixture(t)
 	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
 	runs := 0
@@ -327,7 +324,6 @@ func TestMemoizedGoValidateRecordsOnlyAPass(t *testing.T) {
 // without changing a byte of the tree, so each must miss the record a pass
 // left, through the wrapper the pipeline calls (which reads the process env).
 func TestMemoizedGoValidateRerunsWhenPackageSelectionMoves(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := goMemoFixture(t)
 	editMemoFixture(t, root, "internal/a/a_tagged.go", "//go:build extra\n\npackage a\n\nvar Broken = undefinedName\n")
 	t.Setenv("GOFLAGS", "")

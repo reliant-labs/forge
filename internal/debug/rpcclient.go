@@ -165,39 +165,11 @@ func (c *rpcClient) detachTimeout(kill bool, d time.Duration) error {
 	return c.callTimeout("Detach", detachIn{kill}, &struct{}{}, d)
 }
 
-// stateNonBlockingTimeout is GetStateNonBlocking with a bound. NonBlocking
-// only spares the wait for Delve's target lock; the transport still waits for
-// a reply, which a wedged server never sends.
-func (c *rpcClient) stateNonBlockingTimeout(d time.Duration) (*api.DebuggerState, error) {
-	var out stateOut
-	if err := c.callTimeout("State", stateIn{NonBlocking: true}, &out, d); err != nil {
-		// A timed-out call may still write out later: never read it.
-		return nil, err
-	}
-	return out.State, nil
-}
-
 // haltTimeout stops a running target; it returns once the target is halted.
 func (c *rpcClient) haltTimeout(d time.Duration) (*api.DebuggerState, error) {
 	var out commandOut
 	err := c.callTimeout("Command", api.DebuggerCommand{Name: api.Halt}, &out, d)
 	return &out.State, err
-}
-
-// listBreakpointsTimeout is ListBreakpoints with a bound: release's cleanup
-// must not hang on a server that answered State and then stalled.
-func (c *rpcClient) listBreakpointsTimeout(d time.Duration) ([]*api.Breakpoint, error) {
-	var out listBreakpointsOut
-	if err := c.callTimeout("ListBreakpoints", listBreakpointsIn{false}, &out, d); err != nil {
-		// A timed-out call may still write out later: never read it.
-		return nil, err
-	}
-	return out.Breakpoints, nil
-}
-
-// clearBreakpointTimeout is ClearBreakpoint with a bound, for release.
-func (c *rpcClient) clearBreakpointTimeout(id int, d time.Duration) error {
-	return c.callTimeout("ClearBreakpoint", clearBreakpointIn{Id: id}, new(clearBreakpointOut), d)
 }
 
 // resume sends a Continue without waiting for its reply: the request is

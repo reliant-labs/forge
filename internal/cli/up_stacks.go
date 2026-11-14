@@ -265,14 +265,6 @@ func discoverRunningStacksWithFacts(facts *osProcFacts) []runningStack {
 type stackStop struct {
 	stopped int
 	skipped []ancestorSkip
-	// planned: the process table was read and the teardown planned, so
-	// skipped is known — true even when signalling then failed. False only
-	// when the teardown could not establish its scope at all, and then
-	// nothing about this command's lineage is known either.
-	planned bool
-	// unproven is how many trees were signalled without proof they stopped
-	// (the stop returned an error); stopped is then zero.
-	unproven int
 }
 
 // ancestorSkip is a teardown root left running because it is in this
@@ -479,7 +471,7 @@ func executeStackStop(projectID, env string, scope []string, plan stackStopPlan,
 
 func completeStackStop(projectID, env string, scope []string, plan stackStopPlan, stop func([]int) error) (stackStop, error) {
 	if err := stop(plan.roots); err != nil {
-		return stackStop{skipped: plan.skipped, planned: true, unproven: len(plan.roots)}, fmt.Errorf("environment shutdown incomplete; stack records preserved: %w", err)
+		return stackStop{}, fmt.Errorf("environment shutdown incomplete; stack records preserved: %w", err)
 	}
 	// A skipped tree is still running, so the records still describe it:
 	// `forge env ps` must keep listing it and a later `forge env down` run
@@ -487,7 +479,7 @@ func completeStackStop(projectID, env string, scope []string, plan stackStopPlan
 	if len(scope) == 0 && len(plan.skipped) == 0 {
 		removeStackRecords(projectID, env)
 	}
-	return stackStop{stopped: len(plan.roots), skipped: plan.skipped, planned: true}, nil
+	return stackStop{stopped: len(plan.roots), skipped: plan.skipped}, nil
 }
 
 // filterRootsByService keeps only the teardown roots whose stamped service

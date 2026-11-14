@@ -1,8 +1,8 @@
 """
-Negative test — a funnel is counted per session, user, visitor or person.
+Negative test — a funnel is counted per session or per user.
 """
 
-# expect: by must be 'session' | 'user' | 'visitor' | 'person'
+# expect: by must be 'session' | 'user'
 
 import forge
 

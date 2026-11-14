@@ -300,9 +300,7 @@ func openObsHostedDev(ctx context.Context, env string, rec devtelemetry.Record) 
 	if err != nil {
 		return obsbackend.Cloud{}, obsbackend.Undetermined("env %s: cannot reach its control plane", env).Cause(err)
 	}
-	client := cloud.NewClient(ep, cred)
-	obsbackend.DeclareCloudScopes(client)
-	return obsbackend.Cloud{Env: env, EnvID: rec.EnvironmentID, OrgID: rec.OrgID, Caller: client}, nil
+	return obsbackend.Cloud{Env: env, EnvID: rec.EnvironmentID, OrgID: rec.OrgID, Caller: cloud.NewClient(ep, cred)}, nil
 }
 
 // readDevTelemetry reads env's recorded telemetry decision. A record that

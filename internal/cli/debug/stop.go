@@ -99,13 +99,10 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 			stopDockerDebug(ctx)
 		case actionKillTarget:
 			if err := dbg.Stop(); err != nil { // Stop detaches+kills the debuggee.
-				// A wedged dlv: fall back to the signal, as when it cannot
-				// be reached at all.
-				fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v; killing pid %d\n", err, session.PID)
-				killTarget(session)
+				fmt.Fprintf(os.Stderr, "Warning: error stopping debugger: %v\n", err)
 			}
 		case actionRelease:
-			if err := dbg.Release(session.BreakpointIDs); err != nil {
+			if err := dbg.Release(); err != nil {
 				return fmt.Errorf("releasing the dlv server at %s (session kept; retry 'forge debug stop'): %w", session.Addr, err)
 			}
 		default: // actionDetach
@@ -123,7 +120,11 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 		case actionStopDocker:
 			stopDockerDebug(ctx)
 		case actionKillTarget:
-			killTarget(session)
+			if session != nil && session.PID > 0 {
+				if p, findErr := os.FindProcess(session.PID); findErr == nil {
+					_ = p.Kill()
+				}
+			}
 		case actionRelease:
 			return fmt.Errorf("cannot reach the dlv server at %s to clear its breakpoints (session kept): %w", session.Addr, connErr)
 		default: // actionDetach: NEVER kill the target; reapDlv's SIGTERM detaches.
@@ -152,16 +153,6 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 		fmt.Println("Debug session stopped (detached; breakpoints removed, target process left running).")
 	}
 	return nil
-}
-
-// killTarget signals an owned session's target directly: the fallback when
-// dlv cannot stop it.
-func killTarget(session *dbgsvc.SessionInfo) {
-	if session != nil && session.PID > 0 {
-		if p, err := os.FindProcess(session.PID); err == nil {
-			_ = p.Kill()
-		}
-	}
 }
 
 // owned reports whether forge launched the session's target process. A nil

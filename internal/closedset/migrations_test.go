@@ -86,39 +86,17 @@ func TestAnalyze_SetGainedAValue(t *testing.T) {
 	}
 	for _, want := range []string{
 		"-- forge:backward-compatible — widens access_tokens_scopes",
-		// NOT VALID: a widening cannot fail on an existing row, so the
-		// ACCESS EXCLUSIVE lock is never held for a scan of the table.
-		"ALTER TABLE public.access_tokens\n    DROP CONSTRAINT access_tokens_scopes,\n    ADD CONSTRAINT access_tokens_scopes CHECK (((cardinality(scopes) > 0) AND (scopes <@ ARRAY['deploy:read'::text, 'deploy:write'::text, 'identity:read'::text]))) NOT VALID;",
+		"ALTER TABLE public.access_tokens\n    DROP CONSTRAINT access_tokens_scopes,\n    ADD CONSTRAINT access_tokens_scopes CHECK (((cardinality(scopes) > 0) AND (scopes <@ ARRAY['deploy:read'::text, 'deploy:write'::text, 'identity:read'::text])));",
 		"COMMENT ON CONSTRAINT access_tokens_scopes ON public.access_tokens IS\n    'forge:closed-set accesstoken.AllScopes';",
 	} {
 		if !strings.Contains(f.Fix.Migration, want) {
 			t.Errorf("fix migration lacks %q:\n%s", want, f.Fix.Migration)
 		}
 	}
-	if strings.Contains(f.Fix.SQL, "VALIDATE CONSTRAINT") {
-		t.Errorf("the widening validates in its own transaction, so under its ACCESS EXCLUSIVE lock:\n%s", f.Fix.SQL)
-	}
-	// The scan runs in the migration after, which holds only SHARE UPDATE
-	// EXCLUSIVE (each migration file is one transaction).
-	v := f.Fix.Validate
-	if v == nil || !v.BackwardCompatible {
-		t.Fatalf("a widening is followed by a backward-compatible VALIDATE migration: %+v", v)
-	}
-	for _, want := range []string{
-		"-- forge:backward-compatible — validates existing rows against the widened access_tokens_scopes",
-		"ALTER TABLE public.access_tokens VALIDATE CONSTRAINT access_tokens_scopes;",
-	} {
-		if !strings.Contains(v.Migration, want) {
-			t.Errorf("validate migration lacks %q:\n%s", want, v.Migration)
-		}
-	}
 
-	// The printed pair is the whole repair: as the next two migrations, the
+	// The printed fix is the whole repair: as the next migration, the
 	// analysis comes back clean.
 	if err := os.WriteFile(filepath.Join(dir, "0003_fix.up.sql"), []byte(f.Fix.Migration), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "0004_fix_validate.up.sql"), []byte(v.Migration), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if fs := analyze(t, dir, testSets(scopes)); len(fs) != 0 {
@@ -135,12 +113,6 @@ func TestAnalyze_CheckAdmitsAValueTheSetLacks(t *testing.T) {
 	}
 	if fs[0].Fix.BackwardCompatible || !strings.Contains(fs[0].Fix.Migration, "-- forge:breaks-rollback narrows") {
 		t.Fatalf("a narrowing fix breaks rollback:\n%s", fs[0].Fix.Migration)
-	}
-	// A narrowing must prove every row passes before it commits: the rows it
-	// refuses are rewritten above the ALTER, in the same transaction, and a
-	// NOT VALID CHECK would let a missed one through.
-	if strings.Contains(fs[0].Fix.SQL, "NOT VALID") || fs[0].Fix.Validate != nil {
-		t.Fatalf("a narrowing validates in its own ALTER:\n%s", fs[0].Fix.SQL)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A freshly scaffolded frontend must pass forge's OWN frontend lint rules.
@@ -106,7 +105,6 @@ func TestScaffoldedFrontend_PassesProcessEnvLint(t *testing.T) {
 // config at all, so this one pins that each read site still resolves its
 // value — through loadConfig(), the promotable path.
 func TestScaffoldedFrontend_ConfigReadsGoThroughTheTypedModule(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	for _, tc := range []struct {
 		name  string
 		kind  string

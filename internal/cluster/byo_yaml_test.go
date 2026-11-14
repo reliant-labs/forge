@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const byoDeployment = `apiVersion: apps/v1
@@ -107,7 +105,6 @@ func TestGenerated_OverrideAppliesToItsObject(t *testing.T) {
 }
 
 func TestGenerated_FailuresNameTheGenerator(t *testing.T) {
-	testkit.Slow(t, "execs sh")
 	dir := t.TempDir()
 	writeFile(t, dir, "bad.yaml", "a: [unclosed\n")
 	writeFile(t, dir, "nokind.yaml", "metadata:\n  name: x\n")

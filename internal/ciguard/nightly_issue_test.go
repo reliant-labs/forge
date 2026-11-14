@@ -4,8 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // scripts/ci-nightly-issue.sh keeps one "Nightly CI is red" issue: found by
@@ -13,7 +11,6 @@ import (
 // set of red jobs changes, and closed by a green nightly. #948 collected a
 // comment for every red night, identical for twelve days.
 func TestNightlyIssueIsOneRollingThread(t *testing.T) {
-	testkit.Slow(t, "execs bash")
 	script := filepath.Join("..", "..", "scripts", "ci-nightly-issue.sh")
 	red := `{"e2e":{"result":"failure"},"e2e-scaffold":{"result":"success"},"consumer-canary":{"result":"cancelled"}}`
 	green := `{"e2e":{"result":"success"},"consumer-canary":{"result":"success"}}`

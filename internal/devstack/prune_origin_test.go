@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // THE PORT-BLOCK LEAK: A KEY DERIVED FROM A WORKTREE OUTLIVED IT FOREVER.
@@ -75,7 +73,6 @@ func blockFor(t *testing.T, projectDir, key string) (Block, bool) {
 // label was Stack == false and there was no record that a worktree ever
 // produced it.
 func TestPruneReclaimsDerivedKeyWhenWorktreeGone(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -200,7 +197,6 @@ func TestPruneNeverReclaimsStandaloneKey(t *testing.T) {
 // such worktree exists, so a parsing implementation reclaims it the moment
 // anyone prunes, moving a port that is genuinely in use.
 func TestPruneNeverReclaimsUnrelatedKeyThatMerelyLooksDerived(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)
@@ -232,7 +228,6 @@ func TestPruneNeverReclaimsUnrelatedKeyThatMerelyLooksDerived(t *testing.T) {
 // symmetric: leaving a block held wastes a slot, while moving a live stack's
 // port breaks its cluster mapping and its IdP issuer.
 func TestLegacyEntryWithoutOriginIsNeverReclaimed(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	gitAvailable(t)
 	primary := t.TempDir()
 	pruneInitRepo(t, primary)

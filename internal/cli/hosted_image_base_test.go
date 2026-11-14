@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/config"
 )
 
 // ADR-0003 F1. A bare image on a hosted item resolves to the env's image push
@@ -134,68 +131,5 @@ func TestCheckHostedImagesResolve_NoPushBaseNamesTheFullReferenceRemedy(t *testi
 	}}
 	if err := checkHostedImagesResolve("prod", cluster, ""); err != nil {
 		t.Errorf("a bare CLUSTER image is KCL's refusal, not this one, got: %v", err)
-	}
-}
-
-// A hosted DockerBuild workload with a bare image is PUSHED under the push base
-// (report d3f58107). The push plan already resolved it, so the build header
-// named the platform address while `docker push realworld:latest` went to
-// docker.io and was denied: the per-workload build read the declared image
-// rather than the resolution every other consumer reads. A cluster workload's
-// image is untouched, and with no base the bare name stays bare (the push plan
-// refuses that case before a build starts).
-func TestServiceDockerImage_BareHostedPushesUnderPushBase(t *testing.T) {
-	const base = "registry.reliant.dev/org-7/realworld"
-	docker := func(w *WorkloadEntity) {
-		w.Image = "realworld"
-		w.Build = BuildConfigEntity{Type: "docker", Docker: &DockerBuild{Dockerfile: "Dockerfile"}}
-	}
-	opts := buildOptions{env: "staging", pushPlan: pushPlan{push: true, env: "staging", pushBase: base}}
-	cfg := &config.ProjectConfig{Name: "realworld"}
-
-	hosted := hostedWL("api", docker)
-	repo, tag := serviceDockerImage(hosted, "staging", opts)
-	if repo != base+"/realworld" {
-		t.Fatalf("hosted DockerBuild repository = %q, want %q", repo, base+"/realworld")
-	}
-	_, pushes := serviceDockerBuildArgs(cfg, repo, "Dockerfile", hosted.Build.Docker, opts, "", tag)
-	for _, p := range pushes {
-		if !strings.HasPrefix(p, base+"/realworld:") {
-			t.Errorf("hosted DockerBuild pushes %q, outside the push base %s", p, base)
-		}
-	}
-	if len(pushes) == 0 {
-		t.Error("a pushing build of a hosted DockerBuild workload pushed nothing")
-	}
-
-	if repo, _ := serviceDockerImage(clusterWL("worker", "c", "n", docker), "staging", opts); repo != "realworld" {
-		t.Errorf("a CLUSTER workload's image was resolved under the hosted base: %q", repo)
-	}
-	noBase := opts
-	noBase.pushPlan.pushBase = ""
-	if repo, _ := serviceDockerImage(hosted, "staging", noBase); repo != "realworld" {
-		t.Errorf("with no push base a bare hosted image must stay bare, got %q", repo)
-	}
-}
-
-// A DockerBuild workload bound forge.OnHost is not docker-built: the host runs
-// its command, so nothing in the env pulls the image (report 6cd700c6). A
-// workload bound anywhere that pulls one is still dispatched.
-func TestBuildKCLDockerShell_SkipsHostBoundWorkloads(t *testing.T) {
-	t.Chdir(t.TempDir()) // no Dockerfile: a dispatched build records a skip result without docker
-	docker := func(w *WorkloadEntity) {
-		w.Image = "realworld"
-		w.Build = BuildConfigEntity{Type: "docker", Docker: &DockerBuild{Dockerfile: "Dockerfile"}}
-	}
-	host := hostedWL("api", docker)
-	host.Runtime = RuntimeEntity{Type: RuntimeHost}
-	cluster := clusterWL("worker", "c", "n", docker)
-	ents := &KCLEntities{Workloads: []WorkloadEntity{host, cluster}}
-	results := buildKCLDockerShell(context.Background(), &config.ProjectConfig{Name: "realworld"}, ents, buildOptions{env: "dev"}, "", "dev")
-	if len(results) != 1 || results[0].workload != "worker" {
-		t.Fatalf("results = %+v, want only the cluster-bound worker dispatched", results)
-	}
-	if !hostBoundUnit(host, nil) || hostBoundUnit(host, []WorkloadEntity{cluster}) {
-		t.Error("a unit is host-bound only when every workload sharing its build runs on the host")
 	}
 }

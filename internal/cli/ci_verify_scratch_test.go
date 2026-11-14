@@ -16,8 +16,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // verifyRepo is a committed checkout holding a forge project, in a directory
@@ -551,7 +549,6 @@ func TestVerifyScratch_WorksInAShallowClone(t *testing.T) {
 // it fails whenever isolateGit stops disabling maintenance, not only when the
 // detached child happens to be slow.
 func TestIsolateGit_CommitSpawnsNoBackgroundMaintenance(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	isolateGit(t)
 	repo := t.TempDir()
 	gitOut(t, repo, "init", "-q")

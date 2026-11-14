@@ -6,14 +6,11 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
 	"oras.land/oras-go/v2/content/memory"
 
 	"github.com/reliant-labs/forge/internal/bundle"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // stubEnvShapeStream is stubEnvShape over a stated render, so a test can make
@@ -65,7 +62,6 @@ func bundleRowsFor(t *testing.T, dir, env, version string) []release.BundleRecor
 // source pins and named another forge as the renderer — reuses the recorded
 // bundle instead of recording a second one under the same release.
 func TestWriteEnvBundle_ARelease_ReusesItsRecordedBundle(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-of-record")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-of-record", &stream, &forge)
@@ -105,7 +101,6 @@ func TestWriteEnvBundle_ARelease_ReusesItsRecordedBundle(t *testing.T) {
 // the same release would make the release mean whichever was written last. It
 // is refused, naming the object — unless the caller re-records on purpose.
 func TestWriteEnvBundle_ARelease_RefusesADifferentRender(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-of-record")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-of-record", &stream, &forge)
@@ -146,7 +141,6 @@ func TestWriteEnvBundle_ARelease_RefusesADifferentRender(t *testing.T) {
 // reuses it: the record is re-sent with the RELEASE'S OWN bytes (idempotent on
 // (env, digest)), never with this render's.
 func TestWriteEnvBundle_HostedRelease_ReusesTheTaggedBundle(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "bundle-hosted-project")
 	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
 	stubEnvShapeStream(t, "bundle-hosted-project", &stream, &forge)
@@ -211,105 +205,6 @@ func TestWriteEnvBundle_HostedRelease_ReusesTheTaggedBundle(t *testing.T) {
 			t.Errorf("RecordBundle call %d sent bundle %s; every record of release v1 must be its bundle %s",
 				i+1, shortDigest(d), shortDigest(cut.Digest))
 		}
-	}
-}
-
-// sealRefusingCaller is a control plane whose operator switched evidence seals
-// off: a RecordBundle carrying a manifests layer is refused with
-// snapshot_refused, and every other call is the wrapped fake's.
-type sealRefusingCaller struct {
-	*fakeDSOTCaller
-}
-
-func (c sealRefusingCaller) Call(ctx context.Context, proc string, req, out any) error {
-	if proc == procRecordBundle {
-		raw, _ := json.Marshal(req)
-		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
-		if layer, _ := body["manifestsLayer"].(string); layer != "" {
-			return &cloud.Error{Code: cloud.CodeInvalidArgument, Reason: "snapshot_refused", Message: "evidence seals are disabled", Procedure: proc}
-		}
-	}
-	return c.fakeDSOTCaller.Call(ctx, proc, req, out)
-}
-
-// A REFUSED SNAPSHOT NEVER OWNS THE RELEASE TAG. The sealed bundle is pushed
-// (by digest) before RecordBundle answers; when the control plane refuses it,
-// the legacy bundle is what gets recorded, and the release tag — how a later
-// write finds the release's bundle of record — must resolve to that same
-// recorded digest, never to the refused seal.
-func TestWriteEnvBundle_RefusedSeal_TagsTheRecordedLegacyBundle(t *testing.T) {
-	testkit.Slow(t, "execs git")
-	dir := newLedgerTestProject(t, "bundle-hosted-project")
-	stream, forge := bundleTestStream, "v0.1.44-d6b5d722"
-	stubEnvShapeStream(t, "bundle-hosted-project", &stream, &forge)
-	writeHostedPushBaseFixture(t, dir, "prod", "ghcr.io/acme")
-
-	registry := memory.New()
-	prevTarget := bundlePushTarget
-	bundlePushTarget = func(context.Context, string, string, string) (bundle.Pusher, error) { return registry, nil }
-	t.Cleanup(func() { bundlePushTarget = prevTarget })
-
-	// The seal is a bundle with different bytes (another creation time)
-	// and a manifests layer, which is all the record path reads of it.
-	var sealDigest string
-	prevSeal := sealEvidenceSnapshotFn
-	sealEvidenceSnapshotFn = func(ctx context.Context, _, _ string, _ envLedger, _ envShapeDoc, _ bundleBuildInputs, input bundle.BuildInput) (*evidenceSeal, string) {
-		input.CreatedAt = input.CreatedAt.Add(time.Second)
-		built, err := bundle.Build(ctx, input)
-		if err != nil {
-			t.Fatalf("build the stand-in seal: %v", err)
-		}
-		sealDigest = built.Digest
-		return &evidenceSeal{Digest: "sha256:" + rep64('5'), Bundle: built, Layer: []byte("manifests")}, ""
-	}
-	t.Cleanup(func() { sealEvidenceSnapshotFn = prevSeal })
-
-	var recorded []string
-	fake := &fakeDSOTCaller{replies: map[string]any{
-		procEnsureEnv: map[string]any{"environment": map[string]any{"id": "env_prod"}},
-	}}
-	fake.reply = func(proc string, body map[string]any) (any, bool) {
-		if proc != procRecordBundle {
-			return nil, false
-		}
-		recorded = append(recorded, bundleDigestOfRequest(t, body))
-		var served map[string]any
-		if err := json.Unmarshal([]byte(cpBundleFixture), &served); err != nil {
-			t.Fatal(err)
-		}
-		served["digest"] = bundleDigestOfRequest(t, body)
-		return map[string]any{"bundle": served, "created": true}, true
-	}
-	fake.replies[procDeployCapabilities] = map[string]any{"bundleDocumentFeatures": release.BundleDocFeatures()}
-	prevLedger := bundleLedgerFor
-	bundleLedgerFor = func(context.Context, string, string) (envLedger, error) {
-		return envLedger{Bindings: hostedBindingsStub{}, Releases: hostedReleasesStub{}, Hosted: true}, nil
-	}
-	t.Cleanup(func() { bundleLedgerFor = prevLedger })
-	prevRecorder := bundleRecorderForEnv
-	bundleRecorderForEnv = func(context.Context, string, string, envLedger) (bundleRecorder, error) {
-		return hostedRecordStore{client: sealRefusingCaller{fake}, project: "bundle-hosted-project", resolver: stubEnvResolver{id: "env_prod"}}, nil
-	}
-	t.Cleanup(func() { bundleRecorderForEnv = prevRecorder })
-
-	ctx := context.Background()
-	out, err := writeEnvBundle(ctx, dir, "prod", bundleBuildInputs{Release: "v1", Now: bundleTestNow, Pushed: true, errOut: io.Discard})
-	if err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if sealDigest == "" || sealDigest == out.Digest {
-		t.Fatalf("the stand-in seal (%s) must differ from the legacy bundle (%s)", shortDigest(sealDigest), shortDigest(out.Digest))
-	}
-	if out.Sealed || !out.Recorded {
-		t.Fatalf("outcome = %+v; want the legacy bundle recorded, unsealed", out)
-	}
-	if len(recorded) != 1 || recorded[0] != out.Digest {
-		t.Fatalf("recorded %v; want exactly the legacy bundle %s", recorded, shortDigest(out.Digest))
-	}
-	desc, err := registry.Resolve(ctx, releaseBundleTag("v1"))
-	if err != nil || string(desc.Digest) != recorded[0] {
-		t.Fatalf("release tag resolves to %s (%v); the control plane recorded %s", desc.Digest, err, shortDigest(recorded[0]))
 	}
 }
 

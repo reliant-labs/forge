@@ -11,7 +11,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ciFile returns the data CIWorkflows planned for dest, or nil when the file
@@ -37,7 +36,6 @@ func serviceCfg() *config.ProjectConfig {
 // job houndersclub lost when `forge generate` re-scaffolded ci.yml: the
 // generate-side mapper never set HasDocker.
 func TestCIWorkflows_ServiceGetsDockerBuild(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	files := CIWorkflows(t.TempDir(), serviceCfg(), nil)
 	ci, ok := ciFile(files, ".github/workflows/ci.yml").(templates.CIWorkflowData)
 	if !ok {
@@ -60,7 +58,6 @@ func TestCIWorkflows_ServiceGetsDockerBuild(t *testing.T) {
 // over proto/config on that project, so a verify-generated job without buf
 // could not reproduce the committed tree.
 func TestCIWorkflows_ServiceWithoutServiceProtoStillGetsBuf(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	files := CIWorkflows(t.TempDir(), serviceCfg(), nil)
 	ci := ciFile(files, ".github/workflows/ci.yml").(templates.CIWorkflowData)
 	if !ci.HasServices || !ci.LintBuf {
@@ -74,7 +71,6 @@ func TestCIWorkflows_ServiceWithoutServiceProtoStillGetsBuf(t *testing.T) {
 // CLI and library projects get only what they can run: no Docker image, no
 // deploy, no proto-breaking, and no job that `needs:` one of those.
 func TestCIWorkflows_CLIGetsTheBuildableSubset(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	cfg := &config.ProjectConfig{Name: "tool", ModulePath: "github.com/example/tool", Kind: config.ProjectKindCLI}
 	config.ApplyDerivedDefaults(cfg)
 	files := CIWorkflows(t.TempDir(), cfg, []templates.FrontendCIConfig{{Name: "web", Path: "frontends/web"}})
@@ -101,7 +97,6 @@ func TestCIWorkflows_CLIGetsTheBuildableSubset(t *testing.T) {
 // with protos. It used to install buf only for services, so a CLI with protos
 // got a job that died on `exec: "buf": executable file not found`.
 func TestCIWorkflows_VerifyGeneratedInstallsBufWhereGenerateRunsIt(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	cases := []struct {
 		name     string
 		tree     map[string]string
@@ -194,7 +189,6 @@ func verifyGeneratedBuf(t *testing.T, files []CIWorkflowFile) (installs bool, ve
 
 // A CLI never gets a deploy workflow: there is no image and nothing deployed.
 func TestCIWorkflows_CLIIgnoresReconcileFlag(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	cfg := &config.ProjectConfig{Name: "tool", Kind: config.ProjectKindCLI}
 	config.ApplyDerivedDefaults(cfg)
 	for _, f := range CIWorkflows(t.TempDir(), cfg, nil) {
@@ -209,7 +203,6 @@ func TestCIWorkflows_CLIIgnoresReconcileFlag(t *testing.T) {
 // suite exists: the generated harness is on disk, or ci.e2e.enabled opts in.
 // Otherwise the job fails on `lstat ./e2e/`.
 func TestCIWorkflows_E2EWorkflowNeedsASuite(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := t.TempDir()
 	if ciFile(CIWorkflows(root, serviceCfg(), nil), ".github/workflows/e2e.yml") != nil {
 		t.Error("e2e.yml emitted for a project with no e2e/ harness and ci.e2e off")
@@ -286,7 +279,6 @@ func ciDests(files []CIWorkflowFile) map[string]bool {
 // before F6: no release.yml, no vendored action, and a deploy.yml over every
 // declared env — the same data the hosted-unaware entry point plans.
 func TestCIWorkflows_ClusterOnlyProjectIsUnchanged(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := hostedRoot(t)
 	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{})
 	dests := ciDests(files)
@@ -318,7 +310,6 @@ func TestCIWorkflows_ClusterOnlyProjectIsUnchanged(t *testing.T) {
 // GitHub rejects), and the per-commit image build stays — its signing and
 // scanning still run on every push — against the first hosted env.
 func TestCIWorkflows_HostedEnvsGetReleaseWorkflow(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := hostedRoot(t)
 	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"prod", "staging"}})
 	dests := ciDests(files)
@@ -344,7 +335,6 @@ func TestCIWorkflows_HostedEnvsGetReleaseWorkflow(t *testing.T) {
 // Some envs hosted: deploy.yml keeps the others, release.yml takes the
 // hosted ones, and the per-commit build follows the env deploy.yml deploys.
 func TestCIWorkflows_PartlyHostedSplitsByEnv(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := hostedRoot(t)
 	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"prod"}})
 	deploy := ciFile(files, ".github/workflows/deploy.yml").(templates.DeployWorkflowData)
@@ -367,7 +357,6 @@ func TestCIWorkflows_PartlyHostedSplitsByEnv(t *testing.T) {
 // reporting success. Its release.yml stage is marked Mixed (kubeconfig +
 // always deploy).
 func TestCIWorkflows_MixedEnvIsWhollyReleaseYml(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := hostedRoot(t)
 	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{HostedEnvs: []string{"staging", "prod"}, MixedEnvs: []string{"prod"}})
 	if ciFile(files, ".github/workflows/deploy.yml") != nil {
@@ -384,7 +373,6 @@ func TestCIWorkflows_MixedEnvIsWhollyReleaseYml(t *testing.T) {
 // its template's name under workflows/ is NOT one. A hosted project re-emits
 // both; a cluster-only project is told why it has neither.
 func TestRescaffold_HostedReleaseFilesAreMapperPaths(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	for path, want := range map[string]bool{
 		ForgeDeployActionPath:                       true,
 		".github/workflows/release.yml":             true,
@@ -446,7 +434,6 @@ func TestCIDeployEnvs_ConfigWins(t *testing.T) {
 // hosted" would drop the login from a job that requires it, and the push would
 // fail with a 401 the workflow gives no way to fix.
 func TestCIWorkflows_BuildImagesHostedFollowsItsOwnEnv(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := hostedRoot(t)
 	for name, tc := range map[string]struct {
 		hosted []string

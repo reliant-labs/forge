@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestLintDepsAreInterfaces_FiresOnUnmarkedPackage is the regression
@@ -83,7 +82,6 @@ func TestLintDepsAreInterfaces_FiresOnUnmarkedPackage(t *testing.T) {
 // (Deps fields are interfaces, plus the always-allowed Logger and
 // primitive config data) produces no findings.
 func TestLintDepsAreInterfaces_CleanFixture(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	fs, err := Inspect(context.Background(),
 		filepath.Join("testdata", "deps_clean"),
@@ -104,7 +102,6 @@ func TestLintDepsAreInterfaces_CleanFixture(t *testing.T) {
 // into the composition shape, so the rule has nothing to say about it.
 // contracts_good/ has a contract.go with a Service and no Deps.
 func TestLintDepsAreInterfaces_NoDepsStructIsSilent(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	fs, err := Inspect(context.Background(),
 		filepath.Join("testdata", "contracts_good"),
@@ -320,7 +317,6 @@ func TestLintDepsAreInterfaces_NoInternalDir(t *testing.T) {
 // returned "not an interface" would flag both; one that gave up the other
 // way would flag neither.
 func TestLintDepsAreInterfaces_ResolvesOffModuleSelectors(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	// The fixture is a standalone module that is deliberately NOT a member
 	// of forge's own go.work; without this, go list refuses to resolve it
 	// from inside the workspace. A real project is linted at its own root,
@@ -593,7 +589,6 @@ func New(d Deps) Service { return &service{deps: d} }
 // syntactically a call and must not be read as one, or the exemption breaks
 // again the first time a config renders a duration.
 func TestLintDepsAreInterfaces_ConfigWithPureAccessorsIsData(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	tmp := t.TempDir()
 	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))
@@ -882,7 +877,6 @@ type Deps struct {
 // or the func-typed field that is — with file:line, and a field the package
 // calls a method on keeps the plain remedy.
 func TestLintDepsAreInterfaces_AdviceNamesTheSeam(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	tmp := t.TempDir()
 	must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/app\n\ngo 1.24\n"))

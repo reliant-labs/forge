@@ -264,19 +264,6 @@ func (b Bundle) Layer(mediaType string) ([]byte, bool) {
 	return nil, false
 }
 
-// ConfigTooLargeError is a bundle whose config blob exceeds MaxManifestBytes,
-// the bound both ends hold it to. It is a release.ErrInvalid, as it always
-// was; the type lets a caller that can build a smaller bundle instead (an env
-// deploy that skips its snapshot) tell the bound from every other refusal.
-type ConfigTooLargeError struct{ Size int64 }
-
-func (e *ConfigTooLargeError) Error() string {
-	return fmt.Sprintf("%v: bundle config exceeds %d bytes", release.ErrInvalid, MaxManifestBytes)
-}
-
-// Is makes a ConfigTooLargeError a release.ErrInvalid.
-func (e *ConfigTooLargeError) Is(target error) bool { return target == release.ErrInvalid }
-
 // Build renders one env's bundle: the manifest layer, the shape, the config
 // digest, the BundleDoc, and the OCI manifest that binds them.
 //
@@ -428,7 +415,7 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	}
 
 	if int64(len(configBlob)) > MaxManifestBytes {
-		return Bundle{}, &ConfigTooLargeError{Size: int64(len(configBlob))}
+		return Bundle{}, fmt.Errorf("%w: bundle config exceeds %d bytes", release.ErrInvalid, MaxManifestBytes)
 	}
 	configDesc := content.NewDescriptorFromBytes(release.BundleConfigMediaType, configBlob)
 	manifestsDesc := content.NewDescriptorFromBytes(release.BundleManifestsLayer, manifestsLayer)

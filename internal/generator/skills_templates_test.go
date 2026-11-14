@@ -11,7 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cli"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // forgeCommandRE matches a `forge ` invocation followed by 1-3 lowercase
@@ -106,9 +105,6 @@ func TestSkillTemplatesReferOnlyToRealCommands(t *testing.T) {
 		// quoted verbatim in skill code examples; "forge will not ..." is
 		// prose inside that fixed sentence, not a command reference.
 		fenced = strings.ReplaceAll(fenced, "forge will not overwrite this file", "")
-		// `import kcl_plugin.forge as plugin` is KCL's import of forge's
-		// render plugin (plugin.resolve_port), not a command.
-		fenced = strings.ReplaceAll(fenced, "kcl_plugin.forge as plugin", "")
 		matches := forgeCommandRE.FindAllStringSubmatch(fenced, -1)
 		for _, m := range matches {
 			tokens := strings.Fields(m[1])
@@ -193,7 +189,6 @@ func TestSkillTemplatesHaveNoGoTemplateDirectives(t *testing.T) {
 // documentation — it lists servers a user may want to enable but whose
 // dependencies aren't required for basic development.
 func TestProjectGeneratorWritesMCPConfigExample(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root := filepath.Join(t.TempDir(), "mcp-example-app")
 	g := generator.NewProjectGenerator("mcp-example-app", root, "example.com/mcp-example-app")
 	if err := g.Generate(); err != nil {

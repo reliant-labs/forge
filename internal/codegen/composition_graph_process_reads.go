@@ -52,7 +52,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -89,20 +88,16 @@ func (c cfgBinding) String() string {
 
 // processReadAnalyzer walks runRoot's call tree.
 type processReadAnalyzer struct {
-	funcs    map[string]*ast.FuncDecl
-	inputs   map[string]bool
-	reads    nodeConfigReads
-	seen     map[string]bool
-	rootName string
+	funcs  map[string]*ast.FuncDecl
+	inputs map[string]bool
+	reads  nodeConfigReads
+	seen   map[string]bool
 }
 
 // runRootConfigReads is what the primary command tree's runRoot reads of
 // each config, keyed like nodeConfigReads; nil when the tree declares no
 // runRoot (or the project has no command tree).
 func runRootConfigReads(projectDir string, inputs map[string]bool) nodeConfigReads {
-	return runRootConfigReadsFor(projectDir, inputs, "")
-}
-func runRootConfigReadsFor(projectDir string, inputs map[string]bool, rootName string) nodeConfigReads {
 	treeDir := primaryCmdTreeDir(projectDir)
 	if treeDir == "" {
 		return nil
@@ -124,16 +119,13 @@ func runRootConfigReadsFor(projectDir string, inputs map[string]bool, rootName s
 		}
 		files = append(files, file)
 	}
-	return runRootConfigReadsOfFor(files, inputs, rootName)
+	return runRootConfigReadsOf(files, inputs)
 }
 
 // runRootConfigReadsOf is runRootConfigReads over parsed files of one
 // package.
 func runRootConfigReadsOf(files []*ast.File, inputs map[string]bool) nodeConfigReads {
-	return runRootConfigReadsOfFor(files, inputs, "")
-}
-func runRootConfigReadsOfFor(files []*ast.File, inputs map[string]bool, rootName string) nodeConfigReads {
-	a := &processReadAnalyzer{funcs: map[string]*ast.FuncDecl{}, inputs: inputs, reads: nodeConfigReads{}, seen: map[string]bool{}, rootName: rootName}
+	a := &processReadAnalyzer{funcs: map[string]*ast.FuncDecl{}, inputs: inputs, reads: nodeConfigReads{}, seen: map[string]bool{}}
 	for _, f := range files {
 		for _, d := range f.Decls {
 			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Body != nil {
@@ -273,65 +265,6 @@ func isNilIdent(e ast.Expr) bool {
 	return ok && id.Name == "nil"
 }
 
-// rootCondition evaluates only literal comparisons with the rootSpec Name.
-// Unknown predicates remain conservative: both branches are still analyzed.
-func (a *processReadAnalyzer) rootCondition(e ast.Expr, b map[string]cfgBinding) (bool, bool) {
-	if a.rootName == "" {
-		return false, false
-	}
-	switch x := e.(type) {
-	case *ast.ParenExpr:
-		return a.rootCondition(x.X, b)
-	case *ast.UnaryExpr:
-		if x.Op == token.NOT {
-			v, ok := a.rootCondition(x.X, b)
-			return !v, ok
-		}
-	case *ast.BinaryExpr:
-		if x.Op == token.LAND || x.Op == token.LOR {
-			// A known operand that decides the predicate alone (false
-			// for &&, true for ||) makes it known, whatever the other.
-			decisive := x.Op == token.LOR
-			l, lk := a.rootCondition(x.X, b)
-			r, rk := a.rootCondition(x.Y, b)
-			if (lk && l == decisive) || (rk && r == decisive) {
-				return decisive, true
-			}
-			if lk && rk {
-				return !decisive, true
-			}
-			return false, false
-		}
-		if x.Op != token.EQL && x.Op != token.NEQ {
-			return false, false
-		}
-		for _, p := range [][2]ast.Expr{{x.X, x.Y}, {x.Y, x.X}} {
-			sel, ok := p[0].(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Name" {
-				continue
-			}
-			base, ok := a.chain(sel.X, b)
-			if !ok || base.kind != bindSpec {
-				continue
-			}
-			lit, ok := p[1].(*ast.BasicLit)
-			if !ok || lit.Kind != token.STRING {
-				continue
-			}
-			s, err := strconv.Unquote(lit.Value)
-			if err != nil {
-				continue
-			}
-			equal := a.rootName == s
-			if x.Op == token.NEQ {
-				equal = !equal
-			}
-			return equal, true
-		}
-	}
-	return false, false
-}
-
 // walk records every config read under n.
 func (a *processReadAnalyzer) walk(n ast.Node, b map[string]cfgBinding) {
 	if n == nil {
@@ -345,19 +278,6 @@ func (a *processReadAnalyzer) walk(n ast.Node, b map[string]cfgBinding) {
 			}
 		}
 		switch x := x.(type) {
-		case *ast.IfStmt:
-			if value, known := a.rootCondition(x.Cond, b); known {
-				a.walk(x.Init, b)
-				// An operand the root name did not decide is still
-				// evaluated: its reads count.
-				a.walk(x.Cond, b)
-				if value {
-					a.walk(x.Body, b)
-				} else {
-					a.walk(x.Else, b)
-				}
-				return false
-			}
 		case *ast.AssignStmt:
 			a.assign(x, b)
 			return false

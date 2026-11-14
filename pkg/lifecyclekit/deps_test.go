@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestImportGraphHasNoKubernetes pins that importing lifecyclekit — to get
@@ -25,7 +23,6 @@ import (
 // to any of them (the only way the graph can grow) invalidates the cached
 // result.
 func TestImportGraphHasNoKubernetes(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	out, err := exec.Command("go", "list", "-deps",
 		"-f", "{{.ImportPath}}\t{{.Dir}}\t{{if .Module}}{{.Module.Main}}{{end}}", ".").Output()

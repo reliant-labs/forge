@@ -31,14 +31,11 @@ package migrationlint
 import (
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestAddGeneratedStoredNotNullColumnIsSafe is the core assertion: the exact
 // spelling `--read-only-fields` recommends must pass `--migration-safety`.
 func TestAddGeneratedStoredNotNullColumnIsSafe(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_add_total.up.sql",
 		`ALTER TABLE estimates ADD COLUMN total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED NOT NULL;`)
 
@@ -59,7 +56,6 @@ func TestAddGeneratedStoredNotNullColumnIsSafe(t *testing.T) {
 // at all: a generated column cannot be UPDATEd, so the backfill
 // set-not-null-without-backfill asks for does not exist as valid SQL.
 func TestSetNotNullOnGeneratedColumnIsSafe(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_split_total.up.sql", `
 ALTER TABLE estimates ADD COLUMN total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED;
 ALTER TABLE estimates ALTER COLUMN total_cents SET NOT NULL;
@@ -129,7 +125,6 @@ func TestGeneratedColumnExemptionSpellingVariants(t *testing.T) {
 // plain one. An exemption that leaked to the whole file would silently retire
 // the rule for every migration that happens to add a generated column.
 func TestPlainNotNullAddStillFailsAlongsideGeneratedColumn(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_mixed.up.sql", `
 ALTER TABLE estimates ADD COLUMN total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED NOT NULL;
 ALTER TABLE estimates ADD COLUMN notes text NOT NULL;
@@ -151,7 +146,6 @@ ALTER TABLE estimates ADD COLUMN notes text NOT NULL;
 // exemption must not silently widen to cover a form the reasoning never
 // covered.
 func TestGeneratedVirtualColumnIsNotExempt(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_virtual.up.sql",
 		`ALTER TABLE estimates ADD COLUMN total_cents BIGINT GENERATED ALWAYS AS (a + b) VIRTUAL NOT NULL;`)
 
@@ -167,7 +161,6 @@ func TestGeneratedVirtualColumnIsNotExempt(t *testing.T) {
 // is no expression over existing columns, and the sequence-backed add is a
 // different operation entirely.
 func TestIdentityColumnStillFlagged(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_identity.up.sql",
 		`ALTER TABLE estimates ADD COLUMN seq BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL;`)
 
@@ -183,7 +176,6 @@ func TestIdentityColumnStillFlagged(t *testing.T) {
 // generated must not excuse an unbackfilled SET NOT NULL on a plain column in
 // the same file.
 func TestSetNotNullOnPlainColumnStillFailsAlongsideGeneratedColumn(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_mixed_set.up.sql", `
 ALTER TABLE estimates ADD COLUMN total_cents BIGINT GENERATED ALWAYS AS (subtotal_cents + tax_cents) STORED;
 ALTER TABLE estimates ALTER COLUMN total_cents SET NOT NULL;
@@ -209,7 +201,6 @@ ALTER TABLE estimates ALTER COLUMN notes SET NOT NULL;
 // evidence in scope, and guessing would be worse than the finding. The author
 // has the file-level pragma for that case.
 func TestSetNotNullOnGeneratedColumnAcrossFilesIsStillFlagged(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0002_set_not_null.up.sql",
 		`ALTER TABLE estimates ALTER COLUMN total_cents SET NOT NULL;`)
 
@@ -227,7 +218,6 @@ func TestSetNotNullOnGeneratedColumnAcrossFilesIsStillFlagged(t *testing.T) {
 // that generalizes, since each rule is individually defensible in isolation
 // and it was their INTERSECTION that had no satisfiable spelling.
 func TestReadOnlyFieldsAdviceIsAcceptedByMigrationSafety(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	// From readOnlyFieldFixHint in internal/cli/lint/lint_read_only_fields.go:
 	//   ALTER TABLE <table> ADD COLUMN <col> <type> GENERATED ALWAYS AS (<expression>) STORED NOT NULL
 	dir := writeMigration(t, "0001_read_only_advice.up.sql",
@@ -360,7 +350,6 @@ func TestAllowUnsafeNotNullPragmaSilencesBothRules(t *testing.T) {
 // has. A too-broad pragma is how one acknowledged exception quietly becomes a
 // whole file nobody checks.
 func TestAllowUnsafeNotNullPragmaDoesNotSilenceOtherRules(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := writeMigration(t, "0001_pragma_plus_destructive.up.sql",
 		"-- forge:allow-unsafe-not-null\nALTER TABLE users ADD COLUMN name text NOT NULL;\nDROP TABLE legacy;")
 

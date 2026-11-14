@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestGeneratePlanProtoFileBasic(t *testing.T) {
@@ -461,7 +460,6 @@ func TestGeneratePlanProtoFile_RESTEnabled_CRUDAnnotations(t *testing.T) {
 // this test cares about: the dep must appear when REST flips on and vanish
 // when it flips off.
 func TestUpgradeBufYAML_RESTToggle(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	g := NewProjectGenerator("buf-toggle", filepath.Join(root, "app"), "example.com/buf-toggle")
 	g.ServiceName = "api"

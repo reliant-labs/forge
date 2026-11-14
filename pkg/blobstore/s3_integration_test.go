@@ -51,11 +51,11 @@ func startMinIO(t *testing.T) int {
 		t.Skip("-short: starts a MinIO container")
 	}
 	if exec.Command("docker", "version").Run() != nil {
-		testdocker.Unavailable(t, "docker is not available")
+		t.Skip("docker is not available")
 	}
 	if exec.Command("docker", "image", "inspect", minioImage).Run() != nil {
 		if out, err := exec.Command("docker", "pull", minioImage).CombinedOutput(); err != nil {
-			testdocker.Unavailable(t, "cannot pull %s: %v\n%s", minioImage, err, out)
+			t.Skipf("cannot pull %s: %v\n%s", minioImage, err, out)
 		}
 	}
 	name := fmt.Sprintf("blobstore-minio-%d", time.Now().UnixNano())

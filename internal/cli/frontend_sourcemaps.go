@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -69,29 +68,13 @@ func sourcemapsHosted(e *KCLEntities) bool {
 // sourcemapPublisherFor picks where env's maps go: the platform registry when
 // its observability is hosted, a local directory otherwise.
 func sourcemapPublisherFor(projectDir, env string, e *KCLEntities) deploytarget.SourcemapPublisher {
-	return sourcemapPublisherForProject(projectDir, env, "", "", e)
-}
-
-// sourcemapPublisherForProject is sourcemapPublisherFor filing under the
-// registry subtree of project instead of this checkout's own (forge.yaml's
-// name, when project is empty): `forge frontend sourcemaps push --project`.
-// The symbolicator looks maps up under the project of the env the bundle
-// reports into, which for a bundle another project serves (the Electron
-// renderer, built by the app repo but reporting into the platform's env) is
-// not the project of the checkout that built it.
-//
-// org, when set, is the organization to file under, used as given instead of
-// asking the control plane which org the credential acts for: `--org`. A
-// registry-only credential (accesstoken sourcemaps:write) is refused by every
-// control-plane RPC, that lookup included, so it can file maps only this way.
-func sourcemapPublisherForProject(projectDir, env, project, org string, e *KCLEntities) deploytarget.SourcemapPublisher {
 	if !sourcemapsHosted(e) {
 		return deploytarget.LocalSourcemaps{ProjectDir: projectDir, Env: env}
 	}
 	return deploytarget.RegistrySourcemaps{
 		ProjectDir: projectDir,
 		Env:        env,
-		Base:       func(ctx context.Context) (string, error) { return sourcemapsPushBase(ctx, env, project, org, e) },
+		Base:       func(ctx context.Context) (string, error) { return sourcemapsPushBase(ctx, env, e) },
 		Push:       sourcemapsRegistryPush,
 	}
 }
@@ -112,18 +95,12 @@ func sourcemapPublisherForEnv(ctx context.Context, env string) deploytarget.Sour
 // sourcemapsPushBase is the project's subtree in the platform registry, with
 // docker logged in to it. It is resolved at the first publish rather than up
 // front: a deploy whose build extracts no map never needs the credential.
-// project empty is this checkout's own (forge.yaml's name); org empty is the
-// one the credential acts for, read from the control plane.
-func sourcemapsPushBase(ctx context.Context, env, project, org string, e *KCLEntities) (string, error) {
-	if org == "" {
-		var err error
-		if org, err = e.ControlPlane.organization(ctx); err != nil {
-			return "", err
-		}
+func sourcemapsPushBase(ctx context.Context, env string, e *KCLEntities) (string, error) {
+	org, err := e.ControlPlane.organization(ctx)
+	if err != nil {
+		return "", err
 	}
-	if project == "" {
-		project = hostedProjectName()
-	}
+	project := hostedProjectName()
 	base := hostedimage.PushBase(e.ControlPlane.RegistryHost, org, project)
 	if base == "" {
 		return "", fmt.Errorf("cannot compose the registry subtree for env %q (organization %q, project %q)", env, org, project)
@@ -204,8 +181,8 @@ func newFrontendSourcemapsCmd() *cobra.Command {
 }
 
 type sourcemapsPushOptions struct {
-	dist, frontend, buildID, env, project, org, basePath string
-	dryRun                                               bool
+	dist, frontend, buildID, env, project, basePath string
+	dryRun                                          bool
 }
 
 func newFrontendSourcemapsPushCmd() *cobra.Command {
@@ -227,13 +204,7 @@ platform registry:
   <registry>/<org>/<project>/<frontend>-sourcemaps:<build id>
 
 and otherwise they are kept in .forge/sourcemaps/<env>/<frontend>/<build id>/
-and nothing is uploaded. <project> is --project, or forge.yaml's name: name the
-project of the env the bundle reports its errors into, which is where they are
-looked up. <org> is --org, or the organization the credential acts for, which
-forge asks the control plane. A registry-only credential (a token carrying only
-sourcemaps:write) cannot ask, because the control plane refuses it on every
-RPC, so a CI job holding one names the org with --org. The artifact format is
-documented in
+and nothing is uploaded. The artifact format is documented in
 internal/deploytarget/sourcemaps_oci.go.
 
 THE BUILD ID must be the version the bundle reports to telemetry
@@ -251,8 +222,7 @@ not a no-op.
 
 Examples:
   forge frontend sourcemaps push web/dist --frontend desktop --build-id 3f9c0e1a2b4d --env prod
-  forge frontend sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --dry-run
-  forge frontend sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --org "$ORG_ID"`,
+  forge frontend sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --dry-run`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -264,8 +234,7 @@ Examples:
 	f.StringVar(&opts.frontend, "frontend", "", "The frontend the maps belong to (required)")
 	f.StringVar(&opts.buildID, "build-id", "", "The build id the bundle reports as service.version (required)")
 	f.StringVar(&opts.env, "env", "", "The env whose control plane and observability decide where the maps go (required)")
-	f.StringVar(&opts.project, "project", "", "The forge project the frontend belongs to: its maps are filed under this project's registry subtree (default: forge.yaml's name)")
-	f.StringVar(&opts.org, "org", "", "The organization to file under, used as given instead of asking the control plane (a sourcemaps:write credential cannot ask)")
+	f.StringVar(&opts.project, "project", "", "The forge project the frontend belongs to (default: forge.yaml's name)")
 	f.StringVar(&opts.basePath, "base-path", "", "Where <dist> is mounted in the served site (default: the root)")
 	f.BoolVar(&opts.dryRun, "dry-run", false, "Extract and report; push and keep nothing")
 	for _, name := range []string{"frontend", "build-id", "env"} {
@@ -273,10 +242,6 @@ Examples:
 	}
 	return cmd
 }
-
-// sourcemapsOrgRe is the shape of an organization id as a registry path
-// segment: one lowercase RFC-1123 label (an org id is a UUID).
-var sourcemapsOrgRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func runSourcemapsPush(ctx context.Context, opts sourcemapsPushOptions) error {
 	projectDir := projectDirForKCL()
@@ -290,9 +255,6 @@ func runSourcemapsPush(ctx context.Context, opts sourcemapsPushOptions) error {
 	}
 	if _, err := release.SourcemapsTag(opts.buildID); err != nil {
 		return err
-	}
-	if opts.org != "" && !sourcemapsOrgRe.MatchString(opts.org) {
-		return fmt.Errorf("--org %q is not an organization id: a lowercase label (letters, digits and inner hyphens, at most 63)", opts.org)
 	}
 	build, cleanup, err := deploytarget.ExtractDistSourcemaps(deploytarget.DistSourcemaps{
 		Dir: opts.dist, Project: project, Frontend: opts.frontend, BuildID: opts.buildID, BasePath: opts.basePath,
@@ -318,7 +280,7 @@ func runSourcemapsPush(ctx context.Context, opts sourcemapsPushOptions) error {
 		fmt.Println("[sourcemaps] --dry-run: nothing pushed or kept")
 		return nil
 	}
-	rec, err := sourcemapPublisherForProject(projectDir, opts.env, project, opts.org, entities).PublishSourcemaps(ctx, build)
+	rec, err := sourcemapPublisherFor(projectDir, opts.env, entities).PublishSourcemaps(ctx, build)
 	if err != nil {
 		return fmt.Errorf("file source maps for %s: %w", opts.frontend, err)
 	}

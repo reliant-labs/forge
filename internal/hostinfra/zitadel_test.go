@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -464,9 +466,10 @@ func TestEnsureZitadelBinary_RealUpstreamArchiveMatchesPin(t *testing.T) {
 	defer cancel()
 	bin, err := ensureZitadelBinary(ctx)
 	if err != nil {
-		// No connection or a 5xx (a GitHub outage) is the host's fault; a
-		// 4xx or a checksum mismatch is a wrong pin and still fails.
-		skipIfDownloadUnavailable(t, err)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			t.Skipf("release host unreachable from this machine: %v", err)
+		}
 		t.Fatalf("ensureZitadelBinary: %v", err)
 	}
 	if err := verifyZitadelBinary(bin); err != nil {

@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func TestHostReadinessProcessHelper(t *testing.T) {
@@ -39,7 +37,6 @@ func TestHostReadinessProcessHelper(t *testing.T) {
 }
 
 func TestHostReadinessObservesRealRunnerExit(t *testing.T) {
-	testkit.Slow(t, "execs the forge binary as a child process")
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprint("background=", background), func(t *testing.T) {
 			dir, projectID, env := testStack(t)
@@ -92,7 +89,7 @@ func TestHostReadinessAllowsRealStartupBeyondFifteenSeconds(t *testing.T) {
 	if err := reg.start("api", cmd, true); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reg.shutdown() })
+	t.Cleanup(reg.shutdown)
 	e := &KCLEntities{Workloads: []WorkloadEntity{hostWL("api", withPorts(int32(port)))}}
 	if err := waitHostServicesReady(t.Context(), e, projectID, env, nil, hostReadyTimeout, hostReadyPoll, reg); err != nil {
 		t.Fatalf("live runner with a cold startup was rejected: %v", err)

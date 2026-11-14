@@ -1,6 +1,6 @@
 //go:build integration
 
-package observe_test
+package observe
 
 import (
 	"bytes"
@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/pkg/deploy"
-	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // TestHeadersFileSmokeAgainstContribCollector proves, against a real
@@ -147,7 +146,7 @@ service:
 	// longer than the headers file's recheck interval and none arrives.
 	exportNeverSeen := func(tp interface{ ForceFlush(context.Context) error }, phase string) {
 		t.Helper()
-		deadline := time.Now().Add(observe.HeadersFileRecheckForTest() + 4*time.Second)
+		deadline := time.Now().Add(headersFileRecheck + 4*time.Second)
 		for time.Now().Before(deadline) {
 			_, span := otel.Tracer("smoke").Start(context.Background(), phase)
 			span.End()
@@ -163,15 +162,15 @@ service:
 
 	setup := func(t *testing.T, endpoint string, env map[string]string) (interface{ ForceFlush(context.Context) error }, func()) {
 		t.Helper()
-		observe.ClearOTelEnvForTest(t)
-		observe.SnapshotGlobalsForTest(t)
+		clearOTelEnv(t)
+		snapshotGlobals(t)
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
 		t.Setenv("OTEL_METRICS_EXPORTER", "none")
 		t.Setenv("OTEL_PROFILES_EXPORTER", "none")
 		for k, v := range env {
 			t.Setenv(k, v)
 		}
-		shutdown, _, err := observe.Setup(context.Background(), observe.Config{ServiceName: "headers-file-smoke"})
+		shutdown, _, err := Setup(context.Background(), Config{ServiceName: "headers-file-smoke"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,15 +180,15 @@ service:
 
 	t.Run("direct: runtime reads OTEL_EXPORTER_OTLP_HEADERS_FILE", func(t *testing.T) {
 		headers := filepath.Join(t.TempDir(), "otlp-headers")
-		observe.WriteHeadersFileForTest(t, headers, "authorization=Bearer tok-old")
-		tp, stop := setup(t, backendURL, map[string]string{observe.EnvOTLPHeadersFile: headers})
+		writeHeadersFile(t, headers, "authorization=Bearer tok-old")
+		tp, stop := setup(t, backendURL, map[string]string{EnvOTLPHeadersFile: headers})
 		defer stop()
 
 		exportUntilSeen(tp, "direct-old")
 
 		// Overlap: the collector accepts both while the runtime moves over.
 		setBackendTokens("tok-old", "tok-new")
-		observe.WriteHeadersFileForTest(t, headers, "authorization=Bearer tok-new")
+		writeHeadersFile(t, headers, "authorization=Bearer tok-new")
 		exportUntilSeen(tp, "direct-new")
 
 		// The collector rotates: the old token is refused, new traffic still flows.

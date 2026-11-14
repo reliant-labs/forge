@@ -149,12 +149,6 @@ func gradableRules() []string {
 	return rules
 }
 
-// GradableRules is gradableRules for the guards outside this package:
-// internal/cli's TestEveryGradableRuleIsABenefit holds the benefits
-// registry's lint families equal to it, so a rule cannot ship without the
-// bug class it prevents written down.
-func GradableRules() []string { return gradableRules() }
-
 // ownedElsewhere are rule IDs a lane emits that lint.rules deliberately does
 // not grade, each with the dial that does. Naming one in lint.rules is an
 // error that points there.

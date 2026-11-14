@@ -1211,13 +1211,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		// of a supervising run — a signal that cut a phase short, and an
 		// ordinary error (a failed readiness or cluster gate) after children
 		// started. Only --background leaves a stack running.
-		defer func() {
-			// A teardown that could not prove the stack down fails the run,
-			// so its exit code says the records were kept for a retry.
-			if terr := teardownSupervisedExit(ctx, procs); terr != nil && err == nil {
-				err = terr
-			}
-		}()
+		defer func() { teardownSupervisedExit(ctx, procs) }()
 	}
 
 	// Phase 3: host-mode services.
@@ -1424,20 +1418,18 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// so a beat in flight cannot land after the stopped row and resurrect
 	// the session as running.
 	stopBeat()
-	stopErr := procs.shutdown()
+	procs.shutdown()
 	session.stop(time.Now().UTC())
-	return stopErr
+	return nil
 }
 
 // teardownSupervisedExit stops a supervising run's children on any return
 // that did not already tear them down: a signal before the hold, or an error
 // returned after the first child started. The children run in process groups
 // of their own, so without it they would outlive the command that owns them.
-//
-// It returns shutdown's error: a stack it could not prove stopped.
-func teardownSupervisedExit(ctx context.Context, procs *procRegistry) error {
+func teardownSupervisedExit(ctx context.Context, procs *procRegistry) {
 	if procs.stopped() {
-		return nil
+		return
 	}
 	switch {
 	case ctx.Err() != nil:
@@ -1447,9 +1439,9 @@ func teardownSupervisedExit(ctx context.Context, procs *procRegistry) error {
 	default:
 		// Nothing started and nothing interrupted: no stack of this run's
 		// to stop, and its records are not this run's to remove.
-		return nil
+		return
 	}
-	return procs.shutdown()
+	procs.shutdown()
 }
 
 // nonTTYWatchHint is the one line the non-TTY default prints after it
@@ -3090,7 +3082,7 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: secret provider: %w", err)
 		}
-		la, err := prepareLocalAlerting(ctx, projectDir, env, entities, prov.All())
+		la, err := prepareLocalAlerting(projectDir, env, entities, prov.All())
 		if err != nil {
 			return fmt.Errorf("prepare the local Alertmanager: %w", err)
 		}
@@ -3210,13 +3202,11 @@ func upHostServices(ctx context.Context, cfg *config.ProjectConfig, e *KCLEntiti
 			failures++
 			continue
 		}
-		prepareAirDirs(w)
 		if err := procs.start(name, cmd, background); err != nil {
 			fmt.Printf("[up] host %s: %v\n", w.Name, err)
 			failures++
 			continue
 		}
-		procs.requireStopGrace(name, airStopDrain(hostRunnerSpec(w), cmd.Dir))
 		markUpLaunched(ctx, w.Name)
 	}
 	return failures
@@ -3687,22 +3677,9 @@ type procRegistry struct {
 	projectID  string
 	projectDir string
 	env        string
-	// runID is stamped on every child as FORGE_UP_RUN, so shutdown can find
-	// what this run started even after it left the process tree.
-	runID     string
-	mu        sync.Mutex
-	processes []*managedProcess
-	isStopped bool // shutdown has run
-	// stopGrace is how long shutdown waits after SIGTERM before SIGKILL;
-	// zero means defaultStopGrace. graceFor names who asked for more.
-	stopGrace time.Duration
-	graceFor  string
-	// startedAt bounds the shutdown sweep's "could this be ours" question: a
-	// process started before it cannot be this run's child.
-	startedAt time.Time
-	// readStopTable reads the process table for the shutdown sweep; nil is
-	// the OS table. A test injects a failing or modelled one.
-	readStopTable func() (*stopTable, error)
+	mu         sync.Mutex
+	processes  []*managedProcess
+	isStopped  bool // shutdown has run
 }
 
 // stopped reports whether shutdown has run, so a second teardown path (a
@@ -3714,12 +3691,7 @@ func (p *procRegistry) stopped() bool {
 }
 
 func newProcRegistry(projectID, projectDir, env string) *procRegistry {
-	return &procRegistry{
-		projectID: projectID, projectDir: projectDir, env: env, runID: newUpRunID(),
-		// ps reports start times to the second: back off one so a child
-		// started in this second is never ruled out.
-		startedAt: time.Now().Add(-time.Second),
-	}
+	return &procRegistry{projectID: projectID, projectDir: projectDir, env: env}
 }
 
 // start launches a child command, captures stdout/stderr with a
@@ -3735,19 +3707,6 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	// The project marker is what keeps a different project's reclaim off this
 	// child.
 	stampForgeOwnership(cmd, p.projectID, p.env, name)
-	cmd.Env = withForcedEnv(cmd.Env, forgeUpRunVar, p.runID)
-	// The registry, not the command's context, ends the child's life. A
-	// command built with exec.CommandContext is SIGKILLed — the runner alone —
-	// the moment its context is cancelled, which on a supervising run is the
-	// Ctrl-C itself. That kill landed before shutdown could signal anything:
-	// the runner died without its own graceful stop, its server (in a process
-	// group of its own, as Air starts it) was reparented to init, and the
-	// tree walk that should have reached it started from a dead process.
-	// Every path that cancels the context runs shutdown (the hold, and
-	// teardownSupervisedExit), and a detached child must outlive it anyway.
-	if cmd.Cancel != nil {
-		cmd.Cancel = func() error { return nil }
-	}
 	if background {
 		logPath, err := upLogPath(p.env, name)
 		if err != nil {
@@ -3784,7 +3743,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		// Keep observing the child while startup is pending. Releasing its
 		// handle here loses its exit status and turns compiler failures into
 		// readiness timeouts. Closing our copy does not close the child's fd.
-		mp.observeExit()
+		mp.observeExit(nil)
 		_ = logFile.Close()
 		p.mu.Lock()
 		p.processes = append(p.processes, mp)
@@ -3795,9 +3754,13 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	}
 
 	prefix := fmt.Sprintf("[%s] ", name)
-	stdout, stderr, closeWriters, err := childOutputPipes(cmd, name)
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("stdout pipe %s: %w", name, err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe %s: %w", name, err)
 	}
 	// Tee a raw copy of the child's output to its well-known log file so
 	// it stays greppable after the fact, even in foreground mode where
@@ -3825,25 +3788,18 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	}
 
 	startInOwnProcessGroup(cmd)
-	startErr := cmd.Start()
-	// The child has its own copies of the write ends; forge's must go, or the
-	// streams could never reach EOF.
-	closeWriters()
-	if startErr != nil {
-		_ = stdout.Close()
-		_ = stderr.Close()
+	if err := cmd.Start(); err != nil {
 		if logFile != nil {
 			_ = logFile.Close()
 		}
-		return fmt.Errorf("start %s: %w", name, startErr)
+		return fmt.Errorf("start %s: %w", name, err)
 	}
-	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid, drained: make(chan struct{})}
-	mp.observeExit()
 	var streams sync.WaitGroup
 	streams.Add(2)
-	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink); _ = stdout.Close() }()
-	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink); _ = stderr.Close() }()
-	go func() {
+	go func() { defer streams.Done(); streamUpOutput(prefix, stdout, sink) }()
+	go func() { defer streams.Done(); streamUpOutput(prefix, stderr, sink) }()
+	mp := &managedProcess{name: name, cmd: cmd, pid: cmd.Process.Pid}
+	mp.observeExit(func() {
 		streams.Wait()
 		// Both streams are at EOF, so nothing writes the tee again: close it.
 		// It used to stay open for the rest of forge's life — one leaked
@@ -3852,8 +3808,7 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 		if logFile != nil {
 			_ = logFile.Close()
 		}
-		close(mp.drained)
-	}()
+	})
 
 	p.mu.Lock()
 	p.processes = append(p.processes, mp)
@@ -3861,28 +3816,6 @@ func (p *procRegistry) start(name string, cmd *exec.Cmd, background bool) error 
 	p.persist()
 	fmt.Printf("[up] %s: started (pid=%d)\n", name, cmd.Process.Pid)
 	return nil
-}
-
-// childOutputPipes points cmd's stdout and stderr at pipes forge owns, not
-// exec's StdoutPipe: with *os.File output, Wait copies and closes nothing, so
-// the child is reaped the moment it exits while its output drains on its own
-// (see observeExit). It returns the read ends, and closeWriters, which the
-// caller runs once cmd.Start returned: after it the pipes reach EOF when the
-// child and every descendant holding them are gone.
-func childOutputPipes(cmd *exec.Cmd, name string) (stdout, stderr *os.File, closeWriters func(), err error) {
-	stdout, stdoutW, err := os.Pipe()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stdout pipe %s: %w", name, err)
-	}
-	stderr, stderrW, err := os.Pipe()
-	if err != nil {
-		_ = stdout.Close()
-		_ = stdoutW.Close()
-		return nil, nil, nil, fmt.Errorf("stderr pipe %s: %w", name, err)
-	}
-	cmd.Stdout = stdoutW
-	cmd.Stderr = stderrW
-	return stdout, stderr, func() { _ = stdoutW.Close(); _ = stderrW.Close() }, nil
 }
 
 // streamUpOutput tags each child line with [<name>] and writes it to the
@@ -4107,6 +4040,68 @@ func procPID(mp *managedProcess) int {
 	return 0
 }
 
+// shutdown sends SIGTERM to every registered process group and waits up
+// to 10s for them to exit. Anything still alive after the budget is
+// SIGKILLed. State file is removed on success.
+func (p *procRegistry) shutdown() {
+	p.mu.Lock()
+	p.isStopped = true
+	procs := make([]*managedProcess, len(p.processes))
+	copy(procs, p.processes)
+	p.mu.Unlock()
+
+	// Reverse order so later-started frontends die before the host
+	// services they may have spoken to — keeps the user's last log
+	// lines clean.
+	for i := len(procs) - 1; i >= 0; i-- {
+		mp := procs[i]
+		pid := procPID(mp)
+		if pid <= 0 {
+			continue
+		}
+		fmt.Printf("[up] stopping %s (pid=%d)...\n", mp.name, pid)
+		// Kill the whole process TREE so `go run`/Air's execed child — which
+		// may have moved into its own process group — dies with the parent
+		// instead of orphaning and squatting its port.
+		_ = killProcessTree(pid, syscall.SIGTERM)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for _, mp := range procs {
+			mp := mp
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if mp.done != nil {
+					<-mp.done
+				} else {
+					_ = mp.cmd.Wait()
+				}
+			}()
+		}
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		for _, mp := range procs {
+			pid := procPID(mp)
+			if pid <= 0 || managedProcessExited(mp) {
+				continue
+			}
+			fmt.Printf("[up] %s: did not exit, killing.\n", mp.name)
+			_ = killProcessTree(pid, syscall.SIGKILL)
+		}
+		<-done
+	}
+
+	removeStackRecords(p.projectID, p.env)
+}
+
 // trackedProc is one (name, pid) entry parsed from a stack's PID ledger.
 type trackedProc struct {
 	name string
@@ -4162,63 +4157,24 @@ func runUpStop(env string) error {
 		return err
 	}
 	projectID := projectIDForDir(projectDir)
-	return stopEnv(env, projectDir, envDownSteps{
-		hosts: func() (stackStop, error) { return stopStack(projectID, env) },
-		reportStopped: func() {
-			reportStoppedSession(context.Background(), projectDir, env, os.Stdout, time.Now().UTC())
-		},
-		infra: func() (int, error) {
-			activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
-			composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
-			if composeErr != nil {
-				composeErr = fmt.Errorf("compose containers: %w", composeErr)
-			}
-			infraStopped, err := stopHostInfra(env)
-			if err != nil {
-				err = fmt.Errorf("host infrastructure: %w", err)
-			}
-			return infraStopped, errors.Join(err, composeErr)
-		},
-	})
-}
-
-// envDownSteps are `forge env down`'s three steps, injected so the order and
-// the error policy between them are testable without a machine's processes:
-// stop the stack's host processes, mark its presence row stopped, and stop
-// its compose containers and host infrastructure (reporting how many host
-// infrastructure servers were running).
-type envDownSteps struct {
-	hosts         func() (stackStop, error)
-	reportStopped func()
-	infra         func() (int, error)
-}
-
-// stopEnv runs envDownSteps in order and reports the teardown.
-func stopEnv(env, projectDir string, s envDownSteps) error {
-	res, hostErr := s.hosts()
-	if hostErr != nil && !res.planned {
-		// The process table could not be read, so whether the stack hosts
-		// this command is unknown too: stopping its infrastructure could
-		// pull the database out from under this very session.
-		return hostErr
+	res, err := stopStack(projectID, env)
+	if err != nil {
+		return err
 	}
 	if len(res.skipped) > 0 {
 		// The stack hosts this command, so it is still running: its presence
 		// row stays live, and its host infrastructure stays up. Stopping the
 		// database under the server running this command ends the session
 		// as surely as signalling the server would.
-		return errors.Join(hostErr, reportUpStop(env, projectDir, res, 0, nil))
+		return reportUpStop(env, projectDir, res, 0, nil)
 	}
 
 	// Mark the presence row stopped. This is the teardown report for a
 	// DETACHED stack (`forge env up --background`), which has no
 	// supervising process of its own to report it — see up_session.go.
 	// Best-effort: the stack is already stopped above, and a cosmetic row
-	// must not turn a successful teardown into a failure. Not when a host
-	// process could not be proven stopped: the row would claim it was.
-	if hostErr == nil {
-		s.reportStopped()
-	}
+	// must not turn a successful teardown into a failure.
+	reportStoppedSession(context.Background(), projectDir, env, os.Stdout, time.Now().UTC())
 
 	// Host infrastructure is stopped SEPARATELY, because it is not one of
 	// the child processes the ledger tracks. A host-run postgres is started
@@ -4233,24 +4189,24 @@ func stopEnv(env, projectDir string, s envDownSteps) error {
 	// Its DATA survives; this stops the server, it does not reset the
 	// database. All declared servers are attempted, and a failure is returned
 	// rather than reporting a successful empty teardown.
-	//
-	// It runs even when a host process could not be proven stopped: stop
-	// everything, then report. Returning first left the IdP and databases of
-	// a stack whose runners had already exited holding their ports, and the
-	// next `forge env up` refused to start against them.
-	infraStopped, infraErr := s.infra()
-	return errors.Join(hostErr, reportUpStop(env, projectDir, res, infraStopped, infraErr))
+	activateDevStack(context.Background(), projectDir, env, renderToLaunch, inspectBlocks)
+	composeErr := (deploytarget.ComposeProvider{ProjectDir: projectDir}).StopOwned(context.Background(), env)
+	if composeErr != nil {
+		composeErr = fmt.Errorf("compose containers: %w", composeErr)
+	}
+	infraStopped, err := stopHostInfra(env)
+	if err != nil {
+		err = fmt.Errorf("host infrastructure: %w", err)
+	}
+	return reportUpStop(env, projectDir, res, infraStopped, errors.Join(err, composeErr))
 }
 
 func reportUpStop(env, projectDir string, res stackStop, infraStopped int, infraErr error) error {
-	if res.stopped == 0 && res.unproven == 0 && len(res.skipped) == 0 {
+	if res.stopped == 0 && len(res.skipped) == 0 {
 		fmt.Printf("[down] no owned Forge host processes found for env=%s in %s.\n", env, projectDir)
 	}
 	if res.stopped > 0 {
 		fmt.Printf("[down] signalled %d host process tree(s) for env=%s.\n", res.stopped, env)
-	}
-	if res.unproven > 0 {
-		fmt.Printf("[down] signalled %d host process tree(s) for env=%s but could not prove them stopped; the stack's records are kept for a retry.\n", res.unproven, env)
 	}
 	if len(res.skipped) > 0 {
 		fmt.Printf("[down] left %d process tree(s) and the host infrastructure for env=%s running: they host this command. "+

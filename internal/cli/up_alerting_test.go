@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,7 +37,7 @@ func TestPrepareLocalAlertingRendersWithTheSharedRenderer(t *testing.T) {
 			{Match: map[string]string{}, Receiver: "reliant-inapp"},
 		},
 	})
-	la, err := prepareLocalAlerting(context.Background(), dir, "dev", e, map[string]string{"HOOK_TOKEN": "s3cret-hook-token"})
+	la, err := prepareLocalAlerting(dir, "dev", e, map[string]string{"HOOK_TOKEN": "s3cret-hook-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +86,7 @@ func TestPrepareLocalAlertingRendersWithTheSharedRenderer(t *testing.T) {
 	tok, _ := os.ReadFile(filepath.Join(sec, clickstack.AlertsInAppTokenFile))
 	e.Observability.Alerts.Receivers = nil
 	e.Observability.Alerts.Routes = nil
-	if _, err := prepareLocalAlerting(context.Background(), dir, "dev", e, nil); err != nil {
+	if _, err := prepareLocalAlerting(dir, "dev", e, nil); err != nil {
 		t.Fatal(err)
 	}
 	if again, _ := os.ReadFile(filepath.Join(sec, clickstack.AlertsInAppTokenFile)); string(again) != string(tok) {
@@ -103,7 +102,7 @@ func TestPrepareLocalAlertingIsOffWithoutTheLoop(t *testing.T) {
 	dir := t.TempDir()
 	e := localAlertingEntities(nil)
 	e.Observability.AlertmanagerPort, e.Observability.AlertsPort = 0, 0
-	if la, err := prepareLocalAlerting(context.Background(), dir, "dev", e, nil); la != nil || err != nil {
+	if la, err := prepareLocalAlerting(dir, "dev", e, nil); la != nil || err != nil {
 		t.Fatalf("got %v, %v", la, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, clickstack.AlertmanagerDir)); !os.IsNotExist(err) {

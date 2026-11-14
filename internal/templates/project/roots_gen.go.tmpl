@@ -124,7 +124,7 @@ func rootCommands(deps Deps) []*cobra.Command {
 		},
 {{- end}}
 	}
-{{- if and .Root (not $.RootFlagsHomed) (or (not .Root.HasConfig) .Root.Config)}}
+{{- if and .Root (not $.RootFlagsHomed)}}
 	config.RegisterFlags({{.Var}})
 {{- end}}
 {{- $var := .Var}}

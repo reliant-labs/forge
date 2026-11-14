@@ -4,14 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
-	dbgsvc "github.com/reliant-labs/forge/internal/debug"
 )
 
 func newBreakCmd(_ *factory.Factory) *cobra.Command {
@@ -80,11 +78,10 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 		asFunc = !isFileLineSpec(spec)
 	}
 
-	dbg, session, err := connectWithSession()
+	dbg, err := connectToSession()
 	if err != nil {
 		return err
 	}
-	defer dbg.Disconnect()
 
 	if asFunc {
 		// If the user passed a short name (e.g. "Create" without a package
@@ -102,7 +99,6 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 		if err != nil {
 			return fmt.Errorf("setting function breakpoint %q: %w", spec, err)
 		}
-		recordBreakpoint(session, bp.ID)
 		printBreakpoint(*bp, jsonOutput)
 		return nil
 	}
@@ -119,21 +115,8 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 	if err != nil {
 		return fmt.Errorf("setting breakpoint at %s: %w", spec, err)
 	}
-	recordBreakpoint(session, bp.ID)
 	printBreakpoint(*bp, jsonOutput)
 	return nil
-}
-
-// recordBreakpoint adds id to the breakpoints this session created
-// (SessionInfo.BreakpointIDs).
-func recordBreakpoint(session *dbgsvc.SessionInfo, id int) {
-	if slices.Contains(session.BreakpointIDs, id) {
-		return
-	}
-	session.BreakpointIDs = append(session.BreakpointIDs, id)
-	if err := debugSvc().SaveSession(".", session); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: saving session: %v\n", err)
-	}
 }
 
 func newBreakpointsCmd(_ *factory.Factory) *cobra.Command {
@@ -208,19 +191,13 @@ func newClearCmd(_ *factory.Factory) *cobra.Command {
 }
 
 func runDebugClear(id int) error {
-	dbg, session, err := connectWithSession()
+	dbg, err := connectToSession()
 	if err != nil {
 		return err
 	}
 	defer dbg.Disconnect()
 	if err := dbg.ClearBreakpoint(id); err != nil {
 		return fmt.Errorf("clearing breakpoint: %w", err)
-	}
-	if i := slices.Index(session.BreakpointIDs, id); i >= 0 {
-		session.BreakpointIDs = slices.Delete(session.BreakpointIDs, i, i+1)
-		if err := debugSvc().SaveSession(".", session); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: saving session: %v\n", err)
-		}
 	}
 	return nil
 }

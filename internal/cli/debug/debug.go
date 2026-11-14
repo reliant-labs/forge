@@ -41,13 +41,12 @@ commands (break, continue, eval, ...) reconnect to the same debugger.
 
 A session comes from 'start <service>' (forge builds and runs it), 'start
 --attach <pid>' (a running process), or 'connect <addr>' (a dlv server forge
-did not start). 'start' leaves the target halted (at entry, or where attach
-found it) unless you pass --run; 'continue --timeout' waits for the next
-breakpoint hit without trapping you. 'stop' kills only what 'start'
+did not start). The target runs from the start; 'continue --timeout' waits for
+the next breakpoint hit without trapping you. 'stop' kills only what 'start'
 launched: an attached process is detached with its breakpoints removed.
 
 Examples:
-  forge debug start api --run
+  forge debug start api
   forge debug break CreateTask
   forge debug break internal/handlers/tasks/rpc_create_task.go:42
   forge debug continue --timeout 60s

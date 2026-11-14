@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fixedPointWriter is a forge writer whose output already matches the tree
@@ -45,7 +44,6 @@ func runPipelineOK(t *testing.T, dir string) string {
 // change is the birth ledger recording a newly absent scaffold printed "0
 // changed".
 func TestGenerate_ChangeCountIncludesTheScaffoldLedger(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
 	checksums.ResetScaffoldLedgerCache()
@@ -87,7 +85,6 @@ func TestGenerate_ChangeCountIncludesTheScaffoldLedger(t *testing.T) {
 // (JSON) records its hash in .forge/hashes.json, which was saved after the
 // completion line — so the line counted the JSON but not the state file.
 func TestGenerate_ChangeCountIncludesOwnershipState(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "x.go"), "package internal\n")
 
@@ -119,7 +116,6 @@ func TestGenerate_ChangeCountIncludesOwnershipState(t *testing.T) {
 // TestGenerate_ChangeCountIncludesRemovals: retiring a generated file is a
 // change. It was counted as touched and nothing else.
 func TestGenerate_ChangeCountIncludesRemovals(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "internal", "stale_gen.go"), "package internal\n")
 
@@ -142,7 +138,6 @@ func TestGenerate_ChangeCountIncludesRemovals(t *testing.T) {
 // a project file without going through forge's writers still changed the
 // tree. It is counted, and named, so the reader can tell it apart.
 func TestGenerate_ChangeCountNamesWritesOutsideForgeWriters(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	writeTreeFileT(t, filepath.Join(dir, "config", "app.yaml"), "a: 1\n")
 

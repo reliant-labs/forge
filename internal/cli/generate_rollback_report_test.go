@@ -44,7 +44,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/checksums"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // rootCauseErr is the real abort from the dogfood run: a typecheck failure
@@ -197,7 +196,6 @@ func TestClassifyPostRollbackErrors_SplitsTouchedFromUntouched(t *testing.T) {
 // Post-rollback the tree cannot build and every error cites a file that is
 // either untouched or from an earlier run. Not one of them is the fault.
 func TestRollbackGeneratedTree_DogfoodScenarioEndToEnd(t *testing.T) {
-	testkit.Slow(t, "execs git and go")
 	root := t.TempDir()
 	write := func(rel, body string) {
 		t.Helper()

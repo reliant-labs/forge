@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // ciGenerator returns a service-kind generator whose project dir already
@@ -53,7 +52,6 @@ func readCIFile(t *testing.T, path string) string {
 // A CLI project gets neither an image build nor a deploy workflow: there is no
 // Dockerfile to build from and nothing to deploy.
 func TestCIFiles_CLIGetsNoImageOrDeployWorkflow(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	g := &ProjectGenerator{Name: "myapp", Path: dir, ModulePath: "github.com/example/myapp", Kind: "cli"}
 	if err := os.MkdirAll(filepath.Join(dir, "cmd", "myapp"), 0o755); err != nil {
@@ -79,7 +77,6 @@ func TestCIFiles_CLIGetsNoImageOrDeployWorkflow(t *testing.T) {
 // own. With no deploy env there is no registry to push to, and no
 // build-images.yml that could only fail.
 func TestCIFiles_BuildImagesBuildsForTheFirstDeployEnv(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	g, dir := ciGenerator(t, config.FeaturesConfig{})
 	writeEnvMain(t, dir, "staging", "prod")
 	if err := g.generateCIFiles(); err != nil {

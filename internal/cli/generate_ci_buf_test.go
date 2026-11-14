@@ -11,7 +11,6 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // The scaffolded verify-generated job reruns `forge generate` and demands
@@ -25,7 +24,6 @@ import (
 // from .proto files existing. A CLI with protos got a verify-generated job
 // that died on `exec: "buf": executable file not found`.
 func TestCIVerifyGeneratedInstallsBufExactlyWhenGenerateRunsIt(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	const bufStep = "buf generate (Go stubs)"
 	var gate func(*pipelineContext) bool
 	for _, step := range generateSteps() {

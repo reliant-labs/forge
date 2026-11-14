@@ -24,7 +24,6 @@ package hostedimage
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -99,93 +98,6 @@ func UnderBase(base, image string) bool {
 type Item struct {
 	Owner string
 	Image string
-	// Unbuilt marks a workload forge does NOT build (no `build`): its image
-	// is someone else's — a third-party image or one CI pushed. A host-bearing
-	// unbuilt image outside the push base is not a finding: forge copies it
-	// into the push base at release time (MirrorRepository) and the release
-	// pins the copy by digest. A BUILT image outside the base is: forge would
-	// push its own build somewhere the platform does not pull from.
-	Unbuilt bool
-}
-
-// MirrorRepository is where forge copies a THIRD-PARTY image so the platform
-// can pull it: `<base>/<MirrorSourcePath(image)>` — the repository minus its
-// registry host, so `docker.io/traefik/whoami:v1.10.3` becomes
-// `<base>/traefik/whoami`. The path is kept whole (not just its last segment)
-// so two sources that share a name (`bitnami/redis`, `library/redis`) cannot
-// land in one repository.
-//
-// "" when there is nothing to mirror: no base, a bare image (it already
-// resolves under the base, ResolveBase), or an image already under the base.
-// The result is not yet known to be a name the registry accepts:
-// ValidateMirror says.
-func MirrorRepository(base, image string) string {
-	base = NormalizeBase(base)
-	repo := Repository(image)
-	if base == "" || !HasRegistryHost(repo) || UnderBase(base, repo) {
-		return ""
-	}
-	return base + "/" + MirrorSourcePath(repo)
-}
-
-// dockerHubHosts are the spellings of Docker Hub's registry. A reference on
-// any of them names one repository namespace, and a one-segment path there is
-// an official image under the implicit `library/` namespace.
-var dockerHubHosts = map[string]bool{
-	"docker.io":            true,
-	"index.docker.io":      true,
-	"registry-1.docker.io": true,
-}
-
-// MirrorSourcePath is a host-bearing repository's path with the registry host
-// removed and Docker Hub's implicit namespace written out, so every spelling
-// of one upstream repository maps to one path: `docker.io/nginx`,
-// `index.docker.io/nginx` and `docker.io/library/nginx` are all
-// `library/nginx`. Other registries keep their path verbatim.
-func MirrorSourcePath(repository string) string {
-	host, path, _ := strings.Cut(Repository(repository), "/")
-	if dockerHubHosts[host] && !strings.Contains(path, "/") {
-		return "library/" + path
-	}
-	return path
-}
-
-// CanonicalSource is a source reference's repository with Docker Hub's host
-// spellings and implicit namespace normalized (`docker.io/library/nginx`), so
-// two spellings of one upstream repository compare equal.
-func CanonicalSource(repository string) string {
-	host, _, _ := strings.Cut(Repository(repository), "/")
-	if dockerHubHosts[host] {
-		host = "docker.io"
-	}
-	return host + "/" + MirrorSourcePath(repository)
-}
-
-// mirrorComponentRe is the distribution spec's repository path component:
-// lowercase alphanumerics, separated by `.`, `_`, `__` or runs of `-`.
-var mirrorComponentRe = regexp.MustCompile(`^[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*$`)
-
-// maxMirrorReferenceLen is the longest image name (host and path) the
-// reference grammar the registry and the container runtime parse accepts.
-const maxMirrorReferenceLen = 255
-
-// ValidateMirror reports why a mirror destination is not a repository the
-// platform registry would accept: a path component outside the distribution
-// grammar, or a name past the reference length limit. Checked before anything
-// is copied, so a release cut is refused with the cause rather than failing
-// half-way through a copy.
-func ValidateMirror(destination string) error {
-	if len(destination) > maxMirrorReferenceLen {
-		return fmt.Errorf("mirror repository %s is %d characters, over the %d a registry accepts", destination, len(destination), maxMirrorReferenceLen)
-	}
-	_, path, _ := strings.Cut(destination, "/")
-	for _, c := range strings.Split(path, "/") {
-		if !mirrorComponentRe.MatchString(c) {
-			return fmt.Errorf("mirror repository %s has path component %q, which is not a valid repository name "+
-				"(lowercase letters and digits, separated by '.', '_', '__' or '-')", destination, c)
-		}
-	}
-	return nil
 }
 
 // Finding is one host-bearing image on a hosted item.
@@ -231,10 +143,6 @@ func (f Finding) FixHint() string {
 // OffBase is every host-bearing image among items, judged against base when
 // base is known.
 //
-// An UNBUILT item's image is never a finding either: forge mirrors it into the
-// base at release time (MirrorRepository), so it is pullable whatever registry
-// it names.
-//
 // A BARE image is never a finding: that is the resolved, correct shape. The
 // caller that must refuse an unresolvable bare image does so separately
 // (internal/cli: checkHostedImagesResolve), because the remedy differs —
@@ -244,7 +152,7 @@ func OffBase(items []Item, base string) []Finding {
 	base = NormalizeBase(base)
 	var out []Finding
 	for _, it := range items {
-		if it.Image == "" || it.Unbuilt || !HasRegistryHost(Repository(it.Image)) {
+		if it.Image == "" || !HasRegistryHost(Repository(it.Image)) {
 			continue
 		}
 		if UnderBase(base, it.Image) {

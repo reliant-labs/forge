@@ -135,12 +135,6 @@ func TestConnectStopReleases(t *testing.T) {
 	withWDT(t, t.TempDir())
 	d := launchTarget(t) // stands in for an env's delve runner
 	waitState(t, d.Addr(), dbgsvc.TargetRunning)
-	// Another client's breakpoint, set before forge connects. main.main is
-	// past, so it never stops the target.
-	external, err := connectT(t, d.Addr()).SetFunctionBreakpoint("main.main", "")
-	if err != nil {
-		t.Fatalf("external breakpoint: %v", err)
-	}
 
 	if err := runConnect(d.Addr(), false); err != nil {
 		t.Fatalf("connect: %v", err)
@@ -155,16 +149,6 @@ func TestConnectStopReleases(t *testing.T) {
 	if err := runContinue(10*time.Second, false, false); err != nil {
 		t.Fatalf("continue: %v", err)
 	}
-	// A repeated connect to the same server keeps the breakpoint this
-	// session created (review B1): stop must still clear it.
-	if err := runConnect(d.Addr(), false); err != nil {
-		t.Fatalf("repeated connect: %v", err)
-	}
-	// As `forge debug stop` does: the session as break left it, naming the
-	// breakpoint this session created.
-	if s, _ = debugSvc().LoadSession("."); s == nil || len(s.BreakpointIDs) != 1 {
-		t.Fatalf("session after break and a repeated connect = %+v, want one recorded breakpoint", s)
-	}
 	if err := runStop(context.Background(), s); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -178,16 +162,9 @@ func TestConnectStopReleases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	survived := false
 	for _, bp := range bps {
-		switch {
-		case bp.ID == external.ID:
-			survived = true
-		case bp.ID > 0:
+		if bp.ID > 0 {
 			t.Fatalf("breakpoint %d survived stop of a connected session", bp.ID)
 		}
-	}
-	if !survived {
-		t.Fatalf("stop cleared breakpoint %d, which another client set before forge connected", external.ID)
 	}
 }

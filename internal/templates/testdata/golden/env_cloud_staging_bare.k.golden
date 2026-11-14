@@ -182,7 +182,7 @@ _hosted_frontend = lambda f: forge.Frontend -> forge.Frontend {
     f | {
         image = f.name
         runtime = forge.OnHosted {}
-        runtime_config = f.runtime_config | _api_config
+        runtime_config = _api_config
     }
 }
 

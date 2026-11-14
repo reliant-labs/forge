@@ -439,8 +439,6 @@ var coreComponents = []string{
 	"page_header",
 	"badge",
 	"modal",
-	// The dialog lifecycle hook modal and sidebar_layout import ("./modal_dialog").
-	"modal_dialog",
 	"skeleton_loader",
 	"pagination",
 	"search_input",

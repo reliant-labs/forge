@@ -24,17 +24,6 @@ func platformTestEnv() (*KCLEntities, []ClusterEntity) {
 func captureChartInstalls(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
-	// The chart specs are built with forge's CRD bundles, and the Gateway API
-	// one is downloaded from GitHub on a cold cache. These tests are about
-	// install order and routing, so they never reach the network.
-	restoreCRDs := fetchHelmChartCRDsFn
-	fetchHelmChartCRDsFn = func(_ context.Context, c HelmChartEntity, _ string) (string, error) {
-		if c.CRDs == "" {
-			return "", nil
-		}
-		return "# " + c.CRDs + " CRDs (stub)\n", nil
-	}
-	t.Cleanup(func() { fetchHelmChartCRDsFn = restoreCRDs })
 	restoreRender := renderPlatformPrerequisitesFn
 	renderPlatformPrerequisitesFn = func(context.Context, string, *KCLEntities) (string, error) { return "", nil }
 	t.Cleanup(func() { renderPlatformPrerequisitesFn = restoreRender })

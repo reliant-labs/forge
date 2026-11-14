@@ -315,18 +315,6 @@ tasks:
     cmds:
       - scripts/prettier.sh {{.CLI_ARGS}}
 
-  docs:benefits:
-    # docs/benefits.md and README.md's `<!-- benefits:start -->` block are
-    # rendered from internal/benefits/benefits.yaml; edit the YAML, then run
-    # this. TestRenderedFilesAreCurrent fails while either file is stale.
-    # The renders are prettier-canonical by construction; the --check proves
-    # it for the prose the YAML carries verbatim (a claim prettier would
-    # rewrite would make the pre-commit hook and the test fight forever).
-    desc: Regenerate docs/benefits.md and the README benefits table from internal/benefits/benefits.yaml
-    cmds:
-      - go test -count=1 ./internal/benefits -run TestRenderedFilesAreCurrent -update
-      - scripts/prettier.sh --check docs/benefits.md README.md
-
   canary:
     # The consumer build check (dev-docs/consumer-canary.md): reliant and
     # control-plane at their main, built against THIS checkout. The consumers

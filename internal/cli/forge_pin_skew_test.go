@@ -1,13 +1,8 @@
 package cli
 
-import (
-	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
-)
+import "testing"
 
 func TestPinSkew(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	const pin = "v0.1.44-0.20261007082641-d6b5d722b839"
 	for _, tc := range []struct {
 		name, pin, binary, commit string

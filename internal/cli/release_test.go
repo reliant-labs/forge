@@ -14,7 +14,6 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestReleaseFileStem_PreservesDots pins Fix 3: a semver version's literal
@@ -55,7 +54,6 @@ func TestReleaseFileStem_PreservesDots(t *testing.T) {
 // through. What still matters — and is what this now pins — is that a
 // release written under a label reads back under that same label.
 func TestReleaseVersionRoundTrips(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "roundtrip-project")
 	const version = "v1.0.0"
 
@@ -96,7 +94,6 @@ func sha(c string) string {
 // `forge env build --release` reads back intact, including the per-image shared
 // digest map and platforms.
 func TestRelease_LedgerRoundTrip(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	want := release.Release{
 		Version: "v1.4.0",
@@ -124,7 +121,6 @@ func TestRelease_LedgerRoundTrip(t *testing.T) {
 // TestReadRelease_MissingIsNilNil keeps "no such release" distinct from an
 // error so promote can produce a friendly not-found message.
 func TestReadRelease_MissingIsNilNil(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	got, err := testGetRelease(t, t.TempDir(), "v9.9.9")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -337,7 +333,6 @@ func TestResolveReleaseDigests_VariantOnlyError(t *testing.T) {
 // be cut at all — release.Validate refuses it — so the reachable shape is a
 // release of only packages.
 func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 	if err := testCutRelease(t, dir, release.Release{
@@ -365,7 +360,6 @@ func TestRunPromote_NoImagesReleaseSurfacesActionableError(t *testing.T) {
 
 // TestWriteRelease_EmptyIsRefused: a release naming nothing cannot be cut.
 func TestWriteRelease_EmptyIsRefused(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	err := testCutRelease(t, t.TempDir(), release.Release{Version: "v3.1.0", Artifacts: map[string]release.Artifact{}})
 	if !errors.Is(err, release.ErrInvalid) {
 		t.Fatalf("an empty release must be refused as invalid, got %v", err)
@@ -377,7 +371,6 @@ func TestWriteRelease_EmptyIsRefused(t *testing.T) {
 // digests from the RELEASE binding — NOT the per-env build state — so a
 // promoted env ships the release's bytes.
 func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 
 	// Per-env build state holds a DIFFERENT (older) digest for control-plane.
@@ -420,7 +413,6 @@ func TestResolveDeployDigests_BoundEnvUsesRelease(t *testing.T) {
 // release deployed while shipping something else entirely. Every tag-qualified
 // key of an image the release pins must follow the release.
 func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := buildtarget.WriteState(dir, "prod", buildtarget.State{
 		Service: "reliant-api-server", Image: "reliant", Tag: "e2e",
@@ -453,7 +445,6 @@ func TestResolveDeployDigests_ReleaseOverridesTaggedKeys(t *testing.T) {
 // env with NO release binding resolves exactly the per-env build-state digests,
 // with an empty bound release — byte-identical to the pre-release flow.
 func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if err := WriteBuildState(dir, "staging", BuildState{
 		Image: "control-plane", Tag: "v1.4.0", Pushed: true, PushedAt: nowRFC3339(), Digest: sha("c"),
@@ -476,7 +467,6 @@ func TestResolveDeployDigests_UnboundEnvFallsBack(t *testing.T) {
 // TestResolveDeployDigests_NoDigestSkipsRelease confirms --no-digest disables
 // the release lookup too (the tag-only escape hatch overrides everything).
 func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	if _, err := testBindings(t, dir).Append(context.Background(), release.Promotion{
 		Env: "prod", Release: "v1.4.0", Kind: release.KindPromote, Resolved: map[string]string{"control-plane": sha("a")},
@@ -497,7 +487,6 @@ func TestResolveDeployDigests_NoDigestSkipsRelease(t *testing.T) {
 // a release ledger, proving it records the env→release binding with the
 // resolved digests snapshotted from the release.
 func TestRunPromote_WritesBinding(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	t.Chdir(dir)
 
@@ -535,7 +524,6 @@ func TestRunPromote_WritesBinding(t *testing.T) {
 // TestRunPromote_UnknownReleaseErrors confirms promoting a release that was
 // never cut fails with a clear not-found rather than writing a bad binding.
 func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := useTestLedger(t, t.TempDir())
 	t.Chdir(dir)
 	if err := runPromote(context.Background(), "v9.9.9", "staging", promoteOptions{Ledger: declaredLedger(t, dir, "staging")}); err == nil {
@@ -552,7 +540,6 @@ func TestRunPromote_UnknownReleaseErrors(t *testing.T) {
 // satisfy release.Validate fails to READ, rather than being silently
 // skipped) is unchanged.
 func TestReleaseLedger_KindlessArtifactIsRefused(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := newLedgerTestProject(t, "kindless-project")
 	path := filepath.Join(testStore(t, dir).Dir(), "releases.jsonl")
 	_ = os.MkdirAll(filepath.Dir(path), 0o700)
@@ -640,7 +627,6 @@ func TestResolveReleaseDigests_PackageOnlyReleaseSaysSo(t *testing.T) {
 // while the bundle it planned carries the old digests, and applying it binds the
 // ledger to a release whose code never runs.
 func TestResolveDeployDigests_NamedReleaseWinsOverThePromotedOne(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	ctx := context.Background()
 

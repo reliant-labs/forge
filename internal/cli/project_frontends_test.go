@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge project frontends` prints the in-repo frontends any env's KCL
@@ -15,7 +13,6 @@ import (
 // loops over. A frontend outside the repository (a sibling checkout) is not
 // listed — nothing here can install or build it.
 func TestProjectFrontends_PrintsKCLDeclaredInRepoPaths(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "forge.yaml"), []byte("name: demo\nmodule_path: github.com/example/demo\n"), 0o644); err != nil {
 		t.Fatal(err)

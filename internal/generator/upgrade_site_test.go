@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // A static site — forge.yaml, a root Vite app and deploy/kcl envs, no go.mod
@@ -23,7 +22,6 @@ import (
 // the Go project's files when they apply, so their absence for the site is
 // the fix at work and not an upgrade that wrote nothing at all.
 func TestUpgrade_SiteWithoutGoModuleWritesNoGoProjectFiles(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	t.Parallel()
 	goProjectFiles := []string{"cmd", "pkg", "internal", "Dockerfile", "buf.yaml", "Taskfile.yml", "docker-compose.yml", ".golangci.yml"}
 

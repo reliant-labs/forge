@@ -72,7 +72,7 @@ func TestLibraryCategories(t *testing.T) {
 		CategoryCharts:   5,
 		CategoryDiagrams: 6,
 		CategoryDeck:     7,
-		CategoryUI:       56,
+		CategoryUI:       55,
 	}
 
 	for cat, want := range expected {
@@ -110,8 +110,7 @@ func TestLibraryDependencies(t *testing.T) {
 		"textarea":       {"form_field_context"},
 		"toggle_switch":  {"form_field_context"},
 		"page_header":    {"link"},
-		"sidebar_layout": {"link", "modal_dialog"},
-		"modal":          {"modal_dialog"},
+		"sidebar_layout": {"link", "modal"},
 		"dropdown_menu":  {"link", "popover"},
 		"context_menu":   {"dropdown_menu", "link", "popover"},
 		"combobox":       {"form_field_context", "popover"},
@@ -314,8 +313,8 @@ func TestLibraryList(t *testing.T) {
 
 	// List all
 	all := lib.List("", "")
-	if len(all) != 89 {
-		t.Errorf("list all should return 89 components, got %d", len(all))
+	if len(all) != 88 {
+		t.Errorf("list all should return 88 components, got %d", len(all))
 	}
 
 	// List filtered by category

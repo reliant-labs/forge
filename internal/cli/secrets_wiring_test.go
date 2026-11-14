@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // sampleSecretProviderJSON is an entity render carrying a FileSecrets
@@ -103,7 +101,6 @@ func TestSecretRefsForK8sServices(t *testing.T) {
 }
 
 func TestSecretProviderFromEntities_StorePathResolved(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	dir := t.TempDir()
 	// Populate the store so the provider loads it; assert the value
 	// resolves (proving the relative path was joined against projectDir).

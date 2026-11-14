@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // newExplainDriftCtx builds a minimal pipelineContext over a tmpdir
@@ -53,7 +52,6 @@ func newExplainDriftCtx(t *testing.T, rel string, rendered, onDisk []byte) (*pip
 // no manifest snapshot/restore dance anymore: the truth lives in the
 // file), and finish prints a diff and returns the drift error.
 func TestExplainDrift_EndToEnd(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -121,7 +119,6 @@ func TestExplainDrift_EndToEnd(t *testing.T) {
 
 // TestExplainDrift_DiffTruncation pins the bounded-diff contract.
 func TestExplainDrift_DiffTruncation(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}

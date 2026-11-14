@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 func stubGoMod(t *testing.T, versions map[string]string) {
@@ -42,7 +41,6 @@ func TestBufFor(t *testing.T) {
 // The real lookup: a directory with no go.mod declares nothing, and does not
 // fail.
 func TestGoModVersion_NoModule(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README"), nil, 0o644); err != nil {
 		t.Fatal(err)

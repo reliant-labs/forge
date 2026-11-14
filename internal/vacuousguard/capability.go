@@ -184,10 +184,6 @@ func reports(branch ast.Node) bool {
 	}
 	found := false
 	ast.Inspect(branch, func(n ast.Node) bool {
-		if reportingHelper(n) {
-			found = true
-			return true
-		}
 		sel, ok := testingSelector(n)
 		if !ok {
 			return true
@@ -202,27 +198,6 @@ func reports(branch ast.Node) bool {
 		return true
 	})
 	return found
-}
-
-// reportingHelpers are the package-qualified helpers that always tell someone:
-// testdocker.Unavailable skips on a developer machine and fails under CI, the
-// requireTool shape this rule asks for, spelled for smoke tests.
-var reportingHelpers = map[string]bool{
-	"testdocker.Unavailable": true,
-}
-
-// reportingHelper reports whether n is a call to one of reportingHelpers.
-func reportingHelper(n ast.Node) bool {
-	call, ok := n.(*ast.CallExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && reportingHelpers[pkg.Name+"."+sel.Sel.Name]
 }
 
 // work counts the calls in a branch that the test DEPENDS ON — the ones whose

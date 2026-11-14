@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Every file forge writes into a project must already be what that project's
@@ -120,7 +119,6 @@ func TestScaffoldedConfigProtosAreFormatClean(t *testing.T) {
 // The same protos, judged by buf itself — the authority the structural check
 // above approximates.
 func TestScaffoldedConfigProtosPassBufFormat(t *testing.T) {
-	testkit.Slow(t, "execs buf")
 	requireBuf(t)
 	dir, protos := scaffoldConfigProtos(t)
 	args := []string{"format", "--diff", "--exit-code"}

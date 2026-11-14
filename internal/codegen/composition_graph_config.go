@@ -194,8 +194,7 @@ type processConfigs struct {
 	// process is what the command tree's runRoot reads of each config, by
 	// graph input (composition_graph_process_reads.go); nil when the tree
 	// declares no runRoot, and the scaffolded serve.go's fields stand in.
-	process        nodeConfigReads
-	processForRoot func(string) nodeConfigReads
+	process nodeConfigReads
 }
 
 // rootMessage is the root config's message name; "" without configs.
@@ -565,11 +564,7 @@ func markProcessConfig(views []graphRootView, pc *processConfigs, reads map[stri
 	var problems []string
 	for i := range views {
 		v := &views[i]
-		rootPC := *pc
-		if pc.processForRoot != nil {
-			rootPC.process = pc.processForRoot(v.Name)
-		}
-		v.Config = rootPC.rootConfig(*v, reads)
+		v.Config = pc.rootConfig(*v, reads)
 		v.HasConfig = true
 		v.Loads = nil
 		for _, in := range pc.inputs {
@@ -578,7 +573,7 @@ func markProcessConfig(views []graphRootView, pc *processConfigs, reads map[stri
 			// What runRoot reads of the config is reached by every process
 			// that loads it, as the root config's is (serverkitConfig reads
 			// it off root.Configs).
-			rootPC.addProcessFields(in.model, in.msg.Name, got, v.opensDB())
+			pc.addProcessFields(in.model, in.msg.Name, got, v.opensDB())
 			for _, node := range v.Reach {
 				if r := reads[node][in.msg.Name]; r != nil {
 					readers = append(readers, node)

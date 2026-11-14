@@ -9,7 +9,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // Tests for a release deploy's `--from` (control-plane
@@ -270,7 +269,6 @@ func TestPromoteFrom_StalePromotionWarningIsInTheTextPlan(t *testing.T) {
 // (the same-control-plane guard); this is the backstop that keeps that the
 // only way in.
 func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	store := testBindings(t, newLedgerTestProject(t, "scratch"))
 	p := release.Promotion{Env: "prod", Release: "v1", Kind: release.KindPromote,
 		Resolved: map[string]string{"api": sha("a")}}
@@ -288,7 +286,6 @@ func TestFileLedger_RefusesAVersionItWasNotGiven(t *testing.T) {
 // does not name the same bytes across two ledgers, and the source_moved check
 // needs the source promotion to be a row in the TARGET's control plane.
 func TestPromoteFrom_CrossLedgerIsRefusedBeforeAnyRPC(t *testing.T) {
-	testkit.Slow(t, "execs git")
 	// The org is the CREDENTIAL's, so each env names its credential by token_env
 	// and the stubbed resolver maps that to an org.
 	prevResolver := orgResolver

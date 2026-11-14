@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/testdocker"
 )
 
 // TestServiceDockerBuild_ReproducibleImageID builds one tiny image twice with
@@ -26,10 +25,10 @@ import (
 // and the IDs differ: this is the otelcol-reliant regression in miniature.
 func TestServiceDockerBuild_ReproducibleImageID(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
-		testdocker.Unavailable(t, "docker not on PATH")
+		t.Skip("docker not on PATH")
 	}
 	if err := exec.Command("docker", "info").Run(); err != nil {
-		testdocker.Unavailable(t, "no docker daemon")
+		t.Skip("no docker daemon")
 	}
 	dir := t.TempDir()
 	// No Dockerfile default: the epoch must come from forge's argv. (File

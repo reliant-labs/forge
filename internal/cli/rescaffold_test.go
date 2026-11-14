@@ -36,10 +36,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/factory"
-	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // scaffoldForRescaffold runs the `forge project new` scaffold lane into a temp
@@ -247,7 +245,6 @@ func TestRescaffold_WorkflowTheProjectDoesNotHave(t *testing.T) {
 // Rescaffold restores ABSENT files only. Overwriting a present one would
 // discard the user's edits to a file forge promised never to touch.
 func TestRescaffold_RefusesAPresentFile(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root, cfg := scaffoldForRescaffold(t, nil)
 	const rel = ".pre-commit-config.yaml"
 	edited := []byte("# mine\n")
@@ -279,7 +276,6 @@ func TestRescaffold_RefusesAPresentFile(t *testing.T) {
 // A deleted service proto took the service with it; the refusal names the
 // verb that adds a service rather than a generic "not scaffolded".
 func TestRescaffold_ServiceProtoNamesScaffoldService(t *testing.T) {
-	testkit.Slow(t, "execs go")
 	root, cfg := scaffoldForRescaffold(t, func(g *generator.ProjectGenerator) { g.ServiceName = "item" })
 	const rel = "proto/services/item/v1/item.proto"
 	removeRescaffoldFile(t, root, rel)
@@ -422,17 +418,11 @@ func TestRescaffold_EveryScaffoldedFileIsReemittable(t *testing.T) {
 	//   proto/services/<svc>/v1/<svc>.proto  IS the service — deleting it
 	//                      deletes the service; `forge scaffold service`
 	//                      re-creates one (TestRescaffold_ServiceProtoNamesScaffoldService)
-	//   gen/forge_descriptor/  the derived proto descriptor cache (never
-	//                      committed): any command that reads the descriptor
-	//                      extracts it from proto/ once the root command has
-	//                      registered the extractor, which NewRootCmd now does
-	//                      (#2017), so a test in this package may leave it here
 	skip := func(rel string) bool {
 		if _, ok := serviceProtoOf(rel); ok {
 			return true
 		}
-		return strings.HasPrefix(rel, ".forge/") || rel == ".reliant/project.json" ||
-			strings.HasPrefix(rel, codegen.DescriptorDir+"/")
+		return strings.HasPrefix(rel, ".forge/") || rel == ".reliant/project.json"
 	}
 	for name, shape := range map[string]func(*generator.ProjectGenerator){
 		"default service": nil,

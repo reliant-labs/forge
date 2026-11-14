@@ -51,15 +51,10 @@ Process RPC procedure filters target metric RPC panels only; RPC service/method
 filters target trace drilldowns. Runtime and workload panels are unaffected.
 Metrics carry the canonical full `procedure`, not invented RPC attributes.
 
-Optional generic viewer metadata: `sections: [{id, title, description}]` on a
-dashboard, `section` on panels, and `panelIds` on filters. Empty/absent targets
-retain the original global behavior; every non-empty target and section must be
-declared. Sections are presentation groups, not authorization or implicit filter
-scope. The console draws each section's `title` as a heading across the grid,
-its `description` (optional, at most 500 bytes) under it, and the section's
-panels below: the unsectioned panels first, then the sections in the order the
-dashboard declares them, each section's panels in their declared order. A
-viewer can hide a section from its heading.
+Optional generic viewer metadata: `sections: [{id, title}]` on a dashboard,
+`section` on panels, and `panelIds` on filters. Empty/absent targets retain the
+original global behavior; every non-empty target and section must be declared.
+Sections are presentation groups, not authorization or implicit filter scope.
 HyperDX cannot target a filter to a subset of tiles, so it omits those dropdowns
 rather than silently applying them globally.
 
@@ -69,11 +64,7 @@ picked none. A `sql` panel whose statement groups by a fixed bucket
 (`toDate`, `toStartOfWeek`) rather than by `{step}` declares `minStep` (`"1d"`):
 a range shorter than two such buckets draws one point, so the console widens
 that panel's range to hold two and says so. Prefer `{step}` in the statement
-when the panel can follow the range. `defaultCompare` on a dashboard
-(`"period"`, or `"release"`, which needs one selected environment) is the
-comparison it opens with: a dashboard of headline figures declares `"period"`,
-so each figure opens beside its change against the previous period. The viewer
-can turn it off.
+when the panel can follow the range.
 
 `scope` on a dashboard is one of `"project"` (the default), `"org"` or `"platform"`. `project` reads the environments selected within the route's project. `org` reads every project of the organization, still narrowed to the selected environments. `platform` says the signals are platform or infrastructure telemetry that belongs to no environment (a database, a message bus, a collector): it carries no `reliant.env.id`, so an environment filter would match nothing, and a reader drops that one predicate and nothing else. The scope is a statement about the data, not an access grant; who may read it, and from which organization's data, stays the reader's decision. Most projects never set it.
 
@@ -160,9 +151,8 @@ ship a panel that reads one to a control plane older than the forge that added
 them.
 
 Postgres panels (a live read-only query of your own database), `link`,
-`browse`, `text` panels (Markdown), `display` (area, stacked, bars, pie, donut, gauge,
-funnel and heatmap pictures of the same query), palette colours per series (`color`,
-`colors`) and sparklines on sql figures (`trendSql`) are in `observability/dashboards/panels`.
+`browse`, `text` panels (Markdown) and `display` (area, stacked, bars, pie, donut, gauge and
+funnel pictures of the same query) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
 to grade its value like Core Web Vitals do; renderers that cannot colour ignore
@@ -209,7 +199,7 @@ The file checks cannot know what your telemetry holds. `forge obs dashboards che
 
 The _Workloads_ dashboard (CPU/memory against requests and limits, restarts and exit reason, image versions, Kubernetes events) and the _Releases_ dashboard (request, error and latency by `service.version`) are generated for every project. They read node-derived and release data that a local `forge env up` does not have, so they ship in the spec and the bundle and are not written to `deploy/observability/dashboards/`.
 
-So is the _Product usage_ dashboard (id `usage`, bundle file `<project>-usage_gen.json`), all `sql` panels over `product_events`, which the local ClickStack has no table for. Its sections: _At a glance_, eight headline figures (DAU, WAU and MAU ending at the end of the range, stickiness DAU/MAU, new users, events, events per active user, records written; turn on Compare for each against the previous period); _Users_, daily and rolling 7-day active users as areas, new against returning as stacked bars, and the most active users table last; _What users do_, records written per entity and the create/update/delete mix per entity, top pages (`page_viewed` by `route`) and events by name, each split signed-in against anonymous; _Retention_, weeks 1, 2, 4 and 8 per weekly cohort as lines and the full 12-cohort table. First-seen (new users, new against returning, cohorts) is a user's first event in the 90 days before the end of the range, not the oldest row `product_events` still holds, so expiring rows never make a long-time user new again, and a user idle longer than 90 days counts as new on their return. Where the events come from: `observability/product-events`. Replace it like any generated dashboard, with a `<project>-usage.json` of your own.
+So is the _Product usage_ dashboard (id `usage`, bundle file `<project>-usage_gen.json`), all `sql` panels over `product_events`, which the local ClickStack has no table for: active users (DAU, WAU, MAU and stickiness), daily active users, new against returning users per day, weekly retention by first-event cohort (the 12 weeks before the end of the range, whatever range is selected; first-seen, here and in new against returning, is a user's first event in the 90 days before the end of the range, not the oldest row `product_events` still holds, so expiring rows never make a long-time user new again, and a user idle longer than 90 days counts as new on their return), top pages (`page_viewed` by `route`), records created, updated and deleted per entity (over time and in total), the most active users and every event by name. Where the events come from: `observability/product-events`. Replace it like any generated dashboard, with a `<project>-usage.json` of your own.
 
 ## Alerts
 

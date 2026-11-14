@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,13 +16,6 @@ import (
 func writeAlertDefaults(t *testing.T, in obsdash.AlertInput) string {
 	t.Helper()
 	dir := t.TempDir()
-	writeAlertDefaultsAt(t, dir, in)
-	return dir
-}
-
-// writeAlertDefaultsAt is writeAlertDefaults into dir.
-func writeAlertDefaultsAt(t *testing.T, dir string, in obsdash.AlertInput) {
-	t.Helper()
 	b, err := obsdash.MarshalAlertDefaults(in)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +45,7 @@ func writeAlertDefaultsAt(t *testing.T, dir string, in obsdash.AlertInput) {
 			t.Fatal(err)
 		}
 	}
+	return dir
 }
 
 func alertProject() obsdash.AlertInput {
@@ -93,7 +85,7 @@ func TestAlertsEntity_DecodesTheRenderContract(t *testing.T) {
 
 func TestResolveShapeAlerts_UserRulesPlusEnabledDefaults(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
-	got, routes, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "dev", obsEntities(&AlertsEntity{
+	got, routes, err := resolveShapeAlerts(dir, "dev", obsEntities(&AlertsEntity{
 		Rules: []AlertRuleEntity{
 			{Alert: "OrdersBacklog", Expr: "SELECT 1 AS value", For: "5m", Interval: "1m", Labels: map[string]string{"severity": "warning"}, Enabled: true},
 			{Alert: "Off", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Enabled: false},
@@ -138,7 +130,7 @@ func TestResolveShapeAlerts_UserRulesPlusEnabledDefaults(t *testing.T) {
 
 func TestResolveShapeAlerts_DeclaredRoutesReplaceTheDefaults(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
-	_, routes, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "prod", obsEntities(&AlertsEntity{
+	_, routes, err := resolveShapeAlerts(dir, "prod", obsEntities(&AlertsEntity{
 		Routes: []AlertRouteEntity{{Match: map[string]string{"severity": "critical"}, Receiver: "pagerduty-oncall"}, {Receiver: "slack"}},
 	}))
 	if err != nil {
@@ -151,7 +143,7 @@ func TestResolveShapeAlerts_DeclaredRoutesReplaceTheDefaults(t *testing.T) {
 
 func TestResolveShapeAlerts_DefaultsAreScopedToTheEnv(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
-	got, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "staging", obsEntities(nil))
+	got, _, err := resolveShapeAlerts(dir, "staging", obsEntities(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,18 +168,18 @@ func TestResolveShapeAlerts_NothingToEvaluateRecordsNothing(t *testing.T) {
 		"observability off": {Observability: &ObservabilityEntity{Enabled: false}},
 		"nil entities":      nil,
 	} {
-		got, routes, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "dev", e)
+		got, routes, err := resolveShapeAlerts(dir, "dev", e)
 		if err != nil || got != nil || routes != nil {
 			t.Errorf("%s: got %v %v %v, want nothing", name, got, routes, err)
 		}
 	}
 	// No generated defaults file (never generated) and no rules of its own: nothing, and no routes without alerts.
-	got, routes, err := resolveShapeAlerts(context.Background(), io.Discard, t.TempDir(), "dev", obsEntities(nil))
+	got, routes, err := resolveShapeAlerts(t.TempDir(), "dev", obsEntities(nil))
 	if err != nil || got != nil || routes != nil {
 		t.Errorf("no defaults file, no rules: got %v %v %v", got, routes, err)
 	}
 	// The env's own rules still stand without the file.
-	got, _, err = resolveShapeAlerts(context.Background(), io.Discard, t.TempDir(), "dev", obsEntities(&AlertsEntity{Rules: []AlertRuleEntity{{Alert: "Mine", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Enabled: true}}}))
+	got, _, err = resolveShapeAlerts(t.TempDir(), "dev", obsEntities(&AlertsEntity{Rules: []AlertRuleEntity{{Alert: "Mine", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Enabled: true}}}))
 	if err != nil || len(got) != 1 || got[0].Alert != "Mine" {
 		t.Errorf("own rules without the defaults file: %v %v", got, err)
 	}
@@ -202,7 +194,7 @@ func TestResolveShapeAlerts_Refusals(t *testing.T) {
 		"an annotation that cannot render": {Rules: []AlertRuleEntity{{Alert: "Mine", Expr: "SELECT 1 AS value", Labels: map[string]string{"severity": "info"}, Annotations: map[string]string{"summary": "{{ query \"up\" }}"}, Enabled: true}}},
 	}
 	for name, a := range cases {
-		if _, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "dev", obsEntities(a)); err == nil {
+		if _, _, err := resolveShapeAlerts(dir, "dev", obsEntities(a)); err == nil {
 			t.Errorf("%s: want a refusal", name)
 		}
 	}
@@ -212,7 +204,7 @@ func TestResolveShapeAlerts_MetadataOptOutLeavesNoMetadataRules(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
 	e := obsEntities(nil)
 	e.Observability.Policy = &ObservabilityPolicyEntity{Enabled: true, Disabled: []string{"metadata"}}
-	got, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "prod", e)
+	got, _, err := resolveShapeAlerts(dir, "prod", e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +221,7 @@ func TestResolveShapeAlerts_MetadataOptOutLeavesNoMetadataRules(t *testing.T) {
 
 func TestResolveShapeAlerts_DisabledPlatformDefaultIsRecordedOff(t *testing.T) {
 	dir := writeAlertDefaults(t, alertProject())
-	got, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "prod", obsEntities(&AlertsEntity{Defaults: map[string]AlertDefaultEntity{
+	got, _, err := resolveShapeAlerts(dir, "prod", obsEntities(&AlertsEntity{Defaults: map[string]AlertDefaultEntity{
 		"observability-quota": {Enabled: false},
 		"crash-loop":          {Enabled: false},
 	}}))

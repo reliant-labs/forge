@@ -1975,7 +1975,7 @@ func renderKCLRaw(ctx context.Context, projectDir, env string, extra ...string) 
 	// An env declared by an env document (deploy/envs/<env>.yaml) renders to
 	// the document itself, validated and lowered: the same bytes, the same
 	// parser, every command unchanged (env_document.go).
-	if out, ok, err := loadEnvDocument(ctx, projectDir, env); ok || err != nil {
+	if out, ok, err := loadEnvDocument(ctx, projectDir, env, append(activeRenderOptionDArgs(), extra...)...); ok || err != nil {
 		return out, err
 	}
 	kclDir := filepath.Join(projectDir, "deploy", "kcl", env)

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -25,9 +26,22 @@ import (
 
 // loadEnvDocument is the render of env when an env document declares it: the
 // `{"output": …}` bytes a KCL evaluation would return. ok is false when there
-// is no document (render the KCL).
-func loadEnvDocument(ctx context.Context, projectDir, env string) ([]byte, bool, error) {
-	return envdoc.Load(projectDir, env, envdoc.Options{Release: kclrender.Release(ctx)})
+// is no document (render the KCL). dArgs are the `-D` bindings the KCL
+// render would have received; the image tag among them (a build's
+// re-render binds one) is bound for the document too, with the release and a
+// release snapshot's image pins from ctx.
+func loadEnvDocument(ctx context.Context, projectDir, env string, dArgs ...string) ([]byte, bool, error) {
+	opts := envdoc.Options{Release: kclrender.Release(ctx)}
+	opts.WorkloadPins, opts.Immutable = kclrender.SnapshotPins(ctx)
+	for _, a := range dArgs {
+		if v, ok := strings.CutPrefix(a, "image_tag="); ok {
+			if u, err := strconv.Unquote(v); err == nil {
+				v = u
+			}
+			opts.ImageTag = v
+		}
+	}
+	return envdoc.Load(projectDir, env, opts)
 }
 
 // envHasDeclaration reports whether env is declared in the project: its KCL

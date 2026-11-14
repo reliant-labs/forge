@@ -1514,7 +1514,7 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 	}
 	var out []byte
 	var err error
-	if doc, ok, derr := envdoc.Load(workDir, env, envdoc.Options{Release: kclrender.Release(ctx)}); ok || derr != nil {
+	if doc, ok, derr := envdoc.Load(workDir, env, envDocumentOptions(ctx, imageTag, imageDigests)); ok || derr != nil {
 		// An env document declares this env: it IS the render (internal/envdoc).
 		out, err = doc, derr
 	} else if run, ok := ctx.Value(kclRunnerKey{}).(KCLRunner); ok {
@@ -1526,6 +1526,14 @@ func RenderManifestsWithOverrides(ctx context.Context, mainK, imageTag, namespac
 		return "", nil, err
 	}
 	return extractManifestsIn(ctx, workDir, out)
+}
+
+// envDocumentOptions are the bindings a KCL render receives as `-D` args,
+// for an env document's Go lowering: the release, the tag, the captured
+// digests and a release snapshot's per-slot pins (internal/envdoc image.go).
+func envDocumentOptions(ctx context.Context, imageTag string, imageDigests map[string]string) envdoc.Options {
+	pins, immutable := kclrender.SnapshotPins(ctx)
+	return envdoc.Options{Release: kclrender.Release(ctx), ImageTag: imageTag, ImageDigests: imageDigests, WorkloadPins: pins, Immutable: immutable}
 }
 
 // ExtractManifests is the manifest stream a render's KCL output becomes on

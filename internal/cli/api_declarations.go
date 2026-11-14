@@ -92,6 +92,10 @@ func validateAPIs(projectDir string, apis []APIEntity) error {
 		case APIKindOpenAPI:
 			info, err := os.Stat(p)
 			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				// The OS's own wording differs (Windows: "The system cannot
+				// find the file specified") and names an absolute path.
+				problems = append(problems, fmt.Sprintf("API %q: spec %s: no such file in the project", a.Name, a.Spec))
 			case err != nil:
 				problems = append(problems, fmt.Sprintf("API %q: spec %s: %v", a.Name, a.Spec, err))
 			case info.IsDir():

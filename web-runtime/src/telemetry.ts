@@ -56,6 +56,17 @@
 // analytics tier (below): it is per-person recording, which the cookieless
 // tiers never do.
 //
+// ── Replay costs the page little ─────────────────────────────────────────
+//
+// The recorder does its work on the main thread: it serializes every DOM
+// mutation and input event as it happens, and every 5 s protobuf-encodes and
+// gzips the batch. On a phone that cost every tap 15–45% and stalled scrolling
+// for 300–400 ms every few seconds. So continuous input is sampled
+// (REPLAY_SAMPLING: the pointer at half rate, scroll positions each 150 ms,
+// a field's final value rather than every keystroke) and snapshots leave out
+// scripts, comments and head metadata (rrweb slimDOM). `replaySampling` and
+// `replaySlimDOM: false` take either back.
+//
 // ── Withdrawal stops replay now ──────────────────────────────────────────
 //
 // When the tier leaves `full` (revokeAnalyticsConsent, optOutOfAnalytics) or
@@ -258,6 +269,13 @@ import {
   setExceptionReporter,
   setPendingExceptionHolder,
 } from "./error-reporter.js";
+import {
+  FRAME_STALL_SCOPE,
+  FRAME_STALL_SPAN_NAME,
+  type FrameStall,
+  type FrameStallWatch,
+  watchFrameStalls,
+} from "./frame-stalls.js";
 import { installFetchContext } from "./interaction-context.js";
 import { installPageViews, type PageViewOptions } from "./page-views.js";
 import {
@@ -446,6 +464,26 @@ export interface BrowserTelemetryConfig {
    * recorded once it runs.
    */
   start?: TelemetryStart;
+  /**
+   * Record a `frame.stall` span for each frame the page took 50 ms or more
+   * to paint, while loading and for a few seconds after each input
+   * (frame-stalls.ts). It is how an iPhone, whose WebKit has no Long Tasks
+   * API, reports jank at all. Default true.
+   */
+  frameStalls?: boolean;
+  /**
+   * How finely session replay records continuous input, as rrweb's
+   * `sampling` (mousemove and scroll throttles in ms, `input: "last"` to keep
+   * only a field's final value, …). Each key given replaces the runtime's
+   * default for it (REPLAY_SAMPLING). Ignored without replay.
+   */
+  replaySampling?: ReplaySampling;
+  /**
+   * Leave out of replay snapshots what a replay never shows: scripts,
+   * comments, head metadata and whitespace (rrweb `slimDOMOptions: "all"`).
+   * Default true; false records the DOM whole. Ignored without replay.
+   */
+  replaySlimDOM?: boolean;
   /** Verbose SDK diagnostics to the console. Default false. */
   debug?: boolean;
   /**
@@ -1032,8 +1070,12 @@ export function initBrowserTelemetry(
       errors.hold(error, attributes),
     );
   }
+  const stalls =
+    config.frameStalls === false
+      ? null
+      : watchFrameStalls(() => !isTelemetryDisabled());
   const gate = startGate(config.start);
-  started = start(config, ingest, { clicks, errors, gate });
+  started = start(config, ingest, { clicks, errors, stalls, gate });
   // An RPC that waits for telemetry starts it now (telemetry-gate.ts).
   registerTelemetryStartup(started, gate.startNow);
   return started;
@@ -1043,13 +1085,14 @@ export function initBrowserTelemetry(
 interface EarlyCapture {
   clicks: ClickCapture | null;
   errors: EarlyErrors | null;
+  stalls: FrameStallWatch | null;
   gate: StartGate;
 }
 
 async function start(
   config: BrowserTelemetryConfig,
   ingest: string,
-  { clicks, errors, gate }: EarlyCapture,
+  { clicks, errors, stalls, gate }: EarlyCapture,
 ): Promise<boolean> {
   // Before the first await: until web-vitals registers in hdx.init, only this
   // watch sees the page hidden (see "Paint vitals" in the header).
@@ -1061,6 +1104,7 @@ async function start(
     hidden.stop();
     gate.cancel();
     clicks?.stop();
+    stalls?.stop();
     errors?.stop();
     setPendingExceptionHolder(null);
     stopRoutes();
@@ -1194,6 +1238,7 @@ async function start(
         stopRoutes();
         identity?.stop();
         clicks?.stop();
+        stalls?.stop();
       },
     });
     // What was held is recorded in tasks of its own.
@@ -1204,6 +1249,8 @@ async function start(
     await recordHeldErrors(held, hdx, benign);
     // The clicks held while the SDK loaded, then every later one.
     clicks?.attach(recordClick);
+    // Likewise the frame stalls.
+    stalls?.attach(recordFrameStall);
     // After the sink, so the user goes straight to the SDK. Off unless the
     // caller asked (otel_gen.ts does).
     identity = startIdentity(config);
@@ -1321,6 +1368,21 @@ function recordClick(click: ClickRecord): void {
     attributes: click.attributes,
   });
   span.end(click.at);
+}
+
+/** One frame stall as a span, from the last frame to the late one. */
+function recordFrameStall(stall: FrameStall): void {
+  const span = trace
+    .getTracer(FRAME_STALL_SCOPE)
+    .startSpan(FRAME_STALL_SPAN_NAME, {
+      startTime: stall.start,
+      attributes: {
+        component: "frame-stall",
+        "frame.gap_ms": Math.round(stall.gap),
+        "frame.trigger": stall.trigger,
+      },
+    });
+  span.end(stall.start + stall.gap);
 }
 
 /** The slice of the SDK's tracer provider flushSdk calls. */
@@ -1970,12 +2032,71 @@ export function buildSdkOptions(
     replay: {
       inlineImages: false,
       collectFonts: false,
+      // What the recorder costs the page (see "Replay costs the page little"
+      // in the header): continuous input sampled, not every event; the DOM
+      // without what no replay shows.
+      sampling: replaySampling(config.replaySampling),
+      ...(config.replaySlimDOM === false ? {} : { slimDOMOptions: "all" }),
       plugins: [
         replayUrlScrubPlugin({ keepQueryParams: config.keepUrlQueryParams }),
       ],
     },
   };
   return options;
+}
+
+/**
+ * rrweb's `sampling` for continuous input, as the runtime records it. rrweb
+ * records every scroll position at most each 100 ms, the pointer each 50 ms
+ * and every keystroke of every field; each one is serialized, queued and, on
+ * the recorder's 5 s flush, protobuf-encoded and gzipped on the main thread.
+ * Half the pointer rate, a 150 ms scroll throttle, media each 800 ms (rrweb:
+ * 500) and a field's final value replay the same session at a fraction of the
+ * cost; inputs are masked, so a keystroke-by-keystroke record only ever
+ * replayed asterisks appearing.
+ */
+export const REPLAY_SAMPLING = {
+  mousemove: 100,
+  scroll: 150,
+  media: 800,
+  input: "last",
+} as const satisfies ReplaySampling;
+
+const REPLAY_SAMPLING_KEYS = [
+  "mousemove",
+  "mouseInteraction",
+  "scroll",
+  "media",
+  "input",
+] as const;
+
+// REPLAY_SAMPLING with the keys the config gives, and only the keys
+// ReplaySampling names: nothing else reaches rrweb's record() through it.
+function replaySampling(
+  overrides: ReplaySampling | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...REPLAY_SAMPLING };
+  for (const key of REPLAY_SAMPLING_KEYS) {
+    const value = overrides?.[key];
+    if (value !== undefined) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** The rrweb `sampling` keys a replay's recording takes (canvas is never recorded). */
+export interface ReplaySampling {
+  /** false: no pointer movement; a number: at most one position each N ms. */
+  mousemove?: boolean | number;
+  /** false: no clicks, focus and the like; or per kind (`{ MouseUp: false }`). */
+  mouseInteraction?: boolean | Record<string, boolean | undefined>;
+  /** At most one scroll position each N ms. */
+  scroll?: number;
+  /** At most one media (play, pause, seek) event each N ms. */
+  media?: number;
+  /** "all": every change to a field; "last": its value once typing stops. */
+  input?: "all" | "last";
 }
 
 /** Elements a replay never records: their pixels stay in the browser. */

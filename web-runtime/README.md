@@ -155,6 +155,14 @@ come from the browser's buffered timeline. Console output from before the
 start isn't captured. `start: "eager"` starts as soon as the page is visible,
 as before.
 
+Frame stalls are recorded in every browser, iPhones included. WebKit has no
+Long Tasks API, so the runtime uses `requestAnimationFrame` instead: any frame
+the page took 50 ms or more to paint becomes a `frame.stall` span with
+`frame.gap_ms` and `frame.trigger` (`load` or `input`). The sampler only runs
+during the first 10 s of the page and for 5 s after each input, never while the
+page is hidden, and records at most 100 per page. Turn it off with
+`frameStalls: false`.
+
 ```ts
 import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";
 
@@ -303,6 +311,18 @@ Privacy is forced, not configurable: when replay records, all text and inputs
 are masked, canvas is never recorded, `img, picture, video, audio, iframe,
 object, embed` are blocked, images are not inlined and fonts are not collected.
 Request and response bodies and headers are not captured.
+
+Replay records continuous input sampled (`REPLAY_SAMPLING`):
+
+- the pointer at most every 100 ms;
+- scroll positions every 150 ms;
+- media events every 800 ms;
+- a field's final value (`input: "last"`; inputs are masked anyway).
+
+Snapshots also leave out scripts, comments and head metadata (rrweb's slimDOM).
+The recorder serializes, encodes and gzips on the main thread, so each event it
+doesn't record is work a phone doesn't do. `replaySampling` overrides any of
+these keys, and `replaySlimDOM: false` records the whole DOM.
 
 No URL leaves the browser with its query string or fragment, which is where
 emails, tokens, OAuth codes and search terms live. The SDK stamps the page URL

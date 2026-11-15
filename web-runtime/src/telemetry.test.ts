@@ -716,6 +716,44 @@ describe("buildSdkOptions", () => {
     expect(opts.maskAllText).toBe(true);
   });
 
+  it("records replay sampled and slimmed by default; the config takes either back, key by key", async () => {
+    const { t } = await load();
+    const replay = (config: Record<string, unknown>) =>
+      t.buildSdkOptions(
+        { ...base, replay: true, ...config } as never,
+        `${ORIGIN}/_otel`,
+        ORIGIN,
+      ).replay as Record<string, unknown>;
+
+    expect(replay({})).toMatchObject({
+      sampling: { mousemove: 100, scroll: 150, media: 800, input: "last" },
+      slimDOMOptions: "all",
+    });
+    expect(t.REPLAY_SAMPLING).toEqual({
+      mousemove: 100,
+      scroll: 150,
+      media: 800,
+      input: "last",
+    });
+
+    const custom = replay({
+      replaySampling: {
+        mousemove: true,
+        input: "all",
+        // Not a ReplaySampling key: never reaches rrweb.
+        canvas: "all",
+      },
+      replaySlimDOM: false,
+    });
+    expect(custom.sampling).toEqual({
+      mousemove: true,
+      scroll: 150,
+      media: 800,
+      input: "all",
+    });
+    expect(custom).not.toHaveProperty("slimDOMOptions");
+  });
+
   it("forces masking and media blocking whatever the config says", async () => {
     const { t } = await load();
     for (const replay of [undefined, false, true]) {
@@ -2784,5 +2822,77 @@ describe("starting after the page has loaded", () => {
     expect(init).not.toHaveBeenCalled();
     expect(recordException).not.toHaveBeenCalled();
     expect(r.reportException(new Error("later"))).toBe(false);
+  });
+});
+
+describe("frame stall spans", () => {
+  it("records a frame stall from before the SDK ran as a span over the stalled frame; none with frameStalls: false", async () => {
+    for (const frameStalls of [undefined, false]) {
+      stubDom();
+      vi.stubGlobal("document", fakeDocument().doc);
+      let clock = 0;
+      let frames: Array<(t: number) => void> = [];
+      vi.stubGlobal("performance", { now: () => clock });
+      vi.stubGlobal("requestAnimationFrame", (fn: (t: number) => void) =>
+        frames.push(fn),
+      );
+      const paint = (ms: number) => {
+        clock += ms;
+        const run = frames;
+        frames = [];
+        for (const fn of run) fn(clock);
+      };
+      const spans: Array<{
+        name: string;
+        start: unknown;
+        end?: unknown;
+        attributes: unknown;
+      }> = [];
+      const { trace } = await import("@opentelemetry/api");
+      trace.disable();
+      trace.setGlobalTracerProvider({
+        getTracer: (scope: string) => ({
+          startSpan(
+            name: string,
+            o: { startTime?: unknown; attributes?: unknown },
+          ) {
+            const span = {
+              name: `${scope} ${name}`,
+              start: o?.startTime,
+              attributes: o?.attributes,
+            } as (typeof spans)[number];
+            spans.push(span);
+            return { end: (t: unknown) => (span.end = t) };
+          },
+        }),
+      } as never);
+      const { t } = await load();
+      const started = t.initBrowserTelemetry({
+        serviceName: "web",
+        endpoint: "/_otel",
+        frameStalls,
+      });
+      paint(16);
+      paint(320);
+      expect(await started).toBe(true);
+
+      const stalls = spans.filter((s) => s.name.endsWith(" frame.stall"));
+      if (frameStalls === false) {
+        expect(stalls).toEqual([]);
+        continue;
+      }
+      expect(stalls).toEqual([
+        {
+          name: "@reliantlabs/forge-web-runtime/frames frame.stall",
+          start: 16,
+          end: 336,
+          attributes: {
+            component: "frame-stall",
+            "frame.gap_ms": 320,
+            "frame.trigger": "load",
+          },
+        },
+      ]);
+    }
   });
 });

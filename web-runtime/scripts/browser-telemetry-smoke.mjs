@@ -938,3 +938,121 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     await close(server);
   }
 });
+
+// The idle start (telemetry.ts, "Loading"), proven against the real SDK: it
+// starts only after the page's load event, and what happened before it ran
+// is exported once it does: a click, a track() call and page view at their
+// own times, an uncaught error and an unhandled rejection, and the web vitals
+// the SDK reads back from the browser's buffered performance timeline.
+test("an idle start waits for load, and loses nothing that happened before it", { timeout: 30000 }, async () => {
+  const traces = [];
+  let releaseImage;
+  const imageHeld = new Promise((done) => (releaseImage = done));
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (url === "/slow.svg") {
+        // Holds the page's load event until the test lets it go.
+        await imageHeld;
+        res.setHeader("content-type", "image/svg+xml");
+        res.end('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
+      } else if (url === "/sdk.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await readFile(sdk));
+      } else if (url === "/hyperdx.js") {
+        res.setHeader("content-type", "text/javascript");
+        res.end("export default globalThis.HyperDX;");
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><h1>Early</h1><button id="early">Early</button><img src="/slow.svg">
+<script src="/sdk.js"></script>
+<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
+import { track } from '/runtime/track.js';
+window.tracing = trace;
+window.addEventListener('load', () => { window.loadedAt = performance.now(); });
+window.started = initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false, pageViews: true })
+  .then((ok) => { window.startedAt = performance.now(); window.ready = ok; });
+track('early_event', { n: 1 });
+window.trackedAt = Date.now();
+setTimeout(() => { throw new Error('EARLY_UNCAUGHT'); }, 0);
+Promise.reject(new Error('EARLY_REJECTION'));
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin, { waitUntil: "commit" });
+    await page.waitForFunction(() => window.trackedAt !== undefined, undefined, { timeout: 5000 });
+    await page.locator("#early").click();
+    const clickedAt = await page.evaluate(() => Date.now());
+    // The image still holds the load event: the SDK has not started.
+    await new Promise((done) => setTimeout(done, 300));
+    assert.equal(await page.evaluate(() => window.ready), undefined, "the SDK does not start before the page has loaded");
+    releaseImage();
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 10000 });
+    const { loadedAt, startedAt } = await page.evaluate(() => ({ loadedAt: window.loadedAt, startedAt: window.startedAt }));
+    assert.ok(loadedAt !== undefined && startedAt > loadedAt, `started (${startedAt}) after load (${loadedAt})`);
+    await page.evaluate(async () => {
+      await window.tracing.getTracerProvider().getDelegate().forceFlush();
+    });
+    await until(() => traces.length > 0, 5000, "the first trace export");
+    const spans = traces.flatMap((batch) => batch.resourceSpans ?? [])
+      .flatMap((resource) => resource.scopeSpans ?? [])
+      .flatMap((scope) => scope.spans ?? []);
+    const attr = (span, key) => {
+      const v = span.attributes.find((a) => a.key === key)?.value;
+      return v?.stringValue ?? v?.intValue ?? v?.doubleValue ?? v?.boolValue;
+    };
+    const startMs = (span) => Number(BigInt(span.startTimeUnixNano) / 1000000n);
+    const exported = JSON.stringify(spans);
+
+    const click = spans.find((span) => span.name === "click");
+    assert.ok(click, `the early click is exported: ${JSON.stringify(spans.map((s) => s.name))}`);
+    assert.equal(attr(click, "target_xpath"), '//*[@id="early"]');
+    assert.ok(startMs(click) <= clickedAt, "the click is timed when it happened, not when the SDK started");
+
+    const event = spans.find((span) => span.name === "early_event");
+    assert.ok(event, "the early track() call is exported");
+    const trackedAt = await page.evaluate(() => window.trackedAt);
+    assert.ok(Math.abs(startMs(event) - trackedAt) < 50, "the early event is timed when it was made");
+    assert.ok(spans.some((span) => span.name === "page_viewed"), "the entry page view is exported");
+
+    assert.ok(exported.includes("EARLY_UNCAUGHT"), "the uncaught error from before the start is exported");
+    assert.ok(exported.includes("EARLY_REJECTION"), "the unhandled rejection from before the start is exported");
+
+    const vitals = spans.filter((span) => span.name === "webvitals");
+    for (const vital of ["fcp", "ttfb"]) {
+      assert.ok(vitals.some((span) => attr(span, vital) !== undefined), `${vital} is read back from the buffered timeline`);
+    }
+    assert.ok(spans.some((span) => span.name === "documentLoad"), "the document load is exported");
+    // The runtime's own early capture is the only one: thrown errors reached
+    // the page as ever.
+    assert.deepEqual(errors.sort(), ["EARLY_REJECTION", "EARLY_UNCAUGHT"]);
+  } finally {
+    releaseImage();
+    await browser?.close();
+    await close(server);
+  }
+});

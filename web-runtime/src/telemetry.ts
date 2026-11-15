@@ -193,12 +193,35 @@
 // ── Loading ──────────────────────────────────────────────────────────────
 //
 // The SDK is ~600 KB minified (rrweb and the OTel web stack are bundled in
-// it), so it is imported lazily: bundlers split it into its own chunk that
-// loads after the app is interactive and costs the first paint nothing.
+// it), so it is imported lazily: bundlers split it into its own chunk.
 // initBrowserTelemetry is therefore async and idempotent — every caller gets
 // the same promise, which is what survives React StrictMode's double mount and
 // Fast Refresh. It is a no-op without a DOM (SSR, prerender) and without an
 // endpoint, and it never throws.
+//
+// Evaluating that chunk is one long main-thread task (~540 ms, plus ~170 ms
+// of init, at 4x CPU on a phone-class emulation of reliantlabs.io). Started as
+// soon as the page was visible it ran right after first paint, inside
+// hydration, and a tap in that window waited ~1.1 s instead of ~0.4 s. So by
+// default (`start: "idle"`) the SDK starts once the page has loaded, in the
+// browser's first idle period or right after the first interaction has
+// painted, or at once when an RPC waits for it (telemetry-start.ts,
+// telemetry-gate.ts). Its startup yields between stages, so the chunk's
+// evaluation, the SDK's init and the recording of what was held are separate
+// tasks. `start: "eager"` starts as soon as the page is visible.
+//
+// Nothing is lost by starting later. From the call on, the runtime holds,
+// bounded, what the SDK would have recorded and records it once it runs:
+// uncaught errors, unhandled rejections and failed resource loads
+// (early-errors.ts), errors handed to reportException, clicks
+// (click-capture.ts), and track() calls, page views included (the route watch
+// starts when the page is first visible). Clicks, track() calls and failed
+// resource loads are recorded at the time they happened; a held exception is
+// recorded when the SDK runs, with `forge.error.delay_ms` saying how much
+// earlier it happened. Web vitals, long tasks and the document load need no
+// holding: the SDK reads them from the browser's buffered performance
+// timeline when it starts. Console output from before the SDK runs is not
+// captured.
 import { trace } from "@opentelemetry/api";
 
 import {
@@ -224,8 +247,17 @@ import {
   type ClickCapture,
   type ClickRecord,
   captureClicks,
+  elementXPath,
 } from "./click-capture.js";
-import { setExceptionReporter } from "./error-reporter.js";
+import {
+  type EarlyErrors,
+  type HeldError,
+  holdEarlyErrors,
+} from "./early-errors.js";
+import {
+  setExceptionReporter,
+  setPendingExceptionHolder,
+} from "./error-reporter.js";
 import { installFetchContext } from "./interaction-context.js";
 import { installPageViews, type PageViewOptions } from "./page-views.js";
 import {
@@ -242,6 +274,12 @@ import {
   registerTelemetryStartup,
   rumSessionId,
 } from "./telemetry-gate.js";
+import {
+  type StartGate,
+  startGate,
+  type TelemetryStart,
+  yieldToMain,
+} from "./telemetry-start.js";
 import {
   installSpanExportScrub,
   type QueryParamFilter,
@@ -281,6 +319,11 @@ export {
 } from "./session-cookie-fallback.js";
 
 export { type PageViewOptions } from "./page-views.js";
+export {
+  START_IDLE_TIMEOUT_MS,
+  START_LOAD_TIMEOUT_MS,
+  type TelemetryStart,
+} from "./telemetry-start.js";
 export { type IdentifyOptions } from "./session-identity.js";
 
 export {
@@ -393,6 +436,16 @@ export interface BrowserTelemetryConfig {
    * `off` analytics tier records none.
    */
   clickCapture?: boolean;
+  /**
+   * When the SDK starts (see "Loading" in the header). "idle" (the default):
+   * once the page has loaded, in the browser's first idle period or right
+   * after the first interaction has painted, whichever is first, or at once
+   * when an RPC waits for it. "eager": as soon as the page is visible, as
+   * every release before this option did. Either way nothing is lost: errors,
+   * clicks, page views and track() calls made before it starts are held and
+   * recorded once it runs.
+   */
+  start?: TelemetryStart;
   /** Verbose SDK diagnostics to the console. Default false. */
   debug?: boolean;
   /**
@@ -966,33 +1019,72 @@ export function initBrowserTelemetry(
     setTelemetrySink(null);
     return Promise.resolve(false);
   }
-  // Before the SDK loads, so a click made while it does is not lost.
+  // Before the SDK loads, so a click or an error while it does is not lost.
   const clicks =
     config.clickCapture === false
       ? null
       : captureClicks(
           () => !isTelemetryDisabled() && analyticsTier() !== "off",
         );
-  started = start(config, ingest, clicks);
-  registerTelemetryStartup(started);
+  const errors = holdEarlyErrors();
+  if (errors) {
+    setPendingExceptionHolder((error, attributes) =>
+      errors.hold(error, attributes),
+    );
+  }
+  const gate = startGate(config.start);
+  started = start(config, ingest, { clicks, errors, gate });
+  // An RPC that waits for telemetry starts it now (telemetry-gate.ts).
+  registerTelemetryStartup(started, gate.startNow);
   return started;
+}
+
+/** What initBrowserTelemetry set going before the SDK loads. */
+interface EarlyCapture {
+  clicks: ClickCapture | null;
+  errors: EarlyErrors | null;
+  gate: StartGate;
 }
 
 async function start(
   config: BrowserTelemetryConfig,
   ingest: string,
-  clicks: ClickCapture | null,
+  { clicks, errors, gate }: EarlyCapture,
 ): Promise<boolean> {
   // Before the first await: until web-vitals registers in hdx.init, only this
   // watch sees the page hidden (see "Paint vitals" in the header).
   const hidden = watchFirstHidden();
+  let identity: SessionIdentity | null = null;
+  let stopRoutes = () => {};
+  // Telemetry is not starting after all: let go of everything held for it.
+  const abandon = () => {
+    hidden.stop();
+    gate.cancel();
+    clicks?.stop();
+    errors?.stop();
+    setPendingExceptionHolder(null);
+    stopRoutes();
+    setTelemetrySink(null);
+  };
   try {
     await firstVisible();
-    const hdx = resolveClient(await import("@hyperdx/browser"));
+    // Page views from the moment the page is seen, not from when the SDK
+    // runs: the views and engaged time of a visitor who moves on, or leaves,
+    // before then are held like any track() call.
+    stopRoutes = startRouteWatch(config, (route, previous) =>
+      identity?.onRoute(route, previous),
+    );
+    await gate.ready;
+    if (isTelemetryDisabled()) {
+      abandon();
+      return false;
+    }
+    const mod = await import("@hyperdx/browser");
+    // Evaluating the chunk was one task; the SDK's init gets its own.
+    await yieldToMain();
+    const hdx = resolveClient(mod);
     if (!hdx || isTelemetryDisabled()) {
-      hidden.stop();
-      clicks?.stop();
-      setTelemetrySink(null);
+      abandon();
       return false;
     }
     // Replay records a person: only in the full tier, which is also the only
@@ -1061,8 +1153,10 @@ async function start(
     const stopTier = onAnalyticsTierChange((tier, previous) =>
       applyTier(tier, previous, hdx, config, rum, stopReplay),
     );
-    let identity: SessionIdentity | null = null;
-    let stopRoutes = () => {};
+    // The SDK's own listeners record from here on; the early ones stop, in
+    // the same task, so nothing falls between them or is recorded twice.
+    const held = errors?.take() ?? [];
+    setPendingExceptionHolder(null);
     setExceptionReporter((error, attributes) => {
       if (alreadyRecorded(error) || benign.filtered(error, "reportException")) {
         return;
@@ -1070,7 +1164,11 @@ async function start(
       hdx.recordException(error, attributes);
     });
     setTelemetrySink({
-      track: (name, attributes) => hdx.addAction?.(name, attributes),
+      // A held event is recorded at the time it happened.
+      track: (name, attributes, at) =>
+        at === undefined
+          ? hdx.addAction?.(name, attributes)
+          : recordHeldAction(name, attributes, at),
       setUser: (id) => {
         hdx.setGlobalAttributes?.({ userId: id });
         // The first sign-in of a user in this browser links the visitor to
@@ -1098,23 +1196,119 @@ async function start(
         clicks?.stop();
       },
     });
+    // What was held is recorded in tasks of its own.
+    await yieldToMain();
+    if (isTelemetryDisabled()) {
+      return false;
+    }
+    await recordHeldErrors(held, hdx, benign);
     // The clicks held while the SDK loaded, then every later one.
     clicks?.attach(recordClick);
-    // After the sink, so the first page view and the user go straight to the
-    // SDK. Both are off unless the caller asked (otel_gen.ts does).
+    // After the sink, so the user goes straight to the SDK. Off unless the
+    // caller asked (otel_gen.ts does).
     identity = startIdentity(config);
-    stopRoutes = startRouteWatch(config, identity);
     return true;
   } catch (err) {
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
     // A startup that failed after the hooks went in takes them out again.
-    hidden.stop();
-    clicks?.stop();
+    abandon();
     removeBenignFilter();
     console.debug("[telemetry] disabled:", err);
-    setTelemetrySink(null);
     return false;
   }
+}
+
+/** The tracer the SDK records track() (addAction) on. */
+const SDK_ACTION_SCOPE = "custom-action";
+
+/**
+ * A track() call held while the SDK loaded, recorded as the SDK's addAction
+ * records one, but at the time it was made.
+ */
+function recordHeldAction(
+  name: string,
+  attributes: Record<string, TrackValue>,
+  at: number,
+): void {
+  const span = trace
+    .getTracer(SDK_ACTION_SCOPE)
+    .startSpan(name, { startTime: at, attributes });
+  span.end(at);
+}
+
+/** Held errors recorded per task before the next yield. */
+const HELD_ERRORS_PER_TASK = 5;
+
+/** Each held error's source, as the SDK names the span that records it. */
+const HELD_ERROR_SOURCE: Record<string, string> = {
+  error: "onerror",
+  unhandledrejection: "unhandledrejection",
+  reportException: "reportException",
+};
+
+/**
+ * Records the errors held before the SDK ran, through the same filters as
+ * one it records itself: benign ones are counted, not recorded, and one value
+ * is recorded once however many ways it was reported. Each carries
+ * `forge.error.source` (onerror, unhandledrejection, reportException) and
+ * `forge.error.delay_ms`, how long before the SDK ran it happened.
+ */
+async function recordHeldErrors(
+  held: HeldError[],
+  hdx: HyperDXClient,
+  benign: BenignFilter,
+): Promise<void> {
+  for (let i = 0; i < held.length; i++) {
+    if (i > 0 && i % HELD_ERRORS_PER_TASK === 0) {
+      await yieldToMain();
+      if (isTelemetryDisabled()) {
+        return;
+      }
+    }
+    const error = held[i]!;
+    try {
+      if (error.kind === "resource") {
+        recordHeldResourceError(error.target, error.at);
+        continue;
+      }
+      if (
+        alreadyRecorded(error.value) ||
+        benign.filtered(error.value, error.kind)
+      ) {
+        continue;
+      }
+      noteSeen(error.value);
+      hdx.recordException(error.value, {
+        ...error.attributes,
+        "forge.error.source": HELD_ERROR_SOURCE[error.kind] ?? error.kind,
+        "forge.error.delay_ms": Math.max(0, Date.now() - error.at),
+      });
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
+
+/**
+ * A resource that failed to load before the SDK ran, recorded as the SDK
+ * records one (its `eventListener.error` span on the `errors` tracer), at the
+ * time it failed. target_src is scrubbed at export like any URL.
+ */
+function recordHeldResourceError(target: Element, at: number): void {
+  const attributes: Record<string, string> = {
+    component: "error",
+    "error.type": "error",
+    target_element: target.tagName,
+    target_xpath: elementXPath(target),
+  };
+  const src = (target as { src?: unknown }).src;
+  if (typeof src === "string" && src !== "") {
+    attributes.target_src = src;
+  }
+  const span = trace
+    .getTracer(SDK_ERRORS_SCOPE.name, SDK_ERRORS_SCOPE.version)
+    .startSpan("eventListener.error", { startTime: at, attributes });
+  span.end(at);
 }
 
 /**
@@ -1165,12 +1359,15 @@ function startIdentity(config: BrowserTelemetryConfig): SessionIdentity | null {
 }
 
 // The route watch, when there are page views to record or a session watch
-// that re-asks on leaving the sign-in screens. Returns its teardown.
+// (identify) that re-asks on leaving the sign-in screens. Returns its
+// teardown. `onRoute` reaches the session watch once it runs.
 function startRouteWatch(
   config: BrowserTelemetryConfig,
-  identity: SessionIdentity | null,
+  onRoute: (route: string, previous: string | null) => void,
 ): () => void {
   const pageViews = config.pageViews ?? false;
+  const identify = config.identify?.sessionUrl;
+  const identity = typeof identify === "string" && identify.trim() !== "";
   if (pageViews === false && !identity) {
     return () => {};
   }
@@ -1182,7 +1379,7 @@ function startRouteWatch(
       siteHosts: options.siteHosts,
       pageViews: pageViews !== false,
       engagement: pageViews !== false && options.engagement !== false,
-      onRoute: identity ? identity.onRoute : undefined,
+      onRoute: identity ? onRoute : undefined,
     });
   } catch {
     return () => {};

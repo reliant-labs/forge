@@ -105,7 +105,16 @@ export type TrackProps = Record<string, unknown>;
 
 /** What the `/telemetry` subpath installs once the SDK is running. */
 export interface TelemetrySink {
-  track(name: string, attributes: Record<string, TrackValue>): void;
+  /**
+   * `at` (ms since the epoch) is when a HELD event was recorded, so the sink
+   * can time it then rather than when it was replayed; undefined for a live
+   * event, which happens now.
+   */
+  track(
+    name: string,
+    attributes: Record<string, TrackValue>,
+    at?: number,
+  ): void;
   setUser(id: string): void;
   /**
    * Stamp the org later events are about (setTelemetryOrg); "" clears it.
@@ -126,6 +135,8 @@ type Pending =
       kind: "track";
       name: string;
       attributes: Record<string, TrackValue>;
+      // When it was recorded (ms since the epoch): replayed at that time.
+      at: number;
       onSent?: () => void;
       // The user setTelemetryUser had named when the event was recorded
       // (undefined: none yet), stamped again on replay, so a later
@@ -371,6 +382,7 @@ export function recordProductEvent(
         kind: "track",
         name: trimmed,
         attributes,
+        at: Date.now(),
         onSent,
         user: heldUser(),
       });
@@ -549,7 +561,7 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
           if (op.user !== undefined) {
             stamp(op.user);
           }
-          next.track(op.name, op.attributes);
+          next.track(op.name, op.attributes, op.at);
           sent(op.onSent);
         }
       } else {

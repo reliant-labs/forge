@@ -16,6 +16,7 @@ import {
 } from "vitest";
 
 import { clickEvent, FakeElement, fakeDocument } from "./testdata/fake-dom.js";
+import { registerSdkProvider } from "./testdata/sdk-provider.js";
 import type { ReplayRecordPlugin } from "./url-scrub.js";
 
 const init = vi.fn();
@@ -129,8 +130,10 @@ beforeEach(() => {
   stopSessionRecorder.mockReset();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals();
+  // A provider a test registered must not outlive it.
+  (await import("@opentelemetry/api")).trace.disable();
 });
 
 describe("initBrowserTelemetry", () => {
@@ -1945,6 +1948,15 @@ describe("initBrowserTelemetry replay wiring", () => {
 describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
   it("holds calls made before the SDK is up, then replays them in order", async () => {
     stubDom();
+    // A held event is recorded on the SDK's custom-action tracer, at its own
+    // time: the span addAction makes.
+    const held: unknown[][] = [];
+    init.mockImplementation(() =>
+      registerSdkProvider((name, attributes, at) => {
+        held.push([name, attributes, at]);
+        addAction(name, attributes);
+      }),
+    );
     const { t, k } = await load();
 
     k.setTelemetryUser("user-1");
@@ -1960,6 +1972,9 @@ describe("track, setTelemetryUser and disableTelemetry through the SDK", () => {
     expect(addAction).toHaveBeenNthCalledWith(1, "signup_started", {
       plan: "pro",
     });
+    expect(held).toEqual([
+      ["signup_started", { plan: "pro" }, expect.any(Number)],
+    ]);
     // The event replays under the user it was recorded with, and the last
     // user is what later events carry.
     const stamps = setGlobalAttributes.mock.calls
@@ -2091,6 +2106,11 @@ describe("page views and the signed-in user", () => {
         ),
     );
     vi.stubGlobal("fetch", fetchMock);
+    // The entry view is recorded before the SDK runs, then on its
+    // custom-action tracer: the span addAction makes.
+    init.mockImplementation(() =>
+      registerSdkProvider((name, attributes) => addAction(name, attributes)),
+    );
     const { t } = await load();
     await t.initBrowserTelemetry({
       serviceName: "web",
@@ -2592,5 +2612,177 @@ describe("click spans", () => {
     expect(await started).toBe(false);
     expect(clicks()).toEqual([]);
     expect(dom.listening("click")).toBe(0);
+  });
+});
+
+describe("starting after the page has loaded", () => {
+  // A page still loading, whose load event and idle callbacks the test fires.
+  function loadingPage() {
+    stubDom();
+    const idle: Array<() => void> = [];
+    Object.assign(window, {
+      requestIdleCallback: (fn: () => void) => idle.push(fn),
+      cancelIdleCallback: () => {},
+    });
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      readyState: "loading",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    return {
+      idle,
+      loadThenIdle() {
+        dispatch("load", {});
+        for (const fn of idle.splice(0)) fn();
+      },
+    };
+  }
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("does not load the SDK until the page has loaded and the browser is idle", async () => {
+    const page = loadingPage();
+    const { t } = await load();
+    let running: boolean | undefined;
+    const started = t
+      .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
+      .then((ok) => (running = ok));
+
+    await tick();
+    expect(init).not.toHaveBeenCalled();
+    dispatch("load", {});
+    await tick();
+    expect(init).not.toHaveBeenCalled();
+    expect(page.idle).toHaveLength(1);
+
+    page.idle[0]!();
+    await started;
+    expect(running).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at once with start: eager", async () => {
+    loadingPage();
+    const { t } = await load();
+    await expect(
+      t.initBrowserTelemetry({
+        serviceName: "web",
+        endpoint: "/_otel",
+        start: "eager",
+      }),
+    ).resolves.toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at once when an RPC waits for it", async () => {
+    loadingPage();
+    const { t } = await load();
+    const gate = await import("./telemetry-gate.js");
+    void t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    await tick();
+    expect(init).not.toHaveBeenCalled();
+
+    await gate.telemetryReady();
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the errors raised before it ran, once each, through the benign filter", async () => {
+    const page = loadingPage();
+    const spans: Array<{ name: string; start: unknown; attributes: unknown }> =
+      [];
+    const { trace } = await import("@opentelemetry/api");
+    trace.setGlobalTracerProvider({
+      getTracer: () => ({
+        startSpan: (
+          name: string,
+          o?: { startTime?: unknown; attributes?: unknown },
+        ) => {
+          spans.push({ name, start: o?.startTime, attributes: o?.attributes });
+          return { end() {}, setAttribute() {} };
+        },
+      }),
+    } as never);
+    const { t, r } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+
+    const boom = new Error("boom");
+    dispatch("error", { error: boom, message: "Uncaught Error: boom" });
+    // Reported again by an error boundary: still one record. Held, so the
+    // caller is told to log it as before.
+    expect(r.reportException(boom)).toBe(false);
+    const caught = new Error("caught");
+    expect(r.reportException(caught, { where: "boundary" })).toBe(false);
+    // Benign: counted, not recorded.
+    dispatch("unhandledrejection", {
+      reason: new DOMException("aborted", "AbortError"),
+    });
+    const img = new FakeElement("img", { id: "hero" });
+    Object.assign(img, { src: "https://cdn.test/hero.png?sig=s3cret" });
+    const failedAt = Date.now();
+    dispatch("error", { target: img });
+    expect(recordException).not.toHaveBeenCalled();
+
+    page.loadThenIdle();
+    expect(await started).toBe(true);
+
+    expect(recordException.mock.calls).toEqual([
+      [
+        boom,
+        {
+          "forge.error.source": "onerror",
+          "forge.error.delay_ms": expect.any(Number),
+        },
+      ],
+      [
+        caught,
+        {
+          where: "boundary",
+          "forge.error.source": "reportException",
+          "forge.error.delay_ms": expect.any(Number),
+        },
+      ],
+    ]);
+    expect(spans.filter((s) => s.name === "eventListener.error")).toEqual([
+      {
+        name: "eventListener.error",
+        start: expect.any(Number),
+        attributes: {
+          component: "error",
+          "error.type": "error",
+          target_element: "IMG",
+          target_xpath: '//*[@id="hero"]',
+          // Scrubbed of its query at export, like every URL.
+          target_src: "https://cdn.test/hero.png?sig=s3cret",
+        },
+      },
+    ]);
+    const resource = spans.find((s) => s.name === "eventListener.error")!;
+    expect(resource.start as number).toBeGreaterThanOrEqual(failedAt);
+    expect(resource.start as number).toBeLessThanOrEqual(failedAt + 50);
+
+    // From here the SDK records errors itself: nothing is held any more.
+    expect(r.reportException(new Error("later"))).toBe(true);
+  });
+
+  it("holds nothing, and never loads the SDK, once telemetry is disabled while it waits", async () => {
+    const page = loadingPage();
+    const { t, r, k } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    dispatch("error", { error: new Error("early") });
+    k.disableTelemetry();
+    expect(r.reportException(new Error("after"))).toBe(false);
+
+    page.loadThenIdle();
+    expect(await started).toBe(false);
+    expect(init).not.toHaveBeenCalled();
+    expect(recordException).not.toHaveBeenCalled();
+    expect(r.reportException(new Error("later"))).toBe(false);
   });
 });

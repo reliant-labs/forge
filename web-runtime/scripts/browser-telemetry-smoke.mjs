@@ -49,6 +49,26 @@ const until = async (condition, ms, what) => {
     await new Promise((done) => setTimeout(done, 100));
   }
 };
+// Waits until the real SDK holds `count` finished spans whose name includes
+// `name`, queued in its batch processor or already exported to `traces` (a
+// full batch is exported at once, emptying the queue).
+const untilSpans = async (page, traces, name, count, ms = 5000) => {
+  const exported = () => traces.flatMap((batch) => batch.resourceSpans ?? [])
+    .flatMap((resource) => resource.scopeSpans ?? [])
+    .flatMap((scope) => scope.spans ?? [])
+    .filter((span) => span.name.includes(name)).length;
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const queued = await page.evaluate((name) => {
+      const provider = window.tracing.getTracerProvider().getDelegate();
+      return provider._activeSpanProcessor._spanProcessors.reduce((n, processor) =>
+        n + (processor._finishedSpans ?? []).filter((span) => span.name.includes(name)).length, 0);
+    }, name);
+    if (queued + exported() >= count) return;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${count} ${name} span(s)`);
+    await new Promise((done) => setTimeout(done, 100));
+  }
+};
 // The rrweb records in decoded OTLP log batches.
 const replayRecords = (logs) => logs.flatMap((batch) => batch.resourceLogs ?? [])
   .flatMap((resource) => resource.scopeLogs ?? [])
@@ -165,13 +185,9 @@ document.querySelector('#action').addEventListener('click', () => {
     await page.locator("input").fill("PRIVATE_EDIT_SENTINEL");
     await page.locator("#action").click();
     await page.evaluate(() => window.finished);
-    await page.waitForFunction(() => {
-      // Fetch spans end after resource-timing collection, not at response.
-      // Observe the real SDK batch queue rather than a fixed sleep.
-      const provider = window.tracing.getTracerProvider().getDelegate();
-      return provider._activeSpanProcessor._spanProcessors.some(processor =>
-        processor._finishedSpans?.some(span => span.name === 'HTTP POST'));
-    }, undefined, { timeout: 5000 });
+    // Fetch spans end after resource-timing collection, not at response.
+    // Observe the real SDK batch queue rather than a fixed sleep.
+    await untilSpans(page, traces, "HTTP POST", 1);
     await page.evaluate(async () => {
       // The REAL SDK's provider, not a test substitute.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
@@ -218,6 +234,11 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.ok(replay.length > 0, "session replay still exports records");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
+    // slimDOM reaches the bundled recorder: the page's <script> elements are
+    // not in the full snapshot.
+    const snapshot = JSON.stringify(events.filter(event => event.type === 2));
+    assert.ok(snapshot.includes('"tagName":"button"'), "the full snapshot is recorded");
+    assert.equal(snapshot.includes('"tagName":"script"'), false, "slimDOM leaves scripts out of the snapshot");
     const metas = events.filter(event => event.type === 4);
     assert.ok(metas.length > 0, "the real recorder's opening Meta record is exported");
     for (const meta of metas) {
@@ -792,11 +813,7 @@ document.querySelector('#open').addEventListener('click', () => {
     await page.locator("#open").click();
     await page.waitForFunction(() => window.finished !== undefined, undefined, { timeout: 5000 });
     await page.evaluate(() => window.finished);
-    await page.waitForFunction(() => {
-      const provider = window.tracing.getTracerProvider().getDelegate();
-      return provider._activeSpanProcessor._spanProcessors.some((processor) =>
-        (processor._finishedSpans ?? []).filter((span) => span.name.includes("chat.v1.ChatService")).length === 2);
-    }, undefined, { timeout: 5000 });
+    await untilSpans(page, traces, "chat.v1.ChatService", 2);
     await page.evaluate(() => window.tracing.getTracerProvider().getDelegate().forceFlush());
 
     assert.deepEqual(errors, []);
@@ -985,6 +1002,9 @@ window.started = initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: 
 track('early_event', { n: 1 });
 window.trackedAt = Date.now();
 setTimeout(() => { throw new Error('EARLY_UNCAUGHT'); }, 0);
+// A 250 ms stall while the page loads: a frame.stall in every browser
+// (rAF times a frame from its vsync, which can precede the stall a little).
+setTimeout(() => { const end = performance.now() + 250; while (performance.now() < end) {} }, 50);
 Promise.reject(new Error('EARLY_REJECTION'));
 </script>`);
       } else {
@@ -1047,6 +1067,9 @@ Promise.reject(new Error('EARLY_REJECTION'));
       assert.ok(vitals.some((span) => attr(span, vital) !== undefined), `${vital} is read back from the buffered timeline`);
     }
     assert.ok(spans.some((span) => span.name === "documentLoad"), "the document load is exported");
+    const stalls = spans.filter((span) => span.name === "frame.stall");
+    assert.ok(stalls.some((span) => attr(span, "frame.gap_ms") >= 200 && attr(span, "frame.trigger") === "load"),
+      `the stall while loading is exported as a frame.stall: ${JSON.stringify(stalls.map((s) => s.attributes))}`);
     // The runtime's own early capture is the only one: thrown errors reached
     // the page as ever.
     assert.deepEqual(errors.sort(), ["EARLY_REJECTION", "EARLY_UNCAUGHT"]);

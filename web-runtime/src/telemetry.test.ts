@@ -716,6 +716,44 @@ describe("buildSdkOptions", () => {
     expect(opts.maskAllText).toBe(true);
   });
 
+  it("records replay sampled and slimmed by default; the config takes either back, key by key", async () => {
+    const { t } = await load();
+    const replay = (config: Record<string, unknown>) =>
+      t.buildSdkOptions(
+        { ...base, replay: true, ...config } as never,
+        `${ORIGIN}/_otel`,
+        ORIGIN,
+      ).replay as Record<string, unknown>;
+
+    expect(replay({})).toMatchObject({
+      sampling: { mousemove: 100, scroll: 150, media: 800, input: "last" },
+      slimDOMOptions: "all",
+    });
+    expect(t.REPLAY_SAMPLING).toEqual({
+      mousemove: 100,
+      scroll: 150,
+      media: 800,
+      input: "last",
+    });
+
+    const custom = replay({
+      replaySampling: {
+        mousemove: true,
+        input: "all",
+        // Not a ReplaySampling key: never reaches rrweb.
+        canvas: "all",
+      },
+      replaySlimDOM: false,
+    });
+    expect(custom.sampling).toEqual({
+      mousemove: true,
+      scroll: 150,
+      media: 800,
+      input: "all",
+    });
+    expect(custom).not.toHaveProperty("slimDOMOptions");
+  });
+
   it("forces masking and media blocking whatever the config says", async () => {
     const { t } = await load();
     for (const replay of [undefined, false, true]) {
@@ -1572,6 +1610,36 @@ describe("no session before the page is first visible", () => {
     expect(r.reportException(new Error("early"))).toBe(false);
 
     doc.show();
+    await started;
+    expect(running).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hold an RPC while the page has never been visible, and starts at once for one after it is", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t } = await load();
+    const gate = await import("./telemetry-gate.js");
+    let running: boolean | undefined;
+    const started = t
+      .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
+      .then((ok) => (running = ok));
+    await vi.waitFor(() => expect(doc.waiting()).toBe(2));
+
+    // Hidden: the RPC is told not to wait (no timeout spent), and starts
+    // nothing.
+    let waited = false;
+    const ready = gate.telemetryReady(60_000).then(() => (waited = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(waited).toBe(true);
+    await ready;
+    expect(init).not.toHaveBeenCalled();
+    expect(running).toBeUndefined();
+
+    // Seen: the session may start, and an RPC that waits for it gets it.
+    doc.show();
+    await gate.telemetryReady(60_000);
     await started;
     expect(running).toBe(true);
     expect(init).toHaveBeenCalledTimes(1);
@@ -2859,5 +2927,77 @@ describe("starting after the page has loaded", () => {
     expect(docListeners).toHaveLength(0);
     expect(page.idle).toHaveLength(0);
     expect(init).not.toHaveBeenCalled();
+  });
+});
+
+describe("frame stall spans", () => {
+  it("records a frame stall from before the SDK ran as a span over the stalled frame; none with frameStalls: false", async () => {
+    for (const frameStalls of [undefined, false]) {
+      stubDom();
+      vi.stubGlobal("document", fakeDocument().doc);
+      let clock = 0;
+      let frames: Array<(t: number) => void> = [];
+      vi.stubGlobal("performance", { now: () => clock });
+      vi.stubGlobal("requestAnimationFrame", (fn: (t: number) => void) =>
+        frames.push(fn),
+      );
+      const paint = (ms: number) => {
+        clock += ms;
+        const run = frames;
+        frames = [];
+        for (const fn of run) fn(clock);
+      };
+      const spans: Array<{
+        name: string;
+        start: unknown;
+        end?: unknown;
+        attributes: unknown;
+      }> = [];
+      const { trace } = await import("@opentelemetry/api");
+      trace.disable();
+      trace.setGlobalTracerProvider({
+        getTracer: (scope: string) => ({
+          startSpan(
+            name: string,
+            o: { startTime?: unknown; attributes?: unknown },
+          ) {
+            const span = {
+              name: `${scope} ${name}`,
+              start: o?.startTime,
+              attributes: o?.attributes,
+            } as (typeof spans)[number];
+            spans.push(span);
+            return { end: (t: unknown) => (span.end = t) };
+          },
+        }),
+      } as never);
+      const { t } = await load();
+      const started = t.initBrowserTelemetry({
+        serviceName: "web",
+        endpoint: "/_otel",
+        frameStalls,
+      });
+      paint(16);
+      paint(320);
+      expect(await started).toBe(true);
+
+      const stalls = spans.filter((s) => s.name.endsWith(" frame.stall"));
+      if (frameStalls === false) {
+        expect(stalls).toEqual([]);
+        continue;
+      }
+      expect(stalls).toEqual([
+        {
+          name: "@reliantlabs/forge-web-runtime/frames frame.stall",
+          start: 16,
+          end: 336,
+          attributes: {
+            component: "frame-stall",
+            "frame.gap_ms": 320,
+            "frame.trigger": "load",
+          },
+        },
+      ]);
+    }
   });
 });

@@ -21,6 +21,11 @@
 // its API on mount gets its first requests joined, as before, and a page that
 // calls nothing (a static site) loads the SDK when it is idle.
 //
+// Except on a page that has never been visible: no session starts there, RPC
+// or not (telemetry.ts, "No session until the page has been seen"). The ask
+// then answers that it cannot start now, and the request does not wait at all:
+// waiting would only spend TELEMETRY_WAIT_MS before the same fallback.
+//
 // DOM-free and import-free on purpose: the transport entry point
 // (@reliantlabs/forge-web-runtime/interceptors) imports this and must stay
 // light enough for React Native.
@@ -29,15 +34,17 @@
 export const TELEMETRY_WAIT_MS = 2000;
 
 let startup: Promise<unknown> | null = null;
-let hurry: (() => void) | null = null;
+let hurry: (() => boolean | void) | null = null;
 
 /**
  * Called once by initBrowserTelemetry with the promise of its startup, and
  * what to call to begin it now rather than when the browser is idle.
+ * `startNow` returns false when startup cannot begin now (the page has never
+ * been visible): telemetryReady then does not wait for it.
  */
 export function registerTelemetryStartup(
   p: Promise<unknown>,
-  startNow?: () => void,
+  startNow?: () => boolean | void,
 ): void {
   startup = p;
   hurry = startNow ?? null;
@@ -62,7 +69,9 @@ export function telemetryReady(
     return Promise.resolve();
   }
   try {
-    hurry?.();
+    if (hurry?.() === false) {
+      return Promise.resolve();
+    }
   } catch {
     // Telemetry must never break the app.
   }

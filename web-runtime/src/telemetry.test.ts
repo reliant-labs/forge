@@ -1615,6 +1615,36 @@ describe("no session before the page is first visible", () => {
     expect(init).toHaveBeenCalledTimes(1);
   });
 
+  it("does not hold an RPC while the page has never been visible, and starts at once for one after it is", async () => {
+    stubDom();
+    const doc = stubHiddenDocument();
+    const { t } = await load();
+    const gate = await import("./telemetry-gate.js");
+    let running: boolean | undefined;
+    const started = t
+      .initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" })
+      .then((ok) => (running = ok));
+    await vi.waitFor(() => expect(doc.waiting()).toBe(2));
+
+    // Hidden: the RPC is told not to wait (no timeout spent), and starts
+    // nothing.
+    let waited = false;
+    const ready = gate.telemetryReady(60_000).then(() => (waited = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(waited).toBe(true);
+    await ready;
+    expect(init).not.toHaveBeenCalled();
+    expect(running).toBeUndefined();
+
+    // Seen: the session may start, and an RPC that waits for it gets it.
+    doc.show();
+    await gate.telemetryReady(60_000);
+    await started;
+    expect(running).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
   it("starts at once on a visible page", async () => {
     stubDom();
     vi.stubGlobal("document", {
@@ -2574,6 +2604,29 @@ describe("click spans", () => {
         },
       },
       expect.objectContaining({ start: 1042, end: 1042 }),
+    ]);
+  });
+
+  it("records a click made while the SDK loads with its page URL scrubbed by keepUrlQueryParams", async () => {
+    stubDom();
+    (window as unknown as { location: { href: string } }).location.href =
+      `${ORIGIN}/pricing?email=a%40b.test&utm_source=ad#token=s3cret`;
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      keepUrlQueryParams: ["utm_*"],
+    });
+    // The SDK chunk is still loading, so no export scrub is installed yet.
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 7));
+    expect(await started).toBe(true);
+
+    expect(clicks().map((c) => c.attributes?.["http.url"])).toEqual([
+      `${ORIGIN}/pricing?utm_source=ad`,
     ]);
   });
 

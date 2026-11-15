@@ -105,7 +105,9 @@
 // the recorder would hold no replay for it. Until then reportException returns
 // false (the caller logs to the console) and track() calls are held, bounded,
 // as they are while the SDK loads. A page that never becomes visible sends
-// nothing.
+// nothing. An RPC does not start it either: until the page has been seen, an
+// RPC is told not to wait for telemetry and carries a synthesized traceparent
+// (telemetry-gate.ts).
 //
 // ── Paint vitals are dropped for a page first shown late ─────────────────
 //
@@ -1063,6 +1065,7 @@ export function initBrowserTelemetry(
       ? null
       : captureClicks(
           () => !isTelemetryDisabled() && analyticsTier() !== "off",
+          queryParamFilter(config.keepUrlQueryParams),
         );
   const errors = holdEarlyErrors();
   if (errors) {
@@ -1075,9 +1078,18 @@ export function initBrowserTelemetry(
       ? null
       : watchFrameStalls(() => !isTelemetryDisabled());
   const gate = startGate(config.start);
-  started = start(config, ingest, { clicks, errors, stalls, gate });
-  // An RPC that waits for telemetry starts it now (telemetry-gate.ts).
-  registerTelemetryStartup(started, gate.startNow);
+  const visible = firstVisible();
+  started = start(config, ingest, { clicks, errors, stalls, gate, visible });
+  // An RPC that waits for telemetry starts it now (telemetry-gate.ts), unless
+  // the page has never been visible: no session starts before it has been
+  // seen, so the RPC is told not to wait.
+  registerTelemetryStartup(started, () => {
+    if (!visible.seen()) {
+      return false;
+    }
+    gate.startNow();
+    return true;
+  });
   return started;
 }
 
@@ -1087,12 +1099,13 @@ interface EarlyCapture {
   errors: EarlyErrors | null;
   stalls: FrameStallWatch | null;
   gate: StartGate;
+  visible: FirstVisible;
 }
 
 async function start(
   config: BrowserTelemetryConfig,
   ingest: string,
-  { clicks, errors, stalls, gate }: EarlyCapture,
+  { clicks, errors, stalls, gate, visible }: EarlyCapture,
 ): Promise<boolean> {
   // Before the first await: until web-vitals registers in hdx.init, only this
   // watch sees the page hidden (see "Paint vitals" in the header).
@@ -1111,7 +1124,7 @@ async function start(
     setTelemetrySink(null);
   };
   try {
-    await firstVisible();
+    await visible.ready;
     // Page views from the moment the page is seen, not from when the SDK
     // runs: the views and engaged time of a visitor who moves on, or leaves,
     // before then are held like any track() call.
@@ -1448,28 +1461,39 @@ function startRouteWatch(
   }
 }
 
+/** Whether the document has been visible yet, as firstVisible watches it. */
+interface FirstVisible {
+  /** Resolves once the document has been visible. */
+  readonly ready: Promise<void>;
+  /** True from the moment the document has been visible. */
+  seen(): boolean;
+}
+
 /**
- * Resolves once the document is visible: at once for a visible page or one
- * with no Page Visibility API, otherwise at its first visibilitychange to
+ * Watches for the document to be visible: seen at once for a visible page or
+ * one with no Page Visibility API, otherwise at its first visibilitychange to
  * visible. See "No session until the page has been seen" in the header.
  */
-function firstVisible(): Promise<void> {
+function firstVisible(): FirstVisible {
   if (
     typeof document === "undefined" ||
     document.visibilityState !== "hidden" ||
     typeof document.addEventListener !== "function"
   ) {
-    return Promise.resolve();
+    return { ready: Promise.resolve(), seen: () => true };
   }
-  return new Promise((resolve) => {
+  let seen = false;
+  const ready = new Promise<void>((resolve) => {
     const onChange = () => {
       if (document.visibilityState !== "hidden") {
         document.removeEventListener("visibilitychange", onChange);
+        seen = true;
         resolve();
       }
     };
     document.addEventListener("visibilitychange", onChange);
   });
+  return { ready, seen: () => seen };
 }
 
 /** When the page was first hidden, as watchFirstHidden saw it. */

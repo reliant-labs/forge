@@ -72,7 +72,7 @@ async function moduleFile(url) {
   throw new Error("unknown module");
 }
 
-test("raw interactions stay in masked replay; explicit action and RPC share real span parents", { timeout: 30000 }, async () => {
+test("raw interactions stay in masked replay, one span per click; explicit action and RPC share real span parents", { timeout: 30000 }, async () => {
   const traces = [];
   const logs = [];
   const requests = [];
@@ -194,13 +194,24 @@ document.querySelector('#action').addEventListener('click', () => {
     for (const caller of callers) {
       assert.deepEqual(caller, { host: new URL(origin).host, origin, site: "same-origin" }, "the SDK's exports are same-origin to the proxy");
     }
-    assert.equal(spans.some((span) => ["mousedown", "mouseup", "click"].includes(span.name)), false);
+    // No span per listener or per press: exactly one click span per click,
+    // named by the clicked control, and none for mousedown or mouseup.
+    assert.equal(spans.some((span) => ["mousedown", "mouseup"].includes(span.name)), false);
+    const clicks = spans.filter((span) => span.name === "click");
+    const clickAttr = (span, key) => span.attributes.find((a) => a.key === key)?.value.stringValue;
+    assert.deepEqual(clicks.map((span) => clickAttr(span, "target_xpath")), ['//*[@id="idle"]', '//*[@id="action"]'],
+      `one click span per click: ${JSON.stringify(clicks.map((span) => span.attributes))}`);
+    for (const click of clicks) {
+      assert.equal(clickAttr(click, "target_element"), "BUTTON");
+      assert.equal(clickAttr(click, "http.url"), `${origin}/?utm_source=proof`, "the click's page URL is scrubbed like every other");
+    }
     const action = spans.find((span) => span.name === "save-record");
     const fetch = spans.find((span) => span.name === "HTTP POST");
     assert.ok(action, "explicitly instrumented meaningful action is exported");
     assert.ok(fetch, `network span is still exported: ${JSON.stringify(spans.map(s => s.name))}`);
     assert.equal(fetch.traceId, action.traceId);
     assert.equal(fetch.parentSpanId, action.spanId, "fetch is a child, not just the same trace");
+    assert.equal(clicks.some((click) => click.spanId === action.parentSpanId || click.traceId === fetch.traceId), false, "a click span parents nothing");
     assert.deepEqual(requests, [`00-${fetch.traceId}-${fetch.spanId}-01`], "wire parent is the exported fetch span, not the interceptor's synthetic fallback");
     assert.ok(spans.some((span) => span.name === "documentLoad"), "document-load tracing remains enabled");
     const replay = replayRecords(logs);

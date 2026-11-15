@@ -170,6 +170,16 @@
 // turns them off with PAGE_VIEWS / IDENTIFY_USER = "false" in its runtime
 // config. Both start only once the SDK runs and stop on disableTelemetry().
 //
+// ── One click, one span ──────────────────────────────────────────────────
+//
+// The SDK's interaction instrumentation stays off: it opened a span per
+// listener an event reached, mousedown and mouseup included, and none for the
+// listeners React added before the SDK loaded. Instead the runtime records one
+// `click` span per real click from the moment initBrowserTelemetry is called,
+// held until the SDK runs, with the attributes the SDK's click spans carried
+// (click-capture.ts). `clickCapture: false` turns it off; the `off` analytics
+// tier records none.
+//
 // ── Client context ───────────────────────────────────────────────────────
 //
 // The page reports what only it can know about its client — client hints
@@ -208,6 +218,13 @@ import {
   pageClientResourceAttributes,
   watchViewport,
 } from "./client-context.js";
+import {
+  CLICK_SCOPE,
+  CLICK_SPAN_NAME,
+  type ClickCapture,
+  type ClickRecord,
+  captureClicks,
+} from "./click-capture.js";
 import { setExceptionReporter } from "./error-reporter.js";
 import { installFetchContext } from "./interaction-context.js";
 import { installPageViews, type PageViewOptions } from "./page-views.js";
@@ -369,6 +386,13 @@ export interface BrowserTelemetryConfig {
    * it wants for this session and passes it here.
    */
   replaySampleRate?: number;
+  /**
+   * Record one `click` span per real click (click-capture.ts): the clicked
+   * control's tag and XPath and the page URL, never its text. Default true.
+   * Clicks made while the SDK loads are held and recorded once it runs. The
+   * `off` analytics tier records none.
+   */
+  clickCapture?: boolean;
   /** Verbose SDK diagnostics to the console. Default false. */
   debug?: boolean;
   /**
@@ -942,7 +966,14 @@ export function initBrowserTelemetry(
     setTelemetrySink(null);
     return Promise.resolve(false);
   }
-  started = start(config, ingest);
+  // Before the SDK loads, so a click made while it does is not lost.
+  const clicks =
+    config.clickCapture === false
+      ? null
+      : captureClicks(
+          () => !isTelemetryDisabled() && analyticsTier() !== "off",
+        );
+  started = start(config, ingest, clicks);
   registerTelemetryStartup(started);
   return started;
 }
@@ -950,6 +981,7 @@ export function initBrowserTelemetry(
 async function start(
   config: BrowserTelemetryConfig,
   ingest: string,
+  clicks: ClickCapture | null,
 ): Promise<boolean> {
   // Before the first await: until web-vitals registers in hdx.init, only this
   // watch sees the page hidden (see "Paint vitals" in the header).
@@ -959,6 +991,7 @@ async function start(
     const hdx = resolveClient(await import("@hyperdx/browser"));
     if (!hdx || isTelemetryDisabled()) {
       hidden.stop();
+      clicks?.stop();
       setTelemetrySink(null);
       return false;
     }
@@ -1062,8 +1095,11 @@ async function start(
         stopTier();
         stopRoutes();
         identity?.stop();
+        clicks?.stop();
       },
     });
+    // The clicks held while the SDK loaded, then every later one.
+    clicks?.attach(recordClick);
     // After the sink, so the first page view and the user go straight to the
     // SDK. Both are off unless the caller asked (otel_gen.ts does).
     identity = startIdentity(config);
@@ -1073,11 +1109,24 @@ async function start(
     // Blocked chunk, ad-blocker, SDK throw: telemetry must never break the app.
     // A startup that failed after the hooks went in takes them out again.
     hidden.stop();
+    clicks?.stop();
     removeBenignFilter();
     console.debug("[telemetry] disabled:", err);
     setTelemetrySink(null);
     return false;
   }
+}
+
+/**
+ * One click as a span, at the moment it happened: started and ended at the
+ * event's timestamp, and never made active, so it parents nothing.
+ */
+function recordClick(click: ClickRecord): void {
+  const span = trace.getTracer(CLICK_SCOPE).startSpan(CLICK_SPAN_NAME, {
+    startTime: click.at,
+    attributes: click.attributes,
+  });
+  span.end(click.at);
 }
 
 /** The slice of the SDK's tracer provider flushSdk calls. */
@@ -1688,8 +1737,11 @@ export function buildSdkOptions(
     instrumentations: {
       // Raw DOM events belong to replay, not distributed traces. HyperDX's
       // default traces every mousedown/up listener (including replay's own),
-      // creating empty roots. Meaningful actions can still use manual spans;
-      // fetch/xhr and document-load instrumentation keep their real parents.
+      // creating empty roots, and misses the listeners added before it
+      // loaded. The runtime records one click span per click itself (see
+      // "One click, one span"). Meaningful actions can still use manual
+      // spans; fetch/xhr and document-load instrumentation keep their real
+      // parents.
       interactions: false,
       fetch: {
         propagateTraceHeaderCorsUrls: targets,

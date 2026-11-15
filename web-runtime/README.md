@@ -107,8 +107,14 @@ an opaque external."
 
 ## Browser telemetry (`/telemetry`)
 
-Raw DOM events (including `mousedown`, `mouseup` and `click`) stay in masked
-session replay rather than creating automatic interaction spans. Document loads,
+Raw DOM events (`mousedown`, `mouseup`, every listener a click reaches) stay in
+masked session replay rather than creating automatic interaction spans. Instead
+the runtime records exactly one `click` span per real click, from the moment
+`initBrowserTelemetry` is called (clicks made while the SDK loads are held and
+recorded with their own time): named by the clicked control, with the SDK's
+`event_type`, `target_element`, `target_xpath`, `http.url` and `component`
+attributes and never its text. A click span parents nothing. `clickCapture:
+false` turns it off, and the `off` analytics tier records none. Document loads,
 fetch/XHR requests and explicitly instrumented meaningful actions still create
 spans. The interceptor stack preserves the caller's OTel context across its own
 authentication and telemetry-startup waits; the SDK propagates the actual network
@@ -118,7 +124,8 @@ The real Chromium SDK contract test is a separate slow tier:
 `npm run build && npx playwright install chromium && npm run test:browser`.
 It verifies exact action → fetch parent IDs and wire `traceparent`, that the
 fetch spans of unary and stream calls made while an `interaction()` is open
-are its children, retains mouse events in replay, checks private
+are its children, records one click span per click and none per press,
+retains mouse events in replay, checks private
 text/input sentinels are masked, and that no exported span carries the page
 URL's query string or fragment.
 

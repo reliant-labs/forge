@@ -19,6 +19,8 @@ import {
   vi,
 } from "vitest";
 
+import { registerSdkProvider } from "./testdata/sdk-provider.js";
+
 const init = vi.fn();
 const addAction = vi.fn();
 const setGlobalAttributes = vi.fn();
@@ -46,6 +48,9 @@ function sdkSessionId(): string {
 const client = {
   init: (...args: unknown[]) => {
     sdkSessionId();
+    // Events held while the SDK loaded are recorded on its custom-action
+    // tracer, at their own time: the same span addAction makes.
+    registerSdkProvider((name, attributes) => addAction(name, attributes));
     return init(...args);
   },
   recordException: (...args: unknown[]) => recordException(...args),

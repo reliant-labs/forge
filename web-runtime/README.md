@@ -134,6 +134,27 @@ URL's query string or fragment.
 to this origin's `/_otel`. It is a no-op without a DOM or an endpoint and never
 throws.
 
+The SDK chunk is large (~620 KB minified), and evaluating it is one long
+main-thread task. So by default (`start: "idle"`) it starts off the critical
+path: once the page has loaded, in the browser's first idle period or right
+after the first interaction has painted, or at once when an RPC waits for it.
+Its startup yields between stages: evaluating the chunk, the SDK's init, and
+recording what was held each run as a task of their own. Nothing from before
+the start is lost. From the call on, the runtime holds these, bounded, and
+records them once the SDK runs:
+
+- uncaught errors, unhandled rejections and failed resource loads;
+- errors handed to `reportException`, which returns `false` meanwhile so the
+  caller still logs them;
+- clicks;
+- `track()` calls, page views included.
+
+Clicks, events and resource failures keep their own times. A held exception
+carries `forge.error.delay_ms`. Web vitals, long tasks and the document load
+come from the browser's buffered timeline. Console output from before the
+start isn't captured. `start: "eager"` starts as soon as the page is visible,
+as before.
+
 ```ts
 import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";
 

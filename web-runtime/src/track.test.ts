@@ -188,7 +188,7 @@ describe("track", () => {
     const s = sink();
     setTelemetrySink(s);
     expect(s.track.mock.calls).toEqual([
-      ["sync_completed", { [KIND_PROP]: KIND_STATE }],
+      ["sync_completed", { [KIND_PROP]: KIND_STATE }, expect.any(Number)],
     ]);
   });
 
@@ -205,16 +205,23 @@ describe("track", () => {
     expect(s.track.mock.calls[0]![0]).toHaveLength(MAX_EVENT_NAME_CHARS);
   });
 
-  it("holds calls until a sink is installed, then replays them in order", () => {
-    track("one");
-    track("two", { a: 1 });
+  it("holds calls until a sink is installed, then replays them in order, each with when it was made", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    try {
+      track("one");
+      vi.setSystemTime(1_250);
+      track("two", { a: 1 });
+      vi.setSystemTime(9_000);
+    } finally {
+      vi.useRealTimers();
+    }
     const s = sink();
 
     setTelemetrySink(s);
 
     expect(s.track.mock.calls).toEqual([
-      ["one", {}],
-      ["two", { a: 1 }],
+      ["one", {}, 1_000],
+      ["two", { a: 1 }, 1_250],
     ]);
     // Replayed once: a second install has nothing left to replay.
     const again = sink();
@@ -232,7 +239,7 @@ describe("track", () => {
     // Held while the SDK loads: told on replay, after the sink has it.
     setTelemetrySink(null);
     recordProductEvent("held", {}, () => {
-      expect(s.track).toHaveBeenCalledWith("held", {});
+      expect(s.track).toHaveBeenCalledWith("held", {}, expect.any(Number));
       delivered.push("held");
     });
     expect(delivered).toEqual(["now"]);

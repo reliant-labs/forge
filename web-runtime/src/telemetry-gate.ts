@@ -15,6 +15,12 @@
 // delays a request by that much and no more, then falls back to the synthesized
 // traceparent. With telemetry off nothing is registered and nothing waits.
 //
+// The SDK starts after the page has loaded, when the browser is idle
+// (telemetry.ts, "Loading"). An RPC is a reason not to wait for that: the first
+// call that waits here asks the startup to begin at once, so a page that calls
+// its API on mount gets its first requests joined, as before, and a page that
+// calls nothing (a static site) loads the SDK when it is idle.
+//
 // DOM-free and import-free on purpose: the transport entry point
 // (@reliantlabs/forge-web-runtime/interceptors) imports this and must stay
 // light enough for React Native.
@@ -23,10 +29,24 @@
 export const TELEMETRY_WAIT_MS = 2000;
 
 let startup: Promise<unknown> | null = null;
+let hurry: (() => void) | null = null;
 
-/** Called once by initBrowserTelemetry with the promise of its startup. */
-export function registerTelemetryStartup(p: Promise<unknown>): void {
+/**
+ * Called once by initBrowserTelemetry with the promise of its startup, and
+ * what to call to begin it now rather than when the browser is idle.
+ */
+export function registerTelemetryStartup(
+  p: Promise<unknown>,
+  startNow?: () => void,
+): void {
   startup = p;
+  hurry = startNow ?? null;
+  const settled = () => {
+    if (startup === p) {
+      hurry = null;
+    }
+  };
+  p.then(settled, settled);
 }
 
 /**
@@ -40,6 +60,11 @@ export function telemetryReady(
   const p = startup;
   if (!p) {
     return Promise.resolve();
+  }
+  try {
+    hurry?.();
+  } catch {
+    // Telemetry must never break the app.
   }
   return new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, maxMs);
@@ -84,5 +109,6 @@ export function rumSessionId(): string | undefined {
 /** Test seam. */
 export function resetTelemetryGate(): void {
   startup = null;
+  hurry = null;
   sessionSource = null;
 }

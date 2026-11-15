@@ -105,7 +105,16 @@ export type TrackProps = Record<string, unknown>;
 
 /** What the `/telemetry` subpath installs once the SDK is running. */
 export interface TelemetrySink {
-  track(name: string, attributes: Record<string, TrackValue>): void;
+  /**
+   * `at` (ms since the epoch) is when a HELD event was recorded, so the sink
+   * can time it then rather than when it was replayed; undefined for a live
+   * event, which happens now.
+   */
+  track(
+    name: string,
+    attributes: Record<string, TrackValue>,
+    at?: number,
+  ): void;
   setUser(id: string): void;
   /**
    * Stamp the org later events are about (setTelemetryOrg); "" clears it.
@@ -126,6 +135,8 @@ type Pending =
       kind: "track";
       name: string;
       attributes: Record<string, TrackValue>;
+      // When it was recorded (ms since the epoch): replayed at that time.
+      at: number;
       onSent?: () => void;
       // The user setTelemetryUser had named when the event was recorded
       // (undefined: none yet), stamped again on replay, so a later
@@ -371,6 +382,7 @@ export function recordProductEvent(
         kind: "track",
         name: trimmed,
         attributes,
+        at: Date.now(),
         onSent,
         user: heldUser(),
       });
@@ -510,6 +522,25 @@ export function disableTelemetry(): void {
   } catch {
     // Telemetry must never break the app.
   }
+  for (const listener of [...disableListeners]) {
+    try {
+      listener();
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
+
+const disableListeners = new Set<() => void>();
+
+/**
+ * Calls `listener` when disableTelemetry() runs, until the returned function
+ * is called. For a startup still waiting for its moment (telemetry.ts): it
+ * has no sink yet, and must not wait on a browser event that may never come.
+ */
+export function onTelemetryDisabled(listener: () => void): () => void {
+  disableListeners.add(listener);
+  return () => disableListeners.delete(listener);
 }
 
 /** Whether disableTelemetry() has been called. Read by the installed recorder. */
@@ -549,7 +580,7 @@ export function setTelemetrySink(next: TelemetrySink | null): void {
           if (op.user !== undefined) {
             stamp(op.user);
           }
-          next.track(op.name, op.attributes);
+          next.track(op.name, op.attributes, op.at);
           sent(op.onSent);
         }
       } else {
@@ -828,6 +859,7 @@ export function resetTrackState(): void {
   lastStampedOrg = null;
   extraLocalKeys.clear();
   tierListeners.clear();
+  disableListeners.clear();
   warnedReserved = false;
   lastStamped = null;
 }

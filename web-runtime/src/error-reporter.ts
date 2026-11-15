@@ -28,6 +28,7 @@ type ExceptionReporter = (
  */
 
 let reporter: ExceptionReporter | null = null;
+let holder: ExceptionReporter | null = null;
 
 /**
  * Install (or clear, with null) the recorder reportException forwards to.
@@ -38,12 +39,26 @@ export function setExceptionReporter(next: ExceptionReporter | null): void {
 }
 
 /**
+ * Install (or clear, with null) what holds the errors reportException is
+ * handed while telemetry is starting but its SDK is not running yet, to be
+ * recorded once it is. reportException still returns false for them, so the
+ * caller still logs them to the console. Called by initBrowserTelemetry.
+ */
+export function setPendingExceptionHolder(
+  next: ExceptionReporter | null,
+): void {
+  holder = next;
+}
+
+/**
  * reportException hands a caught error to the browser telemetry SDK, if one
  * is running. Never throws: reporting an error must not become a second
  * error.
  *
  * Returns true when the SDK has the error and false when no SDK is running —
- * so a caller can fall back to console.error and an error never vanishes:
+ * so a caller can fall back to console.error and an error never vanishes. An
+ * error reported while the SDK is still starting returns false too, and is
+ * recorded once it runs:
  *
  *     if (!reportException(error)) console.error(error);
  *
@@ -63,12 +78,13 @@ export function reportException(
   error: unknown,
   attributes?: ExceptionAttributes,
 ): boolean {
-  if (!reporter) {
+  const to = reporter ?? holder;
+  if (!to) {
     return false;
   }
   try {
     const traceId = serverTraceIdOf(error);
-    reporter(
+    to(
       error,
       traceId
         ? { [SERVER_TRACE_ID_ATTRIBUTE]: traceId, ...attributes }
@@ -77,5 +93,7 @@ export function reportException(
   } catch {
     // Telemetry must never break the app.
   }
-  return true;
+  // Held, not recorded: the caller still logs it, so it is not lost if the
+  // SDK never starts.
+  return to === reporter;
 }

@@ -12,7 +12,9 @@ import (
 // GetReleaseHealth can report about a promotion, comparing the window after it
 // with the window before it.
 const (
-	// HealthErrorRate: the error rate rose by more than MaxErrorRateIncrease.
+	// HealthErrorRate: the error rate rose by more than MaxErrorRateIncrease,
+	// each endpoint against its own baseline, with at least
+	// ErrorRateMinErrors errors in the window.
 	HealthErrorRate = "error_rate"
 	// HealthLatency: p95 latency grew by more than MaxP95Ratio.
 	HealthLatency = "latency"
@@ -116,6 +118,47 @@ type ShapeReleaseHealth struct {
 	// BundleFeatureReleaseHealthRegressedMinEvents). 1 counts every
 	// regression, as forge did before the field.
 	RegressedIssueMinEvents int `json:"regressed_issue_min_events,omitempty"`
+	// ErrorRateMinErrors is the after-window errors a service needs before
+	// error_rate can fire: below it, a rise in the rate is too few errors to
+	// be evidence (one client's broken sessions on a quiet service). 0 means
+	// DefaultErrorRateMinErrors, and is how the default is recorded, so a
+	// shape that keeps it encodes as it did before the field (a reader that
+	// predates it is sent none: BundleFeatureReleaseHealthErrorRate). 1 is
+	// the rule before the field: any rise past the limit fires.
+	ErrorRateMinErrors int `json:"error_rate_min_errors,omitempty"`
+	// BaselineWindowSeconds is the longer stretch before the promotion an
+	// endpoint's error rate is compared against when its before window held
+	// fewer than MinRequests requests: an endpoint absent from a quiet 15
+	// minutes is judged against its own history, not read as error-free. 0
+	// means DefaultHealthBaselineWindow, recorded as absent like
+	// ErrorRateMinErrors and withheld from a reader by the same feature.
+	BaselineWindowSeconds int `json:"baseline_window_seconds,omitempty"`
+}
+
+// The defaults of the fields a shape records as 0.
+const (
+	DefaultErrorRateMinErrors   = 10
+	DefaultHealthBaselineWindow = 24 * time.Hour
+	// MaxHealthBaselineWindow bounds BaselineWindowSeconds: the longest
+	// range one overview read covers (obsquery.MaxRangeOverview).
+	MaxHealthBaselineWindow = 7 * 24 * time.Hour
+)
+
+// ErrorMinErrors is ErrorRateMinErrors with the default filled in.
+func (h ShapeReleaseHealth) ErrorMinErrors() int {
+	if h.ErrorRateMinErrors == 0 {
+		return DefaultErrorRateMinErrors
+	}
+	return h.ErrorRateMinErrors
+}
+
+// BaselineWindow is BaselineWindowSeconds as a duration, with the default
+// filled in.
+func (h ShapeReleaseHealth) BaselineWindow() time.Duration {
+	if h.BaselineWindowSeconds == 0 {
+		return DefaultHealthBaselineWindow
+	}
+	return time.Duration(h.BaselineWindowSeconds) * time.Second
 }
 
 // Baseline is RequireBaseline with the default filled in.
@@ -179,6 +222,12 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	if out.RegressedIssueMinEvents == out.NewIssueMinEvents {
 		out.RegressedIssueMinEvents = 0
 	}
+	if out.ErrorRateMinErrors == DefaultErrorRateMinErrors {
+		out.ErrorRateMinErrors = 0
+	}
+	if time.Duration(out.BaselineWindowSeconds)*time.Second == DefaultHealthBaselineWindow {
+		out.BaselineWindowSeconds = 0
+	}
 	return out
 }
 
@@ -200,6 +249,14 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.RegressedIssueMinEvents < 0 {
 		return fmt.Errorf("%w: shape release_health regressed_issue_min_events must be at least 1 (or absent: the same as new_issue_min_events)", ErrInvalid)
+	}
+	if h.ErrorRateMinErrors < 0 {
+		return fmt.Errorf("%w: shape release_health error_rate_min_errors must be at least 1 (or absent: %d)", ErrInvalid, DefaultErrorRateMinErrors)
+	}
+	if h.BaselineWindowSeconds != 0 {
+		if b := h.BaselineWindow(); b < h.Window() || b > MaxHealthBaselineWindow {
+			return fmt.Errorf("%w: shape release_health baseline_window %s is outside the window (%s) to %s", ErrInvalid, b, h.Window(), MaxHealthBaselineWindow)
+		}
 	}
 	if h.RequireBaseline != "" && !slices.Contains(BaselinePolicies, h.RequireBaseline) {
 		return fmt.Errorf("%w: shape release_health require_baseline %q (expected one of %v)", ErrInvalid, h.RequireBaseline, BaselinePolicies)

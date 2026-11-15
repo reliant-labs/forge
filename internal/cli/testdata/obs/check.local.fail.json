@@ -2,7 +2,7 @@
   "schema": "forge.obs.check/v1",
   "ok": false,
   "exit_code": 1,
-  "error": "the release started 2026-10-22T11:40:00Z failed its health check: api: error rate 0.1% -\u003e 8.0% (+7.9%, limit +1.0%); new issue sfp1-deadbeefdeadbeef: boom: \u003cn\u003e (7 events)",
+  "error": "the release started 2026-10-22T11:40:00Z failed its health check: api: error rate 0.1% -\u003e 8.0% (+7.9%, limit +1.0%; 80 errors); new issue sfp1-deadbeefdeadbeef: boom: \u003cn\u003e (7 events)",
   "scope": {
     "env": "dev",
     "backend": "local",
@@ -52,7 +52,7 @@
       "value": 0.079,
       "threshold": 0.01,
       "policy": "fail",
-      "message": "api: error rate 0.1% -\u003e 8.0% (+7.9%, limit +1.0%)"
+      "message": "api: error rate 0.1% -\u003e 8.0% (+7.9%, limit +1.0%; 80 errors)"
     },
     {
       "code": "new_issue",
@@ -81,6 +81,11 @@
       "source": "default"
     },
     {
+      "name": "baseline_window",
+      "value": "24h",
+      "source": "default"
+    },
+    {
       "name": "min_requests",
       "value": "50",
       "source": "default"
@@ -88,6 +93,11 @@
     {
       "name": "max_error_rate_increase",
       "value": "0.01",
+      "source": "default"
+    },
+    {
+      "name": "error_rate_min_errors",
+      "value": "10",
       "source": "default"
     },
     {

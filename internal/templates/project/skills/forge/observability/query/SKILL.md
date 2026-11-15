@@ -88,7 +88,7 @@ Each section is read on its own and concurrently. A section the backend cannot a
 
 ## Release health: `forge obs check`
 
-The subject is a promotion: the env's current one, or `--release v` / `--promotion id`. Two equal windows are compared, before and after it. Each window stops at the neighbouring promotion and at now. Error rate is weighted for tail sampling, so it is not inflated by dropped OK spans. A request the client walked away from is not a server error: a span with `error_class=canceled`, Connect code `canceled` or HTTP 499 counts as a request and never as an error, here or in any error count `obs` reports. Latency is judged per endpoint where the backend supplies endpoint figures. A finding the after window cannot pin on the release (a retried promotion's window from before it went live, a rollout under 50%, an issue whose events are another version's) never fails it. How latency and attribution are judged: `observability/release-health`. A local env has no promotions: `--since 20m` (or the start of the last `forge env up`) names the instant to judge from, and regressed issues, alerts and restarts are listed under `not_evaluated`.
+The subject is a promotion: the env's current one, or `--release v` / `--promotion id`. Two equal windows are compared, before and after it. Each window stops at the neighbouring promotion and at now. Error rate is weighted for tail sampling, so it is not inflated by dropped OK spans. A request the client walked away from is not a server error: a span with `error_class=canceled`, Connect code `canceled` or HTTP 499 counts as a request and never as an error, here or in any error count `obs` reports. Latency and error rate are judged per endpoint where the backend supplies endpoint figures, and `error_rate` needs `error_rate_min_errors` errors in the after window. A finding the after window cannot pin on the release (a retried promotion's window from before it went live, a rollout under 50%, an issue whose events are another version's) never fails it. How latency, error rate and attribution are judged: `observability/release-health`. A local env has no promotions: `--since 20m` (or the start of the last `forge env up`) names the instant to judge from, and regressed issues, alerts and restarts are listed under `not_evaluated`.
 
 The env's KCL declares the thresholds and which findings fail (`forge.ReleaseHealth` on the Bundle; the defaults are below). They are recorded in the release shape, so the console, the CLI and alerting judge alike. `--threshold k=v` overrides one for one call, `--fail-on` the failing set, `--window` the width, and the document says where each threshold came from.
 
@@ -97,6 +97,8 @@ release_health = forge.ReleaseHealth {
     window = "15m"                      # 1m to 6h
     min_requests = 50                   # below this, in either window, a service is not compared
     max_error_rate_increase = 0.01      # a fraction: one percentage point
+    error_rate_min_errors = 10          # error_rate needs this many after-window errors; 1 is the old rule
+    baseline_window = "24h"             # an endpoint with a thin before window is compared against this much history
     max_p95_ratio = 1.5
     new_issue_min_events = 3
     regressed_issue_min_events = 3      # unset: follows new_issue_min_events; 1 counts every regression
@@ -124,7 +126,7 @@ An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of
 
 `--wait --early-pass 8m` ends the wait with a PASS before the after window finishes. It passes only once at least 8m of the window has been observed and all of these hold: every judged service has a measured version share of ≥99% for the judged version (the rollout is over) and has reached `min_requests` on its own (a quiet or unmeasured service waits for the window), and there is no finding of any policy, no new or regressed issue, no firing alert, no restart and no critical alert. Anything found, or a rollout still in progress, keeps the wait going to the end of the window. The document's `early_pass` says why it passed. The control plane's own stored verdict still comes after the full window.
 
-**The control plane records its own verdict.** For an env on a control plane, its release-health evaluator judges every promotion once the after window closes and settles (~2m), with the same rule and the env's declared policy (no `--threshold`/`--fail-on` overrides), and stores it once per promotion, append-only: `pass`, `fail` or `inconclusive` — the verdicts `obs check` reports as 0, 1 and 2. A FAIL raises `ReleaseRegressed`. That stored verdict, not the CLI's exit code, is what the **promotion health gate** reads: an env declaring `delivery_policy.health_gate.after = ["staging"]` refuses a release until staging's verdict for it is `pass` (`deploy/delivery-policy`). So in a staging → prod pipeline, `forge obs check staging --release <v> --wait` is how to wait for the evidence prod's promotion needs; its exit code tells you what the gate will see, and loosening it with `--threshold` or `--allow-inconclusive` changes nothing on the server.
+**The control plane records its own verdict** of every promotion, and that stored verdict, not the CLI's exit code, is what the promotion health gate reads (`observability/release-health`, The stored verdict).
 
 ## Investigate a user session
 

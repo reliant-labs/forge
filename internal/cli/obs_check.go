@@ -356,17 +356,7 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	if b.Info().Backend == obsbackend.BackendCloud && opts.FailOn != nil {
 		res.Report = releasehealth.Rejudge(res.Report, opts.FailOn)
 	}
-	// A before window below min_requests is no baseline: a service compared
-	// against it is not_evaluated, and carries no PASS. Evaluate applies
-	// this itself; a control plane's answer that predates the rule is held
-	// to it here, so the CLI never passes what the updated gate would hold.
-	res.Report = releasehealth.WithThinBaselines(res.Report)
-	// An issue below its min-events threshold is no finding, and a platform
-	// issue alert (NewIssue, IssueRegressed) is judged as its issue, not on
-	// its own. Evaluate applies both; a control plane's answer that predates
-	// regressed_issue_min_events or the issue-alert rule is held to them
-	// here (pkg/releasehealth issue_alerts.go).
-	res.Report = releasehealth.WithIssueThresholds(res.Report, opts.Overrides)
+	res.Report = withCurrentRules(res.Report, opts.Overrides)
 	// Attribution: a finding the after window cannot pin on the release (a
 	// window that ended before it went liveWin, a rollout the window barely saw,
 	// an issue whose events are another version's) never fails it. Before the
@@ -430,6 +420,26 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	fillCheckDoc(&doc, b.Info(), env, res, o)
 	doc.EarlyPass = early
 	return doc, verdictError(res.Report, o.allowInconclusive)
+}
+
+// withCurrentRules holds a judged report to the rules Evaluate applies
+// itself, so a control plane's answer that predates one is judged by it too
+// and the CLI never passes what the updated gate would hold. overrides are
+// the request's --threshold pairs. Over Evaluate's own report each is a
+// no-op.
+func withCurrentRules(r releasehealth.Report, overrides map[string]string) releasehealth.Report {
+	// A before window below min_requests is no baseline: a service compared
+	// against it is not_evaluated, and carries no PASS.
+	r = releasehealth.WithThinBaselines(r)
+	// An issue below its min-events threshold is no finding, and a platform
+	// issue alert (NewIssue, IssueRegressed) is judged as its issue, not on
+	// its own (pkg/releasehealth issue_alerts.go).
+	r = releasehealth.WithIssueThresholds(r, overrides)
+	// error_rate needs error_rate_min_errors errors in the after window: a
+	// rise of a few errors on a quiet service is no evidence (control-plane
+	// v1.20.1-rc.1: 8 errors, one daemon's websockets; pkg/releasehealth
+	// error_rate.go).
+	return releasehealth.WithErrorRateMinErrors(r, overrides)
 }
 
 // earlyPassVersionShare is how much of every service's after-window traffic the

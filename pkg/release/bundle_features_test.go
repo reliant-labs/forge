@@ -21,6 +21,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureReleaseHealth:                   {"shape.release_health"},
 	BundleFeatureReleaseHealthBaseline:           {"shape.release_health.require_baseline"},
 	BundleFeatureReleaseHealthRegressedMinEvents: {"shape.release_health.regressed_issue_min_events"},
+	BundleFeatureReleaseHealthErrorRate:          {"shape.release_health.error_rate_min_errors", "shape.release_health.baseline_window_seconds"},
 	BundleFeatureUptimeChecks:                    {"shape.uptime_checks"},
 	BundleFeatureReleaseProbes:                   {"shape.release_probes"},
 	BundleFeatureDataAccess:                      {"shape.data_access"},

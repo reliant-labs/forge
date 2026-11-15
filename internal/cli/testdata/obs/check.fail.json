@@ -101,6 +101,11 @@
       "name": "regressed_issue_min_events",
       "value": "3",
       "source": "default"
+    },
+    {
+      "name": "error_rate_min_errors",
+      "value": "10",
+      "source": "default"
     }
   ],
   "suggested": [

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,8 +166,8 @@ func TestLocalReleaseHealthNeedsAnInstantAndLabelsWhatItSkipped(t *testing.T) {
 			t.Errorf("not_evaluated lacks %s: %v", want, res.Report.NotEvaluated)
 		}
 	}
-	if len(res.Statements) != 7 {
-		t.Errorf("statements = %d, want RED, RED by endpoint and browser RED per window, plus issues", len(res.Statements))
+	if len(res.Statements) != 8 {
+		t.Errorf("statements = %d, want RED, RED by endpoint and browser RED per window, RED by endpoint over the baseline window, plus issues", len(res.Statements))
 	}
 	if bad := (releasehealth.Options{Overrides: map[string]string{"min_requests": "x"}}); true {
 		if _, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c, Options: bad}); err == nil || err.(*Error).Code != ExitWrong {
@@ -181,8 +182,9 @@ func TestLocalReleaseHealthJudgesAFrontendOnBrowserTelemetry(t *testing.T) {
 	browser := func(errs string) Result {
 		return Result{Rows: [][]any{{"web", num64("500"), num64("200"), num64(errs), num64("1000"), num64("1"), []any{num64("300"), num64("900"), num64("1200")}}}}
 	}
-	// RED, RED by endpoint (both windows), issues, then browser RED before and after.
-	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{{}, {}, {}, {}, {}, browser("5"), browser("200")}}}
+	// RED, RED by endpoint (both windows, then the baseline window), issues,
+	// then browser RED before and after.
+	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{{}, {}, {}, {}, {}, {}, browser("5"), browser("200")}}}
 	res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +224,9 @@ func TestLocalReleaseHealthJudgesTheServiceWhenTheEndpointSetIsTruncated(t *test
 	for i := 0; i <= obsquery.MaxREDEndpoints; i++ {
 		eps = append(eps, []any{"api", fmt.Sprintf("GET /e%d", i), num64("1"), num64("0"), []any{num64("1"), num64("10"), num64("10")}})
 	}
-	// RED before, RED after, by endpoint before, by endpoint after, issues.
-	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{red("10"), red("50"), {Rows: eps}, {Rows: eps}, {}}}}
+	// RED before, RED after, by endpoint before, by endpoint after, by
+	// endpoint over the baseline window, issues.
+	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{red("10"), red("50"), {Rows: eps}, {Rows: eps}, {}, {}}}}
 	res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +240,57 @@ func TestLocalReleaseHealthJudgesTheServiceWhenTheEndpointSetIsTruncated(t *test
 	}
 	if !found {
 		t.Errorf("the service-level p95 regression is judged: %+v", res.Report.Findings)
+	}
+}
+
+// An endpoint the before window missed is judged against its figures over
+// the baseline_window before the promotion: one that always failed 30% of
+// the time is no error-rate rise for doing so after it. Without those
+// figures it is held to the service's before rate, and fails.
+func TestLocalReleaseHealthJudgesASparseEndpointAgainstItsBaselineWindow(t *testing.T) {
+	red := func(req, errs string) Result {
+		return Result{Rows: [][]any{{"api", num64(req), num64(errs), []any{num64("1"), num64("10"), num64("10")}, ""}}}
+	}
+	ep := func(name, req, errs string) []any {
+		return []any{"api", name, num64(req), num64(errs), []any{num64("1"), num64("10"), num64("10")}}
+	}
+	run := func(t *testing.T, baseline Result) HealthResult {
+		t.Helper()
+		// RED before, RED after, by endpoint before, by endpoint after, by
+		// endpoint over the baseline window, issues.
+		l := Local{Env: "dev", Runner: &seqRunner{results: []Result{
+			red("400", "0"), red("500", "30"),
+			{Rows: [][]any{ep("rpc", "400", "0")}},
+			{Rows: [][]any{ep("rpc", "400", "0"), ep("jobs/poll", "100", "30")}},
+			baseline, {},
+		}}}
+		res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	res := run(t, Result{Rows: [][]any{ep("rpc", "9000", "0"), ep("jobs/poll", "2000", "600")}})
+	if res.Report.Verdict != releasehealth.Pass {
+		t.Errorf("with its baseline: verdict %s findings %+v", res.Report.Verdict, res.Report.Findings)
+	}
+	var poll *releasehealth.EndpointHealth
+	for i, e := range res.Report.Services[0].Endpoints {
+		if e.Endpoint == "jobs/poll" {
+			poll = &res.Report.Services[0].Endpoints[i]
+		}
+	}
+	if poll == nil || poll.Baseline == nil || poll.Baseline.Requests != 2000 || poll.Baseline.ErrorRate != 0.3 {
+		t.Errorf("jobs/poll = %+v, want its baseline figures attached", poll)
+	}
+	from := t0c.Add(-20*time.Minute - 24*time.Hour).UTC().Format(time.RFC3339)
+	if !slices.ContainsFunc(res.Statements, func(s Statement) bool { return s.Purpose == "red by endpoint "+from }) {
+		t.Errorf("no by-endpoint read over the 24h before the promotion (from %s): %+v", from, res.Statements)
+	}
+
+	if res := run(t, Result{}); res.Report.Verdict != releasehealth.Fail {
+		t.Errorf("without its baseline: verdict %s, want FAIL against the service's 0%%", res.Report.Verdict)
 	}
 }
 

@@ -924,6 +924,46 @@ func TestObsCheckIssueBelowItsThresholdAndItsAlertsDoNotFail(t *testing.T) {
 	}
 }
 
+// control-plane v1.20.1-rc.1 (2026-11-15, control-plane #2820): a control
+// plane that predates error_rate_min_errors failed prod on reliant-api-server
+// going 0.0% -> 3.3%, 8 errors of 246 requests, all one daemon's terminal
+// websockets the quiet before window held none of. The check holds the answer
+// to the floor and says PASS; a real rise (40 errors), or --threshold
+// error_rate_min_errors=1, still fails.
+func TestObsCheckErrorRateBelowItsMinErrorsDoesNotFail(t *testing.T) {
+	const finding = `{"code":"RELEASE_FINDING_CODE_ERROR_RATE","service":"reliant-api-server","value":%g,"threshold":0.01,"policy":"fail","message":"reliant-api-server: error rate 0.0%% -> %.1f%%"}`
+	reply := func(errs int) string {
+		rate := float64(errs) / 246
+		r := healthReply("RELEASE_VERDICT_FAIL", true, fmt.Sprintf(finding, rate, rate*100), "")
+		return strings.Replace(r,
+			`"services":[{"service":"api","before":{"requests":"900","errorRate":0.001,"p95Ms":100},"after":{"requests":"1000","errorRate":0.05,"p95Ms":110},"versionShare":1}]`,
+			fmt.Sprintf(`"services":[{"service":"reliant-api-server","before":{"requests":"210","errorRate":0,"p95Ms":100},"after":{"requests":"246","errorRate":%g,"p95Ms":110},"versionShare":1}]`, rate), 1)
+	}
+	run := func(t *testing.T, errs int, args ...string) (map[string]any, error) {
+		t.Helper()
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply(errs)}}}
+		out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
+		return decode(t, out), err
+	}
+
+	doc, err := run(t, 8)
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
+	}
+	if doc["verdict"] != "PASS" || len(doc["findings"].([]any)) != 0 {
+		t.Errorf("doc = %v", doc)
+	}
+	if ths := fmt.Sprint(doc["thresholds"]); !strings.Contains(ths, "map[name:error_rate_min_errors source:default value:10]") {
+		t.Errorf("thresholds = %s", ths)
+	}
+	if doc, err = run(t, 40); exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "error_rate") {
+		t.Errorf("40 errors: exit %d doc %v", exitCodeForError(err), doc)
+	}
+	if doc, err = run(t, 8, "--threshold", "error_rate_min_errors=1"); exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" {
+		t.Errorf("error_rate_min_errors=1 is the old rule: exit %d doc %v", exitCodeForError(err), doc)
+	}
+}
+
 // An app adopted by its Dockerfile exports no OpenTelemetry unless it was
 // instrumented, so the control plane answers with no service at all however
 // much traffic it served. Measured: 120 real requests to an adopted Express

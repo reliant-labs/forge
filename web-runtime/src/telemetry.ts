@@ -296,6 +296,7 @@ import {
   grantAnalyticsConsent,
   isTelemetryDisabled,
   onAnalyticsTierChange,
+  onTelemetryDisabled,
   setAnalyticsMode,
   setTelemetrySink,
   stampedTelemetryUser,
@@ -1057,8 +1058,10 @@ async function start(
   const hidden = watchFirstHidden();
   let identity: SessionIdentity | null = null;
   let stopRoutes = () => {};
+  let stopWaiting = () => {};
   // Telemetry is not starting after all: let go of everything held for it.
   const abandon = () => {
+    stopWaiting();
     hidden.stop();
     gate.cancel();
     clicks?.stop();
@@ -1067,15 +1070,26 @@ async function start(
     stopRoutes();
     setTelemetrySink(null);
   };
+  // Until the SDK's sink is installed, disableTelemetry() reaches this
+  // startup only here: the waits below end on it rather than on a visibility
+  // change, a load or an idle period that may never come (a hidden page).
+  const disabledWhileWaiting = new Promise<void>((resolve) => {
+    stopWaiting = onTelemetryDisabled(resolve);
+  });
   try {
-    await firstVisible();
+    await firstVisible(disabledWhileWaiting);
+    if (isTelemetryDisabled()) {
+      abandon();
+      return false;
+    }
     // Page views from the moment the page is seen, not from when the SDK
     // runs: the views and engaged time of a visitor who moves on, or leaves,
     // before then are held like any track() call.
     stopRoutes = startRouteWatch(config, (route, previous) =>
       identity?.onRoute(route, previous),
     );
-    await gate.ready;
+    await Promise.race([gate.ready, disabledWhileWaiting]);
+    stopWaiting();
     if (isTelemetryDisabled()) {
       abandon();
       return false;
@@ -1390,9 +1404,10 @@ function startRouteWatch(
 /**
  * Resolves once the document is visible: at once for a visible page or one
  * with no Page Visibility API, otherwise at its first visibilitychange to
- * visible. See "No session until the page has been seen" in the header.
+ * visible, or when `until` resolves, whichever is first. See "No session
+ * until the page has been seen" in the header.
  */
-function firstVisible(): Promise<void> {
+function firstVisible(until: Promise<void>): Promise<void> {
   if (
     typeof document === "undefined" ||
     document.visibilityState !== "hidden" ||
@@ -1401,13 +1416,18 @@ function firstVisible(): Promise<void> {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
+    const done = () => {
+      document.removeEventListener("visibilitychange", onChange);
+      resolve();
+    };
     const onChange = () => {
       if (document.visibilityState !== "hidden") {
-        document.removeEventListener("visibilitychange", onChange);
-        resolve();
+        done();
       }
     };
     document.addEventListener("visibilitychange", onChange);
+    // Waiting stops early: the listener goes with it.
+    void until.then(done);
   });
 }
 

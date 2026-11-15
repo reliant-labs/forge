@@ -2808,4 +2808,56 @@ describe("starting after the page has loaded", () => {
     expect(recordException).not.toHaveBeenCalled();
     expect(r.reportException(new Error("later"))).toBe(false);
   });
+
+  it("settles startup and telemetryReady when disabled before the page loads", async () => {
+    loadingPage();
+    const { t, k } = await load();
+    const gate = await import("./telemetry-gate.js");
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+
+    // No load event and no idle callback ever fire: disabling alone settles
+    // the startup, and an RPC waiting on it is not held to its timeout.
+    k.disableTelemetry();
+    expect(await started).toBe(false);
+    let ready = false;
+    void gate.telemetryReady(60_000).then(() => (ready = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ready).toBe(true);
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  it("settles startup when disabled on a page that has never been visible", async () => {
+    const page = loadingPage();
+    const docListeners: Listener[] = [];
+    vi.stubGlobal("document", {
+      visibilityState: "hidden",
+      readyState: "loading",
+      addEventListener: (type: string, fn: Listener) => {
+        if (type === "visibilitychange") docListeners.push(fn);
+      },
+      removeEventListener: (type: string, fn: Listener) => {
+        const i = docListeners.indexOf(fn);
+        if (type === "visibilitychange" && i >= 0) docListeners.splice(i, 1);
+      },
+    });
+    const { t, k } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    await Promise.resolve();
+    // The first-hidden watch, and the wait for the page to be seen.
+    expect(docListeners).toHaveLength(2);
+
+    k.disableTelemetry();
+    expect(await started).toBe(false);
+    // Both let go of their listeners.
+    expect(docListeners).toHaveLength(0);
+    expect(page.idle).toHaveLength(0);
+    expect(init).not.toHaveBeenCalled();
+  });
 });

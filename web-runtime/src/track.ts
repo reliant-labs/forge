@@ -522,6 +522,25 @@ export function disableTelemetry(): void {
   } catch {
     // Telemetry must never break the app.
   }
+  for (const listener of [...disableListeners]) {
+    try {
+      listener();
+    } catch {
+      // Telemetry must never break the app.
+    }
+  }
+}
+
+const disableListeners = new Set<() => void>();
+
+/**
+ * Calls `listener` when disableTelemetry() runs, until the returned function
+ * is called. For a startup still waiting for its moment (telemetry.ts): it
+ * has no sink yet, and must not wait on a browser event that may never come.
+ */
+export function onTelemetryDisabled(listener: () => void): () => void {
+  disableListeners.add(listener);
+  return () => disableListeners.delete(listener);
 }
 
 /** Whether disableTelemetry() has been called. Read by the installed recorder. */
@@ -840,6 +859,7 @@ export function resetTrackState(): void {
   lastStampedOrg = null;
   extraLocalKeys.clear();
   tierListeners.clear();
+  disableListeners.clear();
   warnedReserved = false;
   lastStamped = null;
 }

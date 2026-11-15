@@ -6668,9 +6668,13 @@ schema ReleaseHealth:
     and restarts need no baseline and fail a release under every setting.
 
     Findings: error_rate (the error rate rose by more than
-    `max_error_rate_increase`, a fraction: 0.01 is one percentage point),
-    latency (p95 grew by more than `max_p95_ratio`), new_issue (an issue first
-    seen in this release with `new_issue_min_events` events), regressed_issue
+    `max_error_rate_increase`, a fraction: 0.01 is one percentage point,
+    with at least `error_rate_min_errors` errors after the promotion; where
+    the figures are per endpoint, each endpoint is held to its own before
+    window, or, when that held fewer than `min_requests` requests, to the
+    `baseline_window` before the promotion, so a quiet before window that
+    missed a noisy endpoint does not read as a rise), latency (p95 grew by
+    more than `max_p95_ratio`), new_issue (an issue first seen in this release with `new_issue_min_events` events), regressed_issue
     (a resolved issue came back after the promotion, with
     `regressed_issue_min_events` events in the after window; unset, the same
     as `new_issue_min_events`; 1 counts every regression), alert_firing (an
@@ -6696,6 +6700,8 @@ schema ReleaseHealth:
     max_p95_ratio: float = 1.5
     new_issue_min_events: int = 3
     regressed_issue_min_events?: int
+    error_rate_min_errors: int = 10
+    baseline_window: str = "24h"
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
     require_baseline: str = "any"
 
@@ -6709,6 +6715,10 @@ schema ReleaseHealth:
         new_issue_min_events >= 1, "ReleaseHealth.new_issue_min_events ${new_issue_min_events} must be at least 1"
         regressed_issue_min_events == Undefined or regressed_issue_min_events == None or regressed_issue_min_events >= 1, \
             "ReleaseHealth.regressed_issue_min_events ${regressed_issue_min_events} must be at least 1 (1 counts every regression; leave it unset to follow new_issue_min_events)"
+        error_rate_min_errors >= 1, \
+            "ReleaseHealth.error_rate_min_errors ${error_rate_min_errors} must be at least 1 (1 lets any rise past max_error_rate_increase fail)"
+        _release_health_seconds(window) <= _release_health_seconds(baseline_window) <= 604800, \
+            "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"

@@ -33,6 +33,12 @@
 //     workload_restarts, browser_errors, browser_failed_requests,
 //     browser_page_load. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
+//   - error_rate (error_rate.go): with per-endpoint figures, the rise is the
+//     after-window request-weighted mean of each endpoint's rise over its
+//     own baseline (its before window, or the longer baseline_window when
+//     that held fewer than min_requests), so an endpoint the before window
+//     happened to miss does not read as new errors; and it fires only with
+//     error_rate_min_errors errors in the after window.
 //   - Issues count with enough after-window events: new_issue_min_events for
 //     a new issue, regressed_issue_min_events (unset: the same) for a
 //     regressed one. The platform's NewIssue and IssueRegressed alerts are
@@ -104,8 +110,14 @@ const (
 	// ThresholdRegressedIssueMinEvents follows new_issue_min_events unless
 	// the env's policy or the request sets it.
 	ThresholdRegressedIssueMinEvents = "regressed_issue_min_events"
-	ThresholdFailOn                  = "fail_on"
-	ThresholdRequireBaseline         = "require_baseline"
+	// ThresholdErrorRateMinErrors is the after-window errors a service needs
+	// before error_rate can fire (error_rate.go).
+	ThresholdErrorRateMinErrors = "error_rate_min_errors"
+	// ThresholdBaselineWindow is the stretch before the promotion an
+	// endpoint with a thin before window is compared against (error_rate.go).
+	ThresholdBaselineWindow  = "baseline_window"
+	ThresholdFailOn          = "fail_on"
+	ThresholdRequireBaseline = "require_baseline"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -166,7 +178,12 @@ type Thresholds struct {
 	// RegressedIssueMinEvents is the after-window events a regressed issue
 	// needs before it is a finding; NewIssueMinEvents unless set.
 	RegressedIssueMinEvents int
-	FailOn                  []string
+	// ErrorRateMinErrors is the after-window errors a service needs before
+	// error_rate can fire; BaselineWindow the longer baseline of an endpoint
+	// whose before window is thin (error_rate.go).
+	ErrorRateMinErrors int
+	BaselineWindow     time.Duration
+	FailOn             []string
 	// RequireBaseline is release.BaselineAny, BaselineEvery or BaselineNone
 	// (baseline.go); empty reads as BaselineAny.
 	RequireBaseline string
@@ -195,7 +212,8 @@ type Options struct {
 }
 
 // OverrideNames are the thresholds a request may override by name.
-var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline}
+var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline,
+	ThresholdErrorRateMinErrors, ThresholdBaselineWindow}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -237,12 +255,14 @@ func Resolve(o Options) (Thresholds, error) {
 		MaxErrorRateIncrease: base.MaxErrorRateIncrease,
 		MaxP95Ratio:          base.MaxP95Ratio,
 		NewIssueMinEvents:    base.NewIssueMinEvents,
+		ErrorRateMinErrors:   base.ErrorMinErrors(),
+		BaselineWindow:       base.BaselineWindow(),
 		FailOn:               normalizeCodes(base.FailOn),
 		RequireBaseline:      base.Baseline(),
 		Sources: map[string]string{
 			ThresholdWindow: src, ThresholdMinRequests: src, ThresholdMaxErrorRateIncrease: src,
 			ThresholdMaxP95Ratio: src, ThresholdNewIssueMinEvents: src, ThresholdFailOn: src,
-			ThresholdRequireBaseline: src,
+			ThresholdRequireBaseline: src, ThresholdErrorRateMinErrors: src, ThresholdBaselineWindow: src,
 		},
 	}
 	// regressed_issue_min_events follows new_issue_min_events (after any
@@ -267,6 +287,12 @@ func Resolve(o Options) (Thresholds, error) {
 		case ThresholdRegressedIssueMinEvents:
 			t.RegressedIssueMinEvents, err = strconv.Atoi(v)
 			regressedSet = true
+		case ThresholdErrorRateMinErrors:
+			t.ErrorRateMinErrors, err = strconv.Atoi(v)
+		case ThresholdBaselineWindow:
+			if t.BaselineWindow, err = time.ParseDuration(v); err != nil {
+				return Thresholds{}, invalid("threshold baseline_window=%q is not a duration (24h)", v)
+			}
 		case ThresholdMaxErrorRateIncrease:
 			t.MaxErrorRateIncrease, err = strconv.ParseFloat(v, 64)
 		case ThresholdMaxP95Ratio:
@@ -304,6 +330,10 @@ func (t Thresholds) validate() error {
 		return invalid("new_issue_min_events must be at least 1")
 	case t.RegressedIssueMinEvents < 1:
 		return invalid("regressed_issue_min_events must be at least 1")
+	case t.ErrorRateMinErrors < 1:
+		return invalid("error_rate_min_errors must be at least 1")
+	case t.BaselineWindow < t.Window || t.BaselineWindow > release.MaxHealthBaselineWindow:
+		return invalid("baseline_window %s is outside the window (%s) to %s", t.BaselineWindow, t.Window, release.MaxHealthBaselineWindow)
 	case t.RequireBaseline != "" && !slices.Contains(release.BaselinePolicies, t.RequireBaseline):
 		return invalid("require_baseline %q is not a policy; use %s", t.RequireBaseline, strings.Join(release.BaselinePolicies, ", "))
 	}
@@ -346,8 +376,10 @@ func (t Thresholds) List() []Threshold {
 	}
 	return []Threshold{
 		{ThresholdWindow, durationText(t.Window), src(ThresholdWindow)},
+		{ThresholdBaselineWindow, durationText(t.BaselineWindow), src(ThresholdBaselineWindow)},
 		{ThresholdMinRequests, strconv.Itoa(t.MinRequests), src(ThresholdMinRequests)},
 		{ThresholdMaxErrorRateIncrease, strconv.FormatFloat(t.MaxErrorRateIncrease, 'g', -1, 64), src(ThresholdMaxErrorRateIncrease)},
+		{ThresholdErrorRateMinErrors, strconv.Itoa(t.ErrorRateMinErrors), src(ThresholdErrorRateMinErrors)},
 		{ThresholdMaxP95Ratio, strconv.FormatFloat(t.MaxP95Ratio, 'g', -1, 64), src(ThresholdMaxP95Ratio)},
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
 		{ThresholdRegressedIssueMinEvents, strconv.Itoa(t.RegressedIssueMinEvents), src(ThresholdRegressedIssueMinEvents)},
@@ -408,6 +440,11 @@ type EndpointHealth struct {
 	Endpoint string      `json:"endpoint"`
 	Before   WindowStats `json:"before"`
 	After    WindowStats `json:"after"`
+	// Baseline is the endpoint's figures over the baseline_window before the
+	// promotion, read for an endpoint whose before window is thin: what its
+	// error rate is compared against then (error_rate.go). Nil when not
+	// read.
+	Baseline *WindowStats `json:"baseline,omitempty"`
 }
 
 // LatencyRatio is how much slower the service got, and whether there is a
@@ -652,10 +689,8 @@ func Evaluate(in Input) Report {
 		if !t.gauge().comparable(s) {
 			continue // too little traffic in a window to compare (baseline.go)
 		}
-		if inc := s.After.ErrorRate - s.Before.ErrorRate; inc > t.MaxErrorRateIncrease {
-			add(Finding{Code: release.HealthErrorRate, Service: s.Service, Value: inc, Threshold: t.MaxErrorRateIncrease,
-				Message: fmt.Sprintf("%s: error rate %s -> %s (+%s, limit +%s)", s.Service,
-					pct(s.Before.ErrorRate), pct(s.After.ErrorRate), pct(inc), pct(t.MaxErrorRateIncrease))})
+		if f, ok := errorRateFinding(s, t); ok {
+			add(f) // error_rate.go
 		}
 		if ratio, ok := s.LatencyRatio(); ok && ratio > t.MaxP95Ratio {
 			per := ""

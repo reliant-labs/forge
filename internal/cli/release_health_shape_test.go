@@ -81,6 +81,8 @@ func TestReleaseHealthReachesTheShape(t *testing.T) {
         fail_on = ["latency", "new_issue", "error_rate"]
         require_baseline = "every"
         regressed_issue_min_events = 1
+        error_rate_min_errors = 1
+        baseline_window = "48h"
     }`)
 	got := shapeReleaseHealthOf(e)
 	if got == nil {
@@ -92,6 +94,8 @@ func TestReleaseHealthReachesTheShape(t *testing.T) {
 	want.FailOn = []string{release.HealthErrorRate, release.HealthLatency, release.HealthNewIssue}
 	want.RequireBaseline = release.BaselineEvery
 	want.RegressedIssueMinEvents = 1
+	want.ErrorRateMinErrors = 1
+	want.BaselineWindowSeconds = 172800
 	if !reflect.DeepEqual(*got, want) {
 		t.Errorf("shape policy:\n got  %+v\n want %+v", *got, want)
 	}

@@ -89,6 +89,13 @@ const (
 	// (forge.ReleaseHealth.regressed_issue_min_events). A control plane that
 	// predates it is sent the policy without it, and counts every regression.
 	BundleFeatureReleaseHealthRegressedMinEvents = "shape-release-health-regressed-min-events"
+	// BundleFeatureReleaseHealthErrorRate is ShapeReleaseHealth.ErrorRateMinErrors
+	// and ShapeReleaseHealth.BaselineWindowSeconds: the errors error_rate
+	// needs, and the longer baseline a sparse endpoint is compared against
+	// (forge.ReleaseHealth.error_rate_min_errors, baseline_window). A control
+	// plane that predates it is sent the policy without them, and judges by
+	// its own defaults.
+	BundleFeatureReleaseHealthErrorRate = "shape-release-health-error-rate"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -193,7 +200,7 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -295,6 +302,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		}
 		if !r.Supports(BundleFeatureReleaseHealthRegressedMinEvents) && h.RegressedIssueMinEvents != 0 {
 			h.RegressedIssueMinEvents, limited = 0, true
+		}
+		if !r.Supports(BundleFeatureReleaseHealthErrorRate) && (h.ErrorRateMinErrors != 0 || h.BaselineWindowSeconds != 0) {
+			h.ErrorRateMinErrors, h.BaselineWindowSeconds, limited = 0, 0, true
 		}
 		switch {
 		case !limited:

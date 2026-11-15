@@ -80,6 +80,18 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 		// service-level p95 instead, for both windows alike.
 		beforeEP, afterEP = nil, nil
 	}
+	// The baseline_window before the promotion, per endpoint: what an
+	// endpoint the before window barely saw is compared against for its
+	// error rate (pkg/releasehealth error_rate.go). A truncated set is
+	// dropped alone: such an endpoint then falls back to the service's
+	// before rate, which is the rule without it.
+	baselineEP, baselineWhole, err := l.endpointStats(ctx, releasehealth.Range{From: win.Before.To.Add(-th.BaselineWindow), To: win.Before.To}, &out)
+	if err != nil {
+		return out, err
+	}
+	if !baselineWhole {
+		baselineEP = nil
+	}
 	issues, err := l.newIssues(ctx, win, &out)
 	if err != nil {
 		return out, err
@@ -103,7 +115,7 @@ func (l Local) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	var services []releasehealth.ServiceHealth
 	for s := range names {
 		services = append(services, releasehealth.ServiceHealth{Service: s, Before: before[s], After: after[s],
-			Endpoints: endpointHealth(beforeEP[s], afterEP[s])})
+			Endpoints: endpointHealth(beforeEP[s], afterEP[s], baselineEP[s])})
 	}
 	sort.Slice(services, func(i, j int) bool { return services[i].Service < services[j].Service })
 	// A frontend's own browser telemetry is judged beside the server spans.
@@ -235,8 +247,9 @@ func (l Local) endpointStats(ctx context.Context, r releasehealth.Range, out *He
 	return stats, true, nil
 }
 
-// endpointHealth pairs one service's endpoints across the windows, by name.
-func endpointHealth(before, after map[string]releasehealth.WindowStats) []releasehealth.EndpointHealth {
+// endpointHealth pairs one service's endpoints across the windows, by name,
+// with each one's baseline_window figures when baseline holds it.
+func endpointHealth(before, after, baseline map[string]releasehealth.WindowStats) []releasehealth.EndpointHealth {
 	names := map[string]bool{}
 	for n := range before {
 		names[n] = true
@@ -246,7 +259,11 @@ func endpointHealth(before, after map[string]releasehealth.WindowStats) []releas
 	}
 	var out []releasehealth.EndpointHealth
 	for n := range names {
-		out = append(out, releasehealth.EndpointHealth{Endpoint: n, Before: before[n], After: after[n]})
+		e := releasehealth.EndpointHealth{Endpoint: n, Before: before[n], After: after[n]}
+		if b, ok := baseline[n]; ok {
+			e.Baseline = &b
+		}
+		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Endpoint < out[j].Endpoint })
 	return out

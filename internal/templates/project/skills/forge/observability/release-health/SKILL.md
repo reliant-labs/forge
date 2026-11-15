@@ -1,13 +1,13 @@
 ---
 name: observability/release-health
-description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — and the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice.
+description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, and the control plane's stored verdict the promotion health gate reads.
 ---
 
 # Release health: what a release answers for
 
 `forge obs check` (`observability/query`) compares the window after a
 promotion with the window before it. This is the detail behind two of its
-rules: how latency is compared, and which findings are the release's.
+rules: how latency and error rate are compared, and which findings are the release's.
 
 ## Signals: spans, then ingress, plus the browser
 
@@ -23,6 +23,41 @@ So a window filled with one client's fast calls (a deploy polling its own
 release) and then emptied of them does not read as the service getting slower.
 When a window holds more endpoints than the query returns (1000), the endpoint
 set is incomplete and latency is judged on the service-level p95 instead.
+
+## Error rate, per endpoint, with a floor: `error_rate_min_errors`, `baseline_window`
+
+`error_rate` fires when the error rate rose by more than
+`max_error_rate_increase` AND the service had at least `error_rate_min_errors`
+(default 10) errors in the after window. A rise of a few errors on a quiet
+service (one client's broken sessions) is not evidence a release broke
+something, as one event is not an issue. `--threshold error_rate_min_errors=1`
+is the rule before the floor existed.
+
+Where the backend supplies endpoint figures, the rise is the after-window
+request-weighted mean of each endpoint's own rise, so a change in WHICH
+endpoints a window holds does not read as a change in how often they fail. An
+endpoint is compared against its before window when that held `min_requests`
+requests; else against its own figures over `baseline_window` (default `24h`,
+from the window to `168h`) before the promotion, when those did; else against
+the service's before rate, so an endpoint with no history is never read as
+error-free. A busy endpoint that got worse dominates the mean, and a rise
+across many endpoints adds up as it did service-wide, so both still fail.
+
+The case it was built for (control-plane v1.20.1-rc.1): reliant-api-server went
+0.0% -> 3.3%, 8 errors in 246 requests, every one a `terminal.session`
+websocket from one daemon whose machine did not answer. That endpoint had
+failed 9% of the time all day; the 15-minute before window held none of it, so
+the service read 0%. The floor passes it, and judged per endpoint the rise is
+measured against the endpoint's own 9%.
+
+The local backend reads endpoint figures for both windows and the baseline
+window. A control plane that does not supply them is judged service-wide, and
+`obs check` holds its answer to the floor even when the control plane
+predates it, listing `error_rate_min_errors` in `thresholds`.
+
+## The stored verdict
+
+For an env on a control plane, its release-health evaluator judges every promotion once the after window closes and settles (~2m), with the same rule and the env's declared policy (no `--threshold`/`--fail-on` overrides), and stores it once per promotion, append-only: `pass`, `fail` or `inconclusive` — the verdicts `obs check` reports as 0, 1 and 2. A FAIL raises `ReleaseRegressed`. That stored verdict, not the CLI's exit code, is what the **promotion health gate** reads: an env declaring `delivery_policy.health_gate.after = ["staging"]` refuses a release until staging's verdict for it is `pass` (`deploy/delivery-policy`). So in a staging → prod pipeline, `forge obs check staging --release <v> --wait` is how to wait for the evidence prod's promotion needs; its exit code tells you what the gate will see, and loosening it with `--threshold` or `--allow-inconclusive` changes nothing on the server.
 
 ## Attribution: a finding fails the release only when the window measured it
 

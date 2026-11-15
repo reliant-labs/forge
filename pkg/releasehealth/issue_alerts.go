@@ -165,20 +165,7 @@ func issueMinEvents(ths []Threshold) (newMin, regressedMin int, out []Threshold)
 func withOverrides(ths []Threshold, overrides map[string]string) []Threshold {
 	out := ths
 	for _, name := range []string{ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents} {
-		v, ok := overrides[name]
-		if n, err := strconv.Atoi(v); !ok || err != nil || n < 1 {
-			continue
-		}
-		th := Threshold{name, v, SourceRequest}
-		if i := slices.IndexFunc(out, func(t Threshold) bool { return t.Name == name }); i >= 0 {
-			if out[i] == th {
-				continue
-			}
-			out = slices.Clone(out)
-			out[i] = th
-		} else {
-			out = append(slices.Clone(out), th)
-		}
+		out = withOverride(out, overrides, name) // error_rate.go
 	}
 	return out
 }

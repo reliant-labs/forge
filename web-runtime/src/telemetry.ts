@@ -972,6 +972,7 @@ export function initBrowserTelemetry(
       ? null
       : captureClicks(
           () => !isTelemetryDisabled() && analyticsTier() !== "off",
+          queryParamFilter(config.keepUrlQueryParams),
         );
   started = start(config, ingest, clicks);
   registerTelemetryStartup(started);

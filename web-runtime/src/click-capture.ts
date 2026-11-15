@@ -26,8 +26,10 @@
 // component) so existing queries keep working. The target is the clicked
 // control (the nearest link, button, form field or ARIA control around the
 // event's target), not the element a listener happened to sit on. No text
-// content is read. http.url is scrubbed of its query and fragment by the
-// export scrub like every other URL (url-scrub.ts).
+// content is read. http.url is scrubbed of its query and fragment when the
+// click is recorded, by the same policy as every other URL (url-scrub.ts,
+// keepUrlQueryParams): a held click is recorded before the SDK, and its
+// export scrub, run, so the export scrub cannot be what keeps it clean.
 //
 // The span is a point in time: started and ended at the event's timestamp. It
 // is never made the active context, so it parents nothing: an action's RPCs
@@ -35,6 +37,8 @@
 //
 // Clicks made before the SDK is running (it loads lazily) are held, bounded,
 // with their own timestamps, and recorded once it is.
+
+import { type QueryParamFilter, scrubUrl } from "./url-scrub.js";
 
 /** Most clicks held while the SDK is still loading. Later ones are dropped. */
 export const MAX_HELD_CLICKS = 50;
@@ -92,9 +96,14 @@ const CONTROL_SELECTOR = [
 /**
  * Starts watching the document for clicks. `enabled` is asked on every click
  * and again before each is handed on, so a click made, or held, while it says
- * no is never recorded. Returns null without a DOM.
+ * no is never recorded. Each page URL is scrubbed as it is read, keeping
+ * only the query parameters `keep` allows (none by default). Returns null
+ * without a DOM.
  */
-export function captureClicks(enabled: () => boolean): ClickCapture | null {
+export function captureClicks(
+  enabled: () => boolean,
+  keep: QueryParamFilter | null = null,
+): ClickCapture | null {
   if (
     typeof document === "undefined" ||
     typeof document.addEventListener !== "function"
@@ -118,7 +127,7 @@ export function captureClicks(enabled: () => boolean): ClickCapture | null {
       if (!event.isTrusted || !enabled()) {
         return;
       }
-      const click = clickRecord(event);
+      const click = clickRecord(event, keep);
       if (!click) {
         return;
       }
@@ -150,8 +159,14 @@ export function captureClicks(enabled: () => boolean): ClickCapture | null {
   };
 }
 
-/** The record of one click, or null when it names no element to record. */
-export function clickRecord(event: Event): ClickRecord | null {
+/**
+ * The record of one click, or null when it names no element to record. Its
+ * http.url has no fragment and no query but what `keep` allows.
+ */
+export function clickRecord(
+  event: Event,
+  keep: QueryParamFilter | null = null,
+): ClickRecord | null {
   const element = clickedControl(event.target);
   if (!element || element.hasAttribute("disabled")) {
     return null;
@@ -164,7 +179,7 @@ export function clickRecord(event: Event): ClickRecord | null {
   };
   const href = pageHref();
   if (href) {
-    attributes["http.url"] = href;
+    attributes["http.url"] = scrubUrl(href, keep);
   }
   return { at: event.timeStamp, attributes };
 }

@@ -15,6 +15,7 @@ import {
   vi,
 } from "vitest";
 
+import { clickEvent, FakeElement, fakeDocument } from "./testdata/fake-dom.js";
 import type { ReplayRecordPlugin } from "./url-scrub.js";
 
 const init = vi.fn();
@@ -2437,5 +2438,182 @@ describe("the fetch context shim", () => {
     expect(sdkPatched).toHaveBeenCalledWith("http://api.test/x", {
       method: "POST",
     });
+  });
+});
+
+describe("click spans", () => {
+  type Recorded = {
+    scope: string;
+    name: string;
+    start?: unknown;
+    end?: unknown;
+    attributes?: Record<string, string>;
+  };
+
+  // Every span any tracer starts, on a provider standing in for the SDK's.
+  async function recordSpans() {
+    const spans: Recorded[] = [];
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+    trace.setGlobalTracerProvider({
+      getTracer: (scope: string) => ({
+        startSpan(
+          name: string,
+          opts?: { startTime?: unknown; attributes?: Record<string, string> },
+        ) {
+          const recorded: Recorded = {
+            scope,
+            name,
+            start: opts?.startTime,
+            attributes: opts?.attributes,
+          };
+          spans.push(recorded);
+          return {
+            end(t?: unknown) {
+              recorded.end = t;
+            },
+          };
+        },
+      }),
+    } as never);
+    return { spans, clicks: () => spans.filter((s) => s.name === "click") };
+  }
+
+  afterEach(async () => {
+    const { trace } = await import("@opentelemetry/api");
+    trace.disable();
+  });
+
+  it("records one click span per click, those made while the SDK loads included, at each click's own time", async () => {
+    stubDom();
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+    const button = new FakeElement("button", { id: "go" });
+
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    // The SDK chunk is still loading.
+    dom.dispatch("click", clickEvent(button, 42));
+    expect(clicks()).toEqual([]);
+    expect(await started).toBe(true);
+    dom.dispatch("click", clickEvent(button, 1042));
+
+    expect(clicks()).toEqual([
+      {
+        scope: "@reliantlabs/forge-web-runtime/clicks",
+        name: "click",
+        start: 42,
+        end: 42,
+        attributes: {
+          component: "user-interaction",
+          event_type: "click",
+          target_element: "BUTTON",
+          target_xpath: '//*[@id="go"]',
+        },
+      },
+      expect.objectContaining({ start: 1042, end: 1042 }),
+    ]);
+  });
+
+  it("records a click made while the SDK loads with its page URL scrubbed by keepUrlQueryParams", async () => {
+    stubDom();
+    (window as unknown as { location: { href: string } }).location.href =
+      `${ORIGIN}/pricing?email=a%40b.test&utm_source=ad#token=s3cret`;
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      keepUrlQueryParams: ["utm_*"],
+    });
+    // The SDK chunk is still loading, so no export scrub is installed yet.
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 7));
+    expect(await started).toBe(true);
+
+    expect(clicks().map((c) => c.attributes?.["http.url"])).toEqual([
+      `${ORIGIN}/pricing?utm_source=ad`,
+    ]);
+  });
+
+  it("keeps the SDK's per-listener interaction spans off", async () => {
+    const { t } = await load();
+    const options = t.buildSdkOptions(
+      { serviceName: "web" },
+      `${ORIGIN}/_otel`,
+      ORIGIN,
+    );
+    expect(
+      (options.instrumentations as Record<string, unknown>).interactions,
+    ).toBe(false);
+  });
+
+  it("records none with clickCapture: false", async () => {
+    stubDom();
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      clickCapture: false,
+    });
+    expect(dom.listening("click")).toBe(0);
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 1));
+    expect(clicks()).toEqual([]);
+  });
+
+  it("records none in the off analytics tier", async () => {
+    stubDom();
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      analytics: "off",
+    });
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 1));
+    expect(clicks()).toEqual([]);
+  });
+
+  it("stops recording, and stops listening, on disableTelemetry()", async () => {
+    stubDom();
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    k.disableTelemetry();
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 1));
+    expect(clicks()).toEqual([]);
+    expect(dom.listening("click")).toBe(0);
+  });
+
+  it("drops the clicks it held when the SDK never starts", async () => {
+    stubDom();
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    init.mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    const { t } = await load();
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+    });
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 1));
+    expect(await started).toBe(false);
+    expect(clicks()).toEqual([]);
+    expect(dom.listening("click")).toBe(0);
   });
 });

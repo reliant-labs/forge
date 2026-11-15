@@ -316,6 +316,7 @@ import {
   grantAnalyticsConsent,
   isTelemetryDisabled,
   onAnalyticsTierChange,
+  onTelemetryDisabled,
   setAnalyticsMode,
   setTelemetrySink,
   stampedTelemetryUser,
@@ -1112,8 +1113,11 @@ async function start(
   const hidden = watchFirstHidden();
   let identity: SessionIdentity | null = null;
   let stopRoutes = () => {};
+  let stopWaiting = () => {};
   // Telemetry is not starting after all: let go of everything held for it.
   const abandon = () => {
+    stopWaiting();
+    visible.stop();
     hidden.stop();
     gate.cancel();
     clicks?.stop();
@@ -1123,15 +1127,26 @@ async function start(
     stopRoutes();
     setTelemetrySink(null);
   };
+  // Until the SDK's sink is installed, disableTelemetry() reaches this
+  // startup only here: the waits below end on it rather than on a visibility
+  // change, a load or an idle period that may never come (a hidden page).
+  const disabledWhileWaiting = new Promise<void>((resolve) => {
+    stopWaiting = onTelemetryDisabled(resolve);
+  });
   try {
-    await visible.ready;
+    await Promise.race([visible.ready, disabledWhileWaiting]);
+    if (isTelemetryDisabled()) {
+      abandon();
+      return false;
+    }
     // Page views from the moment the page is seen, not from when the SDK
     // runs: the views and engaged time of a visitor who moves on, or leaves,
     // before then are held like any track() call.
     stopRoutes = startRouteWatch(config, (route, previous) =>
       identity?.onRoute(route, previous),
     );
-    await gate.ready;
+    await Promise.race([gate.ready, disabledWhileWaiting]);
+    stopWaiting();
     if (isTelemetryDisabled()) {
       abandon();
       return false;
@@ -1467,6 +1482,8 @@ interface FirstVisible {
   readonly ready: Promise<void>;
   /** True from the moment the document has been visible. */
   seen(): boolean;
+  /** Stops watching (ready then never resolves); its listener goes with it. */
+  stop(): void;
 }
 
 /**
@@ -1480,20 +1497,23 @@ function firstVisible(): FirstVisible {
     document.visibilityState !== "hidden" ||
     typeof document.addEventListener !== "function"
   ) {
-    return { ready: Promise.resolve(), seen: () => true };
+    return { ready: Promise.resolve(), seen: () => true, stop: () => {} };
   }
   let seen = false;
+  const onChange = () => {
+    if (document.visibilityState !== "hidden") {
+      stop();
+      seen = true;
+      resolveReady();
+    }
+  };
+  const stop = () => document.removeEventListener("visibilitychange", onChange);
+  let resolveReady = () => {};
   const ready = new Promise<void>((resolve) => {
-    const onChange = () => {
-      if (document.visibilityState !== "hidden") {
-        document.removeEventListener("visibilitychange", onChange);
-        seen = true;
-        resolve();
-      }
-    };
-    document.addEventListener("visibilitychange", onChange);
+    resolveReady = resolve;
   });
-  return { ready, seen: () => seen };
+  document.addEventListener("visibilitychange", onChange);
+  return { ready, seen: () => seen, stop };
 }
 
 /** When the page was first hidden, as watchFirstHidden saw it. */

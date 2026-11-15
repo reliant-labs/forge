@@ -1025,6 +1025,7 @@ export function initBrowserTelemetry(
       ? null
       : captureClicks(
           () => !isTelemetryDisabled() && analyticsTier() !== "off",
+          queryParamFilter(config.keepUrlQueryParams),
         );
   const errors = holdEarlyErrors();
   if (errors) {

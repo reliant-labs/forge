@@ -16,6 +16,7 @@ import {
   FakeElement,
   fakeDocument,
 } from "./testdata/fake-dom.js";
+import { queryParamFilter } from "./url-scrub.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -60,8 +61,8 @@ describe("captureClicks", () => {
           event_type: "click",
           target_element: "A",
           target_xpath: '//*[@id="top"]/nav/a',
-          // Scrubbed of its query and fragment at export (url-scrub.ts).
-          "http.url": "https://example.test/pricing?email=a%40b.test#x",
+          // No query, no fragment: scrubbed as it is read (url-scrub.ts).
+          "http.url": "https://example.test/pricing",
         },
       },
       {
@@ -71,7 +72,7 @@ describe("captureClicks", () => {
           event_type: "click",
           target_element: "BUTTON",
           target_xpath: "/html/body/main/p[2]/button",
-          "http.url": "https://example.test/pricing?email=a%40b.test#x",
+          "http.url": "https://example.test/pricing",
         },
       },
     ]);
@@ -109,6 +110,22 @@ describe("captureClicks", () => {
       [10, "A"],
       [20, "BUTTON"],
       [900, "A"],
+    ]);
+  });
+
+  it("holds a click's page URL already scrubbed, keeping only the query parameters allowed", () => {
+    const { dom, button } = page();
+    vi.stubGlobal("window", {
+      location: {
+        href: "https://example.test/pricing?utm_source=ad&email=a%40b.test&token=s3cret#code=x",
+      },
+    });
+    const clicks = captureClicks(() => true, queryParamFilter(["utm_*"]))!;
+    dom.dispatch("click", clickEvent(button, 1));
+    const out: ClickRecord[] = [];
+    clicks.attach((c) => out.push(c));
+    expect(out.map((c) => c.attributes["http.url"])).toEqual([
+      "https://example.test/pricing?utm_source=ad",
     ]);
   });
 

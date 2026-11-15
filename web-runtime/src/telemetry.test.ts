@@ -2539,6 +2539,29 @@ describe("click spans", () => {
     ]);
   });
 
+  it("records a click made while the SDK loads with its page URL scrubbed by keepUrlQueryParams", async () => {
+    stubDom();
+    (window as unknown as { location: { href: string } }).location.href =
+      `${ORIGIN}/pricing?email=a%40b.test&utm_source=ad#token=s3cret`;
+    const dom = fakeDocument();
+    vi.stubGlobal("document", dom.doc);
+    const { clicks } = await recordSpans();
+    const { t } = await load();
+
+    const started = t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      keepUrlQueryParams: ["utm_*"],
+    });
+    // The SDK chunk is still loading, so no export scrub is installed yet.
+    dom.dispatch("click", clickEvent(new FakeElement("button"), 7));
+    expect(await started).toBe(true);
+
+    expect(clicks().map((c) => c.attributes?.["http.url"])).toEqual([
+      `${ORIGIN}/pricing?utm_source=ad`,
+    ]);
+  });
+
   it("keeps the SDK's per-listener interaction spans off", async () => {
     const { t } = await load();
     const options = t.buildSdkOptions(

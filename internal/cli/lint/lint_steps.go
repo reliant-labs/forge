@@ -246,6 +246,22 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 4b. Proto format — `buf format -d` over the workspace, the
+		// scaffolded pre-commit hook's own check, so "all gating linters
+		// passed" and the commit hook cannot disagree
+		// (lint_proto_format.go). Gates through the warn-first rollout.
+		{
+			name:  "proto-format lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && fileExists(filepath.Join(rc.cwd, "buf.yaml")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectProtoFormatJSON(rc.ctx, rc.cwd, rc.scope, rc.fix)
+			},
+		},
+
 		// 5. Frontend linters (eslint / stylelint via npm scripts).
 		// TypeScript typechecking is step 5b, not this one — see there.
 		{

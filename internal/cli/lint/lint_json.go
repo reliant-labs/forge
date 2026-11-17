@@ -430,6 +430,10 @@ func collectSingleLinterJSON(
 		return report(collectSlowTestsJSON(ctx, paths))
 	case flags.testWaits:
 		return report(collectTestWaitsJSON(cwd))
+	case flags.protoFormat:
+		// `forge lint --proto-format --fix` writes buf's output (--json
+		// refuses --fix, so it stays detect-only).
+		return report(collectProtoFormatJSON(ctx, cwd, nil, flags.autoFix()))
 	}
 
 	return nil, false, nil

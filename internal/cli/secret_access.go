@@ -107,27 +107,35 @@ func sortAccessEntries(es []secretAccessEntry) {
 	})
 }
 
-// openHostedSecretAccess renders the env, refuses anything but a hosted env
-// (access lists live on the control plane; a FileSecrets store has none), and
-// opens the access half of its writer. ensure follows the hosted rule: allow
-// creates the env by name so access can be granted before the first deploy,
-// as `forge secret set` can; deny and access are not creators.
+// openHostedSecretAccess renders the env, refuses an env with no control
+// plane (access lists live on the control plane; a FileSecrets store has
+// none), and opens the access half of its writer.
+//
+// The list belongs to the env's control-plane environment, not to its
+// secret_provider: an env whose deploys read an external store (OpenBao) can
+// still keep workflow secrets on the control plane, and refusing it there
+// left `forge secret allow` unusable for exactly those secrets. ensure follows
+// the hosted rule: allow creates a forge.HostedSecrets env by name so access
+// can be granted before the first deploy, as `forge secret set` can; any
+// other env must already exist on the control plane; deny and access are not
+// creators.
 func openHostedSecretAccess(ctx context.Context, envName string, ensure bool) (hostedSecretAccess, cloud.Endpoint, error) {
 	entities, err := renderEntitiesForSecrets(ctx, envName)
 	if err != nil {
 		return nil, cloud.Endpoint{}, fmt.Errorf("render KCL: %w", err)
 	}
-	if !isHostedSecretEnv(entities) {
+	hosted := isHostedSecretEnv(entities)
+	if !hosted && (entities == nil || entities.ControlPlane == nil) {
 		provider := "no secret_provider"
-		if sp := entities.SecretProvider; sp != nil {
-			provider = fmt.Sprintf("a %q secret_provider", sp.Type)
+		if entities != nil && entities.SecretProvider != nil {
+			provider = fmt.Sprintf("a %q secret_provider", entities.SecretProvider.Type)
 		}
 		return nil, cloud.Endpoint{}, fmt.Errorf(
-			"env %q declares %s: secret access lists are a hosted feature\n"+
-				"fix: they exist only for forge.HostedSecrets envs (a workflow can use only a secret stored on the control plane); "+
-				"a local FileSecrets store has no access list", envName, provider)
+			"env %q declares %s and no control_plane: secret access lists are a control-plane feature\n"+
+				"fix: they exist for envs bound to a control plane (forge.HostedSecrets, or a control_plane = forge.ControlPlane {} env "+
+				"whose workflow secrets are stored there); a local FileSecrets store has no access list", envName, provider)
 	}
-	w, ep, err := newHostedSecretWriter(ctx, envName, entities, ensure)
+	w, ep, err := newHostedSecretWriter(ctx, envName, entities, ensure && hosted)
 	if err != nil {
 		return nil, ep, err
 	}

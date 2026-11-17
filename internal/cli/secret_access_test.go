@@ -294,8 +294,54 @@ func TestSecretAccessRefusesNonHostedEnv(t *testing.T) {
 		{"access", "--env", "dev"},
 	} {
 		_, err := runSecretCLI(t, args...)
-		if err == nil || !strings.Contains(err.Error(), "access lists are a hosted feature") {
+		if err == nil || !strings.Contains(err.Error(), "access lists are a control-plane feature") {
 			t.Errorf("forge secret %s on a FileSecrets env: err = %v", args[0], err)
 		}
+	}
+}
+
+// externalProviderFixture is hostedFixture for an env whose deploys read an
+// external store (control-plane/prod: OpenBao) while its control-plane
+// environment also holds workflow secrets.
+func externalProviderFixture(t *testing.T, envs []cloudEnvironment) *fakeControlPlane {
+	t.Helper()
+	fake, _ := hostedFixture(t, envs)
+	hosted, err := renderEntitiesForSecrets(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entities := &KCLEntities{SecretProvider: &SecretProviderEntity{Type: "external"}, ControlPlane: hosted.ControlPlane}
+	prev := renderEntitiesForSecrets
+	renderEntitiesForSecrets = func(context.Context, string) (*KCLEntities, error) { return entities, nil }
+	t.Cleanup(func() { renderEntitiesForSecrets = prev })
+	return fake
+}
+
+// Access lists belong to the env's control-plane environment, not to its
+// secret_provider (forge bug report 0557bd68: control-plane/prod's external
+// OpenBao provider made `forge secret allow` refuse, though the env's
+// workflow secrets live on the control plane).
+func TestSecretAccessWorksForAnExternalProviderEnvWithAControlPlane(t *testing.T) {
+	fake := externalProviderFixture(t, []cloudEnvironment{{ID: "env-1", Name: "prod"}})
+	if out, err := runSecretCLI(t, "allow", "--env", "prod", "--workflow", "w", "--project", "p", "VULTR_KEY"); err != nil {
+		t.Fatalf("allow: %v\n%s", err, out)
+	}
+	if c := fake.callsTo(procAllow); len(c) != 1 || c[0].Body["environmentId"] != "env-1" {
+		t.Errorf("AllowSecretUse = %+v, want one into env-1", c)
+	}
+	if _, err := runSecretCLI(t, "access", "--env", "prod"); err != nil {
+		t.Errorf("access: %v", err)
+	}
+}
+
+// Only a forge.HostedSecrets env is created by name on allow; an env whose
+// secrets live elsewhere must already be known to the control plane.
+func TestSecretAllowDoesNotCreateAnExternalProviderEnv(t *testing.T) {
+	fake := externalProviderFixture(t, nil)
+	if _, err := runSecretCLI(t, "allow", "--env", "prod", "--workflow", "w", "--project", "p", "K"); err == nil {
+		t.Fatal("allow on an unseen external-provider env succeeded; want it refused")
+	}
+	if n := len(fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")); n != 0 {
+		t.Errorf("EnsureEnvironment calls = %d, want 0", n)
 	}
 }

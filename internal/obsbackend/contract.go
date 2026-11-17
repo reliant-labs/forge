@@ -1,6 +1,9 @@
 package obsbackend
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Backend is what a `forge obs` verb reads telemetry through. The local
 // backend (the project's ClickStack) is the first implementation; the cloud
@@ -94,6 +97,17 @@ type OverviewReader interface {
 //forge:contract
 type AlertReader interface {
 	Alerts(ctx context.Context) ([]Alert, error)
+}
+
+// AlertHistoryReader lists the env's alert state transitions since a time,
+// newest first: what `forge obs check` reads to tell an alert that was
+// already flapping before a promotion from one the release opened
+// (pkg/releasehealth alert_baseline.go). Only the cloud backend implements
+// it: a local stack keeps no alert history.
+//
+//forge:contract
+type AlertHistoryReader interface {
+	AlertHistory(ctx context.Context, since time.Time) ([]AlertTransition, error)
 }
 
 // DeliveryReader reads whether the control plane has delivered a working

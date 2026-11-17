@@ -48,7 +48,7 @@ var obsCheckSchema = obsout.Schema{
 		"services", "services.service", "services.before", "services.after", "services.version_share",
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed",
 		"version_share", "window_not_live", "rollout_incomplete",
-		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "workload_findings",
+		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -91,7 +91,11 @@ type obsCheckDoc struct {
 	// IssueAlerts fired for an issue release health judges itself (the
 	// platform's NewIssue and IssueRegressed alerts), so they are not
 	// counted again as alert_firing findings.
-	IssueAlerts      []releasehealth.Alert     `json:"issue_alerts,omitempty"`
+	IssueAlerts []releasehealth.Alert `json:"issue_alerts,omitempty"`
+	// BaselineAlerts opened after the promotion, but the same alert also
+	// fired in the baseline window before it: flapping before the release,
+	// so each is a warn finding, not a failing one.
+	BaselineAlerts   []releasehealth.Alert     `json:"baseline_alerts,omitempty"`
 	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
@@ -392,6 +396,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 		readLive()
 	}
 	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
+	// An alert that already fired in the baseline window before the
+	// promotion was flapping before the release (IdentityLatency, rc.6):
+	// a warn, not a failure. The history is read only when an alert_firing
+	// finding could fail; a read that fails discounts nothing.
+	res.Report = withAlertBaseline(ctx, d, b, res.Report, live, opts.Overrides)
 	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
 	if readable && res.Report.Verdict != releasehealth.Fail {
 		readLive()
@@ -483,6 +492,43 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 	}
 	return fmt.Sprintf("%s of the after window observed (until %s), the judged version serving all traffic, nothing found",
 		observed.Round(time.Second), r.After.To.UTC().Format(time.RFC3339))
+}
+
+// withAlertBaseline applies the baseline-alert rule (pkg/releasehealth
+// alert_baseline.go) over the env's alert history, read from the backend when
+// a counted alert_firing finding is in the report. A backend with no history,
+// or a read that fails, leaves the report as judged: without the history
+// nothing proves an alert was flapping, so it counts.
+func withAlertBaseline(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, live []releasehealth.Alert, overrides map[string]string) releasehealth.Report {
+	hr, ok := b.(obsbackend.AlertHistoryReader)
+	if !ok || r.Subject.PromotedAt.IsZero() || !slices.ContainsFunc(r.Findings, func(f releasehealth.Finding) bool {
+		return f.Code == release.HealthAlertFiring && f.Unattributed == ""
+	}) {
+		return r
+	}
+	since := r.Subject.PromotedAt.Add(-checkBaselineWindow(r.Thresholds))
+	events, err := hr.AlertHistory(ctx, since)
+	if err != nil {
+		fmt.Fprintf(d.Stderr, "could not read the alert history, so an alert that was firing before the promotion counts as the release's: %v\n", err)
+		return r
+	}
+	history := make([]releasehealth.AlertEvent, 0, len(events))
+	for _, e := range events {
+		history = append(history, releasehealth.AlertEvent{Rule: e.Rule, Fingerprint: e.Fingerprint, Labels: e.Labels, Transition: e.Transition, At: e.At})
+	}
+	return releasehealth.WithAlertBaseline(r, history, live, overrides)
+}
+
+// checkBaselineWindow is the baseline window a report was judged with.
+func checkBaselineWindow(ths []releasehealth.Threshold) time.Duration {
+	for _, th := range ths {
+		if th.Name == releasehealth.ThresholdBaselineWindow {
+			if v, err := time.ParseDuration(th.Value); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	return release.DefaultHealthBaselineWindow
 }
 
 // firingHealthAlerts maps the firing alerts onto the rule's vocabulary.
@@ -624,7 +670,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
-	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts
+	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts, doc.BaselineAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts, r.BaselineAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -820,6 +866,13 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		for _, a := range doc.IssueAlerts {
 			fmt.Fprintf(w, "alert %s firing for issue %s: judged as the issue (%s), not counted again\n",
 				a.Rule, a.Labels[releasehealth.LabelIssueID], a.IssueCode())
+		}
+	}
+	if len(doc.BaselineAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.BaselineAlerts {
+			fmt.Fprintf(w, "alert %s firing%s: not counted (it also fired %d time(s) in the baseline window before the promotion: flapping before this release)\n",
+				a.Rule, alertSubject(a.Labels), a.BaselineFirings)
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {

@@ -179,7 +179,9 @@ describe("ReplayBatcher", () => {
   it("sends sooner when asked to, never later than already due", () => {
     vi.useFakeTimers();
     const sent: number[] = [];
-    const b = new ReplayBatcher({ send: (records) => sent.push(records.length) });
+    const b = new ReplayBatcher({
+      send: (records) => sent.push(records.length),
+    });
     b.flushWithin(10);
     b.add(record("a"));
     b.flushWithin(1000);
@@ -727,7 +729,9 @@ describe("startReplayRecorder", () => {
     state.emit!({ type: 4, timestamp: Date.now(), data: {} });
     state.emit!({ type: 2, timestamp: Date.now(), data: {} });
     await vi.advanceTimersByTimeAsync(REPLAY_SNAPSHOT_FLUSH_MS);
-    expect(batches.map((b) => [b.mode, b.records.length])).toEqual([["background", 2]]);
+    expect(batches.map((b) => [b.mode, b.records.length])).toEqual([
+      ["background", 2],
+    ]);
     // An incremental event waits for the interval.
     state.emit!({ type: 3, timestamp: Date.now(), data: {} });
     await vi.advanceTimersByTimeAsync(REPLAY_SNAPSHOT_FLUSH_MS * 2);

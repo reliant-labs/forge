@@ -405,6 +405,67 @@ export type ServiceInfiniteQueryHook<
 ) => UseInfiniteQueryResult<TData, ConnectClientError>;
 
 /**
+ * Which queries a successful write refreshes. Omitted, the generated scope:
+ * the rpc's entity for a CRUD write, the whole service otherwise. A function
+ * REPLACES that refresh with its own (a narrower or wider scope the app
+ * knows). `false` refreshes nothing — for a caller that writes the response
+ * into the cache itself and must not have a refetch overwrite it.
+ *
+ * It runs only after the rpc succeeds, synchronously, and is not awaited
+ * (neither is the default refetch).
+ */
+export type ServiceInvalidation = false | ((queryClient: QueryClient) => void);
+
+/**
+ * What a generated mutation hook takes: React Query's mutation options, plus
+ * `invalidate`.
+ *
+ * `onSuccess` ADDS to the success refresh; it never replaces it. The hook
+ * invalidates first, then calls your onSuccess, so a callback that shows a
+ * toast or navigates away cannot silently leave the lists behind it stale.
+ * To change the refresh itself, set `invalidate`:
+ *
+ *   // Write the response into the cache, and do not refetch over it.
+ *   useClick({
+ *     invalidate: false,
+ *     onSuccess: (res) => queryClient.setQueryData(key, res),
+ *   });
+ */
+export type ServiceMutationHookOptions<
+  Schema extends DescMessage,
+  Response,
+  TContext = unknown,
+> = Partial<
+  UseMutationOptions<
+    Response,
+    ConnectClientError,
+    MessageInitShape<Schema>,
+    TContext
+  >
+> & {
+  /** Replaces (a function) or skips (`false`) the success invalidation. */
+  invalidate?: ServiceInvalidation;
+};
+
+/**
+ * Runs a write's success refresh: the caller's `invalidate` when it gave one,
+ * else the generated scope. The hook and the imperative write share it, so
+ * the two cannot disagree about what an option means.
+ */
+function invalidateAfterWrite(
+  queryClient: QueryClient,
+  invalidateKey: ServiceQueryKey,
+  invalidate: ServiceInvalidation | undefined,
+): void {
+  if (invalidate === false) return;
+  if (invalidate) {
+    invalidate(queryClient);
+    return;
+  }
+  void queryClient.invalidateQueries({ queryKey: invalidateKey });
+}
+
+/**
  * A generated mutation hook: `useCreateOrder(options?)`.
  *
  * TContext is React Query's fourth type parameter — what `onMutate` returns
@@ -419,14 +480,7 @@ export type ServiceInfiniteQueryHook<
 export type ServiceMutationHook<Schema extends DescMessage, Response> = <
   TContext = unknown,
 >(
-  options?: Partial<
-    UseMutationOptions<
-      Response,
-      ConnectClientError,
-      MessageInitShape<Schema>,
-      TContext
-    >
-  >,
+  options?: ServiceMutationHookOptions<Schema, Response, TContext>,
 ) => UseMutationResult<
   Response,
   ConnectClientError,
@@ -554,29 +608,22 @@ export function createInfiniteQueryHook<
  * the whole-service scope otherwise — a bespoke mutation may touch anything,
  * so over-invalidating is the safe default there.
  *
- * The invalidation is composed BEFORE the caller's onSuccess and is never
- * replaced by it: onSuccess is destructured out and re-invoked after the
- * invalidate, while the rest of the options object is spread separately. A
- * caller passing onSuccess therefore ADDS behaviour, rather than silently
- * disabling the cache refresh — which is exactly what a plain `...options`
- * spread over a default onSuccess would do.
+ * Passing `onSuccess` never replaces the invalidation: the hook runs the
+ * invalidation first and then calls the caller's onSuccess, so a callback
+ * ADDS behaviour rather than silently disabling the cache refresh (which a
+ * plain `...options` spread over a default onSuccess would do). The refresh
+ * itself changes only through `invalidate`: a function replaces it, `false`
+ * skips it (ServiceMutationHookOptions).
  */
 export function createMutationHook<Schema extends DescMessage, Response>(
   invalidateKey: ServiceQueryKey,
   call: (req: MessageInitShape<Schema>) => Promise<Response>,
 ): ServiceMutationHook<Schema, Response> {
   return <TContext = unknown>(
-    options?: Partial<
-      UseMutationOptions<
-        Response,
-        ConnectClientError,
-        MessageInitShape<Schema>,
-        TContext
-      >
-    >,
+    options?: ServiceMutationHookOptions<Schema, Response, TContext>,
   ) => {
     const queryClient = useQueryClient();
-    const { onSuccess, ...rest } = options ?? {};
+    const { onSuccess, invalidate, ...rest } = options ?? {};
     return useMutation<
       Response,
       ConnectClientError,
@@ -585,7 +632,7 @@ export function createMutationHook<Schema extends DescMessage, Response>(
     >({
       mutationFn: (req: MessageInitShape<Schema>) => call(req),
       onSuccess: (...args) => {
-        queryClient.invalidateQueries({ queryKey: invalidateKey });
+        invalidateAfterWrite(queryClient, invalidateKey, invalidate);
         onSuccess?.(...args);
       },
       ...rest,
@@ -600,14 +647,15 @@ export interface ServiceMutationCallOptions {
   /**
    * Replace the generated success invalidation for this call. Use when an
    * app knows a narrower scope than the generated service/entity key, e.g.
-   * `(qc) => { void invalidateWorktreeQueries(qc, worktreeId); }`.
+   * `(qc) => { void invalidateWorktreeQueries(qc, worktreeId); }`, or pass
+   * `false` to invalidate nothing (the caller updates the cache itself).
    * Omitted: the generated key is invalidated exactly as before.
    * Called only after RPC success, synchronously; returned promises are not
    * awaited, just as the default does not wait for refetches. Handle any
    * async failure inside the callback. A synchronous throw rejects the call
    * AFTER the server write succeeded; it does not roll back or retry it.
    */
-  invalidate?: (queryClient: QueryClient) => void;
+  invalidate?: ServiceInvalidation;
 }
 
 /**
@@ -655,11 +703,7 @@ export function createMutationCall<Schema extends DescMessage, Response>(
 ): ServiceMutationDefinition<Schema, Response> {
   return (queryClient) => async (req, options) => {
     const response = await call(req, options?.signal);
-    if (options?.invalidate) {
-      options.invalidate(queryClient);
-    } else {
-      void queryClient.invalidateQueries({ queryKey: invalidateKey });
-    }
+    invalidateAfterWrite(queryClient, invalidateKey, options?.invalidate);
     return response;
   };
 }

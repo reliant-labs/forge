@@ -288,6 +288,9 @@ func TestCloudAssignIssueSendsTheVersionItRead(t *testing.T) {
 		if req["issueId"] != "ISS-7f3a" || req["expectedVersion"] != float64(7) {
 			t.Errorf("%s: request %v must carry the issue and the version read", tc.name, req)
 		}
+		if f.reqs[procGetIssue]["stateOnly"] != true {
+			t.Errorf("%s: the pre-assign read %v is not state_only: it would spend the query quota", tc.name, f.reqs[procGetIssue])
+		}
 		if got, has := req["assigneeUserId"]; has != tc.wantAssignee || (has && got != tc.assignee) {
 			t.Errorf("%s: assigneeUserId = %v (present=%v), want present=%v", tc.name, got, has, tc.wantAssignee)
 		}

@@ -476,9 +476,8 @@ func newObsIssueTriageCmd(verb string) *cobra.Command {
 		Short: short,
 		Long: short + `. A hosted env only: a local issue carries no state, so this exits 2.
 
-The change is written without reading the issue first, so it spends none of
-the org's hourly observability query quota and works while that is exhausted.
-An issue of another environment than the one named is refused (exit 1).
+The write sends the row version it read, so a change made since is refused
+("re-read and retry", exit 1) instead of overwriting it.
 
 ` + obsIssueSchema.Help(),
 		Args: cobra.RangeArgs(1, 2),

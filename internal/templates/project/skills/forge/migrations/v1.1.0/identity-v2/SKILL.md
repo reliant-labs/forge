@@ -388,7 +388,7 @@ declaration turns on, in that environment, right after the deploy:
   document (an empty `IDP_LOGIN_POLICY`).
 - **Revert the broker:** redeploy the previous release. The new code wrote
   only account metadata (`forge.self_signup`, `forge.signup_role_granted`,
-  `forge.contact_only`, `forge.supersedes`, `forge.first_password`, `forge.superseded_by`,
+  `forge.contact_only`, `forge.supersedes`, `forge.first_password.*`, `forge.superseded_by`,
   `forge.superseded_email`), which the old broker ignores, and renamed the
   users a fresh account superseded. Signed-in users sign in once more,
   because the session cookie name changed (step 2.11).

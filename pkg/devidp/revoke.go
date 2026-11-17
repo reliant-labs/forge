@@ -39,13 +39,12 @@ const (
 	// address it had. Nothing on it is deleted.
 	MetaSupersededBy    = "forge.superseded_by"
 	MetaSupersededEmail = "forge.superseded_email"
-	// MetaFirstPassword marks an unverified, credential-less account whose
-	// first password a presented reset code is installing: written before
-	// the password, cleared once the address is verified. A password-only
-	// unverified account carrying it is one whose verification failed after
-	// its first password was set, and a new presented code completes it;
-	// one without it is never verified by a reset (ResetPassword).
-	MetaFirstPassword = "forge.first_password"
+	// MetaFirstPasswordPrefix starts the key of a first-password install
+	// attempt: one key per attempt (the prefix and a nonce), its value the
+	// attempt's start in unix milliseconds. It lets a later reset tell a
+	// first password whose verification failed from a squatter's password.
+	// See passwordIsAFirstPasswordAttempt.
+	MetaFirstPasswordPrefix = "forge.first_password."
 	// MetaSelfSignup marks an account created by public sign-up (register,
 	// a magic link, a social sign-in), as opposed to one an owner invited
 	// or the identity declares. Only such an account gets signup_role.

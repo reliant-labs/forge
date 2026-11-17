@@ -300,4 +300,11 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	if _, err := client.CreateSession(ctx, devidp.Credentials{LoginName: member, Password: "Member-Passw0rd!"}); err != nil {
 		t.Fatalf("the adopted member's new password: %v", err)
 	}
+
+	// The issuer reports when a password was set (human.passwordChanged),
+	// which first-password attempts are judged against (forge#2179).
+	if m, err := client.FindUserByID(ctx, pendingID); err != nil || m.PasswordChanged.IsZero() ||
+		m.PasswordChanged.Before(time.Now().Add(-10*time.Minute)) {
+		t.Fatalf("passwordChanged of a just-set password = %v (%v), want a recent time", m.PasswordChanged, err)
+	}
 }

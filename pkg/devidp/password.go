@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Password reset for the API-only sign-in flow: redeeming a one-time code
@@ -97,6 +99,10 @@ type User struct {
 	EmailVerified bool
 	// Locked: the issuer refuses every sign-in to the account.
 	Locked bool
+	// PasswordChanged is when the account's password was last set, as the
+	// issuer records it (human.passwordChanged); zero when it has none or
+	// the issuer did not say.
+	PasswordChanged time.Time
 }
 
 // humanUser is the part of a v2 user resource User is read from, shared by
@@ -111,6 +117,7 @@ type humanUser struct {
 			Email      string `json:"email"`
 			IsVerified bool   `json:"isVerified"`
 		} `json:"email"`
+		PasswordChanged time.Time `json:"passwordChanged"`
 	} `json:"human"`
 }
 
@@ -121,12 +128,13 @@ func (h humanUser) user() (User, bool) {
 		return User{}, false
 	}
 	return User{
-		ID:            h.UserID,
-		LoginName:     h.PreferredLoginName,
-		Username:      h.Username,
-		Email:         h.Human.Email.Email,
-		EmailVerified: h.Human.Email.IsVerified,
-		Locked:        h.State == "USER_STATE_LOCKED",
+		ID:              h.UserID,
+		LoginName:       h.PreferredLoginName,
+		Username:        h.Username,
+		Email:           h.Human.Email.Email,
+		EmailVerified:   h.Human.Email.IsVerified,
+		Locked:          h.State == "USER_STATE_LOCKED",
+		PasswordChanged: h.Human.PasswordChanged,
 	}, true
 }
 
@@ -354,23 +362,20 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 		return err
 	}
 	// firstPassword: this redemption installs the account's FIRST password,
-	// or completes one whose verification failed after it was installed
-	// (MetaFirstPassword, written before the password and cleared once the
-	// address is verified). Only then may a presented code verify the
-	// address: the account held nothing nobody proved.
-	firstPassword := false
+	// or completes one whose verification failed after it was installed.
+	// Only then may a presented code verify the address: the account held
+	// nothing nobody proved. See firstPasswordAttempt.
+	firstPassword, attempt := false, ""
 	switch {
 	case gate == gateFirstPassword && proves:
-		if err := c.SetMetadata(ctx, userID, MetaFirstPassword, "1"); err != nil {
-			return fmt.Errorf("record the first password before setting it: %w", err)
+		if attempt, err = c.recordFirstPasswordAttempt(ctx, userID); err != nil {
+			return err
 		}
 		firstPassword = true
 	case gate == gateUnverifiedPassword && proves:
-		v, _, err := c.Metadata(ctx, userID, MetaFirstPassword)
-		if err != nil {
-			return fmt.Errorf("read whether the account's password is its first: %w", err)
+		if firstPassword, err = c.passwordIsAFirstPasswordAttempt(ctx, userID); err != nil {
+			return err
 		}
-		firstPassword = v != ""
 	}
 
 	_, err = c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
@@ -381,12 +386,15 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 		"verificationCode": code,
 	})
 	if err != nil {
-		if gate == gateFirstPassword && firstPassword {
-			// Nothing was installed: the mark goes, so it never stands on
-			// an account that later gains a password some other way.
-			_ = c.DeleteMetadata(context.WithoutCancel(ctx), userID, MetaFirstPassword)
+		err = classifyResetError(err)
+		if attempt != "" && errors.Is(err, ErrInvalidResetCode) {
+			// The issuer refused this code outright, so THIS attempt
+			// installed nothing: its own record goes. Another request's
+			// record is never touched, and an ambiguous failure (a timeout,
+			// a lost answer, a 5xx) keeps this one: the password may be in.
+			_ = c.DeleteMetadata(context.WithoutCancel(ctx), userID, attempt)
 		}
-		return classifyResetError(err)
+		return err
 	}
 	if gate == gateOpen || !proves {
 		return nil
@@ -416,8 +424,94 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 			"(redeeming a new reset code completes it): %w", err)
 	}
 	// Inert on a verified account if this fails.
-	_ = c.DeleteMetadata(context.WithoutCancel(ctx), userID, MetaFirstPassword)
+	c.clearFirstPasswordAttempts(context.WithoutCancel(ctx), userID)
 	return nil
+}
+
+// ── First-password install attempts ─────────────────────────────────────
+//
+// A presented reset code redeemed on an unverified, credential-less account
+// installs its first password and then verifies the address. If the
+// verification fails, or the issuer's answer to the password write is lost,
+// the account is left unverified holding a password — indistinguishable,
+// by its credentials alone, from a squatter's pre-registered account, which
+// a reset must never verify. So each install records an ATTEMPT first, under
+// its own key (MetaFirstPasswordPrefix + nonce, value its start in unix
+// milliseconds): "this broker began installing a first password here".
+//
+// A later presented code verifies a password-only account only when some
+// attempt is still fresh (firstPasswordAttemptTTL) AND the account's
+// password was set at or after that attempt began (the issuer's
+// passwordChanged, less firstPasswordClockSkew). A squatter's password,
+// set before any attempt — an attempt is only ever recorded while the
+// account holds NO credential — never qualifies.
+//
+// Records are safe to leave. One is removed only by the request that made
+// it, and only when the issuer refused that request's code outright; an
+// ambiguous failure keeps it, since the password may have been installed.
+// Every record goes once the address is verified, and an expired one is
+// ignored and removed when read.
+
+// firstPasswordAttemptTTL bounds how long an attempt qualifies: the reset
+// code's lifetime (an hour) plus slack. firstPasswordClockSkew allows for
+// the broker's clock running ahead of the issuer's. Variables so a test
+// can move them.
+var (
+	firstPasswordAttemptTTL = 2 * time.Hour
+	firstPasswordClockSkew  = time.Minute
+)
+
+// recordFirstPasswordAttempt writes this request's attempt and returns its
+// key.
+func (c *Client) recordFirstPasswordAttempt(ctx context.Context, userID string) (string, error) {
+	key := MetaFirstPasswordPrefix + newNonce()
+	if err := c.SetMetadata(ctx, userID, key, strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
+		return "", fmt.Errorf("record the first-password attempt before setting it: %w", err)
+	}
+	return key, nil
+}
+
+// passwordIsAFirstPasswordAttempt reports whether an unverified,
+// password-only account's password is one a recorded first-password attempt
+// installed (see above). It fails closed on a read that fails.
+func (c *Client) passwordIsAFirstPasswordAttempt(ctx context.Context, userID string) (bool, error) {
+	attempts, err := c.MetadataWithPrefix(ctx, userID, MetaFirstPasswordPrefix)
+	if err != nil {
+		return false, fmt.Errorf("read the account's first-password attempts: %w", err)
+	}
+	if len(attempts) == 0 {
+		return false, nil
+	}
+	u, err := c.FindUserByID(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("read when the account's password was set: %w", err)
+	}
+	now := time.Now()
+	qualifies := false
+	for key, v := range attempts {
+		ms, perr := strconv.ParseInt(v, 10, 64)
+		start := time.UnixMilli(ms)
+		if perr != nil || now.Sub(start) > firstPasswordAttemptTTL || start.After(now.Add(firstPasswordClockSkew)) {
+			_ = c.DeleteMetadata(ctx, userID, key) // expired or malformed: inert
+			continue
+		}
+		if !u.PasswordChanged.IsZero() && !u.PasswordChanged.Before(start.Add(-firstPasswordClockSkew)) {
+			qualifies = true
+		}
+	}
+	return qualifies, nil
+}
+
+// clearFirstPasswordAttempts removes every attempt record of a verified
+// account (inert there if one stays).
+func (c *Client) clearFirstPasswordAttempts(ctx context.Context, userID string) {
+	attempts, err := c.MetadataWithPrefix(ctx, userID, MetaFirstPasswordPrefix)
+	if err != nil {
+		return
+	}
+	for key := range attempts {
+		_ = c.DeleteMetadata(ctx, userID, key)
+	}
 }
 
 // mayAddPassword refuses, on a ProvenCredentialsOnly client, to give a
@@ -454,7 +548,8 @@ const (
 	// else — a contact-only or pre-registered account created with one, or
 	// a first password whose verification failed after it was set. Its
 	// holder may replace it. A presented reset code marks the address
-	// verified ONLY for the last (MetaFirstPassword): any other password was
+	// verified ONLY for the last (a first-password attempt; see
+	// passwordIsAFirstPasswordAttempt): any other password was
 	// set by whoever registered the address, who may hold a session it
 	// passed.
 	gateUnverifiedPassword

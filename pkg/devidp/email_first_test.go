@@ -846,8 +846,8 @@ func TestEmailFirst_TheFirstPasswordMarkNeverOutlivesItsInstall(t *testing.T) {
 	if err := broker.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: "a-wrong-code", NewPassword: "a-long-password"}); !errors.Is(err, ErrInvalidResetCode) {
 		t.Fatalf("a wrong code: %v, want ErrInvalidResetCode", err)
 	}
-	if _, ok, _ := z.client().Metadata(ctx, u.id, MetaFirstPassword); ok {
-		t.Fatal("a wrong code left the first-password mark on the account")
+	if left, _ := z.client().MetadataWithPrefix(ctx, u.id, MetaFirstPasswordPrefix); len(left) != 0 {
+		t.Fatalf("a wrong code left its first-password attempt on the account: %v", left)
 	}
 	code, err := z.client().MintPasswordResetCode(ctx, u.id)
 	if err != nil {
@@ -859,7 +859,7 @@ func TestEmailFirst_TheFirstPasswordMarkNeverOutlivesItsInstall(t *testing.T) {
 	if verified, _ := z.passwordState(u.id); !verified {
 		t.Fatal("the first password did not verify the address")
 	}
-	if _, ok, _ := z.client().Metadata(ctx, u.id, MetaFirstPassword); ok {
-		t.Fatal("the first-password mark outlived the verification")
+	if left, _ := z.client().MetadataWithPrefix(ctx, u.id, MetaFirstPasswordPrefix); len(left) != 0 {
+		t.Fatalf("first-password attempts outlived the verification: %v", left)
 	}
 }

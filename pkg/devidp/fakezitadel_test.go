@@ -37,6 +37,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
+	// passwordSetAnswerLost makes the next password set succeed at the
+	// issuer and then answer 504, as a lost response does.
+	passwordSetAnswerLost bool
 	// failEmailResends makes that many verification-code mints
 	// (POST /v2/users/{id}/email/resend) fail (500).
 	failEmailResends int
@@ -79,18 +82,21 @@ type fakeUser struct {
 	id, email, loginName string
 	verified             bool
 	password             string
-	otpEmail             bool
-	passkeys             []Passkey
-	pendingPasskey       string
-	inviteCode           string
-	emailCode            string
-	pkRegCode            PasskeyRegistrationCode
-	resetCode            string
-	links                []IDPLink
-	metadata             map[string]string
-	locked               bool
-	totp                 bool
-	otpSMS               bool
+	// passwordChanged is when password was last set (zero: never, or
+	// seeded without a date).
+	passwordChanged time.Time
+	otpEmail        bool
+	passkeys        []Passkey
+	pendingPasskey  string
+	inviteCode      string
+	emailCode       string
+	pkRegCode       PasskeyRegistrationCode
+	resetCode       string
+	links           []IDPLink
+	metadata        map[string]string
+	locked          bool
+	totp            bool
+	otpSMS          bool
 	// unprojected counts the session creations still to be refused for
 	// this user (projectionLag); negative refuses them all.
 	unprojected int
@@ -191,6 +197,9 @@ func (f *fakeZitadel) addUser(email string, verified bool, password string) *fak
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	u := &fakeUser{id: f.userID(), email: email, loginName: email, username: email, verified: verified, password: password}
+	if password != "" {
+		u.passwordChanged = time.Now()
+	}
 	f.users[u.id] = u
 	return u
 }
@@ -334,7 +343,15 @@ func humanJSON(u *fakeUser) map[string]any {
 		state = "USER_STATE_LOCKED"
 	}
 	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "username": u.name(), "state": state,
-		"human": map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}}
+		"human": humanPart(u)}
+}
+
+func humanPart(u *fakeUser) map[string]any {
+	h := map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}
+	if !u.passwordChanged.IsZero() {
+		h["passwordChanged"] = u.passwordChanged.UTC().Format(time.RFC3339Nano)
+	}
+	return h
 }
 
 func (f *fakeZitadel) routes(mux *http.ServeMux) {
@@ -565,6 +582,9 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			}
 		}
 		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw, unprojected: f.projectionLag}
+		if pw != "" {
+			u.passwordChanged = time.Now()
+		}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")
@@ -693,7 +713,14 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			zerr(w, 500, "INTERNAL", "the issuer is down")
 			return
 		}
-		u.password, u.resetCode = pw, ""
+		u.password, u.resetCode, u.passwordChanged = pw, "", time.Now()
+		if f.passwordSetAnswerLost {
+			// The issuer installed the password and consumed the code, and
+			// its answer never arrived.
+			f.passwordSetAnswerLost = false
+			zerr(w, 504, "UNAVAILABLE-fake", "the answer was lost")
+			return
+		}
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("GET /v2/users/{id}/authentication_methods", func(w http.ResponseWriter, r *http.Request) {

@@ -34,6 +34,10 @@
 #                 rules[]                    lint families: {id, lane, bug_class}; lane is
 #                                            the `forge lint` flag that runs the rule
 #                                            alone, or "" when only a bare `forge lint` does
+#   glance.<app|site>[]  fact, show, benefits   <= 6 one-line facts per audience, each
+#                                            with the command that shows it and the
+#                                            shipped benefit ids it digests (bottom of file)
+#   limits[]      id, title, claim, instead, evidence   what forge does NOT do (bottom of file)
 #
 # internal/cli's TestBenefitsEvidenceExists resolves every evidence item
 # against the binary and this repo; TestEveryGradableRuleIsABenefit holds the
@@ -3914,6 +3918,44 @@ benefits:
       - external: control-plane:internal/freesite
       - external: control-plane:internal/staticfreetier
 
+  - id: hosting-pay-as-you-go
+    category: host
+    title: Pay-as-you-go hosting, no base fee
+    claim: >-
+      Hosting bills only what your pods request, at $0.0455 per vCPU-hour,
+      $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage: about
+      $8.34 a month for a small always-on service (0.1 vCPU, 512 MiB) and $20.14
+      for managed Postgres (0.25 vCPU, 1 GiB, 10 GiB), with a $5 minimum only in
+      a month with usage, no machine plan, and static-site egress free to 10 GiB
+      a month, then $0.10 per GiB.
+    availability: hosted
+    use: >-
+      `forge env shape <env>` prints what each workload requests; the public
+      rates are at https://reliantlabs.io/pricing#hosting.
+    why: >-
+      The rates are the pricing-v2 list (2026-11-06), the same for every plan;
+      monthly figures assume 730 hours always on. Backend egress is measured but
+      not billed today, and extra static sites are free once billing is set up.
+    evidence:
+      - command: env shape
+      - external: control-plane:internal/plansconfig/pricing.yaml
+      - external: control-plane:internal/billing/inframeter/shadow_only.go
+      - external: landing-page:src/content/pricing.catalog.json
+
+  - id: observability-allowance
+    category: host
+    title: 10 GiB of telemetry included
+    claim: >-
+      Every organization gets 10 GiB of stored logs, traces, metrics and
+      profiles a month, with or without a plan, then $0.10 per GiB; an org with
+      no payment method is never charged for more and keeps its errors and
+      metrics past the allowance.
+    availability: hosted
+    evidence:
+      - external: control-plane:internal/plansconfig/pricing.yaml
+      - external: control-plane:docs/observability/quota.md
+      - external: landing-page:src/content/pricing.catalog.json
+
   - id: live-hostname
     category: host
     title: A live URL on deploy
@@ -4884,3 +4926,109 @@ benefits:
       - external: reliant:internal/toolexec/daemonruntime/cmd_forge_deploy.go
       - external: reliant:internal/toolexec/daemonruntime/cmd_forge.go
       - external: reliant:internal/toolexec/daemonruntime/cmd_forge_promote.go
+
+# The glance: what a project gets with no setup, in at most six lines per
+# audience (app: an app with an API; site: a frontend-only static site). The
+# entry skills and `forge start app` open with it (rendered when a skill
+# loads, from a `<!-- @benefits glance <audience> -->` directive), so an agent
+# meets the payoff before the procedure. Each fact digests the shipped
+# benefits it names and ends with the command that shows it; internal/cli's
+# TestGlanceCommandsParse runs every one through the real command tree.
+glance:
+  app:
+    - fact: Every RPC traced, with p50/p95/p99 latency and error rate per endpoint, and no instrumentation code
+      show: obs endpoints dev
+      benefits: [edge-telemetry, obs-cli]
+    - fact: Errors grouped into issues tied to the release that introduced them; browser sessions with masked replay
+      show: obs issues prod
+      benefits: [issues-triage, issues-symbolication, rum-sessions]
+    - fact: Default alerts (error rate, latency, crash loops, failed deploys) and dashboards derived from the code
+      show: obs alerts check
+      benefits: [default-alerts, generated-dashboards]
+    - fact: Releases built once, prod promoted with the digests staging ran, and each deploy judged pass or fail
+      show: obs check prod --wait
+      benefits: [build-once-promote-by-digest, obs-check]
+    - fact: Every RPC requires auth unless its proto opts out; unsafe migrations fail lint before they ship
+      show: lint --migration-safety
+      benefits: [auth-fail-closed, migration-safety]
+    - fact: On Reliant hosting, managed Postgres per env, a live URL, and custom domains with HTTPS
+      show: env deploy prod
+      benefits: [managed-postgres, live-hostname, custom-domains-tls]
+  site:
+    - fact: A CDN-served site with a live URL, and your own domain with HTTPS issued and renewed
+      show: env deploy prod
+      benefits: [static-hosting-cdn, live-hostname, custom-domains-tls]
+    - fact: One hosted site free per person; with no account, a live URL plus a 72-hour claim link
+      show: env deploy prod --claimable
+      benefits: [free-static-site, claimable-deploys]
+    - fact: Browser errors, page views and masked session replay, wired in by the scaffold
+      show: obs sessions prod
+      benefits: [rum-sessions]
+    - fact: Built once, so prod serves the bytes staging served, with per-env config and no rebuild
+      show: env deploy prod --from staging
+      benefits: [build-once-promote-by-digest, static-site-first-class]
+    - fact: Every console call and uncaught browser error in dev lands in a log file you can grep
+      show: env up dev
+      benefits: [browser-logs-on-disk]
+    - fact: Anything a static export cannot serve fails lint with its file and line, before a deploy
+      show: lint --static-export
+      benefits: [static-export-lint]
+
+# What forge and Reliant hosting do NOT do. The `compare` skill quotes these
+# beside the wins, so an agent can recommend forge where it fits and say
+# plainly where it does not. Same evidence rules as a benefit.
+limits:
+  - id: static-export-frontends-only
+    title: Hosted frontends are static exports
+    claim: >-
+      Reliant hosting serves a frontend only as a static export, so no
+      server-side rendering, server actions, middleware, ISR, request-time
+      `cookies()`/`headers()` or on-the-fly image optimization; a Vite SPA or a
+      statically exportable Next.js app fits as it is.
+    instead: >-
+      run a Next.js app that needs a server as a container workload (`output:
+      standalone`, skill `frontend/serving`), or keep it on a host built for
+      that and point it at the forge API.
+    evidence:
+      - analyzer: --static-export
+      - skill: frontend/serving
+  - id: no-hosted-cron-or-operators
+    title: No hosted cron jobs or operators
+    claim: >-
+      Hosting runs services, workers and jobs, not cron-kind workloads or
+      Kubernetes operators.
+    instead: >-
+      a worker that runs its own schedule runs hosted; bind a cron job or an
+      operator to a cluster you run and keep the rest hosted.
+    evidence:
+      - skill: deploy/hosting
+      - external: control-plane:internal/operators/workload/doc.go
+  - id: codegen-is-go
+    title: Generated backends are Go
+    claim: >-
+      The typed API, ORM, handlers and tests forge generates are Go over Connect
+      RPC, with TypeScript clients; a backend in another language deploys from
+      its Dockerfile with environments, releases, hosting and OpenTelemetry
+      monitoring, but none of the generated code.
+    evidence:
+      - skill: authoring
+      - skill: adopt
+  - id: one-hosted-region
+    title: One hosted region
+    claim: >-
+      Hosted services and managed databases run in one region, GCP us-central1,
+      with no region choice; static sites are served through the CDN edge.
+    instead: >-
+      bind a workload to a cluster you run in another region
+      (`forge.OnCluster`).
+    evidence:
+      - external: control-plane:deploy/kcl/lib/hub_pool.k
+      - skill: deploy
+  - id: unclaimed-deploys-expire
+    title: Unclaimed deploys are temporary
+    claim: >-
+      A deploy with no account goes offline after 72 hours unless its claim
+      link is opened, and an unclaimed service has no outbound internet.
+    evidence:
+      - command: env deploy --claimable
+      - skill: deploy/hosting

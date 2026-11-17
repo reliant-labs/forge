@@ -3368,6 +3368,39 @@ _Enforced · Reliant hosting_
 - `internal/freesite` in the control-plane repo
 - `internal/staticfreetier` in the control-plane repo
 
+<a id="hosting-pay-as-you-go"></a>
+
+### Pay-as-you-go hosting, no base fee
+
+Hosting bills only what your pods request, at $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage: about $8.34 a month for a small always-on service (0.1 vCPU, 512 MiB) and $20.14 for managed Postgres (0.25 vCPU, 1 GiB, 10 GiB), with a $5 minimum only in a month with usage, no machine plan, and static-site egress free to 10 GiB a month, then $0.10 per GiB.
+
+_Enforced · Reliant hosting_
+
+**Use:** `forge env shape <env>` prints what each workload requests; the public rates are at https://reliantlabs.io/pricing#hosting.
+
+**Why:** The rates are the pricing-v2 list (2026-11-06), the same for every plan; monthly figures assume 730 hours always on. Backend egress is measured but not billed today, and extra static sites are free once billing is set up.
+
+**Evidence:**
+
+- command `forge env shape`
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `internal/billing/inframeter/shadow_only.go` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
+
+<a id="observability-allowance"></a>
+
+### 10 GiB of telemetry included
+
+Every organization gets 10 GiB of stored logs, traces, metrics and profiles a month, with or without a plan, then $0.10 per GiB; an org with no payment method is never charged for more and keeps its errors and metrics past the allowance.
+
+_Enforced · Reliant hosting_
+
+**Evidence:**
+
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `docs/observability/quota.md` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
+
 <a id="live-hostname"></a>
 
 ### A live URL on deploy

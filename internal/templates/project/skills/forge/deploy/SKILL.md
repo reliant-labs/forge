@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Ship anything — static sites, SPAs, services, workers: declare each workload once, bind it to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. A frontend-only site: deploy/static-site.
+description: Ship anything with Reliant Forge — static sites, SPAs, services, workers: declare each workload once, bind it to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. A frontend-only site: deploy/static-site.
 ---
 
 # Ship It
@@ -9,6 +9,8 @@ description: Ship anything — static sites, SPAs, services, workers: declare ea
 everything to it, and `forge env deploy prod` is the whole procedure. What it
 provides, what it refuses, and the gates (billing, unset secrets):
 `deploy/hosting`. A cluster you operate is the secondary path, below.
+
+<!-- @benefits glance app -->
 
 **No Reliant account yet?** `forge env deploy <env> --claimable` publishes
 anyway and prints a live URL plus a claim link for your user (see

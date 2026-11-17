@@ -439,33 +439,38 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 // its own key (MetaFirstPasswordPrefix + nonce, value its start in unix
 // milliseconds): "this broker began installing a first password here".
 //
-// A later presented code verifies a password-only account only when some
-// attempt is still fresh (firstPasswordAttemptTTL) AND the account's
-// password was set at or after that attempt began (the issuer's
-// passwordChanged, less firstPasswordClockSkew). A squatter's password,
-// set before any attempt — an attempt is only ever recorded while the
-// account holds NO credential — never qualifies.
+// A later presented code verifies a password-only account only when an
+// attempt exists AND the account's password was set at or after the
+// EARLIEST attempt began (the issuer's passwordChanged, less
+// firstPasswordClockSkew). There is no expiry: an invitee whose verification
+// failed during an outage and who comes back days later must still recover
+// the SAME account, with its roles. Safety rests on two facts instead:
 //
-// Records are safe to leave. One is removed only by the request that made
-// it, and only when the issuer refused that request's code outright; an
-// ambiguous failure keeps it, since the password may have been installed.
-// Every record goes once the address is verified, and an expired one is
-// ignored and removed when read.
+//   - An attempt is recorded only while the account holds NO credential, so
+//     a password set before it — a squatter's, from a pre-registration —
+//     predates every attempt and never qualifies.
+//   - Once recorded, a password reaches the account only through a reset
+//     code, which is mailed to the address or handed out by an
+//     administrator; no forge path sets a password on an existing unverified
+//     account otherwise (ProvenCredentialsOnly refuses a broker-minted one
+//     for a credential-less account). So any password set after an attempt
+//     is the address owner's, and verifying it is what the owner asked for.
+//
+// A record is removed by the request that made it only when the issuer
+// refused that request's code outright (it installed nothing); an ambiguous
+// failure keeps it, since the password may be in. Every record goes once the
+// address is verified. A malformed record, or one dated in the future past
+// the skew, is treated as absent.
 
-// firstPasswordAttemptTTL bounds how long an attempt qualifies: the reset
-// code's lifetime (an hour) plus slack. firstPasswordClockSkew allows for
-// the broker's clock running ahead of the issuer's. Variables so a test
-// can move them.
-var (
-	firstPasswordAttemptTTL = 2 * time.Hour
-	firstPasswordClockSkew  = time.Minute
-)
+// firstPasswordClockSkew allows for the broker's clock running ahead of the
+// issuer's. A variable so a test can move it.
+var firstPasswordClockSkew = time.Minute
 
 // recordFirstPasswordAttempt writes this request's attempt and returns its
 // key.
 func (c *Client) recordFirstPasswordAttempt(ctx context.Context, userID string) (string, error) {
 	key := MetaFirstPasswordPrefix + newNonce()
-	if err := c.SetMetadata(ctx, userID, key, strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
+	if err := c.SetMetadata(ctx, userID, key, strconv.FormatInt(c.clock().UnixMilli(), 10)); err != nil {
 		return "", fmt.Errorf("record the first-password attempt before setting it: %w", err)
 	}
 	return key, nil
@@ -479,27 +484,26 @@ func (c *Client) passwordIsAFirstPasswordAttempt(ctx context.Context, userID str
 	if err != nil {
 		return false, fmt.Errorf("read the account's first-password attempts: %w", err)
 	}
-	if len(attempts) == 0 {
+	now := c.clock()
+	var earliest time.Time
+	for _, v := range attempts {
+		ms, perr := strconv.ParseInt(v, 10, 64)
+		start := time.UnixMilli(ms)
+		if perr != nil || ms <= 0 || start.After(now.Add(firstPasswordClockSkew)) {
+			continue // malformed, or from the future: absent
+		}
+		if earliest.IsZero() || start.Before(earliest) {
+			earliest = start
+		}
+	}
+	if earliest.IsZero() {
 		return false, nil
 	}
 	u, err := c.FindUserByID(ctx, userID)
 	if err != nil {
 		return false, fmt.Errorf("read when the account's password was set: %w", err)
 	}
-	now := time.Now()
-	qualifies := false
-	for key, v := range attempts {
-		ms, perr := strconv.ParseInt(v, 10, 64)
-		start := time.UnixMilli(ms)
-		if perr != nil || now.Sub(start) > firstPasswordAttemptTTL || start.After(now.Add(firstPasswordClockSkew)) {
-			_ = c.DeleteMetadata(ctx, userID, key) // expired or malformed: inert
-			continue
-		}
-		if !u.PasswordChanged.IsZero() && !u.PasswordChanged.Before(start.Add(-firstPasswordClockSkew)) {
-			qualifies = true
-		}
-	}
-	return qualifies, nil
+	return !u.PasswordChanged.IsZero() && !u.PasswordChanged.Before(earliest.Add(-firstPasswordClockSkew)), nil
 }
 
 // clearFirstPasswordAttempts removes every attempt record of a verified

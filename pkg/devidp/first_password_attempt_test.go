@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -15,13 +16,27 @@ import (
 
 // forge#2179 review (password.go:385): first-password install attempts are
 // records safe to leave. An ambiguous failure keeps them, a wrong code removes
-// only its own, and only a password set at or after a fresh attempt — never
-// a squatter's earlier one — lets a later reset verify the address.
+// only its own, and only a password set at or after an attempt — never a
+// squatter's earlier one — lets a later reset verify the address, however
+// much later it comes.
 
 func provenBroker(z *fakeZitadel) *Client {
 	c := z.client()
 	c.ProvenCredentialsOnly = true
+	z.mu.Lock()
+	c.now = z.now // the issuer's clock, when a test set one
+	z.mu.Unlock()
 	return c
+}
+
+// withClock gives the fake issuer, and every provenBroker after it, one
+// settable clock.
+func withClock(z *fakeZitadel) *fakeClock {
+	clk := &fakeClock{t: time.Now()}
+	z.mu.Lock()
+	z.now = clk.now
+	z.mu.Unlock()
+	return clk
 }
 
 func resetCode(t *testing.T, z *fakeZitadel, id string) string {
@@ -129,46 +144,91 @@ func TestFirstPasswordAttempt_AWrongCodeBesideAValidOneNeverBreaksRecovery(t *te
 	}
 }
 
-// A squatter's password, set before any attempt, never qualifies — even
-// when a fresh attempt record exists.
+// A squatter's password, set before any attempt, never qualifies — whether
+// the attempt record came minutes or days after it.
 func TestFirstPasswordAttempt_AnEarlierPasswordNeverQualifies(t *testing.T) {
-	ctx := context.Background()
-	z := newFakeZitadel(t)
-	s := z.addUser(victimEmail, false, attackerPassword)
-	z.mu.Lock()
-	s.passwordChanged = time.Now().Add(-10 * time.Minute)
-	z.mu.Unlock()
-	if err := z.client().SetMetadata(ctx, s.id, MetaFirstPasswordPrefix+"later", strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
-		t.Fatal(err)
-	}
-	if err := provenBroker(z).ResetPassword(ctx, PasswordReset{UserID: s.id, Code: resetCode(t, z, s.id), NewPassword: "owner-password-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if verified, _ := z.passwordState(s.id); verified {
-		t.Fatal("TAKEOVER: an attempt recorded after the squatter's password made a reset verify the account")
+	for _, gap := range []time.Duration{10 * time.Minute, 72 * time.Hour} {
+		t.Run(gap.String(), func(t *testing.T) {
+			ctx := context.Background()
+			z := newFakeZitadel(t)
+			clk := withClock(z)
+			s := z.addUser(victimEmail, false, attackerPassword) // passwordChanged: now
+			clk.advance(gap)
+			if err := z.client().SetMetadata(ctx, s.id, MetaFirstPasswordPrefix+"later", strconv.FormatInt(clk.now().UnixMilli(), 10)); err != nil {
+				t.Fatal(err)
+			}
+			if err := provenBroker(z).ResetPassword(ctx, PasswordReset{UserID: s.id, Code: resetCode(t, z, s.id), NewPassword: "owner-password-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if verified, _ := z.passwordState(s.id); verified {
+				t.Fatal("TAKEOVER: an attempt recorded after the squatter's password made a reset verify the account")
+			}
+		})
 	}
 }
 
-// An attempt past firstPasswordAttemptTTL does not qualify, and is removed.
-func TestFirstPasswordAttempt_AnExpiredAttemptDoesNotQualify(t *testing.T) {
+// forge#2179 review (password.go:494): an invitee whose verification failed
+// during an outage and who comes back a day later recovers the SAME
+// account, with its grant. An attempt has no expiry.
+func TestFirstPasswordAttempt_RecoveryADayLaterKeepsTheSameAccount(t *testing.T) {
 	ctx := context.Background()
 	z := newFakeZitadel(t)
-	u := z.addUser("invitee@acme.com", false, "first-password-1")
-	start := time.Now().Add(-firstPasswordAttemptTTL - time.Hour)
+	clk := withClock(z)
+	u := z.addUser("invitee@acme.com", false, "")
 	z.mu.Lock()
-	u.passwordChanged = start.Add(time.Minute) // installed by that attempt, long ago
+	z.grants = append(z.grants, u.id+":member")
+	z.failEmailResends = 1 // the first install's verification fails
 	z.mu.Unlock()
-	key := MetaFirstPasswordPrefix + "old"
-	if err := z.client().SetMetadata(ctx, u.id, key, strconv.FormatInt(start.UnixMilli(), 10)); err != nil {
-		t.Fatal(err)
+	if err := provenBroker(z).ResetPassword(ctx, PasswordReset{UserID: u.id, Code: resetCode(t, z, u.id), NewPassword: "first-password-1"}); err == nil {
+		t.Fatal("precondition: the first install's verification was meant to fail")
 	}
-	if err := provenBroker(z).ResetPassword(ctx, PasswordReset{UserID: u.id, Code: resetCode(t, z, u.id), NewPassword: "first-password-2"}); err != nil {
-		t.Fatal(err)
+	if verified, pw := z.passwordState(u.id); verified || pw != "first-password-1" {
+		t.Fatalf("precondition: want the password installed and the address unverified (verified=%v)", verified)
 	}
-	if verified, _ := z.passwordState(u.id); verified {
-		t.Fatal("an expired first-password attempt let a reset verify the account")
+
+	clk.advance(26 * time.Hour)
+	if !recoverWith(t, z, u.id, "first-password-2") {
+		t.Fatal("a day after a failed verification, a new reset code did not verify the account it installed a first password on")
 	}
-	if _, ok, _ := z.client().Metadata(ctx, u.id, key); ok {
-		t.Fatal("the expired attempt was not removed")
+	if got := z.userByEmail("invitee@acme.com"); got == nil || got.id != u.id {
+		t.Fatal("recovery did not keep the same account")
+	}
+	z.mu.Lock()
+	granted := slices.Contains(z.grants, u.id+":member")
+	z.mu.Unlock()
+	if !granted {
+		t.Fatal("recovery lost the account's grant")
+	}
+	if attempts, err := z.client().MetadataWithPrefix(ctx, u.id, MetaFirstPasswordPrefix); err != nil || len(attempts) != 0 {
+		t.Fatalf("attempt records left on a verified account: %v (err %v)", attempts, err)
+	}
+}
+
+// A malformed record, or one dated past the skew in the future, is absent:
+// it never qualifies a password.
+func TestFirstPasswordAttempt_AMalformedRecordIsAbsent(t *testing.T) {
+	for name, value := range map[string]func(now time.Time) string{
+		"not a number": func(time.Time) string { return "yesterday" },
+		"zero":         func(time.Time) string { return "0" },
+		"negative":     func(time.Time) string { return "-5" },
+		"in the future": func(now time.Time) string {
+			return strconv.FormatInt(now.Add(firstPasswordClockSkew+time.Hour).UnixMilli(), 10)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			z := newFakeZitadel(t)
+			clk := withClock(z)
+			s := z.addUser(victimEmail, false, attackerPassword)
+			if err := z.client().SetMetadata(ctx, s.id, MetaFirstPasswordPrefix+"bad", value(clk.now())); err != nil {
+				t.Fatal(err)
+			}
+			if err := provenBroker(z).ResetPassword(ctx, PasswordReset{UserID: s.id, Code: resetCode(t, z, s.id), NewPassword: "owner-password-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if verified, _ := z.passwordState(s.id); verified {
+				t.Fatal("a malformed attempt record made a reset verify the account")
+			}
+		})
 	}
 }

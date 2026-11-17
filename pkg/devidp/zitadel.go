@@ -72,6 +72,16 @@ type Client struct {
 	ProvenCredentialsOnly bool
 
 	http *http.Client
+	// now is the clock first-password attempts are dated by (time.Now when
+	// nil); a test injects one.
+	now func() time.Time
+}
+
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // requestTimeout bounds a single API call. Generous for a local container,

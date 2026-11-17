@@ -37,6 +37,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
+	// now is the issuer's clock (time.Now when nil): passwordChanged is
+	// dated by it. A test sets it, and the client's, to one fake clock.
+	now func() time.Time
 	// passwordSetAnswerLost makes the next password set succeed at the
 	// issuer and then answer 504, as a lost response does.
 	passwordSetAnswerLost bool
@@ -198,7 +201,7 @@ func (f *fakeZitadel) addUser(email string, verified bool, password string) *fak
 	defer f.mu.Unlock()
 	u := &fakeUser{id: f.userID(), email: email, loginName: email, username: email, verified: verified, password: password}
 	if password != "" {
-		u.passwordChanged = time.Now()
+		u.passwordChanged = f.clock()
 	}
 	f.users[u.id] = u
 	return u
@@ -583,7 +586,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw, unprojected: f.projectionLag}
 		if pw != "" {
-			u.passwordChanged = time.Now()
+			u.passwordChanged = f.clock()
 		}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
@@ -713,7 +716,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			zerr(w, 500, "INTERNAL", "the issuer is down")
 			return
 		}
-		u.password, u.resetCode, u.passwordChanged = pw, "", time.Now()
+		u.password, u.resetCode, u.passwordChanged = pw, "", f.clock()
 		if f.passwordSetAnswerLost {
 			// The issuer installed the password and consumed the code, and
 			// its answer never arrived.
@@ -980,4 +983,24 @@ func (f *fakeZitadel) snapshot(id string) string {
 	return fmt.Sprintf("email=%s name=%s verified=%v locked=%v password=%q otpEmail=%v otpSMS=%v totp=%v passkeys=%v pending=%q links=%v invite=%q emailCode=%q reset=%q md=%v sessions=%v",
 		u.email, u.name(), u.verified, u.locked, u.password, u.otpEmail, u.otpSMS, u.totp, u.passkeys, u.pendingPasskey, u.links,
 		u.inviteCode, u.emailCode, u.resetCode, md, sessions)
+}
+
+func (f *fakeZitadel) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
+}
+
+// fakeClock is a settable clock shared by the fake issuer and a client.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
 }

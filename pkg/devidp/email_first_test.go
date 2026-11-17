@@ -799,3 +799,67 @@ func TestEmailFirst_ATakeoverCutShortAfterTheEmailMovedResumes(t *testing.T) {
 		})
 	}
 }
+
+// forge#2179 review (password.go:468): a pre-registered, unverified account
+// holding only a password — the squatter's — and a session that passed that
+// password before the owner ever acted. The inbox owner redeems a reset code
+// mailed to the address. The password is replaced (the holder's recovery),
+// but the address is NOT verified: verifying it would let the squatter's
+// retained session through the verified-email gate. The owner proves into a
+// fresh account instead.
+func TestEmailFirst_AResetNeverVerifiesAPreRegisteredPasswordAccount(t *testing.T) {
+	ctx := context.Background()
+	z := newFakeZitadel(t)
+	broker := z.client()
+	broker.ProvenCredentialsOnly = true
+	s := z.addUser(victimEmail, false, attackerPassword)
+	z.mu.Lock()
+	z.sessions["s-attacker"] = &fakeSession{token: "s-attacker-token", userID: s.id, verified: []string{"password"}}
+	z.mu.Unlock()
+
+	code, err := z.client().MintPasswordResetCode(ctx, s.id) // mailed to the address: the owner holds it
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.ResetPassword(ctx, PasswordReset{UserID: s.id, Code: code, NewPassword: "owner-password-1"}); err != nil {
+		t.Fatalf("the owner's reset: %v", err)
+	}
+	if verified, pw := z.passwordState(s.id); verified || pw != "owner-password-1" {
+		t.Fatalf("after the owner's reset: verified=%v password replaced=%v, want the password replaced and the address still unverified", verified, pw == "owner-password-1")
+	}
+	_, err = broker.CompleteSignIn(ctx, FlowConfig{ClientID: "c", RedirectURI: "r", RequireVerifiedEmail: true},
+		Session{ID: "s-attacker", Token: "s-attacker-token"})
+	if !errors.Is(err, ErrEmailUnverified) {
+		t.Fatalf("TAKEOVER: the squatter's retained session completed sign-in after the owner's reset (err %v)", err)
+	}
+}
+
+// The first-password mark exists only while a first password is being
+// installed: a wrong code installs nothing and leaves no mark, and a
+// successful first password clears it once the address is verified.
+func TestEmailFirst_TheFirstPasswordMarkNeverOutlivesItsInstall(t *testing.T) {
+	ctx := context.Background()
+	z := newFakeZitadel(t)
+	broker := z.client()
+	broker.ProvenCredentialsOnly = true
+	u := z.addUser("pending@acme.com", false, "")
+	if err := broker.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: "a-wrong-code", NewPassword: "a-long-password"}); !errors.Is(err, ErrInvalidResetCode) {
+		t.Fatalf("a wrong code: %v, want ErrInvalidResetCode", err)
+	}
+	if _, ok, _ := z.client().Metadata(ctx, u.id, MetaFirstPassword); ok {
+		t.Fatal("a wrong code left the first-password mark on the account")
+	}
+	code, err := z.client().MintPasswordResetCode(ctx, u.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broker.ResetPassword(ctx, PasswordReset{UserID: u.id, Code: code, NewPassword: "a-long-password"}); err != nil {
+		t.Fatal(err)
+	}
+	if verified, _ := z.passwordState(u.id); !verified {
+		t.Fatal("the first password did not verify the address")
+	}
+	if _, ok, _ := z.client().Metadata(ctx, u.id, MetaFirstPassword); ok {
+		t.Fatal("the first-password mark outlived the verification")
+	}
+}

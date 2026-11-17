@@ -353,6 +353,25 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 	if err != nil {
 		return err
 	}
+	// firstPassword: this redemption installs the account's FIRST password,
+	// or completes one whose verification failed after it was installed
+	// (MetaFirstPassword, written before the password and cleared once the
+	// address is verified). Only then may a presented code verify the
+	// address: the account held nothing nobody proved.
+	firstPassword := false
+	switch {
+	case gate == gateFirstPassword && proves:
+		if err := c.SetMetadata(ctx, userID, MetaFirstPassword, "1"); err != nil {
+			return fmt.Errorf("record the first password before setting it: %w", err)
+		}
+		firstPassword = true
+	case gate == gateUnverifiedPassword && proves:
+		v, _, err := c.Metadata(ctx, userID, MetaFirstPassword)
+		if err != nil {
+			return fmt.Errorf("read whether the account's password is its first: %w", err)
+		}
+		firstPassword = v != ""
+	}
 
 	_, err = c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
 		"newPassword": map[string]any{
@@ -362,9 +381,23 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 		"verificationCode": code,
 	})
 	if err != nil {
+		if gate == gateFirstPassword && firstPassword {
+			// Nothing was installed: the mark goes, so it never stands on
+			// an account that later gains a password some other way.
+			_ = c.DeleteMetadata(context.WithoutCancel(ctx), userID, MetaFirstPassword)
+		}
 		return classifyResetError(err)
 	}
 	if gate == gateOpen || !proves {
+		return nil
+	}
+	if gate == gateUnverifiedPassword && !firstPassword {
+		// A password-only account this broker did not give its first
+		// password: whoever registered the address set it, and may hold a
+		// session it passed before this reset. Replacing the password is the
+		// holder's recovery; the address is never verified on it, which would
+		// make that session usable (forge#2179 review). Its owner proves into
+		// a fresh account instead.
 		return nil
 	}
 	// The issuer accepted the code, and a reset code reaches a person only
@@ -382,6 +415,8 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 		return fmt.Errorf("the password was set, but the address its reset code proved could not be marked verified "+
 			"(redeeming a new reset code completes it): %w", err)
 	}
+	// Inert on a verified account if this fails.
+	_ = c.DeleteMetadata(context.WithoutCancel(ctx), userID, MetaFirstPassword)
 	return nil
 }
 
@@ -416,9 +451,12 @@ const (
 	// address verified.
 	gateFirstPassword
 	// gateUnverifiedPassword: unverified, holding a password and nothing
-	// else — a contact-only account created with one, or a first password
-	// whose verification failed after it was set. Its holder may replace
-	// it; a presented reset code also marks the address verified.
+	// else — a contact-only or pre-registered account created with one, or
+	// a first password whose verification failed after it was set. Its
+	// holder may replace it. A presented reset code marks the address
+	// verified ONLY for the last (MetaFirstPassword): any other password was
+	// set by whoever registered the address, who may hold a session it
+	// passed.
 	gateUnverifiedPassword
 )
 

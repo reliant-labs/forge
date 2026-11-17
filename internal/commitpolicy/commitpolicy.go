@@ -43,6 +43,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -415,9 +416,13 @@ func isHex(b []byte) bool {
 }
 
 // isDevRuntimeConfig reports whether rel is a frontend's dev runtime document
-// (frontends/<name>/public/config.js).
+// (frontends/<name>/public/config.js) or a build's copy of it. A Vite or
+// Next.js build copies public/ into its output directory, so the same
+// machine-local document also lands at frontends/<name>/<outDir>/config.js —
+// dist/, out/, or a project's own outDir such as dist-demo/ — and that copy
+// is gitignored build output, never source to commit.
 func isDevRuntimeConfig(rel string) bool {
-	return strings.HasPrefix(rel, "frontends/") && strings.HasSuffix(rel, "/"+devRuntimeConfig) &&
+	return strings.HasPrefix(rel, "frontends/") && path.Base(rel) == path.Base(devRuntimeConfig) &&
 		strings.Count(rel, "/") == 3
 }
 

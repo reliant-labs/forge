@@ -56,4 +56,19 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 			t.Errorf("agent_instructions lacks %q:\n%s", want, doc.AgentInstructions)
 		}
 	}
+
+	// A deploy that can no longer be claimed promises nothing about claiming.
+	for _, state := range []string{"claimed", "expired"} {
+		b.Reset()
+		printClaimBlock(&b, "prod", &deployClaimJSON{State: state, ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)})
+		if strings.Contains(b.String(), "ONCE CLAIMED") {
+			t.Errorf("a %s deploy's block says what claiming gives:\n%s", state, b.String())
+		}
+	}
+	expired := claimDocument("prod", credentials.Credential{Claimable: &credentials.Claimable{
+		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(-48 * time.Hour), PurgeAfter: now.Add(-time.Hour),
+	}}, now, false)
+	if expired.State != "expired" || strings.Contains(expired.AgentInstructions, "Once claimed") {
+		t.Errorf("an expired deploy's instructions (state %s) promise a claim:\n%s", expired.State, expired.AgentInstructions)
+	}
 }

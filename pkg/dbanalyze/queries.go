@@ -131,7 +131,7 @@ func noUsableIndex(q Query, a TableAccess, rc RowCount, cfg Config) (Finding, bo
 	case UnservedOrder:
 		msg = fmt.Sprintf("no index provides the order %s on %s: every row is sorted to return the first few", a.Detail, a.Table)
 	case UnservedJoin:
-		msg = fmt.Sprintf("%s is read in full to join it on %s: no index leads with that column", a.Table, a.Detail)
+		msg = fmt.Sprintf("%s is read in full to join it on %s: no index serves that join (none leads with the column, or the plan does not read by it)", a.Table, a.Detail)
 	}
 	f := Finding{Rule: RuleQueryNoUsableIndex, Severity: sev, Relation: a.Table, Message: msg, Fix: fixNoUsableIndex}
 	if rc.Value != nil {
@@ -169,10 +169,9 @@ WHERE c.relname = $2 AND (n.nspname = $1 OR ($1 = '' AND pg_table_is_visible(c.o
 LIMIT 1`
 
 const relationIndexesQuery = `
-SELECT i.relname, x.indpred IS NOT NULL, COALESCE(a.attname, '')
+SELECT i.relname, x.indpred IS NOT NULL
 FROM pg_index x
 JOIN pg_class i ON i.oid = x.indexrelid
-LEFT JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = x.indkey[0] AND x.indkey[0] <> 0
 WHERE x.indrelid = $1 AND x.indisvalid`
 
 func (c *catalog) lookup(ctx context.Context, schema, name string) (*relInfo, error) {
@@ -193,7 +192,7 @@ func (c *catalog) lookup(ctx context.Context, schema, name string) (*relInfo, er
 	for rows.Next() {
 		var ix string
 		var info indexInfo
-		if err := rows.Scan(&ix, &info.partial, &info.leading); err != nil {
+		if err := rows.Scan(&ix, &info.partial); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}

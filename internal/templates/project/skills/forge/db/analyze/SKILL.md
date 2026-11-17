@@ -200,10 +200,9 @@ document):
 | served (`index_cond`) | the scan has an `Index Cond`: an index answers the filter or join |
 | served (`partial_index`) | a partial index whose predicate implies the filter |
 | served (`order`) | an index scan whose order reaches the `LIMIT` untouched (`ORDER BY id DESC LIMIT 20`) |
-| served (`join_key`) | read in full under a hash/merge join, but an index leads with the join column |
 | unserved (`filter`) | a predicate evaluated on every row: a Seq Scan the planner could not avoid, **or an index walked in full with only a `Filter`** — an index node alone proves nothing |
 | unserved (`order`) | every row sorted to return the first few (`Sort` under `Limit`) |
-| unserved (`join`) | read in full to be joined, in a statement that filters something, with no index on the join column (the unindexed foreign key) |
+| unserved (`join`) | read in full to be joined, in a statement that filters something (the unindexed foreign key). An index that leads with the join column but that the plan does not read by (a disabled `Seq Scan` under the join) serves nothing |
 | unfiltered | nothing an index could serve: an unfiltered list, a count, an unfiltered join |
 
 A scratch target is empty, and that is fine: whether an index **can** serve a

@@ -197,26 +197,6 @@ type relInfo struct {
 
 type indexInfo struct {
 	partial bool
-	// leading is the first key column, "" for an expression.
-	leading string
-}
-
-// leadingIndex is a non-partial index of r whose first column is one of cols.
-func (r *relInfo) leadingIndex(cols []string) string {
-	names := make([]string, 0, len(r.indexes))
-	for name := range r.indexes {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		ix := r.indexes[name]
-		for _, c := range cols {
-			if !ix.partial && ix.leading != "" && ix.leading == c {
-				return name
-			}
-		}
-	}
-	return ""
 }
 
 // lookupFunc resolves a scanned relation (schema, name) in the catalog.
@@ -238,8 +218,9 @@ type classified struct {
 // LIMIT untouched. Otherwise it is unserved when it evaluates a Filter on
 // every row — a disabled Seq Scan, or an index walked in full for want of a
 // usable one —, when every row is sorted for a LIMIT, or when it is read in
-// full to be joined in a statement that restricts something and no index
-// leads with its join column. A full read that nothing constrains is
+// full to be joined in a statement that restricts something: an index that
+// leads with the join column but that the plan does not read by it serves
+// nothing. A full read that nothing constrains is
 // unfiltered: no index would help it.
 func classify(normal, noSeq *rawPlan, lookup lookupFunc) ([]classified, error) {
 	aliases := map[string]bool{}
@@ -373,10 +354,10 @@ func accessOf(n *rawPlan, ri *relInfo, root *rawPlan, aliases map[string]bool, r
 	if keys := n.sortedUnderLimit(); keys != nil {
 		return unserved(UnservedOrder, strings.Join(keys, ", "))
 	}
+	// Reaching here, the scan reads the relation in full: no index gives it
+	// rows by the join key, whatever the catalog holds. An index leading
+	// with the join column that the plan does not use serves nothing.
 	if cols := joinColumns(n.Alias, root, aliases); len(cols) > 0 && restricted {
-		if idx := ri.leadingIndex(cols); idx != "" {
-			return served(ServedByJoinKey, idx, strings.Join(cols, ", "))
-		}
 		return unserved(UnservedJoin, strings.Join(cols, ", "))
 	}
 	a.Verdict = AccessUnfiltered

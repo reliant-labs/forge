@@ -194,11 +194,11 @@ Where the implementation (`pkg/dbanalyze/plan.go`, `queries.go`;
   unfiltered join seq-scans with nothing an index could serve. A full read (no `Index
 Cond`, no partial index, no order reaching a `LIMIT`) is unserved only when it carries
   a `Filter`, sits under a `Sort` under a `Limit`, or is **joined in a statement that
-  restricts something** with no index leading with its join column. The last is the
-  unindexed foreign key: with seq scans off the planner keeps a hash join and reads the
-  joined table in full (no `Disabled` node on the side it walks by an index), so the join
-  columns are read from the plan's conditions and checked against the catalog
-  (`join_key`). Anything else is `unfiltered`, not a finding.
+  restricts something**. The last is the unindexed foreign key: with seq scans off the
+  planner keeps a hash join and reads the joined table in full (no `Disabled` node on the
+  side it walks by an index), so the join columns are read from the plan's conditions.
+  The plan decides, not the catalog: an index that leads with the join column but that the
+  plan does not read by serves nothing. Anything else is `unfiltered`, not a finding.
 - **A partial index shows no `Index Cond`** (its predicate implies the filter, so the
   planner drops it): partial-index use is read from `pg_index.indpred`.
 - **An index scan whose order reaches the `LIMIT`** (no `Sort` between) is served even

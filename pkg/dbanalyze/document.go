@@ -210,7 +210,7 @@ type TableAccess struct {
 	// Verdict is AccessServed, AccessUnserved or AccessUnfiltered.
 	Verdict string `json:"verdict"`
 	// How says why: for served, ServedByIndexCond, ServedByPartialIndex,
-	// ServedByOrder, ServedByJoinKey or ServedByTID; for unserved,
+	// ServedByOrder or ServedByTID; for unserved,
 	// UnservedFilter, UnservedOrder or UnservedJoin.
 	How string `json:"how,omitempty"`
 	// Index is the index that serves it, or the one walked in full.
@@ -242,11 +242,10 @@ const (
 	ServedByIndexCond    = "index_cond"    // the scan has an Index Cond
 	ServedByPartialIndex = "partial_index" // a partial index whose predicate implies the filter
 	ServedByOrder        = "order"         // an index scan delivers the ORDER BY … LIMIT order
-	ServedByJoinKey      = "join_key"      // an index leads with the column the table is joined on
 	ServedByTID          = "tid"           // a ctid lookup
 	UnservedFilter       = "filter"        // a predicate evaluated on every row
 	UnservedOrder        = "order"         // every row sorted to return the first few
-	UnservedJoin         = "join"          // read in full to be joined, with no index on the join key
+	UnservedJoin         = "join"          // read in full to be joined: no index serves the join key
 )
 
 // PlanNode is one node of an EXPLAIN plan, trimmed to what a review reads.

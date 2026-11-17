@@ -187,7 +187,8 @@ func selectQueryShapes(projectDir string, cfg *config.ProjectConfig, opts dbAnal
 		if len(first) == 0 {
 			continue
 		}
-		sh.Callers = append(first, rest...)
+		first = append(first, rest...)
+		sh.Callers = first
 		qp.shapes = append(qp.shapes, sh)
 	}
 	if len(qp.shapes) == 0 {

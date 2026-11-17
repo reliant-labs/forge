@@ -156,7 +156,7 @@ func defaultAnalyzeDeps() analyzeDeps {
 // dsn target's copy has its pending migrations applied exactly as the
 // migration pass applies them (each file committed, CONCURRENTLY run for
 // real), unreported.
-func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectConfig, opts dbAnalyzeOptions, deps analyzeDeps) *dbanalyze.Document {
+func runDBAnalyze(ctx context.Context, projectDir string, cfg *config.ProjectConfig, opts dbAnalyzeOptions, deps analyzeDeps) *dbanalyze.Document { //nolint:funlen // one disposable database's lifecycle: its scratch cleanup, clone drop and session close are defers that must run on every path out of THIS scope, and both passes run between them in order.
 	doc := dbanalyze.NewDocument()
 	fail := func(format string, args ...any) *dbanalyze.Document {
 		doc.Error = fmt.Sprintf(format, args...)

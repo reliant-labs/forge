@@ -85,6 +85,12 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// Nor does any build ask a registry's token realm about push access: the
+	// clean-CI answer is "not verified", which proceeds. A test of the
+	// preflight states the realm's answer (registry_push_preflight_test.go).
+	registryPushProbe = func(context.Context, string, []string) deploytarget.PushAccess {
+		return deploytarget.PushAccess{Reason: "unit tests do not query a container registry"}
+	}
 	// A unit test builds images through the (fake) docker on PATH, so the
 	// daemon answers; a test of the no-daemon error sets its own answer.
 	dockerDaemonReachable = func(context.Context) error { return nil }

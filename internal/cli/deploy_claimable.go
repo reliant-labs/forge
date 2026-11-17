@@ -430,6 +430,10 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 			fmt.Printf("      %-24s %s\n", claimableCauseLabel(c), strings.TrimSuffix(c.Message, "."))
 		}
 	}
+	// Push access is a question about a credential, and this preview holds
+	// none by design: the anonymous one exists only once the deploy mints it.
+	// The deploy then asks the registry before it builds (registry_push_preflight.go).
+	fmt.Printf("  ? registry push access: not checked here (no identity); the deploy checks it with its own credential before it builds\n")
 	if doc.SignedIn {
 		fmt.Printf("  note: you are signed in to %s, so --claimable is refused from this machine; drop it to deploy to your organization\n", ep.URL)
 	}

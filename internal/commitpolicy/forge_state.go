@@ -45,13 +45,13 @@ func IgnoredForgeState(projectDir string) ([]Violation, error) {
 	for _, s := range committedForgeState {
 		paths = append(paths, s.path)
 	}
-	ignored, err := checkIgnore(projectDir, paths)
+	ignored, err := checkIgnoreMatches(projectDir, paths)
 	if err != nil {
 		return nil, err
 	}
 	var out []Violation
 	for _, s := range committedForgeState {
-		rule, ok := ignored[s.path]
+		match, ok := ignored[s.path]
 		if !ok {
 			continue
 		}
@@ -59,12 +59,31 @@ func IgnoredForgeState(projectDir string) ([]Violation, error) {
 		out = append(out, Violation{
 			Rule: RuleForgeStateIgnored,
 			Path: path,
-			Why:  fmt.Sprintf("%s is %s, but %s excludes it from git", path, s.what, rule),
-			Fix: "ignore the children of .forge/, not the directory: replace `.forge/` with `.forge/*` " +
-				"(the scaffold's .gitignore then re-includes .forge/scaffolded/, .forge/disowned.json and .forge/hashes/), " +
-				"then `git add .forge/`",
+			Why:  fmt.Sprintf("%s is %s, but %s excludes it from git", path, s.what, match),
+			Fix:  forgeStateFix(path, match),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// forgeStateFix is the change that re-includes path, chosen by the rule that
+// excludes it. Only a rule that excludes the .forge directory itself needs
+// rewriting; any other rule (`.forge/*` with the negation missing, a broader
+// `*.json`) is kept, and a negation for path goes below it.
+func forgeStateFix(path string, match ignoreMatch) string {
+	switch strings.Trim(match.pattern, "/") {
+	case ".forge", "**/.forge":
+		return "ignore the children of .forge/, not the directory: replace `" + match.pattern + "` with `.forge/*` " +
+			"(the scaffold's .gitignore then re-includes .forge/scaffolded/, .forge/disowned.json and .forge/hashes/), " +
+			"then `git add .forge/`"
+	case ".forge/*", "**/.forge/*":
+		return "keep `" + match.pattern + "` and re-include this path: add `!" + path + "` on a line below it in " +
+			match.source + " (the scaffold's .gitignore re-includes .forge/scaffolded/, .forge/disowned.json and .forge/hashes/), " +
+			"then `git add " + path + "`"
+	default:
+		return "re-include this path: add `!" + path + "` on a line below `" + match.pattern + "` (" +
+			match.source + ":" + match.line + "), then `git add " + path + "`. If that rule excludes the .forge " +
+			"directory itself, git cannot re-include anything below it: narrow the rule so .forge/ is not matched"
+	}
 }

@@ -242,7 +242,18 @@ records its outcome in `last-full-gc.json`: when it ran, whether it succeeded,
 and which layers failed. Only the full pass runs registry retention, so this
 record is how forge knows whether that retention is working. If registries are
 registered and the last full pass failed, is more than 48 hours old, or never
-completed, `forge doctor` warns and `forge env up` prints one line saying so.
+completed, `forge doctor` warns. `forge env up` prints one line saying so only
+for the registries its own env's clusters `use`: the record is machine-wide,
+and a project that never touches a registry is not told about it. That line
+quotes the recorded error, says the env is unaffected (retention only reclaims
+old image versions), and names `forge storage gc --dry-run` to re-check and
+`forge storage gc --apply` to retry.
+
+A registry whose protecting cluster is stopped (or was deleted from Docker with
+its kubeconfig context left behind) cannot have its protected set listed, so
+nothing is deleted from it. That pass records the registry as skipped, not
+failed: on a laptop a stopped cluster is ordinary. A cluster that is running and
+does not answer is still a failure.
 
 Registry GC, which briefly stops the registry, runs only from the scheduled job
 or an explicit `forge storage gc --apply`. Install the schedule once per machine:
@@ -252,8 +263,8 @@ forge storage gc --dry-run   # review the plan
 forge storage install        # daily at 03:30
 ```
 
-`forge env up` and `forge doctor` say so when registries are registered but no
-schedule is installed.
+`forge doctor` says so when registries are registered but no schedule is
+installed, and `forge env up` does when its env uses one of them.
 
 `forge storage register` remains the manual escape hatch: importing an old
 project's ledger (`--ledger`), adopting a builder forge never used

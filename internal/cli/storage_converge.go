@@ -181,9 +181,15 @@ func upReclaimsStorage(e *KCLEntities, clusterErr error) bool {
 // even on failure, and `forge doctor` read it as "GC scheduled, last ran 2h
 // ago" on a machine where registry retention had never once run.
 //
-// It also prints at most ONE line about storage health: that no schedule is
-// installed, or else that the last full GC failed, is stale, or never ran.
-func maybeOpportunisticGC(_ context.Context, out io.Writer) {
+// It also prints at most ONE line about storage health, and only about the
+// local registries THIS env's clusters use (envRegistries): that no schedule
+// is installed to clean them, or that their last cleanup failed, is stale, or
+// never ran. The policy and the full-pass record are machine-wide, so an
+// unscoped line named whatever registry any project on the machine had
+// registered — a brand-new project's first `up` warned that
+// k3d-control-plane-registry, which it never touches, "failed".
+// Machine-wide health is `forge doctor`'s.
+func maybeOpportunisticGC(_ context.Context, out io.Writer, envRegistries []string) {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return
@@ -192,14 +198,7 @@ func maybeOpportunisticGC(_ context.Context, out io.Writer) {
 	if err != nil {
 		return
 	}
-	if len(policy.Registries) > 0 && !storageScheduleInstalledFn() {
-		fmt.Fprintf(out, "[up] storage: %d local registr(ies) registered but no maintenance schedule is installed — run `forge storage install` to reclaim registry versions daily.\n", len(policy.Registries))
-	} else {
-		last, ok := storage.LastFullGC(path)
-		if problem := storage.FullGCProblem(policy, last, ok, time.Now()); problem != "" {
-			fmt.Fprintf(out, "[up] storage: %s, so registry images are not being reclaimed — run `forge storage gc --dry-run` to see why.\n", problem)
-		}
-	}
+	reportEnvRegistryRetention(out, path, policy, envRegistries)
 	if os.Getenv(storageAutoOptOut) == "0" {
 		return
 	}
@@ -212,6 +211,34 @@ func maybeOpportunisticGC(_ context.Context, out io.Writer) {
 		return
 	}
 	fmt.Fprintf(out, "[up] storage: pruning build cache, dangling images, temp scratch and rotated logs in the background (log: %s; %s=0 disables)\n", logPath, storageAutoOptOut)
+}
+
+// reportEnvRegistryRetention prints the one storage-health line `env up`
+// may print: about the registries this env uses that are registered for
+// cleanup, and nothing when there are none. The line says what is wrong, that
+// the env itself is unaffected (retention only reclaims OLD image versions),
+// and the two commands that re-check and retry.
+func reportEnvRegistryRetention(out io.Writer, path string, policy storage.Policy, envRegistries []string) {
+	var mine []string
+	for _, reg := range policy.Registries {
+		if slices.Contains(envRegistries, reg.Container) {
+			mine = append(mine, reg.Container)
+		}
+	}
+	if len(mine) == 0 {
+		return
+	}
+	if !storageScheduleInstalledFn() {
+		fmt.Fprintf(out, "[up] storage: this env's registry %s is registered for cleanup but no maintenance schedule is installed, so old image versions are never reclaimed — run `forge storage install` to reclaim them daily.\n", strings.Join(mine, ", "))
+		return
+	}
+	last, ok := storage.LastFullGC(path)
+	for _, container := range mine {
+		if problem := storage.RegistryGCProblem(policy, container, last, ok, time.Now()); problem != "" {
+			fmt.Fprintf(out, "[up] storage: %s. This env is unaffected: the registry still serves it, only old image versions are not being reclaimed. `forge storage gc --dry-run` re-checks without deleting anything; `forge storage gc --apply` retries.\n", problem)
+			return
+		}
+	}
 }
 
 // runAutoGC is the body of `forge storage auto-gc`: one bounded,

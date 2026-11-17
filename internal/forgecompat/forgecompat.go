@@ -135,7 +135,7 @@ func Decide(binaryVersion, rawBuildVersion, projectVersion string, local bool) V
 		// forge.yaml and .forge-kcl all agreed, and generate still refused —
 		// telling the user to bridge with go.work when nothing needed
 		// bridging.
-		if projectVersion != "" && projectVersion == rawBuildVersion {
+		if projectVersion != "" && projectVersion == cleanBuildOf(rawBuildVersion) {
 			return OK
 		}
 		return UnreleasableNoBridge
@@ -156,6 +156,15 @@ func Decide(binaryVersion, rawBuildVersion, projectVersion string, local bool) V
 		return BehindPin
 	}
 	return OK
+}
+
+// cleanBuildOf is the version a source build names when its bytes ARE that
+// commit: a clean checkout's derived version carries "+dev" (buildinfo's
+// gitVersion) only because the commit may not be pushed, and the project
+// resolving the bare pseudo-version is the proof that it was. "+dirty" is
+// kept as is: those bytes are not the commit, so they never match a pin.
+func cleanBuildOf(rawBuildVersion string) string {
+	return strings.TrimSuffix(rawBuildVersion, "+dev")
 }
 
 // ResolveProjectForge asks the go toolchain how forge ACTUALLY resolves for

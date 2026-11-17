@@ -60,6 +60,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -174,6 +175,24 @@ func (s *lintScope) contains(file string) bool {
 	for _, p := range s.paths {
 		if f == p || strings.HasPrefix(f, p+"/") {
 			return true
+		}
+	}
+	return false
+}
+
+// reachesAnyDir reports whether any scope path lies inside one of dirs, or
+// contains one (project-relative, slash-separated). A nil scope reaches
+// everything.
+func (s *lintScope) reachesAnyDir(dirs []string) bool {
+	if s == nil {
+		return true
+	}
+	for _, d := range dirs {
+		d = strings.TrimPrefix(path.Clean(filepath.ToSlash(d)), "./")
+		for _, p := range s.paths {
+			if p == d || strings.HasPrefix(p, d+"/") || strings.HasPrefix(d, p+"/") {
+				return true
+			}
 		}
 	}
 	return false

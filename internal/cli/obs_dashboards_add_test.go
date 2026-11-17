@@ -376,3 +376,57 @@ func TestObsDashboardsAddPanel_CommandWiring(t *testing.T) {
 		t.Error("--panel is required")
 	}
 }
+
+const addPanelSectionedJSON = `{
+  "id": "headline-orders",
+  "title": "Orders",
+  "kind": "number",
+  "signal": "traces",
+  "section": "headline",
+  "series": [{"label": "n", "agg": "count"}]
+}
+`
+
+// A panel's section is declared by the dashboard it joins, so add-panel judges
+// it against the target's `sections` (forge bug report 2b3887c5: every
+// sectioned panel was refused as "undeclared section" when judged alone).
+func TestObsDashboardsAddPanel_SectionDeclaredByTheTargetDashboard(t *testing.T) {
+	dir := t.TempDir()
+	p := dashboardPath(dir, "gtm")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{
+  "version": "forge.dashboards/v1",
+  "id": "gtm",
+  "title": "GTM",
+  "sections": [{"id": "headline", "title": "Headline"}],
+  "panels": [{"id": "intro", "title": "Intro", "kind": "text", "markdown": "hello"}]
+}
+`
+	if err := os.WriteFile(p, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := obsdash.ParseDashboard(p, []byte(seed)); err != nil {
+		t.Fatalf("seed dashboard does not validate: %v", err)
+	}
+	r := addPanel(t, dir, obsDashboardsAddOpts{slug: "gtm", panel: writePanelFile(t, addPanelSectionedJSON)}, "")
+	if r.err != nil {
+		t.Fatalf("add-panel refused a panel whose section the dashboard declares: %v", r.err)
+	}
+	d := readDashboard(t, dir, "gtm")
+	if got := panelIDs(d); strings.Join(got, ",") != "intro,headline-orders" {
+		t.Errorf("panels = %v", got)
+	}
+}
+
+func TestObsDashboardsAddPanel_SectionTheDashboardLacksIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	r := addPanel(t, dir, obsDashboardsAddOpts{slug: "fresh", panel: writePanelFile(t, addPanelSectionedJSON)}, "")
+	if r.err == nil || !strings.Contains(r.err.Error(), `undeclared section "headline"`) {
+		t.Fatalf("err = %v, want the undeclared section named", r.err)
+	}
+	if _, err := os.Stat(dashboardPath(dir, "fresh")); !os.IsNotExist(err) {
+		t.Errorf("a dashboard was written for a refused panel (stat err %v)", err)
+	}
+}

@@ -304,8 +304,16 @@ func lintPipeline() []linterStep {
 				// No declared frontend and no frontends/ directory: a clean
 				// silent no-op, not a finding. A backend-only project must
 				// not be told about a lane that does not apply to it.
-				if len(frontendTypecheckTargets(rc.cfg)) == 0 {
+				targets := frontendTypecheckTargets(rc.cfg)
+				if len(targets) == 0 {
 					return false, ""
+				}
+				// A --scope that names no path inside any frontend cannot
+				// report a single typecheck finding (the lane is by file),
+				// so running it — a dependency install and a whole-frontend
+				// tsc — is work the scoped run was asked not to do.
+				if !rc.scope.reachesAnyDir(frontendTargetDirs(targets)) {
+					return false, "--scope reaches no frontend — skipping frontend typecheck"
 				}
 				return true, ""
 			},

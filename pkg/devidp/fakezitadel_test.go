@@ -37,9 +37,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
-	// now is the issuer's clock (time.Now when nil): passwordChanged is
+	// clk is the issuer's clock (time.Now when nil): passwordChanged is
 	// dated by it. A test sets it, and the client's, to one fake clock.
-	now func() time.Time
+	clk *fakeClock
 	// passwordSetAnswerLost makes the next password set succeed at the
 	// issuer and then answer 504, as a lost response does.
 	passwordSetAnswerLost bool
@@ -986,8 +986,8 @@ func (f *fakeZitadel) snapshot(id string) string {
 }
 
 func (f *fakeZitadel) clock() time.Time {
-	if f.now != nil {
-		return f.now()
+	if f.clk != nil {
+		return f.clk.now()
 	}
 	return time.Now()
 }

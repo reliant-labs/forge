@@ -72,14 +72,15 @@ type Client struct {
 	ProvenCredentialsOnly bool
 
 	http *http.Client
-	// now is the clock first-password attempts are dated by (time.Now when
-	// nil); a test injects one.
-	now func() time.Time
+	// clk is the clock first-password attempts are dated by (time.Now when
+	// nil); a test injects one. An interface, not a func, so Client stays
+	// comparable (a func field would break == on it, a pkg/ API break).
+	clk interface{ now() time.Time }
 }
 
 func (c *Client) clock() time.Time {
-	if c.now != nil {
-		return c.now()
+	if c.clk != nil {
+		return c.clk.now()
 	}
 	return time.Now()
 }

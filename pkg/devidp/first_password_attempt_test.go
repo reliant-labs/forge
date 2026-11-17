@@ -24,7 +24,9 @@ func provenBroker(z *fakeZitadel) *Client {
 	c := z.client()
 	c.ProvenCredentialsOnly = true
 	z.mu.Lock()
-	c.now = z.now // the issuer's clock, when a test set one
+	if z.clk != nil {
+		c.clk = z.clk // the issuer's clock, when a test set one
+	}
 	z.mu.Unlock()
 	return c
 }
@@ -34,7 +36,7 @@ func provenBroker(z *fakeZitadel) *Client {
 func withClock(z *fakeZitadel) *fakeClock {
 	clk := &fakeClock{t: time.Now()}
 	z.mu.Lock()
-	z.now = clk.now
+	z.clk = clk
 	z.mu.Unlock()
 	return clk
 }

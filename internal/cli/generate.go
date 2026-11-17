@@ -145,7 +145,7 @@ Examples:
   forge generate --check    # Run generate into a tmpdir; exit 1 if it would change the tree (CI guard)
   forge generate --no-cache # Run every step even if nothing changed since the last verified run
   forge generate --explain  # Print per-file provenance log after generate
-  forge generate --verbose  # Print one line per gate-off skipped step
+  forge generate --verbose  # Also print routine lines (skipped steps, pinned-tool resolution)
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
@@ -295,7 +295,7 @@ func newGenerateCmd() *cobra.Command {
 	// changed nothing — the long form was declared without a shorthand
 	// precisely to dodge that collision. The root flag is gone; the
 	// shorthand belongs to the command that actually consumes it.
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Also print routine lines: one per gate-off skipped step ('⏩ skipped: <step name> (<reason>)') and which pinned build each codegen tool resolved to ('📌 <tool> resolved to <version>'). Default prints progress and what needs action only.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	// --dry-run is the spelling every other forge verb uses for "show me,
 	// don't do it" (`forge scaffold`, `disown`, `secrets`, `project upgrade`).

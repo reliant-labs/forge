@@ -1071,10 +1071,12 @@ Promise.reject(new Error('EARLY_REJECTION'));
 
 // The runtime's recorder's lifecycle against real rrweb: with
 // `replayStart: "interaction"` rrweb is not even fetched until the first
-// interaction, with replay off it never is, and what the recorder holds
-// leaves with the page (pagehide, keepalive) long before its flush interval.
+// interaction, with replay off it never is, the full snapshot goes at once
+// (gzipped, in the background), and what the recorder holds after it leaves
+// with the page (pagehide, keepalive) long before its flush interval.
 test("rrweb loads lazily, only with replay on and, with replayStart: interaction, only once the person interacts; held replay leaves with the page", { timeout: 30000 }, async () => {
   const logs = [];
+  const encodings = [];
   const served = [];
   const server = createServer(async (req, res) => {
     try {
@@ -1085,7 +1087,10 @@ test("rrweb loads lazily, only with replay on and, with replayStart: interaction
         for await (const chunk of req) chunks.push(chunk);
         const raw = Buffer.concat(chunks);
         const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
-        if (url.endsWith("logs")) logs.push(LogsData.decode(decoded));
+        if (url.endsWith("logs")) {
+          logs.push(LogsData.decode(decoded));
+          encodings.push(req.headers["content-encoding"] ?? "");
+        }
         res.setHeader("content-type", "application/json");
         res.end("{}");
       } else if (vendor[url]) {
@@ -1134,16 +1139,22 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     assert.equal(served.includes("/vendor/rrweb.js"), false, "rrweb is not fetched before the first interaction");
     await page.locator("#go").click();
     await until(() => served.includes("/vendor/rrweb.js"), 5000, "rrweb fetched after the first interaction");
-    // Let the recorder take its full snapshot.
-    await new Promise((done) => setTimeout(done, 500));
-    assert.equal(logs.length, 0, "nothing is sent before the flush interval while the page stays");
+    // The full snapshot taken at the interaction goes at once, gzipped.
+    await until(() => replayRecords(logs).length > 0, 5000, "the full snapshot, sent at once");
+    const first = replayRecords(logs).map((record) => JSON.parse(record.body.stringValue));
+    assert.ok(first.some((event) => event.type === 2), "the full snapshot is in the first batch");
+    assert.ok(first.some((event) => event.type === 4), "with its Meta record");
+    assert.deepEqual(encodings, ["gzip"], "sent gzipped, in the background");
+    const batchesBefore = logs.length;
 
-    // Leaving the page sends what is held, with keepalive.
+    // Recorded after: held until the interval, or until the page is left.
+    await page.locator("#go").click();
+    await new Promise((done) => setTimeout(done, 1500));
+    assert.equal(logs.length, batchesBefore, "an ordinary event waits for the flush interval while the page stays");
     await page.goto(`${origin}/next`);
-    await until(() => replayRecords(logs).length > 0, 5000, "the held replay, sent as the page left");
-    const events = replayRecords(logs).map((record) => JSON.parse(record.body.stringValue));
-    assert.ok(events.some((event) => event.type === 2), "the full snapshot taken at the interaction left with the page");
-    assert.ok(events.some((event) => event.type === 4), "with its Meta record");
+    await until(() => logs.length > batchesBefore, 5000, "the held replay, sent as the page left");
+    const left = logs.slice(batchesBefore).flatMap((batch) => replayRecords([batch])).map((record) => JSON.parse(record.body.stringValue));
+    assert.ok(left.some((event) => event.type === 3), "the click recorded after the snapshot left with the page");
     assert.equal(JSON.stringify(logs).includes("PRIVATE_TEXT_SENTINEL"), false, "private text never leaves the browser");
     assert.deepEqual(errors, []);
   } finally {

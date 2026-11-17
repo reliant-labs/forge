@@ -62,6 +62,14 @@ export const REPLAY_FLUSH_INTERVAL_MS = 15_000;
 /** Held record bytes (JSON chars) that send a batch before the interval. */
 export const REPLAY_MAX_PENDING_BYTES = 512 * 1024;
 
+/**
+ * How soon (ms) a full snapshot is sent once taken. It is most of a session's
+ * bytes and the one record a replay cannot play without, so it goes gzipped in
+ * the background straight away rather than wait for the interval and risk
+ * leaving, uncompressed and best effort, with the page.
+ */
+export const REPLAY_SNAPSHOT_FLUSH_MS = 1_000;
+
 /** The largest record body; a longer event is split into chunks. */
 export const MAX_CHUNK_CHARS = 950 * 1024;
 
@@ -184,8 +192,14 @@ self.onmessage = async (e) => {
 
 // ── Batching ─────────────────────────────────────────────────────────────
 
-/** How a batch leaves: in the background, or now because the page is going. */
-export type FlushMode = "background" | "leaving";
+/**
+ * How a batch leaves. "background": encoded and gzipped off the main thread.
+ * "hidden": the same, sent with keepalive, because the page was just hidden
+ * and may not come back (a phone backgrounding the app). "leaving": encoded
+ * now and sent uncompressed with keepalive, because the page is being
+ * unloaded and nothing asynchronous will finish.
+ */
+export type FlushMode = "background" | "hidden" | "leaving";
 
 export interface ReplayBatcherOptions {
   flushIntervalMs?: number;
@@ -221,11 +235,30 @@ export class ReplayBatcher {
     if (this.bytes >= this.maxBytes) {
       this.flush("background");
     } else if (this.timer === undefined) {
-      this.timer = setTimeout(() => {
-        this.timer = undefined;
-        this.flush("background");
-      }, this.interval);
+      this.schedule(this.interval);
     }
+  }
+
+  private due = 0;
+
+  private schedule(ms: number): void {
+    this.due = Date.now() + ms;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.flush("background");
+    }, ms);
+  }
+
+  /** Sends what is held within `ms`, sooner than the interval would. */
+  flushWithin(ms: number): void {
+    if (this.pending.length === 0) {
+      return;
+    }
+    if (this.timer !== undefined && this.due <= Date.now() + ms) {
+      return;
+    }
+    this.clearTimer();
+    this.schedule(ms);
   }
 
   flush(mode: FlushMode): void {
@@ -301,6 +334,12 @@ export class ReplayTransport {
     }
   >();
   private closed = false;
+  // Batches encoding in the background: taken over by flushInFlight() when
+  // the page is unloaded before they finish.
+  private readonly inFlight = new Set<{
+    records: ReplayRecord[];
+    taken: boolean;
+  }>();
   private readonly doFetch: FetchFn;
 
   constructor(private readonly options: ReplayTransportOptions) {
@@ -321,9 +360,25 @@ export class ReplayTransport {
     void this.sendInBackground(records);
   }
 
+  /**
+   * The page is being unloaded: every batch still being encoded is sent now,
+   * uncompressed, with keepalive, and its background result is dropped, so
+   * each batch is sent once.
+   */
+  flushInFlight(): void {
+    for (const batch of this.inFlight) {
+      if (!batch.taken) {
+        batch.taken = true;
+        this.sendNow(batch.records);
+      }
+    }
+    this.inFlight.clear();
+  }
+
   /** Nothing is sent from here on, and nothing still encoding is. */
   close(): void {
     this.closed = true;
+    this.inFlight.clear();
     for (const [, job] of this.jobs) {
       clearTimeout(job.timer);
       job.reject(new Error("closed"));
@@ -371,6 +426,8 @@ export class ReplayTransport {
   }
 
   private async sendInBackground(records: ReplayRecord[]): Promise<void> {
+    const batch = { records, taken: false };
+    this.inFlight.add(batch);
     const resource = this.options.resource();
     let encoded: Encoded;
     try {
@@ -381,8 +438,10 @@ export class ReplayTransport {
       }
       encoded = await this.encodeOnMain(resource, records);
     }
-    if (this.closed) {
-      // Withdrawn while it was encoding: it never leaves.
+    this.inFlight.delete(batch);
+    if (this.closed || batch.taken) {
+      // Withdrawn while it was encoding: it never leaves. Taken over by
+      // flushInFlight(): it already left.
       return;
     }
     this.post(encoded, encoded.bytes <= KEEPALIVE_MAX_BYTES);
@@ -611,6 +670,7 @@ interface MutationData {
   attributes?: Array<{ id: number }>;
 }
 
+const FULL_SNAPSHOT = 2;
 const INCREMENTAL_SNAPSHOT = 3;
 const MUTATION_SOURCE = 0;
 
@@ -739,7 +799,8 @@ export interface ReplayRecorderOptions {
   debug?: boolean;
   /** Test seams. */
   loadRecord?: () => Promise<RrwebRecord>;
-  transport?: Pick<ReplayTransport, "send" | "close">;
+  transport?: Pick<ReplayTransport, "send" | "close"> &
+    Partial<Pick<ReplayTransport, "flushInFlight">>;
   now?: () => number;
 }
 
@@ -780,17 +841,22 @@ export function startReplayRecorder(
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
   const undo: Array<() => void> = [];
 
+  // Unloaded: what is held, and what is still encoding, goes now.
   const leave = () => {
     if (!stopped) {
       batcher.flush("leaving");
+      transport.flushInFlight?.();
     }
   };
+  // Hidden: what is held goes, gzipped, with keepalive. If the page is being
+  // unloaded, pagehide follows and takes over whatever has not finished.
   const onVisibility = () => {
     if (
+      !stopped &&
       typeof document !== "undefined" &&
       document.visibilityState === "hidden"
     ) {
-      leave();
+      batcher.flush("hidden");
     }
   };
   if (
@@ -888,6 +954,9 @@ export function startReplayRecorder(
               "rr-web.total-chunks": total,
             },
           });
+        }
+        if (event.type === FULL_SNAPSHOT) {
+          batcher.flushWithin(REPLAY_SNAPSHOT_FLUSH_MS);
         }
       } catch {
         // Telemetry must never break the app.

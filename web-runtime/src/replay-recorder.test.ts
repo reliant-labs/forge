@@ -19,6 +19,7 @@ import {
   REPLAY_FLUSH_INTERVAL_MS,
   REPLAY_MAX_PENDING_BYTES,
   REPLAY_SCOPE,
+  REPLAY_SNAPSHOT_FLUSH_MS,
   ReplayBatcher,
   type ReplayRecord,
   type RrwebRecord,
@@ -173,6 +174,24 @@ describe("ReplayBatcher", () => {
     b.add(record("x".repeat(REPLAY_MAX_PENDING_BYTES / 2)));
     expect(sent).toEqual([2]);
     expect(b.size).toBe(0);
+  });
+
+  it("sends sooner when asked to, never later than already due", () => {
+    vi.useFakeTimers();
+    const sent: number[] = [];
+    const b = new ReplayBatcher({ send: (records) => sent.push(records.length) });
+    b.flushWithin(10);
+    b.add(record("a"));
+    b.flushWithin(1000);
+    vi.advanceTimersByTime(999);
+    expect(sent).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(sent).toEqual([1]);
+    b.add(record("b"));
+    b.flushWithin(100);
+    b.flushWithin(5000);
+    vi.advanceTimersByTime(100);
+    expect(sent).toEqual([1, 1]);
   });
 
   it("flushes on demand in the mode asked, and drops what it holds on drop()", () => {
@@ -346,6 +365,51 @@ describe("ReplayTransport", () => {
     expect(sent.some((s) => s.init.keepalive === false)).toBe(true);
     const all = sent.map((s) => textOf(s.init)).join();
     for (const i of [1, 2, 3, 4, 5]) expect(all).toContain(`${big}${i}`);
+  });
+
+  it("when hidden, gzips in the background and still sends with keepalive", async () => {
+    const { sent, fn } = fakeFetch();
+    const t = new ReplayTransport({
+      url: URL_,
+      resource,
+      fetch: fn,
+      createWorker: inlineWorker,
+    });
+    t.send([record("hidden")], "hidden");
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.init.keepalive).toBe(true);
+    expect(
+      (sent[0]!.init.headers as Record<string, string>)["content-encoding"],
+    ).toBe("gzip");
+  });
+
+  it("on unload, sends a batch still encoding now, uncompressed, and never its background result too", async () => {
+    const { sent, fn } = fakeFetch();
+    let reply: ((e: unknown) => void) | undefined;
+    const slow: WorkerLike = {
+      postMessage: () => {},
+      addEventListener: (type, l) => {
+        if (type === "message") reply = l;
+      },
+      terminate: () => {},
+    };
+    const t = new ReplayTransport({
+      url: URL_,
+      resource,
+      fetch: fn,
+      createWorker: () => slow,
+    });
+    t.send([record("encoding")], "hidden");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(sent).toEqual([]);
+    t.flushInFlight();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.init.keepalive).toBe(true);
+    expect(textOf(sent[0]!.init)).toContain("encoding");
+    // The Worker finishes after all: nothing more is sent.
+    reply?.({ data: { id: 1, json: "late" } });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sent).toHaveLength(1);
   });
 
   it("retries without keepalive a request the browser refuses for its keepalive budget", async () => {
@@ -566,7 +630,8 @@ describe("startReplayRecorder", () => {
     expect(batches).toEqual([]);
     page.hide();
     expect(batches).toHaveLength(1);
-    expect(batches[0]!.mode).toBe("leaving");
+    // Hidden, not gone: gzipped in the background, with keepalive.
+    expect(batches[0]!.mode).toBe("hidden");
     expect(batches[0]!.records.map((r) => r.attributes)).toEqual([
       {
         "rr-web.offset": 1,
@@ -586,6 +651,25 @@ describe("startReplayRecorder", () => {
       timestamp: expect.any(Number),
       data: { href: "x" },
     });
+    rec.stop();
+  });
+
+  it("on pagehide, also hands over what the transport is still encoding", async () => {
+    const page = stubPage();
+    const { record } = fakeRrweb();
+    const { transport } = fakeTransport();
+    const flushInFlight = vi.fn();
+    const rec = startReplayRecorder({
+      ...base,
+      sessionId: () => "s1",
+      loadRecord: async () => record,
+      transport: { ...transport, flushInFlight },
+    });
+    await rec.started;
+    page.hide();
+    expect(flushInFlight).not.toHaveBeenCalled();
+    page.fire("pagehide");
+    expect(flushInFlight).toHaveBeenCalledTimes(1);
     rec.stop();
   });
 
@@ -625,6 +709,29 @@ describe("startReplayRecorder", () => {
     expect(JSON.parse(records.map((r) => r.body).join(""))).toMatchObject({
       type: 2,
     });
+    rec.stop();
+  });
+
+  it(`sends a full snapshot in the background within ${REPLAY_SNAPSHOT_FLUSH_MS} ms, not at the interval`, async () => {
+    vi.useFakeTimers();
+    stubPage();
+    const { state, record } = fakeRrweb();
+    const { batches, transport } = fakeTransport();
+    const rec = startReplayRecorder({
+      ...base,
+      sessionId: () => "s1",
+      loadRecord: async () => record,
+      transport,
+    });
+    await rec.started;
+    state.emit!({ type: 4, timestamp: Date.now(), data: {} });
+    state.emit!({ type: 2, timestamp: Date.now(), data: {} });
+    await vi.advanceTimersByTimeAsync(REPLAY_SNAPSHOT_FLUSH_MS);
+    expect(batches.map((b) => [b.mode, b.records.length])).toEqual([["background", 2]]);
+    // An incremental event waits for the interval.
+    state.emit!({ type: 3, timestamp: Date.now(), data: {} });
+    await vi.advanceTimersByTimeAsync(REPLAY_SNAPSHOT_FLUSH_MS * 2);
+    expect(batches).toHaveLength(1);
     rec.stop();
   });
 

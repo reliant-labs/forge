@@ -175,15 +175,86 @@ func (n *rawPlan) sortedUnderLimit() []string {
 	return nil
 }
 
-// predicates are the node's condition strings.
+// predicates are the node's conditions, one per top-level AND conjunct:
+// postgres prints a node's quals as one string, so a Join Filter that
+// joins two relations can also carry a filter on one of them.
 func (n *rawPlan) predicates() []string {
 	var out []string
 	for _, p := range []string{n.IndexCond, n.RecheckCond, n.Filter, n.HashCond, n.MergeCond, n.JoinFilter} {
 		if p != "" {
-			out = append(out, p)
+			out = append(out, conjuncts(p)...)
 		}
 	}
 	return out
+}
+
+// conjuncts splits a deparsed condition at its top-level ANDs, outside
+// parentheses and quotes. A condition with none is returned whole.
+func conjuncts(pred string) []string {
+	s := strings.TrimSpace(pred)
+	for enclosed(s) {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	var parts []string
+	depth, start := 0, 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case depth == 0 && strings.HasPrefix(s[i:], " AND "):
+			parts = append(parts, s[start:i])
+			start = i + len(" AND ")
+			i = start - 1
+		}
+	}
+	if parts == nil {
+		return []string{pred}
+	}
+	parts = append(parts, s[start:])
+	var out []string
+	for _, p := range parts {
+		out = append(out, conjuncts(p)...)
+	}
+	return out
+}
+
+// enclosed reports whether s is one parenthesized expression: its opening
+// parenthesis closes at its last byte.
+func enclosed(s string) bool {
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return false
+	}
+	depth := 0
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 && i != len(s)-1 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // relInfo is what the catalog says of a scanned relation.

@@ -1,6 +1,9 @@
 package dbanalyze
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // A table read in full under a join is unserved even when the catalog holds
 // an index leading with the join column: the plan, not the catalog, says
@@ -30,6 +33,55 @@ func TestClassifyJoinReadInFullIsUnservedDespiteAnIndexOnTheJoinKey(t *testing.T
 	for _, c := range got {
 		if v := c.Verdict + "/" + c.How; v != want[c.Table] {
 			t.Errorf("%s: %s, want %s", c.Table, v, want[c.Table])
+		}
+	}
+}
+
+// A Join Filter that joins two relations and also filters one of them
+// restricts the statement: a table read in full to be joined is unserved.
+func TestClassifyJoinFilterCarryingARestrictionMarksTheFullReadUnserved(t *testing.T) {
+	plan := []byte(`[{"Plan": {"Node Type": "Nested Loop", "Join Type": "Left",
+	  "Join Filter": "((o.customer_id = c.id) AND (o.status = 'paid'::text))", "Plans": [
+	  {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public", "Alias": "o", "Disabled": true},
+	  {"Node Type": "Materialize", "Plans": [
+	    {"Node Type": "Seq Scan", "Relation Name": "customers", "Schema": "public", "Alias": "c", "Disabled": true}]}]}}]`)
+	root, err := parsePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rels := map[string]*relInfo{
+		"orders":    {table: "orders", indexes: map[string]indexInfo{}},
+		"customers": {table: "customers", indexes: map[string]indexInfo{}},
+	}
+	got, err := classify(root, root, func(_, name string) (*relInfo, error) { return rels[name], nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"orders":    AccessUnserved + "/" + UnservedJoin + "/customer_id",
+		"customers": AccessUnserved + "/" + UnservedJoin + "/id",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("access = %+v, want %v", got, want)
+	}
+	for _, c := range got {
+		if v := c.Verdict + "/" + c.How + "/" + c.Detail; v != want[c.Table] {
+			t.Errorf("%s: %s, want %s", c.Table, v, want[c.Table])
+		}
+	}
+}
+
+func TestConjunctsSplitTopLevelAnds(t *testing.T) {
+	for in, want := range map[string][]string{
+		"(o.id = c.id)": {"(o.id = c.id)"},
+		"((o.customer_id = c.id) AND (o.status = 'paid'::text))": {"(o.customer_id = c.id)", "(o.status = 'paid'::text)"},
+		"((o.a = c.a) OR (o.b = 'x AND y'::text))":               {"((o.a = c.a) OR (o.b = 'x AND y'::text))"},
+		"((a = 1) AND ((b = 2) AND (c = 3)))":                    {"(a = 1)", "(b = 2)", "(c = 3)"},
+		"((a)::text = 'it''s AND'::text)":                        {"((a)::text = 'it''s AND'::text)"},
+	} {
+		got := conjuncts(in)
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("conjuncts(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

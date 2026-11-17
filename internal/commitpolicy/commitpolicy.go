@@ -151,6 +151,16 @@ func IsGoBuildCacheDir(dir string) bool {
 
 // skipDirs are never walked: dependencies, build output, VCS and forge state.
 // None of them hold project source, and several are huge.
+// forgeTempFilePrefix and forgeProbeDirPrefix name forge's own transient
+// paths: the sibling temp file of an atomic write (internal/atomicfile) and
+// a KCL config probe's private directory (internal/cli/env_probe.go). A
+// lint run beside a concurrent generate saw them and reported them as
+// ignored generated source.
+const (
+	forgeTempFilePrefix = ".forge-tmp-"
+	forgeProbeDirPrefix = ".forge-probe-"
+)
+
 var skipDirs = map[string]bool{
 	".git":           true,
 	".forge":         true,
@@ -227,13 +237,20 @@ func ignoredGeneratedFiles(projectDir string) ([]Violation, error) {
 			return nil
 		}
 		if d.IsDir() {
-			if p != projectDir && (skipDirs[d.Name()] || IsGoBuildCacheDir(p) || isForeignProject(p, ownModule)) {
+			if p != projectDir && (skipDirs[d.Name()] || IsGoBuildCacheDir(p) || isForeignProject(p, ownModule) ||
+				strings.HasPrefix(d.Name(), forgeProbeDirPrefix)) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		if !d.Type().IsRegular() {
 			return nil // symlinks (the dev web-runtime bridge) are not source
+		}
+		if strings.HasPrefix(d.Name(), forgeTempFilePrefix) {
+			// A concurrent generate's atomic-write intermediate: it carries
+			// the generated header, lives for milliseconds, and is renamed
+			// over its target — not a generated file anyone could commit.
+			return nil
 		}
 		rel, rerr := filepath.Rel(projectDir, p)
 		if rerr != nil {

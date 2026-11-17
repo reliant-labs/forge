@@ -322,33 +322,11 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	deadline := d.Now().Add(o.timeout)
 	var res obsbackend.HealthResult
 	var liveWin checkLive
-	faults := 0 // transient faults in a row, for the backoff
+	poll := checkPoll{d: d, reader: reader, info: b.Info(), env: env, o: o, deadline: deadline}
 	for {
-		req.Now = d.Now()
-		if res, err = reader.ReleaseHealth(ctx, req); err != nil {
-			// A refused or failed read judged nothing (obs_check_retry.go):
-			// --wait asks again; a refusal it cannot outlast is exit 8.
-			retry, ok := checkRetryOf(err, d.Now(), faults+1)
-			if !ok || ctx.Err() != nil {
-				return bad(err)
-			}
-			if retry.code == "" {
-				faults++
-			}
-			if !o.wait || !d.Now().Add(retry.wait).Before(deadline) {
-				if retry.code == "" {
-					return bad(err)
-				}
-				return refusedCheck(doc, b.Info(), env, o, retry, err, d.Now().Sub(deadline.Add(-o.timeout)))
-			}
-			sleep := retry.sleepFor(d.Now(), deadline)
-			fmt.Fprintf(d.Stderr, "%s; asking again in %s\n", retry.why, sleep.Round(time.Second))
-			if err := obsCheckSleep(ctx, sleep); err != nil {
-				return bad(obsbackend.Undetermined("interrupted while waiting").Cause(err))
-			}
-			continue
+		if res, doc, err = poll.read(ctx, req, doc); err != nil {
+			return doc, err
 		}
-		faults = 0
 		// When the release went liveWin, from the promotion's deploy gates. A
 		// promotion none of whose attempts has shipped has no window of its
 		// own yet, so --wait waits for one to ship.
@@ -398,45 +376,7 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// an issue whose events are another version's) never fails it. Before the
 	// alert read, which a FAIL skips (obs_check_attribution.go).
 	res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
-	// A release promoted into a firing critical alert is not proven good, and
-	// one that opened a critical alert fails. The alert state is read here
-	// rather than trusted to the control plane's answer, which lists only the
-	// alerts that opened after the promotion and judges them by the env's
-	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
-	// The answer's own firing alerts are judged first, so a critical alert it
-	// already proves cannot be softened by a failed second read.
-	// An alert whose rule says it is not about the env's workloads (a build
-	// machine's load, a fleet the env watches: label release_health=exclude)
-	// judges no release, whichever side judged the report. The alert state,
-	// read once, names such a rule when an alert_firing finding's answer
-	// lists no alert of it.
-	ar, readable := b.(obsbackend.AlertReader)
-	var live []releasehealth.Alert
-	var aerr error
-	read := false
-	readLive := func() {
-		if read {
-			return
-		}
-		read = true
-		var alerts []obsbackend.Alert
-		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
-			live = firingHealthAlerts(alerts)
-		}
-	}
-	if readable && slices.ContainsFunc(res.Report.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
-		readLive()
-	}
-	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
-	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
-	if readable && res.Report.Verdict != releasehealth.Fail {
-		readLive()
-		if aerr != nil {
-			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
-		} else {
-			res.Report = releasehealth.WithStandingAlerts(res.Report, live)
-		}
-	}
+	res.Report = judgeCheckAlerts(ctx, b, res.Report)
 	// Attribution again, over the alerts that read added: idempotent.
 	res.Report = releasehealth.Attribute(res.Report)
 	// --early-pass: the open window is judged as far as it goes, after every
@@ -476,6 +416,49 @@ func withCurrentRules(r releasehealth.Report, overrides map[string]string) relea
 	// v1.20.1-rc.1: 8 errors, one daemon's websockets; pkg/releasehealth
 	// error_rate.go).
 	return releasehealth.WithErrorRateMinErrors(r, overrides)
+}
+
+// judgeCheckAlerts holds a judged report to the env's alert state. A release
+// promoted into a firing critical alert is not proven good, and one that
+// opened a critical alert fails. The alert state is read here rather than
+// trusted to the control plane's answer, which lists only the alerts that
+// opened after the promotion and judges them by the env's policy; a check that
+// cannot read it is INCONCLUSIVE, never a PASS. The answer's own firing alerts
+// are judged first, so a critical alert it already proves cannot be softened
+// by a failed second read. An alert whose rule says it is not about the env's
+// workloads (a build machine's load, a fleet the env watches: label
+// release_health=exclude) judges no release, whichever side judged the
+// report. The alert state, read once, names such a rule when an alert_firing
+// finding's answer lists no alert of it.
+func judgeCheckAlerts(ctx context.Context, b obsbackend.Backend, r releasehealth.Report) releasehealth.Report {
+	ar, readable := b.(obsbackend.AlertReader)
+	var live []releasehealth.Alert
+	var aerr error
+	read := false
+	readLive := func() {
+		if read {
+			return
+		}
+		read = true
+		var alerts []obsbackend.Alert
+		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
+			live = firingHealthAlerts(alerts)
+		}
+	}
+	if readable && slices.ContainsFunc(r.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
+		readLive()
+	}
+	r = releasehealth.WithoutExcludedAlerts(r, live)
+	r = releasehealth.WithStandingAlerts(r, nil)
+	if readable && r.Verdict != releasehealth.Fail {
+		readLive()
+		if aerr != nil {
+			r = releasehealth.WithAlertStateUnread(r, aerr.Error())
+		} else {
+			r = releasehealth.WithStandingAlerts(r, live)
+		}
+	}
+	return r
 }
 
 // earlyPassVersionShare is how much of every service's after-window traffic the

@@ -23,6 +23,7 @@ package cli
 // Every other failure keeps its mapping (MapCloudError).
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -150,6 +151,57 @@ func (r checkRetry) sleepFor(now, deadline time.Time) time.Duration {
 	d := min(r.wait, limit)
 	d += obsCheckJitter(d)
 	return max(min(d, deadline.Sub(now)), 0)
+}
+
+// checkPoll is what every GetReleaseHealth read of one check shares: the
+// reader, the env it judges, the flags and the --timeout deadline.
+type checkPoll struct {
+	d        obsDeps
+	reader   obsbackend.HealthReader
+	info     obsbackend.Info
+	env      string
+	o        obsCheckOpts
+	deadline time.Time
+}
+
+// read is one poll's GetReleaseHealth read. A refused or failed read judged
+// nothing: under --wait it is asked again while checkRetryOf says a later read
+// can succeed before the deadline. It returns the result, or the document and
+// error obs check exits with: exit 8 for a refusal it cannot outlast, the
+// failure's own status otherwise.
+func (p checkPoll) read(ctx context.Context, req obsbackend.HealthRequest, doc obsCheckDoc) (obsbackend.HealthResult, obsCheckDoc, error) {
+	d, o, deadline := p.d, p.o, p.deadline
+	bad := func(err error) (obsbackend.HealthResult, obsCheckDoc, error) {
+		doc.Suggested = obsbackend.SuggestedOf(err)
+		return obsbackend.HealthResult{}, doc, err
+	}
+	faults := 0 // transient faults in a row, for the backoff
+	for {
+		req.Now = d.Now()
+		res, err := p.reader.ReleaseHealth(ctx, req)
+		if err == nil {
+			return res, doc, nil
+		}
+		retry, ok := checkRetryOf(err, d.Now(), faults+1)
+		if !ok || ctx.Err() != nil {
+			return bad(err)
+		}
+		if retry.code == "" {
+			faults++
+		}
+		if !o.wait || !d.Now().Add(retry.wait).Before(deadline) {
+			if retry.code == "" {
+				return bad(err)
+			}
+			doc, err = refusedCheck(doc, p.info, p.env, o, retry, err, d.Now().Sub(deadline.Add(-o.timeout)))
+			return obsbackend.HealthResult{}, doc, err
+		}
+		sleep := retry.sleepFor(d.Now(), deadline)
+		fmt.Fprintf(d.Stderr, "%s; asking again in %s\n", retry.why, sleep.Round(time.Second))
+		if err := obsCheckSleep(ctx, sleep); err != nil {
+			return bad(obsbackend.Undetermined("interrupted while waiting").Cause(err))
+		}
+	}
 }
 
 // refusedCheck is the document and exit-8 error of a check whose read was

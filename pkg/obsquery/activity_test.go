@@ -94,15 +94,17 @@ func TestUserActivityCompilesTheDeclaredRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(st.SQL, "EventName IN ('internal_user')"); n != 6 {
-		t.Errorf("the exclusion appears %d times, want 6 (act, seen, nu_cur, nu_prev, nd_cur, nd_prev):\n%s", n, st.SQL)
+	// nd_cur and nd_prev each read twice: the window's users, and the
+	// sign-ups retained.
+	if n := strings.Count(st.SQL, "EventName IN ('internal_user')"); n != 8 {
+		t.Errorf("the exclusion appears %d times, want 8 (act, seen, nu_cur, nu_prev, nd_cur and nd_prev twice):\n%s", n, st.SQL)
 	}
 	q.Activity.ExcludeUserIDs = []string{"canary-subject"}
 	if st, err = q.Compile(); err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(st.SQL, "UserId NOT IN ('canary-subject')"); n != 6 {
-		t.Errorf("the id exclusion appears %d times, want 6:\n%s", n, st.SQL)
+	if n := strings.Count(st.SQL, "UserId NOT IN ('canary-subject')"); n != 8 {
+		t.Errorf("the id exclusion appears %d times, want 8:\n%s", n, st.SQL)
 	}
 	for _, bad := range []Activity{{NotActivity: []string{"no quotes'"}}, {ExcludeUserIDs: []string{"staff@example.com"}}} {
 		q.Activity = bad

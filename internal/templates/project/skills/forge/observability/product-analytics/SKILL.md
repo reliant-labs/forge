@@ -113,8 +113,12 @@ dashboard over several environments equals the sum of their cards.
   users first seen in the range instead (`obsquery.NewUsersSource`), except the
   users first seen within 7 days of the earliest event retained: the data, not
   the user, begins there, so they count as returning. A range with nothing
-  past those 7 days shows no New or Returning figure. The Users dashboard's
-  _Where auth events come from_ table says when, and from which moment.
+  past those 7 days shows no New or Returning figure. An environment that
+  began emitting `auth_signed_up` inside the range counts only the sign-ups
+  from its earliest one retained: everyone who signed up before then counts as
+  returning, so its New and Returning figures say "since" that day until the
+  range starts after it. The Users dashboard's _Where auth events come from_
+  table says when, and from which moment.
 - **Returning**: active and not new.
 
 **Sign-up attribution.** A sign-up (a user's first `auth_signed_up`) is credited

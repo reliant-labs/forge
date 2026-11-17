@@ -15,6 +15,8 @@ func TestValidationAcceptsPresentationFields(t *testing.T) {
 		{"sql heatmap", onePanel(`"kind":"sql","sql":"SELECT cohort, w1, w2 FROM t","unit":"percent","display":{"style":"heatmap","color":"violet"}`)},
 		{"sql figure with a trend", onePanel(`"kind":"sql","sql":"SELECT count() AS n FROM t","trendSql":"SELECT toDate(Timestamp) AS day, count() AS n FROM t GROUP BY day ORDER BY day","display":{"color":"cyan"}`)},
 		{"trend with a line style", onePanel(`"kind":"sql","sql":"SELECT 1","trendSql":"SELECT 1","display":{"style":"area"}`)},
+		{"sql figure with a subtitle", onePanel(`"kind":"sql","sql":"SELECT count() AS n FROM t","subtitleSql":"SELECT if(min(Timestamp) > {from:DateTime64(9)}, 'since 14 Nov', '') FROM t"`)},
+		{"subtitle on a heatmap", onePanel(`"kind":"sql","sql":"SELECT 1","subtitleSql":"SELECT 'x'","display":{"style":"heatmap"}`)},
 		{"series colours on a sql chart", onePanel(`"kind":"sql","sql":"SELECT 1","display":{"style":"bars","stack":true,"colors":{"Signed in":"blue","Anonymous":"slate"}}`)},
 		{"series colours on a line", onePanel(`"kind":"line","signal":"traces","display":{"colors":{"errors":"danger","all":"blue"}},` + twoCounts)},
 		{"slice colours on a pie", onePanel(`"kind":"bar","signal":"traces","groupBy":["span.name"],"display":{"style":"pie","colors":{"GET /":"amber"}},` + oneCount)},
@@ -57,6 +59,12 @@ func TestValidationRefusesMisusedPresentationFields(t *testing.T) {
 		{"trend not a string", sql(`"trendSql":7`), "panels[0].trendSql", "must be a string"},
 		{"trend on a funnel", sql(`"trendSql":"SELECT 1","display":{"style":"funnel"}`), "panels[0].trendSql", "drawn as a funnel has none"},
 		{"trend on a heatmap", sql(`"trendSql":"SELECT 1","display":{"style":"heatmap"}`), "panels[0].trendSql", "drawn as a heatmap has none"},
+		{"subtitle on a number panel", onePanel(`"kind":"number","signal":"traces","subtitleSql":"SELECT 'x'",` + oneCount), "panels[0].subtitleSql", `only a sql panel takes "subtitleSql"`},
+		{"subtitle on a text panel", onePanel(`"kind":"text","markdown":"hi","subtitleSql":"SELECT 'x'"`), "panels[0].subtitleSql", `a text panel takes no "subtitleSql"`},
+		{"subtitle on a delivery panel", onePanel(`"kind":"delivery","subtitleSql":"SELECT 'x'"`), "panels[0].subtitleSql", `a delivery panel takes no "subtitleSql"`},
+		{"subtitle that writes", sql(`"subtitleSql":"DROP TABLE product_events"`), "panels[0].subtitleSql", "SELECT"},
+		{"empty subtitle", sql(`"subtitleSql":"  "`), "panels[0].subtitleSql", "must not be empty"},
+		{"subtitle not a string", sql(`"subtitleSql":7`), "panels[0].subtitleSql", "must be a string"},
 		{"unknown compare", `{"id":"x","title":"X","defaultCompare":"week","panels":[{"id":"p","title":"P","kind":"sql","sql":"SELECT 1"}]}`, "defaultCompare", `"week" is not one of: period, release`},
 		{"long section description", `{"id":"x","title":"X","sections":[{"id":"s","title":"S","description":"` + strings.Repeat("x", MaxSectionDescriptionBytes+1) + `"}],"panels":[{"id":"p","title":"P","kind":"sql","sql":"SELECT 1"}]}`, "sections[0].description", "longer than 500 bytes"},
 	}
@@ -86,13 +94,13 @@ func manyColors(n int) string {
 
 func TestPresentationFieldsRoundTripAndStayOutWhenUnset(t *testing.T) {
 	src := `{"id":"x","title":"X","defaultCompare":"period","sections":[{"id":"s","title":"S","description":"D"}],"panels":[` +
-		`{"id":"p","title":"P","section":"s","kind":"sql","sql":"SELECT 1","trendSql":"SELECT 2","display":{"color":"violet","colors":{"a":"blue"}}}]}`
+		`{"id":"p","title":"P","section":"s","kind":"sql","sql":"SELECT 1","trendSql":"SELECT 2","subtitleSql":"SELECT 'since 14 Nov'","display":{"color":"violet","colors":{"a":"blue"}}}]}`
 	d, err := ParseDashboard("f.json", []byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := d.Panels[0]
-	if d.DefaultCompare != ComparePeriod || d.Sections[0].Description != "D" || p.TrendSQL != "SELECT 2" ||
+	if d.DefaultCompare != ComparePeriod || d.Sections[0].Description != "D" || p.TrendSQL != "SELECT 2" || p.SubtitleSQL != "SELECT 'since 14 Nov'" ||
 		p.Display == nil || p.Display.Color != ColorViolet || p.Display.Colors == nil || (*p.Display.Colors)["a"] != ColorBlue {
 		t.Fatalf("decoded %+v / %+v", d, p)
 	}
@@ -100,7 +108,7 @@ func TestPresentationFieldsRoundTripAndStayOutWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"defaultCompare":"period"`, `"description":"D"`, `"trendSql":"SELECT 2"`, `"color":"violet"`, `"colors":{"a":"blue"}`} {
+	for _, want := range []string{`"defaultCompare":"period"`, `"description":"D"`, `"trendSql":"SELECT 2"`, `"subtitleSql":"SELECT 'since 14 Nov'"`, `"color":"violet"`, `"colors":{"a":"blue"}`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("marshalled %s, want %s", out, want)
 		}
@@ -110,7 +118,7 @@ func TestPresentationFieldsRoundTripAndStayOutWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"defaultCompare"`, `"description"`, `"trendSql"`, `"color"`, `"colors"`} {
+	for _, field := range []string{`"defaultCompare"`, `"description"`, `"trendSql"`, `"subtitleSql"`, `"color"`, `"colors"`} {
 		if strings.Contains(string(plain), field) {
 			t.Errorf("a dashboard that sets no %s marshals one: %s", field, plain)
 		}

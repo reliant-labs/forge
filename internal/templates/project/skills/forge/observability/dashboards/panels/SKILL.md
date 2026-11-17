@@ -233,7 +233,26 @@ over a `trendSql` of each day's active users.
 A panel drawn as a `funnel` or a `heatmap` draws no figure and takes no
 `trendSql`. HyperDX ignores it.
 
-`heatmap`, `trendSql`, `color` and `colors` (and a dashboard's `defaultCompare`
+### Subtitles that depend on the data: `subtitleSql`
+
+When what a `sql` panel shows needs a qualifier only the data can decide, give
+it `subtitleSql`: a read-only `SELECT` under the same guard and parameters,
+whose first row's first column is a short text the console draws under the
+title. An empty string, a NULL or no row draws nothing, so write it to return
+`''` once the qualifier no longer applies and the subtitle goes by itself. The
+built-in New and Returning figures use it to say "since 14 Nov" while the
+environment's sign-ups are reported only from inside the range.
+
+```json
+{ "id": "new", "title": "New users", "kind": "sql", "unit": "count",
+  "sql": "SELECT count() AS \"New users\" FROM ...",
+  "subtitleSql": "SELECT if(started > {from:DateTime64(9)}, concat('since ', formatDateTime(started, '%d %b', 'UTC')), '') FROM (SELECT min(Timestamp) AS started FROM product_events WHERE EventName = 'auth_signed_up')" }
+```
+
+It never changes the figures. Any `sql` panel takes it, however it is drawn.
+HyperDX ignores it.
+
+`heatmap`, `trendSql`, `subtitleSql`, `color` and `colors` (and a dashboard's `defaultCompare`
 and a section's `description`) are refused by a control plane pinned to an
 older forge, so add them to a hand-written dashboard once the control plane
 runs the forge that ships them.

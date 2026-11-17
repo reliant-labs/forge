@@ -334,6 +334,8 @@ export class ReplayTransport {
     }
   >();
   private closed = false;
+  // Set once the page is being unloaded (a "leaving" send): see post().
+  private unloading = false;
   // Batches encoding in the background: taken over by flushInFlight() when
   // the page is unloaded before they finish.
   private readonly inFlight = new Set<{
@@ -354,6 +356,7 @@ export class ReplayTransport {
       return;
     }
     if (mode === "leaving") {
+      this.unloading = true;
       this.sendNow(records);
       return;
     }
@@ -366,6 +369,7 @@ export class ReplayTransport {
    * each batch is sent once.
    */
   flushInFlight(): void {
+    this.unloading = true;
     for (const batch of this.inFlight) {
       if (!batch.taken) {
         batch.taken = true;
@@ -466,8 +470,11 @@ export class ReplayTransport {
     try {
       this.doFetch(this.options.url, init).catch(() => {
         // Over the keepalive budget the browser refuses the request: retry
-        // without it, which arrives unless the page is already gone.
-        if (keepalive && !this.closed) {
+        // without it, which arrives unless the page is already gone. Never
+        // while the page unloads: the browser then rejects a keepalive
+        // request it DID send (the document is going), and a retry would
+        // deliver the batch twice.
+        if (keepalive && !this.closed && !this.unloading) {
           this.doFetch(this.options.url, { ...init, keepalive: false }).catch(
             () => {},
           );

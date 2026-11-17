@@ -414,10 +414,15 @@ describe("ReplayTransport", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("retries without keepalive a request the browser refuses for its keepalive budget", async () => {
+  it("retries without keepalive a request the browser refuses for its keepalive budget while the page lives", async () => {
     const { sent, fn } = fakeFetch((init) => init.keepalive === true);
-    const t = new ReplayTransport({ url: URL_, resource, fetch: fn });
-    t.send([record("r")], "leaving");
+    const t = new ReplayTransport({
+      url: URL_,
+      resource,
+      fetch: fn,
+      createWorker: inlineWorker,
+    });
+    t.send([record("r")], "hidden");
     await vi.waitFor(() => expect(sent).toHaveLength(2));
     expect(sent.map((s) => s.init.keepalive)).toEqual([true, false]);
   });
@@ -440,6 +445,14 @@ describe("ReplayTransport", () => {
     release();
     await new Promise((r) => setTimeout(r, 30));
     expect(sent).toEqual([]);
+  });
+
+  it("never resends a keepalive request the browser rejects while the page unloads: it was sent", async () => {
+    const { sent, fn } = fakeFetch((init) => init.keepalive === true);
+    const t = new ReplayTransport({ url: URL_, resource, fetch: fn });
+    t.send([record("left")], "leaving");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sent.map((s) => s.init.keepalive)).toEqual([true]);
   });
 
   it("sends nothing once closed, not even a batch it was encoding", async () => {

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/internal/migrationver"
@@ -192,7 +194,75 @@ func RebaseMigrations(dir string, paths []string) ([]RebaseResult, error) {
 			NewVersion: newVersion,
 		})
 	}
+	if err := refreshPointerHeaders(dir, results, time.Now().UTC()); err != nil {
+		return results, err
+	}
 	return results, nil
+}
+
+// refreshPointerHeaders brings the header GeneratePointerComment wrote up to
+// date in each re-versioned file. The header records when the file was
+// created and which migration was newest below it; after a rebase both
+// describe the old version, so a reviewer reads a "Created" from before the
+// migrations it now follows and a "newest" that is no longer the one below
+// it. Only those two lines change, and only inside the file's leading comment
+// block: the SQL, and a header in any other shape, are left as they are.
+func refreshPointerHeaders(dir string, results []RebaseResult, now time.Time) error {
+	if len(results) == 0 {
+		return nil
+	}
+	names, err := GetMigrationHistory(dir)
+	if err != nil {
+		return err
+	}
+	for _, r := range results {
+		base := filepath.Base(r.NewPath)
+		var below []string
+		for _, n := range names {
+			if n < base {
+				below = append(below, n)
+			}
+		}
+		if err := refreshPointerHeader(r.NewPath, below, now); err != nil {
+			return fmt.Errorf("refresh the header of %s: %w", base, err)
+		}
+	}
+	return nil
+}
+
+// pointerHistoryLine matches GeneratePointerComment's history line.
+var pointerHistoryLine = regexp.MustCompile(`^-- The schema is the \d+ migration\(s\) in this directory, applied in order \(newest: .*\)\. To read it:$`)
+
+func refreshPointerHeader(path string, below []string, now time.Time) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		text := strings.TrimRight(line, "\r\n")
+		if text != "" && !strings.HasPrefix(text, "--") {
+			break // the header ends at the first SQL line
+		}
+		eol := line[len(text):]
+		switch {
+		case strings.HasPrefix(text, "-- Created: "):
+			lines[i] = "-- Created: " + now.Format(time.RFC3339) + eol
+		case pointerHistoryLine.MatchString(text) && len(below) > 0:
+			lines[i] = fmt.Sprintf("-- The schema is the %d migration(s) in this directory, applied in order (newest: %s). To read it:",
+				len(below), below[len(below)-1]) + eol
+		}
+		changed = changed || lines[i] != line
+	}
+	if !changed {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "")), info.Mode().Perm())
 }
 
 // PendingMigrations returns the *.up.sql files in dir that are new on this

@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/migrationver"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -530,5 +531,93 @@ func TestPendingMigrationsIncludesBranchFilesBelowAMergedHead(t *testing.T) {
 	}
 	if createV == 0 || seedV == 0 || createV >= seedV {
 		t.Errorf("create_tiers=%d seed_tiers=%d: the batch must keep its order", createV, seedV)
+	}
+}
+
+// A rebase re-versions the file but used to keep the header that described
+// its old version: a "Created" from before the migrations it now follows, and
+// a "newest" naming a migration that is no longer the one below it. The two
+// lines are rewritten; the SQL, and a header line that only looks similar
+// after the first SQL line, are not.
+func TestRefreshPointerHeaderRewritesCreatedAndNewest(t *testing.T) {
+	t.Parallel()
+	created := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	header := GeneratePointerComment("add_users", []string{"20251201000000_init.up.sql"}, created)
+	body := "CREATE TABLE users (id text);\n-- Created: keep this, it is not the header\n"
+	path := filepath.Join(t.TempDir(), "20260301000001_add_users.up.sql")
+	if err := os.WriteFile(path, []byte("-- forge:backward-compatible — new table\n"+header+body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC)
+	below := []string{"20251201000000_init.up.sql", "20260301000000_add_accounts.up.sql"}
+	if err := refreshPointerHeader(path, below, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{
+		"-- forge:backward-compatible — new table\n-- Migration: add_users\n",
+		"-- Created: 2026-03-01T09:30:00Z\n",
+		"-- The schema is the 2 migration(s) in this directory, applied in order (newest: 20260301000000_add_accounts.up.sql). To read it:\n",
+		body,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rebased header lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "2026-01-01T12:00:00Z") || strings.Contains(text, "newest: 20251201000000_init.up.sql") {
+		t.Errorf("rebased header still describes the old version:\n%s", text)
+	}
+}
+
+// A file with no pointer header (hand-written, or the full --context header's
+// other lines) is left byte-for-byte alone, apart from a Created line.
+func TestRefreshPointerHeaderLeavesOtherHeadersAlone(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "20260301000001_add_users.up.sql")
+	const content = "-- hand-written: adds users\nCREATE TABLE users (id text);\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshPointerHeader(path, []string{"20260301000000_a.up.sql"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != content {
+		t.Errorf("a header with no pointer lines was rewritten:\n%s", got)
+	}
+}
+
+// End to end: the rebased file's header names the migration now below it.
+func TestRebaseRefreshesThePointerHeader(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories and worktrees; runs in task test")
+	}
+	_, migDir := gitRepo(t,
+		[]string{"20260301000000_add_accounts.up.sql"},
+		[]string{"20260101120000_add_users.up.sql"},
+	)
+	stale := filepath.Join(migDir, "20260101120000_add_users.up.sql")
+	header := GeneratePointerComment("add_users", []string{"20251201000000_init.up.sql"},
+		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+	if err := os.WriteFile(stale, []byte(header+"SELECT 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	results, err := RebaseMigrations(migDir, []string{stale})
+	if err != nil {
+		t.Fatalf("RebaseMigrations: %v", err)
+	}
+	got, err := os.ReadFile(results[0].NewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "(newest: 20260301000000_add_accounts.up.sql)"; !strings.Contains(string(got), want) {
+		t.Errorf("rebased header does not name the migration now below it (%s):\n%s", want, got)
+	}
+	if strings.Contains(string(got), "-- Created: 2026-01-01T12:00:00Z") {
+		t.Errorf("rebased header keeps the old Created line:\n%s", got)
 	}
 }

@@ -2989,3 +2989,34 @@ describe("frame stall spans", () => {
     }
   });
 });
+
+describe("setTelemetryAttributes", () => {
+  it("stamps the app's attributes on every span: held before the SDK runs, applied at once after", async () => {
+    stubDom();
+    const { t } = await load();
+    t.setTelemetryAttributes({ "reliant.build": "b1", ignored: 3 as never });
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(setGlobalAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({ "reliant.build": "b1", "app.client": "web" }),
+    );
+    expect(
+      setGlobalAttributes.mock.calls.some(([a]) => "ignored" in (a as object)),
+    ).toBe(false);
+
+    t.setTelemetryAttributes({ "reliant.build": "b2" });
+    expect(setGlobalAttributes).toHaveBeenLastCalledWith({
+      "reliant.build": "b2",
+    });
+  });
+
+  it("is a no-op after disableTelemetry()", async () => {
+    stubDom();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    k.disableTelemetry();
+    setGlobalAttributes.mockClear();
+    t.setTelemetryAttributes({ "reliant.build": "b3" });
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
+  });
+});

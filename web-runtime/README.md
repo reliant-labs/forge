@@ -353,6 +353,12 @@ only on `unload`. The runtime's recorder works like this:
   person's first tap, click or key, and then only after that frame has
   painted.
 
+An app that stamped its own attributes by importing `@hyperdx/browser` and
+calling `setGlobalAttributes` on it must call `setTelemetryAttributes` from
+`/telemetry` instead. That SDK instance is no longer the one running, so
+attributes set on it go nowhere. Calls made before the SDK starts are held
+and applied when it does.
+
 HyperDX's replay player reads the result unchanged: OTLP logs on
 `/_otel/v1/logs` with scope `rum.rr-web` 4.0.0, the event JSON as the body,
 `rr-web.offset`/`event`/`chunk`/`total-chunks` attributes and the SDK's

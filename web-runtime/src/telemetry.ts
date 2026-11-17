@@ -606,6 +606,40 @@ let attributionWanted = false;
 let attributionOptions: { search?: string } = {};
 let runningConfig: BrowserTelemetryConfig | null = null;
 let runningClient: HyperDXClient | null = null;
+// setTelemetryAttributes calls made before the SDK runs, applied when it does.
+let heldAttributes: Record<string, string> = {};
+
+/**
+ * Stamp `attributes` on every span from here on: the app's own dimensions
+ * (a build id, a deployment cohort) beside the runtime's `app.client`. Values
+ * are strings; an empty string clears a key. Safe to call before
+ * initBrowserTelemetry resolves (held, then applied when the SDK starts), more
+ * than once (keys merge, the latest value wins), and on the server (a no-op).
+ * Use it instead of reaching for the SDK: the runtime owns the SDK's client.
+ */
+export function setTelemetryAttributes(attributes: Record<string, string>): void {
+  if (typeof window === "undefined" || isTelemetryDisabled()) {
+    return;
+  }
+  const clean: Record<string, string> = {};
+  for (const [key, value] of Object.entries(attributes ?? {})) {
+    if (typeof key === "string" && key !== "" && typeof value === "string") {
+      clean[key] = value;
+    }
+  }
+  if (Object.keys(clean).length === 0) {
+    return;
+  }
+  if (runningClient) {
+    try {
+      runningClient.setGlobalAttributes?.(clean);
+    } catch {
+      // Telemetry must never break the app.
+    }
+    return;
+  }
+  heldAttributes = { ...heldAttributes, ...clean };
+}
 
 function captureVisitor(config: BrowserTelemetryConfig): string {
   return captureAttribution({
@@ -893,7 +927,8 @@ async function start(
     if (attributionWanted) {
       globals["visitor.id"] = captureVisitor(config);
     }
-    hdx.setGlobalAttributes?.(globals);
+    hdx.setGlobalAttributes?.({ ...heldAttributes, ...globals });
+    heldAttributes = {};
     // The viewport and screen ride on every span, refreshed on resize
     // (client-context.ts): the SDK's global attributes are a span processor
     // that stamps the current set on each span as it starts, so a span carries
@@ -943,6 +978,7 @@ async function start(
       // SDK's exporter posts with fetch keepalive, which outlives the page.
       flush: () => flushSdk(),
       disable: () => {
+        runningClient = null;
         stopReplay();
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.

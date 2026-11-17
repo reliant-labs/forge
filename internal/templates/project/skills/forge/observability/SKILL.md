@@ -126,19 +126,8 @@ Nothing is hidden: a user error is still written, with `error`,
 claiming to be an incident. Its volume stays countable: the RPC error counter
 (and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
 
-**Server spans follow the class too.** otelconnect marks a server span Error
-from the wire code alone (Unavailable, Unknown, Internal, …), so a user
-refused with `svcerr.WithClass(svcerr.Unavailable("your machine is waking
-up"), svcerr.ClassUser)` used to read as a server error in every span-based
-view (`forge obs endpoints`, `traces`, `status`, release health). forge's
-chain now settles the server span of every failed call itself: `error_class`,
-`rpc.error_reason` (the `svcerr.WithReason` code the client received), the
-error as an exception event, and status **OK** for `user` and `canceled` —
-final, so otelconnect's later Error cannot overwrite it — and **Error** for
-`server`. The wire is unchanged. A project whose span error rates must count
-user refusals opts in with `observe.WithUserErrorsAsSpanErrors()`
-(`serverkit.ChainDeps.ServerSpan` / `observe.Deps.ServerSpan`). An ending the
-server chose (`svcerr.ExpectedClose`) is OK with `rpc.close_reason` instead.
+A failed call's server span follows the class too (OK for `user` and
+`canceled`, Error for `server`): `observability/error-levels`.
 
 Where the policy applies (the RPC edge, the component chain, every
 hand-written `logger.Error`), wrapping a log forwarder, and marking an error

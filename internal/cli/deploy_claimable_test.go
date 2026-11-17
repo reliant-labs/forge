@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -747,6 +748,61 @@ func TestClaimableDeploy_PlanOnlyPreviewsAndCreatesNothing(t *testing.T) {
 	}
 	if fake.challenges != 0 || fake.starts != 0 || len(fake.authSeen) != 0 {
 		t.Errorf("a preview touched the account path: challenges=%d starts=%d authed=%d", fake.challenges, fake.starts, len(fake.authSeen))
+	}
+}
+
+// A migration the default branch does not hold is refused by the release cut
+// (checkUnmergedMigrations). The --plan-only preview used to say "fits" for
+// such a checkout, and the deploy refused it only after a full build. Both
+// now judge it from the checkout first: the preview fails, and the deploy is
+// refused before any proof of work, account or build — until it is committed.
+func TestClaimableDeploy_UnmergedMigrationIsRefusedBeforeAnythingIsCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL, execs git and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	migGit(t, dir, "init", "-q", "-b", "main")
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "project")
+	writeMigFile(t, dir, "20260101000000_counters.up.sql")
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	if err == nil || exitCodeForError(err) != exitRefused {
+		t.Fatalf("preview of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
+	}
+	doc := decodeClaimDoc(t, out)
+	refusal, _ := doc["release_refusal"].(string)
+	if doc["ok"] != false || doc["eligible"] != true || !strings.Contains(refusal, "20260101000000_counters.up.sql") ||
+		doc["error_reason"] != reasonUnmergedMigrations {
+		t.Errorf("preview doc = %v", doc)
+	}
+	if !strings.Contains(refusal, "git add db/migrations && git commit") {
+		t.Errorf("the refusal does not say how to commit the migration:\n%s", refusal)
+	}
+
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if err == nil || exitCodeForError(err) != exitRefused {
+		t.Fatalf("deploy of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
+	}
+	if doc := decodeClaimDoc(t, out); doc["error_reason"] != reasonUnmergedMigrations {
+		t.Errorf("deploy doc = %v", doc)
+	}
+	if fake.challenges != 0 || fake.starts != 0 {
+		t.Errorf("the refusal came after the account path: challenges=%d starts=%d", fake.challenges, fake.starts)
+	}
+
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "migration")
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	if err != nil {
+		t.Fatalf("preview once the migration is on main: %v\n%s", err, out)
+	}
+	if doc := decodeClaimDoc(t, out); doc["release_refusal"] != nil {
+		t.Errorf("a committed migration is still refused: %v", doc["release_refusal"])
 	}
 }
 

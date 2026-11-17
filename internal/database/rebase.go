@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/internal/migrationver"
 )
@@ -262,7 +263,7 @@ func refreshPointerHeader(path string, below []string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "")), info.Mode().Perm())
+	return atomicfile.WriteFile(path, []byte(strings.Join(lines, "")), info.Mode().Perm())
 }
 
 // PendingMigrations returns the *.up.sql files in dir that are new on this

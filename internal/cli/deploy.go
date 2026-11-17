@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -384,6 +385,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
 	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to hosted static hosting, a bucket or Firebase Hosting, skipping every backend workload (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	flags.BoolVar(&f.verbose, "verbose", false, "Stream every build step's output (docker builds, dependency installs, framework builds) as it runs. By default each step prints one line with its duration, the full output goes to .forge/logs/<env>/deploy.log, and a failing step prints its last lines and that path")
 	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 	flags.BoolVar(&f.offlineLedger, "offline-ledger", false, "Break-glass for a control plane that is down: deploy the env's cached CURRENT release by its recorded digests (nothing is built, the ledger is not contacted) and queue the promotion record, replayed idempotently on the next successful ledger contact. Refuses a hosted tier and a hub-converged env, and a move to any other release. Prints the cache's age; the cache is refreshed by every successful ledger read or write")
 	flags.StringVar(&f.offlineTo, "to", "", "With --offline-ledger: deploy this CACHED release instead of the current one — a release version, a cached promotion id, or `previous` (the release before the current one). The rollback for a bad release that took the control plane down. Refused if the release is not in this machine's offline copy (`forge env status <env>` lists what is)")
@@ -548,6 +550,9 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 // exclusions, the rollout-policy assembly) live in a function that can be read
 // and tested on its own.
 type deployCmdFlags struct {
+	// verbose streams every build step's output instead of one line per
+	// step (buildlog).
+	verbose       bool
 	organization  string
 	tag           string
 	dryRun        bool
@@ -611,6 +616,10 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	// a phase or a subprocess prints on the way to it.
 	if f.jsonOut {
 		defer reserveStdoutForJSON()()
+	}
+	// One line per build step, the full output in a file (buildlog).
+	if session := beginDeployBuildLog(envName, f); session != nil {
+		defer func() { _ = session.End() }()
 	}
 	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
@@ -4429,9 +4438,11 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 		return err
 	}
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
+	var endStep func(error)
+	buildCmd.Stdout, buildCmd.Stderr, endStep = buildlog.Step("docker build " + cfg.Name)
+	err := buildCmd.Run()
+	endStep(err)
+	if err != nil {
 		return fmt.Errorf("docker build for %s failed: %w", cfg.Name, err)
 	}
 

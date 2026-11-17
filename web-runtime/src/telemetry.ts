@@ -617,7 +617,9 @@ let heldAttributes: Record<string, string> = {};
  * than once (keys merge, the latest value wins), and on the server (a no-op).
  * Use it instead of reaching for the SDK: the runtime owns the SDK's client.
  */
-export function setTelemetryAttributes(attributes: Record<string, string>): void {
+export function setTelemetryAttributes(
+  attributes: Record<string, string>,
+): void {
   if (typeof window === "undefined" || isTelemetryDisabled()) {
     return;
   }

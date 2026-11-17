@@ -124,6 +124,46 @@ func TestNewAlertStillFails(t *testing.T) {
 	}
 }
 
+// The identity match is exact over the non-numeric labels, not a subset test
+// (pr-review B1 on forge#2290): an alert whose only labels are alertname and
+// measurements has an empty identity, which a subset test matches against
+// every instance of its rule, so another service's flapping would discount
+// it. Exact, an empty identity matches only a baseline firing whose identity
+// is empty too: the same series. IdentityLatency, whose instances differ only
+// by numeric labels, is still discounted.
+func TestAlertIdentityMatchIsExact(t *testing.T) {
+	bare := Alert{Rule: "QueueDepth", Fingerprint: "q1", FiringAt: t0.Add(5 * time.Minute),
+		Labels: map[string]string{"alertname": "QueueDepth", "depth": "812"}}
+	tests := map[string]struct {
+		alert   Alert
+		history []AlertEvent
+		verdict Verdict
+	}{
+		"empty identity, baseline firing for service=X": {bare,
+			[]AlertEvent{event("QueueDepth", "q0", TransitionFiring, t0.Add(-time.Hour), map[string]string{"alertname": "QueueDepth", "service": "X", "depth": "90"})}, Fail},
+		"empty identity, baseline firing with no labels": {bare,
+			[]AlertEvent{event("QueueDepth", "q0", TransitionFiring, t0.Add(-time.Hour), nil)}, Pass},
+		"empty identity, baseline firing with only numeric labels": {bare,
+			[]AlertEvent{event("QueueDepth", "q0", TransitionFiring, t0.Add(-time.Hour), map[string]string{"alertname": "QueueDepth", "depth": "90"})}, Pass},
+		"service=api, baseline firing with an extra label": {
+			Alert{Rule: "ErrorRateHigh", Fingerprint: "e1", FiringAt: t0.Add(5 * time.Minute), Labels: map[string]string{"service": "api", "rate": "0.07"}},
+			[]AlertEvent{event("ErrorRateHigh", "e0", TransitionFiring, t0.Add(-time.Hour), map[string]string{"service": "api", "uri": "/login", "rate": "0.05"})}, Fail},
+		"IdentityLatency, differing only by slow": {identityLatency("fp4", "4", t0.Add(5*time.Minute)),
+			[]AlertEvent{event("IdentityLatency", "fp3", TransitionFiring, t0.Add(-20*time.Minute), latencyLabels("3"))}, Pass},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := Evaluate(alertInput(t, []Alert{tc.alert}, tc.history))
+			if r.Verdict != tc.verdict {
+				t.Fatalf("verdict = %s, want %s; findings %+v", r.Verdict, tc.verdict, r.Findings)
+			}
+			if discounted := len(r.BaselineAlerts) == 1; discounted != (tc.verdict == Pass) {
+				t.Errorf("baseline_alerts = %+v", r.BaselineAlerts)
+			}
+		})
+	}
+}
+
 // Without a history nothing proves an alert was flapping, so it counts: the
 // rule can only be as strict as before when the history was not read.
 func TestNoAlertHistoryCountsEveryAlert(t *testing.T) {

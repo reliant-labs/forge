@@ -25,7 +25,12 @@ package releasehealth
 // (IdentityLatency's slow=4 and slow=6 were two instances). A label whose
 // value is a number is therefore read as a measurement and left out; the
 // rest (service, uri, pod, severity, ...) name what the alert is about, and a
-// baseline firing counts only when each of them has the same value. The
+// baseline firing counts only when its identity is EXACTLY the alert's: the
+// same non-numeric labels with the same values, no more and no fewer. A
+// subset test would let an alert with no identifying label (a rule whose only
+// labels are measurements) match every instance of its rule, so a service
+// that flapped would discount another service's new alert; exact, an empty
+// identity matches only the same, label-less series. The
 // trade-off is a rule grouped by a numeric label (code="500"): its values are
 // one identity here, so a baseline firing for one value discounts another.
 // alert_baseline_min_firings = 0 is the rule before this one, every alert
@@ -108,7 +113,7 @@ func baselineFirings(a Alert, history []AlertEvent, from, to time.Time) int {
 	}
 	instances := map[string]*instance{}
 	for _, e := range history {
-		if e.Rule != a.Rule || e.At.Before(from) || !e.At.Before(to) || !hasLabels(e.Labels, id) {
+		if e.Rule != a.Rule || e.At.Before(from) || !e.At.Before(to) || !sameIdentity(identityLabels(e.Labels), id) {
 			continue
 		}
 		key := e.Fingerprint
@@ -137,10 +142,15 @@ func baselineFirings(a Alert, history []AlertEvent, from, to time.Time) int {
 	return n
 }
 
-// hasLabels reports whether labels holds every one of want with its value.
-func hasLabels(labels, want map[string]string) bool {
-	for k, v := range want {
-		if labels[k] != v {
+// sameIdentity reports whether two identities (identityLabels) are the same
+// label set: equal keys and values, so an empty identity matches only an
+// empty one.
+func sameIdentity(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
 			return false
 		}
 	}

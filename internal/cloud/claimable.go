@@ -432,6 +432,48 @@ func RecordClaimableURL(ep Endpoint, project, env, url string) error {
 	})
 }
 
+// RecordClaimableAttempt remembers how the newest deploy of (project, env)
+// ended, beside its token: published (deployErr nil) or the first line of
+// why not. `forge env status --claimable` reads it to say whether anything is
+// deployed at all.
+func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, deployErr error) error {
+	path, err := CredentialsPath()
+	if err != nil {
+		return err
+	}
+	return credentials.Update(path, func(f *credentials.File) error {
+		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env))
+		if err != nil || c.Claimable == nil {
+			return nil
+		}
+		c.Claimable.LastAttemptAt = at.UTC()
+		c.Claimable.LastAttemptError = ""
+		if deployErr == nil {
+			c.Claimable.LastPublishedAt = at.UTC()
+		} else {
+			c.Claimable.LastAttemptError = firstErrorLine(deployErr)
+		}
+		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
+	})
+}
+
+// firstErrorLine is an error's first line, bounded: what a status line can
+// show. The full error was printed by the deploy that raised it.
+func firstErrorLine(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = strings.TrimSpace(msg[:i])
+	}
+	const limit = 500
+	if len(msg) > limit {
+		msg = strings.ToValidUTF8(msg[:limit], "") + "…"
+	}
+	if msg == "" {
+		msg = "the deploy failed"
+	}
+	return msg
+}
+
 // ClaimableDeviceID is this machine's stable claimable-deploy identifier,
 // generated once and kept beside the credentials file. Only its hash is stored
 // server-side; it is the unit of the "3 live per device" limit and part of the

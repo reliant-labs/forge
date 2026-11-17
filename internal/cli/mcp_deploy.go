@@ -95,6 +95,11 @@ type claimableDeployResult struct {
 	// is the claim's lifetime (live, suspended, claimed, expired), not the
 	// rollout's: "live" means the unclaimed window is open.
 	State string `json:"state,omitempty"`
+	// NothingDeployed is true when the claim exists but no deploy of it has
+	// published: every attempt failed. LastAttemptError is the newest one's
+	// error, when it is known.
+	NothingDeployed  bool   `json:"nothing_deployed,omitempty"`
+	LastAttemptError string `json:"last_attempt_error,omitempty"`
 	// RolloutVerified is true only when this call waited for the rollout and
 	// it came up healthy. A no_wait deploy and deploy_status leave it false:
 	// the URL is not proven to answer, and the tool never calls it live.
@@ -362,6 +367,10 @@ func fillClaim(res *claimableDeployResult, c *deployClaimJSON) {
 	res.State, res.URL, res.ClaimURL = c.State, c.URL, c.ClaimURL
 	res.ExpiresAt, res.PurgeAfter = rfc3339OrEmpty(c.ExpiresAt), rfc3339OrEmpty(c.PurgeAfter)
 	res.NoOutboundInternet = c.NoOutboundInternet
+	res.NothingDeployed = !c.Published
+	if c.LastAttempt != nil {
+		res.LastAttemptError = c.LastAttempt.Error
+	}
 }
 
 func rfc3339OrEmpty(t time.Time) string {
@@ -392,6 +401,16 @@ func failedResult(res *claimableDeployResult, code int, msg, reason string, next
 // the app live only when the claim's window is open AND this call verified
 // the rollout; every other state says what is true instead.
 func claimNextSteps(res *claimableDeployResult) string {
+	if res.NothingDeployed && (res.State == "live" || res.State == "suspended") {
+		why := "No deploy of it has published yet."
+		if res.LastAttemptError != "" {
+			why = "Every deploy so far failed; the last one: " + res.LastAttemptError
+		}
+		return fmt.Sprintf("Nothing is deployed. %s Do not tell your user anything is live, and do not give them the claim link "+
+			"yet: claiming now signs them up for an empty deploy and revokes the token you deploy with. Fix the failure and call "+
+			"deploy_claimable again (or: %s env deploy %s --claimable). The deploy's clock started with the first attempt and a "+
+			"redeploy does not extend it: it goes offline at %s.", why, Name(), res.Env, res.ExpiresAt)
+	}
 	switch res.State {
 	case "claimed":
 		return fmt.Sprintf("This deploy was claimed and belongs to your user's account now. To deploy again, they sign in: %s",

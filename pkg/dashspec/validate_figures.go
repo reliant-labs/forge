@@ -158,6 +158,9 @@ func (v *validator) attentionPanel(path string, o map[string]any, ids map[string
 			v.add(childPath(fp, "kind"), "an attention panel's own figure is a sql panel, not %q", kind)
 			continue
 		}
+		// ids is the dashboard's one set of panel ids: panel records each
+		// figure's id in it, so a figure repeats neither a panel's id nor
+		// another figure's, of this attention panel or any other.
 		v.panel(fp, f, ids)
 		if !declaresGood(f) {
 			v.add(fp, "an attention panel's figure says which way is good (display.good)")
@@ -185,9 +188,13 @@ func (v *validator) attentionTargets(panels []any) {
 			continue
 		}
 		path := indexPath("panels", i)
-		a, _ := o["attention"].(map[string]any)
-		watch, _ := a["watch"].([]any)
-		figures, _ := a["figures"].([]any)
+		// No attention object (or not an object, which attentionPanel
+		// reports) watches every figure with Display.Good.
+		var watch, figures []any
+		if a, ok := o["attention"].(map[string]any); ok {
+			watch, _ = a["watch"].([]any)
+			figures, _ = a["figures"].([]any)
+		}
 		if len(watch) == 0 && len(figures) == 0 && !anyGood {
 			v.add(path, "watches nothing: no panel of the dashboard declares display.good, and it names no figures of its own")
 		}

@@ -94,6 +94,20 @@ func TestValidationRefusesMisusedFigureAndRankingDisplay(t *testing.T) {
 			"panels[2]", "attention.watch[0]", "does not say which way is good"},
 		{"a figure repeating a panel id", dash(good, `{"id":"w","title":"W","kind":"attention","attention":{"figures":[{"id":"a","title":"A",`+figureSQL+`,"display":{"good":"up"}}]}}`),
 			"panels[1]", "attention.figures[0].id", `duplicate panel id "a"`},
+		// Every id a figure reads joins the dashboard's set, so two figures
+		// of one panel, or of two panels, cannot share one either, and a
+		// panel after them cannot take one.
+		{"two figures sharing an id", dash(good, `{"id":"w","title":"W","kind":"attention","attention":{"figures":[`+
+			`{"id":"f","title":"F",`+figureSQL+`,"display":{"good":"up"}},{"id":"f","title":"G",`+figureSQL+`,"display":{"good":"up"}}]}}`),
+			"panels[1]", "attention.figures[1].id", `duplicate panel id "f"`},
+		{"figures of two panels sharing an id", dash(good,
+			`{"id":"w","title":"W","kind":"attention","attention":{"figures":[{"id":"f","title":"F",`+figureSQL+`,"display":{"good":"up"}}]}}`,
+			`{"id":"v","title":"V","kind":"attention","attention":{"figures":[{"id":"f","title":"G",`+figureSQL+`,"display":{"good":"up"}}]}}`),
+			"panels[2]", "attention.figures[0].id", `duplicate panel id "f"`},
+		{"a panel after a figure taking its id", dash(good,
+			`{"id":"w","title":"W","kind":"attention","attention":{"figures":[{"id":"f","title":"F",`+figureSQL+`,"display":{"good":"up"}}]}}`,
+			`{"id":"f","title":"F2",`+figureSQL+`}`),
+			"panels[2]", "id", `duplicate panel id "f"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) { wantProblem(t, tc.src, tc.at, tc.path, tc.want) })
 	}
@@ -158,4 +172,16 @@ func TestFigureDisplayRoundTripsAndStaysComparable(t *testing.T) {
 	if *a.Display == (Display{}) {
 		t.Error("a decoded display compares equal to the zero display")
 	}
+}
+
+// An attention panel with no attention object watches every figure with
+// display.good, and one whose attention is not an object is a problem, not a
+// crash.
+func TestAttentionWithoutItsObjectIsJudgedNotCrashed(t *testing.T) {
+	good := `{"id":"a","title":"A",` + figureSQL + `,"display":{"good":"up"}}`
+	if _, err := ParseDashboard("f.json", []byte(dash(good, `{"id":"w","title":"W","kind":"attention"}`))); err != nil {
+		t.Errorf("an attention panel watching every good figure: %v", err)
+	}
+	wantProblem(t, dash(`{"id":"w","title":"W","kind":"attention"}`), "panels[0]", "", "watches nothing")
+	wantProblem(t, dash(good, `{"id":"w","title":"W","kind":"attention","attention":"all"}`), "panels[1]", "attention", "must be an object")
 }

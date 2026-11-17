@@ -29,10 +29,19 @@ import (
 // The offer is still made by the user's next ordinary forge command.
 const skipHookActivationAnnotation = "forge.skip-hook-activation"
 
-// hookActivationSkipped reports whether cmd opted out of hook activation.
+// hookActivationSkipped reports whether cmd opted out of hook activation,
+// or was asked only for its help: `--help-dev` (cmdutil.HideDevFlags) is a
+// flag, not cobra's help command, so the pre-run hook runs for it — and
+// reading a writing command's maintainer flags must not write the clone's
+// shared git config (hooks or the generated-file merge driver).
 func hookActivationSkipped(cmd *cobra.Command) bool {
-	_, ok := cmd.Annotations[skipHookActivationAnnotation]
-	return ok
+	if _, ok := cmd.Annotations[skipHookActivationAnnotation]; ok {
+		return true
+	}
+	if f := cmd.Flags().Lookup("help-dev"); f != nil && f.Changed {
+		return true
+	}
+	return false
 }
 
 // gitHooksOptOutEnv stops forge activating its tracked git hooks in this

@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -343,5 +346,59 @@ func TestSecretAllowDoesNotCreateAnExternalProviderEnv(t *testing.T) {
 	}
 	if n := len(fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")); n != 0 {
 		t.Errorf("EnsureEnvironment calls = %d, want 0", n)
+	}
+}
+
+// The external-provider env, rendered from real KCL rather than constructed:
+// a bundle declaring `secret_provider = forge.ExternalSecrets {}` beside
+// `control_plane = forge.ControlPlane {...}` — control-plane/prod's shape
+// (deploy/kcl/prod/main.k) — renders to the entities the access-list gate
+// reads, and `forge secret allow` then reaches AllowSecretUse on that env's
+// control-plane environment.
+func TestSecretAllowOnARenderedExternalProviderEnv(t *testing.T) {
+	testkit.Slow(t, "renders KCL")
+	fake, _ := hostedFixture(t, []cloudEnvironment{{ID: "env-prod", Name: "prod"}})
+	hosted, err := renderEntitiesForSecrets(context.Background(), "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"forge.yaml":         "name: acme\nmodule_path: github.com/example/acme\n",
+		"deploy/kcl/kcl.mod": "[package]\nname = \"acme_deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"deploy/kcl/prod/main.k": "import forge\n\n" +
+			"output = forge.render(forge.Bundle {\n" +
+			"    project = \"acme\"\n" +
+			"    secret_provider = forge.ExternalSecrets {}\n" +
+			"    control_plane = forge.ControlPlane {endpoint = \"" + hosted.ControlPlane.Endpoint + "\"}\n" +
+			"})\n",
+	} {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rendered, err := RenderKCL(context.Background(), dir, "prod")
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if rendered.SecretProvider == nil || rendered.SecretProvider.Type != "external" || rendered.ControlPlane == nil {
+		t.Fatalf("rendered provider/control plane = %+v / %+v, want external beside a control plane", rendered.SecretProvider, rendered.ControlPlane)
+	}
+	prev := renderEntitiesForSecrets
+	renderEntitiesForSecrets = func(context.Context, string) (*KCLEntities, error) { return rendered, nil }
+	t.Cleanup(func() { renderEntitiesForSecrets = prev })
+
+	if out, err := runSecretCLI(t, "allow", "--env", "prod", "--workflow", "w", "--project", "p", "VULTR_KEY"); err != nil {
+		t.Fatalf("allow: %v\n%s", err, out)
+	}
+	if c := fake.callsTo(procAllow); len(c) != 1 || c[0].Body["environmentId"] != "env-prod" {
+		t.Errorf("AllowSecretUse = %+v, want one into env-prod", c)
+	}
+	if n := len(fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")); n != 0 {
+		t.Errorf("EnsureEnvironment calls = %d, want 0 for an external-provider env", n)
 	}
 }

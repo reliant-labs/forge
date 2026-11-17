@@ -56,6 +56,10 @@ const (
 	obsCheckRefusalWait = time.Minute
 	// obsCheckMaxFaultWait caps the backoff on a transient fault.
 	obsCheckMaxFaultWait = 2 * time.Minute
+	// obsCheckFinalReadMargin is the part of --timeout kept for the final
+	// read after a transient fault: the backoff stops this long before the
+	// deadline, so the last read is made inside it.
+	obsCheckFinalReadMargin = 10 * time.Second
 )
 
 // obsCheckJitter is added to each wait on a failed read, so checks refused by
@@ -142,15 +146,15 @@ func transportFailure(err error) bool {
 }
 
 // sleepFor is how long to sleep before asking again: the wait, capped,
-// jittered, and never past the deadline.
-func (r checkRetry) sleepFor(now, deadline time.Time) time.Duration {
+// jittered, and never past until (retryUntil).
+func (r checkRetry) sleepFor(now, until time.Time) time.Duration {
 	limit := obsCheckMaxFaultWait
 	if r.code != "" {
 		limit = obsCheckMaxRefusalWait
 	}
 	d := min(r.wait, limit)
 	d += obsCheckJitter(d)
-	return max(min(d, deadline.Sub(now)), 0)
+	return max(min(d, until.Sub(now)), 0)
 }
 
 // checkPoll is what every GetReleaseHealth read of one check shares: the
@@ -186,22 +190,44 @@ func (p checkPoll) read(ctx context.Context, req obsbackend.HealthRequest, doc o
 		if !ok || ctx.Err() != nil {
 			return bad(err)
 		}
-		if retry.code == "" {
-			faults++
+		until, ok := p.retryUntil(retry, d.Now())
+		if !ok && retry.code == "" {
+			return bad(err)
 		}
-		if !o.wait || !d.Now().Add(retry.wait).Before(deadline) {
-			if retry.code == "" {
-				return bad(err)
-			}
+		if !ok {
 			doc, err = refusedCheck(doc, p.info, p.env, o, retry, err, d.Now().Sub(deadline.Add(-o.timeout)))
 			return obsbackend.HealthResult{}, doc, err
 		}
-		sleep := retry.sleepFor(d.Now(), deadline)
+		if retry.code == "" {
+			faults++
+		}
+		sleep := retry.sleepFor(d.Now(), until)
 		fmt.Fprintf(d.Stderr, "%s; asking again in %s\n", retry.why, sleep.Round(time.Second))
 		if err := obsCheckSleep(ctx, sleep); err != nil {
 			return bad(obsbackend.Undetermined("interrupted while waiting").Cause(err))
 		}
 	}
+}
+
+// retryUntil says whether a failed read at now is asked again, and the latest
+// moment the sleep before it may end. The two failures spend --timeout
+// differently:
+//   - a refusal (a spent quota, a throttle) is asked again only when its
+//     allowance refills before the deadline; a read before the refill would be
+//     refused again, so one that refills later is exit 8 at once.
+//   - a transient fault may clear at any moment, so it uses all of --timeout:
+//     a backoff longer than the time left is cut short, and the final read is
+//     made obsCheckFinalReadMargin before the deadline. Only a fault on that
+//     final read ends the wait (exit 2).
+func (p checkPoll) retryUntil(r checkRetry, now time.Time) (time.Time, bool) {
+	if !p.o.wait {
+		return time.Time{}, false
+	}
+	if r.code != "" {
+		return p.deadline, now.Add(r.wait).Before(p.deadline)
+	}
+	last := p.deadline.Add(-obsCheckFinalReadMargin)
+	return last, now.Before(last)
 }
 
 // refusedCheck is the document and exit-8 error of a check whose read was

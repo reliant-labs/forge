@@ -226,8 +226,9 @@ func TestObsCheckTransientFaultThatOutlastsTheWaitIsExit2(t *testing.T) {
 	if got := exitCodeForError(err); got != exitUndetermined {
 		t.Fatalf("exit = %d (%v), want 2", got, err)
 	}
-	if env.sleeps == 0 || env.now.Sub(obsNow) >= 5*time.Minute {
-		t.Errorf("sleeps = %d over %s: the fault is retried within --timeout", env.sleeps, env.now.Sub(obsNow))
+	// 15s, 30s, 60s, 120s, then the 65s left before the final read at 4m50s.
+	if env.sleeps != 5 || env.now.Sub(obsNow) != 5*time.Minute-obsCheckFinalReadMargin {
+		t.Errorf("sleeps = %d over %s: the fault is retried until the final read %s before --timeout", env.sleeps, env.now.Sub(obsNow), obsCheckFinalReadMargin)
 	}
 	for _, d := range env.slept {
 		if d > obsCheckMaxFaultWait {
@@ -242,6 +243,59 @@ func TestObsCheckTransientFaultThatOutlastsTheWaitIsExit2(t *testing.T) {
 	env = newObsCheckHarness()
 	if _, _, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--json"); exitCodeForError(err) != exitUndetermined || env.sleeps != 0 {
 		t.Errorf("without --wait: exit = %d sleeps = %d, want 2 and none", exitCodeForError(err), env.sleeps)
+	}
+}
+
+// A transient fault whose next backoff would pass the deadline uses what is
+// left of --timeout: the sleep is cut to the final read, obsCheckFinalReadMargin
+// before the deadline, and only a fault on that read is exit 2.
+func TestObsCheckTransientFaultUsesTheTimeLeft(t *testing.T) {
+	// --timeout 1m: faults at 0s and 15s back off 15s and 30s; at 45s the 60s
+	// backoff would pass the deadline, so it sleeps the 5s left to 50s.
+	want := []time.Duration{15 * time.Second, 30 * time.Second, 5 * time.Second}
+	for _, tc := range []struct {
+		name     string
+		failures int
+		exit     int
+		verdict  any
+	}{
+		{"the final read succeeds", 3, 0, "PASS"},
+		{"the final read fails", -1, exitUndetermined, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := &healthRefuser{n: tc.failures, err: &cloud.Error{Code: cloud.CodeUnavailable}, next: passingCaller()}
+			env := newObsCheckHarness()
+			out, _, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--wait", "--timeout", "1m", "--json")
+			if got := exitCodeForError(err); got != tc.exit {
+				t.Fatalf("exit = %d (%v), want %d", got, err, tc.exit)
+			}
+			if fmt.Sprint(env.slept) != fmt.Sprint(want) {
+				t.Errorf("slept %v, want %v: the last sleep ends at the final read", env.slept, want)
+			}
+			if got := env.now.Sub(obsNow); got != time.Minute-obsCheckFinalReadMargin {
+				t.Errorf("final read at +%s, want +%s", got, time.Minute-obsCheckFinalReadMargin)
+			}
+			if tc.failures < 0 && caller.refused != 4 {
+				t.Errorf("reads = %d, want 4: the final read is made, then no more", caller.refused)
+			}
+			if doc := decode(t, out); doc["verdict"] != tc.verdict || doc["reason_code"] != nil {
+				t.Errorf("doc = %v", doc)
+			}
+		})
+	}
+}
+
+// A refusal whose refill lands after the deadline is still exit 8 at once,
+// however much of --timeout is left: a read before the refill is refused again.
+func TestObsCheckRefusalPastTheDeadlineIsExit8AtOnce(t *testing.T) {
+	caller := &healthRefuser{n: -1, err: quotaRefusal(time.Minute, time.Time{}), next: passingCaller()}
+	env := newObsCheckHarness()
+	out, _, err := env.run(t, cloudFacts(), caller, nil, "check", "prod", "--wait", "--timeout", "1m", "--json")
+	if got := exitCodeForError(err); got != exitTimedOut || env.sleeps != 0 || caller.refused != 1 {
+		t.Fatalf("exit = %d sleeps = %d reads = %d (%v), want 8 at once after one read", got, env.sleeps, caller.refused, err)
+	}
+	if doc := decode(t, out); doc["reason_code"] != checkReasonQuotaExhausted || doc["waited"] != "0s" {
+		t.Errorf("doc = %v", doc)
 	}
 }
 

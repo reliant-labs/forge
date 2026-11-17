@@ -341,38 +341,44 @@ func TestObsIssueCloudJSONGolden(t *testing.T) {
 	}
 }
 
-func TestObsIssueTriageCloudSendsTheReadVersion(t *testing.T) {
+// A status change is one write and no read: GetIssue reads ClickHouse and
+// spends the org's hourly query quota, which bulk triage exhausted
+// (control-plane#2767).
+func TestObsIssueTriageCloudWritesWithoutReading(t *testing.T) {
 	updated := strings.Replace(cloudIssueJSON, "ISSUE_STATUS_REGRESSED", "ISSUE_STATUS_RESOLVED", 1)
-	fc := &fakeCloudCaller{replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`, cloudUpdate: `{"issue":` + updated + `}`}}
+	fc := &fakeCloudCaller{replies: map[string]string{cloudUpdate: `{"issue":` + updated + `}`}}
 	out, _, err := obsRunCloud(t, fc, "issue", "resolve", "ISS-7f3a", "prod", "--in", "next", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fc.calls) != 2 || fc.calls[0].procedure != cloudIssue || fc.calls[1].procedure != cloudUpdate {
-		t.Fatalf("calls = %v: the write must follow a read", fc.calls)
+	if len(fc.calls) != 1 || fc.calls[0].procedure != cloudUpdate {
+		t.Fatalf("calls = %v: a status change is one write, with no read first", fc.calls)
 	}
-	for _, want := range []string{`"expectedVersion":4`, `"envId":"env-prod"`, `"status":"ISSUE_STATUS_CHANGE_RESOLVED"`, `"kind":"ISSUE_RESOLVE_KIND_NEXT_RELEASE"`} {
-		if !strings.Contains(fc.calls[1].body, want) {
-			t.Errorf("update lacks %s:\n%s", want, fc.calls[1].body)
+	for _, want := range []string{`"envId":"env-prod"`, `"status":"ISSUE_STATUS_CHANGE_RESOLVED"`, `"kind":"ISSUE_RESOLVE_KIND_NEXT_RELEASE"`} {
+		if !strings.Contains(fc.calls[0].body, want) {
+			t.Errorf("update lacks %s:\n%s", want, fc.calls[0].body)
 		}
+	}
+	if strings.Contains(fc.calls[0].body, "expectedVersion") {
+		t.Errorf("update sends a version it never read:\n%s", fc.calls[0].body)
 	}
 	if doc := decode(t, out); doc["issue"].(map[string]any)["status"] != "resolved" || doc["ok"] != true {
 		t.Errorf("document = %v", doc)
 	}
 
-	fc = &fakeCloudCaller{replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`, cloudUpdate: `{"issue":` + updated + `}`}}
+	fc = &fakeCloudCaller{replies: map[string]string{cloudUpdate: `{"issue":` + updated + `}`}}
 	if _, _, err = obsRunCloud(t, fc, "issue", "resolve", "ISS-7f3a", "prod", "--in", "v1.5.0"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fc.calls[1].body, `"kind":"ISSUE_RESOLVE_KIND_VERSION","version":"v1.5.0"`) {
-		t.Errorf("--in <version>: %s", fc.calls[1].body)
+	if !strings.Contains(fc.calls[0].body, `"kind":"ISSUE_RESOLVE_KIND_VERSION","version":"v1.5.0"`) {
+		t.Errorf("--in <version>: %s", fc.calls[0].body)
 	}
-	fc = &fakeCloudCaller{replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`, cloudUpdate: `{"issue":` + updated + `}`}}
+	fc = &fakeCloudCaller{replies: map[string]string{cloudUpdate: `{"issue":` + updated + `}`}}
 	if _, _, err = obsRunCloud(t, fc, "issue", "ignore", "ISS-7f3a", "prod", "--until", "72h"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(fc.calls[1].body, `"ignoredUntil":"2026-10-25T12:00:00Z"`) {
-		t.Errorf("--until 72h from the clock: %s", fc.calls[1].body)
+	if !strings.Contains(fc.calls[0].body, `"ignoredUntil":"2026-10-25T12:00:00Z"`) {
+		t.Errorf("--until 72h from the clock: %s", fc.calls[0].body)
 	}
 	if _, _, err = obsRunCloud(t, fc, "issue", "ignore", "ISS-7f3a", "prod", "--until", "someday"); exitCodeForError(err) != 1 {
 		t.Errorf("bad --until: exit %d, want 1", exitCodeForError(err))
@@ -406,8 +412,7 @@ func TestObsIssuesCloudErrorMapping(t *testing.T) {
 
 func TestObsIssueTriageCloudStaleWriteIsExit1(t *testing.T) {
 	fc := &fakeCloudCaller{
-		replies: map[string]string{cloudIssue: `{"issue":` + cloudIssueJSON + `}`},
-		errs:    map[string]error{cloudUpdate: &cloud.Error{Code: "aborted"}},
+		errs: map[string]error{cloudUpdate: &cloud.Error{Code: "aborted"}},
 	}
 	out, _, err := obsRunCloud(t, fc, "issue", "unresolve", "ISS-7f3a", "prod", "--json")
 	if exitCodeForError(err) != 1 {

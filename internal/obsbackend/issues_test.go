@@ -318,7 +318,7 @@ func TestCloudGetIssueRefusesAnotherEnvironmentsIssue(t *testing.T) {
 
 func TestCloudTriageSendsExpectedVersionAndMapsResolveIn(t *testing.T) {
 	updated := strings.Replace(strings.Replace(wireIssueJSON, "ISSUE_STATUS_REGRESSED", "ISSUE_STATUS_RESOLVED", 1), `"version":4`, `"version":5`, 1)
-	f := &fakeCaller{replies: map[string]string{procGetIssue: `{"issue":` + wireIssueJSON + `}`, procUpdateIssueStatus: `{"issue":` + updated + `}`}}
+	f := &fakeCaller{replies: map[string]string{procUpdateIssueStatus: `{"issue":` + updated + `}`}}
 	until := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
 	cases := []struct {
 		req  UpdateIssueStatusRequest
@@ -340,8 +340,11 @@ func TestCloudTriageSendsExpectedVersionAndMapsResolveIn(t *testing.T) {
 			t.Fatal(err)
 		}
 		req := f.reqs[procUpdateIssueStatus]
-		if req["issueId"] != "ISS-7f3a" || req["envId"] != "env-1" || req["expectedVersion"] != float64(4) {
-			t.Errorf("%+v: request %v must carry the issue, its env and the version read", tc.req, req)
+		if req["issueId"] != "ISS-7f3a" || req["envId"] != "env-1" {
+			t.Errorf("%+v: request %v must carry the issue and the env named", tc.req, req)
+		}
+		if _, has := req["expectedVersion"]; has {
+			t.Errorf("%+v: request %v sends a version it never read", tc.req, req)
 		}
 		for k, want := range tc.want {
 			if got := jsonOf(req[k]); got != jsonOf(want) {
@@ -355,14 +358,18 @@ func TestCloudTriageSendsExpectedVersionAndMapsResolveIn(t *testing.T) {
 	if _, has := f.reqs[procUpdateIssueStatus]["resolveIn"]; has {
 		t.Error("only a resolve carries resolve_in")
 	}
+	// GetIssue reads ClickHouse and spends the org's hourly query quota; a
+	// status change is a Postgres write and must not (control-plane#2767).
+	if _, read := f.reqs[procGetIssue]; read {
+		t.Error("a status change read the issue first")
+	}
 }
 
 func jsonOf(v any) string { b, _ := json.Marshal(v); return string(b) }
 
 func TestCloudTriageStaleWriteIsExit1WithRetryAdvice(t *testing.T) {
 	f := &fakeCaller{
-		replies: map[string]string{procGetIssue: `{"issue":` + wireIssueJSON + `}`},
-		errs:    map[string]error{procUpdateIssueStatus: &cloud.Error{Code: "aborted"}},
+		errs: map[string]error{procUpdateIssueStatus: &cloud.Error{Code: "aborted"}},
 	}
 	_, err := cloudWith(f).UpdateIssueStatus(context.Background(), UpdateIssueStatusRequest{ID: "ISS-7f3a", Status: IssueResolved})
 	if exitOf(err) != ExitWrong || !strings.Contains(err.Error(), "re-read and retry") {

@@ -239,7 +239,12 @@ var newRules = []rolloutGroup{
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.MigrationRuleIDs()},
+	// forge db analyze queries: a captured query's filter, join or
+	// ORDER BY … LIMIT no index serves. Dated apart from the migration rules
+	// above: v1.7.0 shipped the migration pass alone, so these get their own
+	// warning release before they gate.
+	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: dbanalyze.QueryRuleIDs()},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

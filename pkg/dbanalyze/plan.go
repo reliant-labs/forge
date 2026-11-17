@@ -189,7 +189,10 @@ func (n *rawPlan) predicates() []string {
 }
 
 // conjuncts splits a deparsed condition at its top-level ANDs, outside
-// parentheses and quotes. A condition with none is returned whole.
+// parentheses and quotes. A condition with none is returned whole. Postgres
+// deparses a quote inside a literal or identifier as a doubled quote, which
+// the scan reads as a close and an immediate reopen: no byte between the two
+// is ever outside the quote, so a doubled quote needs no special case.
 func conjuncts(pred string) []string {
 	s := strings.TrimSpace(pred)
 	for enclosed(s) {

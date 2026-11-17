@@ -78,6 +78,12 @@ func TestConjunctsSplitTopLevelAnds(t *testing.T) {
 		"((o.a = c.a) OR (o.b = 'x AND y'::text))":               {"((o.a = c.a) OR (o.b = 'x AND y'::text))"},
 		"((a = 1) AND ((b = 2) AND (c = 3)))":                    {"(a = 1)", "(b = 2)", "(c = 3)"},
 		"((a)::text = 'it''s AND'::text)":                        {"((a)::text = 'it''s AND'::text)"},
+		// A doubled quote closes and reopens the literal, so the text after
+		// it, " AND " and alias references included, stays inside it.
+		"((o.note = 'it''s AND o.customer_id = c.id'::text) AND (o.id = 1))": {"(o.note = 'it''s AND o.customer_id = c.id'::text)", "(o.id = 1)"},
+		"(o.note = 'it''s AND o.customer_id = c.id'::text)":                  {"(o.note = 'it''s AND o.customer_id = c.id'::text)"},
+		"((o.\"we\"\"ird AND x\" = 1) AND (o.id = 1))":                       {"(o.\"we\"\"ird AND x\" = 1)", "(o.id = 1)"},
+		"('a'')' = o.x)": {"('a'')' = o.x)"},
 	} {
 		got := conjuncts(in)
 		if strings.Join(got, "|") != strings.Join(want, "|") {

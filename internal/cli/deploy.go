@@ -567,6 +567,9 @@ type deployCmdFlags struct {
 	// claim, set only by the claimable path, resolves the `claim` object of the
 	// --json document at the moment the document is written.
 	claim func() *deployClaimJSON
+	// promoted, set only by the claimable path, is called once the
+	// promotion is recorded, whatever the rollout then does.
+	promoted func()
 	// offlineLedger deploys the cached current release with the hosted
 	// ledger unreachable (offline_ledger.go).
 	offlineLedger bool

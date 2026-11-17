@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -249,6 +250,76 @@ func TestClaimableDeploy_PublishesAndPrintsTheClaim(t *testing.T) {
 	}
 	if !strings.Contains(statusOut, "Claim:  https://app.reliant.dev/claim#rcl_9f3KQe") {
 		t.Errorf("status --claimable lacks the claim link:\n%s", statusOut)
+	}
+}
+
+// A claimable deploy whose promotion was written is published, whatever its
+// rollout then does: a timed-out wait, with no address observed yet, must not
+// make status say nothing is deployed and hold the claim link back. And a
+// successful retry's documents report THAT attempt, not the stored failure.
+func TestClaimableDeploy_FailedRolloutStillReadsAsPublished(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	fake.noObservedURL = true
+	wait := capturedWait{err: &exitCodeError{code: exitTimedOut, msg: "web: still progressing"}}
+	wait.install(t)
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if got := exitCodeForError(err); got != exitTimedOut {
+		t.Fatalf("exit code = %d, want the wait's %d (%v)\n%s", got, exitTimedOut, err, out)
+	}
+	if fake.bundles[fake.envs["hosted"]]["web"] == nil {
+		t.Fatal("the promotion was not written; the test needs a deploy that published before its rollout failed")
+	}
+
+	statusOut, err := runForge(t, "env", "status", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("status --claimable --json: %v\n%s", err, statusOut)
+	}
+	claim, _ := decodeClaimDoc(t, statusOut)["claim"].(map[string]any)
+	if claim == nil {
+		t.Fatalf("status carries no claim:\n%s", statusOut)
+	}
+	if claim["published"] != true {
+		t.Fatalf("claim.published = %v after a written promotion whose rollout failed:\n%s", claim["published"], statusOut)
+	}
+	if u, _ := claim["url"].(string); u != "" {
+		t.Fatalf("claim.url = %q; the test needs no observed address", u)
+	}
+	last, _ := claim["last_attempt"].(map[string]any)
+	if last["outcome"] != "failed" || !strings.Contains(fmt.Sprint(last["error"]), "still progressing") {
+		t.Fatalf("claim.last_attempt = %v, want the rollout's failure", last)
+	}
+	text, err := runForge(t, "env", "status", "hosted", "--claimable")
+	if err != nil {
+		t.Fatalf("status --claimable: %v\n%s", err, text)
+	}
+	if strings.Contains(text, "Nothing is deployed") || !strings.Contains(text, "Claim:  https://app.reliant.dev/claim#rcl_9f3KQe") {
+		t.Fatalf("status of a published deploy withheld the claim:\n%s", text)
+	}
+
+	// The retry succeeds, starting from that stored failure.
+	wait.err = nil
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	for name, doc := range map[string]string{"deploy --json": out} {
+		claim, _ := decodeClaimDoc(t, doc)["claim"].(map[string]any)
+		last, _ := claim["last_attempt"].(map[string]any)
+		if claim["published"] != true || last["outcome"] != "published" || last["error"] != nil {
+			t.Fatalf("%s: claim = %v, want this attempt, published, with no error", name, claim)
+		}
+	}
+	statusOut, err = runForge(t, "env", "status", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("status after the retry: %v\n%s", err, statusOut)
+	}
+	claim, _ = decodeClaimDoc(t, statusOut)["claim"].(map[string]any)
+	if last, _ := claim["last_attempt"].(map[string]any); last["outcome"] != "published" || last["error"] != nil {
+		t.Fatalf("stored last_attempt after a successful retry = %v", last)
 	}
 }
 

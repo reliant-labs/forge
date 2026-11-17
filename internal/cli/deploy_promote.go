@@ -40,6 +40,10 @@ type promoteOptions struct {
 	// Claim, set only by `deploy --claimable`, resolves the document's `claim`
 	// object once the deploy is live (its URL is not known before).
 	Claim func() *deployClaimJSON
+	// Promoted, set only by `deploy --claimable`, is called once the
+	// promotion is recorded, before the follow-through: the release is
+	// published then, whatever its rollout goes on to do.
+	Promoted func()
 	// DryRun computes the plan and stops. Nothing is written, exit 0.
 	DryRun bool
 	// JSON switches the RENDERING only. The plan is computed before either
@@ -401,6 +405,9 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		})
 		if writeErr == nil {
 			plan.FloorsRaised = floorsRaisedBy(ctx, ledger, env, plan.Recorded)
+			if opts.Promoted != nil {
+				opts.Promoted()
+			}
 		}
 		if writeErr == nil && opts.Follow != nil {
 			writeErr = followRecordedPromotion(ctx, env, projectDir, &plan, ledger, opts)

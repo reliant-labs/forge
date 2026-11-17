@@ -306,21 +306,23 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// plan for a throwaway account, and the account is the only thing at stake.
 		inner := f
 		inner.promote.yes = true
+		// Every outcome is remembered beside the token, so `env status
+		// --claimable` can tell a published deploy from one whose every
+		// attempt failed: both have a claim link and an expiry. Publication
+		// is recorded when the promotion is written, so a rollout that then
+		// times out or degrades still reads as published.
+		inner.promoted = session.markPublished
 		inner.claim = func() *deployClaimJSON {
-			// Asked for only once the promotion is written: this deploy published.
-			session.cred.Claimable.LastPublishedAt = claimableNow().UTC()
+			// Asked for only once the deploy succeeded: its document says so.
+			session.recordAttempt(nil)
 			session.refreshURL(ctx)
 			return session.document(compute)
 		}
-		// Every outcome is remembered beside the token, so `env status
-		// --claimable` can tell a published deploy from one whose every
-		// attempt failed: both have a claim link and an expiry.
 		deployErr := runDeployEverything(ctx, envName, inner)
-		_ = cloud.RecordClaimableAttempt(ep, project, envName, claimableNow(), deployErr)
+		session.recordAttempt(deployErr)
 		if deployErr != nil {
 			return claimableDeployError(envName, deployErr)
 		}
-		session.cred.Claimable.LastPublishedAt = claimableNow().UTC()
 		if !f.jsonOut {
 			printClaimBlock(os.Stdout, envName, session.document(compute))
 		}
@@ -946,6 +948,28 @@ func (s *claimableSession) refreshURL(ctx context.Context) {
 		s.cred.Claimable.URL = url
 		_ = cloud.RecordClaimableURL(s.ep, s.project, s.env, url)
 	}
+}
+
+// markPublished records that this deploy's promotion was written: from now
+// on the claimable deploy has something behind it, whatever the rollout does.
+// Durable at once, so a deploy that then fails or is killed still reads as
+// published.
+func (s *claimableSession) markPublished() {
+	s.recordAttempt(nil)
+}
+
+// recordAttempt sets how this deploy ended, in memory and beside the token:
+// published (deployErr nil), or the error, keeping an earlier publication.
+func (s *claimableSession) recordAttempt(deployErr error) {
+	at := claimableNow().UTC()
+	cl := s.cred.Claimable
+	cl.LastAttemptAt, cl.LastAttemptError = at, ""
+	if deployErr == nil {
+		cl.LastPublishedAt = at
+	} else {
+		cl.LastAttemptError = cloud.FirstErrorLine(deployErr)
+	}
+	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr)
 }
 
 // primaryURL is the address to show first: the static site's when there is one,

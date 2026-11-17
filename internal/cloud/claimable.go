@@ -451,15 +451,15 @@ func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, depl
 		if deployErr == nil {
 			c.Claimable.LastPublishedAt = at.UTC()
 		} else {
-			c.Claimable.LastAttemptError = firstErrorLine(deployErr)
+			c.Claimable.LastAttemptError = FirstErrorLine(deployErr)
 		}
 		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
 	})
 }
 
-// firstErrorLine is an error's first line, bounded: what a status line can
+// FirstErrorLine is an error's first line, bounded: what a status line can
 // show. The full error was printed by the deploy that raised it.
-func firstErrorLine(err error) string {
+func FirstErrorLine(err error) string {
 	msg := strings.TrimSpace(err.Error())
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = strings.TrimSpace(msg[:i])

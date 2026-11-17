@@ -187,6 +187,31 @@ func TestDeployRelease_TheWaitsExitCodeIsTheDeploys(t *testing.T) {
 	}
 }
 
+// Promoted fires at the write, before the wait: a deploy whose promotion was
+// recorded published, even when its rollout then times out. Claim, which
+// describes a successful deploy, is not asked for.
+func TestDeployRelease_PromotedFiresAtTheWriteEvenWhenTheWaitFails(t *testing.T) {
+	wait := capturedWait{err: &exitCodeError{code: exitTimedOut, msg: "still progressing"}}
+	wait.install(t)
+
+	_, store := hostedPromoteFixture(t, "v1")
+	promoted := 0
+	_, err := runHostedPromote(t, store, "v2", promoteOptions{
+		Follow:   waitByDefault(),
+		Promoted: func() { promoted++ },
+		Claim: func() *deployClaimJSON {
+			t.Error("the claim document was built for a deploy whose rollout failed")
+			return nil
+		},
+	})
+	if got := exitCodeForError(err); got != exitTimedOut {
+		t.Fatalf("exit code = %d, want %d (%v)", got, exitTimedOut, err)
+	}
+	if promoted != 1 {
+		t.Fatalf("Promoted ran %d time(s), want once at the write", promoted)
+	}
+}
+
 // TestDeployRelease_FailedWaitStillEmitsTheJSONDocument is the write/wait seam,
 // and it is the case that matters MOST for a pipeline.
 //

@@ -455,6 +455,21 @@ describe("ReplayTransport", () => {
     expect(sent.map((s) => s.init.keepalive)).toEqual([true]);
   });
 
+  it("retries again once the page is restored from the back-forward cache", async () => {
+    const { sent, fn } = fakeFetch((init) => init.keepalive === true);
+    const t = new ReplayTransport({
+      url: URL_,
+      resource,
+      fetch: fn,
+      createWorker: inlineWorker,
+    });
+    t.send([record("left")], "leaving");
+    t.restored();
+    t.send([record("back")], "hidden");
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent.map((s) => s.init.keepalive)).toEqual([true, true, false]);
+  });
+
   it("sends nothing once closed, not even a batch it was encoding", async () => {
     const { sent, fn } = fakeFetch();
     const worker = inlineWorker();

@@ -368,6 +368,11 @@ export class ReplayTransport {
    * uncompressed, with keepalive, and its background result is dropped, so
    * each batch is sent once.
    */
+  /** The page came back from the back-forward cache: it lives again. */
+  restored(): void {
+    this.unloading = false;
+  }
+
   flushInFlight(): void {
     this.unloading = true;
     for (const batch of this.inFlight) {
@@ -467,14 +472,15 @@ export class ReplayTransport {
       body: encoded.body,
       keepalive,
     };
+    const sentUnloading = this.unloading;
     try {
       this.doFetch(this.options.url, init).catch(() => {
         // Over the keepalive budget the browser refuses the request: retry
         // without it, which arrives unless the page is already gone. Never
-        // while the page unloads: the browser then rejects a keepalive
-        // request it DID send (the document is going), and a retry would
-        // deliver the batch twice.
-        if (keepalive && !this.closed && !this.unloading) {
+        // for a request sent or rejected while the page unloads: the browser
+        // then rejects a keepalive request it DID send (the document is
+        // going), and a retry would deliver the batch twice.
+        if (keepalive && !this.closed && !sentUnloading && !this.unloading) {
           this.doFetch(this.options.url, { ...init, keepalive: false }).catch(
             () => {},
           );
@@ -807,7 +813,7 @@ export interface ReplayRecorderOptions {
   /** Test seams. */
   loadRecord?: () => Promise<RrwebRecord>;
   transport?: Pick<ReplayTransport, "send" | "close"> &
-    Partial<Pick<ReplayTransport, "flushInFlight">>;
+    Partial<Pick<ReplayTransport, "flushInFlight" | "restored">>;
   now?: () => number;
 }
 
@@ -881,6 +887,12 @@ export function startReplayRecorder(
   ) {
     window.addEventListener("pagehide", leave);
     undo.push(() => window.removeEventListener?.("pagehide", leave));
+    // Back from the back-forward cache: the page was not unloaded after all.
+    const back = (e: Event) => {
+      if ((e as PageTransitionEvent).persisted) transport.restored?.();
+    };
+    window.addEventListener("pageshow", back);
+    undo.push(() => window.removeEventListener?.("pageshow", back));
   }
 
   const begin = async (): Promise<boolean> => {

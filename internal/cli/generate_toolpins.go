@@ -168,7 +168,10 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 			return nil, err
 		}
 		bin := filepath.Join(dir, t.Binary+exeSuffix())
-		built, err := installPinnedTool(ctx, t, want, dir, have, nil)
+		built, err := installPinnedTool(ctx, t, want, dir, have, func() {
+			fmt.Fprintf(os.Stderr, "📌 installing %s %s, which go.mod pins (%s), into forge's tool cache (one time) → %s\n",
+				t.Binary, want, have, dir)
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +180,7 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 				return nil, pinError(t, want, have, fmt.Errorf("installed binary reports %s", got))
 			}
 		}
-		fmt.Fprintf(os.Stderr, "📌 %s resolved to %s (%s, go.mod pins %s) → %s\n", t.Binary, want, have, want, dir)
+		pinNotice("📌 %s resolved to %s (%s, go.mod pins %s) → %s\n", t.Binary, want, have, want, dir)
 		res.Dirs = append(res.Dirs, dir)
 		res.paths[t.Binary] = bin
 	}
@@ -185,6 +188,22 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 		return nil, err
 	}
 	return res, nil
+}
+
+// pinNotice reports which pinned build a codegen tool resolved to. It is
+// routine (generate_verbosity.go): with the pin already in forge's tool cache
+// the line is identical on every run, and nothing is wrong — forge's own steps
+// run the pin whatever PATH holds, so PATH lagging go.mod needs no action.
+// Printing it on every `forge generate` and `forge scaffold` taught readers to
+// skim past the block it sat in. So it prints under `forge generate
+// --verbose`, for debugging which binary a step ran. What does need saying
+// prints regardless: a pin being installed (a one-time build, announced by
+// installPinnedTool's caller and by cigate's resolver) and a pin that cannot
+// be installed (pinError).
+func pinNotice(format string, args ...any) {
+	if generateVerbose {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}
 }
 
 // pinBuf runs buf at the version the project's go.mod declares
@@ -209,7 +228,7 @@ func pinBuf(ctx context.Context, projectDir string, res *codegenTools) error {
 	if dir == "" {
 		return nil // the buf on PATH is the pin
 	}
-	fmt.Fprintf(os.Stderr, "📌 buf resolved to %s (go.mod pins %s) → %s\n", b.Version, b.Version, dir)
+	pinNotice("📌 buf resolved to %s (go.mod pins %s) → %s\n", b.Version, b.Version, dir)
 	res.Dirs = append(res.Dirs, dir)
 	res.paths["buf"] = filepath.Join(dir, "buf"+exeSuffix())
 	return nil

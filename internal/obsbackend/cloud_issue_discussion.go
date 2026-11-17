@@ -174,30 +174,27 @@ func (c Cloud) AddIssueComment(ctx context.Context, req AddIssueCommentRequest) 
 }
 
 // AssignIssue implements IssueReader over IssuesService.AssignIssue. Like
-// UpdateIssueStatus it reads the issue first and sends the row version it read
+// UpdateIssueStatus it reads the issue's state first (issueState: no query
+// quota) and sends the row version it read
 // as expected_version: a write over a state the caller never saw is Aborted,
 // reported as "changed since you read it", and never retried.
 func (c Cloud) AssignIssue(ctx context.Context, req AssignIssueRequest) (AssignIssueResult, error) {
-	now := time.Now().UTC()
-	cur, err := c.getIssue(ctx, req.ID, Narrow{Range: Range{From: now.Add(-triageWindow), To: now}})
+	cur, err := c.issueState(ctx, req.ID)
 	if err != nil {
-		return AssignIssueResult{}, err
-	}
-	if err := c.checkEnv(cur.Issue); err != nil {
 		return AssignIssueResult{}, err
 	}
 	in := struct {
 		IssueID         string `json:"issueId"`
 		AssigneeUserID  string `json:"assigneeUserId,omitempty"`
 		ExpectedVersion int32  `json:"expectedVersion,omitempty"`
-	}{req.ID, req.Assignee, cur.Issue.Version}
+	}{req.ID, req.Assignee, cur.Version}
 	var out struct {
 		Issue wireIssue `json:"issue"`
 	}
 	if err := c.callIssuesEnvWide(ctx, procAssignIssue, in, &out); err != nil {
 		var ce *cloud.Error
 		if errors.As(err, &ce) && ce.HasCode("aborted") {
-			return AssignIssueResult{}, Wrong("issue %s changed since you read it (version %d); read it again before assigning", req.ID, cur.Issue.Version).Cause(err)
+			return AssignIssueResult{}, Wrong("issue %s changed since you read it (version %d); read it again before assigning", req.ID, cur.Version).Cause(err)
 		}
 		return AssignIssueResult{}, err
 	}

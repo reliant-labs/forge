@@ -47,6 +47,11 @@ service Status {
 }
 ```
 
+Publishing an rpc does not publish a page. A gated frontend's route guard still
+sends a signed-out visitor to sign in before the page can call it: list the page
+in `src/lib/auth/route-guard.tsx` too (`publicExactPaths = ["/"]` for a public
+home page; `auth/public-pages`).
+
 Opening an rpc is not the only way to serve a second audience: forge declares
 multiple frontends and multiple services in `forge.yaml`, so separate audiences
 can have separate applications against separate rpcs.

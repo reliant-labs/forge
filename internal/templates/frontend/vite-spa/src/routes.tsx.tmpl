@@ -133,7 +133,9 @@ export const rootRoute = createRootRoute({
 
 // Index route — the welcome / dashboard landing page. Replace with your own
 // dashboard component once you have services with CRUD entities and have
-// run `forge generate` to scaffold them.
+// run `forge generate` to scaffold them. Like every route inside <App />, it
+// renders inside App's <main>: use a <div> or <section>, never a second
+// <main>.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",

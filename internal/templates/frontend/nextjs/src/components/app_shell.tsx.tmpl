@@ -31,6 +31,10 @@
 // Add a path to `bareRoutes` for any other full-bleed page — a marketing
 // landing page, an onboarding wizard, a 404 you want unframed. The match is
 // prefix-based, so "/auth" covers "/auth/sign-in/login" too.
+//
+// The shell draws the app's one <main> landmark, around the content column,
+// so a page rendered inside it must not draw another. A bare route gets no
+// <main> from here: its page renders its own (the auth screens do).
 
 import { usePathname } from "next/navigation";
 

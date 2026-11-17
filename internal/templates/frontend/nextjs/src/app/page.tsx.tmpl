@@ -5,6 +5,12 @@
 // file you had written. Swapping the entity tiles for the handful of numbers
 // your product actually leads with is the expected first edit, not a
 // customization.
+//
+// This page renders INSIDE a <main>. The root layout wraps every page in
+// AppShell (src/components/app_shell.tsx), which draws the one <main>
+// landmark around the content column, so a rewrite here uses a <div> or a
+// <section> — a second <main> nested in the first is a duplicate landmark to
+// a screen reader. (Routes AppShell renders bare, /auth, draw their own.)
 
 import { EntityTiles, QuickActions } from "@/app/dashboard";
 import PageHeader from "@/components/ui/page_header";

@@ -18,7 +18,8 @@
 //   - rrweb is imported lazily, only when replay runs: bundlers put it in its
 //     own chunk, and an app without replay never loads it.
 //   - Records are batched (ReplayBatcher) and flushed every
-//     REPLAY_FLUSH_INTERVAL_MS, sooner when REPLAY_MAX_PENDING_BYTES are held.
+//     REPLAY_FLUSH_INTERVAL_MS, within a second once REPLAY_TAIL_MAX_BYTES are
+//     held, and at once when REPLAY_MAX_PENDING_BYTES are.
 //   - A batch is encoded as OTLP/JSON (encodeReplayRequest: one native
 //     JSON.stringify) and gzipped with CompressionStream, both in a Worker
 //     (ReplayTransport). Where a Worker cannot run (a CSP without
@@ -61,6 +62,15 @@ export const REPLAY_FLUSH_INTERVAL_MS = 15_000;
 
 /** Held record bytes (JSON chars) that send a batch before the interval. */
 export const REPLAY_MAX_PENDING_BYTES = 512 * 1024;
+
+/**
+ * Held record bytes (JSON chars) that send a batch within
+ * REPLAY_SNAPSHOT_FLUSH_MS rather than wait for the interval. What is held
+ * when the page is left goes uncompressed, and only KEEPALIVE_MAX_BYTES of it
+ * is sure to arrive; this keeps that tail to about a second's records, and
+ * sends the rest gzipped, a fifth to a tenth of the bytes.
+ */
+export const REPLAY_TAIL_MAX_BYTES = 48 * 1024;
 
 /**
  * How soon (ms) a full snapshot is sent once taken. It is most of a session's
@@ -204,12 +214,14 @@ export type FlushMode = "background" | "hidden" | "leaving";
 export interface ReplayBatcherOptions {
   flushIntervalMs?: number;
   maxPendingBytes?: number;
+  tailMaxBytes?: number;
   send(records: ReplayRecord[], mode: FlushMode): void;
 }
 
 /**
  * Holds records and hands them to `send` in batches: REPLAY_FLUSH_INTERVAL_MS
- * after the first record held since the last batch, at once when
+ * after the first record held since the last batch, within
+ * REPLAY_SNAPSHOT_FLUSH_MS once REPLAY_TAIL_MAX_BYTES are held, at once when
  * REPLAY_MAX_PENDING_BYTES are held, and on flush().
  */
 export class ReplayBatcher {
@@ -218,10 +230,12 @@ export class ReplayBatcher {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly interval: number;
   private readonly maxBytes: number;
+  private readonly tailBytes: number;
 
   constructor(private readonly options: ReplayBatcherOptions) {
     this.interval = options.flushIntervalMs ?? REPLAY_FLUSH_INTERVAL_MS;
     this.maxBytes = options.maxPendingBytes ?? REPLAY_MAX_PENDING_BYTES;
+    this.tailBytes = options.tailMaxBytes ?? REPLAY_TAIL_MAX_BYTES;
   }
 
   /** Records held, not yet sent. */
@@ -234,6 +248,8 @@ export class ReplayBatcher {
     this.bytes += record.body.length;
     if (this.bytes >= this.maxBytes) {
       this.flush("background");
+    } else if (this.bytes >= this.tailBytes) {
+      this.flushWithin(REPLAY_SNAPSHOT_FLUSH_MS);
     } else if (this.timer === undefined) {
       this.schedule(this.interval);
     }
@@ -363,16 +379,16 @@ export class ReplayTransport {
     void this.sendInBackground(records);
   }
 
-  /**
-   * The page is being unloaded: every batch still being encoded is sent now,
-   * uncompressed, with keepalive, and its background result is dropped, so
-   * each batch is sent once.
-   */
   /** The page came back from the back-forward cache: it lives again. */
   restored(): void {
     this.unloading = false;
   }
 
+  /**
+   * The page is being unloaded: every batch still being encoded is sent now,
+   * uncompressed, with keepalive, and its background result is dropped, so
+   * each batch is sent once.
+   */
   flushInFlight(): void {
     this.unloading = true;
     for (const batch of this.inFlight) {

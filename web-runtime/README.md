@@ -340,7 +340,8 @@ only on `unload`. The runtime's recorder works like this:
 
 - **Lazy rrweb.** rrweb loads in its own chunk, and only when replay runs.
 - **Batches.** Records are held and sent every 15 s (`replayFlushIntervalMs`),
-  or sooner once 512 KB are held.
+  or within a second once 48 KB are held, so what is left to send
+  uncompressed when the page is left stays small.
 - **Encoding.** Each batch is encoded as OTLP/JSON (one native
   `JSON.stringify`) and gzipped with `CompressionStream`, both in a Worker
   created from a Blob URL. Under a CSP that refuses `worker-src blob:`, the

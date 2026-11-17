@@ -20,6 +20,7 @@ import {
   REPLAY_MAX_PENDING_BYTES,
   REPLAY_SCOPE,
   REPLAY_SNAPSHOT_FLUSH_MS,
+  REPLAY_TAIL_MAX_BYTES,
   ReplayBatcher,
   type ReplayRecord,
   type RrwebRecord,
@@ -174,6 +175,22 @@ describe("ReplayBatcher", () => {
     b.add(record("x".repeat(REPLAY_MAX_PENDING_BYTES / 2)));
     expect(sent).toEqual([2]);
     expect(b.size).toBe(0);
+  });
+
+  it("sends within REPLAY_SNAPSHOT_FLUSH_MS once REPLAY_TAIL_MAX_BYTES are held, so a page left loses little to the uncompressed tail", () => {
+    vi.useFakeTimers();
+    const sent: number[] = [];
+    const b = new ReplayBatcher({
+      send: (records) => sent.push(records.length),
+    });
+    b.add(record("x".repeat(REPLAY_TAIL_MAX_BYTES / 2)));
+    vi.advanceTimersByTime(REPLAY_SNAPSHOT_FLUSH_MS);
+    expect(sent).toEqual([]);
+    b.add(record("x".repeat(REPLAY_TAIL_MAX_BYTES / 2)));
+    vi.advanceTimersByTime(REPLAY_SNAPSHOT_FLUSH_MS - 1);
+    expect(sent).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(sent).toEqual([2]);
   });
 
   it("sends sooner when asked to, never later than already due", () => {

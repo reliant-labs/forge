@@ -508,8 +508,8 @@ export interface BrowserTelemetryConfig {
   replayStart?: ReplayStart;
   /**
    * How often (ms) recorded replay is sent. Default REPLAY_FLUSH_INTERVAL_MS
-   * (15 s); a batch also goes when 512 KB are held, and whenever the page is
-   * hidden or left.
+   * (15 s); a batch also goes within a second once 48 KB are held, and
+   * whenever the page is hidden or left.
    */
   replayFlushIntervalMs?: number;
   /** Verbose SDK diagnostics to the console. Default false. */

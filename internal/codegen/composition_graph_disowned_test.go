@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/checksums"
 	"golang.org/x/tools/imports"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 // Exercise normal discovery/assembly, including the generated Operators node,

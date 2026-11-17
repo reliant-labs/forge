@@ -1366,9 +1366,13 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if upReclaimsStorage(entities, clusterErr) {
 		maybeOpportunisticGC(ctx, os.Stdout)
 	}
-	// The stack is up: say so in one line, the last of the bring-up. A run
-	// whose cluster gate failed gets its line on the error instead.
+	// The stack is up: what its RPCs did, then one line saying so, the last
+	// of the bring-up. A run whose cluster gate failed gets its line on the
+	// error instead.
 	if clusterErr == nil {
+		if upHasHostService(upRows) {
+			printUpEndpoints(ctx, os.Stdout, opts.env)
+		}
 		fmt.Printf("\n%s\n", upResult(opts.env, upRows, detach).Line())
 	}
 

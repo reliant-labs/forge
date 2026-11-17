@@ -126,16 +126,24 @@ function normalize(pathname: string): string {
   return trimmed === "" ? "/" : trimmed;
 }
 
+/** The two lists above, as the guard reads them. */
+interface PublicRoutes {
+  exact: readonly string[];
+  prefixes: readonly string[];
+}
+
+const PUBLIC_ROUTES: PublicRoutes = { exact: publicExactPaths, prefixes: publicPaths };
+
 /**
  * Whether `pathname` renders for a visitor with no session.
  *
  * Not exported: a module that exports anything but components loses React
  * Fast Refresh. Links ask through useCanVisit() (route-access_gen.ts).
  */
-function isPublicPath(pathname: string): boolean {
+function isPublicPath(pathname: string, routes: PublicRoutes = PUBLIC_ROUTES): boolean {
   const path = normalize(pathname);
-  if (publicExactPaths.some((p) => normalize(p) === path)) return true;
-  return publicPaths.some((raw) => {
+  if (routes.exact.some((p) => normalize(p) === path)) return true;
+  return routes.prefixes.some((raw) => {
     const p = normalize(raw);
     // "/" is the home page, never a prefix: that would be every path.
     if (p === "/") return path === "/";
@@ -151,15 +159,21 @@ function isPublicPath(pathname: string): boolean {
  * shared byte-for-byte between the Next.js and Vite scaffolds, which disagree
  * about routing and about nothing else here. It also means this component can
  * be tested with no router mounted at all.
+ *
+ * `publicRoutes` replaces the two lists above for one mount. The app never
+ * passes it — edit the lists — but route-guard.test.tsx does, to pin the
+ * matching rules against lists the scaffold does not ship.
  */
 export function RouteGuard({
   pathname,
   navigate,
   children,
+  publicRoutes = PUBLIC_ROUTES,
 }: {
   pathname: string;
   navigate: (path: string) => void;
   children: React.ReactNode;
+  publicRoutes?: PublicRoutes;
 }) {
   const { isAuthenticated, isLoading } = useAuth();
 
@@ -168,7 +182,8 @@ export function RouteGuard({
   // because the browser has no issuer config: the server holds it and
   // answers "who is signed in?" over this app's own API.
   const enforcing = true;
-  const blocked = enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname);
+  const blocked =
+    enforcing && !isLoading && !isAuthenticated && !isPublicPath(pathname, publicRoutes);
 
   // Redirect from an effect, not during render: navigating while rendering is
   // a side effect in the render phase, which React is entitled to run twice
@@ -233,8 +248,8 @@ export function RouteGuard({
   // rather than a signed-out one's admin links flashing up and vanishing.
   const signedIn = hydrated && !isLoading && isAuthenticated;
   const canVisit = useCallback(
-    (path: string) => !enforcing || signedIn || isPublicPath(path),
-    [enforcing, signedIn],
+    (path: string) => !enforcing || signedIn || isPublicPath(path, publicRoutes),
+    [enforcing, signedIn, publicRoutes],
   );
   const render = (tree: React.ReactNode) => (
     <RouteAccessContext.Provider value={canVisit}>{tree}</RouteAccessContext.Provider>
@@ -252,7 +267,7 @@ export function RouteGuard({
   // It is safe to skip the hydration dance here for the same reason the
   // route is public: the output does not depend on identity, so the server
   // and the client render the same thing either way.
-  if (isPublicPath(pathname)) return render(children);
+  if (isPublicPath(pathname, publicRoutes)) return render(children);
 
   if (!hydrated) return <AuthPending />;
 

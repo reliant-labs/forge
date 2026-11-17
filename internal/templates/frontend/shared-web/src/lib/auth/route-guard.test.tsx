@@ -32,10 +32,12 @@ function Links({ paths }: { paths: string[] }) {
   );
 }
 
-function renderAt(pathname: string, paths: string[] = []) {
+type PublicRoutes = { exact: string[]; prefixes: string[] };
+
+function renderAt(pathname: string, paths: string[] = [], publicRoutes?: PublicRoutes) {
   const navigate = vi.fn();
   render(
-    <RouteGuard pathname={pathname} navigate={navigate}>
+    <RouteGuard pathname={pathname} navigate={navigate} publicRoutes={publicRoutes}>
       <p>page</p>
       <Links paths={paths} />
     </RouteGuard>,
@@ -94,6 +96,79 @@ describe("RouteGuard", () => {
     expect(screen.getByText("/orders: hidden")).toBeTruthy();
     expect(screen.getByText("/auth/forgot: open")).toBeTruthy();
   });
+});
+
+/**
+ * Mounts the guard signed out at `pathname` and reports whether it rendered
+ * the page (true) or sent the visitor to sign in (false).
+ */
+function opensSignedOut(pathname: string, publicRoutes: PublicRoutes): boolean {
+  const navigate = renderAt(pathname, [], publicRoutes);
+  const rendered = screen.queryByText("page") !== null;
+  // Rendering and redirecting are one decision, never both or neither.
+  expect(navigate.mock.calls.length > 0).toBe(!rendered);
+  cleanup();
+  return rendered;
+}
+
+/** What the guard tells links (useCanVisit) about each of `paths`, signed out. */
+function linksSignedOut(from: string, paths: string[], publicRoutes: PublicRoutes) {
+  renderAt(from, paths, publicRoutes);
+  const seen = Object.fromEntries(
+    paths.map((p) => [p, screen.getByText(new RegExp(`^${p}: `)).textContent?.endsWith("open")]),
+  );
+  cleanup();
+  return seen;
+}
+
+describe("RouteGuard public-route policy", () => {
+  // The lists the scaffold ships are the edit point; these pass their own,
+  // so the matching rules are pinned whatever the app lists.
+
+  it("opens an exact page, not what is under it, with or without a trailing slash", () => {
+    const routes = { exact: ["/pricing"], prefixes: [] };
+    expect(opensSignedOut("/pricing", routes)).toBe(true);
+    expect(opensSignedOut("/pricing/", routes)).toBe(true);
+    expect(opensSignedOut("/pricing/admin", routes)).toBe(false);
+    expect(opensSignedOut("/pricing/admin/", routes)).toBe(false);
+
+    expect(
+      linksSignedOut(
+        "/pricing",
+        ["/pricing", "/pricing/", "/pricing/admin", "/pricing/admin/"],
+        routes,
+      ),
+    ).toEqual({
+      "/pricing": true,
+      "/pricing/": true,
+      "/pricing/admin": false,
+      "/pricing/admin/": false,
+    });
+  });
+
+  it("normalizes a listed path's own trailing slash", () => {
+    const routes = { exact: ["/pricing/"], prefixes: ["/docs/"] };
+    expect(opensSignedOut("/pricing", routes)).toBe(true);
+    expect(opensSignedOut("/docs/intro", routes)).toBe(true);
+    expect(opensSignedOut("/pricing/admin", routes)).toBe(false);
+  });
+
+  for (const list of ["exact", "prefixes"] as const) {
+    it(`opens only the home page when "/" is in ${list}, never every route`, () => {
+      const routes = { exact: [], prefixes: [], [list]: ["/"] } as PublicRoutes;
+      expect(opensSignedOut("/", routes)).toBe(true);
+      expect(opensSignedOut("/orders", routes)).toBe(false);
+      expect(opensSignedOut("/orders/", routes)).toBe(false);
+      expect(opensSignedOut("/orders/view", routes)).toBe(false);
+
+      expect(linksSignedOut("/", ["/", "/orders", "/orders/", "/orders/view"], routes)).toEqual({
+        "/": true,
+        "/orders": false,
+        "/orders/": false,
+        "/orders/view": false,
+      });
+    });
+  }
 });
 
 describe("useCanVisit without a guard", () => {

@@ -1,6 +1,6 @@
 ---
 name: panels
-description: The dashboard panels beyond the basic queries — postgres panels (a live read-only query of your own database), row links into the data browser, saved data-browser views (browse), text panels (Markdown), display options that draw one query as area, stacked, bars, pie, donut, gauge, funnel or heatmap, palette colours per series, and sparklines on sql figures (trendSql).
+description: The dashboard panels beyond the basic queries — postgres panels (a live read-only query of your own database), row links into the data browser, saved data-browser views (browse), text panels (Markdown), display options that draw one query as area, stacked, bars, pie, donut, gauge, funnel (bars or steps), heatmap, bar list or KPI card, which way a figure is good (green/red changes), palette colours per series, sparklines on sql figures (trendSql), drill links to another dashboard, and Needs-attention panels.
 ---
 
 # Postgres, links, saved views, text, display and colours
@@ -155,9 +155,10 @@ default and is still right about the numbers. Every field is optional:
 | kind | `style` (first is the default) | other fields |
 |---|---|---|
 | `line` | `line`, `area`, `bars` (one bar per bucket) | `stack` (area or bars), `topN` |
-| `bar` | `bar`, `pie`, `donut` (a pie takes exactly one series) | `stack` and `horizontal` (bars), `topN` (pie, donut) |
-| `number` | `stat`, `gauge` | `min` (default 0) and `max` (gauge; required unless `unit` is `percent`, whose scale is 0 to 1), `exact` |
-| `sql` | `line`, `area`, `bars`, `funnel`, `heatmap` | `stack` (area or bars), `topN` (line styles), `exact` (figures) |
+| `bar` | `bar`, `pie`, `donut` (a pie takes exactly one series), `barlist` | `stack` and `horizontal` (bars), `topN` (pie, donut), `bar` and `share` (barlist) |
+| `number` | `stat`, `gauge`, `kpi` | `min` (default 0) and `max` (gauge; required unless `unit` is `percent`, whose scale is 0 to 1), `exact`, `good`, `units` (kpi) |
+| `sql` | `line`, `area`, `bars`, `funnel`, `heatmap`, `barlist`, `kpi` | `stack` (area or bars), `topN` (line styles), `exact` and `good` (figures), `layout` (funnel), `bar`, `share` and `units` (barlist), `units` (kpi) |
+| `funnel` | (one) | `layout` |
 
 Every kind with a `display` also takes `color` and `colors` (below).
 
@@ -181,6 +182,28 @@ Every kind with a `display` also takes `color` and `colors` (below).
   row per series, a cell per bucket. A NULL is an empty cell, not a zero, so a
   week that has not happened yet is missing rather than churned. It takes no
   `stack`, `topN` or `colors`.
+- `barlist` draws a ranking as labelled bars, largest first: a `sql` panel's
+  rows with no time column, or a `bar` panel's groups. The first text column is
+  the label and any other text column a muted second line; the bar is the value
+  column `bar` names (default: the first numeric one), followed by every other
+  value column. A column whose name ends in `%` holds 0 to 100. `share: true`
+  follows each bar with its share of the rows' total; `units` gives a column
+  its own unit (`{"Conversion %": "percent"}`). A `trendSql` grouped by the
+  label (`day, label, value`) draws a sparkline on each row. The console shows
+  the first rows and "Show all" for the rest, so prefer it to a `table` for any
+  ranking; keep `table` for a list of rows (an audit trail, a utm grid).
+- `kpi` draws one row of figures as one card: the first figure large, with its
+  change against the comparison and its `trendSql` sparkline, and the other
+  figures small under it (DAU / WAU / MAU under Active users).
+- `good: "up"` or `"down"` says which way a figure is better, so the console
+  colours its change green when it improves and red when it worsens (a change
+  under 2% stays grey), and a Needs-attention panel can watch it. Bounce rate
+  and time-to-anything are `down`. Without it a change is neutral.
+- `layout: "steps"` lays a funnel (the `funnel` kind, or a `sql` panel drawn as
+  `funnel`) out across the card on a log scale, with the conversion between
+  steps and the weakest step called out: for a funnel whose first step counts
+  visitors and whose later steps count people, which bars scaled to the first
+  step flatten into hairlines.
 
 ```json
 { "id": "reconciles", "title": "Reconciles by result", "kind": "line", "signal": "metrics",
@@ -252,7 +275,41 @@ environment's sign-ups are reported only from inside the range.
 It never changes the figures. Any `sql` panel takes it, however it is drawn.
 HyperDX ignores it.
 
-`heatmap`, `trendSql`, `subtitleSql`, `color` and `colors` (and a dashboard's `defaultCompare`
-and a section's `description`) are refused by a control plane pinned to an
-older forge, so add them to a hand-written dashboard once the control plane
-runs the forge that ships them.
+## Drill links: `drill`
+
+`drill` puts a link in a panel's header to the dashboard that has its detail
+("Users →"); the console keeps the range, the comparison and the environments
+when it follows it. `panel` scrolls to one panel there; `label` defaults to that
+dashboard's title. Any kind takes it. It differs from `link`, which opens the
+data browser per row.
+
+```json
+"drill": { "dashboard": "users", "label": "Users", "panel": "lifecycle-weekly" }
+```
+
+## Needs attention: the `attention` kind
+
+An `attention` panel lists the figures that moved by at least `threshold`
+(a fraction; default 0.05, 5%) against the comparison, the ones that moved the
+wrong way first, then those that improved. It runs no query of its own: it
+reads the figures it watches over the range and the comparison window, the
+reads their cards already make, and with no comparison selected it asks for
+one. It is a declared comparison, not a statistical test.
+
+- `watch` names panels on the same dashboard, each with `display.good`; empty
+  watches every panel that has one.
+- `figures` are up to 8 `sql` figures read only here (an activation rate, a
+  bounce rate), each with `display.good`. Their ids must not repeat a panel's.
+
+```json
+{ "id": "attention", "title": "Needs attention", "kind": "attention", "width": 6,
+  "attention": { "watch": ["visitors", "signups"], "threshold": 0.05,
+    "figures": [{ "id": "bounce", "title": "Bounce rate", "kind": "sql", "unit": "percent",
+                  "sql": "...", "display": { "good": "down" } }] } }
+```
+
+`heatmap`, `trendSql`, `subtitleSql`, `color` and `colors` (and a dashboard's
+`defaultCompare` and a section's `description`), and `barlist`, `kpi`, `good`,
+`bar`, `share`, `units`, `layout`, `drill` and the `attention` kind, are
+refused by a control plane pinned to an older forge, so add them to a
+hand-written dashboard once the control plane runs the forge that ships them.

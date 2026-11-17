@@ -444,6 +444,16 @@ type Panel struct {
 	// one drawn as a funnel or a heatmap. Renderers that draw no sparkline
 	// ignore it.
 	TrendSQL string `json:"trendSql,omitempty"`
+	// SubtitleSQL is a sql panel's subtitle: a read-only SELECT, under the
+	// same guard and parameters as SQL, whose first row's first column is a
+	// short text a renderer draws under the panel's title, as part of its
+	// label ("New users", "since 14 Nov"). It qualifies what the panel shows
+	// for the window read, when that depends on the data: new users counted
+	// only since the environment began reporting sign-ups. An empty string,
+	// a NULL or no row draws no subtitle, so a panel whose qualification no
+	// longer applies loses it by itself. It never changes the figures. Only a
+	// sql panel takes it. Renderers that draw no subtitle ignore it.
+	SubtitleSQL string `json:"subtitleSql,omitempty"`
 	// MinStep is the narrowest bucket a KindSQL panel's statement produces,
 	// in the same form as DefaultRange ("1d"): set it when the statement
 	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the

@@ -46,8 +46,9 @@ func Users(in Input) dashspec.Dashboard {
 		DefaultCompare: dashspec.ComparePeriod,
 	}
 	newRule := fmt.Sprintf("Users whose first auth_signed_up is in the range; where no sign-up was reported in the %d days before its end, "+
-		"the users first seen in the range, except those within %d days of the earliest event retained (the data begins there; they count as returning). "+
-		"No figure when no part of the range is decided. The Authentication section says which rule applies, and from when.",
+		"the users first seen in the range, except those within %d days of the earliest event retained (they count as returning). "+
+		"\"Since\" a day: sign-ups are reported only from then, so an earlier one counts as returning. "+
+		"No figure when no part of the range is decided. Authentication says which rule applies, and from when.",
 		obsquery.NewUsersWindowDays, obsquery.FirstSeenGraceDays)
 
 	dauWauMau := chart("glance", "dau-wau-mau", "Daily, weekly and monthly active users",
@@ -88,9 +89,9 @@ func Users(in Input) dashspec.Dashboard {
 			accountsSQL, accountsTrendSQL, dashspec.UnitCount, colorNeutral)),
 		exact(figure("glance", "active", "Active users", "Distinct users with any signed-in product event in the range (a sign-in, the daily session heartbeat, a CRUD write, an app event). The trend is each UTC day's.",
 			activeSQL, activeTrendSQL, dashspec.UnitCount, colorUsers)),
-		exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)),
-		exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it. No figure when the range "+
-			"decides no new users (New's description says when).", returningSQL, "", dashspec.UnitCount, colorWeekly)),
+		sinceSignups(exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)), from),
+		sinceSignups(exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it. No figure when the range "+
+			"decides no new users, and \"since\" a day when New is counted only from it (New's description says when).", returningSQL, "", dashspec.UnitCount, colorWeekly)), from),
 		dauWauMau,
 		figure("glance", "stickiness", "Stickiness (DAU / MAU)",
 			"The average daily active users over the average 30-day active users across the range's days: how habitual the product is. DAU over MAU, not Statsig's rolling stickiness.",
@@ -112,7 +113,8 @@ func Users(in Input) dashspec.Dashboard {
 			"The range's sign-ups by auth provider, and the social provider of a social sign-up (forge/google).", signupsByProviderSQL, 6, 8),
 		table("auth", "auth-sources", "Where auth events come from",
 			"The clients that reported auth events in the range (backend, web, …). A last row says when the environment reports no sign-ups, so new users are the ones first seen, "+
-				"and from when, when that is inside the range: before then a user first seen may be returning.",
+				"and from when, when that is inside the range: before then a user first seen may be returning. It also says when sign-ups are reported only from inside the range: "+
+				"a user who signed up before then counts as returning.",
 			authSourcesSQL, 12, 8),
 
 		table("people", "most-active-users", "Most active users",
@@ -300,7 +302,12 @@ FROM (
                'sign-ups not reported: new users are the users first seen'), 0, 0, 0, 0
   FROM (SELECT count() AS n, (SELECT max(DecidedFrom) FROM (` + newDecided(to) + `)) AS decided
         FROM product_events WHERE EventName = 'auth_signed_up' AND ` + envScope + ` AND ` + lastDays(obsquery.NewUsersWindowDays, to) + `)
-  WHERE n = 0)
+  WHERE n = 0
+  UNION ALL
+  SELECT 1, concat('sign-ups reported from ', formatDateTime(decided, '%Y-%m-%d %H:%i', 'UTC'),
+                   ' UTC, the earliest auth_signed_up retained: new users are the users who signed up since then; a user who signed up before then has no sign-up and counts as returning'), 0, 0, 0, 0
+  FROM (SELECT ` + signupsFrom(to) + ` AS decided)
+  WHERE decided > ` + from + `)
 ORDER BY o, client`
 
 	mostActiveUsersSQL = `SELECT UserId AS "User", count() AS "Events",

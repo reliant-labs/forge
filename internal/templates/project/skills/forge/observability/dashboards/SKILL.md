@@ -176,7 +176,7 @@ them.
 Postgres panels (a live read-only query of your own database), `link`,
 `browse`, `text` panels (Markdown), `display` (area, stacked, bars, pie, donut, gauge,
 funnel and heatmap pictures of the same query), palette colours per series (`color`,
-`colors`) and sparklines on sql figures (`trendSql`) are in `observability/dashboards/panels`.
+`colors`), sparklines on sql figures (`trendSql`) and data-dependent subtitles (`subtitleSql`) are in `observability/dashboards/panels`.
 
 A `table` or `number` series may carry `thresholds: {good, poor}`
 to grade its value like Core Web Vitals do; renderers that cannot colour ignore

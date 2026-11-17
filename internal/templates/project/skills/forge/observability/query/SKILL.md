@@ -18,7 +18,7 @@ After a change, four questions decide what to do next:
 
 ```bash
 forge env deploy prod
-forge obs check prod --wait --json          # 0 PASS · 1 FAIL · 2 cannot tell (incl. low traffic) · 8 wait timed out
+forge obs check prod --wait --json          # 0 PASS · 1 FAIL · 2 cannot tell (incl. low traffic) · 8 check again later (wait timed out, quota spent)
 # on FAIL, the document's findings[] and suggested[] name the next commands:
 forge obs issue ISS-7f3a prod --json        # culprit, latest event, trace id, suspect commits, the release live
 forge obs trace 0af7651916cd43dd8448eb211c80319c prod
@@ -112,9 +112,11 @@ release_health = forge.ReleaseHealth {
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |
 | 1 | FAIL: a `fail_on` finding fired |
 | 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
-| 8 | `--wait` timed out (`--timeout`, default 30m) before the after window finished |
+| 8 | check again later: `--wait` timed out (`--timeout`, default 30m) before the after window finished, or the control plane refused the read because a query allowance is spent (`reason_code` `quota_exhausted` or `rate_limited`) |
 
-**Low traffic is exit 2, not 8.** 8 means `--wait` ran out with the after window still open: check again later. `low_traffic` and `thin_baseline` mean the window CLOSED with too few requests: final for that promotion, so report "not proven good" and do not loop on it (`observability/release-health`, Low traffic).
+**A refused read is exit 8, not 2:** nothing was judged. `--wait` waits it out until `--timeout`; the document has no `verdict`, and has `reason_code` and `retry_at` (rerun after it). Details, and how an unreachable control plane is retried: `observability/release-health`, A refused read.
+
+**Low traffic is exit 2, not 8.** 8 means `--wait` ran out with the after window still open (or a refused read, above): check again later. `low_traffic` and `thin_baseline` mean the window CLOSED with too few requests: final for that promotion, so report "not proven good" and do not loop on it (`observability/release-health`, Low traffic).
 
 An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
 
@@ -157,7 +159,7 @@ forge env releases at prod 2h                # …two hours ago (or `now`)
 - **`--fields`** projects the document (dotted paths) to save tokens. Each verb's `--help` lists its schema's fields; a misspelled one is refused with the real list.
 - **No placeholders.** A missing key means unknown.
 
-Exit codes are shared by every verb: **1** = you asked for something wrong (bad query, guard refused, policy refused); **2** = forge could not look (unreachable, auth, quota, telemetry off, the control plane does not serve the call yet). A gate must treat 2 as "not proven good".
+Exit codes are shared by every verb: **1** = you asked for something wrong (bad query, guard refused, policy refused); **2** = forge could not look (unreachable, auth, quota, telemetry off, the control plane does not serve the call yet). A gate must treat 2 as "not proven good". Except in `obs check`, where a spent quota is **8** (above).
 
 ## Machine credentials
 

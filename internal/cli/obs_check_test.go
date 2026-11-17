@@ -89,19 +89,22 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 type obsCheckHarness struct {
 	now    time.Time
 	sleeps int
+	slept  []time.Duration
 	ledger obsbackend.LedgerReader
 }
 
 func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsbackend.Caller, local obsbackend.Runner, args ...string) (string, string, error) {
 	t.Helper()
 	var out, errb bytes.Buffer
-	old, oldSleep := obsDepsOverride, obsCheckSleep
-	t.Cleanup(func() { obsDepsOverride, obsCheckSleep = old, oldSleep })
+	old, oldSleep, oldJitter := obsDepsOverride, obsCheckSleep, obsCheckJitter
+	t.Cleanup(func() { obsDepsOverride, obsCheckSleep, obsCheckJitter = old, oldSleep, oldJitter })
 	obsCheckSleep = func(_ context.Context, d time.Duration) error {
 		e.now = e.now.Add(d)
 		e.sleeps++
+		e.slept = append(e.slept, d)
 		return nil
 	}
+	obsCheckJitter = func(time.Duration) time.Duration { return 0 }
 	obsDepsOverride = &obsDeps{
 		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return facts, nil },
 		Local: func(env string) obsbackend.Backend {

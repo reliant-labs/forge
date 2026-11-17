@@ -45,6 +45,9 @@ func TestProductOverviewSharesTheTabsStatements(t *testing.T) {
 	if !strings.Contains(panel(t, ov, "active-new-returning").SQL, weeklyUsersCTEs) || !strings.Contains(panel(t, users, "lifecycle-weekly").SQL, weeklyUsersCTEs) {
 		t.Error("new and returning do not read the lifecycle's weekly users")
 	}
+	if got, want := panel(t, ov, "active-new-returning").SubtitleSQL, panel(t, users, "new").SubtitleSQL; got == "" || got != want {
+		t.Errorf("new and returning do not say \"since\" as the Users tab's New does:\n%s\nwant\n%s", got, want)
+	}
 	if !strings.Contains(panel(t, ov, "retention").SQL, newUsers(to)) {
 		t.Error("the retention grid does not read the shared new-user source")
 	}

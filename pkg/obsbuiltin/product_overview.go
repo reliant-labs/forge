@@ -104,10 +104,12 @@ func ProductOverview(in Input) dashspec.Dashboard {
 		}
 	}
 
-	newReturning := drill(chart("glance", "active-new-returning", "Active users, new and returning",
+	// "since <date>" while sign-ups are reported only from inside the range,
+	// the subtitle the Users tab's New and Returning figures carry.
+	newReturning := drill(sinceSignups(chart("glance", "active-new-returning", "Active users, new and returning",
 		"Each ISO week's active users: new (whose sign-up, or first event where sign-ups are not reported, is in that week) and returning (everyone else active that week). "+
-			"New is the Users tab's lifecycle New; returning is its Retained and Resurrected.",
-		newReturningSQL, bars(true, dashspec.SeriesColors{"New": colorNew, "Returning": colorUsers}), 18, 8), drillUsers, "lifecycle-weekly")
+			"New is the Users tab's lifecycle New; returning is its Retained and Resurrected. \"since\" a day when New is counted only from it.",
+		newReturningSQL, bars(true, dashspec.SeriesColors{"New": colorNew, "Returning": colorUsers}), 18, 8), from), drillUsers, "lifecycle-weekly")
 	newReturning.MinStep = "7d"
 
 	d.Panels = append(lead, newReturning, attentionPanel(in, lead))

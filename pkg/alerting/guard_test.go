@@ -17,6 +17,7 @@ func TestValidateExprAccepts(t *testing.T) {
 		"trailing ;":       "SELECT 1 AS value;",
 		"comment":          "SELECT 1 AS value -- drop table x\n",
 		"block comment":    "SELECT /* ; DROP TABLE x */ 1 AS value",
+		"leading comments": "-- why\n# owner\n/* multi\nline */ SELECT 1 AS value",
 		"string keyword":   "SELECT count() AS value FROM t WHERE Body = 'drop table; insert into x'",
 		"escaped quote":    `SELECT 1 AS value WHERE a = 'it\'s; DROP TABLE x'`,
 		"doubled quote":    "SELECT 1 AS value WHERE a = 'it''s; DROP'",

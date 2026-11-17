@@ -209,8 +209,22 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 		"a pin without the leading v compares too": {
 			pin: "0.1.46", wantSev: lintSevWarning, wantGrace: true,
 		},
-		"a pseudo-version leading to gates_from still warns": {
-			pin: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevWarning, wantGrace: true,
+		// forge#2230: a pseudo-version reads as the release it leads to, so
+		// it grades exactly as that commit's tag would.
+		"a pseudo-version leading to gates_from gates, as its tag does": {
+			pin: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevError, wantGated: true,
+		},
+		"a dirty pseudo-version leading to gates_from gates": {
+			pin: "v1.0.1-0.20261030000000-aaaaaaaaaaaa+dirty", wantSev: lintSevError, wantGated: true,
+		},
+		"a pseudo-version leading to the shipping release warns, as its tag does": {
+			pin: "v1.0.0-0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevWarning, wantGrace: true,
+		},
+		"a pseudo-version after a pre-release reads as that release": {
+			pin: "v1.0.1-rc.1.0.20261030000000-aaaaaaaaaaaa", wantSev: lintSevError, wantGated: true,
+		},
+		"a pseudo-version with no tag behind it sorts below every release": {
+			pin: "v0.0.0-20261030000000-aaaaaaaaaaaa", wantSev: lintSevWarning, wantGrace: true,
 		},
 		"the gates_from release gates": {
 			pin: "v1.0.1", wantSev: lintSevError, wantGated: true,
@@ -248,6 +262,45 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 				t.Errorf("grace note = %+v", got[0].Grace)
 			}
 		})
+	}
+}
+
+// A pin bump names the rules whose grace it ends (forge#2230), so a red gate
+// is never the first a project hears of them. A pseudo-version and its tag
+// are the same place, so moving from one to the other ends nothing.
+func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
+	for name, tc := range map[string]struct {
+		from, to string
+		rules    map[string]string
+		want     bool
+	}{
+		"crossing gates_from ends the grace":                {from: "v1.0.0", to: "v1.0.1", want: true},
+		"a later release crosses it too":                    {from: "v0.1.46", to: "v1.2.0", want: true},
+		"a pseudo-version leading to gates_from crosses it": {from: "v1.0.0", to: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", want: true},
+		"a pseudo-version to its own tag crosses nothing":   {from: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", to: "v1.0.1"},
+		"a bump that stays before gates_from ends nothing":  {from: "v0.1.46", to: "v1.0.0"},
+		"a bump that starts past gates_from ends nothing":   {from: "v1.0.1", to: "v1.1.0"},
+		"an unpinned project already gates everything":      {from: "", to: "v1.0.1"},
+		"a dev target does not move the pin":                {from: "v1.0.0", to: "(devel)"},
+		"lint.rules naming the rule decides it instead":     {from: "v1.0.0", to: "v1.0.1", rules: map[string]string{rolloutRule: "warn"}},
+		"lint.rules `*` decides it instead":                 {from: "v1.0.0", to: "v1.0.1", rules: map[string]string{"*": "error"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := rulesStartingToGate(testRollouts, pinnedCfg(tc.from, tc.rules), tc.from, tc.to)
+			if !tc.want {
+				if len(got) != 0 {
+					t.Fatalf("got %+v, want none", got)
+				}
+				return
+			}
+			want := GatingRule{Rule: rolloutRule, IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"}
+			if len(got) != 1 || got[0] != want {
+				t.Fatalf("got %+v, want [%+v]", got, want)
+			}
+		})
+	}
+	if got := rulesStartingToGate(testRollouts, &config.ProjectConfig{ModulePath: "github.com/reliant-labs/forge"}, "v1.0.0", "v1.0.1"); len(got) != 0 {
+		t.Errorf("forge's own tree builds the forge it lints with; got %+v", got)
 	}
 }
 

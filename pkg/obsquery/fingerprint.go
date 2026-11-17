@@ -265,9 +265,24 @@ var (
 	ServerEventCauseSQL = errCauseSQL(`if(Attributes['error'] != '', Attributes['error'], Attributes['exception.message'])`)
 )
 
+// ForgeLibraryFunctionPrefix starts the function name of every frame in
+// forge's own libraries (forge/pkg). A record logged there, such as the
+// logging interceptor's "rpc failed" for a deadline that carries no handler
+// stack, names forge's interceptor as where it was logged, which tells the
+// reader nothing about which rpc failed (forge#2235).
+const ForgeLibraryFunctionPrefix = "github.com/reliant-labs/forge/pkg/"
+
+// sqlLoggedByForge selects a record forge's own libraries logged for an rpc.
+const sqlLoggedByForge = `(startsWith(` + sqlFunction + `, '` + ForgeLibraryFunctionPrefix + `') AND LogAttributes['procedure'] != '')`
+
 // ServerCulpritSQL is where an issue was logged: "file in function", or the
-// function alone (ScopeName for a record with no source location).
-const ServerCulpritSQL = `if(LogAttributes['code.file.path'] != '', concat(LogAttributes['code.file.path'], ' in ', ` + sqlFunction + `), ` + sqlFunction + `)`
+// function alone (ScopeName for a record with no source location). A record
+// forge's own libraries logged for an rpc shows the rpc's procedure instead:
+// the interceptor is where every such record is logged, the procedure is what
+// failed. Display only: the fingerprints still read the function, so no
+// issue regroups.
+const ServerCulpritSQL = `if(` + sqlLoggedByForge + `, LogAttributes['procedure'], ` +
+	`if(LogAttributes['code.file.path'] != '', concat(LogAttributes['code.file.path'], ' in ', ` + sqlFunction + `), ` + sqlFunction + `))`
 
 // ServerErrorRecord is the part of an otel_logs row sfp1 reads.
 type ServerErrorRecord struct {
@@ -334,8 +349,28 @@ func ServerTitle(r ServerErrorRecord) string {
 	return norm
 }
 
+// LoggedByForge reports whether forge's own libraries logged r for an rpc:
+// its function is in forge/pkg and it carries the rpc's procedure.
+func (r ServerErrorRecord) LoggedByForge() bool {
+	return strings.HasPrefix(r.function(), ForgeLibraryFunctionPrefix) && r.Attributes[LogKeyProcedure] != ""
+}
+
+// ForgeLibraryCulprit reports whether culprit, as ServerCulprit spelled it
+// before forge#2235, names a function in forge's own libraries: an issue
+// stored then still shows forge's interceptor.
+func ForgeLibraryCulprit(culprit string) bool {
+	function := culprit
+	if i := strings.LastIndex(culprit, " in "); i >= 0 {
+		function = culprit[i+len(" in "):]
+	}
+	return strings.HasPrefix(function, ForgeLibraryFunctionPrefix)
+}
+
 // ServerCulprit is the Go reference for ServerCulpritSQL.
 func ServerCulprit(r ServerErrorRecord) string {
+	if r.LoggedByForge() {
+		return r.Attributes[LogKeyProcedure]
+	}
 	if file := r.Attributes[LogKeyCodeFile]; file != "" {
 		return file + " in " + r.function()
 	}

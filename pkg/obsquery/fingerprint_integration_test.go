@@ -125,6 +125,14 @@ func corpus() []obsquery.ServerErrorRecord {
 		r("api", "app", "rpc failed", with(obsquery.LogKeyExceptionType, "context.deadlineExceededError", obsquery.LogKeyProcedure, "/jobs.v1.JobService/ListJobs")...),
 		r("api", "app", "rpc failed", with(obsquery.LogKeyExceptionType, "*connect.Error", obsquery.LogKeyExceptionMessage, "unavailable")...),
 		r("api", "app", "file but no function", obsquery.LogKeyCodeFile, "x.go"),
+		// forge#2235: logged by forge's own interceptor, the culprit is the procedure.
+		r("api", "app", "rpc failed", obsquery.LogKeyCodeFunction, "github.com/reliant-labs/forge/pkg/observe.(*loggingInterceptor).log",
+			obsquery.LogKeyCodeFile, "/go/pkg/mod/github.com/reliant-labs/forge@v1.6.0/pkg/observe/interceptors.go",
+			obsquery.LogKeyExceptionType, "context.deadlineExceededError", obsquery.LogKeyProcedure, "/customers.v1.CustomerService/ArchiveCustomer"),
+		r("api", "app", "rpc failed", obsquery.LogKeyCodeFunction, "github.com/reliant-labs/forge/pkg/observe.(*loggingInterceptor).log",
+			obsquery.LogKeyCodeFile, "/go/pkg/mod/github.com/reliant-labs/forge@v1.6.0/pkg/observe/interceptors.go",
+			obsquery.LogKeyExceptionType, "context.deadlineExceededError"),
+		r("api", "github.com/reliant-labs/forge/pkg/observe", "rpc failed", obsquery.LogKeyProcedure, "/customers.v1.CustomerService/ArchiveCustomer"),
 
 		// sfp2: the cause in the `error` attribute refines records with no type.
 		r("api", "app", "Transaction failed", with(obsquery.LogKeyError, `ERROR: invalid byte sequence for encoding "UTF8": 0xe2 0x2e (SQLSTATE 22021)`)...),

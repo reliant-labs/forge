@@ -96,6 +96,11 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"cmd command groups (services/workers/operators)",
 		"discover components",
 		"workloads.k (scaffold once)",
+		// BEFORE every KCL render: a module calling a new type's crd_gen.k
+		// helper renders only once the helper exists. Gated on
+		// features.deploy — absent from a project that declares no CRDs,
+		// present here because the guard drives the full plan.
+		"CRD KCL manifests (api/ Go types)",
 		"per-env deploy config",
 		"observability dashboards",
 		// AFTER per-env deploy config: the frontend's runtime document is
@@ -108,9 +113,6 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// cannot render before the config modules it imports exist.
 		"CI workflows",
 		"ingress k3d ports fragment",
-		// Gated on features.deploy — absent from a project that declares no
-		// CRDs, present here because the guard drives the full plan.
-		"CRD KCL manifests (api/ Go types)",
 		"entity-aware seed data",
 		"frontend mocks + transport",
 		"repoint renamed *_gen frontend imports",

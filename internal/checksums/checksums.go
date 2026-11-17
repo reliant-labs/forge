@@ -416,7 +416,7 @@ func healNoticeText(relPath string, trigger HealTrigger) string {
 // refuses to silently overwrite it. Default prints to stderr.
 var NoHealSkipFn = func(relPath string) {
 	fmt.Fprintf(os.Stderr,
-		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file) or `forge generate --force` (this file only). To keep your version permanently: `forge project disown %s`.\n",
+		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file; `--force` does not, because it overwrites only the hand-edited files the drift guard names, and this file verifies as forge's). To keep your version permanently: `forge project disown %s`.\n",
 		relPath, relPath)
 }
 

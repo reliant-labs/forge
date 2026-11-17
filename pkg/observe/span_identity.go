@@ -31,7 +31,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/reliant-labs/forge/pkg/authn"
-	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // AttrSessionID is the browser RUM session id on a backend span, and the baggage
@@ -79,27 +78,29 @@ func SessionIDFromBaggage(header http.Header) string {
 // slot opened) for identitySpanInterceptor, and sets session.id on it from the
 // request's baggage. Chain installs it directly inside Trace.
 //
-// It also classifies how the call ended, on that span. The Trace slot is
-// otelconnect, which knows only the wire code: it marks a server span Error for
-// Unavailable, whoever was at fault. But Unavailable is also the code of an
-// ending nobody has to act on: a replica draining for a rollout
-// (svcerr.ErrServerDraining, which a redialing peer needs as Unavailable), or a
-// peer that went quiet and was cut so it redials. svcerr classes those
-// canceled, and logging and metrics already honour that; the server span did
-// not, so every drained or reaped stream was a server error in every error rate
-// (a daemon gateway, whose only rpc is one such stream, read 100% errors). So a
-// call that ends with a canceled-class error gets RecordSpanError on its server
-// span: error_class=canceled, which is what obsquery's error expressions exclude,
-// and the error as an exception event. The status otelconnect then sets is left
-// as it is: it describes the wire code, and the class says who must act.
+// It also classifies how the call ended, on that span (span_status.go). The
+// Trace slot is otelconnect, which knows only the wire code: it marks a server
+// span Error for Unavailable (and Unknown, Internal, …), whoever was at fault.
+// But Unavailable is also the code of an ending nobody has to act on: a user
+// refused for a state they are in ("your machine is waking up"), a replica
+// draining for a rollout (svcerr.ErrServerDraining, which a redialing peer needs
+// as Unavailable), or a peer that went quiet and was cut so it redials. svcerr
+// classes those user or canceled, and logging already honours that; the server
+// span did not, so each was a server error in every span-based error rate (a
+// daemon gateway, whose only rpc is one such stream, read 100% errors). So a
+// failed call's server span gets error_class, rpc.error_reason and an exception
+// event, and its status follows the class: OK for user and canceled — final, so
+// otelconnect's later Error for the same code is ignored — and Error for a
+// server fault. WithUserErrorsAsSpanErrors marks user errors Error instead.
 //
-// The one exception is an ending the handler declared with
-// svcerr.ExpectedClose — the server ended the call on purpose, so nothing
-// failed. RecordSpanError sets that span's status OK, with rpc.close_reason,
-// and OK is final: otelconnect's Error for the same Unavailable is ignored.
-func RequestSpanInterceptor() connect.Interceptor { return requestSpan{} }
+// An ending the handler declared with svcerr.ExpectedClose — the server ended
+// the call on purpose — is OK too, with rpc.close_reason and an rpc.close event
+// in place of the exception.
+func RequestSpanInterceptor(opts ...ServerSpanOption) connect.Interceptor {
+	return requestSpan{policy: newServerSpanPolicy(opts)}
+}
 
-type requestSpan struct{}
+type requestSpan struct{ policy serverSpanPolicy }
 
 func (requestSpan) enter(ctx context.Context, header http.Header) context.Context {
 	span := trace.SpanFromContext(ctx)
@@ -109,12 +110,12 @@ func (requestSpan) enter(ctx context.Context, header http.Header) context.Contex
 	return context.WithValue(ctx, serverSpanKey{}, span)
 }
 
-// settle classifies a canceled-class ending on the server span (see
-// RequestSpanInterceptor). Any other failure is left to the Trace slot, which
-// already marks a server fault Error and a user error unset.
-func (requestSpan) settle(ctx context.Context, err error) {
-	if err != nil && svcerr.Classify(err) == svcerr.ClassCanceled {
-		RecordSpanError(serverSpanOf(ctx), err)
+// settle records how the call ended on the server span (see
+// RequestSpanInterceptor). It runs before the Trace slot sets the span's
+// status, so an OK it sets is final.
+func (r requestSpan) settle(ctx context.Context, err error) {
+	if err != nil {
+		r.policy.settle(serverSpanOf(ctx), err)
 	}
 }
 

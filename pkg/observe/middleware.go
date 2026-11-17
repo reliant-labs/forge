@@ -187,6 +187,13 @@ type Deps struct {
 	// Set this OR Tracer, not both: two spans per RPC.
 	Trace connect.Interceptor
 
+	// ServerSpan tunes how a failed call reads on its server span — the
+	// Trace slot's (RequestSpanInterceptor) or Tracer's. nil is the default:
+	// status Error for a server fault, OK for a user- or canceled-class
+	// error, which no span-based error rate should count.
+	// WithUserErrorsAsSpanErrors counts user errors too.
+	ServerSpan []ServerSpanOption
+
 	// Deadline is the RPC's time budget — serverkit's Deadline slot: a
 	// per-RPC deadline and a slow-call watchdog. It runs after the
 	// observability layer, so a DeadlineExceeded is logged and counted with
@@ -297,7 +304,7 @@ type Deps struct {
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {
-		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor(), RequestSpanInterceptor())
+		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor(), RequestSpanInterceptor(deps.ServerSpan...))
 	}
 	meter := deps.Meter
 	if meter == nil {
@@ -314,7 +321,7 @@ func Chain(deps Deps) []connect.Interceptor {
 	}
 	chain = append(chain,
 		LoggingInterceptor(deps.Logger, deps.LogOptions...),
-		TracingInterceptor(deps.Tracer),
+		newTracingInterceptor(deps.Tracer, newServerSpanPolicy(deps.ServerSpan)),
 		MetricsInterceptor(meter),
 	)
 	if deadline := deadlineSlot(deps.Deadline, deps.Logger); deadline != nil {

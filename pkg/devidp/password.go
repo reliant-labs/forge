@@ -81,7 +81,10 @@ type User struct {
 	// address people actually type. Resolve through FindUserByEmail
 	// rather than passing a typed email to CreateSession.
 	LoginName string
-	Email     string
+	// Username is the account's username, which its login name derives
+	// from. Accounts the broker creates take the address as their username.
+	Username string
+	Email    string
 	// EmailVerified is the issuer's own verdict on Email
 	// (human.email.isVerified): true only once the address was proven
 	// reachable, by a verification code or by whoever created the account
@@ -102,6 +105,7 @@ type humanUser struct {
 	UserID             string `json:"userId"`
 	State              string `json:"state"`
 	PreferredLoginName string `json:"preferredLoginName"`
+	Username           string `json:"username"`
 	Human              *struct {
 		Email struct {
 			Email      string `json:"email"`
@@ -119,6 +123,7 @@ func (h humanUser) user() (User, bool) {
 	return User{
 		ID:            h.UserID,
 		LoginName:     h.PreferredLoginName,
+		Username:      h.Username,
 		Email:         h.Human.Email.Email,
 		EmailVerified: h.Human.Email.IsVerified,
 		Locked:        h.State == "USER_STATE_LOCKED",
@@ -126,7 +131,11 @@ func (h humanUser) user() (User, bool) {
 }
 
 // FindUserByEmail resolves an email address to the one human user that has
-// it, case-insensitively.
+// it, case-insensitively; none, or several, is ErrUserNotFound. On a
+// ProvenCredentialsOnly client, where several share it, the one whose address
+// is VERIFIED is that user — a proven owner. Several share an address while a
+// fresh account takes it over from one holding unproven credentials (see
+// fresh_account.go); the proven one is the one to act on.
 //
 // The broker's login-client credential may search users, so this works with
 // the same token SignIn uses.
@@ -163,12 +172,24 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (User, error
 		}
 		matches = append(matches, u)
 	}
-	if len(matches) != 1 {
-		// Zitadel does not enforce email uniqueness by default. Zero and
-		// "more than one" are both "no single account to act on".
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if !c.ProvenCredentialsOnly {
 		return User{}, ErrUserNotFound
 	}
-	return matches[0], nil
+	// Zitadel does not enforce email uniqueness by default. Zero, or
+	// several with no single verified one, is "no single account to act on".
+	var verified []User
+	for _, u := range matches {
+		if u.EmailVerified {
+			verified = append(verified, u)
+		}
+	}
+	if len(verified) == 1 {
+		return verified[0], nil
+	}
+	return User{}, ErrUserNotFound
 }
 
 // FindUserByID resolves a user id to the human user it names. ErrUserNotFound
@@ -309,6 +330,14 @@ type PasswordReset struct {
 // Anything else is the issuer or the credential failing, and is returned
 // with the issuer's own message.
 func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
+	return c.resetPassword(ctx, r, true)
+}
+
+// resetPassword redeems r. proves says whether the code is one a person
+// presented or the broker minted after a proof of the address: only then does
+// the redemption mark an unverified account's address verified. SetPassword
+// passes false, because the code it redeems is its own and proves nothing.
+func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool) error {
 	userID := strings.TrimSpace(r.UserID)
 	code := strings.TrimSpace(r.Code)
 	switch {
@@ -320,18 +349,129 @@ func (c *Client) ResetPassword(ctx context.Context, r PasswordReset) error {
 	case r.NewPassword == "":
 		return fmt.Errorf("a new password is required")
 	}
+	gate, err := c.passwordGate(ctx, userID)
+	if err != nil {
+		return err
+	}
 
-	_, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
+	_, err = c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/password", map[string]any{
 		"newPassword": map[string]any{
 			"password":       r.NewPassword,
 			"changeRequired": false,
 		},
 		"verificationCode": code,
 	})
-	if err == nil {
+	if err != nil {
+		return classifyResetError(err)
+	}
+	if gate == gateOpen || !proves {
 		return nil
 	}
-	return classifyResetError(err)
+	// The issuer accepted the code, and a reset code reaches a person only
+	// in a mail to the account's address or from an administrator who
+	// issued it (a console invitation): either way the address is now
+	// proven, so it is marked verified, as AdoptPendingAccount would.
+	//
+	// The password is already set, so this must not be lost to the request
+	// going away: it runs without the caller's cancellation (each issuer call
+	// keeps its own timeout). If it fails anyway, the account is unverified
+	// and holds only a password, which passwordGate reports as
+	// gateUnverifiedPassword: redeeming a fresh reset code on the SAME
+	// account marks it verified then, so nothing is stranded (forge#2121).
+	if err := c.markAddressVerified(context.WithoutCancel(ctx), userID); err != nil {
+		return fmt.Errorf("the password was set, but the address its reset code proved could not be marked verified "+
+			"(redeeming a new reset code completes it): %w", err)
+	}
+	return nil
+}
+
+// mayAddPassword refuses, on a ProvenCredentialsOnly client, to give a
+// password to an unverified account that has none (ErrUnverifiedAccount):
+// that is a credential added. Replacing the password a contact-only account
+// was created with is its holder's own recovery, and stays allowed.
+//
+// SetPassword runs it: the code it redeems is one the broker minted itself,
+// which proves nothing about the address.
+func (c *Client) mayAddPassword(ctx context.Context, userID string) error {
+	gate, err := c.passwordGate(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if gate == gateFirstPassword {
+		return ErrUnverifiedAccount
+	}
+	return nil
+}
+
+// passwordState is what passwordGate found about an account.
+type passwordState int
+
+const (
+	// gateOpen: nothing to verify — the address is verified, the client
+	// does not require proven credentials, or the account holds a password
+	// beside another credential. Setting a password changes nothing else.
+	gateOpen passwordState = iota
+	// gateFirstPassword: unverified, holding NO credential. Only a reset
+	// code the person presented may set its password, and that marks the
+	// address verified.
+	gateFirstPassword
+	// gateUnverifiedPassword: unverified, holding a password and nothing
+	// else — a contact-only account created with one, or a first password
+	// whose verification failed after it was set. Its holder may replace
+	// it; a presented reset code also marks the address verified.
+	gateUnverifiedPassword
+)
+
+// passwordGate is the ProvenCredentialsOnly check before a password is set.
+// It refuses (ErrUnverifiedAccount) an unverified account holding a
+// credential other than a password, and otherwise reports the account's
+// passwordState: a presented reset code redeemed on an unverified account
+// marks the address verified — a reset code is delivered only to the address
+// or by an administrator who issued it (forge#2121).
+//
+// It fails CLOSED: an account that cannot be read, or whose sign-in methods
+// cannot be, is refused with that error — nothing is minted or redeemed for
+// it. An unknown account answers as a wrong code does (ErrInvalidResetCode),
+// so a reset form says nothing about which accounts exist.
+func (c *Client) passwordGate(ctx context.Context, userID string) (passwordState, error) {
+	if !c.ProvenCredentialsOnly {
+		return gateOpen, nil
+	}
+	u, err := c.FindUserByID(ctx, userID)
+	if errors.Is(err, ErrUserNotFound) {
+		return gateOpen, fmt.Errorf("%w: no such account", ErrInvalidResetCode)
+	}
+	if err != nil {
+		return gateOpen, fmt.Errorf("read the account before setting its password: %w", err)
+	}
+	if u.EmailVerified {
+		return gateOpen, nil
+	}
+	kinds, err := c.credentialKinds(ctx, userID)
+	if err != nil {
+		return gateOpen, fmt.Errorf("read the account's sign-in methods before setting its password: %w", err)
+	}
+	if len(kinds) == 0 {
+		return gateFirstPassword, nil
+	}
+	hasPassword, onlyPassword := false, true
+	for _, k := range kinds {
+		if k == "AUTHENTICATION_METHOD_TYPE_PASSWORD" {
+			hasPassword = true
+		} else {
+			onlyPassword = false
+		}
+	}
+	switch {
+	case onlyPassword:
+		return gateUnverifiedPassword, nil
+	case hasPassword:
+		// A password beside a credential nobody proved: replacing the
+		// password stays the holder's recovery, but nothing is verified,
+		// which would vouch for the other credential.
+		return gateOpen, nil
+	}
+	return gateOpen, ErrUnverifiedAccount
 }
 
 // Zitadel's stable ids for the two rejections a reset form must tell apart.

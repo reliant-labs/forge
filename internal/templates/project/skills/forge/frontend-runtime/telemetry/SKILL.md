@@ -5,8 +5,10 @@ description: Browser telemetry in forge frontends — the HyperDX SDK forge scaf
 
 # Browser telemetry (HyperDX SDK)
 
-Forge scaffolds, injects and initialises the **HyperDX browser SDK**
-(`@hyperdx/browser`, pinned exactly) in Next.js and Vite frontends. It captures
+Forge scaffolds, injects and initialises the **HyperDX browser SDK** in Next.js
+and Vite frontends: `@hyperdx/otel-web`, which `@reliantlabs/forge-web-runtime`
+carries as its own dependency and drives itself, with session replay recorded
+by the runtime's own rrweb recorder. The app declares neither. It captures
 uncaught errors and unhandled rejections, `console.*`, fetch/XHR spans, document
 load, long tasks and web vitals, and ships them as OTLP to ClickStack. There is
 no Sentry SDK and no Sentry-protocol adapter. React Native frontends get
@@ -267,7 +269,14 @@ hosted dev provides collection. Offline without a collector, recording is
 unavailable and capture stays off. For local collection, supply an OTLP collector
 and `observability.local_port`; app dev already declares local ClickStack.
 
-The SDK bundles an rrweb recorder. When enabled, **all text and all inputs are
+Replay is rrweb, recorded by the runtime: rrweb loads in its own chunk only
+when replay runs, batches are encoded as OTLP/JSON and gzipped in a Worker (a
+CSP without `worker-src blob:` makes it gzip on the main thread in short
+slices instead), sent every 15 s (`replayFlushIntervalMs`) and whenever the
+page is hidden or left (with keepalive), and `replayStart: "interaction"`
+starts recording only at the person's first tap, click or key. HyperDX's
+replay player reads it as before (scope `rum.rr-web`, the same `rr-web.*`
+attributes). When enabled, **all text and all inputs are
 masked**, canvas/media/fonts are not recorded, and network bodies are off.
 There is no unmasked setting. Sessions are sampled at
 `frontend.telemetry.replay_sample_rate` (0..1, default 1, so every eligible
@@ -275,6 +284,16 @@ session). Sampling does not override a privacy gate. Recording adds browser
 work and telemetry volume/storage; review the environment's retention and
 access policy before shipping sensitive applications. Masking is defense in
 depth, not permission to record without any consent your product requires.
+
+### Upgrading from a runtime that imported `@hyperdx/browser`
+
+Nothing to edit. web-runtime 0.13.17 and earlier imported `@hyperdx/browser`
+and forge declared it in every web frontend's `package.json`. The runtime now
+brings `@hyperdx/otel-web` and `rrweb` itself, as dependencies, under npm and
+pnpm's strict layout alike, so the next install after the runtime moves just
+works. The old `@hyperdx/browser` entry is unused from then on and forge leaves
+it where it is: remove it (and the `@hyperdx/otel-web-session-recorder>fflate`
+override, which guarded only its recorder) when you next touch the manifest.
 
 ## Reporting a caught error
 

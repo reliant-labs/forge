@@ -2,16 +2,16 @@
 //
 // Withdrawal means stop now: once consent is withdrawn, no session-replay
 // record and no replay span leaves the page, including what the recorder had
-// buffered before the withdrawal and whatever stopping it emits.
+// buffered before the withdrawal, a batch it was still encoding, and whatever
+// stopping it emits.
 //
-// Pinned against a fake of the HyperDX SDK whose recorder behaves as the one
-// bundled in @hyperdx/browser 0.26.0 (@hyperdx/otel-web-session-recorder
-// 4.0.0) does: it buffers rrweb records and posts them to `${url}/v1/logs`
-// with the global fetch on its own timer, its spans are on the `rum.rr-web`
-// tracer (version 4.0.0), and a stop() on an already stopped recorder starts
-// and ends a `record stop` span. scripts/browser-telemetry-smoke.mjs proves
-// the same against the real SDK in Chromium.
-import { gunzipSync, gzipSync } from "node:zlib";
+// End to end through initBrowserTelemetry, the runtime's HyperDX client
+// (sdk-client.ts) and its recorder (replay-recorder.ts), over a fake
+// @hyperdx/otel-web and a fake rrweb whose emit() the test drives. Only the
+// network is observed: every request that reaches it was sent.
+// scripts/browser-telemetry-smoke.mjs proves the same against the real SDK
+// and rrweb in Chromium.
+import { gunzipSync } from "node:zlib";
 
 import {
   afterEach,
@@ -41,155 +41,77 @@ interface Exported {
 }
 const exported: Exported[] = [];
 
-interface FakeSpan {
-  attributes: Record<string, unknown>;
-  setAttribute(k: string, v: unknown): FakeSpan;
-  end(): void;
-}
-
 function fakeProvider() {
-  const tracers = new Map<string, { startSpan(name: string): FakeSpan }>();
   return {
-    getTracer(name: string, version?: string) {
-      const key = `${name}@${version ?? ""}`;
-      if (!tracers.has(key)) {
-        tracers.set(key, {
-          startSpan(spanName: string): FakeSpan {
-            const span: FakeSpan = {
-              attributes: {},
-              setAttribute(k, v) {
-                span.attributes[k] = v;
-                return span;
-              },
-              end() {
-                exported.push({
-                  kind: "span",
-                  scope: name,
-                  name: spanName,
-                  at: tick(),
-                });
-              },
-            };
-            return span;
-          },
-        });
-      }
-      return tracers.get(key)!;
+    getTracer(scope: string) {
+      return {
+        startSpan(name: string) {
+          const span = {
+            setAttribute: () => span,
+            end() {
+              exported.push({ kind: "span", scope, name, at: tick() });
+            },
+          };
+          return span;
+        },
+      };
     },
   };
 }
 
-// The recorder, as the SDK bundles it: emit() buffers while running, flush()
-// is its batch timer (or its unload handler) posting the buffer with the
-// global fetch, and stop() has the SDK's inverted guard.
-const recorder = {
-  inited: false,
-  stopped: false,
-  url: "",
-  buffer: [] as string[],
-  tracer: null as { startSpan(name: string): FakeSpan } | null,
-  init(url: string, tracer: { startSpan(name: string): FakeSpan }) {
-    this.inited = true;
-    this.stopped = false;
-    this.url = url;
-    this.buffer = [];
-    this.tracer = tracer;
-    tracer.startSpan("record init").end();
+// @hyperdx/otel-web's Rum, as far as the client drives it.
+const rum = {
+  provider: undefined as
+    | { resource: { attributes: Record<string, unknown> } }
+    | undefined,
+  init() {
+    rum.provider = {
+      resource: {
+        attributes: { "service.name": "web", "rum.sessionId": "s1" },
+      },
+    };
   },
-  emit(event: string) {
-    if (this.inited && !this.stopped) {
-      this.buffer.push(event);
-    }
-  },
-  stop() {
-    if (!this.inited) return;
-    if (this.stopped) {
-      this.tracer?.startSpan("record stop").end();
-    }
-    this.stopped = true;
-  },
-  flush() {
-    const batch = this.buffer.splice(0, this.buffer.length);
-    if (batch.length === 0) return;
-    // A bare global lookup at export time, as the SDK's exporter does, with
-    // its request shape: gzipped OTLP protobuf under the rum.rr-web scope.
-    void fetch(
-      this.url,
-      otlpLogsPost("rum.rr-web", JSON.stringify(batch)),
-    ).catch(() => {});
-  },
+  recordException() {},
+  addAction() {},
+  setGlobalAttributes() {},
+  getSessionId: () => "s1",
 };
+vi.mock("@hyperdx/otel-web", () => ({ default: rum, Rum: rum }));
 
-/** A length-delimited protobuf field: tag, varint length, payload. */
-function ld(field: number, payload: Buffer | string): Buffer {
-  const bytes = Buffer.from(payload);
-  const length: number[] = [];
-  let n = bytes.length;
-  do {
-    length.push((n & 0x7f) | (n >= 0x80 ? 0x80 : 0));
-    n >>>= 7;
-  } while (n > 0);
-  return Buffer.concat([Buffer.from([(field << 3) | 2, ...length]), bytes]);
+// rrweb's record(), driven by the test.
+const rrweb = {
+  emit: undefined as ((event: unknown) => void) | undefined,
+  stops: 0,
+};
+let timestamp = 1_700_000_000_000;
+function emit(marker: string, size = 0) {
+  rrweb.emit?.({
+    type: 3,
+    timestamp: ++timestamp,
+    data: { source: 2, marker, pad: "x".repeat(size) },
+  });
 }
-
-/**
- * An OTLP logs post as the SDK's recorder makes it: a gzipped protobuf
- * ExportLogsServiceRequest, one ResourceLogs with one ScopeLogs whose
- * InstrumentationScope.name is `scope`, holding one LogRecord whose body is
- * `records` and which carries `attribute` as a string attribute value.
- */
-function otlpLogsPost(
-  scope: string,
-  records: string,
-  attribute = "",
-): RequestInit {
-  // LogRecord: body (5) AnyValue{string_value (1)}, attributes (6)
-  // KeyValue{key (1), value (2) AnyValue{string_value (1)}}.
-  const record = Buffer.concat([
-    ld(5, ld(1, records)),
-    ld(6, Buffer.concat([ld(1, "note"), ld(2, ld(1, attribute))])),
-  ]);
-  // ScopeLogs: scope (1) InstrumentationScope{name (1)}, log_records (2).
-  const scopeLogs = Buffer.concat([ld(1, ld(1, scope)), ld(2, record)]);
-  // ExportLogsServiceRequest: resource_logs (1) ResourceLogs{scope_logs (2)}.
-  const body = gzipSync(ld(1, ld(2, scopeLogs)));
-  return {
-    method: "POST",
-    body: new Uint8Array(body),
-    headers: {
-      "Content-Type": "application/x-protobuf",
-      "Content-Encoding": "gzip",
+vi.mock("rrweb", () => {
+  const record = Object.assign(
+    (options: { emit(event: unknown): void }) => {
+      rrweb.emit = options.emit;
+      return () => {
+        rrweb.stops++;
+      };
     },
-  };
-}
-
-const client = {
-  init(options: Record<string, unknown>) {
-    // The recorder holds its tracer from init on, as the real one does.
-    if (options.disableReplay !== true) {
-      recorder.init(
-        `${String(options.url)}/v1/logs`,
-        providerForInit.getTracer("rum.rr-web", "4.0.0"),
-      );
-    }
-  },
-  recordException: vi.fn(),
-  addAction: vi.fn(),
-  setGlobalAttributes: vi.fn(),
-  stopSessionRecorder() {
-    recorder.stop();
-  },
-  getSessionId: () => "s-1",
-};
-
-let providerForInit = fakeProvider();
-
-vi.mock("@hyperdx/browser", () => ({ default: client }));
+    {
+      takeFullSnapshot: () => {},
+      mirror: { getNode: () => null, getId: () => 0 },
+    },
+  );
+  return { record };
+});
 
 class FakeDocument {
   jar = new Map<string, string>();
   referrer = "";
   visibilityState = "visible";
+  hidden = false;
   addEventListener(): void {}
   removeEventListener(): void {}
   get cookie(): string {
@@ -228,25 +150,34 @@ class FakeStorage {
   }
 }
 
+function bodyText(body: unknown): string | undefined {
+  if (typeof body === "string") {
+    return body;
+  }
+  if (body instanceof ArrayBuffer || body instanceof Uint8Array) {
+    return gunzipSync(Buffer.from(body as ArrayBuffer)).toString("utf8");
+  }
+  return undefined;
+}
+
 // The network below the runtime: every request that reaches it was sent.
 const network = vi.fn(async (input: unknown, init?: { body?: unknown }) => {
   exported.push({
     kind: "fetch",
     url: String(input),
-    body:
-      typeof init?.body === "string"
-        ? init.body
-        : init?.body instanceof Uint8Array
-          ? gunzipSync(init.body).toString("latin1")
-          : undefined,
+    body: bodyText(init?.body),
     at: tick(),
   });
   return new Response(null, { status: 200 });
 });
 
+type Listener = (e: unknown) => void;
+const windowListeners = new Map<string, Listener[]>();
+
 function stubBrowser() {
   const local = new FakeStorage();
   const session = new FakeStorage();
+  windowListeners.clear();
   vi.stubGlobal("document", new FakeDocument());
   vi.stubGlobal("navigator", {});
   vi.stubGlobal("localStorage", local);
@@ -256,10 +187,20 @@ function stubBrowser() {
     localStorage: local,
     sessionStorage: session,
     history: { pushState: () => {}, replaceState: () => {} },
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type: string, fn: Listener) =>
+      windowListeners.set(type, [...(windowListeners.get(type) ?? []), fn]),
+    removeEventListener: (type: string, fn: Listener) =>
+      windowListeners.set(
+        type,
+        (windowListeners.get(type) ?? []).filter((l) => l !== fn),
+      ),
   });
   vi.stubGlobal("fetch", network);
+}
+
+/** The page is being left: the recorder sends what it holds, now. */
+function pagehide() {
+  for (const fn of windowListeners.get("pagehide") ?? []) fn({});
 }
 
 async function startRecording() {
@@ -267,8 +208,7 @@ async function startRecording() {
   vi.resetModules();
   const { trace } = await import("@opentelemetry/api");
   trace.disable();
-  providerForInit = fakeProvider();
-  trace.setGlobalTracerProvider(providerForInit as never);
+  trace.setGlobalTracerProvider(fakeProvider() as never);
   const t = await import("./telemetry.js");
   const k = await import("./track.js");
   k.grantAnalyticsConsent();
@@ -278,8 +218,10 @@ async function startRecording() {
       endpoint: "/_otel",
       analytics: "full",
       replay: true,
+      start: "eager",
     }),
   ).resolves.toBe(true);
+  await vi.waitFor(() => expect(rrweb.emit).toBeDefined());
   return k;
 }
 
@@ -293,10 +235,8 @@ function replayAfter(since: number): Exported[] {
   );
 }
 
-// Transform the module graph once, outside any test: a cold import of
-// telemetry.js takes seconds on a loaded machine, and inside the first test
-// it ran against that test's 5s timeout. startRecording() then re-evaluates
-// from the transform cache in milliseconds.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
 beforeAll(async () => {
   await import("@opentelemetry/api");
   await import("./telemetry.js");
@@ -306,7 +246,8 @@ beforeAll(async () => {
 beforeEach(() => {
   exported.length = 0;
   network.mockClear();
-  recorder.inited = false;
+  rrweb.emit = undefined;
+  rrweb.stops = 0;
 });
 
 afterEach(async () => {
@@ -332,47 +273,72 @@ const withdrawals: Array<[string, (k: Track) => void]> = [
 
 describe("session replay after consent is withdrawn", () => {
   it.each(withdrawals)(
-    "%s: nothing recorded before it and still buffered is sent, and stopping exports no span",
+    "%s: nothing recorded before it and still held is sent, and stopping exports no span",
     async (_name, withdraw) => {
       const k = await startRecording();
-      // Replay runs while consented: a flushed batch reaches the network.
-      recorder.emit("before-1");
-      recorder.flush();
+      // Replay runs while consented: a sent batch reaches the network.
+      emit("before-1");
+      pagehide();
       expect(
         exported.filter((e) => e.kind === "fetch" && e.url === LOGS_URL),
       ).toHaveLength(1);
-      // Recorded before the withdrawal, still in the recorder's buffer.
-      recorder.emit("before-2");
+      expect(JSON.stringify(exported)).toContain("before-1");
+      // Recorded before the withdrawal, still held by the recorder.
+      emit("before-2");
 
       const withdrawnAt = tick();
       withdraw(k);
-      recorder.emit("after");
-      // The recorder's batch timer (or its unload handler) fires.
-      recorder.flush();
-      await Promise.resolve();
+      emit("after");
+      // The page is left, and any timer the recorder had runs.
+      pagehide();
+      await settle();
 
       expect(replayAfter(withdrawnAt)).toEqual([]);
       expect(JSON.stringify(exported)).not.toContain("before-2");
+      expect(JSON.stringify(exported)).not.toContain('"after"');
     },
   );
 
-  it("a later stop on the SDK itself exports no `record stop` span", async () => {
+  it("a batch still being encoded when consent is withdrawn is never sent", async () => {
     const k = await startRecording();
-    const withdrawnAt = tick();
+    const since = tick();
+    // Over REPLAY_MAX_PENDING_BYTES: sent in the background at once, which
+    // encodes and gzips it before posting.
+    emit("encoding", 600 * 1024);
     k.disableTelemetry();
-    // Another caller (the app, an SDK path) stopping the recorder again.
-    client.stopSessionRecorder();
-    client.stopSessionRecorder();
+    await settle();
 
-    expect(replayAfter(withdrawnAt)).toEqual([]);
+    expect(replayAfter(since)).toEqual([]);
   });
 
-  it("only replay is held back: traces and the app's own requests still go out", async () => {
+  it("a batch sent in the background before the withdrawal does arrive, gzipped OTLP/JSON", async () => {
+    await startRecording();
+    const since = tick();
+    emit("background", 600 * 1024);
+    await vi.waitFor(() => expect(replayAfter(since)).toHaveLength(1));
+    const sent = replayAfter(since)[0]!;
+    const request = JSON.parse(sent.body!) as {
+      resourceLogs: Array<{
+        scopeLogs: Array<{ scope: { name: string }; logRecords: unknown[] }>;
+      }>;
+    };
+    expect(request.resourceLogs[0]!.scopeLogs[0]!.scope.name).toBe(
+      "rum.rr-web",
+    );
+    expect(sent.body).toContain("background");
+  });
+
+  it("only replay stops: traces, other OTLP logs and the app's own requests still go out", async () => {
     const k = await startRecording();
     k.disableTelemetry();
     const since = tick();
 
     await fetch(`${ORIGIN}/_otel/v1/traces`, { method: "POST", body: "{}" });
+    await fetch(LOGS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resourceLogs: [], note: "app-log-json" }),
+    });
     await fetch("https://api.example.com/v1/orders", { method: "POST" });
 
     expect(
@@ -381,93 +347,20 @@ describe("session replay after consent is withdrawn", () => {
         .map((e) => e.url),
     ).toEqual([
       `${ORIGIN}/_otel/v1/traces`,
+      LOGS_URL,
       "https://api.example.com/v1/orders",
     ]);
   });
 
-  it("other OTLP logs to the same logs URL still go out after it", async () => {
+  it("rrweb is stopped exactly once however consent is withdrawn, and nothing is exported for it", async () => {
     const k = await startRecording();
-    k.disableTelemetry();
     const since = tick();
-
-    // The app's own OTLP logs: protobuf under another scope, and JSON.
-    await fetch(LOGS_URL, otlpLogsPost("app.logs", "app-log-protobuf"));
-    await fetch(LOGS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ resourceLogs: [], note: "app-log-json" }),
-    });
-
-    const sent = exported.filter((e) => e.kind === "fetch" && e.at > since);
-    expect(sent.map((e) => e.url)).toEqual([LOGS_URL, LOGS_URL]);
-    expect(sent[0]?.body).toContain("app-log-protobuf");
-    expect(sent[1]?.body).toContain("app-log-json");
-  });
-
-  it("an app log whose body or attributes hold the recorder's scope bytes still goes out", async () => {
-    const k = await startRecording();
-    k.disableTelemetry();
-    const since = tick();
-
-    // The exact bytes of InstrumentationScope.name = "rum.rr-web", but in a
-    // log record's body and in an attribute value, not at the scope's path.
-    const scopeBytes = ld(1, "rum.rr-web").toString("latin1");
-    await fetch(
-      LOGS_URL,
-      otlpLogsPost("app.logs", `body ${scopeBytes}`, scopeBytes),
-    );
-
-    const sent = exported.filter((e) => e.kind === "fetch" && e.at > since);
-    expect(sent.map((e) => e.url)).toEqual([LOGS_URL]);
-    expect(sent[0]?.body).toContain("rum.rr-web");
-  });
-
-  it("a malformed protobuf log batch goes out as asked", async () => {
-    const k = await startRecording();
-    k.disableTelemetry();
-    const since = tick();
-
-    // Truncated: a length longer than what follows.
-    await fetch(LOGS_URL, {
-      method: "POST",
-      body: new Uint8Array(gzipSync(Buffer.from([0x0a, 0x7f, 0x12]))),
-      headers: {
-        "Content-Type": "application/x-protobuf",
-        "Content-Encoding": "gzip",
-      },
-    });
-
-    expect(
-      exported.filter((e) => e.kind === "fetch" && e.at > since),
-    ).toHaveLength(1);
-  });
-
-  it.each([
-    ["a trailing slash", `${LOGS_URL}/`],
-    ["a relative URL", "/_otel/v1/logs"],
-    ["a query string", `${LOGS_URL}?x=1`],
-  ])(
-    "a replay batch to the logs URL spelled with %s is dropped too",
-    async (_name, url) => {
-      const k = await startRecording();
-      k.disableTelemetry();
-      const since = tick();
-
-      await fetch(url, otlpLogsPost("rum.rr-web", "spelled-differently"));
-
-      expect(
-        exported.filter((e) => e.kind === "fetch" && e.at > since),
-      ).toEqual([]);
-    },
-  );
-
-  it("the recorder is stopped exactly once however consent is withdrawn", async () => {
-    const k = await startRecording();
-    const stop = vi.spyOn(client, "stopSessionRecorder");
     k.revokeAnalyticsConsent();
     k.optOutOfAnalytics();
     k.disableTelemetry();
+    await settle();
 
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(rrweb.stops).toBe(1);
+    expect(replayAfter(since)).toEqual([]);
   });
 });

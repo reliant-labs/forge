@@ -171,13 +171,22 @@ func (s *lintScope) contains(file string) bool {
 		}
 		f = rel
 	}
-	f = strings.TrimPrefix(filepath.ToSlash(filepath.Clean(f)), "./")
+	f = scopeRel(f)
 	for _, p := range s.paths {
-		if f == p || strings.HasPrefix(f, p+"/") {
+		if p = scopeRel(p); f == p || strings.HasPrefix(f, p+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+// scopeRel is the one normal form scope matching compares in: a
+// project-relative path, slash-separated, cleaned (no "..", no trailing "/"),
+// with no leading "./". Both sides of every comparison go through it, so a
+// scope spelled "./frontends/web/src" or "frontends/web/../web/src/" matches
+// exactly what "frontends/web/src" does.
+func scopeRel(p string) string {
+	return strings.TrimPrefix(path.Clean(filepath.ToSlash(p)), "./")
 }
 
 // reachesAnyDir reports whether any scope path lies inside one of dirs, or
@@ -188,9 +197,9 @@ func (s *lintScope) reachesAnyDir(dirs []string) bool {
 		return true
 	}
 	for _, d := range dirs {
-		d = strings.TrimPrefix(path.Clean(filepath.ToSlash(d)), "./")
+		d = scopeRel(d)
 		for _, p := range s.paths {
-			if p == d || strings.HasPrefix(p, d+"/") || strings.HasPrefix(d, p+"/") {
+			if p = scopeRel(p); p == d || strings.HasPrefix(p, d+"/") || strings.HasPrefix(d, p+"/") {
 				return true
 			}
 		}

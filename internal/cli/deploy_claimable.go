@@ -1092,7 +1092,7 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
 	if !published {
 		instr = nothingPublishedInstructions(env, cl)
-	} else {
+	} else if claimableState(state) {
 		instr += ". " + afterClaimNote(env)
 	}
 	if compute {
@@ -1186,8 +1186,15 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 		fmt.Fprintf(w, "  not a bug in the app. It ends when the deploy is claimed: the platform restarts\n")
 		fmt.Fprintf(w, "  the backend on the normal hosted network.\n")
 	}
-	printAfterClaim(w, env, c.ConsoleURL)
+	if claimableState(c.State) {
+		printAfterClaim(w, env, c.ConsoleURL)
+	}
 }
+
+// claimableState reports whether a deploy in state can still be claimed: live,
+// or suspended (offline, not yet deleted). What the claimer gets is said only
+// then; a claimed or expired deploy has no claim left to make.
+func claimableState(state string) bool { return state == "live" || state == "suspended" }
 
 // printAfterClaim tells the agent what to pass on about owning the deploy:
 // where it is managed, what the free plan covers, and how to redeploy once

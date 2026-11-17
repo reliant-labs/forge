@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/assets"
@@ -56,7 +57,7 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	templateData := ProjectMemoryData{Name: g.Name, CLI: cliName()}
 
 	// User-owned MCP config — write only if absent.
-	if err := writeIfAbsent(filepath.Join(g.Path, ".mcp.json"), "mcp.json.tmpl", templateData); err != nil {
+	if err := writeIfAbsent(filepath.Join(g.Path, ".mcp.json"), "mcp.json.tmpl", newMCPJSONData(g.Harness, cliName())); err != nil {
 		return fmt.Errorf("failed to write .mcp.json: %w", err)
 	}
 
@@ -67,6 +68,34 @@ func (g *ProjectGenerator) writeProjectMetadata() error {
 	}
 
 	return nil
+}
+
+// mcpJSONData is what mcp.json.tmpl renders from. The forge entry is
+// pre-encoded JSON so a CLI name the template cannot quote never breaks the
+// file.
+type mcpJSONData struct {
+	ForgeCommandJSON string
+	ForgeArgsJSON    string
+}
+
+// newMCPJSONData registers forge's own MCP server for the claude harness:
+// Claude Code is the one harness that loads a project's .mcp.json, so it is
+// the one where the entry is the difference between an agent with forge's
+// tools and one without. Reliant's agents already run forge in their shells,
+// and cursor and codex read their MCP config from elsewhere, so no forge
+// entry is written for them. cli is how forge was invoked ("forge", or
+// "reliant forge" when embedded); the entry runs that same binary.
+func newMCPJSONData(h Harness, cli string) mcpJSONData {
+	if h != HarnessClaude {
+		return mcpJSONData{}
+	}
+	fields := strings.Fields(cli)
+	if len(fields) == 0 {
+		return mcpJSONData{}
+	}
+	cmd, _ := json.Marshal(fields[0])
+	args, _ := json.Marshal(append(fields[1:], "mcp"))
+	return mcpJSONData{ForgeCommandJSON: string(cmd), ForgeArgsJSON: string(args)}
 }
 
 // ProjectMemoryData is what the framework memory template

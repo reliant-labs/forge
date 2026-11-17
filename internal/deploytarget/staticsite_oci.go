@@ -88,6 +88,12 @@ func BuildStaticSiteTree(ctx context.Context, projectDir string, fe StaticSiteFr
 	if err != nil {
 		return "", StageResult{}, err
 	}
+	if fe.Release != "" {
+		marker := StaticSiteReleaseMarker{Project: fe.Project, Frontend: fe.Name, Release: fe.Release}
+		if err := WriteStaticSiteReleaseMarker(plan.Stage.StagingDir, marker); err != nil {
+			return "", StageResult{}, fmt.Errorf("static-site %s: %w", fe.Name, err)
+		}
+	}
 	return plan.Stage.StagingDir, res, nil
 }
 

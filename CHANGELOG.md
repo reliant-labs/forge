@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.7.0] - 2026-11-17
+
+### Added
+
+- **env:** forge env render takes -D render options, like env up and env build ([#2190](https://github.com/reliant-labs/forge/pull/2190))
+- **analytics:** Events funnels (forge.Step where/within, by org), forge.Count, project-level Observability.analytics ([#2176](https://github.com/reliant-labs/forge/pull/2176))
+- **skills:** adopt — every entry point is real ([#2170](https://github.com/reliant-labs/forge/pull/2170))
+- **observe,obsquery:** Events that are not activity — observe.TrackState, and a project's own user-count rules ([#2180](https://github.com/reliant-labs/forge/pull/2180))
+- **web-runtime:** attribution carries referrer host + entry page; setTelemetryOrg ([#2174](https://github.com/reliant-labs/forge/pull/2174))
+- **observe:** events carry org + explicit actor, drop PII props, honour a consent source ([#2169](https://github.com/reliant-labs/forge/pull/2169))
+- **orm:** capture query shapes under FORGE_QUERY_CAPTURE_DIR ([#2208](https://github.com/reliant-labs/forge/pull/2208))
+- **env:** the env output is a public, schema'd API ([#2210](https://github.com/reliant-labs/forge/pull/2210))
+- **env:** declare an env with a YAML/JSON document instead of KCL ([#2216](https://github.com/reliant-labs/forge/pull/2216))
+- **obs:** built-in AI hub — LLM and workflow dashboards on OTel GenAI spans ([#2226](https://github.com/reliant-labs/forge/pull/2226))
+- **deploy:** a database declares its dialect and migrations; several per project ([#2211](https://github.com/reliant-labs/forge/pull/2211))
+- **mcp:** hosted account tools for a remote MCP connector, and the connect skill ([#2213](https://github.com/reliant-labs/forge/pull/2213))
+- **env:** an env document can declare a cluster workload forge builds ([#2219](https://github.com/reliant-labs/forge/pull/2219))
+- **obs:** obs init declares the env as an env document, not in forge.yaml ([#2217](https://github.com/reliant-labs/forge/pull/2217))
+- **db:** forge db analyze — empirical migration lock/rewrite analysis ([#2209](https://github.com/reliant-labs/forge/pull/2209))
+- **obs:** one rule set for events that are not activity and users who are not counted ([#2206](https://github.com/reliant-labs/forge/pull/2206))
+
+### Changed
+
+- main's Windows and removal-guard reds from #2191, #2192, #2196 and #2199 ([#2205](https://github.com/reliant-labs/forge/pull/2205))
+- **merge-tier:** run internal/removalguard in full mode in the merge queue ([#2222](https://github.com/reliant-labs/forge/pull/2222))
+- show public demo telemetry in README ([#2221](https://github.com/reliant-labs/forge/pull/2221))
+- **cli:** -command-surface-only records a change's own commands; record the surface main shipped unrecorded ([#2229](https://github.com/reliant-labs/forge/pull/2229))
+- run Windows -short tests of changed packages in the merge queue ([#2243](https://github.com/reliant-labs/forge/pull/2243))
+- **deps:** bump the go-patch group across 1 directory with 3 updates ([#2245](https://github.com/reliant-labs/forge/pull/2245))
+- **deps:** bump the go-otel group across 1 directory with 3 updates ([#2246](https://github.com/reliant-labs/forge/pull/2246))
+- **deps:** bump the go-minor group across 1 directory with 10 updates ([#2247](https://github.com/reliant-labs/forge/pull/2247))
+
+### Fixed
+
+- **web-runtime:** strip URL query and fragment from browser telemetry before export ([#2191](https://github.com/reliant-labs/forge/pull/2191))
+- **deploy:** a successful anonymous deploy no longer reads as a broken one ([#2199](https://github.com/reliant-labs/forge/pull/2199))
+- **deploy:** an env forge applies through OnExternal hooks is self-managed, so the control plane records its promotions ([#2196](https://github.com/reliant-labs/forge/pull/2196))
+- **ci:** vuln-scan --go scans every Go module of the project, not just the cwd's ([#2192](https://github.com/reliant-labs/forge/pull/2192))
+- **mcp:** repair LLM recovery link and unclaimed gateway advice ([#2198](https://github.com/reliant-labs/forge/pull/2198))
+- **obs:** don't count users first seen in the data's first week as new when sign-ups aren't reported ([#2203](https://github.com/reliant-labs/forge/pull/2203))
+- **graph:** do not require constructors for unreachable role helpers ([#2185](https://github.com/reliant-labs/forge/pull/2185))
+- **web-runtime:** strip URL query and fragment from session-replay records ([#2207](https://github.com/reliant-labs/forge/pull/2207))
+- **dbtrace:** the query-capture test closes its recorder before TempDir cleanup (Windows main red) ([#2215](https://github.com/reliant-labs/forge/pull/2215))
+- **schemagen:** main's guards after #2210 — drop the never-written Schema.Enum; allow the generated schema's Kubernetes PolicyRule sentence ([#2223](https://github.com/reliant-labs/forge/pull/2223))
+- **cliev:** the test sink guards hang and status with its mutex (forge main -race red) ([#2225](https://github.com/reliant-labs/forge/pull/2225))
+- **devidp:** dev Zitadel moves to v4.20.3, in step with the deployed one ([#2224](https://github.com/reliant-labs/forge/pull/2224))
+- **envdoc:** env-document messages name paths with forward slashes on every OS (forge main Windows red) ([#2227](https://github.com/reliant-labs/forge/pull/2227))
+- **cli:** --allow-version-skew before the command is refused with the line that works, never handed off misparsed ([#2237](https://github.com/reliant-labs/forge/pull/2237))
+- **env:** env status names a port another forge stack holds instead of showing this stack's service up ([#2238](https://github.com/reliant-labs/forge/pull/2238))
+- **obs:** dashboards audit stays inside a query budget and reports progress ([#2239](https://github.com/reliant-labs/forge/pull/2239))
+- **release:** a web runtime a later commit already released supersedes the commit being released ([#2240](https://github.com/reliant-labs/forge/pull/2240))
+- **obs:** obs check judges release health env-wide, and names the --window a late-live release needs ([#2228](https://github.com/reliant-labs/forge/pull/2228))
+- **cli:** a missing OpenAPI spec says "no such file" on every OS; chtrace's dial-timeout precondition is deterministic ([#2241](https://github.com/reliant-labs/forge/pull/2241))
+- **skills:** the connect skill's Goose bullets no longer read as a buf local plugin ([#2244](https://github.com/reliant-labs/forge/pull/2244))
+- **devidp:** wait for a just-created account before signing it in ([#2248](https://github.com/reliant-labs/forge/pull/2248))
+- **test:** build scratch modules offline from forge's own requirement list ([#2249](https://github.com/reliant-labs/forge/pull/2249))
+- **web-runtime:** warm each test file's module graph in beforeAll, so a cold import never runs against a test's 5s timeout ([#2250](https://github.com/reliant-labs/forge/pull/2250))
+- **releasehealth:** a regression needs regressed_issue_min_events events, and issue alerts are judged as their issue ([#2251](https://github.com/reliant-labs/forge/pull/2251))
+- **releasehealth:** judge error rate per endpoint against its own baseline, and require error_rate_min_errors errors ([#2252](https://github.com/reliant-labs/forge/pull/2252))
+
 ## [v1.6.0] - 2026-11-13
 
 ### Added
@@ -8995,7 +9055,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.7.0...HEAD
+[v1.7.0]: https://github.com/reliant-labs/forge/compare/v1.6.0...v1.7.0
 [v1.6.0]: https://github.com/reliant-labs/forge/compare/v1.5.0...v1.6.0
 [v1.5.0]: https://github.com/reliant-labs/forge/compare/v1.4.0...v1.5.0
 [v1.4.0]: https://github.com/reliant-labs/forge/compare/v1.3.0...v1.4.0

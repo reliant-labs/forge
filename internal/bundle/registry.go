@@ -30,9 +30,9 @@ import (
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/retry"
 
+	"github.com/reliant-labs/forge/internal/dockercred"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -87,11 +87,11 @@ type Resolver interface {
 // control-plane identity, not whatever a store happens to hold for the host
 // (see NewRepositoryWithCredential).
 func NewRepository(ref string) (*remote.Repository, error) {
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	credential, err := dockercred.Credential()
 	if err != nil {
 		return nil, fmt.Errorf("bundle: read docker credentials: %w", err)
 	}
-	return NewRepositoryWithCredential(ref, credentials.Credential(store))
+	return NewRepositoryWithCredential(ref, credential)
 }
 
 // NewRepositoryWithCredential is NewRepository with the credential supplied by

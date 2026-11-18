@@ -41,3 +41,51 @@ func TestUnprovenSignup_NothingWithoutADeclaration(t *testing.T) {
 		t.Fatalf("= %v, %v", found, err)
 	}
 }
+
+// The lane is wired into the sweep a bare `forge lint` runs, and graded by
+// the rollout table there: run through collectLintOutcomes (every other lane
+// switched off, so no toolchain runs), a production sign-up with no mail
+// warns while the pin is in the grace period and gates from GatesFrom.
+// forge#2179 review: a merge once dropped the lane from lintPipeline while
+// the collector's own tests stayed green.
+func TestUnprovenSignup_TheBareSweepRunsAndGradesIt(t *testing.T) {
+	root := t.TempDir()
+	writeOpenSignupFile(t, root, "deploy/kcl/prod/main.k", `import forge
+
+IDENTITY = forge.ManagedIdentity {
+    signup = "open"
+    email = forge.IdentityEmail {delivery = "none"}
+}
+`)
+	off := map[string]bool{}
+	for _, step := range lintPipeline() {
+		if step.name != unprovenSignupLane {
+			off[step.name] = true
+		}
+	}
+	ro, ok := lintRollouts[ruleUnprovenSignup]
+	if !ok {
+		t.Fatalf("%s has no rollout row", ruleUnprovenSignup)
+	}
+	sweep := func(pin string) ([]lintJSONFinding, bool) {
+		t.Helper()
+		outcomes := collectLintOutcomes(&lintRunCtx{ctx: t.Context(), cwd: root, cfg: pinnedCfg(pin, nil), lanesOff: off})
+		fs, gated := flattenLintOutcomes(outcomes)
+		var mine []lintJSONFinding
+		for _, f := range fs {
+			if f.Rule == ruleUnprovenSignup {
+				mine = append(mine, f)
+			}
+		}
+		if len(mine) != 1 || mine[0].File != "deploy/kcl/prod/main.k" {
+			t.Fatalf("pin %s: the bare sweep's %s findings = %+v, want prod's no-mail sign-up (all findings %+v)", pin, ruleUnprovenSignup, mine, fs)
+		}
+		return mine, gated
+	}
+	if fs, gated := sweep(ro.IntroducedIn); gated || fs[0].Severity == lintSevError {
+		t.Errorf("pin %s (before GatesFrom %s): want a warning that does not gate, got gated=%v %+v", ro.IntroducedIn, ro.GatesFrom, gated, fs)
+	}
+	if fs, gated := sweep(ro.GatesFrom); !gated || fs[0].Severity != lintSevError {
+		t.Errorf("pin %s: want an error that gates, got gated=%v %+v", ro.GatesFrom, gated, fs)
+	}
+}

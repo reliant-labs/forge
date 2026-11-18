@@ -97,6 +97,9 @@ func findUnprovenSignups(root string) ([]unprovenSignupFinding, error) {
 	return out, nil
 }
 
+// unprovenSignupLane is the lane's name in lintPipeline (and lint.lanes).
+const unprovenSignupLane = "unproven-signup lint"
+
 func collectUnprovenSignupJSON(root string) ([]lintJSONFinding, error) {
 	if root == "" {
 		return nil, nil

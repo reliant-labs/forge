@@ -135,7 +135,7 @@ func NewRootCmd() *cobra.Command {
 	var rootCmd *cobra.Command
 	rootCmd = &cobra.Command{
 		Use:   "forge",
-		Short: "Build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
+		Short: "Reliant Forge: build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
 		Long: `Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's
 forge (Solidity) or Laravel Forge.
 
@@ -146,6 +146,8 @@ observability and linters from day 0.
 New here? 'forge start' prints, in about 60 lines, the one command for the
 directory you are in: deploy the app already here with no account
 ('forge env deploy prod --claimable'), or create one.
+'forge skill load compare' says where forge fits next to Vercel, Supabase or
+Render: what it replaces, its limits and what hosting costs.
 
 A landing page, docs site, SPA or PWA with no backend is a complete forge
 project: one static frontend on hosted static hosting, no server to run.

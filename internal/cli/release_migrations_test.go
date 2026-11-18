@@ -375,6 +375,56 @@ func TestEnvKeepsHostedLedger(t *testing.T) {
 	}
 }
 
+// A build preflight whose ledger cannot be resolved (here: --offline-ledger
+// with no cached ledger, deterministic and offline) still judges the
+// unmerged-migration half from the render alone: a hosted env's uncommitted
+// migration is refused before the build, with the commit that fixes it,
+// rather than waiting for the cut after the build.
+func TestPreflightReleaseMigrations_LedgerUnresolvedStillRefusesUnmerged(t *testing.T) {
+	testkit.Slow(t, "execs git over a temp repository")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	migGit(t, dir, "init", "-q", "-b", "main")
+	mainK := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
+	if err := os.MkdirAll(filepath.Dir(mainK), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainK, []byte("# declares prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "project")
+	writeMigFile(t, dir, "20260101000000_counters.up.sql")
+
+	ctx := withOfflineLedger(context.Background())
+	hosted := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.invalid"}}
+	if _, err := ledgerForRendered(ctx, dir, "prod", hosted); err == nil {
+		t.Fatal("precondition: the ledger resolved; this test needs the unresolved-ledger fallback")
+	}
+	opts := buildOptions{env: "prod", release: "v1"}
+
+	err := preflightReleaseMigrations(ctx, dir, hosted, opts)
+	var coded exitCodeError
+	if !errors.As(err, &coded) || coded.code != exitRefused || !strings.Contains(err.Error(), "20260101000000_counters.up.sql") {
+		t.Fatalf("err = %v; want a refusal naming the uncommitted migration", err)
+	}
+	if !strings.Contains(err.Error(), "git switch main && git add db/migrations && git commit") {
+		t.Errorf("the refusal does not name the commit that fixes it:\n%v", err)
+	}
+
+	// An env whose ledger is this machine's is not judged by this rule.
+	if err := preflightReleaseMigrations(ctx, dir, &KCLEntities{}, opts); err != nil {
+		t.Errorf("an env with no control plane: err = %v, want nil (the cut owns the ledger failure)", err)
+	}
+
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "migration")
+	if err := preflightReleaseMigrations(ctx, dir, hosted, opts); err != nil {
+		t.Errorf("once the migration is on main: err = %v, want nil", err)
+	}
+}
+
 // (A): a release for a shared env carrying the project's migration that main
 // does not have is refused; once it is on main, it passes.
 func TestCheckUnmergedMigrations(t *testing.T) {

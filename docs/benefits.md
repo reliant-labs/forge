@@ -3368,6 +3368,41 @@ _Enforced · Reliant hosting_
 - `internal/freesite` in the control-plane repo
 - `internal/staticfreetier` in the control-plane repo
 
+<a id="hosting-pay-as-you-go"></a>
+
+### Posted pay-as-you-go hosting rates
+
+Reliant hosting's posted rates are $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage, on what each pod requests. No CPU, memory or storage is included, on any plan, so a workload is billed from its first vCPU-hour and GiB-hour: about $8.34 a month for an always-on service at 0.1 vCPU and 512 MiB, and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB. A $5 invoice minimum applies, and static-site egress is included to 10 GiB a month, then $0.10 per GiB.
+
+_Enforced · Reliant hosting_
+
+**Use:** `forge env shape <env>` prints what each workload requests. Current terms, and what is billed today: https://reliantlabs.io/pricing.
+
+**Why:** The rates are the pricing-v2 list (2026-11-06) in control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders. Hosting is pay-as-you-go beside the machine plans: every plan there sets `included_cpu_hours`, `included_memory_gib_hours` and `included_storage_gib_hours` to 0. The monthly figures assume 730 hours.
+
+**Evidence:**
+
+- command `forge env shape`
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
+
+<a id="observability-allowance"></a>
+
+### 10 GiB of telemetry included
+
+The posted observability allowance is 10 GiB of stored logs, traces, metrics and profiles per organization a month, with or without a plan, and the posted rate above it is $0.10 per GiB.
+
+_Enforced · Reliant hosting_
+
+**Use:** What is billed today, and what happens past the allowance: https://reliantlabs.io/pricing.
+
+**Why:** The figures are the `observability:` block of control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders.
+
+**Evidence:**
+
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
+
 <a id="live-hostname"></a>
 
 ### A live URL on deploy

@@ -173,15 +173,29 @@ outputs:
   verdict: "{{ nodes.?doc.doc.verdict.orValue('') }}"
 entry: [facts]
 nodes:
-# Everything a shell below interpolates is checked here first.
+# Every value a shell below sees is checked here first, against a pattern that
+# cannot hold a quote, a $, a backtick or a newline, and the scripts read them
+# only from this node (and from resolved, which checks fetch's output the same
+# way), each inside single quotes. A run node takes no env: block, so a
+# checked value in single quotes is the safe way in. Anything else is refused
+# before a command runs.
 - id: facts
   type: compute
   outputs:
     valid: >-
-      {{ inputs.sha.matches('^[0-9a-f]{40}$')
+      {{ inputs.tier in ['pr', 'queue', 'main']
+      && inputs.sha.matches('^[0-9a-f]{40}$')
       && (inputs.base == '' || inputs.base.matches('^[0-9a-f]{40}$'))
-      && inputs.default_branch.matches('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
-      && (inputs.tier != 'queue' || inputs.branch.matches('-[0-9a-f]{40}$')) }}
+      && inputs.default_branch.matches('^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$')
+      && (inputs.tier != 'queue' || inputs.branch.matches('^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]{40}$'))
+      && workflow.chat_id.matches('^[A-Za-z0-9-]{1,64}$')
+      && has(workflow.path) && workflow.path.matches('^/[A-Za-z0-9 ._/+@=,:~-]*$') }}
+    tier: '{{ inputs.tier }}'
+    sha: '{{ inputs.sha }}'
+    default_branch: '{{ inputs.default_branch }}'
+    # The run's private ref namespace: refs/reliant-ci/<run>/{head,base}.
+    run: '{{ workflow.chat_id }}'
+    path: "{{ has(workflow.path) ? workflow.path : '' }}"
     # A merge group's base is the commit its branch name ends in.
     base: "{{ inputs.tier == 'queue' ? regex.extract(inputs.branch, '-([0-9a-f]{40})$').orValue('') : inputs.base }}"
 - id: invalid
@@ -189,38 +203,71 @@ nodes:
   outcome: failure
   args:
     role: assistant
-    content: 'Refused: the gate needs a 40-character commit sha, a valid base and default branch, and for a merge group a gh-readonly-queue branch.'
-# Fetches the commit (and its base) into the project's checkout on this
-# machine. It holds the machine's git credentials, so it runs git fetch only:
-# it never checks out, reads or runs the commit's files.
+    content: >-
+      Refused: the gate needs a known tier, a 40-character commit sha, a valid base and default branch, a
+      gh-readonly-queue branch for a merge group, and a run id and project directory a shell can take as they are.
+# Fetches the commit (and its base) into this run's private refs in the
+# project's checkout on this machine. It holds the machine's git credentials,
+# so it runs git fetch only: it never checks out, reads or runs the commit's
+# files. It prints the base commit, or nothing for the main tier, and fails
+# when the pr or queue tier's base does not resolve: their affected tests are
+# measured from it, so a gate without it would judge the wrong change.
 - id: fetch
   type: run
   timeout: 15m
   args:
     command: |
       set -eu
-      cd '{{ workflow.path }}'
-      ref='refs/reliant-ci/{{ workflow.chat_id }}'
-      git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+{{ inputs.sha }}:'"$ref/head"
-      if [ -n '{{ nodes.facts.base }}' ]; then
-        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+{{ nodes.facts.base }}:'"$ref/base"
-      elif [ '{{ inputs.tier }}' != main ]; then
-        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+refs/heads/{{ inputs.default_branch }}:'"$ref/base"
+      tier='{{ nodes.facts.tier }}'
+      sha='{{ nodes.facts.sha }}'
+      base='{{ nodes.facts.base }}'
+      default_branch='{{ nodes.facts.default_branch }}'
+      run='{{ nodes.facts.run }}'
+      dir='{{ nodes.facts.path }}'
+      case "$run" in ''|*[!A-Za-z0-9-]*) echo "refused: run id '$run' is not [A-Za-z0-9-]+" >&2; exit 1 ;; esac
+      case "$sha" in *[!0-9a-f]*|'') echo "refused: '$sha' is not a commit sha" >&2; exit 1 ;; esac
+      cd "$dir"
+      ref="refs/reliant-ci/$run"
+      git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$sha:$ref/head"
+      [ "$tier" = main ] && exit 0
+      if [ -n "$base" ]; then
+        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$base:$ref/base" ||
+          { echo "the $tier tier needs its base commit $base, and fetching it failed" >&2; exit 1; }
+      else
+        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+refs/heads/$default_branch:$ref/base" ||
+          { echo "the $tier tier needs a base commit, and fetching $default_branch for it failed" >&2; exit 1; }
       fi
-      git rev-parse --verify --quiet "$ref/base^{commit}" || true
+      git rev-parse --verify --quiet "$ref/base^{commit}" ||
+        { echo "the $tier tier needs a base commit, and $ref/base did not resolve" >&2; exit 1; }
+# fetch's output, checked like facts before a shell sees it: a base is a
+# commit sha, and only the main tier may have none.
+- id: resolved
+  type: compute
+  outputs:
+    base: "{{ nodes.fetch.exit_code == 0 ? nodes.fetch.stdout.trim() : '' }}"
+    ok: >-
+      {{ nodes.fetch.exit_code == 0
+      && (nodes.fetch.stdout.trim().matches('^[0-9a-f]{40}$')
+          || (nodes.facts.tier == 'main' && nodes.fetch.stdout.trim() == '')) }}
+    error: >-
+      {{ nodes.fetch.exit_code != 0
+      ? 'fetching the commit failed: ' + nodes.fetch.stderr.substring(math.greatest(0, size(nodes.fetch.stderr) - 1500))
+      : nodes.fetch.stdout.trim() == '' ? 'the ' + nodes.facts.tier + ' tier needs a base commit, and fetch resolved none'
+      : 'fetch printed a base that is not a commit sha' }}
 # The gate runs the commit's code, so it holds no credentials: a fresh clone
 # sharing the checkout's objects, in this command's private /tmp, with git
 # hooks off. stdout is the gate's forge.ci.gate/v1 document and nothing else.
 - id: gate
   type: run
-  condition: nodes.fetch.exit_code == 0
   timeout: 90m
   args:
     credentials: none
     command: |
       set -u
-      repo='{{ workflow.path }}'
-      base='{{ nodes.fetch.stdout.trim() }}'
+      repo='{{ nodes.facts.path }}'
+      tier='{{ nodes.facts.tier }}'
+      sha='{{ nodes.facts.sha }}'
+      base='{{ nodes.resolved.base }}'
       work=$(mktemp -d)
       trap 'rm -rf "$work"' EXIT
       log="$work/setup.log"
@@ -229,26 +276,28 @@ nodes:
         tail -c 4000 "$log" >&2
         exit 0
       }
+      case "$tier" in pr|queue|main) ;; *) fail 'refused: unknown tier' ;; esac
+      case "$sha$base" in *[!0-9a-f]*) fail 'refused: the commit or its base is not a sha' ;; esac
+      if [ "$tier" != main ] && [ -z "$base" ]; then fail "the $tier tier needs a base commit"; fi
       top=$(git -C "$repo" rev-parse --show-toplevel 2>>"$log") || fail 'the project directory is not a git checkout'
       sub=$(git -C "$repo" rev-parse --show-prefix 2>>"$log")
       git clone --quiet --shared --no-checkout "$top" "$work/src" >>"$log" 2>&1 || fail 'git clone of the project checkout failed'
-      git -C "$work/src" -c core.hooksPath=/dev/null checkout --quiet --detach '{{ inputs.sha }}' >>"$log" 2>&1 || fail 'git checkout of the commit failed'
+      git -C "$work/src" -c core.hooksPath=/dev/null checkout --quiet --detach "$sha" >>"$log" 2>&1 || fail 'git checkout of the commit failed'
       cd "$work/src/$sub" || fail 'the project directory is missing at this commit'
       if [ -n "$base" ]; then
-        reliant forge ci gate --tier '{{ inputs.tier }}' --base "$base" --json 2>"$work/gate.log"
+        reliant forge ci gate --tier "$tier" --base "$base" --json 2>"$work/gate.log"
       else
-        reliant forge ci gate --tier '{{ inputs.tier }}' --json 2>"$work/gate.log"
+        reliant forge ci gate --tier "$tier" --json 2>"$work/gate.log"
       fi
       rc=$?
       tail -c 6000 "$work/gate.log" >&2
       exit "$rc"
-# The gate's document, or one saying why there is none.
 - id: doc
   type: compute
   outputs:
     doc: >-
-      {{ nodes.fetch.exit_code != 0
-      ? {'ok': false, 'verdict': 'error', 'error': 'git fetch of the commit failed: ' + nodes.fetch.stderr.substring(math.greatest(0, size(nodes.fetch.stderr) - 1500)), 'checks': []}
+      {{ !nodes.resolved.ok
+      ? {'ok': false, 'verdict': 'error', 'error': nodes.resolved.error, 'checks': []}
       : json.decode(nodes.?gate.stdout.orValue('')).orValue({'ok': false, 'verdict': 'error', 'error': 'the gate printed no result (exit ' + string(nodes.?gate.exit_code.orValue(-1)) + ')', 'checks': []}) }}
     log: "{{ nodes.?gate.stderr.orValue('') }}"
 # The check run's output: a table of every check, the notes and log tails of
@@ -296,7 +345,12 @@ edges:
     to: [fetch]
   default: invalid
 - from: fetch
-  default: gate
+  default: resolved
+- from: resolved
+  cases:
+  - condition: nodes.resolved.ok == true
+    to: [gate]
+  default: doc
 - from: gate
   default: doc
 - from: doc
@@ -308,12 +362,14 @@ finally:
   sequence:
   - id: cleanup
     type: run
-    condition: nodes.?fetch.exit_code.hasValue()
+    condition: nodes.?fetch.exit_code.hasValue() && nodes.?facts.valid.orValue(false) == true
     timeout: 2m
     args:
       credentials: none
       command: |
-        cd '{{ workflow.path }}' || exit 0
-        for r in head base; do git update-ref -d "refs/reliant-ci/{{ workflow.chat_id }}/$r" 2>/dev/null; done
+        run='{{ nodes.?facts.run.orValue('') }}'
+        case "$run" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
+        cd '{{ nodes.?facts.path.orValue('') }}' || exit 0
+        for r in head base; do git update-ref -d "refs/reliant-ci/$run/$r" 2>/dev/null; done
         exit 0
 

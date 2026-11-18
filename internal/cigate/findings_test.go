@@ -1,6 +1,7 @@
 package cigate
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,6 +93,7 @@ func TestExtractFindings_GoTestJSON(t *testing.T) {
 {"Action":"output","Package":"example.com/shop/internal/orders","Test":"TestOK","Output":"=== RUN   TestOK\n"}
 {"Action":"output","Package":"example.com/shop/internal/orders","Test":"TestOK","Output":"    orders_test.go:3: just logging\n"}
 {"Action":"output","Package":"example.com/shop/internal/orders","Test":"TestOK","Output":"--- PASS: TestOK (0.00s)\n"}
+{"Action":"pass","Package":"example.com/shop/internal/orders","Test":"TestOK"}
 {"Action":"run","Package":"example.com/shop/internal/orders","Test":"TestOrders"}
 {"Action":"output","Package":"example.com/shop/internal/orders","Test":"TestOrders","Output":"=== RUN   TestOrders\n"}
 {"Action":"output","Package":"example.com/shop/internal/orders","Test":"TestOrders","Output":"    orders_test.go:9: want 2 rows\n"}
@@ -148,6 +150,73 @@ func TestExtractFindings_GoTestJSONInterleaved(t *testing.T) {
 		{Path: "internal/c/c_test.go", Line: 2, Level: LevelError, Message: "TestC: c broke"},
 		{Path: "internal/d/d.go", Line: 3, Column: 1, Level: LevelError, Message: "undefined: x"},
 		{Path: "internal/e", Level: LevelError, Message: m + "/internal/e failed: panic: boom"},
+	})
+}
+
+// go test -json output events that name no Test: the package's own output, or
+// a test's test2json could not attribute. Each is owned by the one test still
+// running in its package, else by the package — never by the test that
+// printed last.
+//
+//   - f: TestF1 passed, TestF2 is running when a Test-less panic is printed and
+//     the binary dies (no fail event for TestF2): the panic is TestF2's.
+//   - g: TestG passed and logged, then TestMain panics in teardown: the
+//     package failed, carrying the panic; TestG (the last printer) is not
+//     blamed and its log is no finding.
+//   - h: an init panic before any test: the package failed, carrying it.
+//   - i: two parallel tests running when a Test-less panic is printed: no one
+//     test owns it, so the package carries it beside the two failed tests.
+func TestExtractFindings_GoTestJSONPackageOutput(t *testing.T) {
+	const m = testModule
+	ev := func(pkg, action, test, output string) string {
+		b, err := json.Marshal(map[string]string{"Action": action, "Package": m + "/internal/" + pkg, "Test": test, "Output": output})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	out := strings.Join([]string{
+		ev("f", "run", "TestF1", ""),
+		ev("f", "output", "TestF1", "=== RUN   TestF1\n"),
+		ev("f", "output", "TestF1", "--- PASS: TestF1 (0.00s)\n"),
+		ev("f", "pass", "TestF1", ""),
+		ev("f", "run", "TestF2", ""),
+		ev("f", "output", "TestF2", "=== RUN   TestF2\n"),
+		ev("f", "output", "", "panic: assignment to entry in nil map\n"),
+		ev("f", "output", "", "\n"),
+		ev("f", "output", "", "goroutine 7 [running]:\n"),
+		ev("f", "output", "", "FAIL\t"+m+"/internal/f\t0.020s\n"),
+		ev("f", "fail", "", ""),
+
+		ev("g", "run", "TestG", ""),
+		ev("g", "output", "TestG", "=== RUN   TestG\n"),
+		ev("g", "output", "TestG", "    g_test.go:4: setting up\n"),
+		ev("g", "output", "TestG", "--- PASS: TestG (0.00s)\n"),
+		ev("g", "pass", "TestG", ""),
+		ev("g", "output", "", "PASS\n"),
+		ev("g", "output", "", "panic: teardown: connection refused\n"),
+		ev("g", "output", "", "FAIL\t"+m+"/internal/g\t0.011s\n"),
+		ev("g", "fail", "", ""),
+
+		ev("h", "output", "", "panic: init: missing config\n"),
+		ev("h", "output", "", "FAIL\t"+m+"/internal/h\t0.003s\n"),
+		ev("h", "fail", "", ""),
+
+		ev("i", "run", "TestI1", ""),
+		ev("i", "run", "TestI2", ""),
+		ev("i", "output", "", "panic: send on closed channel\n"),
+		ev("i", "fail", "TestI1", ""),
+		ev("i", "fail", "TestI2", ""),
+		ev("i", "fail", "", ""),
+	}, "\n")
+	got, _ := ExtractFindings(out, FindingsInput{Module: m})
+	assertFindings(t, got, []Finding{
+		{Path: "internal/f", Level: LevelError, Message: "TestF2: panic: assignment to entry in nil map"},
+		{Path: "internal/g", Level: LevelError, Message: m + "/internal/g failed: panic: teardown: connection refused"},
+		{Path: "internal/h", Level: LevelError, Message: m + "/internal/h failed: panic: init: missing config"},
+		{Path: "internal/i", Level: LevelError, Message: "TestI1 failed"},
+		{Path: "internal/i", Level: LevelError, Message: "TestI2 failed"},
+		{Path: "internal/i", Level: LevelError, Message: m + "/internal/i: panic: send on closed channel"},
 	})
 }
 

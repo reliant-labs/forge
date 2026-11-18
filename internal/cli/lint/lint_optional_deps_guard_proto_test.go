@@ -11,7 +11,10 @@ import (
 // optional pointer to a protobuf message generated into the project
 // (gen/config/v1/config.pb.go), beside an optional pointer to a hand-written
 // struct with a Get method, and an optional pointer to a message-shaped type
-// in a package outside the module.
+// in a package outside the module. The message's package also holds Get
+// methods that are not generated getters: one hand-written beside the
+// generated file, one in a *.pb.go without the generated header, and one in
+// the generated file without the nil-receiver check.
 func writeOptionalProtoPkg(t *testing.T, projectDir, methods string) {
 	t.Helper()
 	write := func(rel, body string) {
@@ -30,8 +33,19 @@ func writeOptionalProtoPkg(t *testing.T, projectDir, methods string) {
 package configv1
 
 type Config struct {
-	Foo string
+	Foo  string
+	Name *string
+	Qux  int32
+	Kind isConfig_Kind
 }
+
+type isConfig_Kind interface{ isConfig_Kind() }
+
+type Config_Baz struct{ Baz string }
+
+func (*Config_Baz) isConfig_Kind() {}
+
+const Default_Config_Name = "n"
 
 func (x *Config) GetFoo() string {
 	if x != nil {
@@ -40,7 +54,56 @@ func (x *Config) GetFoo() string {
 	return ""
 }
 
+func (x *Config) GetName() string {
+	if x != nil && x.Name != nil {
+		return *x.Name
+	}
+	return Default_Config_Name
+}
+
+func (x *Config) GetBaz() string {
+	if x != nil {
+		if x, ok := x.Kind.(*Config_Baz); ok {
+			return x.Baz
+		}
+	}
+	return ""
+}
+
+func (x *Config) GetQux() int32 {
+	if x == nil {
+		return 0
+	}
+	return x.Qux
+}
+
+func (x *Config) GetRaw() string {
+	return x.Foo
+}
+
 func (x *Config) Reset() { *x = Config{} }
+`)
+	// Hand-written beside the generated file, in the same package.
+	write("gen/config/v1/config_ext.go", `package configv1
+
+func (x *Config) GetDanger() string { return x.Foo }
+
+func (x *Config) GetCareful() string {
+	if x != nil {
+		return x.Foo
+	}
+	return ""
+}
+`)
+	// A *.pb.go name without the generated header.
+	write("gen/config/v1/extra.pb.go", `package configv1
+
+func (x *Config) GetUnmarked() string {
+	if x != nil {
+		return x.Foo
+	}
+	return ""
+}
 `)
 	write("internal/handlers/fixture/service.go", `package fixture
 
@@ -102,6 +165,61 @@ func (s *Service) Call() string {
 	return cfg.GetFoo()
 }
 `,
+		},
+		{
+			name: "generated-getter-shapes-not-flagged",
+			methods: `
+func (s *Service) Call() (string, string, int32) {
+	return s.deps.Cfg.GetName(), s.deps.Cfg.GetBaz(), s.deps.Cfg.GetQux()
+}
+`,
+		},
+		{
+			// forge#2357 review B1: the message being generated does not make
+			// every Get method on it a generated getter.
+			name: "hand-written-get-on-message-flagged",
+			methods: `
+func (s *Service) Call() string {
+	return s.deps.Cfg.GetDanger()
+}
+`,
+			want: []string{"Cfg"},
+		},
+		{
+			name: "hand-written-nil-checked-get-on-message-flagged",
+			methods: `
+func (s *Service) Call() string {
+	return s.deps.Cfg.GetCareful()
+}
+`,
+			want: []string{"Cfg"},
+		},
+		{
+			name: "get-in-pb-go-without-generated-header-flagged",
+			methods: `
+func (s *Service) Call() string {
+	return s.deps.Cfg.GetUnmarked()
+}
+`,
+			want: []string{"Cfg"},
+		},
+		{
+			name: "generated-get-without-nil-check-flagged",
+			methods: `
+func (s *Service) Call() string {
+	return s.deps.Cfg.GetRaw()
+}
+`,
+			want: []string{"Cfg"},
+		},
+		{
+			name: "undeclared-get-flagged",
+			methods: `
+func (s *Service) Call() string {
+	return s.deps.Cfg.GetMissing()
+}
+`,
+			want: []string{"Cfg"},
 		},
 		{
 			name: "field-access-flagged",

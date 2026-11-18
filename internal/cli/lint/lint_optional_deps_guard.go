@@ -76,12 +76,17 @@
 //
 // A field typed as a pointer to a protobuf message generated into this
 // project (`Cfg *configv1.Config`, where configv1 is a package of this module
-// holding a *.pb.go that declares Config) may call its getters while nil:
-// protoc-gen-go emits every `GetX()` as a nil-receiver check that returns the
-// zero value. So `s.deps.Cfg.GetFoo()` is not flagged. Field access
-// (`s.deps.Cfg.Foo`), every other method (`Reset()`, `ProtoReflect()`) and a
-// `Get*()` on any other type still are. The walker has no type checker; a
-// type it cannot resolve to such a message keeps the plain rule.
+// holding a generated *.pb.go that declares Config) may call its getters
+// while nil: protoc-gen-go emits every `GetX()` as a nil-receiver check that
+// returns the zero value. So `s.deps.Cfg.GetFoo()` is not flagged — but only
+// when that very method is proven a generated getter: declared in a *.pb.go
+// file carrying the `// Code generated ... DO NOT EDIT.` header, taking no
+// arguments, and opening with the nil-receiver check. A hand-written
+// `GetDanger()` on the same message, in another file of its package, is a
+// plain method and still flagged. Field access (`s.deps.Cfg.Foo`), every
+// other method (`Reset()`, `ProtoReflect()`) and a `Get*()` on any other
+// type still are. The walker has no type checker; a type or method it cannot
+// resolve to such a getter keeps the plain rule.
 //
 // Guard patterns recognized
 //
@@ -159,7 +164,6 @@
 package lint
 
 import (
-	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -364,7 +368,7 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 	protoMsgs := projectProtoMessages{projectDir: projectDir, imports: depsImports}
 	for _, d := range optionalDeps {
 		shape := types.shapeOf(d.Type)
-		shape.protoMsgPtr = protoMsgs.isPointer(d.Type)
+		shape.nilSafeGetters = protoMsgs.nilSafeGetters(d.Type)
 		pkg.optional[d.Name] = shape
 	}
 	for _, f := range all {
@@ -1230,22 +1234,25 @@ func copyGuards(base, extra map[string]bool) map[string]bool {
 
 // optionalFieldShape is what the walker knows of an optional field's
 // declared type: whether it is a map, and if so whether its element's zero
-// value is nil (so a looked-up element of the nil map is nil); and whether
-// it is a pointer to a protobuf message generated into this project, whose
-// getters are nil-safe.
+// value is nil (so a looked-up element of the nil map is nil); and, when it
+// is a pointer to a protobuf message generated into this project, which of
+// that message's methods are proven nil-safe generated getters.
 type optionalFieldShape struct {
 	isMap       bool
 	elemNilable bool
-	protoMsgPtr bool
+	// nilSafeGetters is keyed by method name; only a true entry is
+	// nil-safe. Nil when the field is not such a message pointer.
+	nilSafeGetters map[string]bool
 }
 
 // isNilSafeProtoGetter reports whether call is a no-argument `Get*()` method
 // call on an optional field (or an alias of one) typed as a pointer to a
-// generated protobuf message. protoc-gen-go emits every getter as
+// generated protobuf message, where that method is one protoMessageGetters
+// proved a generated getter: protoc-gen-go emits each as
 // `if x != nil { return x.F }; return <zero>`, so the call cannot panic while
 // the dep is nil. Field access (`s.deps.Cfg.Foo`), any other method
-// (`Reset()`, `ProtoReflect()`) and a getter on a non-proto type are still
-// derefs.
+// (`Reset()`, `ProtoReflect()`, a hand-written `GetDanger()`) and a getter
+// on a non-proto type are still derefs.
 func (w *optionalGuardWalker) isNilSafeProtoGetter(call *ast.CallExpr) bool {
 	if len(call.Args) != 0 {
 		return false
@@ -1255,7 +1262,7 @@ func (w *optionalGuardWalker) isNilSafeProtoGetter(call *ast.CallExpr) bool {
 		return false
 	}
 	k, kind, ok := w.resolve(sel.X)
-	return ok && kind == targetField && w.optional[k].protoMsgPtr
+	return ok && kind == targetField && w.optional[k].nilSafeGetters[sel.Sel.Name]
 }
 
 // isProtoGetterName reports whether name has protoc-gen-go's getter shape:
@@ -1283,12 +1290,13 @@ func declaresType(f *ast.File, name string) bool {
 }
 
 // projectProtoMessages answers whether a Deps field type names a pointer to
-// a protobuf message generated into this project — without a type checker.
-// A type qualifies when it is `*<alias>.<Name>`, the alias (from the Deps
-// file's imports) is a package of this module, and a `*.pb.go` file in that
-// package's directory declares `type <Name> struct`. Anything it cannot
-// resolve — a dependency's package, an unreadable go.mod — is not a proto
-// message, which keeps the plain deref rule: the conservative direction.
+// a protobuf message generated into this project, and which of its getters
+// are nil-safe — without a type checker. A type qualifies when it is
+// `*<alias>.<Name>`, the alias (from the Deps file's imports) is a package of
+// this module, and a generated `*.pb.go` file in that package's directory
+// declares `type <Name> struct`. Anything it cannot resolve — a dependency's
+// package, an unreadable go.mod — is not a proto message, which keeps the
+// plain deref rule: the conservative direction.
 type projectProtoMessages struct {
 	projectDir string
 	imports    map[string]string
@@ -1297,36 +1305,38 @@ type projectProtoMessages struct {
 	moduleRead bool
 }
 
-func (p *projectProtoMessages) isPointer(typ string) bool {
+// nilSafeGetters returns protoMessageGetters for the message typ points to,
+// or nil when typ is not a pointer to a message generated into this project.
+func (p *projectProtoMessages) nilSafeGetters(typ string) map[string]bool {
 	expr, err := parser.ParseExpr(typ)
 	if err != nil {
-		return false
+		return nil
 	}
 	star, ok := expr.(*ast.StarExpr)
 	if !ok {
-		return false
+		return nil
 	}
 	sel, ok := star.X.(*ast.SelectorExpr)
 	if !ok {
-		return false
+		return nil
 	}
 	alias, ok := sel.X.(*ast.Ident)
 	if !ok {
-		return false
+		return nil
 	}
 	importPath, ok := p.imports[alias.Name]
 	if !ok {
-		return false
+		return nil
 	}
 	module := p.module()
 	if module == "" {
-		return false
+		return nil
 	}
 	rel, ok := strings.CutPrefix(importPath, module+"/")
 	if !ok {
-		return false
+		return nil
 	}
-	return pbGoDeclaresStruct(filepath.Join(p.projectDir, filepath.FromSlash(rel)), sel.Sel.Name)
+	return protoMessageGetters(filepath.Join(p.projectDir, filepath.FromSlash(rel)), sel.Sel.Name)
 }
 
 func (p *projectProtoMessages) module() string {
@@ -1339,21 +1349,176 @@ func (p *projectProtoMessages) module() string {
 	return p.modulePath
 }
 
-// pbGoDeclaresStruct reports whether a protoc-gen-go output file (*.pb.go)
-// in dir declares `type <name> struct`.
-func pbGoDeclaresStruct(dir, name string) bool {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.pb.go"))
+// protoMessageGetters parses the package in dir and, when a generated
+// *.pb.go file in it declares `type <name> struct`, returns every `Get*`
+// method of *<name>, keyed by name: true only for one proven a generated
+// nil-safe getter — declared in a *.pb.go file that carries the
+// `// Code generated ... DO NOT EDIT.` header, taking no arguments, and
+// opening with protoc-gen-go's nil-receiver check. A Get method declared
+// anywhere else (a hand-written file beside the generated one, a *.pb.go
+// without the header) or with any other body maps to false: calling it on a
+// nil dep is a deref. A method it never sees is absent, which reads as false
+// too. Returns nil when no generated file declares the message.
+func protoMessageGetters(dir, name string) map[string]bool {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		return nil
 	}
-	decl := []byte("\ntype " + name + " struct {")
-	for _, m := range matches {
-		data, err := os.ReadFile(m)
-		if err == nil && bytes.Contains(data, decl) {
-			return true
+	fset := token.NewFileSet()
+	declared := false
+	getters := map[string]bool{}
+	for _, e := range entries {
+		fileName := e.Name()
+		if e.IsDir() || !strings.HasSuffix(fileName, ".go") || strings.HasSuffix(fileName, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, fileName), nil, parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		generated := strings.HasSuffix(fileName, ".pb.go") && ast.IsGenerated(f)
+		if generated && declaresStruct(f, name) {
+			declared = true
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !isProtoGetterName(fn.Name.Name) {
+				continue
+			}
+			recv, ok := pointerReceiver(fn, name)
+			if !ok {
+				continue
+			}
+			safe := generated && recv != "" && recv != "_" &&
+				fn.Type.Params.NumFields() == 0 && opensWithNilReceiverCheck(fn.Body, recv)
+			// A name declared twice (the package would not compile) keeps
+			// the stricter verdict.
+			if prev, seen := getters[fn.Name.Name]; seen {
+				safe = safe && prev
+			}
+			getters[fn.Name.Name] = safe
+		}
+	}
+	if !declared {
+		return nil
+	}
+	return getters
+}
+
+// declaresStruct reports whether f declares `type <name> struct`.
+func declaresStruct(f *ast.File, name string) bool {
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != name {
+				continue
+			}
+			if _, isStruct := ts.Type.(*ast.StructType); isStruct {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// pointerReceiver reports whether fn is a method on *<typ>, and returns its
+// receiver's name ("" when unnamed).
+func pointerReceiver(fn *ast.FuncDecl, typ string) (string, bool) {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return "", false
+	}
+	field := fn.Recv.List[0]
+	star, ok := field.Type.(*ast.StarExpr)
+	if !ok {
+		return "", false
+	}
+	if id, ok := star.X.(*ast.Ident); !ok || id.Name != typ {
+		return "", false
+	}
+	if len(field.Names) == 0 {
+		return "", true
+	}
+	return field.Names[0].Name, true
+}
+
+// opensWithNilReceiverCheck reports whether body opens with a nil-receiver
+// check on recv that keeps every deref of recv behind it:
+//
+//   - `if recv != nil [&& …] { … }` with nothing after it, and no else,
+//     naming recv — every getter protoc-gen-go emits (open and opaque API,
+//     oneof members, proto2 defaults);
+//   - `if recv == nil [|| …] { return … }` whose body never names recv —
+//     the same check spelled the other way.
+//
+// A name that merely shadows recv counts as naming it: the conservative
+// direction.
+func opensWithNilReceiverCheck(body *ast.BlockStmt, recv string) bool {
+	if body == nil || len(body.List) == 0 {
+		return false
+	}
+	ifs, ok := body.List[0].(*ast.IfStmt)
+	if !ok || ifs.Init != nil {
+		return false
+	}
+	switch {
+	case leadsWithNilComparison(ifs.Cond, recv, token.NEQ, token.LAND):
+		if ifs.Else != nil && mentionsIdent(ifs.Else, recv) {
+			return false
+		}
+		for _, s := range body.List[1:] {
+			if mentionsIdent(s, recv) {
+				return false
+			}
+		}
+		return true
+	case leadsWithNilComparison(ifs.Cond, recv, token.EQL, token.LOR):
+		n := len(ifs.Body.List)
+		if n == 0 || mentionsIdent(ifs.Body, recv) {
+			return false
+		}
+		_, returns := ifs.Body.List[n-1].(*ast.ReturnStmt)
+		return returns
+	}
+	return false
+}
+
+// leadsWithNilComparison reports whether cond's leftmost operand — the one
+// evaluated first along a chain of chain operators — is `recv <cmp> nil`.
+func leadsWithNilComparison(cond ast.Expr, recv string, cmp, chain token.Token) bool {
+	e := unparen(cond)
+	for {
+		be, ok := e.(*ast.BinaryExpr)
+		if !ok || be.Op != chain {
+			break
+		}
+		e = unparen(be.X)
+	}
+	be, ok := e.(*ast.BinaryExpr)
+	if !ok || be.Op != cmp {
+		return false
+	}
+	side, ok := nilComparand(be)
+	if !ok {
+		return false
+	}
+	id, ok := side.(*ast.Ident)
+	return ok && id.Name == recv
+}
+
+// mentionsIdent reports whether any identifier under n is named name.
+func mentionsIdent(n ast.Node, name string) bool {
+	found := false
+	ast.Inspect(n, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // packageTypeDecls are the type declarations of one package, by name — the

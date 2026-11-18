@@ -198,7 +198,7 @@ func TestFormOptionalScalar_EmptyInputSubmitsUnset(t *testing.T) {
 		}
 
 		email := formFieldNamed(t, form.fields, "email")
-		if want := `z.preprocess((v) => (v === "" ? undefined : v), z.string().email("Enter a valid email address").optional())`; email.ZodExpr != want {
+		if want := `z.preprocess((v) => (v === "" ? undefined : v), z.string().pipe(z.email("Enter a valid email address")).optional())`; email.ZodExpr != want {
 			t.Errorf("%s email zod = %s, want %s", form.name, email.ZodExpr, want)
 		}
 		if email.PrefillExpr != `item.email ?? ""` {
@@ -279,7 +279,7 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 		assertChoices(form.name+" select", kind.EnumValues)
 		// The zod mirror of the CHECK: a stored zero (a schema forge did not
 		// birth) is refused on both forms rather than written back.
-		if want := `z.coerce.number().pipe(z.nativeEnum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value")`; kind.ZodExpr != want {
+		if want := `z.coerce.number().pipe(z.enum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value")`; kind.ZodExpr != want {
 			t.Errorf("%s kind zod = %s, want %s", form.name, kind.ZodExpr, want)
 		}
 	}
@@ -380,7 +380,7 @@ func TestEnumOptional_NoneIsAChoice(t *testing.T) {
 	page := fieldRulesPage(t, svc)
 
 	kind := formFieldNamed(t, page.CreateFields, "kind")
-	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.nativeEnum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
+	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.enum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
 		t.Errorf("optional kind zod = %s, want %s", kind.ZodExpr, want)
 	}
 	// Edit opens a NULL enum on None, never on the first real member — an

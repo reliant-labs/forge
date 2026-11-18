@@ -76,11 +76,15 @@ interfaces stay hand-declared, consumer-side, in `deps.go` (the existing
 3. Forensics on failure or slowness, redaction decided at codegen time: on an
    error or slow call, the span gets ONE `forge.forensics` event carrying the
    call's arguments as the generator classified them, rate-limited per op per
-   process. Deny by default: numbers, bools, durations, times, enums and
-   ID-shaped strings (parameter or field named `*ID`/`*Id`/`*IDs`/`*_id`) are
-   recorded; other strings record only their length; proto messages are
-   walked with protoreflect, honouring `debug_redact`, under the same field
-   rules; other Go structs record their type only. `// forge:no-capture <param>`
+   process. Deny by default: numbers, bools, enums and ID-shaped strings
+   (parameter or field named `id`/`ids`/`*ID`/`*Id`/`*IDs`/`*_id`) are
+   recorded by value; times and durations (Go and proto well-known types)
+   are user content and record only their type; proto messages are walked
+   with protoreflect under the same field rules, and a `debug_redact` field
+   is omitted entirely. Encoding of a value that is not recorded:
+   `"[len=N]"` for strings and bytes, `"[count=N]"` for slices and maps,
+   `"[message]"` below the depth limit, `"[type=<Name>]"` for anything else
+   (times, durations, unclassified structs). `// forge:no-capture <param>`
    on a method excludes a parameter; forge.yaml
    `observability.forensics: false` turns the whole feature off. The capture
    closure is built lazily, so a successful fast call pays nothing.

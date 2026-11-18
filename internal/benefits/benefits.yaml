@@ -2141,6 +2141,13 @@ benefits:
           A `forge.ManagedIdentity` declaring a sign-in method or signup mode
           the project's own broker does not serve, so the declaration is
           converged and silently ignored
+      - id: forgeconv-unproven-signup
+        lane: ""
+        bug_class: >-
+          A deployed sign-up whose address nobody proves (identity mail
+          `delivery = "none"`, or `auth_self_signup` outside development): the
+          email is a contact field anyone can type, so whatever the app binds to
+          it is bound to whoever typed it
       - id: typed-config-guardrail
         lane: ""
         bug_class: >-

@@ -79,7 +79,9 @@ func fetchStaticReleaseMarker(ctx context.Context, siteURL string) (deploytarget
 	if err != nil {
 		return deploytarget.StaticSiteReleaseMarker{}, err
 	}
-	defer resp.Body.Close()
+	// The body is read once and fully, or not needed: a close error says
+	// nothing about the marker.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return deploytarget.StaticSiteReleaseMarker{}, errNoReleaseMarker
 	}

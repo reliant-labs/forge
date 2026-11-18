@@ -272,6 +272,14 @@ GROUP BY EventName HAVING "People" > 0 ORDER BY "People" DESC, "Event" LIMIT ` +
 // (obsquery.Activity.ExcludeUsersWith, .ExcludeUserIDs), by their person key,
 // so the visitor rows a same-day sign-in links to them go too. Empty when
 // the rules exclude nobody.
+//
+// Its scope is obsquery.ActiveEvidenceFor's, which every other user count
+// applies. A marker excludes its user in the marker's own environment only:
+// the key is (EnvId, person), and the subquery reads only the environments
+// the dashboard selected (envScope is its {env_ids} filter), so a marker in
+// another environment, selected or not, never removes a person here. It is
+// not bounded by the range: a user marked before it is excluded inside it,
+// "history included" (obsquery.Activity.ExcludeUsersWith).
 func excludedPersons(act obsquery.Activity) string {
 	var preds []string
 	if len(act.ExcludeUsersWith) > 0 {

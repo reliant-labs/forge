@@ -9,6 +9,50 @@ import (
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
+// overviewEnvsSeed is two environments for Top features' marker exclusion.
+// uz uses order_created in e1 and in e2, and carries the internal_user marker
+// in e2 only; uy uses order_created in e1, marked there on 2025-12-01, before
+// the range; ux uses it in e1 and is never marked.
+const overviewEnvsSeed = `
+INSERT INTO forge_obsbuiltin_overview_envs.product_events
+    (Timestamp, ServiceName, EnvId, UserId, EventName, Props, Client) VALUES
+    ('2026-03-15 10:00:00', 'api', 'e1', 'uz', 'order_created', {}, 'backend'),
+    ('2026-03-15 10:00:00', 'api', 'e2', 'uz', 'order_created', {}, 'backend'),
+    ('2026-03-15 10:01:00', 'api', 'e2', 'uz', 'internal_user', {}, 'backend'),
+    ('2026-03-15 11:00:00', 'api', 'e1', 'uy', 'order_created', {}, 'backend'),
+    ('2025-12-01 09:00:00', 'api', 'e1', 'uy', 'internal_user', {}, 'backend'),
+    ('2026-03-15 12:00:00', 'api', 'e1', 'ux', 'order_created', {}, 'backend');
+`
+
+// TestProductOverviewTopFeaturesMarkerIsPerEnvironment pins Top features'
+// exclude_users_with scope: a marker removes its user in its own environment
+// alone, whichever environments are selected, and a marker older than the
+// range still removes them (history included).
+func TestProductOverviewTopFeaturesMarkerIsPerEnvironment(t *testing.T) {
+	ch := newClickHouse(t, "forge_obsbuiltin_overview_envs", overviewEnvsSeed)
+	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
+	start := end.Add(-30 * 24 * time.Hour)
+	in := fullInput()
+	in.Activity = obsquery.Activity{ExcludeUsersWith: []string{"internal_user"}}
+	sql := panel(t, ProductOverview(in), "top-features").SQL
+	for _, c := range []struct {
+		envs []string
+		want string
+	}{
+		// e1 alone: uz's marker is e2's, so uz counts; uy's old marker
+		// removes uy.
+		{[]string{"e1"}, "order_created\t2\t2"},
+		// e2 alone: uz is marked there.
+		{[]string{"e2"}, ""},
+		// Both: (e1, uz) and ux count, (e2, uz) and (e1, uy) do not.
+		{[]string{"e1", "e2"}, "order_created\t2\t2"},
+	} {
+		if got := ch.run(sql, start, end, c.envs...); got != c.want {
+			t.Errorf("top features over %v =\n%s\nwant\n%s", c.envs, got, c.want)
+		}
+	}
+}
+
 // TestProductOverviewOnAPopulation runs every Overview statement over the
 // population (population_clickhouse_test.go) and pins each figure twice: to
 // the answer worked by hand, and to what the tab it links to answers over the

@@ -2669,6 +2669,12 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	}
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
+	// An env that did not render would drop its frontends and processes from
+	// every output (they are the union of all envs), so keep them as they
+	// are instead — a warning, not a failure (generate_observability_keep.go).
+	if failed := ctx.renderedEnvs().failed; len(failed) > 0 {
+		return keepObservabilityOutputs(os.Stderr, ctx.AbsPath, failed)
+	}
 	return ctx.warnOrFail("observability dashboards", func() error {
 		funnels, err := declaredFunnels(ctx.renderedFrontends(), ctx.renderedEnvs().analytics...)
 		if err != nil {

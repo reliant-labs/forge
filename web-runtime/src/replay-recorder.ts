@@ -427,7 +427,14 @@ export class ReplayTransport {
     // UTF-8) and a comma between them, since logRecords is one JSON array.
     // A body's length in characters is not that: escaping and multi-byte
     // text can double it. Only a record too big for a request of its own
-    // (a chunk of a large snapshot) is ever over the cap.
+    // (a chunk of a large snapshot, up to MAX_CHUNK_CHARS) is ever over the
+    // cap, and it goes without keepalive, best effort, on purpose: a large
+    // record is sent gzipped in the background within about a second
+    // (REPLAY_SNAPSHOT_FLUSH_MS), so one still held when the page leaves is
+    // rare, and sending it is never worse than dropping it. If that tail
+    // turns out to matter, the follow-up is to re-chunk such a record here
+    // into keepalive-sized pieces with rr-web.chunk / rr-web.total-chunks,
+    // which the player already reassembles.
     const empty = utf8Length(encodeReplayRequest(resource, REPLAY_SCOPE, []));
     let budget = KEEPALIVE_MAX_BYTES;
     let group: ReplayRecord[] = [];

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -368,6 +369,58 @@ func TestExtractFindings_BufTSCAndAbsolute(t *testing.T) {
 		{Path: "internal/a/a.go", Line: 5, Column: 1, Level: LevelError, Message: "vet: unreachable code"},
 		{Path: "proto/shop/v1/shop.proto", Line: 12, Column: 3, Level: LevelError, Message: `Field name "Total" should be lower_snake_case.`},
 	})
+}
+
+// Windows paths, on any OS: a drive-qualified path is the one colon a located
+// line's path can hold, `\` separates, and the drive letter matches in either
+// case. A relative `internal\a\a.go` is placed like `internal/a/a.go`.
+func TestExtractFindings_WindowsPaths(t *testing.T) {
+	for _, c := range []struct {
+		line, file string
+		ln, col    int
+		msg        string
+	}{
+		{`C:\Users\ci\shop\internal\a\a.go:5:1: vet: unreachable code`, `C:\Users\ci\shop\internal\a\a.go`, 5, 1, "vet: unreachable code"},
+		{`d:/work/shop/cmd/main.go:12: undefined: x`, `d:/work/shop/cmd/main.go`, 12, 0, "undefined: x"},
+		{`internal\a\a.go:3:2: unused`, `internal\a\a.go`, 3, 2, "unused"},
+	} {
+		m := reLocated.FindStringSubmatch(c.line)
+		if m == nil {
+			t.Errorf("%q: not parsed as a located line", c.line)
+			continue
+		}
+		if m[1] != c.file || m[2] != strconv.Itoa(c.ln) || (c.col != 0 && m[3] != strconv.Itoa(c.col)) || m[4] != c.msg {
+			t.Errorf("%q parsed as file %q line %s col %s msg %q", c.line, m[1], m[2], m[3], m[4])
+		}
+	}
+	if reLocated.MatchString(`see C:foo.go:1: x`) || reLocated.MatchString(`https://example.com:443: refused`) {
+		t.Error("a colon that is not a drive must not start a path")
+	}
+
+	for _, c := range []struct {
+		root, file, want string
+		ok               bool
+	}{
+		{`C:\Users\ci\shop`, `C:\Users\ci\shop\internal\a\a.go`, "internal/a/a.go", true},
+		{`C:\Users\ci\shop`, `c:/Users/ci/shop/internal/a/a.go`, "internal/a/a.go", true},
+		{`c:\Users\ci\shop\`, `C:\Users\ci\shop\go.mod`, "go.mod", true},
+		{`C:\`, `C:\a.go`, "a.go", true},
+		{`C:\Users\ci\shop`, `D:\Users\ci\shop\a.go`, "", false},
+		{`C:\Users\ci\shop`, `C:\Users\ci\shopping\a.go`, "", false},
+		{`C:\Users\ci\shop`, `C:\Users\ci\shop`, "", false},
+		{`C:\Users\ci\shop`, `/Users/ci/shop/a.go`, "", false},
+		{`/home/ci/shop`, `/home/ci/shop/internal/a/a.go`, "internal/a/a.go", true},
+		{`/`, `/a.go`, "a.go", true},
+	} {
+		got, ok := relUnder(c.root, c.file)
+		if got != c.want || ok != c.ok {
+			t.Errorf("relUnder(%q, %q) = %q, %v; want %q, %v", c.root, c.file, got, ok, c.want, c.ok)
+		}
+	}
+
+	root := findingsRoot(t, "internal/a/a.go")
+	got, _ := ExtractFindings(`internal\a\a.go:3:2: unused`+"\n", FindingsInput{Root: root})
+	assertFindings(t, got, []Finding{{Path: "internal/a/a.go", Line: 3, Column: 2, Level: LevelError, Message: "unused"}})
 }
 
 // The same output always gives the same list: sorted, de-duplicated, capped.

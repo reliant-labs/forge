@@ -56,8 +56,11 @@ type FindingsInput struct {
 
 var (
 	// path/file.go:12:3: message — go build, go vet, golangci-lint, buf (no
-	// space after the last colon), and most compilers and linters.
-	reLocated = regexp.MustCompile(`^\s*([^\s:()][^\s:()]*\.[A-Za-z0-9]+):(\d+)(?::(\d+))?:\s*(\S.*)$`)
+	// space after the last colon), and most compilers and linters. A Windows
+	// path may open with a drive (C:\ or C:/), the one colon a path can hold.
+	reLocated = regexp.MustCompile(`^\s*((?:[A-Za-z]:[\\/])?[^\s:()][^\s:()]*\.[A-Za-z0-9]+):(\d+)(?::(\d+))?:\s*(\S.*)$`)
+	// reDrive is a slash-separated path's Windows drive.
+	reDrive = regexp.MustCompile(`^[A-Za-z]:/`)
 	// src/x.ts(12,5): error TS2322: message — tsc.
 	reTSC = regexp.MustCompile(`^\s*([^\s()]+\.[cm]?[jt]sx?)\((\d+),(\d+)\): (error|warning) (.*)$`)
 )
@@ -176,21 +179,24 @@ func (p *findingParser) located(line string) (Finding, bool) {
 }
 
 // relPath places a path a tool printed under the project root.
+// Paths are compared in slash form whatever the OS forge runs on, so a
+// Windows tool's `C:\proj\a.go` and a POSIX tool's `/proj/a.go` are both
+// placed (and the rule is testable on either).
 func (p *findingParser) relPath(file string) (string, bool) {
-	file = filepath.ToSlash(file)
+	file = slashPath(file)
 	var rel string
 	switch {
-	case path.IsAbs(file) || filepath.IsAbs(file):
+	case isAbsPath(file):
 		if p.in.Root == "" {
 			return "", false
 		}
-		r, err := filepath.Rel(p.in.Root, filepath.FromSlash(file))
-		if err != nil || strings.HasPrefix(filepath.ToSlash(r), "../") {
+		r, ok := relUnder(p.in.Root, file)
+		if !ok {
 			return "", false
 		}
-		rel = filepath.ToSlash(r)
+		rel = r
 	default:
-		rel = path.Clean(path.Join(filepath.ToSlash(p.in.Dir), file))
+		rel = path.Clean(path.Join(slashPath(p.in.Dir), file))
 	}
 	if strings.HasPrefix(rel, "../") || rel == ".." {
 		return "", false
@@ -201,6 +207,36 @@ func (p *findingParser) relPath(file string) (string, bool) {
 		}
 	}
 	return rel, true
+}
+
+// slashPath is p with every separator a slash: `\` is one on Windows, and a
+// path a Windows tool printed is read the same way on any OS.
+func slashPath(p string) string { return strings.ReplaceAll(filepath.ToSlash(p), `\`, "/") }
+
+// isAbsPath reports whether a slash-form path is absolute, POSIX (/x) or
+// Windows (C:/x).
+func isAbsPath(p string) bool { return strings.HasPrefix(p, "/") || reDrive.MatchString(p) }
+
+// relUnder is file relative to root, both absolute, when file is under root.
+// It is lexical and OS-independent; a Windows drive letter matches in either
+// case, as Windows treats it.
+func relUnder(root, file string) (string, bool) {
+	r, f := path.Clean(slashPath(root)), path.Clean(slashPath(file))
+	rd, fd := reDrive.MatchString(r+"/"), reDrive.MatchString(f)
+	if rd != fd {
+		return "", false
+	}
+	if fd {
+		if !strings.EqualFold(r[:1], f[:1]) {
+			return "", false
+		}
+		r, f = strings.ToUpper(r[:1])+r[1:], strings.ToUpper(f[:1])+f[1:]
+	}
+	prefix := strings.TrimSuffix(r, "/") + "/"
+	if !strings.HasPrefix(f, prefix) || len(f) == len(prefix) {
+		return "", false
+	}
+	return f[len(prefix):], true
 }
 
 func leadingSpace(s string) int {

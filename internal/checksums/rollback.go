@@ -71,6 +71,7 @@ import (
 	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -162,6 +163,13 @@ var rollbackRoot string
 // deleted.
 var rollbackTrees map[string]bool
 
+// rollbackTreeIDs is the directory each captured tree was, first seen: at
+// capture, or at the settle point after the tool created it. A tree that is
+// no longer that directory — replaced by another one, by a symlink, or
+// reached through a symlinked parent — is another writer's, and nothing
+// beneath it is walked or deleted (forge#2329 review).
+var rollbackTreeIDs map[string]os.FileInfo
+
 // rollbackDirty are the journaled paths written since the last settle point
 // whose post-write state is not recorded yet, and rollbackDirtyTrees the
 // captured directories an external tool may have written into since then.
@@ -185,6 +193,7 @@ func BeginRollbackJournal(root string) {
 	resetScaffoldBirths()
 	rollbackJournal = map[string]rollbackEntry{}
 	rollbackTrees = map[string]bool{}
+	rollbackTreeIDs = map[string]os.FileInfo{}
 	rollbackDirty = map[string]bool{}
 	rollbackDirtyTrees = map[string]bool{}
 	rollbackCreated = map[string][sha256.Size]byte{}
@@ -208,6 +217,7 @@ func CommitRollback() {
 func clearRollbackState() {
 	rollbackJournal = nil
 	rollbackTrees = nil
+	rollbackTreeIDs = nil
 	rollbackDirty = nil
 	rollbackDirtyTrees = nil
 	rollbackCreated = nil
@@ -290,8 +300,15 @@ func CaptureExternalWrites(root string, relPaths ...string) {
 		info, err := os.Lstat(full)
 		switch {
 		case err == nil && info.IsDir():
+			if !throughRealDirs(root, rel) {
+				// Reached through a symlinked parent: not ours to capture.
+				continue
+			}
 			rollbackTrees[rel] = true
 			rollbackDirtyTrees[rel] = true
+			if _, seen := rollbackTreeIDs[rel]; !seen {
+				rollbackTreeIDs[rel] = info
+			}
 			_ = filepath.WalkDir(full, func(path string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil || !d.Type().IsRegular() {
 					return nil
@@ -359,6 +376,16 @@ func SettleJournal(root string) {
 		rollbackJournal[relPath] = entry
 	}
 	for tree := range rollbackDirtyTrees {
+		if _, seen := rollbackTreeIDs[tree]; !seen {
+			// Absent at capture: the directory the tool created is the
+			// tree from here on.
+			if info, err := os.Lstat(filepath.Join(root, tree)); err == nil && info.IsDir() && throughRealDirs(root, tree) {
+				rollbackTreeIDs[tree] = info
+			}
+		}
+		if !treeIntact(root, tree) {
+			continue
+		}
 		_ = filepath.WalkDir(filepath.Join(root, tree), func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil || !d.Type().IsRegular() {
 				return nil
@@ -608,7 +635,7 @@ func SummarizeWrites(root string) WriteSummary {
 	}
 	var sum WriteSummary
 	for relPath, entry := range rollbackJournal {
-		if entry.external && externalSettled(entry, filepath.Join(root, relPath)) {
+		if entry.external && externalSettled(root, relPath, entry) {
 			// Captured ahead of a tool that left it alone: not a write.
 			continue
 		}
@@ -648,12 +675,23 @@ func SummarizeWrites(root string) WriteSummary {
 // createdUnderTrees lists the regular files under a captured external-tool
 // directory that are not in the journal — i.e. that did not exist when the
 // directory was captured.
+//
+// A tree that is no longer the directory captured (replacedTrees) is not
+// walked, nor is a nested captured tree inside a walked one that was
+// replaced: what is beneath it is another writer's.
 func createdUnderTrees(root string) []string {
 	var out []string
 	seen := map[string]bool{} // nested captured trees walk a file twice
+	replaced := map[string]bool{}
+	for _, tree := range replacedTrees(root) {
+		replaced[tree] = true
+	}
 	for tree := range rollbackTrees {
+		if replaced[tree] {
+			continue
+		}
 		_ = filepath.WalkDir(filepath.Join(root, tree), func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil || !d.Type().IsRegular() {
+			if walkErr != nil {
 				return nil
 			}
 			rel, relErr := filepath.Rel(root, path)
@@ -661,6 +699,12 @@ func createdUnderTrees(root string) []string {
 				return nil
 			}
 			rel = slashKey(rel)
+			if d.IsDir() && replaced[rel] {
+				return filepath.SkipDir
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
 			if _, journaled := rollbackJournal[rel]; !journaled && !seen[rel] {
 				seen[rel] = true
 				out = append(out, rel)
@@ -751,17 +795,28 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	SettleJournal(root)
 	var res RestoreResult
 	restored, failed := make([]string, 0, len(rollbackJournal)), []string(nil)
+	replaced := replacedTrees(root)
 	for relPath, entry := range rollbackJournal {
 		full := filepath.Join(root, relPath)
-		if entry.external && externalSettled(entry, full) {
+		if underAny(relPath, replaced) {
+			// Beneath a captured directory another writer replaced: the
+			// path is theirs now, whatever it holds.
+			res.Spared = append(res.Spared, relPath)
+			continue
+		}
+		if entry.external && externalSettled(root, relPath, entry) {
 			continue
 		}
 		// Fail closed. A path whose state cannot be verified — unreadable
 		// now, not a regular file now (a symlink is never followed, written
 		// through or removed), unverifiable before the run, or with no
 		// readable record of what forge left — is left as is and reported.
+		// So is one reached through a parent another writer made a symlink.
 		kind, data := observe(full)
 		switch {
+		case !throughRealDirs(root, relPath):
+			res.Spared = append(res.Spared, relPath)
+			continue
 		case kind == kindUnreadable || entry.unverifiable:
 			res.Unverified = append(res.Unverified, relPath)
 			continue
@@ -812,7 +867,10 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	// file that existed there at capture time is journaled, so anything
 	// else is new this run.
 	// Only a file still as the step left it is deleted: one another
-	// writer created there, or changed since, is theirs.
+	// writer created there, or changed since, is theirs. A tree that is
+	// no longer the directory captured is not walked at all: it is
+	// spared and reported, with everything beneath it.
+	res.Spared = append(res.Spared, replaced...)
 	for _, rel := range createdUnderTrees(root) {
 		full := filepath.Join(root, rel)
 		switch kind, data := observe(full); {
@@ -840,7 +898,7 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	reconcileScaffoldBirths(root, created)
 	sort.Strings(restored)
 	sort.Strings(failed)
-	sort.Strings(res.Spared)
+	res.Spared = dedupeSorted(res.Spared)
 	sort.Strings(res.Unverified)
 	res.Restored, res.Failed = restored, failed
 	return res
@@ -868,13 +926,93 @@ func createdByThisRun(rel string, data []byte) bool {
 // needs nothing restored on its own account: it is in its pre-run state, or
 // it was absent and the tool made it a DIRECTORY — whose files the
 // created-under-trees sweep removes.
-func externalSettled(entry rollbackEntry, full string) bool {
-	if !entry.existed {
-		info, err := os.Lstat(full)
-		return os.IsNotExist(err) || (err == nil && info.IsDir())
+//
+// The path is observed without following a symlink, so a symlink, an
+// unreadable path, or a directory that is not the tree this run captured is
+// never settled: the fail-closed checks of the rewind see it.
+func externalSettled(root, relPath string, entry rollbackEntry) bool {
+	full := filepath.Join(root, relPath)
+	if !throughRealDirs(root, relPath) {
+		return false
 	}
-	current, err := os.ReadFile(full)
-	return err == nil && bytes.Equal(current, entry.content)
+	kind, data := observe(full)
+	if !entry.existed {
+		if kind == kindAbsent {
+			return true
+		}
+		info, err := os.Lstat(full)
+		return err == nil && info.IsDir() && rollbackTrees[relPath] && treeIntact(root, relPath)
+	}
+	return kind == kindRegular && bytes.Equal(data, entry.content)
+}
+
+// throughRealDirs reports whether no parent of rel under root is a symlink:
+// a path reached through one is somewhere else than the one captured.
+func throughRealDirs(root, rel string) bool {
+	dir := filepath.Dir(filepath.FromSlash(rel))
+	for dir != "." && dir != string(filepath.Separator) && dir != "" {
+		info, err := os.Lstat(filepath.Join(root, dir))
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		dir = filepath.Dir(dir)
+	}
+	return true
+}
+
+// treeIntact reports whether a captured tree may be walked: absent, or still
+// the very directory this run captured (or the tool created), reached
+// without a symlink.
+func treeIntact(root, tree string) bool {
+	if !throughRealDirs(root, tree) {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(root, tree))
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	id, recorded := rollbackTreeIDs[tree]
+	if !recorded {
+		// Absent at capture and not settled since: a directory the tool
+		// is creating, or a regular file it wrote in its place (journaled
+		// itself). A rewind settles first, so it always has a record of a
+		// directory that existed at its last settle point.
+		return info.IsDir() || info.Mode().IsRegular()
+	}
+	return info.IsDir() && os.SameFile(id, info)
+}
+
+// replacedTrees lists, sorted, the captured trees that are no longer the
+// directory this run captured: replaced by another directory or a symlink,
+// or reached through a symlinked parent.
+func replacedTrees(root string) []string {
+	var out []string
+	for tree := range rollbackTrees {
+		if !treeIntact(root, tree) {
+			out = append(out, tree)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// underAny reports whether rel is strictly beneath one of trees.
+func underAny(rel string, trees []string) bool {
+	for _, tree := range trees {
+		if strings.HasPrefix(rel, tree+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupeSorted sorts s and drops repeats.
+func dedupeSorted(s []string) []string {
+	slices.Sort(s)
+	return slices.Compact(s)
 }
 
 // pruneEmptyParents removes now-empty directories from dir up toward

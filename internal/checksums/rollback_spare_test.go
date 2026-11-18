@@ -302,3 +302,97 @@ func TestRestore_SparesAFileReplacedByASymlinkOrADirectory(t *testing.T) {
 		t.Errorf("the directory's content was touched: %q", got)
 	}
 }
+
+// symlinkOrSkip makes link point at target, skipping where the host cannot
+// create a symlink (Windows without Developer Mode).
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege on Windows: %v", err)
+		}
+		t.Fatal(err)
+	}
+}
+
+// Review on forge#2329 (R2.B1): a captured tree another writer replaced
+// with a symlink to a directory is never walked. Files there that hold the
+// very bytes this run's tool wrote are the other writer's, and survive.
+func TestRestore_NeverWalksATreeReplacedByASymlink(t *testing.T) {
+	root := t.TempDir()
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	CaptureExternalWrites(root, "gen")
+	seedFile(t, root, "gen/out.go", "package gen // tool\n")
+	SettleJournal(root)
+
+	// Another writer moves the tool's output aside and links gen to it.
+	elsewhere := filepath.Join(t.TempDir(), "kept")
+	if err := os.Rename(filepath.Join(root, "gen"), elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, elsewhere, filepath.Join(root, "gen"))
+
+	res := RestoreRollbackDetailed(root)
+	if !reflect.DeepEqual(res.Spared, []string{"gen"}) || len(res.Restored) != 0 {
+		t.Errorf("spared = %v, restored = %v; want gen spared, nothing removed", res.Spared, res.Restored)
+	}
+	if got, err := os.ReadFile(filepath.Join(elsewhere, "out.go")); err != nil || string(got) != "package gen // tool\n" {
+		t.Errorf("a file beneath the symlinked tree was touched: %q %v", got, err)
+	}
+	if info, err := os.Lstat(filepath.Join(root, "gen")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("gen is no longer the other writer's symlink: %v %v", info, err)
+	}
+}
+
+// A captured tree another writer moved aside and re-created as a new
+// directory is theirs: neither the files created there nor the journaled
+// ones beneath it are rewound. (The old directory is kept, so the new one
+// cannot reuse its inode.)
+func TestRestore_NeverWalksATreeReplacedByAnotherDirectory(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "gen/old.go", "package gen // pre-run\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	CaptureExternalWrites(root, "gen")
+	seedFile(t, root, "gen/old.go", "package gen // tool\n")
+	seedFile(t, root, "gen/new.go", "package gen // tool\n")
+	SettleJournal(root)
+
+	if err := os.Rename(filepath.Join(root, "gen"), filepath.Join(root, "gen.bak")); err != nil {
+		t.Fatal(err)
+	}
+	seedFile(t, root, "gen/old.go", "package gen // tool\n")
+	seedFile(t, root, "gen/new.go", "package gen // tool\n")
+
+	res := RestoreRollbackDetailed(root)
+	if want := []string{"gen", "gen/old.go"}; !reflect.DeepEqual(res.Spared, want) || len(res.Restored) != 0 {
+		t.Errorf("spared = %v, restored = %v; want %v spared, nothing rewound", res.Spared, res.Restored, want)
+	}
+	for _, rel := range []string{"gen/old.go", "gen/new.go"} {
+		if got := readFileT(t, root, rel); got != "package gen // tool\n" {
+			t.Errorf("%s = %q, want the other writer's file untouched", rel, got)
+		}
+	}
+}
+
+// An external path absent before the run that another writer made a
+// symlink to a directory is not settled: it is spared, not followed.
+func TestRestore_AnAbsentExternalPathMadeASymlinkIsSpared(t *testing.T) {
+	root := t.TempDir()
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	CaptureExternalWrites(root, "openapi")
+	SettleJournal(root)
+	dir := t.TempDir()
+	seedFile(t, dir, "spec.json", "{}\n")
+	symlinkOrSkip(t, dir, filepath.Join(root, "openapi"))
+
+	res := RestoreRollbackDetailed(root)
+	if !reflect.DeepEqual(res.Spared, []string{"openapi"}) || len(res.Restored) != 0 {
+		t.Errorf("spared = %v, restored = %v; want openapi spared", res.Spared, res.Restored)
+	}
+	if got := readFileT(t, dir, "spec.json"); got != "{}\n" {
+		t.Errorf("the symlink's target was touched: %q", got)
+	}
+}

@@ -168,6 +168,49 @@ func frontendTypecheckTargets(cfg *config.ProjectConfig) []frontendTarget {
 	return out
 }
 
+// frontendTypecheckScopeFile returns the frontend's verdict anchor, or "" if
+// it does not overlap the scope. A scope inside a frontend still needs that
+// frontend's complete TS program (including its imports / project references),
+// but not another frontend's install or compiler. Anchor failures to the
+// selected path so a missing compiler or unlocated error cannot be filtered
+// away when the scope names a source file rather than the frontend root.
+func frontendTypecheckScopeFile(scope *lintScope, dir string) string {
+	if scope == nil || scope.contains(dir) {
+		return dir
+	}
+	rel := dir
+	if filepath.IsAbs(rel) {
+		var err error
+		rel, err = filepath.Rel(scope.root, rel)
+		if err != nil {
+			return ""
+		}
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	for _, p := range scope.paths {
+		if rel == "." || strings.HasPrefix(p, rel+"/") {
+			return p
+		}
+	}
+	return ""
+}
+
+// frontendTypecheckTargetsForRun narrows execution BEFORE Ensure can install
+// dependencies. scopeByFile alone only narrows findings AFTER collection.
+func frontendTypecheckTargetsForRun(rc *lintRunCtx) []frontendTarget {
+	targets := frontendTypecheckTargets(rc.cfg)
+	if rc.scope == nil {
+		return targets
+	}
+	var selected []frontendTarget
+	for _, target := range targets {
+		if frontendTypecheckScopeFile(rc.scope, target.dir) != "" {
+			selected = append(selected, target)
+		}
+	}
+	return selected
+}
+
 // resolveLocalTSC returns the path to the TypeScript compiler installed
 // for feDir, searching node_modules/.bin/tsc in feDir and then in each
 // ancestor up to (and including) the project root — the layout npm and
@@ -457,7 +500,7 @@ func typecheckGates(cfg *config.ProjectConfig) bool {
 // normalized through externalLinesToFindings so `file(line,col): message`
 // lines become file-scoped findings.
 func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	targets := frontendTypecheckTargets(rc.cfg)
+	targets := frontendTypecheckTargetsForRun(rc)
 	results := runFrontendTypechecks(rc.ctx, targets, rc.cwd)
 
 	gates := typecheckGates(rc.cfg)
@@ -473,7 +516,7 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 		case typecheckUnavailable:
 			// Graded by applyGapPolicy (lint_skip.go).
 			out = append(out, lintJSONFinding{
-				File:     r.target.dir,
+				File:     frontendTypecheckScopeFile(rc.scope, r.target.dir),
 				Severity: lintSevWarning,
 				Rule:     ruleFrontendTypecheckUnavailable,
 				Message:  fmt.Sprintf("%s: %s", r.target.name, r.reason),
@@ -485,7 +528,7 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 				sev = lintSevWarning
 			}
 			out = append(out, lintJSONFinding{
-				File:     r.target.dir,
+				File:     frontendTypecheckScopeFile(rc.scope, r.target.dir),
 				Severity: sev,
 				Rule:     ruleFrontendTypecheck,
 				Message:  fmt.Sprintf("%s: %s reported type errors", r.target.name, r.command),

@@ -304,7 +304,10 @@ func lintPipeline() []linterStep {
 				// No declared frontend and no frontends/ directory: a clean
 				// silent no-op, not a finding. A backend-only project must
 				// not be told about a lane that does not apply to it.
-				if len(frontendTypecheckTargets(rc.cfg)) == 0 {
+				if len(frontendTypecheckTargetsForRun(rc)) == 0 {
+					if rc.scope != nil {
+						return false, "no frontend under --scope — skipping frontend typecheck"
+					}
 					return false, ""
 				}
 				return true, ""

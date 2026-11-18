@@ -1230,6 +1230,113 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 	return nil
 }
 
+// UpdateWhere writes the named columns of EVERY live row the filters match,
+// in one statement, and returns how many rows it changed — the set-based
+// write a List followed by an UpdateMasked per row (N round trips, which
+// timed out at 150,000 rows: forge#2266) should be.
+//
+// values carries the column values, as UpdateMasked's entity does: fields
+// names which of its columns are written (AIP-134 paths; a path outside the
+// updatable allowlist is *orm.UnknownFieldError, and a ,skipupdate column
+// named here is written, as in UpdateMasked). values itself is not modified.
+// updated_at is stamped under managed timestamps, and a forge:version column
+// is advanced on every row written, so a reader holding one of them gets
+// Aborted on its next versioned write rather than overwriting this one.
+//
+// filters are List's own orm.QueryOptions (orm.WhereEq, orm.WhereIn, …),
+// applied to the same scope List reads: they pick the rows by key, in a
+// subquery, so every option List takes works here — orm.WithOrderBy plus
+// orm.WithLimit writes a bounded batch. A soft-deleted row is never written.
+// At least one filter is required: an UPDATE of every row of a table is
+// never an accident worth making easy, and a caller that means it says so
+// (orm.WhereIsNotNull on the key).
+//
+// Nothing that runs per row in Update or UpdateMasked runs here: no
+// read-back and no per-row version check. Callers that apply a client's
+// write policy (forge:read-only, forge:immutable) decide which fields to
+// pass themselves.
+func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fields []string, filters ...orm.QueryOption) (int64, error) {
+	r.ensureMeta(db)
+	if len(fields) == 0 {
+		return 0, nil
+	}
+	if len(filters) == 0 {
+		return 0, fmt.Errorf("update %s where: no filter — UpdateWhere never writes every row of a table by default; pass a filter (orm.WhereIsNotNull(%q) to mean every row)", r.m.table, r.m.pkColumn)
+	}
+	if len(r.m.updatableSet) == 0 {
+		return 0, &orm.UnknownFieldError{Field: fields[0]}
+	}
+	ctx, span := r.startSpan(ctx, "UpdateWhere")
+	defer span.End()
+
+	entity := *values // the caller's template stays as given
+	stampUpdated := r.m.timestamps && r.m.hasUpdatedAt
+	if stampUpdated {
+		r.stampUpdated(&entity)
+	}
+	cols := make([]string, 0, len(fields)+1)
+	var forced []string
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		if !r.m.updatableSet[f] {
+			return 0, &orm.UnknownFieldError{Field: f}
+		}
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		if _, skip := r.m.skipUpdate[f]; skip {
+			forced = append(forced, f)
+			continue
+		}
+		cols = append(cols, f)
+	}
+	r.normalizeArraysFor(&entity, seen)
+	if stampUpdated && !seen["updated_at"] {
+		cols = append(cols, "updated_at")
+	}
+
+	b := r.newBinder(db)
+	q := db.Bun().NewUpdate().Model(&entity)
+	v := reflect.ValueOf(&entity).Elem()
+	if len(cols) > 0 {
+		b.setColumns(q, r.m.fields, v, cols)
+	}
+	for _, f := range forced {
+		q.SetColumn(f, "?", b.value(v.Field(r.m.skipUpdate[f]).Interface()))
+	}
+	if r.m.versionColumn != "" {
+		col := bun.Ident(r.m.versionColumn)
+		q.Set("? = ? + 1", col, col)
+	}
+	// The rows, by key, exactly as List would read them.
+	keys := r.pkIdents()
+	keyCols := make([]string, len(keys))
+	marks := make([]string, len(keys))
+	for i, k := range keys {
+		keyCols[i] = string(k.(bun.Ident))
+		marks[i] = "?"
+	}
+	sub := db.Bun().NewSelect().Model((*M)(nil)).Column(keyCols...)
+	r.scopeRead(sub)
+	for _, opt := range filters {
+		opt(sub)
+	}
+	q.Where("("+strings.Join(marks, ", ")+") IN (?)", append(keys, sub)...)
+	r.scopeWrite(q)
+	res, err := b.write(ctx, span, db, q, nil, false)
+	if err != nil {
+		recordErr(span, err)
+		return 0, fmt.Errorf("update %s where: %w", r.m.table, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		recordErr(span, err)
+		return 0, fmt.Errorf("update %s where: %w", r.m.table, err)
+	}
+	return n, nil
+}
+
 // UpdateOption tunes one Update or UpdateMasked call. See Preserve and
 // NoReadBack.
 type UpdateOption func(*updateOptions)

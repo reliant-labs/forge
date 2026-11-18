@@ -169,6 +169,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/mod/modfile"
 
@@ -1261,7 +1262,8 @@ func (w *optionalGuardWalker) isNilSafeProtoGetter(call *ast.CallExpr) bool {
 // Get followed by an exported field name.
 func isProtoGetterName(name string) bool {
 	rest, ok := strings.CutPrefix(name, "Get")
-	return ok && rest != "" && unicode.IsUpper([]rune(rest)[0])
+	r, _ := utf8.DecodeRuneInString(rest)
+	return ok && rest != "" && unicode.IsUpper(r)
 }
 
 // declaresType reports whether f declares a type named name.

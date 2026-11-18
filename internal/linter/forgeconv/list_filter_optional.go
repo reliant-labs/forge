@@ -140,10 +140,11 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 	unmanagedRequests := map[string]bool{}
 	managedRequests := map[string]bool{}
 	// The response types of the managed List rpcs, by request (both
-	// readings), and every top-level message by fully-qualified name: what
-	// listedFieldNames resolves a request's listed message from.
-	listResponses := map[string][]string{}
-	messagesByFQ := map[string]codegen.RawProtoMessage{}
+	// readings), each with the package it is written in, and the tree's
+	// messages: what listedFieldNames resolves a request's listed message
+	// from.
+	listResponses := map[string][]typeRef{}
+	tree := protoMessages{top: map[string]codegen.RawProtoMessage{}, nested: map[string]bool{}}
 	for _, d := range dirs {
 		scan, err := codegen.ScanRawProtoFiles(byDir[d])
 		if err != nil {
@@ -179,12 +180,15 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			listRequests[scan.Package+"."+rpc.Request] = true
 			if rpc.Response != "" {
 				for _, req := range []string{rpc.Request, scan.Package + "." + rpc.Request} {
-					listResponses[req] = append(listResponses[req], rpc.Response, scan.Package+"."+rpc.Response)
+					listResponses[req] = append(listResponses[req], typeRef{name: rpc.Response, scope: scan.Package})
 				}
 			}
 		}
 		for _, msg := range scan.Messages {
-			messagesByFQ[scan.Package+"."+msg.Name] = msg
+			tree.top[scan.Package+"."+msg.Name] = msg
+		}
+		for fq := range scan.NestedMessages {
+			tree.nested[fq] = true
 		}
 	}
 
@@ -199,7 +203,7 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			if unmanagedRequests[fq] && !managedRequests[fq] {
 				continue
 			}
-			listed := listedFieldNames(listResponses[fq], messagesByFQ)
+			listed := listedFieldNames(listResponses[fq], tree)
 			for _, f := range msg.Fields {
 				if !judgedAsFilter(f, listed) {
 					continue
@@ -228,6 +232,58 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 	return out
 }
 
+// typeRef is a message type as written in a .proto, and the scope it is
+// written in: a package, or a message's fully-qualified name.
+type typeRef struct {
+	name, scope string
+}
+
+// protoMessages is the tree's messages by fully-qualified name: the
+// top-level ones the raw scan captures, and the nested ones it only names.
+type protoMessages struct {
+	top    map[string]codegen.RawProtoMessage
+	nested map[string]bool
+}
+
+// resolve finds the top-level message a type reference names, by protobuf's
+// scoping rule: the name as the scanner qualified it, then the name inside
+// the referencing scope and each enclosing scope out to the root. A
+// reference that resolves to a nested message, or to nothing in the tree,
+// is not found — its fields are not captured, and an outer message of the
+// same name must not stand in for it.
+func (t protoMessages) resolve(ref typeRef) (codegen.RawProtoMessage, bool) {
+	name := strings.TrimPrefix(ref.name, ".")
+	if name == "" {
+		return codegen.RawProtoMessage{}, false
+	}
+	if msg, ok := t.top[name]; ok {
+		return msg, true
+	}
+	if t.nested[name] {
+		return codegen.RawProtoMessage{}, false
+	}
+	for scope := ref.scope; ; scope = parentScope(scope) {
+		cand := scope + "." + name
+		if t.nested[cand] {
+			return codegen.RawProtoMessage{}, false
+		}
+		if msg, ok := t.top[cand]; ok {
+			return msg, true
+		}
+		if scope == "" {
+			return codegen.RawProtoMessage{}, false
+		}
+	}
+}
+
+// parentScope is the scope enclosing scope: "a.b.c" -> "a.b", "a" -> "".
+func parentScope(scope string) string {
+	if i := strings.LastIndex(scope, "."); i >= 0 {
+		return scope[:i]
+	}
+	return ""
+}
+
 // listedFieldNames is the set of field names of the message a List rpc
 // lists — the element type of each repeated message field of its response —
 // or nil when no response resolves to one (a request no rpc uses, a response
@@ -237,18 +293,25 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 // returns the entity message, whose fields are the columns it projects, and
 // a filter it generates must name one of them (classifyEntityFilterField
 // refuses any other).
-func listedFieldNames(responses []string, messages map[string]codegen.RawProtoMessage) map[string]bool {
+//
+// Both the response and each element type resolve by protobuf's scoping
+// rule (protoMessages.resolve): the scanner leaves a reference into another
+// package as written ("shared.v1.Row" from inside "acme.deploy.v1"), and an
+// unresolved element must not read as "no listed message" while a resolvable
+// one is missed.
+func listedFieldNames(responses []typeRef, tree protoMessages) map[string]bool {
 	var listed map[string]bool
-	for _, resp := range responses {
-		msg, ok := messages[resp]
+	for _, ref := range responses {
+		resp, ok := tree.resolve(ref)
 		if !ok {
 			continue
 		}
-		for _, f := range msg.Fields {
+		respFQ := resp.Package + "." + resp.Name
+		for _, f := range resp.Fields {
 			if !f.Repeated || f.Kind != "message" {
 				continue
 			}
-			elem, ok := messages[f.TypeName]
+			elem, ok := tree.resolve(typeRef{name: f.TypeName, scope: respFQ})
 			if !ok {
 				continue
 			}

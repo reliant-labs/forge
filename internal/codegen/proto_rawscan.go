@@ -317,6 +317,10 @@ type RawProtoScan struct {
 	Enums map[string][]string
 	// RPCs are every rpc declaration found across the files.
 	RPCs []RawProtoRPC
+	// NestedMessages are the fully-qualified names of every message
+	// declared inside another ("pkg.Order.Item"). Their fields are not
+	// captured; nil when there are none.
+	NestedMessages map[string]bool
 }
 
 // MessageByName returns the top-level message with the given relative
@@ -902,6 +906,17 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		fqEnums[pkg+"."+rel] = values
 	}
 	scan.Enums = fqEnums
+	// Nested messages by fully-qualified name: not captured, but a resolver
+	// must know they exist, or a reference to one would fall through to a
+	// same-named message in an outer scope.
+	for full := range declaredMessages {
+		if strings.Contains(full, ".") {
+			if scan.NestedMessages == nil {
+				scan.NestedMessages = map[string]bool{}
+			}
+			scan.NestedMessages[pkg+"."+full] = true
+		}
+	}
 
 	classify := func(owner, token string) (kind, typeName string) {
 		if IsProtoScalarKind(token) {

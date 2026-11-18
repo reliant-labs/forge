@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // lintListFilters runs the whole proto convention pass over one file in a
@@ -479,5 +481,123 @@ message DeployUsage {
 	}
 	if len(got) != 3 {
 		t.Errorf("expected 3 findings, got %d: %q", len(got), flagged)
+	}
+}
+
+// Review B1 on forge#2318: a response's element type written relative to its
+// package — here a message from a sibling package, which the scanner leaves
+// as written ("shared.v1.UsageRow" inside "acme.deploy.v1") — resolves by
+// protobuf's scoping rule. Before, the lookup missed it, the listed message
+// read as unknown, and every field was judged, the knob included.
+func TestListFilterOptional_ResolvesAPackageRelativeElementType(t *testing.T) {
+	dir := t.TempDir()
+	must(t, mkdirAll(filepath.Join(dir, "shared", "v1")))
+	must(t, mkdirAll(filepath.Join(dir, "deploy", "v1")))
+	must(t, writeFile(filepath.Join(dir, "shared", "v1", "types.proto"), `syntax = "proto3";
+package acme.shared.v1;
+
+message UsageRow {
+  string org_id = 1;
+}
+`))
+	must(t, writeFile(filepath.Join(dir, "deploy", "v1", "deploy.proto"), `syntax = "proto3";
+package acme.deploy.v1;
+
+import "shared/v1/types.proto";
+
+service DeployService {
+  rpc ListDeployUsage(ListDeployUsageRequest) returns (ListDeployUsageResponse);
+}
+
+message ListDeployUsageRequest {
+  string org_id = 1;
+  bool withhold_costs_without_billing_read = 8;
+}
+
+message ListDeployUsageResponse {
+  repeated shared.v1.UsageRow rows = 1;
+}
+`))
+	res, err := LintProtoTree(dir)
+	if err != nil {
+		t.Fatalf("LintProtoTree: %v", err)
+	}
+	got := findingsForRule(res.Findings, ruleListFilterOptional)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "ListDeployUsageRequest.org_id") {
+		t.Fatalf("expected only org_id judged (the knob is not a field of the listed UsageRow), got:\n%s", res.FormatText())
+	}
+}
+
+// A response listing a NESTED message: its fields are not captured, so the
+// listed message is unknown and every field is judged, as before. A
+// top-level message of the same name must not stand in for it — that would
+// judge the wrong field set.
+func TestListFilterOptional_NestedElementTypeIsNotShadowedByATopLevelOne(t *testing.T) {
+	src := `syntax = "proto3";
+package things.v1;
+
+service ThingService {
+  rpc ListThings(ListThingsRequest) returns (ListThingsResponse);
+}
+
+message ListThingsRequest {
+  string org_id = 1;
+  bool knob = 2;
+}
+
+message ListThingsResponse {
+  message Row {
+    string org_id = 1;
+  }
+  repeated Row rows = 1;
+}
+
+// Same name, outer scope: has knob, not org_id.
+message Row {
+  bool knob = 1;
+}
+`
+	got := lintListFilters(t, "things.proto", src)
+	var flagged []string
+	for _, f := range got {
+		flagged = append(flagged, f.Message)
+	}
+	if len(got) != 2 {
+		t.Fatalf("a nested listed message is unknown, so both fields are judged; got %q", flagged)
+	}
+}
+
+// The resolver directly: a bare package-relative name, a name qualified by
+// the scanner, a name relative to an outer package, a nested message, and
+// the empty package.
+func TestProtoMessagesResolve(t *testing.T) {
+	tree := protoMessages{
+		top: map[string]codegen.RawProtoMessage{
+			"deploy.v1.DeployUsage": {Name: "DeployUsage", Package: "deploy.v1"},
+			"acme.shared.v1.Row":    {Name: "Row", Package: "acme.shared.v1"},
+			"deploy.v1.Item":        {Name: "Item", Package: "deploy.v1"},
+			".Loose":                {Name: "Loose"},
+		},
+		nested: map[string]bool{"deploy.v1.ListResponse.Item": true},
+	}
+	for name, tc := range map[string]struct {
+		ref  typeRef
+		want string // "" = not found
+	}{
+		"package-relative":           {typeRef{"DeployUsage", "deploy.v1.ListResponse"}, "DeployUsage"},
+		"qualified by the scanner":   {typeRef{"deploy.v1.DeployUsage", "deploy.v1.ListResponse"}, "DeployUsage"},
+		"leading dot":                {typeRef{".deploy.v1.DeployUsage", "x.v1"}, "DeployUsage"},
+		"relative to an outer scope": {typeRef{"shared.v1.Row", "acme.deploy.v1.ListResponse"}, "Row"},
+		"nested shadows outer":       {typeRef{"Item", "deploy.v1.ListResponse"}, ""},
+		"nested, scanner-qualified":  {typeRef{"deploy.v1.ListResponse.Item", "deploy.v1"}, ""},
+		"empty package":              {typeRef{"Loose", ".ListResponse"}, "Loose"},
+		"not in the tree":            {typeRef{"vendor.Money", "deploy.v1.ListResponse"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msg, ok := tree.resolve(tc.ref)
+			if got := map[bool]string{true: msg.Name, false: ""}[ok]; got != tc.want {
+				t.Errorf("resolve(%+v) = %q, want %q", tc.ref, got, tc.want)
+			}
+		})
 	}
 }

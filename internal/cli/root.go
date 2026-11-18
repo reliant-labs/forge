@@ -349,6 +349,9 @@ path from an empty directory to authored protos, in one call.`,
 	// lives under it with the env as a positional argument. Commands where
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
+	// `app` acts on a hosted app as a whole — every env the control plane
+	// runs for this project: stop, tear down, delete (app_lifecycle.go).
+	rootCmd.AddCommand(newAppCmd())
 	// `obs` reads back what the local observability stack collected.
 	rootCmd.AddCommand(newObsCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -359,9 +360,13 @@ func (p *run) buildOutput(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	jwks, err := p.fetchJWKS(ctx)
+	raw, err := p.fetchJWKS(ctx)
 	if err != nil {
 		return err
+	}
+	jwks, err := snapshotJWKS(raw, issuer, p.c.now())
+	if err != nil {
+		return objErr("jwks", p.c.base, err)
 	}
 	p.rep.Output = Output{
 		Issuer:     issuer,
@@ -443,4 +448,26 @@ func (p *run) fetchJWKS(ctx context.Context) (json.RawMessage, error) {
 		return nil, objErr("jwks", p.c.base, fmt.Errorf("the instance served no signing keys"))
 	}
 	return raw, nil
+}
+
+// snapshotJWKS makes the instance's JWKS a snapshot document (forge/pkg/auth,
+// jwks_snapshot.go): every member of the JWKS, plus the issuer it was
+// published for and when it was taken. A snapshot delivered as an inline value
+// has nothing else to date it by, so without delivered_at a validator rejects
+// it. The result is still a valid JWKS.
+func snapshotJWKS(raw json.RawMessage, issuer string, at time.Time) (json.RawMessage, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("the instance's JWKS is not a JSON object: %w", err)
+	}
+	iss, err := json.Marshal(issuer)
+	if err != nil {
+		return nil, err
+	}
+	del, err := json.Marshal(at.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	doc["issuer"], doc["delivered_at"] = iss, del
+	return json.Marshal(doc)
 }

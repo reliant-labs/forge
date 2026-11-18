@@ -344,8 +344,11 @@ func frontendNotInInventoryError(cfg *config.ProjectConfig, message, want string
 // renderFailureCause is the line of a KCL render failure that says WHY: the
 // failed schema check's message when there is one (kcl prints it after
 // "Check failed on the condition:", or an assert's after "Assertion
-// failure"), with ANSI colour stripped, else the error's first line —
-// which for a KCL failure is only "evaluate KCL in <dir>: exit status 1".
+// failure"), or the message of kcl's source-annotated diagnostic (the
+// `   |  <message>` line under the offending source line, which is how an
+// assert in a module reports), with ANSI colour stripped, else the error's
+// first line — which for a KCL failure is only "evaluate KCL in <dir>: exit
+// status 1".
 func renderFailureCause(err error) string {
 	msg := ansiEscapeRE.ReplaceAllString(err.Error(), "")
 	for _, marker := range []string{"Check failed on the condition:", "Assertion failure:", "EvaluationError:"} {
@@ -355,10 +358,18 @@ func renderFailureCause(err error) string {
 			}
 		}
 	}
+	if m := kclDiagnosticMessageRE.FindStringSubmatch(msg); m != nil {
+		return strings.TrimSpace(m[1])
+	}
 	return firstLine(msg)
 }
 
 var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// kclDiagnosticMessageRE matches the message line of a kcl diagnostic: a
+// gutter with no line number (`   |`), then the text. The source line above
+// it carries its number (`69 |`), and the gutter's blank lines carry none.
+var kclDiagnosticMessageRE = regexp.MustCompile(`(?m)^[ \t]*\|[ \t^~]+(\S.*)$`)
 
 func knownFrontendsSuffix(cfg *config.ProjectConfig) string {
 	if len(cfg.Frontends) == 0 {

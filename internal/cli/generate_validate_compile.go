@@ -124,10 +124,17 @@ func (e *listFailure) Error() string {
 // compileTree compiles every package under projectDir — and, with tests, the
 // test variant of each — without linking anything.
 func compileTree(projectDir string, tests bool) (compileReport, error) {
+	return compileTreeWith(projectDir, tests, nil, nil)
+}
+
+// compileTreeWith is compileTree with extra go flags (before the package
+// pattern) and extra environment.
+func compileTreeWith(projectDir string, tests bool, flags, env []string) (compileReport, error) {
 	args := []string{"list", "-e", "-export", "-deps", "-json=" + compileFields}
 	if tests {
 		args = append(args, "-test")
 	}
+	args = append(args, flags...)
 	args = append(args, "./...")
 	cmd := exec.Command("go", args...)
 	cmd.Dir = projectDir
@@ -135,7 +142,7 @@ func compileTree(projectDir string, tests bool) (compileReport, error) {
 	// compile reuses the build cache a sibling worktree, the checkout this
 	// scratch copy came from or the last verify-generated filled: see
 	// goexec.WithTrimpath.
-	cmd.Env = goexec.CheckEnv()
+	cmd.Env = goexec.CheckEnv(env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	// go list -e repeats some load errors on stderr; the JSON carries them

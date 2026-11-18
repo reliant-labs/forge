@@ -267,13 +267,44 @@ func TestRemediationForNamesTheRulesOwnHatch(t *testing.T) {
 	}
 }
 
+// TestNotNullAddRemediationLeadsWithAConstantDefault pins the order of the
+// unsafe-add-not-null-column advice. The nullable-backfill-SET NOT NULL path
+// breaks the previous release's INSERTs (they do not name the new column)
+// once SET NOT NULL lands; a constant DEFAULT does not, and is metadata-only
+// on postgres 11+. Leading with the backfill steered authors into a rollout
+// break. set-not-null-without-backfill keeps the backfill advice, since an
+// existing column's rows need values before SET NOT NULL.
+func TestNotNullAddRemediationLeadsWithAConstantDefault(t *testing.T) {
+	add := RemediationFor(RuleUnsafeAddNotNullColumn)
+	def, backfill := strings.Index(add, "DEFAULT"), strings.Index(add, "backfill")
+	if def < 0 || backfill < 0 || def > backfill {
+		t.Errorf("unsafe-add-not-null-column advice must offer a constant DEFAULT before the backfill path, got %q", add)
+	}
+	if !strings.Contains(add, "previous release") {
+		t.Errorf("unsafe-add-not-null-column advice must warn that SET NOT NULL breaks the previous release's inserts, got %q", add)
+	}
+	if !strings.HasSuffix(add, `"-- forge:allow-unsafe-not-null" comment`) {
+		t.Errorf("the pragma must be the last resort, got %q", add)
+	}
+
+	set := RemediationFor(RuleSetNotNullWithoutBackfill)
+	if !strings.Contains(set, "backfill") || !strings.Contains(set, "previous release") {
+		t.Errorf("set-not-null-without-backfill advice must name the backfill and the previous-release caveat, got %q", set)
+	}
+
+	findings := lintStatements("001_add.up.sql", "ALTER TABLE t ADD COLUMN c text NOT NULL;\n", RuleConfig{Enabled: true, UnsafeAddColumn: "error"})
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "constant DEFAULT") {
+		t.Errorf("unsafe-add-not-null-column message must name the DEFAULT option, got %+v", findings)
+	}
+}
+
 // TestPrimaryRemediationRefusesToPickForAMixedBatch pins the batch behaviour.
 // The CLI prints one Fix line under all findings, so a batch spanning rules
 // must not be given any single rule's hatch — that is the same wrong-advice
 // failure, just harder to notice.
 func TestPrimaryRemediationRefusesToPickForAMixedBatch(t *testing.T) {
 	single := []Finding{{Rule: "unsafe-add-not-null-column", Severity: SeverityError}}
-	if got := PrimaryRemediation(single); got != UnsafeNotNullRemediation {
+	if got := PrimaryRemediation(single); got != UnsafeAddNotNullRemediation {
 		t.Errorf("single-rule batch should get that rule's text, got %q", got)
 	}
 
@@ -282,7 +313,7 @@ func TestPrimaryRemediationRefusesToPickForAMixedBatch(t *testing.T) {
 		{Rule: "destructive-change", Severity: SeverityError},
 	}
 	got := PrimaryRemediation(mixed)
-	if !strings.HasPrefix(got, MixedRemediation) || got == DestructiveChangeRemediation || got == UnsafeNotNullRemediation {
+	if !strings.HasPrefix(got, MixedRemediation) || got == DestructiveChangeRemediation || got == UnsafeAddNotNullRemediation {
 		t.Errorf("mixed batch should refuse to pick one rule's hatch, got %q", got)
 	}
 	// It names the hatch of each rule present, and of no other.

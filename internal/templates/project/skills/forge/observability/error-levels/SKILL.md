@@ -1,6 +1,6 @@
 ---
 name: observability/error-levels
-description: Where forge's error-level policy applies (rpc failed, component failures, every hand-written logger.Error through observe.NewErrorClassHandler), how to wrap a log forwarder so it sees the classified level, and how to mark an error's class (svcerr.WithClass, observe.WithErrorClassifier).
+description: Where forge's error-level policy applies (rpc failed, component failures, every hand-written logger.Error through observe.NewErrorClassHandler), how a failed call's server span follows the class (OK for user and canceled, observe.WithUserErrorsAsSpanErrors), how to wrap a log forwarder so it sees the classified level, and how to mark an error's class (svcerr.WithClass, observe.WithErrorClassifier).
 ---
 
 # Observability: applying the error-level policy
@@ -17,6 +17,20 @@ The policy holds at all three places a record comes from:
    wraps the process's slog handler (serverkit's `NewLogger` already does) and
    lowers a record carrying a non-server error to the user-error level, adding
    `error_class`. It only ever lowers; it never raises a WARN to ERROR.
+
+**Server spans follow the class too.** otelconnect marks a server span Error
+from the wire code alone (Unavailable, Unknown, Internal, …), so a user
+refused with `svcerr.WithClass(svcerr.Unavailable("your machine is waking
+up"), svcerr.ClassUser)` used to read as a server error in every span-based
+view (`forge obs endpoints`, `traces`, `status`, release health). forge's
+chain now settles the server span of every failed call itself: `error_class`,
+`rpc.error_reason` (the `svcerr.WithReason` code the client received), the
+error as an exception event, and status **OK** for `user` and `canceled` —
+final, so otelconnect's later Error cannot overwrite it — and **Error** for
+`server`. The wire is unchanged. A project whose span error rates must count
+user refusals opts in with `observe.WithUserErrorsAsSpanErrors()`
+(`serverkit.ChainDeps.ServerSpan` / `observe.Deps.ServerSpan`). An ending the
+server chose (`svcerr.ExpectedClose`) is OK with `rpc.close_reason` instead.
 
 **If you forward logs to another sink (or count them), wrap
 `observe.NewErrorClassHandler` OUTSIDE that handler**, so it sees the

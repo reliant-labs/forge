@@ -175,9 +175,12 @@ describe("the published surface", () => {
     // every other entry must reach neither; ./telemetry reaches each through
     // import() alone, which is what makes each its own chunk, loaded when
     // telemetry (and, for rrweb, replay) actually runs.
+    // sdk-client.ts names the SDK through package.json's import map
+    // (#hyperdx-otel-web; see the next test), so that counts too.
     const sdkImport =
-      /(?:from\s*|import\s*\(\s*|import\s*)["'](@hyperdx\/[^"']+|rrweb)["']/g;
-    const dynamicOnly = /import\(\s*["'](@hyperdx\/[^"']+|rrweb)["']\s*\)/g;
+      /(?:from\s*|import\s*\(\s*|import\s*)["'](@hyperdx\/[^"']+|#hyperdx-otel-web|rrweb)["']/g;
+    const dynamicOnly =
+      /import\(\s*["'](@hyperdx\/[^"']+|#hyperdx-otel-web|rrweb)["']\s*\)/g;
     const importers = new Map<string, string[]>();
     for (const name of distFiles.filter((f) => f.endsWith(".js"))) {
       const body = readFileSync(join(pkgDir, "dist", name), "utf8");
@@ -191,7 +194,7 @@ describe("the published surface", () => {
       importers.set(name, all);
     }
     expect(Object.fromEntries(importers)).toEqual({
-      "sdk-client.js": ["@hyperdx/otel-web"],
+      "sdk-client.js": ["#hyperdx-otel-web"],
       "replay-recorder.js": ["rrweb"],
     });
     // And only ./telemetry's closure reaches those two modules.
@@ -205,6 +208,41 @@ describe("the published surface", () => {
         ).toBe(false);
       }
     }
+  });
+
+  it("maps #hyperdx-otel-web to the SDK for bundlers, and to its Node build under node", () => {
+    // A browser bundler matches `browser`, listed first so it wins even where
+    // `node` is also set, and must get the SDK's own ESM build, a lazy chunk
+    // of its own (sdk-conditions.test.ts resolves it with esbuild). Under Node (a test runner that
+    // loads this package natively) it gets dist/hyperdx-otel-web.node.js,
+    // which scripts/build.mjs builds, because Node cannot load the SDK's
+    // ESM build (see "//imports note" in package.json).
+    const imports = (pkg as unknown as { imports?: Record<string, unknown> })
+      .imports;
+    expect(imports).toEqual({
+      "#hyperdx-otel-web": {
+        browser: "@hyperdx/otel-web",
+        node: {
+          types: "./dist/hyperdx-otel-web.node.d.ts",
+          default: "./dist/hyperdx-otel-web.node.js",
+        },
+        default: "@hyperdx/otel-web",
+      },
+    });
+    expect(distFiles).toContain("hyperdx-otel-web.node.js");
+    expect(distFiles).toContain("hyperdx-otel-web.node.d.ts");
+    // The Node build shares the app's @opentelemetry/api, and reaches
+    // nothing else outside itself.
+    const body = readFileSync(
+      join(pkgDir, "dist", "hyperdx-otel-web.node.js"),
+      "utf8",
+    );
+    const outside = new Set(
+      [...body.matchAll(/(?:from|import)\s*["']([^"'.][^"']*)["']/g)].map(
+        (m) => m[1],
+      ),
+    );
+    expect([...outside].sort()).toEqual(["@opentelemetry/api"]);
   });
 
   it("makes every peer the ./node entry never imports OPTIONAL, so a Node-only consumer installs none of them", () => {

@@ -23,7 +23,9 @@ package cli
 //	MISSING      declared by the binding, running nowhere.
 //	UNTAGGED     the workload runs by mutable tag, so there is no digest to
 //	             compare. Nothing is proven either way.
-//	UNREACHABLE  the cluster could not be read. Says NOTHING about the env.
+//	UNREACHABLE  what runs could not be observed: the cluster, observer or
+//	             site could not be read, or a hosted static site answered
+//	             without a release marker. Says NOTHING about the env.
 //
 // Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential
 // is not evidence that a release is wrong, and a gate that reports drift and
@@ -158,6 +160,11 @@ type envStatusDocument struct {
 	// does). A consumer that finishes or verifies a release checks
 	// apply.status == "passed", never `release` alone. Absent when unbound.
 	Apply *envApplyReport `json:"apply,omitempty"`
+	// CodeSources carries a hosted env's app's two-repositories warning
+	// (code_source_warning.go): two repositories deploy to this app. Absent
+	// when there is none, or the control plane predates it. Never affects
+	// the verdict.
+	CodeSources *envCodeSourcesReport `json:"code_sources,omitempty"`
 }
 
 // envTarget is WHERE an environment runs: the kubectl context and the
@@ -282,6 +289,11 @@ type envStatusOptions struct {
 	// FetchReleaseMarker reads the release marker a live static site serves.
 	// Nil fetches it over HTTP (fetchStaticReleaseMarker).
 	FetchReleaseMarker func(ctx context.Context, siteURL string) (deploytarget.StaticSiteReleaseMarker, error)
+	// HostedCodeSourceWarning states a HOSTED env's app's two-repositories
+	// warning. Nil takes it from the lookup that resolved the env on its
+	// control plane — unless HostedRollout is set, when a test that states
+	// none gets none.
+	HostedCodeSourceWarning func(ctx context.Context, env string) string
 }
 
 // verifyExternalThenCluster reads forge.OnExternal workloads through their
@@ -404,6 +416,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		source                 string
 		queued                 *deployQueuedError
 		identity               *envIdentityReport
+		codeSourceWarning      string
 	)
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
@@ -416,7 +429,8 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 		if !opts.JSON {
 			fmt.Printf("  source   %s (forge cannot read a hosted env's cluster)\n", source)
 		}
-		results, queued, identity = verifyHostedWithIdentity(ctx, envName, binding, opts)
+		read := verifyHostedWithIdentity(ctx, envName, binding, opts)
+		results, queued, identity, codeSourceWarning = read.results, read.queued, read.identity, read.codeSourceWarning
 	} else {
 		results, kubeContext, namespace, source = verifyExternalThenCluster(ctx, projectDir, envName, binding.Resolved, opts)
 	}
@@ -456,6 +470,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 			OfflineCache: offline,
 			Identity:     identity,
 			Apply:        &applied,
+			CodeSources:  codeSourcesReport(codeSourceWarning),
 		}
 		if queued != nil {
 			report.Queued = queued.document()
@@ -484,6 +499,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	if identity != nil {
 		fmt.Println(identity.line())
 	}
+	writeCodeSourceWarning(os.Stdout, codeSourceWarning)
 	if reconcilerLine != "" {
 		fmt.Println(reconcilerLine)
 	}
@@ -514,21 +530,35 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 // release or nothing, so the per-image rows read as drift — which is true and
 // is not the verdict: the env is where it should be while it waits.
 func verifyHosted(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) ([]imageVerification, *deployQueuedError) {
-	results, queued, _ := verifyHostedWithIdentity(ctx, envName, binding, opts)
-	return results, queued
+	read := verifyHostedWithIdentity(ctx, envName, binding, opts)
+	return read.results, read.queued
+}
+
+// hostedStatusRead is what one hosted read of `forge env status` learned.
+type hostedStatusRead struct {
+	results  []imageVerification
+	queued   *deployQueuedError
+	identity *envIdentityReport
+	// codeSourceWarning is the env's app's two-repositories warning.
+	codeSourceWarning string
 }
 
 // verifyHostedWithIdentity is verifyHosted plus the env's managed identity,
 // read from the same control plane (resolved once). The identity is reported,
 // never judged: it does not change the release verdict.
-func verifyHostedWithIdentity(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) ([]imageVerification, *deployQueuedError, *envIdentityReport) {
+func verifyHostedWithIdentity(ctx context.Context, envName string, binding release.Promotion, opts envStatusOptions) hostedStatusRead {
 	readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	readRolloutFn, readIdentityFn := opts.HostedRollout, opts.HostedIdentity
+	var out hostedStatusRead
+	if opts.HostedCodeSourceWarning != nil {
+		out.codeSourceWarning = opts.HostedCodeSourceWarning(readCtx, envName)
+	}
 	if readRolloutFn == nil {
 		target, err := resolveDeclaredWaitTarget(readCtx, envName)
 		if err != nil {
-			return unreachableVerifications(binding.Resolved, err), nil, nil
+			out.results = unreachableVerifications(binding.Resolved, err)
+			return out
 		}
 		readRolloutFn = func(ctx context.Context, _, promotionID string) (wireRollout, error) {
 			return readRollout(ctx, target.Client, target.EnvironmentID, promotionID)
@@ -537,21 +567,24 @@ func verifyHostedWithIdentity(ctx context.Context, envName string, binding relea
 			read := identityReader(target.Client, target.EnvironmentID)
 			readIdentityFn = func(ctx context.Context, _ string) (identityStatusDocument, error) { return read(ctx) }
 		}
+		if opts.HostedCodeSourceWarning == nil {
+			out.codeSourceWarning = target.CodeSourceWarning
+		}
 	}
 	rollout, err := readRolloutFn(readCtx, envName, binding.ID)
 	if err != nil {
-		return unreachableVerifications(binding.Resolved, err), nil, nil
+		out.results = unreachableVerifications(binding.Resolved, err)
+		return out
 	}
-	var queued *deployQueuedError
 	if rollout.Phase == wireRolloutPhaseHeld {
-		queued = &deployQueuedError{Env: envName, Release: binding.Release, PromotionID: binding.ID, Holds: rollout.Holds}
+		out.queued = &deployQueuedError{Env: envName, Release: binding.Release, PromotionID: binding.ID, Holds: rollout.Holds}
 	}
-	var identity *envIdentityReport
 	if readIdentityFn != nil {
 		w := &identityWatch{read: func(ctx context.Context) (identityStatusDocument, error) { return readIdentityFn(ctx, envName) }}
-		identity = w.observe(readCtx)
+		out.identity = w.observe(readCtx)
 	}
-	return verifyHostedRollout(rollout), queued, identity
+	out.results = verifyHostedRollout(rollout)
+	return out
 }
 
 // readDeclaredRollout is the production hosted read: the env's declared

@@ -167,7 +167,7 @@ describe("initBrowserTelemetry", () => {
     init.mockImplementation(() => {
       throw new Error("boom");
     });
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { t } = await load();
 
     await expect(
@@ -207,6 +207,34 @@ describe("initBrowserTelemetry", () => {
 
     expect(recordException).toHaveBeenCalledWith(err, {
       "react.component_stack": "at X",
+    });
+  });
+
+  it("tells the RPC span stage what it may record: forensics per rpcForensics, nothing once disabled", async () => {
+    stubDom();
+    let { t, k } = await load();
+    let gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: true,
+    });
+    k.disableTelemetry();
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: false,
+      forensics: false,
+    });
+
+    ({ t, k } = await load());
+    gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      rpcForensics: false,
+    });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: false,
     });
   });
 });
@@ -501,7 +529,7 @@ describe("benign browser errors", () => {
   });
 
   it("leaves everything as it was when the SDK fails to start", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await start({}, { initThrows: true });
     expect(console.error).toBe(consoleUnderSdk);
     const { trace } = await import("@opentelemetry/api");
@@ -517,7 +545,7 @@ describe("benign browser errors", () => {
   });
 
   it("undoes the tracer wrap and the console tap when startup fails after the SDK init", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     setGlobalAttributes.mockImplementationOnce(() => {
       throw new Error("late failure");
     });

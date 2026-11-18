@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime/transport
-description: The forge-web-runtime transport interceptor stack — buildRuntimeInterceptors (error-normalize → auth → brand → traceparent; React Query owns retries), always-on W3C traceparent tracing, and typed errors: ConnectClientError, the total .reason vocabulary, userMessage(err), normalizeError, never matching on message text.
+description: The forge-web-runtime transport interceptor stack — buildRuntimeInterceptors (error-normalize → auth → brand → rpc span → traceparent; React Query owns retries), always-on W3C traceparent tracing, one client span per RPC with redacted failure forensics, and typed errors: ConnectClientError, the total .reason vocabulary, userMessage(err), normalizeError, never matching on message text.
 ---
 
 # Transport interceptor stack
@@ -18,7 +18,7 @@ const interceptors = buildRuntimeInterceptors({
 ```
 
 The chain (outermost → innermost): **error-normalize → auth → brand
-headers → traceparent**. There is no retry layer in it: the app's React Query
+headers → rpc span → traceparent**. There is no retry layer in it: the app's React Query
 client is the single retry owner, because it knows reads from writes — it
 retries transient READ failures and never a mutation. Each React Query retry
 re-runs the queryFn, so every attempt goes through the whole chain again
@@ -47,6 +47,39 @@ Which trace a call joins (the caller's active span, else the open
 awaits. Every runtime interceptor makes that choice on entry if no earlier
 one has, so keep a runtime interceptor outermost, or put
 `interactionContextInterceptor()` first when your own awaiting stages lead.
+
+## One client span per RPC
+
+`rpcSpanInterceptor` records a `CLIENT` span for every RPC, unary and
+streaming, named `<rpc.service>/<rpc.method>` (`pkg.v1.ChatService/GetChat`)
+with `rpc.system = connect_rpc`, `rpc.service`, `rpc.method`,
+`forge.rpc.client = true`, and on failure `rpc.connect_rpc.error_code` and an
+ERROR status (a cancelled call keeps its code but is not an error). A stream's
+span ends when the stream does. It sits directly outside the traceparent
+stage, so the server's otelconnect span is its descendant in the same trace,
+and `rpc.service` + `rpc.method` join the two. With no tracer provider
+registered it records nothing and costs nothing; a React Native app that
+registers its own OpenTelemetry provider gets the spans from `/interceptors`.
+
+A failed call's span carries one **`forge.forensics`** event:
+`forensics.reason = error` and `forensics.arg.<field>` for the request
+message, classified deny by default — numbers, bools, enums and id-named
+strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values, except an id whose name
+also names a secret (`session_id`, `apiKeyId`, `otpId`: `token`, `secret`,
+`passw`, `credential`, `session`, `cookie`, `apikey`, `privatekey`,
+`signingkey`, `otp`), which is `"[len=N]"` only; every other string and
+bytes as `"[len=N]"`; repeated and map fields as `"[count=N]"`; times
+(`Timestamp`, `Duration`, the `google.type` dates) as `"[type=<Name>]"`, never
+their value; nested messages walked three levels; `[debug_redact = true]`
+fields never. Once per
+procedure and error code per page load. Mark a request field that must never
+leave the browser with `[debug_redact = true]` in the proto.
+
+Off switches: `buildRuntimeInterceptors({ rpcForensics: false })` (this chain),
+`telemetry = forge.BrowserTelemetry {rpc_forensics = False}` in the env's KCL
+(renders `RPC_FORENSICS = "false"`, page-wide), `rpcSpans: false` (no span
+stage). `disableTelemetry()` stops both. A hand-built chain puts
+`rpcSpanInterceptor()` directly outside `traceInterceptor()`.
 
 ## Typed errors
 

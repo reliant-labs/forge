@@ -76,7 +76,9 @@ const rum = {
   setGlobalAttributes() {},
   getSessionId: () => "s1",
 };
-vi.mock("@hyperdx/otel-web", () => ({ default: rum, Rum: rum }));
+// By the specifier sdk-client.ts imports: package.json's import map, which
+// under vitest's `node` condition would otherwise load the real SDK.
+vi.mock("#hyperdx-otel-web", () => ({ default: rum, Rum: rum }));
 
 // rrweb's record(), driven by the test.
 const rrweb = {

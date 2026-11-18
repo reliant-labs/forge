@@ -1,4 +1,10 @@
 // Slow, opt-in real Chromium/HyperDX contract proof: npm run test:browser.
+// The real @hyperdx/otel-web and rrweb run in the page, bundled once per run
+// with esbuild as an app's bundler would (otel-web's ESM reaches CommonJS
+// packages a browser cannot load raw). The vendor bundle carries its own copy
+// of @opentelemetry/api, as @hyperdx/browser's UMD did; the two meet through
+// the API's global registry. The runtime's own modules are served from dist/
+// as built.
 // No live collector, credentials or deployed service; both HTTP origins bind
 // ephemeral loopback ports. The normal vitest tier remains browser-free.
 import assert from "node:assert/strict";
@@ -9,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { gunzipSync } from "node:zlib";
+import { build } from "esbuild";
 import { chromium } from "playwright";
 
 import { createOtelProxyHandler } from "../dist/otel-proxy.js";
@@ -17,22 +24,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const apiDir = resolve(dirname(require.resolve("@opentelemetry/api")), "../..");
 const protoDir = resolve(dirname(require.resolve("@bufbuild/protobuf")), "../..");
-const sdk = require.resolve("@hyperdx/browser");
-const recorderRequire = createRequire(require.resolve("@hyperdx/otel-web-session-recorder"));
-// Decode the OTLP log envelope, not a mocked replay sink. protobufjs is the
-// recorder's own dependency. Only fields used by this proof are declared.
-const LogsData = recorderRequire("protobufjs").parse(`
-  syntax = "proto3";
-  message AnyValue { oneof value { string stringValue = 1; bool boolValue = 2; int64 intValue = 3; double doubleValue = 4; ArrayValue arrayValue = 5; KeyValueList kvlistValue = 6; } }
-  message ArrayValue { repeated AnyValue values = 1; }
-  message KeyValue { string key = 1; AnyValue value = 2; }
-  message KeyValueList { repeated KeyValue values = 1; }
-  message Scope { string name = 1; }
-  message LogRecord { AnyValue body = 5; }
-  message ScopeLogs { Scope scope = 1; repeated LogRecord logRecords = 2; }
-  message ResourceLogs { repeated ScopeLogs scopeLogs = 2; }
-  message LogsData { repeated ResourceLogs resourceLogs = 1; }
-`).root.lookupType("LogsData");
+// The SDK's parts as an app's bundle carries them, each its own module.
+const vendor = {};
+for (const [path, source] of [
+  ["/vendor/otel-web.js", 'export * from "@hyperdx/otel-web"; export { default } from "@hyperdx/otel-web";'],
+  ["/vendor/rrweb.js", 'export * from "rrweb";'],
+]) {
+  const out = await build({
+    stdin: { contents: source, resolveDir: root, loader: "js" },
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    write: false,
+    logLevel: "error",
+  });
+  vendor[path] = out.outputFiles[0].text;
+}
+// The recorder posts OTLP/JSON logs (src/replay-recorder.ts), gzipped.
+const LogsData = { decode: (bytes) => JSON.parse(Buffer.from(bytes).toString("utf8")) };
 const listen = async (server) => {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   return `http://127.0.0.1:${server.address().port}`;
@@ -95,6 +104,7 @@ async function moduleFile(url) {
 test("raw interactions stay in masked replay, one span per click; explicit action and RPC share real span parents", { timeout: 30000 }, async () => {
   const traces = [];
   const logs = [];
+  const logHeaders = [];
   const requests = [];
   // The page's /_otel goes through the runtime's real dev proxy (the one
   // forgeOtelProxy mounts), to a collector behind it. This proves the real
@@ -109,6 +119,7 @@ test("raw interactions stay in masked replay, one span per click; explicit actio
     const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
     const payload = url.endsWith("logs") ? LogsData.decode(decoded) : JSON.parse(decoded.toString());
     (url.endsWith("traces") ? traces : logs).push(payload);
+    if (url.endsWith("logs")) logHeaders.push({ type: req.headers["content-type"], encoding: req.headers["content-encoding"] });
     res.setHeader("content-type", "application/json");
     res.end("{}");
   });
@@ -126,17 +137,13 @@ test("raw interactions stay in masked replay, one span per click; explicit actio
       if (url.startsWith("/_otel/")) {
         callers.push({ host: req.headers.host, origin: req.headers.origin, site: req.headers["sec-fetch-site"] });
         proxy(req, res, req.url.slice("/_otel".length));
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p><input value="PRIVATE_INPUT_SENTINEL"><button id="idle">Idle</button><button id="action">Run</button>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
 import { disableTelemetry, grantAnalyticsConsent } from '/runtime/track.js';
@@ -144,7 +151,7 @@ window.withdrawConsent = disableTelemetry;
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
 // Replay records a person: it runs only in the full analytics tier.
 grantAnalyticsConsent();
-window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, keepUrlQueryParams: ['utm_*'], apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, replayFlushIntervalMs: 1000, keepUrlQueryParams: ['utm_*'], apiOrigins: [${JSON.stringify(backendOrigin)}], consoleCapture: false });
 window.tracing = trace;
 for (const type of ['mousedown','mouseup','click']) document.querySelector('#idle').addEventListener(type, () => {});
 document.querySelector('#action').addEventListener('click', () => {
@@ -174,6 +181,7 @@ document.querySelector('#action').addEventListener('click', () => {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (m) => process.env.SMOKE_DEBUG && console.log("[page]", m.type(), m.text()));
     // The page's own URL carries a query and a fragment: neither may leave the
     // browser, in a span or in the replay's Meta record, except the parameter
     // keepUrlQueryParams allows.
@@ -193,7 +201,7 @@ document.querySelector('#action').addEventListener('click', () => {
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
     });
     // Let the real recorder deliver the clicks, independently of trace
-    // export: wait on its actual export (it batches every 5s), not a sleep or
+    // export: wait on its actual export (every replayFlushIntervalMs), not a sleep or
     // an unload handler modern browsers are allowed to suppress. Withdrawal
     // drops whatever it still holds, so this must arrive before it.
     await until(() => replayRecords(logs).some((record) => {
@@ -232,6 +240,15 @@ document.querySelector('#action').addEventListener('click', () => {
     assert.ok(spans.some((span) => span.name === "documentLoad"), "document-load tracing remains enabled");
     const replay = replayRecords(logs);
     assert.ok(replay.length > 0, "session replay still exports records");
+    // The runtime's recorder: OTLP/JSON, gzipped (in its Worker) on the
+    // background flushes this test waits for.
+    assert.ok(logHeaders.length > 0);
+    for (const h of logHeaders) assert.equal(h.type, "application/json");
+    assert.ok(logHeaders.some((h) => h.encoding === "gzip"), `a background batch is gzipped: ${JSON.stringify(logHeaders)}`);
+    // Each record numbered as HyperDX's player reads them.
+    const attrs = (record) => Object.fromEntries(record.attributes.map((a) => [a.key, a.value.doubleValue]));
+    assert.deepEqual(Object.keys(attrs(replay[0])).sort(), ["rr-web.chunk", "rr-web.event", "rr-web.offset", "rr-web.total-chunks"]);
+    assert.deepEqual(replay.map((r) => attrs(r)["rr-web.offset"]), replay.map((_r, i) => i + 1), "offsets run 1..n in order");
     const events = replay.map(record => JSON.parse(record.body.stringValue));
     assert.ok(events.some(event => event.type === 3 && event.data.source === 2), "raw mouse interactions remain replay events");
     // slimDOM reaches the bundled recorder: the page's <script> elements are
@@ -273,11 +290,10 @@ document.querySelector('#action').addEventListener('click', () => {
 });
 
 // Withdrawal means stop now (telemetry.ts, "Withdrawal stops replay now"),
-// proven against the real recorder: it buffers records for 5s and still posts
-// them once stopped, and a second stop() starts a `record stop` span on its
-// `rum.rr-web` tracer. After the withdrawal no replay batch is posted, not even
-// one holding what was recorded before it, and no replay span is exported, even
-// when the SDK's recorder is stopped again directly.
+// proven against the real recorder and rrweb: it holds records between
+// flushes. After the withdrawal no replay batch is posted, not even one holding
+// what was recorded before it or one sent as the page unloads, and no replay
+// span is exported, even when the recorder is stopped again.
 for (const withdraw of ["disableTelemetry", "revokeAnalyticsConsent"]) {
 test(`${withdraw}(): no replay record or replay span leaves the page after it, not even one recorded before it`, { timeout: 45000 }, async () => {
   const traces = [];
@@ -294,17 +310,13 @@ test(`${withdraw}(): no replay record or replay span leaves the page after it, n
         else traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { disableTelemetry, grantAnalyticsConsent, revokeAnalyticsConsent } from '/runtime/track.js';
@@ -312,7 +324,7 @@ window.tracing = trace;
 window.withdraw = { disableTelemetry, revokeAnalyticsConsent }[${JSON.stringify(withdraw)}];
 // Replay records a person: it runs only in the full analytics tier.
 grantAnalyticsConsent();
-window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, consoleCapture: false });
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: true, replayFlushIntervalMs: 1000, consoleCapture: false });
 </script>`);
       } else {
         res.setHeader("content-type", "text/javascript");
@@ -333,8 +345,9 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     await page.goto(origin);
     await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
     // Replay runs while consented: the recorder's first batch (the page's
-    // snapshot) is posted. Right after a batch went, the next is due 5s after
-    // the recorder's next record, so the record below stays buffered.
+    // snapshot) is posted. Right after a batch went, the next is due a flush
+    // interval after the recorder's next record, so the record below stays
+    // held.
     await until(() => replayRecords(logs).length > 0, 15000, "the first replay batch");
     await page.evaluate(async () => {
       const marker = document.createElement("p");
@@ -348,14 +361,14 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
       // Every span made before the withdrawal leaves before it.
       await window.tracing.getTracerProvider().getDelegate().forceFlush();
       window.withdraw();
-      // Anything else that stops the recorder again: the app, or the SDK.
-      globalThis.HyperDX.stopSessionRecorder();
+      // Anything else that stops the recorder again.
+      window.withdraw();
       const marker = document.createElement("p");
       marker.id = "recorded-after-withdrawal";
       document.body.append(marker);
     });
     const tracesAtWithdrawal = traces.length;
-    // Past the recorder's 5s batch timer, then everything still queued leaves:
+    // Past the recorder's batch timer, then everything still queued leaves:
     // the trace provider is flushed and the page unloads (the recorder flushes
     // on unload too).
     await new Promise((done) => setTimeout(done, 6000));
@@ -401,12 +414,9 @@ test("benign browser errors are counted, not recorded, and every app handler sti
         if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html>
@@ -420,8 +430,7 @@ window.addEventListener("error", (e) => window.seen.push("before/error " + what(
 window.addEventListener("unhandledrejection", (e) => window.seen.push("before/rejection " + what(e.reason)));
 window.addEventListener("unhandledrejection", (e) => window.seen.push("before/rejection-capture " + what(e.reason)), true);
 </script>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -529,17 +538,13 @@ test("every span carries the viewport and screen current when it started, restam
         if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -617,17 +622,13 @@ test(`analytics mode ${mode ?? "unset (identified)"} stores nothing on the devic
         if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { analyticsTier, track } from '/runtime/track.js';
@@ -635,7 +636,7 @@ import { identifyUser, trackAuthEvent } from '/runtime/auth-events.js';
 import { trackExposure } from '/runtime/exposure.js';
 window.tracing = trace;
 const mode = new URLSearchParams(location.search).get('mode') || undefined;
-window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false, pageViews: true, replay: true, analytics: mode });
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', consoleCapture: false, pageViews: true, replay: true, replayFlushIntervalMs: 1000, analytics: mode });
 track('checkout_started', { plan: 'pro' });
 history.pushState({}, '', '/orders/17');
 identifyUser('u-1', { provider: 'clerk' });
@@ -748,17 +749,13 @@ test("interaction(): unary and stream fetch spans made after the click are the c
         if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><button id="open">Open</button>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
@@ -864,20 +861,16 @@ test("page_engaged reports each view once: on a route change, and on leaving the
         if (url.endsWith("traces")) traces.push(JSON.parse(decoded.toString()));
         res.setHeader("content-type", "application/json");
         res.end("{}");
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/elsewhere") {
         res.setHeader("content-type", "text/html");
         res.end("<!doctype html><p>another document</p>");
       } else if (url.startsWith("/blog/")) {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><body style="margin:0"><div style="height:4000px">a long post</div>
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -981,17 +974,13 @@ test("an idle start waits for load, and loses nothing that happened before it", 
         await imageHeld;
         res.setHeader("content-type", "image/svg+xml");
         res.end('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>');
-      } else if (url === "/sdk.js") {
+      } else if (vendor[url]) {
         res.setHeader("content-type", "text/javascript");
-        res.end(await readFile(sdk));
-      } else if (url === "/hyperdx.js") {
-        res.setHeader("content-type", "text/javascript");
-        res.end("export default globalThis.HyperDX;");
+        res.end(vendor[url]);
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><h1>Early</h1><button id="early">Early</button><img src="/slow.svg">
-<script src="/sdk.js"></script>
-<script type="importmap">{"imports":{"@hyperdx/browser":"/hyperdx.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { track } from '/runtime/track.js';
@@ -1075,6 +1064,174 @@ Promise.reject(new Error('EARLY_REJECTION'));
     assert.deepEqual(errors.sort(), ["EARLY_REJECTION", "EARLY_UNCAUGHT"]);
   } finally {
     releaseImage();
+    await browser?.close();
+    await close(server);
+  }
+});
+
+// The runtime's recorder's lifecycle against real rrweb: with
+// `replayStart: "interaction"` rrweb is not even fetched until the first
+// interaction, with replay off it never is, the full snapshot goes at once
+// (gzipped, in the background), and what the recorder holds after it leaves
+// with the page (pagehide, keepalive) long before its flush interval.
+test("rrweb loads lazily, only with replay on and, with replayStart: interaction, only once the person interacts; held replay leaves with the page", { timeout: 30000 }, async () => {
+  const logs = [];
+  const encodings = [];
+  const served = [];
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      served.push(url);
+      if (url.startsWith("/_otel/")) {
+        const chunks = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const raw = Buffer.concat(chunks);
+        const decoded = req.headers["content-encoding"] === "gzip" ? gunzipSync(raw) : raw;
+        if (url.endsWith("logs")) {
+          logs.push(LogsData.decode(decoded));
+          encodings.push(req.headers["content-encoding"] ?? "");
+        }
+        res.setHeader("content-type", "application/json");
+        res.end("{}");
+      } else if (vendor[url]) {
+        res.setHeader("content-type", "text/javascript");
+        res.end(vendor[url]);
+      } else if (url === "/" || url === "/off") {
+        const replay = url === "/";
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p><button id="go">Go</button>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { initBrowserTelemetry } from '/runtime/telemetry.js';
+import { grantAnalyticsConsent } from '/runtime/track.js';
+grantAnalyticsConsent();
+window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoint: '/_otel', analytics: 'full', replay: ${replay}, replayStart: 'interaction', replayFlushIntervalMs: 600000, start: 'eager', consoleCapture: false });
+</script>`);
+      } else if (url === "/next") {
+        res.setHeader("content-type", "text/html");
+        res.end("<!doctype html><p>next</p>");
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto(`${origin}/off`);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.locator("#go").click();
+    await new Promise((done) => setTimeout(done, 500));
+    assert.equal(served.includes("/vendor/rrweb.js"), false, "with replay off, rrweb is never fetched");
+
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await new Promise((done) => setTimeout(done, 500));
+    assert.equal(served.includes("/vendor/rrweb.js"), false, "rrweb is not fetched before the first interaction");
+    await page.locator("#go").click();
+    await until(() => served.includes("/vendor/rrweb.js"), 5000, "rrweb fetched after the first interaction");
+    // The full snapshot taken at the interaction goes at once, gzipped.
+    await until(() => replayRecords(logs).length > 0, 5000, "the full snapshot, sent at once");
+    const first = replayRecords(logs).map((record) => JSON.parse(record.body.stringValue));
+    assert.ok(first.some((event) => event.type === 2), "the full snapshot is in the first batch");
+    assert.ok(first.some((event) => event.type === 4), "with its Meta record");
+    assert.deepEqual(encodings, ["gzip"], "sent gzipped, in the background");
+    const batchesBefore = logs.length;
+
+    // Recorded after: held until the interval, or until the page is left.
+    await page.locator("#go").click();
+    await new Promise((done) => setTimeout(done, 1500));
+    assert.equal(logs.length, batchesBefore, "an ordinary event waits for the flush interval while the page stays");
+    await page.goto(`${origin}/next`);
+    await until(() => logs.length > batchesBefore, 5000, "the held replay, sent as the page left");
+    const left = logs.slice(batchesBefore).flatMap((batch) => replayRecords([batch])).map((record) => JSON.parse(record.body.stringValue));
+    assert.ok(left.some((event) => event.type === 3), "the click recorded after the snapshot left with the page");
+    assert.equal(JSON.stringify(logs).includes("PRIVATE_TEXT_SENTINEL"), false, "private text never leaves the browser");
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});
+
+// A new RUM session's replay starts with its baseline, against real rrweb:
+// when the recorder sees the session change, the Meta and FullSnapshot
+// rrweb takes are recorded, numbered 1 and 2, before the event that found
+// the new session or any after it.
+test("a new session's replay records its Meta and full snapshot before any of its other events", { timeout: 30000 }, async () => {
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (vendor[url]) {
+        res.setHeader("content-type", "text/javascript");
+        res.end(vendor[url]);
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><button id="go">Go</button><p id="out"></p>
+<script type="importmap">{"imports":{"rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { startReplayRecorder } from '/runtime/replay-recorder.js';
+window.session = 's1';
+window.records = [];
+document.getElementById('go').addEventListener('click', () => {
+  document.getElementById('out').textContent += 'x';
+});
+window.rec = startReplayRecorder({
+  url: '/_otel/v1/logs',
+  rrweb: {},
+  resource: () => ({}),
+  sessionId: () => window.session,
+  transport: { send: (records) => window.records.push(...records), close() {} },
+});
+window.ready = await window.rec.started;
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.locator("#go").click();
+    await page.evaluate(() => {
+      window.rec.flush();
+      window.records.length = 0;
+      window.session = "s2";
+    });
+    // The click is the first event the recorder sees in the new session.
+    await page.locator("#go").click();
+    await page.locator("#go").click();
+    await new Promise((done) => setTimeout(done, 300));
+    const records = await page.evaluate(() => {
+      window.rec.flush();
+      return window.records.map((r) => ({ type: JSON.parse(r.body).type, event: r.attributes["rr-web.event"], chunk: r.attributes["rr-web.chunk"] }));
+    });
+    const events = records.filter((r) => r.chunk === 1);
+    assert.ok(events.length > 2, `the new session recorded events: ${JSON.stringify(events)}`);
+    assert.deepEqual(events.slice(0, 2).map((r) => [r.type, r.event]), [[4, 1], [2, 2]], `Meta then FullSnapshot first: ${JSON.stringify(events)}`);
+    assert.ok(events.slice(2).every((r) => r.type !== 4 && r.type !== 2 && r.event > 2), `every other event after them: ${JSON.stringify(events)}`);
+    assert.deepEqual(errors, []);
+  } finally {
     await browser?.close();
     await close(server);
   }

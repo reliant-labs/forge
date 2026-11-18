@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -156,18 +157,42 @@ func TestRun_DeferredRowRunsNothingAndPasses(t *testing.T) {
 	}
 }
 
-// Queued is the wait for the job cap: with one job, the second of two checks
-// waits at least as long as the first one ran.
+// stepClock is a fake clock that moves only when the test advances it, so a
+// measured duration is exactly what the test scripted.
+type stepClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *stepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *stepClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+// Queued is the wait for a heavy slot, measured apart from the run: the slot
+// is granted after 3s of the fake clock, and the command runs for 1s of it.
 func TestRun_RecordsQueuedTime(t *testing.T) {
-	const hold = 30 * time.Millisecond
-	slow := func(_ context.Context, _ string, _ []string, _ []string, _ io.Writer) error {
-		time.Sleep(hold)
+	clock := &stepClock{now: time.Unix(0, 0)}
+	slots := &fakeSlots{sem: make(chan struct{}, 1)}
+	slot := func(ctx context.Context) (HeldSlot, error) {
+		clock.advance(3 * time.Second)
+		return slots.take(ctx)
+	}
+	run := func(_ context.Context, _ string, _ []string, _ []string, _ io.Writer) error {
+		clock.advance(time.Second)
 		return nil
 	}
-	rep := Run(context.Background(), "checks", []Check{check("a", "a"), check("b", "b")},
-		Options{Out: io.Discard, Exec: slow, Jobs: 1})
-	waited := max(rep.Results[0].Queued, rep.Results[1].Queued)
-	if waited < hold {
-		t.Errorf("queued %v and %v; with one job one check must wait >= %v", rep.Results[0].Queued, rep.Results[1].Queued, hold)
+	c := check("build", "build")
+	c.Heavy = true
+	rep := Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: run, Slot: slot, Clock: clock.Now})
+	if got := rep.Results[0]; got.Queued != 3*time.Second || got.Duration != time.Second {
+		t.Errorf("queued %v, ran %v; want 3s queued and 1s run", got.Queued, got.Duration)
 	}
 }

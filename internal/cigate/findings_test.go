@@ -107,6 +107,68 @@ func TestExtractFindings_GoTestJSON(t *testing.T) {
 	})
 }
 
+// go test -json with packages interleaved (`go test -json -p N ./...`):
+// every line is attributed by its event's Package and Test, and a package's
+// findings are placed by its own terminal fail event — b has no `FAIL <pkg>`
+// summary line at all. a passes (its log is no finding); c's stream is cut
+// short before its terminal event (its failed test is still placed, with no
+// package-level finding); d fails to build (Go 1.24 build-output events), and
+// is not reported again as a package; e fails with no test, after d, and is
+// reported — d's build error does not carry over to it.
+func TestExtractFindings_GoTestJSONInterleaved(t *testing.T) {
+	root := findingsRoot(t, "internal/d/d.go")
+	const m = testModule
+	out := strings.Join([]string{
+		`{"Action":"start","Package":"` + m + `/internal/a"}`,
+		`{"Action":"start","Package":"` + m + `/internal/b"}`,
+		`{"Action":"output","Package":"` + m + `/internal/a","Test":"TestA","Output":"=== RUN   TestA\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/b","Test":"TestB","Output":"=== RUN   TestB\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/a","Test":"TestA","Output":"    a_test.go:5: only logging\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/b","Test":"TestB","Output":"    b_test.go:7: b broke\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/c","Test":"TestC","Output":"--- FAIL: TestC (0.00s)\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/b","Test":"TestB","Output":"--- FAIL: TestB (0.00s)\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/a","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n"}`,
+		`{"Action":"output","Package":"` + m + `/internal/c","Test":"TestC","Output":"    c_test.go:2: c broke\n"}`,
+		`{"Action":"pass","Package":"` + m + `/internal/a","Test":"TestA"}`,
+		`{"Action":"fail","Package":"` + m + `/internal/b","Test":"TestB"}`,
+		`{"Action":"output","Package":"` + m + `/internal/a","Output":"ok  \t` + m + `/internal/a\t0.01s\n"}`,
+		`{"Action":"pass","Package":"` + m + `/internal/a"}`,
+		`{"Action":"fail","Package":"` + m + `/internal/b"}`,
+		`{"ImportPath":"` + m + `/internal/d [` + m + `/internal/d.test]","Action":"build-output","Output":"# ` + m + `/internal/d [` + m + `/internal/d.test]\n"}`,
+		`{"ImportPath":"` + m + `/internal/d [` + m + `/internal/d.test]","Action":"build-output","Output":"internal/d/d.go:3:1: undefined: x\n"}`,
+		`{"ImportPath":"` + m + `/internal/d [` + m + `/internal/d.test]","Action":"build-fail"}`,
+		`{"Action":"output","Package":"` + m + `/internal/d","Output":"FAIL\t` + m + `/internal/d [build failed]\n"}`,
+		`{"Action":"fail","Package":"` + m + `/internal/d","FailedBuild":"` + m + `/internal/d [` + m + `/internal/d.test]"}`,
+		`{"Action":"output","Package":"` + m + `/internal/e","Output":"panic: boom\n"}`,
+		`{"Action":"fail","Package":"` + m + `/internal/e"}`,
+	}, "\n")
+	got, _ := ExtractFindings(out, FindingsInput{Root: root, Module: m})
+	assertFindings(t, got, []Finding{
+		{Path: "internal/b/b_test.go", Line: 7, Level: LevelError, Message: "TestB: b broke"},
+		{Path: "internal/c/c_test.go", Line: 2, Level: LevelError, Message: "TestC: c broke"},
+		{Path: "internal/d/d.go", Line: 3, Column: 1, Level: LevelError, Message: "undefined: x"},
+		{Path: "internal/e", Level: LevelError, Message: m + "/internal/e failed: panic: boom"},
+	})
+}
+
+// A build error is credited to the package its `# <pkg>` header names, never
+// to the next package: a without a FAIL summary line (go vet's output has
+// none) must not hide b's failure.
+func TestExtractFindings_BuildErrorDoesNotCarryOver(t *testing.T) {
+	root := findingsRoot(t, "internal/a/a.go")
+	out := "# example.com/shop/internal/a\n" +
+		"internal/a/a.go:3:1: undefined: x\n" +
+		"FAIL\texample.com/shop/internal/b\t0.010s\n" +
+		"# example.com/shop/internal/a\n" +
+		"internal/a/a.go:3:1: undefined: x\n" +
+		"FAIL\texample.com/shop/internal/a [build failed]\n"
+	got, _ := ExtractFindings(out, FindingsInput{Root: root, Module: testModule})
+	assertFindings(t, got, []Finding{
+		{Path: "internal/a/a.go", Line: 3, Column: 1, Level: LevelError, Message: "undefined: x"},
+		{Path: "internal/b", Level: LevelError, Message: "example.com/shop/internal/b failed"},
+	})
+}
+
 // A package that does not compile: the compiler's located lines are the
 // findings, and the package is not reported a second time.
 func TestExtractFindings_GoTestBuildFailure(t *testing.T) {

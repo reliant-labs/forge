@@ -46,6 +46,18 @@
 //   - goimports/restamp rewrite files that are THEMSELVES already in the
 //     journal (forge wrote them earlier this run), so restoring the
 //     journal also undoes those in-place rewrites.
+//   - A DECLARED path can be edited by another writer too, after forge
+//     wrote it: an agent editing a hand-owned file the run also touched.
+//     Its pre-run bytes alone cannot tell that edit from forge's own
+//     output, and a failed run once reverted 617 files, one of them a
+//     helper another agent had just written, which broke the build for
+//     everyone (forge#2267). So the journal also records what forge LAST
+//     LEFT at each path: at the write chokepoint right after the write
+//     (notePostWrite), and for every other write route at the end of each
+//     pipeline step (SettleJournal). A restore rewinds only a path still
+//     in that state, and spares and names one that is not. A file an
+//     external tool created under a captured directory is deleted only
+//     when it is the one the step left there.
 //
 // The journal is process-global (like the rest of this package's per-run
 // state) and reset by BeginRollbackJournal at the head of each pipeline
@@ -56,6 +68,7 @@ package checksums
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,6 +90,19 @@ type rollbackEntry struct {
 	// tool may never write it at all, so it counts as written — in the
 	// write ledger and in the restored list — only when its bytes changed.
 	external bool
+	// left is what this run's writers last left at the path: its bytes'
+	// digest, or that they removed it. Set at the chokepoint right after a
+	// write (notePostWrite) and at each settle point (SettleJournal). A
+	// restore rewinds only a path still in that state; one that differs
+	// was changed by another writer after forge's write, and is spared.
+	left forgeLeft
+}
+
+// forgeLeft is the state this run's writers last left a path in.
+type forgeLeft struct {
+	known  bool
+	absent bool
+	sum    [sha256.Size]byte
 }
 
 // rollbackJournal is the per-run capture set: relPath -> pre-run state.
@@ -99,6 +125,20 @@ var rollbackRoot string
 // deleted.
 var rollbackTrees map[string]bool
 
+// rollbackDirty are the journaled paths written since the last settle point
+// whose post-write state is not recorded yet, and rollbackDirtyTrees the
+// captured directories an external tool may have written into since then.
+// SettleJournal records their current state as forge's and clears both.
+var (
+	rollbackDirty      map[string]bool
+	rollbackDirtyTrees map[string]bool
+)
+
+// rollbackCreated is the digest of each file an external tool created under
+// a captured directory, as the step that created it left it. A file there
+// that is not in it, or no longer matches, is another writer's.
+var rollbackCreated map[string][sha256.Size]byte
+
 // BeginRollbackJournal turns journaling ON and clears any prior capture.
 // Called once at the head of a `forge generate` run, before any writer
 // fires, with the project root the run operates on. After this, every
@@ -108,6 +148,9 @@ func BeginRollbackJournal(root string) {
 	resetScaffoldBirths()
 	rollbackJournal = map[string]rollbackEntry{}
 	rollbackTrees = map[string]bool{}
+	rollbackDirty = map[string]bool{}
+	rollbackDirtyTrees = map[string]bool{}
+	rollbackCreated = map[string][sha256.Size]byte{}
 	if abs, err := filepath.Abs(root); err == nil {
 		rollbackRoot = abs
 	} else {
@@ -121,8 +164,16 @@ func BeginRollbackJournal(root string) {
 // silently recorded.
 func CommitRollback() {
 	resetScaffoldBirths()
+	clearRollbackState()
+}
+
+// clearRollbackState drops the journal and everything kept beside it.
+func clearRollbackState() {
 	rollbackJournal = nil
 	rollbackTrees = nil
+	rollbackDirty = nil
+	rollbackDirtyTrees = nil
+	rollbackCreated = nil
 	rollbackRoot = ""
 }
 
@@ -142,6 +193,7 @@ func recordPreWrite(root, relPath string) {
 		return
 	}
 	relPath = slashKey(relPath)
+	rollbackDirty[relPath] = true
 	if entry, seen := rollbackJournal[relPath]; seen {
 		// Already captured — possibly ahead of an external tool. The
 		// first capture holds the pre-run bytes either way; a forge
@@ -200,6 +252,7 @@ func CaptureExternalWrites(root string, relPaths ...string) {
 		switch {
 		case err == nil && info.IsDir():
 			rollbackTrees[rel] = true
+			rollbackDirtyTrees[rel] = true
 			_ = filepath.WalkDir(full, func(path string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil || !d.Type().IsRegular() {
 					return nil
@@ -215,16 +268,110 @@ func CaptureExternalWrites(root string, relPaths ...string) {
 			captureExternal(root, rel)
 			if err != nil {
 				rollbackTrees[rel] = true
+				rollbackDirtyTrees[rel] = true
 			}
 		}
 	}
 }
 
 func captureExternal(root, relPath string) {
+	// The tool about to run may rewrite it, whenever it was captured.
+	rollbackDirty[relPath] = true
 	if _, seen := rollbackJournal[relPath]; seen {
 		return
 	}
 	captureEntry(root, relPath, true)
+}
+
+// notePostWrite records content as what forge left at relPath, right after
+// the chokepoint wrote it: the precise form of SettleJournal for the writes
+// that hold their bytes. No-op when journaling is OFF or the path is not
+// journaled.
+func notePostWrite(relPath string, content []byte) {
+	if rollbackJournal == nil {
+		return
+	}
+	relPath = slashKey(relPath)
+	entry, ok := rollbackJournal[relPath]
+	if !ok {
+		return
+	}
+	entry.left = forgeLeft{known: true, sum: sha256.Sum256(content)}
+	rollbackJournal[relPath] = entry
+	delete(rollbackDirty, relPath)
+}
+
+// SettleJournal records, as what this run's writers left there, the current
+// state of every journaled path written since the last call, and of every
+// file under a directory an external tool was about to write into. The
+// generate pipeline calls it at the end of each step, so a later edit by
+// another writer is told apart from forge's output when a failed run is
+// rewound. No-op when journaling is OFF.
+func SettleJournal(root string) {
+	if rollbackJournal == nil {
+		return
+	}
+	for relPath := range rollbackDirty {
+		entry, ok := rollbackJournal[relPath]
+		if !ok {
+			continue
+		}
+		entry.left = currentState(filepath.Join(root, relPath))
+		rollbackJournal[relPath] = entry
+	}
+	for tree := range rollbackDirtyTrees {
+		_ = filepath.WalkDir(filepath.Join(root, tree), func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil || !d.Type().IsRegular() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = slashKey(rel)
+			if entry, journaled := rollbackJournal[rel]; journaled {
+				entry.left = currentState(path)
+				rollbackJournal[rel] = entry
+				return nil
+			}
+			if data, err := os.ReadFile(path); err == nil {
+				rollbackCreated[rel] = sha256.Sum256(data)
+			}
+			return nil
+		})
+	}
+	clear(rollbackDirty)
+	clear(rollbackDirtyTrees)
+}
+
+// currentState is full's state as a forgeLeft; unknown when it cannot be
+// read, so a restore falls back to rewinding it.
+func currentState(full string) forgeLeft {
+	data, err := os.ReadFile(full)
+	switch {
+	case os.IsNotExist(err):
+		return forgeLeft{known: true, absent: true}
+	case err != nil:
+		return forgeLeft{}
+	}
+	return forgeLeft{known: true, sum: sha256.Sum256(data)}
+}
+
+// changedSinceForge reports whether full is no longer in the state this
+// run's writers left it in: another writer changed it after forge did. A
+// path whose state is unknown, or cannot be read now, is not.
+func changedSinceForge(left forgeLeft, full string) bool {
+	if !left.known {
+		return false
+	}
+	data, err := os.ReadFile(full)
+	switch {
+	case os.IsNotExist(err):
+		return !left.absent
+	case err != nil:
+		return false
+	}
+	return left.absent || sha256.Sum256(data) != left.sum
 }
 
 // JournaledPaths returns every path the journal holds (slash form, sorted)
@@ -529,19 +676,50 @@ func RestoreRollback(root string) []string {
 
 // RestoreRollbackReport is RestoreRollback that also returns the paths it
 // could NOT restore, so a caller can refuse to claim a restore that did not
-// happen.
+// happen. A path spared because another writer changed it after forge did
+// (RestoreResult.Spared) is one of them.
+func RestoreRollbackReport(root string) (restored, failed []string) {
+	res := RestoreRollbackDetailed(root)
+	failed = append(res.Failed, res.Spared...)
+	sort.Strings(failed)
+	return res.Restored, failed
+}
+
+// RestoreResult is what a rewind did, path by path (slash form, sorted).
+type RestoreResult struct {
+	// Restored are put back to their pre-run state.
+	Restored []string
+	// Failed could not be put back (a write or delete error).
+	Failed []string
+	// Spared were left alone because another writer changed them after
+	// this run's writers did: rewinding them would destroy that writer's
+	// bytes (forge#2267). They are neither the pre-run nor forge's state.
+	Spared []string
+}
+
+// RestoreRollbackDetailed rewinds the journal like RestoreRollbackReport and
+// says which paths it spared.
 //
 // Paths captured ahead of an external tool (CaptureExternalWrites) are
 // rewritten and listed only when the tool actually changed them, and every
-// file created under a captured directory during the run is deleted.
-func RestoreRollbackReport(root string) (restored, failed []string) {
+// file created under a captured directory during the run is deleted — each
+// only while it is still what this run left there (see the file header).
+// What was written since the last settle point is settled first: forge
+// wrote it, nothing has run since.
+func RestoreRollbackDetailed(root string) RestoreResult {
 	if rollbackJournal == nil {
-		return nil, nil
+		return RestoreResult{}
 	}
-	restored = make([]string, 0, len(rollbackJournal))
+	SettleJournal(root)
+	var res RestoreResult
+	restored, failed := make([]string, 0, len(rollbackJournal)), []string(nil)
 	for relPath, entry := range rollbackJournal {
 		full := filepath.Join(root, relPath)
 		if entry.external && externalSettled(entry, full) {
+			continue
+		}
+		if changedSinceForge(entry.left, full) && !atPreRunState(entry, full) {
+			res.Spared = append(res.Spared, relPath)
 			continue
 		}
 		if entry.existed {
@@ -580,8 +758,14 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 	// Files an external tool CREATED under a captured directory: every
 	// file that existed there at capture time is journaled, so anything
 	// else is new this run.
+	// Only a file still as the step left it is deleted: one another
+	// writer created there, or changed since, is theirs.
 	for _, rel := range createdUnderTrees(root) {
 		full := filepath.Join(root, rel)
+		if !createdByThisRun(rel, full) {
+			res.Spared = append(res.Spared, rel)
+			continue
+		}
 		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
 			failed = append(failed, rel)
 			continue
@@ -590,16 +774,37 @@ func RestoreRollbackReport(root string) (restored, failed []string) {
 		restored = append(restored, rel)
 	}
 	created := ScaffoldsCreatedThisRun()
-	rollbackJournal = nil
-	rollbackTrees = nil
-	rollbackRoot = ""
+	clearRollbackState()
 	// Journaling is off now, so the reconcile's own ledger writes are not
 	// captured into a journal that no longer exists.
 	resetScaffoldBirths()
 	reconcileScaffoldBirths(root, created)
 	sort.Strings(restored)
 	sort.Strings(failed)
-	return restored, failed
+	sort.Strings(res.Spared)
+	res.Restored, res.Failed = restored, failed
+	return res
+}
+
+// atPreRunState reports whether full is already in the state a restore
+// of entry would put it in — there is nothing to spare then, whoever wrote
+// it.
+func atPreRunState(entry rollbackEntry, full string) bool {
+	return !entryChanged(entry, full)
+}
+
+// createdByThisRun reports whether a file under a captured directory, absent
+// from the journal, is one this run's tool created and left as it is now.
+func createdByThisRun(rel, full string) bool {
+	sum, ok := rollbackCreated[rel]
+	if !ok {
+		return false
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	return sha256.Sum256(data) == sum
 }
 
 // externalSettled reports whether a path captured ahead of an external tool

@@ -414,6 +414,37 @@ describe("ReplayTransport", () => {
     expect(bodies).toEqual([quoted, accented]);
   });
 
+  it("fits any one record of at most MAX_CHUNK_CHARS in a keepalive request, however its text encodes", () => {
+    const fullResource = () => ({
+      "rum.sessionId": "0123456789abcdef0123456789abcdef",
+      "service.name": "a-rather-long-frontend-service-name",
+      "service.version": "v1.2.3-0.20261118040000-0123456789ab",
+      "deployment.environment": "production",
+    });
+    const utf8 = (s: string) => new TextEncoder().encode(s).length;
+    // A character is at most 3 bytes of UTF-8 (€), a quote 2 once escaped,
+    // and a surrogate pair cut at a chunk's edges 6 escaped bytes a half.
+    const pair = "😀";
+    for (const body of [
+      "€".repeat(MAX_CHUNK_CHARS),
+      '"'.repeat(MAX_CHUNK_CHARS),
+      pair[1] + "€".repeat(MAX_CHUNK_CHARS - 2) + pair[0],
+    ]) {
+      const json = encodeReplayRequest(fullResource(), REPLAY_SCOPE, [
+        {
+          ...record(body, Number.MAX_SAFE_INTEGER, 1_000_000_000),
+          attributes: {
+            "rr-web.offset": 1_000_000_000,
+            "rr-web.event": 1_000_000_000,
+            "rr-web.chunk": 1_000_000,
+            "rr-web.total-chunks": 1_000_000,
+          },
+        },
+      ]);
+      expect(utf8(json)).toBeLessThanOrEqual(KEEPALIVE_MAX_BYTES);
+    }
+  });
+
   it("when hidden, gzips in the background and still sends with keepalive", async () => {
     const { sent, fn } = fakeFetch();
     const t = new ReplayTransport({
@@ -836,6 +867,44 @@ describe("startReplayRecorder", () => {
     expect(
       batches[0]!.records.map((r) => r.attributes["rr-web.event"]),
     ).toEqual([1, 1]);
+    rec.stop();
+  });
+
+  it("batches a new session's Meta and full snapshot before the event that found the session", async () => {
+    stubPage();
+    const { state, record } = fakeRrweb();
+    // As rrweb 2.x does: record.takeFullSnapshot() emits Meta, then the
+    // FullSnapshot, synchronously, through the same emit callback.
+    (record as unknown as { takeFullSnapshot: () => void }).takeFullSnapshot =
+      () => {
+        state.snapshots++;
+        state.emit!({ type: 4, timestamp: 2, data: { href: "/" } });
+        state.emit!({ type: 2, timestamp: 2, data: { node: {} } });
+      };
+    const { batches, transport } = fakeTransport();
+    let session = "s1";
+    const rec = startReplayRecorder({
+      ...base,
+      sessionId: () => session,
+      loadRecord: async () => record,
+      transport,
+    });
+    await rec.started;
+    state.emit!({ type: 3, timestamp: 1, data: {} });
+    rec.flush();
+    batches.length = 0;
+    session = "s2";
+    state.emit!({ type: 3, timestamp: 3, data: { source: 2 } });
+    rec.flush();
+    const records = batches.flatMap((b) => b.records);
+    expect(state.snapshots).toBe(1);
+    expect(
+      records.map((r) => (JSON.parse(r.body) as { type: number }).type),
+    ).toEqual([4, 2, 3]);
+    expect(records.map((r) => r.attributes["rr-web.event"])).toEqual([1, 2, 3]);
+    expect(records.map((r) => r.attributes["rr-web.offset"])).toEqual([
+      1, 2, 3,
+    ]);
     rec.stop();
   });
 

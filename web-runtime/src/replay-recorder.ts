@@ -80,8 +80,19 @@ export const REPLAY_TAIL_MAX_BYTES = 48 * 1024;
  */
 export const REPLAY_SNAPSHOT_FLUSH_MS = 1_000;
 
-/** The largest record body; a longer event is split into chunks. */
-export const MAX_CHUNK_CHARS = 950 * 1024;
+/**
+ * The largest record body; a longer event is split into chunks, which the
+ * player joins by `rr-web.event` and `rr-web.chunk` / `rr-web.total-chunks`.
+ * Small enough that any one record's request fits KEEPALIVE_MAX_BYTES, so
+ * nothing held when the page leaves is too big to outlive it: a body
+ * character encodes to at most 3 bytes (UTF-8; a JSON-escaped quote or
+ * backslash is 2, and the body is itself JSON, so it holds no raw control
+ * character), so a chunk is at most 48 KiB, plus at most two 6-byte
+ * escapes for a surrogate pair split at its edges, plus the record's own
+ * fields. HyperDX's recorder chunked at 950 KB; a large snapshot is now more
+ * records, which only the uncompressed leaving path ever notices.
+ */
+export const MAX_CHUNK_CHARS = 16 * 1024;
 
 /** The longest a session is recorded: 4 h and a minute, as HyperDX's recorder. */
 export const MAX_RECORDING_MS = (4 * 60 + 1) * 60 * 1000;
@@ -426,15 +437,9 @@ export class ReplayTransport {
     // bytes, plus each record's own encoded bytes (its body JSON-escaped, as
     // UTF-8) and a comma between them, since logRecords is one JSON array.
     // A body's length in characters is not that: escaping and multi-byte
-    // text can double it. Only a record too big for a request of its own
-    // (a chunk of a large snapshot, up to MAX_CHUNK_CHARS) is ever over the
-    // cap, and it goes without keepalive, best effort, on purpose: a large
-    // record is sent gzipped in the background within about a second
-    // (REPLAY_SNAPSHOT_FLUSH_MS), so one still held when the page leaves is
-    // rare, and sending it is never worse than dropping it. If that tail
-    // turns out to matter, the follow-up is to re-chunk such a record here
-    // into keepalive-sized pieces with rr-web.chunk / rr-web.total-chunks,
-    // which the player already reassembles.
+    // text can double it. Every record fits a request of its own
+    // (MAX_CHUNK_CHARS), so every request is within the cap; only what is
+    // past the page's whole keepalive budget goes without it.
     const empty = utf8Length(encodeReplayRequest(resource, REPLAY_SCOPE, []));
     let budget = KEEPALIVE_MAX_BYTES;
     let group: ReplayRecord[] = [];
@@ -982,6 +987,10 @@ export function startReplayRecorder(
           sessionStart = now();
           eventCounter = 1;
           logCounter = 1;
+          // rrweb (2.x) emits the snapshot's Meta and FullSnapshot events
+          // synchronously, back through this emit, with lastSession already
+          // the new one: they are batched, numbered 1 and 2, before the event
+          // that found the session goes on below.
           record.takeFullSnapshot();
         }
         if (source.timestamp > sessionStart + MAX_RECORDING_MS) {

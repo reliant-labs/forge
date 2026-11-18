@@ -364,8 +364,9 @@ HyperDX's replay player reads the result unchanged: OTLP logs on
 `/_otel/v1/logs` with scope `rum.rr-web` 4.0.0, the event JSON as the body,
 `rr-web.offset`/`event`/`chunk`/`total-chunks` attributes and the SDK's
 resource. The bundled recorder's safeguards are kept: a full snapshot when the
-RUM session changes, a 4 h cap per session, events over 950 KB split into
-chunks, and a per-node limit on attribute mutations.
+RUM session changes, a 4 h cap per session, events split into chunks (of 16 K
+characters, so any one chunk can leave with the page in a keepalive request),
+and a per-node limit on attribute mutations.
 
 No URL leaves the browser with its query string or fragment, which is where
 emails, tokens, OAuth codes and search terms live. The SDK stamps the page URL

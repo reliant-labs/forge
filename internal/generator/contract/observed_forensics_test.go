@@ -199,7 +199,7 @@ func (m *MockService) Verify(ctx context.Context, otpCounterID int64, attempt ui
 		// Ping is promoted from an embedded type: tied to the one type that
 		// declares it.
 		`Ping:   observe.NewOp("orders.Ping", "example.com/shop/internal/orders.Service.Ping", "internal/orders/ping.go"),`,
-		`o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Place, forgeMiddlewareServicePlaceArgs{orderID, note, qty, items}, func(ctx context.Context) (string, error) {`,
+		`observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Place, forgeMiddlewareServicePlaceArgs{orderID, note, qty, items}, func(ctx context.Context) (string, error) {`,
 		`r.ID("orderID", a.orderID)`,
 		`r.Len("note", len(a.note))`,
 		`r.Int("qty", int64(a.qty))`,
@@ -209,7 +209,7 @@ func (m *MockService) Verify(ctx context.Context, otpCounterID int64, attempt ui
 		`r.IntDigits("otpCounterID", a.otpCounterID)`,
 		`r.Uint("attempt", uint64(a.attempt))`,
 		// Bare forge:no-capture on the implementation: nothing for Get.
-		`o.chain.RunOp(ctx, forgeMiddlewareServiceOps.Get, observe.NoArgs{}, func(ctx context.Context) error {`,
+		`observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.Get, observe.NoArgs{}, func(ctx context.Context) error {`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("decorator missing %q\n---\n%s", want, got)
@@ -232,7 +232,7 @@ func (m *MockService) Verify(ctx context.Context, otpCounterID int64, attempt ui
 	if strings.Contains(off, "RecordForensics") || strings.Contains(off, "PlaceArgs") {
 		t.Errorf("NoForensics still generated capture code:\n%s", off)
 	}
-	if !strings.Contains(off, `o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Place, observe.NoArgs{},`) {
+	if !strings.Contains(off, `observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Place, observe.NoArgs{},`) {
 		t.Errorf("NoForensics must still carry the op:\n%s", off)
 	}
 }

@@ -55,6 +55,11 @@ func newRecordedChain(t *testing.T, opts ...ComponentSpanOption) (*ComponentChai
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	// A fixed, stepping clock unless the test brings its own (a later option
+	// wins): no assertion depends on the wall clock or where a call falls
+	// against a time boundary.
+	clock := &stepClock{t: time.Unix(1_700_000_000, 0), step: time.Microsecond}
+	opts = append([]ComponentSpanOption{withSpanClock(clock.now)}, opts...)
 	return NewComponentChain(TraceMiddlewareWith(tp.Tracer("test"), opts...)), rec
 }
 
@@ -80,7 +85,7 @@ func TestComponentOpSpanCarriesCodeLocation(t *testing.T) {
 	chain, rec := newRecordedChain(t)
 	op := NewOp("checkout.Do", "example.com/shop/internal/checkout.Service.Do", "internal/checkout/service.go")
 	var seen *Op
-	got, err := chain.AroundOp(context.Background(), op, NoArgs{}, func(ctx context.Context) (int, error) {
+	got, err := AroundOp(chain, context.Background(), op, NoArgs{}, func(ctx context.Context) (int, error) {
 		seen = OpFromContext(ctx)
 		return 7, nil
 	})
@@ -115,7 +120,7 @@ func TestComponentOpSpanCarriesCodeLocation(t *testing.T) {
 func TestComponentOpLegacyRunCarriesNoOp(t *testing.T) {
 	chain, rec := newRecordedChain(t)
 	op := NewOp("checkout.Do", "f", "x.go")
-	_ = chain.RunOp(context.Background(), op, NoArgs{}, func(ctx context.Context) error {
+	_ = RunOp(chain, context.Background(), op, NoArgs{}, func(ctx context.Context) error {
 		// A nested legacy call shadows the outer op.
 		return chain.Run(ctx, "legacy.Inner", func(ctx context.Context) error {
 			if OpFromContext(ctx) != nil {
@@ -143,7 +148,7 @@ func TestComponentOpSlowMarkingAndForensics(t *testing.T) {
 	op := NewOp("checkout.Do", "", "")
 	args := testArgs{orderID: "ord_123", note: "deliver to the back door", n: 3}
 	call := func() {
-		_ = chain.RunOp(context.Background(), op, args, func(context.Context) error { return nil })
+		_ = RunOp(chain, context.Background(), op, args, func(context.Context) error { return nil })
 	}
 	for range 20 {
 		call()
@@ -190,10 +195,10 @@ func TestComponentOpSlowNeedsTheFloor(t *testing.T) {
 	chain, rec := newRecordedChain(t, withSpanClock(clock.now), WithSlowWarmup(5))
 	op := NewOp("checkout.Do", "", "")
 	for range 10 {
-		_ = chain.RunOp(context.Background(), op, NoArgs{}, func(context.Context) error { return nil })
+		_ = RunOp(chain, context.Background(), op, NoArgs{}, func(context.Context) error { return nil })
 	}
 	clock.step = 5 * time.Millisecond // 500x normal, under the 100ms floor
-	_ = chain.RunOp(context.Background(), op, NoArgs{}, func(context.Context) error { return nil })
+	_ = RunOp(chain, context.Background(), op, NoArgs{}, func(context.Context) error { return nil })
 	spans := rec.Ended()
 	if _, ok := attrsOf(spans[len(spans)-1].Attributes())[AttrForgeSlow]; ok {
 		t.Fatalf("a call under the floor was marked slow")
@@ -206,7 +211,7 @@ func TestComponentOpForensicsOnServerFaultsOnlyAndRateLimited(t *testing.T) {
 	op := NewOp("checkout.Do", "", "")
 	args := testArgs{orderID: "ord_1"}
 	run := func(err error) {
-		_ = chain.RunOp(context.Background(), op, args, func(context.Context) error { return err })
+		_ = RunOp(chain, context.Background(), op, args, func(context.Context) error { return err })
 	}
 	run(svcerr.InvalidArgument("bad sku")) // user-class: no forensics
 	run(context.Canceled)                  // canceled: no forensics
@@ -227,7 +232,7 @@ func TestComponentOpForensicsOnServerFaultsOnlyAndRateLimited(t *testing.T) {
 func TestComponentOpForensicsOff(t *testing.T) {
 	chain, rec := newRecordedChain(t, WithForensics(false))
 	op := NewOp("checkout.Do", "", "")
-	_ = chain.RunOp(context.Background(), op, testArgs{orderID: "x"}, func(context.Context) error { return errors.New("boom") })
+	_ = RunOp(chain, context.Background(), op, testArgs{orderID: "x"}, func(context.Context) error { return errors.New("boom") })
 	if n := len(forensicsEvents(rec.Ended()[0])); n != 0 {
 		t.Fatalf("WithForensics(false) recorded %d events", n)
 	}
@@ -240,7 +245,7 @@ func (panickyArgs) RecordForensics(*ForensicRecorder) { panic("capture bug") }
 func TestComponentOpCapturePanicNeverChangesTheOutcome(t *testing.T) {
 	chain, rec := newRecordedChain(t)
 	want := errors.New("db down")
-	err := chain.RunOp(context.Background(), NewOp("checkout.Do", "", ""), panickyArgs{}, func(context.Context) error { return want })
+	err := RunOp(chain, context.Background(), NewOp("checkout.Do", "", ""), panickyArgs{}, func(context.Context) error { return want })
 	if err != want {
 		t.Fatalf("err = %v, want the call's own error", err)
 	}
@@ -335,7 +340,7 @@ func TestComponentOpForensicsNeverRecordsARedactedProtoField(t *testing.T) {
 	card.Set(cardDesc.Fields().ByName("parent"), protoreflect.ValueOfMessage(deep))
 
 	chain, rec := newRecordedChain(t)
-	_ = chain.RunOp(context.Background(), NewOp("checkout.Place", "", ""), protoArgs{in: order}, func(context.Context) error {
+	_ = RunOp(chain, context.Background(), NewOp("checkout.Place", "", ""), protoArgs{in: order}, func(context.Context) error {
 		return errors.New("db down")
 	})
 	ev := forensicsEvents(rec.Ended()[0])
@@ -415,7 +420,7 @@ func BenchmarkComponentChainSuccess(b *testing.B) {
 		b.Run("AroundOp"+suffix, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				_, _ = chain.AroundOp(ctx, op, testArgs{orderID: orderID, note: note, n: 1}, func(context.Context) (int, error) {
+				_, _ = AroundOp(chain, ctx, op, testArgs{orderID: orderID, note: note, n: 1}, func(context.Context) (int, error) {
 					return len(orderID) + len(note), nil
 				})
 			}
@@ -471,7 +476,7 @@ func TestComponentOpForensicsNeverRecordsATimeValue(t *testing.T) {
 
 	chain, rec := newRecordedChain(t)
 	args := timeArgs{roomID: "room_7", when: timestamppb.New(booked), req: booking}
-	_ = chain.RunOp(context.Background(), NewOp("booking.Book", "", ""), args, func(context.Context) error {
+	_ = RunOp(chain, context.Background(), NewOp("booking.Book", "", ""), args, func(context.Context) error {
 		return errors.New("db down")
 	})
 	ev := forensicsEvents(rec.Ended()[0])
@@ -563,7 +568,7 @@ func TestComponentOpForensicsHidesSecretNamedNumbers(t *testing.T) {
 
 	chain, rec := newRecordedChain(t)
 	args := secretNumberArgs{otpCounterID: 381057264, sessionID: 90210, attempt: 3, req: msg}
-	_ = chain.RunOp(context.Background(), NewOp("auth.Verify", "", ""), args, func(context.Context) error {
+	_ = RunOp(chain, context.Background(), NewOp("auth.Verify", "", ""), args, func(context.Context) error {
 		return errors.New("db down")
 	})
 	ev := forensicsEvents(rec.Ended()[0])

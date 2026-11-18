@@ -79,24 +79,24 @@ type State struct{ N int }
 	}
 
 	// (T, error) → generic Around one-liner with the correct op name.
-	if !strings.Contains(got, `o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Run, forgeMiddlewareServiceRunArgs{}, func(ctx context.Context) (RunResult, error) {`) {
+	if !strings.Contains(got, `observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Run, forgeMiddlewareServiceRunArgs{}, func(ctx context.Context) (RunResult, error) {`) {
 		t.Errorf("Run wrapper not the Around one-liner:\n%s", got)
 	}
 	// error-only → Run one-liner.
-	if !strings.Contains(got, `o.chain.RunOp(ctx, forgeMiddlewareServiceOps.Ping, observe.NoArgs{}, func(ctx context.Context) error {`) {
+	if !strings.Contains(got, `observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.Ping, observe.NoArgs{}, func(ctx context.Context) error {`) {
 		t.Errorf("Ping wrapper not the Run one-liner:\n%s", got)
 	}
 	// non-ctx error-only → context.Background(), unnamed closure ctx.
-	if !strings.Contains(got, `o.chain.RunOp(context.Background(), forgeMiddlewareServiceOps.Close, observe.NoArgs{}, func(_ context.Context) error {`) {
+	if !strings.Contains(got, `observe.RunOp(o.chain, context.Background(), forgeMiddlewareServiceOps.Close, observe.NoArgs{}, func(_ context.Context) error {`) {
 		t.Errorf("Close wrapper not background-ctx Run:\n%s", got)
 	}
 	// (A, B, error) → general capture form.
-	if !strings.Contains(got, `err := o.chain.RunOp(ctx, forgeMiddlewareServiceOps.Lookup, forgeMiddlewareServiceLookupArgs{id}`) ||
+	if !strings.Contains(got, `err := observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.Lookup, forgeMiddlewareServiceLookupArgs{id}`) ||
 		!strings.Contains(got, "return r0, r1, err") {
 		t.Errorf("Lookup wrapper not the multi-result capture form:\n%s", got)
 	}
 	// non-ctx, non-error single result.
-	if !strings.Contains(got, `o.chain.RunOp(context.Background(), forgeMiddlewareServiceOps.Snapshot, observe.NoArgs{}`) ||
+	if !strings.Contains(got, `observe.RunOp(o.chain, context.Background(), forgeMiddlewareServiceOps.Snapshot, observe.NoArgs{}`) ||
 		!strings.Contains(got, "return r0") {
 		t.Errorf("Snapshot wrapper not the non-error capture form:\n%s", got)
 	}
@@ -115,7 +115,7 @@ type Service interface {
 
 	for _, want := range []string{
 		"func (o *forgeMiddlewareService) Run(p0 context.Context, p1 string) error {",
-		`o.chain.RunOp(p0, forgeMiddlewareServiceOps.Run, forgeMiddlewareServiceRunArgs{p1}, func(p0 context.Context) error {`,
+		`observe.RunOp(o.chain, p0, forgeMiddlewareServiceOps.Run, forgeMiddlewareServiceRunArgs{p1}, func(p0 context.Context) error {`,
 		"return o.inner.Run(p0, p1)",
 	} {
 		if !strings.Contains(got, want) {
@@ -155,7 +155,7 @@ type Gateway interface {
 	for _, want := range []string{
 		"func NewGatewayWithForgeMiddleware(inner Gateway) Gateway {",
 		"type forgeMiddlewareGateway struct {",
-		`o.chain.RunOp(ctx, forgeMiddlewareGatewayOps.Send, forgeMiddlewareGatewaySendArgs{msg}, func(ctx context.Context) error {`,
+		`observe.RunOp(o.chain, ctx, forgeMiddlewareGatewayOps.Send, forgeMiddlewareGatewaySendArgs{msg}, func(ctx context.Context) error {`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("marker-named decorator missing %q\n---\n%s", want, got)
@@ -218,7 +218,7 @@ type RunResult struct{ OK bool }
 		t.Fatalf("rewrite contract.go: %v", err)
 	}
 	after := genDecorator(t, dir, "Service", "checkout")
-	if !strings.Contains(after, `o.chain.RunOp(ctx, forgeMiddlewareServiceOps.Refund, forgeMiddlewareServiceRefundArgs{id}, func(ctx context.Context) error {`) {
+	if !strings.Contains(after, `observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.Refund, forgeMiddlewareServiceRefundArgs{id}, func(ctx context.Context) error {`) {
 		t.Errorf("regenerated decorator did not gain the Refund wrapper:\n%s", after)
 	}
 }
@@ -285,7 +285,7 @@ type RunResult struct{ OK bool }
 	got := genDecorator(t, dir, "Service", "checkout")
 
 	// The instrumented method routes through the chain.
-	if !strings.Contains(got, `o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Run,`) {
+	if !strings.Contains(got, `observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Run,`) {
 		t.Fatalf("Run should route through the chain:\n%s", got)
 	}
 	// The skipped method delegates directly — no observe.* for Health.
@@ -408,7 +408,7 @@ type Service interface {
 	// An unnamed result list declares no `err` in scope, so `:=` is both
 	// correct and idiomatic there — and is what every pre-existing decorator
 	// renders. The named-error fix must not have disturbed it.
-	if !strings.Contains(got, "err := o.chain.RunOp") {
+	if !strings.Contains(got, "err := observe.RunOp(o.chain") {
 		t.Errorf("an UNNAMED result list declares no `err` in scope, so the body must "+
 			"still open with `err :=`:\n%s", got)
 	}

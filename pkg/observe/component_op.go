@@ -12,7 +12,7 @@
 //
 // and routes the call through RunOp / AroundOp instead of Run / Around:
 //
-//	return o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Do, forgeMiddlewareServiceDoArgs{orderID}, func(ctx context.Context) (DoResult, error) {
+//	return observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Do, forgeMiddlewareServiceDoArgs{orderID}, func(ctx context.Context) (DoResult, error) {
 //	    return o.inner.Do(ctx, orderID)
 //	})
 //
@@ -146,7 +146,11 @@ func (NoArgs) RecordForensics(*ForensicRecorder) {}
 // call runs far above op's own normal, and gets one forge.forensics event on
 // an error or a slow call (component_forensics.go). The method name every
 // middleware sees is op.Name(), so metrics and logs are identical to Run's.
-func (c *ComponentChain) RunOp[A ForensicArgs](ctx context.Context, op *Op, args A, next ComponentOp) error {
+//
+// RunOp and AroundOp are package-level functions over c, not methods: a
+// method with its own type parameters needs Go 1.27, and gopls, linters and
+// toolchains a generated file must still satisfy do not all read one yet.
+func RunOp[A ForensicArgs](c *ComponentChain, ctx context.Context, op *Op, args A, next ComponentOp) error {
 	name := op.Name()
 	f := &argsFrame[A]{componentFrame: componentFrame{id: c.methodID(name), op: op}, args: args}
 	return c.dispatch(context.WithValue(ctx, componentMethodIDKey{}, frameValue(f)), 0, name, next)
@@ -154,9 +158,9 @@ func (c *ComponentChain) RunOp[A ForensicArgs](ctx context.Context, op *Op, args
 
 // AroundOp is Around for a call that carries its generated Op and arguments;
 // see RunOp.
-func (c *ComponentChain) AroundOp[A ForensicArgs, T any](ctx context.Context, op *Op, args A, next func(context.Context) (T, error)) (T, error) {
+func AroundOp[A ForensicArgs, T any](c *ComponentChain, ctx context.Context, op *Op, args A, next func(context.Context) (T, error)) (T, error) {
 	var out T
-	err := c.RunOp(ctx, op, args, func(ctx context.Context) error {
+	err := RunOp(c, ctx, op, args, func(ctx context.Context) error {
 		var e error
 		out, e = next(ctx)
 		return e

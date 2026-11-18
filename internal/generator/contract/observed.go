@@ -352,8 +352,8 @@ func renderDirectBody(m MethodDef) string {
 }
 
 // renderObservedBody renders the statement body of one wrapper method. It
-// routes the inner call through the chain via chain.AroundOp (the common
-// single-value-plus-error shape) or chain.RunOp (error-only and every other
+// routes the inner call through the chain via observe.AroundOp (the common
+// single-value-plus-error shape) or observe.RunOp (error-only and every other
 // shape), capturing any non-error results out of the closure. opExpr is the
 // method's *observe.Op and argsExpr its forensics capture value. Methods
 // without a context parameter run under context.Background() — metrics /
@@ -377,13 +377,13 @@ func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
 	case len(results) == 1 && results[0].TypeExpr == "error":
 		// error-only: one-liner through the general primitive.
 		return fmt.Sprintf(
-			"return %s.RunOp(%s, %s, func(%s) error {\n\treturn %s\n})",
+			"return observe.RunOp(%s, %s, %s, func(%s) error {\n\treturn %s\n})",
 			chain, outerCtx, op, closureParam, inner)
 
 	case len(results) == 2 && results[1].TypeExpr == "error":
 		// (T, error): the common shape — generic sugar keeps it a one-liner.
 		return fmt.Sprintf(
-			"return %s.AroundOp(%s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
+			"return observe.AroundOp(%s, %s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
 			chain, outerCtx, op, closureParam, results[0].TypeExpr, inner)
 	}
 
@@ -399,7 +399,7 @@ func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
 	if len(nonErr) == 0 && !lastIsErr {
 		// Pure void method: no results at all.
 		return fmt.Sprintf(
-			"_ = %s.RunOp(%s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
+			"_ = observe.RunOp(%s, %s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
 			chain, outerCtx, op, closureParam, inner)
 	}
 
@@ -414,7 +414,7 @@ func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
 		// `err :=` is safe: the wrapper's result list is unnamed and no
 		// parameter is named err (withBodyScopedNames), so nothing in scope
 		// declares it already.
-		fmt.Fprintf(&b, "err := %s.RunOp(%s, %s, func(%s) error {\n",
+		fmt.Fprintf(&b, "err := observe.RunOp(%s, %s, %s, func(%s) error {\n",
 			chain, outerCtx, op, closureParam)
 		b.WriteString("\tvar e error\n")
 		fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(append(append([]string{}, names...), "e"), ", "), inner)
@@ -424,7 +424,7 @@ func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
 	}
 
 	// One or more non-error results, no error result.
-	fmt.Fprintf(&b, "_ = %s.RunOp(%s, %s, func(%s) error {\n", chain, outerCtx, op, closureParam)
+	fmt.Fprintf(&b, "_ = observe.RunOp(%s, %s, %s, func(%s) error {\n", chain, outerCtx, op, closureParam)
 	fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(names, ", "), inner)
 	b.WriteString("\treturn nil\n})\n")
 	fmt.Fprintf(&b, "return %s", strings.Join(names, ", "))

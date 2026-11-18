@@ -13,7 +13,7 @@
 // *Op and its forensics capture value (component_op.go):
 //
 //	func (o *forgeMiddlewareService) Do(ctx context.Context, orderID string) (DoResult, error) {
-//	    return o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Do, forgeMiddlewareServiceDoArgs{orderID}, func(ctx context.Context) (DoResult, error) {
+//	    return observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Do, forgeMiddlewareServiceDoArgs{orderID}, func(ctx context.Context) (DoResult, error) {
 //	        return o.inner.Do(ctx, orderID)
 //	    })
 //	}

@@ -171,6 +171,67 @@ func TestCompositionGraph_ConventionalComposeIsRescaffolded(t *testing.T) {
 	}
 }
 
+// editFile replaces old with new in one fixture file, failing if old is absent.
+func editFile(t *testing.T, dir, rel, old, new string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), old) {
+		t.Fatalf("%s lacks %q", rel, old)
+	}
+	if err := os.WriteFile(p, []byte(strings.Replace(string(b), old, new, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// forge#2276: the legacy reconcile wrote `Authenticate: nil, // optional — no
+// provider` when nothing provided an optional collaborator. That nil is a
+// placeholder, not a value: carried into the graph's compose.go it would
+// survive every generate (the graph never touches a value), so a provider
+// of that type would exist and stay switched off — an upload handler's auth
+// gate, in the report. The codemod drops such keys, so the graph resolves
+// them again; a nil the author wrote is kept, and named in Next.
+func TestCompositionGraph_PlaceholderNilIsResolvedAgainNotCarried(t *testing.T) {
+	dir := copyLegacy(t)
+	editFile(t, dir, "internal/app/compose.go", "\t\tDB:     infra.ORM,\n", "\t\tDB:     infra.ORM,\n"+
+		"\t\tAuthenticate: nil, // optional — no provider\n"+
+		"\t\tAudit: nil, // TODO: no provider for audit.Sink\n"+
+		"\t\tRegion: \"\", // TODO: Region is configuration — declare a config block (see forge architecture skill)\n"+
+		"\t\tClock: nil,\n")
+	rep, err := runCompositionGraph(dir, Options{Write: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Blocked) > 0 {
+		t.Fatalf("blocked:\n%s", strings.Join(rep.Blocked, "\n"))
+	}
+	compose := snapshot(t, dir)["internal/app/compose.go"]
+	for _, gone := range []string{"Authenticate", "Audit", "Region", "no provider"} {
+		if strings.Contains(compose, gone) {
+			t.Errorf("compose.go carried the placeholder %q over, so generate never resolves it:\n%s", gone, compose)
+		}
+	}
+	if !strings.Contains(squash(compose), "Clock: nil,") {
+		t.Errorf("a nil the author wrote must be kept:\n%s", compose)
+	}
+	next := strings.Join(rep.Next, "\n")
+	if !strings.Contains(next, "newTasks keeps `Clock: nil`") || strings.Contains(next, "`Authenticate: nil`") {
+		t.Errorf("Next must name the author's nil, and only it:\n%s", next)
+	}
+}
+
+// squash collapses runs of spaces, so an assertion does not depend on how
+// gofmt aligned a composite literal.
+func squash(s string) string {
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return s
+}
+
 // Shapes only the author can map onto roots and providers are listed with
 // their file:line, and nothing is written.
 func TestCompositionGraph_RefusesBespokeShapesAndWritesNothing(t *testing.T) {

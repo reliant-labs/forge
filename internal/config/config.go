@@ -2119,6 +2119,21 @@ type ObservabilityConfig struct {
 	// keeps success logging quiet under a production Info handler. An
 	// unknown value falls back to the default.
 	LogLevel string `yaml:"log_level,omitempty"`
+	// Forensics controls whether a generated component decorator captures a
+	// failed or slow call's arguments into the span's forge.forensics event
+	// (redacted at generation time: IDs, numbers and bools by value, other
+	// strings and collections by length, everything else by type; see
+	// forge/pkg/observe component_forensics.go). Unset or true captures;
+	// false generates no capture code at all — spans still carry their code
+	// location and forge.slow. observe.WithForensics(false) is the runtime
+	// switch for one chain.
+	Forensics *bool `yaml:"forensics,omitempty"`
+}
+
+// ForensicsEnabled reports whether generated decorators capture forensics
+// (default: on).
+func (o ObservabilityConfig) ForensicsEnabled() bool {
+	return o.Forensics == nil || *o.Forensics
 }
 
 // SlogLevelExpr resolves LogLevel to the Go expression for the matching

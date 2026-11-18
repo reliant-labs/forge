@@ -431,8 +431,10 @@ func (p *SeedProjection) FixtureInputs(table string) ([]string, bool) {
 //   - every table it references, transitively (a foreign-key value is a row
 //     of the referenced table's key, and a diamond resolves through shared
 //     ancestors);
-//   - every table that references it (being referenced makes its fixture
-//     carry every row, not the first few: fixtureRowClosure);
+//   - every table that references it, transitively (being referenced makes
+//     its fixture carry every row, not the first few: fixtureRowClosure; a
+//     descendant further down is kept too, conservatively, so a migration on
+//     a grandchild never passes as touching no input);
 //   - every column type the type mapping does not know (a native enum or a
 //     domain), whose labels and rules are declared apart from the table.
 //
@@ -462,22 +464,23 @@ func fixtureInputNames(tables []schemadef.Table) map[string][]string {
 			}
 		}
 		add(t.Name)
-		for _, c := range children[t.Name] {
-			add(c)
-		}
-		// Ancestors, transitively.
-		seen := map[string]bool{t.Name: true}
-		queue := append([]string(nil), parents[t.Name]...)
-		for len(queue) > 0 {
-			p := queue[0]
-			queue = queue[1:]
-			if seen[p] {
-				continue
+		// Ancestors and descendants, each transitively.
+		walk := func(edges map[string][]string) {
+			seen := map[string]bool{t.Name: true}
+			queue := append([]string(nil), edges[t.Name]...)
+			for len(queue) > 0 {
+				n := queue[0]
+				queue = queue[1:]
+				if seen[n] {
+					continue
+				}
+				seen[n] = true
+				add(n)
+				queue = append(queue, edges[n]...)
 			}
-			seen[p] = true
-			add(p)
-			queue = append(queue, parents[p]...)
 		}
+		walk(parents)
+		walk(children)
 		for _, c := range t.Columns {
 			if !c.TypeKnown {
 				add(c.DeclType)

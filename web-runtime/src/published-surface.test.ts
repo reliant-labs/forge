@@ -211,8 +211,9 @@ describe("the published surface", () => {
   });
 
   it("maps #hyperdx-otel-web to the SDK for bundlers, and to its Node build under node", () => {
-    // A browser bundler sets no `node` condition and must get the SDK's own
-    // ESM build, a lazy chunk of its own. Under Node (a test runner that
+    // A browser bundler matches `browser`, listed first so it wins even where
+    // `node` is also set, and must get the SDK's own ESM build, a lazy chunk
+    // of its own (sdk-conditions.test.ts resolves it with esbuild). Under Node (a test runner that
     // loads this package natively) it gets dist/hyperdx-otel-web.node.js,
     // which scripts/build.mjs builds, because Node cannot load the SDK's
     // ESM build (see "//imports note" in package.json).
@@ -220,6 +221,7 @@ describe("the published surface", () => {
       .imports;
     expect(imports).toEqual({
       "#hyperdx-otel-web": {
+        browser: "@hyperdx/otel-web",
         node: {
           types: "./dist/hyperdx-otel-web.node.d.ts",
           default: "./dist/hyperdx-otel-web.node.js",
@@ -240,7 +242,7 @@ describe("the published surface", () => {
         (m) => m[1],
       ),
     );
-    expect([...outside].sort()).toEqual(["@opentelemetry/api", "node:module"]);
+    expect([...outside].sort()).toEqual(["@opentelemetry/api"]);
   });
 
   it("makes every peer the ./node entry never imports OPTIONAL, so a Node-only consumer installs none of them", () => {

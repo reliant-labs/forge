@@ -102,14 +102,41 @@ if (!existsSync(tsc) || missingDevDeps.length > 0) {
 // "//imports note"). It is @hyperdx/otel-web bundled for the browser platform,
 // as an app's bundler builds it, into one ES module that Node can load. That
 // lets a test runner running this package natively (vitest, jsdom) start the
-// same SDK a browser does. Browser bundles never reach this file.
+// same SDK a browser does. It is built before tsc so that tsc, resolving the
+// import map under nodenext, finds its declaration file.
+//
+// Browser bundlers never select it: the map lists `browser` first. It is
+// still kept free of Node: it imports @opentelemetry/api and nothing else,
+// with no node: builtin and no require(), so even a bundler that did reach it
+// would get working browser code.
+//
 // @opentelemetry/api stays external, so the SDK and the runtime share the
-// app's copy. It is built before tsc so that tsc, resolving the import map
-// under nodenext, finds its declaration file.
+// app's copy. The SDK's CommonJS dependencies require() it, and an external
+// require() in an ES module would need a Node `require`. So a require() of the
+// API resolves to a small bundled ES module that re-exports the external one,
+// and esbuild turns the require() into a reference to that module.
 {
   const { build } = await import("esbuild");
   const { mkdirSync, writeFileSync } = await import("node:fs");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
+  const apiFromEsm = {
+    name: "opentelemetry-api-from-esm",
+    setup(b) {
+      b.onResolve({ filter: /^@opentelemetry\/api$/ }, (args) =>
+        args.kind === "require-call"
+          ? { path: "@opentelemetry/api", namespace: "opentelemetry-api-esm" }
+          : { path: args.path, external: true },
+      );
+      b.onLoad({ filter: /.*/, namespace: "opentelemetry-api-esm" }, () => ({
+        // The default too: one dependency reads `api.default.trace`, as a
+        // default import of the API compiles to.
+        contents:
+          'export * from "@opentelemetry/api"; export { default } from "@opentelemetry/api";',
+        loader: "js",
+        resolveDir: pkgDir,
+      }));
+    },
+  };
   await build({
     stdin: {
       contents: 'export * from "@hyperdx/otel-web";',
@@ -120,12 +147,7 @@ if (!existsSync(tsc) || missingDevDeps.length > 0) {
     format: "esm",
     platform: "browser",
     target: "es2022",
-    external: ["@opentelemetry/api"],
-    // Some bundled CommonJS dependencies require() the external API, and an
-    // ES module has no require of its own. This file only ever runs in Node.
-    banner: {
-      js: 'import { createRequire as __forgeCreateRequire } from "node:module";\nconst require = __forgeCreateRequire(import.meta.url);',
-    },
+    plugins: [apiFromEsm],
     // Each bundled package's license comment, kept at the end of the file.
     legalComments: "eof",
     outfile: join(pkgDir, "dist", "hyperdx-otel-web.node.js"),

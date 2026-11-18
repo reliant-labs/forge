@@ -6680,7 +6680,10 @@ schema ReleaseHealth:
     as `new_issue_min_events`; 1 counts every regression), alert_firing (an
     alert opened after the promotion still fires; the platform's NewIssue and
     IssueRegressed alerts are judged as their issue, by the two thresholds
-    above, unless the env made them critical),
+    above, unless the env made them critical; an alert that also fired at
+    least `alert_baseline_min_firings` times in the `baseline_window` before
+    the promotion was flapping before the release, and warns instead of
+    failing unless it is critical; 0 counts every alert),
     workload_restarts, and, for a frontend that sends browser telemetry,
     browser_errors (JavaScript errors per page view rose by more than
     `max_error_rate_increase`), browser_failed_requests (the share of its
@@ -6702,6 +6705,7 @@ schema ReleaseHealth:
     regressed_issue_min_events?: int
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
+    alert_baseline_min_firings: int = 1
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
     require_baseline: str = "any"
 
@@ -6719,6 +6723,8 @@ schema ReleaseHealth:
             "ReleaseHealth.error_rate_min_errors ${error_rate_min_errors} must be at least 1 (1 lets any rise past max_error_rate_increase fail)"
         _release_health_seconds(window) <= _release_health_seconds(baseline_window) <= 604800, \
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
+        alert_baseline_min_firings >= 0, \
+            "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"

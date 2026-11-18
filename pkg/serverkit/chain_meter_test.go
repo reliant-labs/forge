@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	"github.com/reliant-labs/forge/pkg/serverkit"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
 func TestChainExplicitMeterProviderAndScopeCountOnce(t *testing.T) {

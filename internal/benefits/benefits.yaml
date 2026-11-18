@@ -4434,8 +4434,8 @@ benefits:
     category: run
     title: Built-in product analytics dashboards
     claim: >-
-      A hosted app gets Users, Product and Acquisition dashboards and the
-      Overview's Traffic and Users sections with no code: visitors, channels,
+      A hosted app gets Product overview, Users, Product and Acquisition
+      dashboards and the Overview's Traffic and Users sections with no code: visitors, channels,
       sign-ups and their attribution, active and new users, retention, goals and
       funnels.
     status: in-progress
@@ -4940,22 +4940,22 @@ benefits:
 # TestGlanceCommandsParse runs every one through the real command tree.
 glance:
   app:
-    - fact: Every RPC traced, with p50/p95/p99 latency and error rate per endpoint, and no instrumentation code
+    - fact: Every RPC traced, with p50/p95/p99 latency and error rate, and no instrumentation code
       show: obs endpoints dev
       benefits: [edge-telemetry, obs-cli]
-    - fact: Errors grouped into issues tied to the release that introduced them; browser sessions with masked replay
+    - fact: Errors grouped into issues tied to the release that caused them; masked browser session replay
       show: obs issues prod
       benefits: [issues-triage, issues-symbolication, rum-sessions]
-    - fact: Default alerts (error rate, latency, crash loops, failed deploys) and dashboards derived from the code
+    - fact: Default alerts (errors, latency, crash loops, failed deploys) and code-derived dashboards
       show: obs alerts check
       benefits: [default-alerts, generated-dashboards]
-    - fact: Releases built once, prod promoted with the digests staging ran, and each deploy judged pass or fail
+    - fact: Releases built once; prod runs the digests staging ran; each deploy judged pass or fail
       show: obs check prod --wait
       benefits: [build-once-promote-by-digest, obs-check]
-    - fact: Every RPC requires auth unless its proto opts out; unsafe migrations fail lint before they ship
+    - fact: RPCs require auth unless the proto opts out; unsafe migrations fail lint before they ship
       show: lint --migration-safety
       benefits: [auth-fail-closed, migration-safety]
-    - fact: On Reliant hosting, managed Postgres per env, a live URL, and custom domains with HTTPS
+    - fact: On Reliant hosting, managed Postgres per env, a live URL, custom domains with HTTPS
       show: env deploy prod
       benefits: [managed-postgres, live-hostname, custom-domains-tls]
   site:

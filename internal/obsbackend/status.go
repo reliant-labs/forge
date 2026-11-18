@@ -61,6 +61,16 @@ type Alert struct {
 	Value    float64         `json:"value"`
 }
 
+// AlertTransition is one state change of an alert instance in the env's
+// alert history: pending, firing, resolved, inactive or removed.
+type AlertTransition struct {
+	Rule        string            `json:"rule"`
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Transition  string            `json:"transition"`
+	At          time.Time         `json:"at"`
+}
+
 // Telemetry-token delivery states that leave a working token in place (or
 // need none). The others are the control plane's DeliveryState names, lower
 // case and unprefixed: pending, failing, expired, unbound, disabled.

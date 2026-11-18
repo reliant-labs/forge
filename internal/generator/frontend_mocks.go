@@ -137,7 +137,7 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 			return 0, fmt.Errorf("render mock data for %s: %w", entity.Name, err)
 		}
 
-		slug := codegen.PascalToKebab(inflection.Plural(entity.Name))
+		slug := mockFixtureSlug(entity)
 		rel := filepath.Join(mocksRel, slug+"_gen.ts")
 		if _, err := WriteGeneratedFileTier1(root, rel, buf.Bytes(), cs, true); err != nil {
 			return 0, fmt.Errorf("write mock data file %s: %w", rel, err)
@@ -222,6 +222,39 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 	retireMocksIndex(root, mocksRel, cs)
 
 	return mockFileCount, nil
+}
+
+// mockFixtureSlug is the base name of an entity's fixture module, without
+// its "_gen.ts" suffix.
+func mockFixtureSlug(entity codegen.EntityDef) string {
+	return codegen.PascalToKebab(inflection.Plural(entity.Name))
+}
+
+// MockFixtureInputs maps each entity fixture module EmitFrontendMockSurface
+// writes (by base name, "patients_gen.ts") to the schema names its rows are
+// built from (codegen.SeedProjection.FixtureInputs), for the fixture
+// freshness guard. nil when there is no dataset: the fixtures are then
+// placeholders, and the guard compares the whole input digest as before.
+func MockFixtureInputs(services []codegen.ServiceDef, entities []codegen.EntityDef, seed *codegen.SeedProjection) map[string][]string {
+	entities, _ = codegen.FrontendEntities(entities)
+	owned := buildEntityServiceMap(services, entities)
+	var out map[string][]string
+	for _, entity := range entities {
+		if _, ok := owned[entity.Name]; !ok {
+			continue
+		}
+		names, ok := seed.FixtureInputs(entity.TableName)
+		if !ok {
+			// A fixture whose rows no plan describes: nothing narrower than
+			// the whole digest can vouch for the set.
+			return nil
+		}
+		if out == nil {
+			out = map[string][]string{}
+		}
+		out[mockFixtureSlug(entity)+"_gen.ts"] = names
+	}
+	return out
 }
 
 // buildEntityServiceMap creates a mapping from entity name to the service

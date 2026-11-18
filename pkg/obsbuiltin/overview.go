@@ -82,7 +82,7 @@ SELECT uniqExact(`+visitor+`) AS "Visitors" FROM web`,
 		with(web)+`
 SELECT toStartOfHour(ts) AS hour, uniqExact(`+visitor+`) AS "Visitors" FROM web GROUP BY hour ORDER BY hour`,
 		dashspec.UnitCount, colorVisitors)
-	return []dashspec.Panel{
+	return withGood([]dashspec.Panel{
 		figure("traffic", "live-visitors", "Visitors now", "Distinct visitors in the 5 minutes before the end of the range.",
 			with(web)+`
 SELECT uniqExact(`+visitor+`) AS "Visitors now" FROM web WHERE ts >= `+to+` - INTERVAL 5 MINUTE`, "", dashspec.UnitCount, colorVisitors),
@@ -102,7 +102,7 @@ SELECT round(avg(views = 1 AND actions = 0), 4) AS "Bounce rate" FROM visits`, "
 			with(web)+`
 SELECT round(1000 * (SELECT count() FROM error_events WHERE `+scope+`) / nullIf((SELECT countIf(EventName = 'page_viewed') FROM web), 0), 2) AS "Errors per 1,000 views"`,
 			"", dashspec.UnitNone, colorDanger),
-	}
+	}, map[string]dashspec.Direction{"visitors": up, "pageviews": up, "bounce": down, "js-errors-per-1k": down})
 }
 
 func overviewUserPanels() []dashspec.Panel {
@@ -131,7 +131,7 @@ FROM product_events
 WHERE `+active+` AND `+envScope+` AND Timestamp >= toStartOfDay(`+to+`) - INTERVAL 29 DAY AND Timestamp < `+to+`
 GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active users": colorUsers}), 24, 7)
 	dau.MinStep = "1d"
-	return []dashspec.Panel{
+	return withGood([]dashspec.Panel{
 		exact(figure("users", "active-7d", "Active users", "Distinct users with any signed-in product event."+fixed,
 			twoWeeks("Active users (7 days)", activeIn), "", dashspec.UnitCount, colorUsers)),
 		sinceSignups(exact(figure("users", "new-7d", "New users",
@@ -146,5 +146,5 @@ GROUP BY day ORDER BY day`, bars(false, dashspec.SeriesColors{"Daily active user
 			"Accounts in the environment's identity instance, from the platform's daily snapshot; an environment with none shows its users seen in the last 90 days.",
 			accountsSQL, "", dashspec.UnitCount, colorNeutral)),
 		dau,
-	}
+	}, map[string]dashspec.Direction{"active-7d": up, "new-7d": up, "returning-7d": up, "accounts": up})
 }

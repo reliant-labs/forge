@@ -2,6 +2,7 @@ package dashspec
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -156,7 +157,7 @@ func TestChartColorsAreThePaletteKeysOnce(t *testing.T) {
 
 func TestSQLTakesAHeatmapStyle(t *testing.T) {
 	styles := DisplayStyles(KindSQL)
-	if styles[0] != StyleLine || styles[len(styles)-1] != StyleHeatmap {
+	if styles[0] != StyleLine || !slices.Contains(styles, StyleHeatmap) {
 		t.Errorf("DisplayStyles(sql) = %v, want line first and heatmap among them", styles)
 	}
 }

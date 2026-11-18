@@ -705,3 +705,46 @@ message Order {
 			len(order.RetiredMarkers), order.RetiredMarkers)
 	}
 }
+
+// forge#2264: `// forge:request-option` marks a List request knob on the raw
+// scan, leading or trailing, and binds to its own field only; a
+// (forge.v1.filter) facet is recorded; and an rpc carries its response type.
+func TestScanRawProtoDir_RequestOptionMarkerAndResponse(t *testing.T) {
+	dir := writeRawScanFixture(t, map[string]string{"v1/usage.proto": `syntax = "proto3";
+package services.usage.v1;
+
+service UsageService {
+  rpc ListUsage(ListUsageRequest) returns (stream .services.usage.v1.ListUsageResponse);
+}
+
+message ListUsageRequest {
+  // forge:request-option
+  bool include_archived = 1;
+  bool archived = 2; // forge:request-option — returns archived rows too
+  string org_id = 3;
+  int64 cost_above = 4 [(forge.v1.filter) = { column: "cost_cents", op: LIST_FILTER_OP_GT }];
+}
+
+message ListUsageResponse { repeated string ids = 1; }
+`})
+	scan, err := ScanRawProtoDir(dir)
+	if err != nil {
+		t.Fatalf("ScanRawProtoDir: %v", err)
+	}
+	req, ok := scan.MessageByName("ListUsageRequest")
+	if !ok {
+		t.Fatal("ListUsageRequest not scanned")
+	}
+	for _, f := range req.Fields {
+		wantOption := f.Name == "include_archived" || f.Name == "archived"
+		if f.RequestOption != wantOption {
+			t.Errorf("%s: RequestOption = %v, want %v", f.Name, f.RequestOption, wantOption)
+		}
+		if f.FilterFacet != (f.Name == "cost_above") {
+			t.Errorf("%s: FilterFacet = %v", f.Name, f.FilterFacet)
+		}
+	}
+	if len(scan.RPCs) != 1 || scan.RPCs[0].Response != "services.usage.v1.ListUsageResponse" {
+		t.Errorf("rpcs = %+v, want ListUsage returning services.usage.v1.ListUsageResponse", scan.RPCs)
+	}
+}

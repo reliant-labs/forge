@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
-	"github.com/reliant-labs/forge/pkg/serverkit"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/reliant-labs/forge/pkg/serverkit"
 )
 
 type outerContextKey struct{}

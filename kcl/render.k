@@ -1988,7 +1988,8 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
 # and baseline_window_seconds only when they are not the defaults (10, 24h),
-# so a render that keeps them records the shape it always did.
+# and alert_baseline_min_firings only when it is not the default (1), so a
+# render that keeps them records the shape it always did.
 _render_release_health = lambda h: ReleaseHealth -> any {
     {
         "window_seconds": _release_health_seconds(h.window)
@@ -2005,6 +2006,8 @@ _render_release_health = lambda h: ReleaseHealth -> any {
             "error_rate_min_errors": h.error_rate_min_errors
         if _release_health_seconds(h.baseline_window) != 86400:
             "baseline_window_seconds": _release_health_seconds(h.baseline_window)
+        if h.alert_baseline_min_firings != 1:
+            "alert_baseline_min_firings": h.alert_baseline_min_firings
     }
 }
 

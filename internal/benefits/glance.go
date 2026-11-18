@@ -30,9 +30,8 @@ func RenderGlance(r *Registry, audience string) (string, error) {
 	for _, f := range facts {
 		fmt.Fprintf(&b, "- %s: `forge %s`\n", strings.TrimSpace(f.Fact), f.Show)
 	}
-	b.WriteString("\nEach line is an entry of `forge project benefits --all`, checked against this\n" +
-		"binary. Trade-offs, limits and prices next to Vercel, Supabase or Render:\n" +
-		"`forge skill load compare`.\n")
+	b.WriteString("\nAll checked against this binary (`forge project benefits --all`). Limits and\n" +
+		"prices beside Vercel, Supabase or Render: `forge skill load compare`.\n")
 	return b.String(), nil
 }
 

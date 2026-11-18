@@ -95,6 +95,7 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 			PrimaryWorkload: codegen.APIWorkloadName,
 			IngressEnabled:  true,
 			HasFrontend:     hasFrontend,
+			NoIdentity:      !g.declaresIdentity(),
 			SessionReplay:   hasFrontend,
 			FrontendName:    g.FrontendName,
 			FrontendIdent:   naming.KCLIdentifier(g.FrontendName),
@@ -203,8 +204,9 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 	}
 
 	// The users, declared once for every env. Only a project with a frontend
-	// has someone to sign in; a project without one declares no identity.
-	if g.forScaffold().HasFrontend && hasBackend {
+	// has someone to sign in; a project without one, or one created with
+	// --auth-mode none, declares no identity.
+	if g.declaresIdentity() {
 		if err := ScaffoldIdentityKCL(g.Path, g.Name); err != nil {
 			return fmt.Errorf("scaffold %s: %w", codegen.IdentityKCLRelPath, err)
 		}
@@ -437,6 +439,22 @@ func (g *ProjectGenerator) generateIDPSteps() error {
 		return fmt.Errorf("render idp-steps.yaml: %w", err)
 	}
 	return atomicfile.WriteFile(filepath.Join(g.Path, "idp-steps.yaml"), content, 0644)
+}
+
+// declaresIdentity reports whether this scaffold declares users: the
+// deploy/kcl/identity.k ManagedIdentity, and with it the dev identity
+// provider, the sign-in pages and the route guard. A project has users to
+// sign in only when it ships a browser AND has a backend to sign them in to,
+// and only when it was not created with --auth-mode none.
+//
+// It is the scaffold lane's answer. Once identity.k is written (or not), the
+// file IS the answer, and the regenerate lane reads it back
+// (projectDeclaresIdentity), so nothing has to record the choice.
+func (g *ProjectGenerator) declaresIdentity() bool {
+	if g.FrontendName == "" || g.AuthNone {
+		return false
+	}
+	return len(g.bornComponents()) > 0 || g.Features.MigrationsEnabled()
 }
 
 // ScaffoldIdentityKCL writes deploy/kcl/identity.k, the one ManagedIdentity

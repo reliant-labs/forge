@@ -55,11 +55,10 @@ import App from "./App";
 // Root route — renders the app shell (<App />) and an <Outlet /> for matched
 // children.
 //
-// PUBLIC FRONTEND (auth_mode: none): there is no route guard and no sign-in
-// route — every page renders for every visitor. To gate it later, set
-// `auth_mode: native` in forge.yaml, wrap the shell in the RouteGuard from
-// @/lib/auth/route-guard and add a sign-in route (`forge skill load
-// auth/frontend`).
+// PUBLIC FRONTEND (--auth-mode none): there is no route guard and no sign-in
+// route — every page renders for every visitor. To gate it later, declare
+// users, wrap the shell in the RouteGuard from @/lib/auth/route-guard and add
+// a sign-in route (`forge skill load auth/frontend`).
 export const rootRoute = createRootRoute({
   component: function RootShell() {
     return (

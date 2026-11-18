@@ -130,7 +130,7 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 	octet := 16 + int(time.Now().UnixNano()%200)
 	subnet := fmt.Sprintf("10.%d.%d.0/24", octet, int(time.Now().UnixNano()/7%250))
 	envoyIP := strings.TrimSuffix(subnet, "0/24") + "10"
-	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerReapAfter)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
 	if err := testdocker.Network(t, smokeDockerOwner, network, "--subnet", subnet); err != nil {
 		t.Skipf("cannot create a docker network on %s: %v", subnet, err)
 	}

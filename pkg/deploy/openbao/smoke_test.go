@@ -64,13 +64,14 @@ import (
 const smokeOpenBaoImage = "quay.io/openbao/openbao:2.6.2"
 
 // The smoke tests label every docker network and container they create as
-// smokeDockerOwner's, and reap their own leftovers older than
-// smokeDockerReapAfter (a killed run never reaches t.Cleanup; forge#2283). An
-// hour is far longer than any run of this package takes, so one run never
-// reaps another's live containers.
+// smokeDockerOwner's, and reap their own leftovers (a killed run never reaches
+// t.Cleanup; forge#2283). smokeDockerMaxRun is the longest a run of this
+// package takes, longer than any lane's -timeout for it; testdocker.ReapStale
+// never reaps a live run's resources on this host, and elsewhere waits past
+// this (or the binary's own -timeout, if longer) plus a margin.
 const (
-	smokeDockerOwner     = "openbao"
-	smokeDockerReapAfter = time.Hour
+	smokeDockerOwner  = "openbao"
+	smokeDockerMaxRun = time.Hour
 )
 
 const kubectlShim = `#!/bin/bash
@@ -302,7 +303,7 @@ func newSmoke(t *testing.T) *smoke {
 	sfx := fmt.Sprintf("%d", time.Now().UnixNano()%1e9)
 	s.net = "bao-smoke-" + sfx
 	s.server = "bao-server-" + sfx
-	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerReapAfter)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
 	if err := testdocker.Network(t, smokeDockerOwner, s.net); err != nil {
 		t.Fatal(err)
 	}

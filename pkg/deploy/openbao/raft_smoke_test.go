@@ -84,7 +84,7 @@ func TestSmoke_RaftAutoJoinThreeNodes(t *testing.T) {
 	key := hex.EncodeToString(kb)
 	sfx := fmt.Sprintf("%d", time.Now().UnixNano()%1e9)
 	network := "bao-raft-" + sfx
-	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerReapAfter)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
 	if err := testdocker.Network(t, smokeDockerOwner, network); err != nil {
 		t.Fatal(err)
 	}

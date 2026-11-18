@@ -35,6 +35,12 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Handler is required, but the Mux ergonomics let a composition root
 	// leave it nil and rely on Server.Mux as the handler (the common case:
 	// no REST swap, no outer wrapper). Fall back to Mux before failing.
+	// The health rpc on the Mux the services were mounted on, built with the
+	// same handler options (health.go). A Handler that does not route to the
+	// Mux (a REST swap) does not serve it.
+	if srv.Mux != nil {
+		mountHealth(srv.Mux, srv.MountedNames(), srv.handlerOptions()...)
+	}
 	if srv.Handler == nil {
 		if srv.Mux != nil {
 			srv.Handler = srv.Mux

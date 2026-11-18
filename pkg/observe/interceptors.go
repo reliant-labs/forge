@@ -286,6 +286,9 @@ type metricsInterceptor struct {
 
 func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if IsHealthProcedure(req.Spec().Procedure) {
+			return next(ctx, req)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", req.Spec().Procedure))
 		if i.calls != nil {
@@ -330,6 +333,9 @@ func (i *metricsInterceptor) WrapStreamingClient(next connect.StreamingClientFun
 
 func (i *metricsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return connect.StreamingHandlerFunc(func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if IsHealthProcedure(conn.Spec().Procedure) {
+			return next(ctx, conn)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", conn.Spec().Procedure))
 		if i.calls != nil {

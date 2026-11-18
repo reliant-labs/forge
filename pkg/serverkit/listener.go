@@ -247,10 +247,15 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 			opts = deps.Chain.HandlerOptions()
 		}
 		l.services = deps.Routes.Register(mux, opts...)
+		// The health rpc, through the same chain (health.go).
+		health := mountHealth(mux, l.services, opts...)
 		handler = mux
 		if deps.REST {
 			if rest := RESTHandler(mux, l.services, logger); rest != nil {
 				handler = rest
+				if health {
+					handler = withHealthRoute(mux, rest)
+				}
 			}
 		}
 	}

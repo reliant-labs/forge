@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/dashspec"
+	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
 // TestProductOverviewOnAPopulation runs every Overview statement over the
@@ -123,6 +124,16 @@ func TestProductOverviewOnAPopulation(t *testing.T) {
 	}
 	equal("top features", ovr("top-features", false), rows("order_created\t4\t4", "order_updated\t2\t2", "add_to_cart\t1\t1", "purchase\t1\t1"),
 		sortedByCount(rows(events...)))
+
+	// A person the activity rules exclude uses no feature: u4 (by id) and
+	// whoever carries the internal_user marker (nobody here) are left out,
+	// u4's anonymous add_to_cart included, since the same-day sign-in links
+	// h1 to them; the rules leave the other events' people as they were.
+	ruled := in
+	ruled.Activity = obsquery.Activity{ExcludeUserIDs: []string{"u4"}, ExcludeUsersWith: []string{"internal_user"}}
+	if got, want := runs(panel(t, ProductOverview(ruled), "top-features"), false, "e1"), rows("order_created\t3\t3", "order_updated\t2\t2"); got != want {
+		t.Errorf("top features with u4 excluded =\n%s\nwant\n%s", got, want)
+	}
 
 	// With no frontend: Accounts and Stickiness lead, and the funnel starts
 	// at the sign-up.

@@ -41,8 +41,10 @@ func TestActivityRulesReachEveryUserCount(t *testing.T) {
 			if d.ID == ProductOverviewID && p.ID == "top-features" {
 				// The one other reader of the rules: an event the project
 				// declares is not activity is not a feature either.
-				if !strings.Contains(p.SQL, "'billing_subscription_state'") {
-					t.Errorf("top-features lists the declared not_activity events:\n%s", p.SQL)
+				for _, want := range []string{"'billing_subscription_state'", "EventName IN ('internal_user')", "person NOT IN ('u:canary-subject')"} {
+					if !strings.Contains(p.SQL, want) {
+						t.Errorf("top-features does not apply the activity rules (%s):\n%s", want, p.SQL)
+					}
 				}
 				continue
 			}

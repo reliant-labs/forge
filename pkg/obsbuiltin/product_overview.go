@@ -250,11 +250,40 @@ GROUP BY day, route ORDER BY day, route`
 var notFeatures = []string{"page_viewed", "page_engaged", "flag_evaluated"}
 
 // topFeaturesSQL is the app's own product events by the people who used them
-// (the Product tab's Events by name, by its Persons), leaving out the
-// platform's events and the ones the project declares are not activity.
+// (the Product tab's Events by name, by its Persons), under the project's
+// whole activity policy: the platform's events and the ones it declares are
+// not activity are not features, and a person it leaves out of every user
+// count (a marked user, a listed id) uses none, whether signed in or a
+// visitor a same-day sign-in links to them.
 func topFeaturesSQL(act obsquery.Activity) string {
 	not := append(append([]string(nil), notFeatures...), act.NotActivity...)
+	where := ""
+	if excluded := excludedPersons(act); excluded != "" {
+		where = "\nWHERE " + excluded
+	}
 	return with(stitchCTE(inRange), personsCTE(inRange, "EventName NOT IN ("+strings.Trim(lits(not), "[]")+") AND NOT startsWith(EventName, 'auth_')")) + `
 SELECT EventName AS "Event", uniqExactIf((EnvId, person), person != '') AS "People", count() AS "Events"
-FROM persons GROUP BY EventName HAVING "People" > 0 ORDER BY "People" DESC, "Event" LIMIT ` + fmt.Sprint(overviewTop)
+FROM persons` + where + `
+GROUP BY EventName HAVING "People" > 0 ORDER BY "People" DESC, "Event" LIMIT ` + fmt.Sprint(overviewTop)
+}
+
+// excludedPersons is the predicate on personsCTE's rows that leaves out the
+// users the project's activity rules exclude from every user count
+// (obsquery.Activity.ExcludeUsersWith, .ExcludeUserIDs), by their person key,
+// so the visitor rows a same-day sign-in links to them go too. Empty when
+// the rules exclude nobody.
+func excludedPersons(act obsquery.Activity) string {
+	var preds []string
+	if len(act.ExcludeUsersWith) > 0 {
+		preds = append(preds, "(EnvId, person) NOT IN (SELECT EnvId, concat('u:', UserId) FROM product_events WHERE EventName IN ("+
+			strings.Trim(lits(act.ExcludeUsersWith), "[]")+") AND UserId != '' AND "+envScope+")")
+	}
+	if len(act.ExcludeUserIDs) > 0 {
+		keys := make([]string, len(act.ExcludeUserIDs))
+		for i, id := range act.ExcludeUserIDs {
+			keys[i] = "u:" + id
+		}
+		preds = append(preds, "person NOT IN ("+strings.Trim(lits(keys), "[]")+")")
+	}
+	return strings.Join(preds, " AND ")
 }

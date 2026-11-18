@@ -30,6 +30,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	allowedGenFiles := map[string]struct{}{
 		// Per-package mock generation off contract.go.
 		"mock_gen.go": {},
+		// Per-package Service interface derived from a `//forge:contract`
+		// struct (generator/contract/derive.go).
+		"contract_gen.go": {},
 		// Per-package component-middleware decorator, generated off contract.go
 		// (sibling of mock_gen.go): New<Concrete>WithForgeMiddleware wraps New
 		// through the observe.ComponentChain. Re-introduced Wave 5 as the

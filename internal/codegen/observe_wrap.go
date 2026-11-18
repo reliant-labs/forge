@@ -41,6 +41,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // observeChainSeamFunc is the owned chain-builder a package may declare to
@@ -63,8 +65,9 @@ const observeChainSeamFunc = "newObserveChain"
 //     Handler-shaped packages return a concrete *Service and are never wrapped
 //     — otelconnect owns the RPC edge, and wrapping *Service would change the
 //     Components field type.
-//  2. it is a contract package — a contract.go the contracts step generates
-//     from, not opted out with `//forge:exclude-contract` — because that step
+//  2. it is a contract package — a contract.go, or a `//forge:contract` type
+//     whose contract_gen.go the contracts step derives and generates from
+//     (contractsrc.HasContract), not opted out with `//forge:exclude-contract` — because that step
 //     is what writes the decorator. A package returning an interface with no
 //     contract.go has no middleware_gen.go, and wrapping it would not compile.
 //     (A package excluded in forge.yaml's contracts.exclude is not discovered
@@ -78,7 +81,7 @@ func ShouldInstrumentComponent(dir, ctorType, ifaceName string) bool {
 	if ctorType != ifaceName {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
+	if !contractsrc.HasContract(dir) {
 		return false
 	}
 	if HasExcludeContractDirective(dir) {

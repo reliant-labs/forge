@@ -28,6 +28,7 @@ import (
 	"unicode"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -304,10 +305,21 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse file: %w", err)
 	}
+	// A derived contract_gen.go is read together with the package's
+	// hand-declared dependency interfaces (contractFiles), so they are
+	// mocked as they were when contract.go held them all.
+	files := []*ast.File{file}
+	for _, companion := range contractFiles(path)[1:] {
+		cfile, cerr := parser.ParseFile(fset, companion, nil, parser.ParseComments)
+		if cerr != nil {
+			return nil, fmt.Errorf("parse %s: %w", filepath.Base(companion), cerr)
+		}
+		files = append(files, cfile)
+	}
 
 	cf := &File{
 		Package:          file.Name.Name,
-		Source:           filepath.Base(path),
+		Source:           contractSourceName(path),
 		Imports:          make(map[string]string),
 		ExplicitImports:  make(map[string]bool),
 		InterfaceNames:   make(map[string]bool),
@@ -345,21 +357,28 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 	// Also collect primitive aliases declared in contract.go itself, so the
 	// zero-value generator handles `type X string` defined alongside the
 	// Service interface in the same file.
-	collectPrimitiveAliases(file, cf.PrimitiveAliases)
+	for _, f := range files {
+		collectPrimitiveAliases(f, cf.PrimitiveAliases)
+	}
 
 	// Collect imports: build a map from local name → import path. An
 	// unaliased import binds its package's DECLARED name, which is not
 	// always its last path element (github.com/nats-io/nats.go binds
 	// `nats`) — the resolver asks the toolchain.
-	for _, imp := range file.Imports {
-		name, path, explicit := r.importLocalName(imp)
-		if name == "_" || name == "." {
-			continue
+	for _, f := range files {
+		for _, imp := range f.Imports {
+			name, impPath, explicit := r.importLocalName(imp)
+			if name == "_" || name == "." {
+				continue
+			}
+			if prev, ok := cf.Imports[name]; ok && prev != impPath {
+				return nil, fmt.Errorf("%s: %s names two packages across the contract's files (%s and %s); alias one of the imports", dir, name, prev, impPath)
+			}
+			if explicit {
+				cf.ExplicitImports[name] = true
+			}
+			cf.Imports[name] = impPath
 		}
-		if explicit {
-			cf.ExplicitImports[name] = true
-		}
-		cf.Imports[name] = path
 	}
 
 	// First pass: collect all interface AST nodes by name.
@@ -368,25 +387,27 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		ifaceType *ast.InterfaceType
 	}
 	var ifaceEntries []ifaceEntry
-	for _, decl := range file.Decls {
-		genDecl, ok := decl.(*ast.GenDecl)
-		if !ok || genDecl.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range genDecl.Specs {
-			typeSpec, ok := spec.(*ast.TypeSpec)
-			if !ok {
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.TYPE {
 				continue
 			}
-			ifaceType, ok := typeSpec.Type.(*ast.InterfaceType)
-			if !ok {
-				continue
+			for _, spec := range genDecl.Specs {
+				typeSpec, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				ifaceType, ok := typeSpec.Type.(*ast.InterfaceType)
+				if !ok {
+					continue
+				}
+				ifaceEntries = append(ifaceEntries, ifaceEntry{
+					name:      typeSpec.Name.Name,
+					ifaceType: ifaceType,
+				})
+				cf.InterfaceNames[typeSpec.Name.Name] = true
 			}
-			ifaceEntries = append(ifaceEntries, ifaceEntry{
-				name:      typeSpec.Name.Name,
-				ifaceType: ifaceType,
-			})
-			cf.InterfaceNames[typeSpec.Name.Name] = true
 		}
 	}
 
@@ -1293,6 +1314,20 @@ func zeroValue(typeExpr string, interfaceNames map[string]bool, primitiveAliases
 		// the long-standing behavior.
 		return "nil"
 	}
+}
+
+// contractSourceName is the hand-written file a contract read from path is
+// edited in: path's own base name, except for a derived contract_gen.go,
+// whose source is the file declaring its //forge:contract type.
+func contractSourceName(path string) string {
+	base := filepath.Base(path)
+	if base != contractsrc.DerivedFileName {
+		return base
+	}
+	if marked := contractsrc.MarkedTypes(filepath.Dir(path)); len(marked) > 0 {
+		return marked[0].File
+	}
+	return base
 }
 
 // sourceName is the file the mock header names: Source, or contract.go for

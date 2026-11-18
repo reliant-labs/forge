@@ -67,6 +67,7 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // mockFileName is the mock artifact's filename in a contract package.
@@ -224,8 +225,12 @@ func forgeOwnsBytes(dir, rel, name string, onDisk []byte, opts Options) bool {
 // the package rooted at dir right now. ok=false when there is nothing to
 // render from (no contract.go, or it no longer parses) — in which case
 // the caller has no render to compare against and must keep the file.
+// A derived contract renders from its contract_gen.go as it stands.
 func renderCurrentMock(dir string, opts Options) ([]byte, bool) {
-	contractPath := filepath.Join(dir, "contract.go")
+	contractPath := contractsrc.Path(dir)
+	if contractPath == "" {
+		return nil, false
+	}
 	cf, err := ParseContractWith(contractPath, opts.Resolver)
 	if err != nil {
 		return nil, false

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // Analyzer is the go/analysis analyzer registered by cmd/contractlint.
@@ -214,14 +215,15 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	return nil, nil
 }
 
-// providedContractNames returns the contract.go interfaces that are the
+// providedContractNames returns the contract.go (or derived contract_gen.go)
+// interfaces that are the
 // package's PROVIDED contract: one named Service, or one carrying the
 // //forge:service / //forge:contract marker (codegen.HasServiceContractMarker,
 // the same reading codegen and the contract-name lint use).
 func providedContractNames(pass *analysis.Pass) map[string]bool {
 	out := map[string]bool{}
 	for _, file := range pass.Files {
-		if filepath.Base(pass.Fset.Position(file.Pos()).Filename) != "contract.go" {
+		if !contractsrc.IsContractFile(filepath.Base(pass.Fset.Position(file.Pos()).Filename)) {
 			continue
 		}
 		for _, decl := range file.Decls {
@@ -302,14 +304,15 @@ func depsSeamNames(pass *analysis.Pass, contractInterfaces map[string]*types.Int
 	return out
 }
 
-// extractContractInterfaces scans the package for a file named "contract.go"
-// and returns all interface types declared in it, keyed by name.
+// extractContractInterfaces scans the package for its contract file —
+// contract.go, or the contract_gen.go derived from a `//forge:contract`
+// type — and returns all interface types declared in it, keyed by name.
 func extractContractInterfaces(pass *analysis.Pass) map[string]*types.Interface {
 	result := make(map[string]*types.Interface)
 
 	for _, file := range pass.Files {
 		filename := pass.Fset.Position(file.Pos()).Filename
-		if filepath.Base(filename) != "contract.go" {
+		if !contractsrc.IsContractFile(filepath.Base(filename)) {
 			continue
 		}
 

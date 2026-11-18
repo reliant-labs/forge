@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // Internal-package kinds. There are exactly two, and the distinction is
@@ -128,10 +129,8 @@ func DiscoverInternalPackages(projectDir string) ([]InternalPackage, error) {
 		if config.MatchExclude(excludes, rel) {
 			return filepath.SkipDir
 		}
-		if _, statErr := os.Stat(filepath.Join(path, "contract.go")); os.IsNotExist(statErr) {
+		if !contractsrc.HasContract(path) {
 			return nil
-		} else if statErr != nil {
-			return statErr
 		}
 		// Per-package opt-out. Do NOT SkipDir: descendants may still be
 		// components and carry their own directive; only THIS package opts

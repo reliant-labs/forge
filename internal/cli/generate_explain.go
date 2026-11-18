@@ -25,6 +25,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -188,13 +189,19 @@ func classifyGeneratedFile(rel, projectDir string, svcByName map[string]codegen.
 		notes = append(notes, "entity ORM projected from the applied schema (shadow-introspected db/migrations)")
 
 	case strings.HasPrefix(relSlash, "internal/") && (strings.HasSuffix(relSlash, "/mock_gen.go") || strings.HasSuffix(relSlash, "/middleware_gen.go") ||
-		strings.HasSuffix(relSlash, "/tracing_gen.go") || strings.HasSuffix(relSlash, "/metrics_gen.go")):
+		strings.HasSuffix(relSlash, "/tracing_gen.go") || strings.HasSuffix(relSlash, "/metrics_gen.go") ||
+		strings.HasSuffix(relSlash, "/"+contractsrc.DerivedFileName)):
 		kind = "contract"
-		// driven by sibling contract.go
+		// driven by sibling contract.go, or by the //forge:contract type the
+		// package's contract_gen.go is derived from
 		dir := filepath.Dir(relSlash)
-		contractPath := filepath.Join(projectDir, dir, "contract.go")
-		if _, err := os.Stat(contractPath); err == nil {
-			sources = append(sources, filepath.ToSlash(filepath.Join(dir, "contract.go")))
+		abs := filepath.Join(projectDir, dir)
+		if marked := contractsrc.MarkedTypes(abs); len(marked) > 0 {
+			sources = append(sources, filepath.ToSlash(filepath.Join(dir, marked[0].File)))
+			notes = append(notes, fmt.Sprintf("contract derived from the //forge:contract type %s", marked[0].Name))
+		}
+		if _, err := os.Stat(filepath.Join(abs, contractsrc.FileName)); err == nil {
+			sources = append(sources, filepath.ToSlash(filepath.Join(dir, contractsrc.FileName)))
 		}
 
 	case strings.HasPrefix(relSlash, "pkg/config/") && strings.HasSuffix(relSlash, "_gen.go"):

@@ -161,6 +161,16 @@ func TestPackageScaffoldSummary_StillSaysInternalPackage(t *testing.T) {
 	if !strings.Contains(summary, "Internal package 'cache'") {
 		t.Errorf("the default package scaffold no longer confirms an internal package:\n%s", summary)
 	}
+
+	// The default scaffold has no contract.go: its contract is service.go's
+	// //forge:contract type, so the next step must send the reader there.
+	next := summary
+	if idx := strings.Index(summary, "Next"); idx >= 0 {
+		next = summary[idx:]
+	}
+	if !strings.Contains(next, "internal/cache/service.go") || strings.Contains(next, "contract.go ") {
+		t.Errorf("the default package scaffold's next step must point at service.go (the //forge:contract type), not a contract.go it never wrote:\n%s", summary)
+	}
 }
 
 // The scaffold summary names the construction rule `forge lint --tracing`

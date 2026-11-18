@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 
@@ -1615,7 +1616,9 @@ func isForgeOwnedFile(path string) bool {
 func contractDerivedSource(file string) string {
 	switch filepath.Base(file) {
 	case "mock_gen.go", "middleware_gen.go", "tracing_gen.go", "metrics_gen.go":
-		return "contract.go (or deps.go)"
+		return "contract.go (or deps.go, or the //forge:contract type)"
+	case contractsrc.DerivedFileName:
+		return "the exported methods of the package's //forge:contract type"
 	case "helpers_gen_test.go":
 		return "the Deps struct in service.go"
 	}

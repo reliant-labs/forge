@@ -9,6 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
@@ -186,6 +187,13 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	if cfg != nil {
 		extraIfaceTypes = cfg.Contracts.InterfaceTypeSet()
 	}
+	// Derived contracts first: every reader below — the Resolver, the mock,
+	// the decorator — reads contract_gen.go, so it must be current before
+	// any of them runs.
+	if err := deriveInternalContracts(internalDir, projectDir, cs); err != nil {
+		return err
+	}
+
 	contractOpts := contract.Options{
 		ExtraInterfaceTypes: extraIfaceTypes,
 		// Route the mock_gen.go write through the manifest chokepoint —
@@ -240,8 +248,11 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return filepath.SkipDir
 		}
 
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); os.IsNotExist(statErr) {
+		// contract.go, or the contract_gen.go derived above from a
+		// `//forge:contract` type: either way the file the interface is
+		// read from.
+		contractPath := contractsrc.Path(path)
+		if contractPath == "" {
 			// A component with no contract.go (a handler, worker or
 			// operator) whose Deps interfaces `forge fix narrow-deps`
 			// declared in deps.go: its mocks follow that file, exactly as a
@@ -253,8 +264,6 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				}
 			}
 			return nil
-		} else if statErr != nil {
-			return statErr
 		}
 
 		// Per-package opt-out: `//forge:exclude-contract` in this package's
@@ -398,6 +407,52 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	declines.report()
 
 	return nil
+}
+
+// deriveInternalContracts writes contract_gen.go for every package under
+// internalDir whose contract is a `//forge:contract` type, and removes the
+// stale contract_gen.go of a package whose marker is gone
+// (contract.SyncDerivedContract).
+//
+// It walks every package, forge.yaml `contracts.exclude` and
+// `//forge:exclude-contract` included: those opt a package out of the mock
+// and the decorator, but contract_gen.go is the interface the package's own
+// code is written against (New returns Service), and the package does not
+// compile without it. testdata/ holds fixtures, not packages.
+func deriveInternalContracts(internalDir, projectDir string, cs *generator.FileChecksums) error {
+	opts := contract.Options{ProjectRoot: projectDir, Checksums: cs}
+	return filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+		if !contractsrc.HasMarkedType(path) && !fileExists(filepath.Join(path, contractsrc.DerivedFileName)) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(projectDir, path)
+		if relErr != nil {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+		outcome, derr := contract.SyncDerivedContract(path, opts)
+		if derr != nil {
+			return fmt.Errorf("derive the contract of %s: %w", rel, derr)
+		}
+		switch outcome {
+		case contract.DeriveWritten:
+			fmt.Printf("  ✅ Derived %s/%s from its //forge:contract type\n", rel, contractsrc.DerivedFileName)
+		case contract.DeriveRemoved:
+			fmt.Printf("  🧹 Removed %s/%s (no //forge:contract type remains)\n", rel, contractsrc.DerivedFileName)
+		case contract.DeriveKept:
+			fmt.Printf("  ⚠️  %s/%s has no //forge:contract type behind it, but forge cannot prove the file is its own; delete it, or mark the implementing type\n", rel, contractsrc.DerivedFileName)
+		}
+		return nil
+	})
 }
 
 // contractTestBirth is everything the one-time contract_test.go scaffold

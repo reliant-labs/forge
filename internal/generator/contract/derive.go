@@ -1,0 +1,511 @@
+// Contracts derived from a marked type (`//forge:contract` on a struct).
+//
+// A package used to state its contract twice: `type Service interface` in
+// contract.go, and the same method set on the unexported struct that
+// implements it. The contract linter already requires the implementation to
+// export ONLY the contract's methods, so the interface is by construction the
+// type's exported method set. Marking the type says so once:
+//
+//	//forge:contract
+//	type service struct{ deps Deps }
+//
+// and `forge generate` writes contract_gen.go — `type Service interface`
+// holding every exported method declared on the type (pointer and value
+// receivers), each method's doc comment copied, plus
+// `var _ Service = (*service)(nil)`. mock_gen.go and middleware_gen.go are
+// then generated from contract_gen.go exactly as from a hand-written
+// contract.go: ParseContract reads it, together with the package's
+// hand-declared dependency interfaces (contract.go, when one remains, and a
+// `// forge:deps` deps.go), so their mocks keep being generated.
+//
+// Only DECLARED methods are part of the contract. Methods promoted from an
+// embedded field are part of the type's method set but were never written
+// as the package's API; the derived interface leaves them out, and the type
+// still satisfies it.
+package contract
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/contractsrc"
+	"github.com/reliant-labs/forge/internal/depsurface"
+)
+
+// DeriveOutcome is what SyncDerivedContract did to one package.
+type DeriveOutcome int
+
+const (
+	// DeriveNone: the package has no marked type and no contract_gen.go.
+	DeriveNone DeriveOutcome = iota
+	// DeriveWritten: contract_gen.go was written from the marked type and
+	// its bytes changed (or it was created).
+	DeriveWritten
+	// DeriveUnchanged: contract_gen.go is current; the render matched.
+	DeriveUnchanged
+	// DeriveRemoved: the marker is gone, so the stale contract_gen.go was.
+	DeriveRemoved
+	// DeriveKept: the marker is gone but contract_gen.go is the user's
+	// (disowned, or bytes forge never certified), so it was left alone.
+	DeriveKept
+)
+
+// SyncDerivedContract keeps dir's contract_gen.go in step with its
+// `//forge:contract` type: (re)written while the type is marked, removed
+// (journaled, so an aborted run restores it) once it is not. A package that
+// declares its contract twice — a hand-written Service interface AND a
+// marked type — is an error naming both.
+//
+// It runs before any other contract codegen reads the package, because
+// mock_gen.go and middleware_gen.go are rendered from the file it writes. It
+// works on syntax alone, so a freshly scaffolded package — which does not
+// compile until contract_gen.go declares the Service its New returns — is
+// derived like any other.
+func SyncDerivedContract(dir string, opts Options) (DeriveOutcome, error) {
+	derivedPath := filepath.Join(dir, contractsrc.DerivedFileName)
+	if !contractsrc.HasMarkedType(dir) {
+		return removeStaleDerived(dir, derivedPath, opts)
+	}
+	content, err := RenderDerivedContract(dir, opts.Resolver)
+	if err != nil {
+		return DeriveNone, err
+	}
+	if opts.ProjectRoot != "" {
+		rel, relErr := filepath.Rel(opts.ProjectRoot, derivedPath)
+		if relErr != nil {
+			return DeriveNone, fmt.Errorf("compute project-relative path: %w", relErr)
+		}
+		out, werr := checksums.WriteDerivedFileOutcome(opts.ProjectRoot, rel, content, opts.Checksums, true)
+		if werr != nil {
+			return DeriveNone, fmt.Errorf("write %s: %w", rel, werr)
+		}
+		if !out.Changed {
+			return DeriveUnchanged, nil
+		}
+		return DeriveWritten, nil
+	}
+	if prev, rerr := os.ReadFile(derivedPath); rerr == nil && bytes.Equal(prev, content) {
+		return DeriveUnchanged, nil
+	}
+	if err := atomicfile.WriteFile(derivedPath, content, 0o644); err != nil {
+		return DeriveNone, err
+	}
+	return DeriveWritten, nil
+}
+
+// removeStaleDerived deletes a contract_gen.go whose marker is gone, unless
+// the path is the user's: disowned, or bytes forge never certified.
+func removeStaleDerived(dir, derivedPath string, opts Options) (DeriveOutcome, error) {
+	onDisk, err := os.ReadFile(derivedPath)
+	if os.IsNotExist(err) {
+		return DeriveNone, nil
+	}
+	if err != nil {
+		return DeriveNone, fmt.Errorf("read %s: %w", derivedPath, err)
+	}
+	rel := displayPath(opts.ProjectRoot, derivedPath)
+	if opts.Checksums.IsDisowned(rel) {
+		return DeriveKept, nil
+	}
+	root := opts.ProjectRoot
+	if root == "" {
+		root = dir
+	}
+	if checksums.ClassifyPath(root, rel, onDisk) == checksums.NoMarker && !bytes.HasPrefix(onDisk, []byte(derivedHeaderFirstLine)) {
+		return DeriveKept, nil
+	}
+	if err := removeJournaled(derivedPath); err != nil {
+		return DeriveNone, err
+	}
+	return DeriveRemoved, nil
+}
+
+const derivedHeaderFirstLine = "// Code generated by forge. DO NOT EDIT."
+
+// RenderDerivedContract renders contract_gen.go for the package in dir from
+// its `//forge:contract` type. r names the package's unaliased imports; nil
+// builds a Resolver over dir only when the Go convention cannot.
+func RenderDerivedContract(dir string, r *Resolver) ([]byte, error) {
+	d, err := deriveContract(dir, r)
+	if err != nil {
+		return nil, err
+	}
+	return d.render()
+}
+
+// derived is a parsed derivation, ready to render.
+type derived struct {
+	pkg      string
+	typeName string
+	typeFile string
+	typeDoc  []string
+	methods  []derivedMethod
+	imports  []ImportDef
+}
+
+type derivedMethod struct {
+	name string
+	doc  []string
+	sig  string // "(ctx context.Context) error" — the FuncType minus `func`
+}
+
+// CheckMarkedContract returns dir's `//forge:contract` type, refusing every
+// declaration the derived interface could not express: no marked type, two
+// of them, an alias, a generic type, a type named Service, and a package
+// that ALSO hand-writes its contract interface. `forge lint` reports the same
+// refusals before `forge generate` would hit them.
+func CheckMarkedContract(dir string) (contractsrc.MarkedType, error) {
+	rel := dir
+	marked := contractsrc.MarkedTypes(dir)
+	switch {
+	case len(marked) == 0:
+		return contractsrc.MarkedType{}, fmt.Errorf("%s: no //forge:contract type", rel)
+	case len(marked) > 1:
+		var where []string
+		for _, m := range marked {
+			where = append(where, fmt.Sprintf("%s (%s:%d)", m.Name, m.File, m.Line))
+		}
+		return contractsrc.MarkedType{}, fmt.Errorf("%s: %d types carry //forge:contract (%s); a package derives ONE Service contract — keep the marker on the type New returns", rel, len(marked), strings.Join(where, ", "))
+	}
+	m := marked[0]
+	switch {
+	case m.Alias:
+		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: //forge:contract is on the alias %s, which declares no methods of its own; put the marker on the defined type", filepath.Join(rel, m.File), m.Line, m.Name)
+	case m.Generic:
+		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: //forge:contract is on the generic type %s; a generic type cannot implement the non-generic Service interface by itself — mark a non-generic type, or hand-write the interface in contract.go", filepath.Join(rel, m.File), m.Line, m.Name)
+	case m.Name == contractsrc.InterfaceName:
+		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: the //forge:contract type is named %s, the name of the interface forge derives from it; rename the type (conventionally the unexported `service`)", filepath.Join(rel, m.File), m.Line, m.Name)
+	}
+	if hw := contractsrc.HandWrittenContracts(dir); len(hw) > 0 {
+		h := hw[0]
+		return contractsrc.MarkedType{}, fmt.Errorf("%s declares its contract twice: the hand-written interface %s (%s:%d) and the //forge:contract type %s (%s:%d). Keep one: delete the interface and let forge generate derive it into %s, or remove the marker and keep contract.go",
+			rel, h.Name, h.File, h.Line, m.Name, m.File, m.Line, contractsrc.DerivedFileName)
+	}
+
+	return m, nil
+}
+
+// deriveContract parses dir and collects the marked type's exported method
+// set, refusing every shape the derived interface could not express.
+//
+//nolint:funlen // One pass over the package: refuse, collect, resolve imports.
+func deriveContract(dir string, r *Resolver) (*derived, error) {
+	rel := dir
+	m, err := CheckMarkedContract(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	fset := token.NewFileSet()
+	d := &derived{typeName: m.Name, typeFile: m.File}
+	type fileImports struct {
+		byName  map[string]ImportDef // local name → import
+		unnamed []ImportDef          // unaliased, name to resolve
+		dot     bool
+	}
+	perFile := map[string]*fileImports{}
+	var qualified []struct {
+		file, qualifier string
+		method          string
+	}
+
+	for _, name := range contractsrc.SourceFiles(dir) {
+		path := filepath.Join(dir, name)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if d.pkg == "" {
+			d.pkg = file.Name.Name
+		}
+		if collides := topLevelServiceDecl(file); collides != "" {
+			return nil, fmt.Errorf("%s declares a %s named %s, the name of the interface forge derives from the //forge:contract type %s; rename it", path, collides, contractsrc.InterfaceName, m.Name)
+		}
+		fi := &fileImports{byName: map[string]ImportDef{}}
+		for _, imp := range file.Imports {
+			p, uerr := strconv.Unquote(imp.Path.Value)
+			if uerr != nil {
+				continue
+			}
+			switch {
+			case imp.Name == nil:
+				fi.unnamed = append(fi.unnamed, ImportDef{Path: p})
+			case imp.Name.Name == ".":
+				fi.dot = true
+			case imp.Name.Name == "_":
+			default:
+				fi.byName[imp.Name.Name] = ImportDef{Path: p, Name: imp.Name.Name, Explicit: true}
+			}
+		}
+		perFile[name] = fi
+
+		for _, decl := range file.Decls {
+			switch dd := decl.(type) {
+			case *ast.GenDecl:
+				if name != m.File || dd.Tok != token.TYPE {
+					continue
+				}
+				for _, spec := range dd.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok || ts.Name.Name != m.Name {
+						continue
+					}
+					doc := ts.Doc
+					if doc == nil && len(dd.Specs) == 1 {
+						doc = dd.Doc
+					}
+					d.typeDoc = proseLines(doc)
+				}
+			case *ast.FuncDecl:
+				if dd.Recv == nil || len(dd.Recv.List) != 1 || !dd.Name.IsExported() {
+					continue
+				}
+				if receiverTypeName(dd.Recv.List[0].Type) != m.Name {
+					continue
+				}
+				if fi.dot {
+					return nil, fmt.Errorf("%s: %s.%s is declared in a file with a dot import; a derived contract cannot tell its package's types from the dot-imported ones — import that package by name", path, m.Name, dd.Name.Name)
+				}
+				var buf bytes.Buffer
+				if err := format.Node(&buf, fset, dd.Type); err != nil {
+					return nil, fmt.Errorf("render %s.%s: %w", m.Name, dd.Name.Name, err)
+				}
+				d.methods = append(d.methods, derivedMethod{
+					name: dd.Name.Name,
+					doc:  methodDocLines(dd.Doc),
+					sig:  strings.TrimPrefix(buf.String(), "func"),
+				})
+				ast.Inspect(dd.Type, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					if id, ok := sel.X.(*ast.Ident); ok {
+						qualified = append(qualified, struct {
+							file, qualifier string
+							method          string
+						}{name, id.Name, dd.Name.Name})
+					}
+					return false
+				})
+			}
+		}
+	}
+
+	// Each qualifier resolves against the imports of the file its method is
+	// declared in. Aliased imports keep their alias; an unaliased one binds
+	// its package's declared name, which the convention gives for the
+	// standard library and the toolchain (the Resolver) for the rest.
+	needed := map[string]ImportDef{} // local name → import
+	resolve := func(fi *fileImports, q string) (ImportDef, bool) {
+		if imp, ok := fi.byName[q]; ok {
+			return imp, true
+		}
+		for _, imp := range fi.unnamed {
+			if r.packageName(imp.Path) == q {
+				return ImportDef{Path: imp.Path, Name: q}, true
+			}
+		}
+		return ImportDef{}, false
+	}
+	for _, q := range qualified {
+		fi := perFile[q.file]
+		imp, ok := resolve(fi, q.qualifier)
+		if !ok && r == nil {
+			r = NewResolver(filepath.Join(dir, m.File))
+			imp, ok = resolve(fi, q.qualifier)
+		}
+		if !ok {
+			return nil, fmt.Errorf("%s: %s.%s names %s., which no import of %s binds", filepath.Join(rel, q.file), m.Name, q.method, q.qualifier, q.file)
+		}
+		if prev, seen := needed[q.qualifier]; seen && prev.Path != imp.Path {
+			return nil, fmt.Errorf("%s: the methods of %s use %s for two packages (%s and %s) in different files; contract_gen.go needs one name per package — alias one of the imports", rel, m.Name, q.qualifier, prev.Path, imp.Path)
+		}
+		needed[q.qualifier] = imp
+	}
+	for _, imp := range needed {
+		d.imports = append(d.imports, imp)
+	}
+	sort.Slice(d.imports, func(i, j int) bool { return d.imports[i].Path < d.imports[j].Path })
+	return d, nil
+}
+
+// topLevelServiceDecl reports what a file declares under the derived
+// interface's name other than an interface (HandWrittenContracts reports
+// those): "type", "func", "var" or "const"; "" for nothing.
+func topLevelServiceDecl(file *ast.File) string {
+	for _, decl := range file.Decls {
+		switch dd := decl.(type) {
+		case *ast.FuncDecl:
+			if dd.Recv == nil && dd.Name.Name == contractsrc.InterfaceName {
+				return "func"
+			}
+		case *ast.GenDecl:
+			for _, spec := range dd.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					if s.Name.Name == contractsrc.InterfaceName {
+						if _, isIface := s.Type.(*ast.InterfaceType); !isIface {
+							return "type"
+						}
+					}
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						if n.Name == contractsrc.InterfaceName {
+							return strings.ToLower(dd.Tok.String())
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// receiverTypeName is the base type name of a method receiver: `s *service`,
+// `s service` and a generic `s *service[T]` all name "service".
+func receiverTypeName(expr ast.Expr) string {
+	for {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			expr = e.X
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		case *ast.IndexListExpr:
+			expr = e.X
+		case *ast.Ident:
+			return e.Name
+		default:
+			return ""
+		}
+	}
+}
+
+// methodDocLines is a method's doc comment, raw, for the interface method —
+// `// forge:no-observe` included, since ParseContract reads it there. Only
+// `//go:` compiler directives are dropped: they apply to the function body,
+// and an interface method has none.
+func methodDocLines(cg *ast.CommentGroup) []string {
+	if cg == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range cg.List {
+		if strings.HasPrefix(c.Text, "//go:") {
+			continue
+		}
+		out = append(out, c.Text)
+	}
+	return out
+}
+
+// proseLines is the type's doc comment minus its directives (the
+// //forge:contract marker itself, //go:, //nolint), for the interface doc.
+func proseLines(cg *ast.CommentGroup) []string {
+	if cg == nil {
+		return nil
+	}
+	var out []string
+	for _, c := range cg.List {
+		if !strings.HasPrefix(c.Text, "//") {
+			out = append(out, c.Text)
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+		if strings.HasPrefix(body, "forge:") || strings.HasPrefix(c.Text, "//go:") || strings.HasPrefix(body, "nolint") {
+			continue
+		}
+		out = append(out, c.Text)
+	}
+	// Trim the blank `//` lines a removed directive leaves at either end.
+	for len(out) > 0 && strings.TrimSpace(strings.TrimPrefix(out[len(out)-1], "//")) == "" {
+		out = out[:len(out)-1]
+	}
+	for len(out) > 0 && strings.TrimSpace(strings.TrimPrefix(out[0], "//")) == "" {
+		out = out[1:]
+	}
+	return out
+}
+
+func (d *derived) render() ([]byte, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", derivedHeaderFirstLine)
+	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
+	fmt.Fprintf(&b, "// Source: the //forge:contract type %s in %s.\n", d.typeName, d.typeFile)
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "// To change the contract, change the exported methods of %s and re-run\n", d.typeName)
+	b.WriteString("// \"forge generate\": this file, mock_gen.go and middleware_gen.go follow.\n")
+	fmt.Fprintf(&b, "package %s\n\n", d.pkg)
+	if len(d.imports) > 0 {
+		b.WriteString("import (\n")
+		for _, imp := range d.imports {
+			fmt.Fprintf(&b, "\t%s\n", imp.Declaration())
+		}
+		b.WriteString(")\n\n")
+	}
+	fmt.Fprintf(&b, "// %s is the contract of package %s: the exported methods of %s,\n", contractsrc.InterfaceName, d.pkg, d.typeName)
+	fmt.Fprintf(&b, "// derived by forge generate from its //forge:contract marker.\n")
+	if len(d.typeDoc) > 0 {
+		b.WriteString("//\n")
+		for _, l := range d.typeDoc {
+			b.WriteString(l + "\n")
+		}
+	}
+	fmt.Fprintf(&b, "type %s interface {\n", contractsrc.InterfaceName)
+	for i, m := range d.methods {
+		if i > 0 && len(m.doc) > 0 {
+			b.WriteString("\n")
+		}
+		for _, l := range m.doc {
+			b.WriteString("\t" + l + "\n")
+		}
+		fmt.Fprintf(&b, "\t%s%s\n", m.name, m.sig)
+	}
+	b.WriteString("}\n\n")
+	fmt.Fprintf(&b, "var _ %s = (*%s)(nil)\n", contractsrc.InterfaceName, d.typeName)
+
+	out, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return nil, fmt.Errorf("gofmt %s: %w\n---\n%s", contractsrc.DerivedFileName, err, b.String())
+	}
+	return out, nil
+}
+
+// contractFiles returns the files a contract at contractPath is read from:
+// the file itself and, for a derived contract_gen.go, the package's
+// hand-declared dependency interfaces — contract.go when one remains beside
+// the marked type, and a `// forge:deps` deps.go. Their interfaces are
+// mocked with Service's, exactly as when they share a hand-written
+// contract.go.
+func contractFiles(contractPath string) []string {
+	files := []string{contractPath}
+	if filepath.Base(contractPath) != contractsrc.DerivedFileName {
+		return files
+	}
+	dir := filepath.Dir(contractPath)
+	if p := filepath.Join(dir, contractsrc.FileName); fileExists(p) {
+		files = append(files, p)
+	}
+	if depsurface.HasDepsMarker(dir) {
+		files = append(files, filepath.Join(dir, depsurface.DepsFileName))
+	}
+	return files
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}

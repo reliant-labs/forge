@@ -868,7 +868,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### A generated mock per interface
 
-Every interface in a package's `contract.go` gets a recording mock in `mock_gen.go`, configured per method by field, so unit tests never hand-roll a fake.
+Every interface in a package's contract (`contract.go`, or the `Service` derived from a `//forge:contract` struct) gets a recording mock in `mock_gen.go`, configured per method by field, so unit tests never hand-roll a fake.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -1622,7 +1622,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Package contracts enforced
 
-An internal package with exported methods and no `contract.go` is flagged, so every component is visible to wiring, mocks, the observability decorator and the reporters.
+An internal package with exported methods and no contract (`contract.go` or a `//forge:contract` type) is flagged, so every component is visible to wiring, mocks, the observability decorator and the reporters.
 
 _Enforced · Forge, on any infrastructure_
 

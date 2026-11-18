@@ -11,6 +11,7 @@ import { embedFileDesc, fileDesc } from "@bufbuild/protobuf/codegenv2";
 import {
   FieldDescriptorProto_Label as Label,
   FieldDescriptorProto_Type as Type,
+  file_google_protobuf_duration,
   file_google_protobuf_timestamp,
   FileDescriptorProtoSchema,
 } from "@bufbuild/protobuf/wkt";
@@ -218,6 +219,126 @@ function forensicsTestRequest(): DescMessage {
   return desc;
 }
 
+const msgField = (name: string, number: number, typeName: string) => ({
+  name,
+  number,
+  type: Type.MESSAGE,
+  typeName,
+  label: opt,
+  jsonName: name,
+});
+const enumField = (name: string, number: number, typeName: string) => ({
+  name,
+  number,
+  type: Type.ENUM,
+  typeName,
+  label: opt,
+  jsonName: name,
+});
+const intField = (name: string, number: number) => ({
+  name,
+  number,
+  type: Type.INT32,
+  label: opt,
+  jsonName: name,
+});
+
+/**
+ * A request carrying every temporal type the classifier knows: the
+ * google.protobuf well-known types and the google.type ones (declared here
+ * with their real names and shapes, trimmed to the fields the test sets).
+ */
+function temporalTestRequest(): DescMessage {
+  const googleType = create(FileDescriptorProtoSchema, {
+    name: "google/type/datetime_test.proto",
+    package: "google.type",
+    syntax: "proto3",
+    dependency: ["google/protobuf/timestamp.proto"],
+    enumType: [
+      {
+        name: "Month",
+        value: [
+          { name: "MONTH_UNSPECIFIED", number: 0 },
+          { name: "MARCH", number: 3 },
+        ],
+      },
+      {
+        name: "DayOfWeek",
+        value: [
+          { name: "DAY_OF_WEEK_UNSPECIFIED", number: 0 },
+          { name: "FRIDAY", number: 5 },
+        ],
+      },
+    ],
+    messageType: [
+      {
+        name: "Date",
+        field: [intField("year", 1), intField("month", 2), intField("day", 3)],
+      },
+      {
+        name: "DateTime",
+        field: [
+          intField("year", 1),
+          intField("month", 2),
+          intField("hours", 4),
+        ],
+      },
+      {
+        name: "TimeOfDay",
+        field: [intField("hours", 1), intField("minutes", 2)],
+      },
+      {
+        name: "Interval",
+        field: [
+          msgField("start_time", 1, ".google.protobuf.Timestamp"),
+          msgField("end_time", 2, ".google.protobuf.Timestamp"),
+        ],
+      },
+    ],
+  });
+  const typeFile = fileDesc(embedFileDesc(googleType).base64(), [
+    file_google_protobuf_timestamp,
+  ]);
+  const request = create(FileDescriptorProtoSchema, {
+    name: "forensics_temporal_test.proto",
+    package: "forensics.v1",
+    syntax: "proto3",
+    dependency: [
+      "google/protobuf/timestamp.proto",
+      "google/protobuf/duration.proto",
+      "google/type/datetime_test.proto",
+    ],
+    messageType: [
+      {
+        name: "Window",
+        field: [msgField("from", 1, ".google.protobuf.Timestamp")],
+      },
+      {
+        name: "BookRequest",
+        field: [
+          msgField("birth_time", 1, ".google.protobuf.Timestamp"),
+          msgField("ttl", 2, ".google.protobuf.Duration"),
+          msgField("birthday", 3, ".google.type.Date"),
+          msgField("appointment", 4, ".google.type.DateTime"),
+          msgField("wake_at", 5, ".google.type.TimeOfDay"),
+          msgField("stay", 6, ".google.type.Interval"),
+          enumField("birth_month", 7, ".google.type.Month"),
+          enumField("weekday", 8, ".google.type.DayOfWeek"),
+          msgField("window", 9, ".forensics.v1.Window"),
+        ],
+      },
+    ],
+  });
+  const file = fileDesc(embedFileDesc(request).base64(), [
+    file_google_protobuf_timestamp,
+    file_google_protobuf_duration,
+    typeFile,
+  ]);
+  const desc = file.messages.find((m) => m.name === "BookRequest");
+  if (!desc) throw new Error("temporal test message did not register");
+  return desc;
+}
+
 /** A message of `n` int32 fields, f0..f<n-1>. */
 function wideMessage(n: number): DescMessage {
   const registry = createFileRegistry(
@@ -259,7 +380,7 @@ describe("classifyRequest", () => {
       labels: { team: "infra", env: "prod" },
       filter: { ownerId: "u_9", note: "call me at 555-0100" },
       password: "hunter2",
-      since: { seconds: 1_700_000_000n, nanos: 0 },
+      since: { seconds: 1_700_000_000n, nanos: 123_000_000 },
       blob: new Uint8Array([1, 2, 3, 4]),
       big: 9_007_199_254_740_993n,
       ownerID: "u_1",
@@ -275,11 +396,68 @@ describe("classifyRequest", () => {
       "forensics.arg.labels": "[count=2]",
       "forensics.arg.filter.owner_id": "u_9",
       "forensics.arg.filter.note": "[len=19]",
-      "forensics.arg.since": "2023-11-14T22:13:20.000Z",
+      "forensics.arg.since": "[type=Timestamp]",
       "forensics.arg.blob": "[len=4]",
       "forensics.arg.big": "9007199254740993",
       "forensics.arg.ownerID": "u_1",
     });
+  });
+
+  it("records a time only by its type, never its value or its subfields", () => {
+    const book = temporalTestRequest();
+    const out = classifyRequest(
+      book,
+      create(book, {
+        birthTime: { seconds: 643_334_400n, nanos: 987_654_321 }, // 1990-05-23
+        ttl: { seconds: 86_399n, nanos: 424_242 },
+        birthday: { year: 1987, month: 11, day: 29 },
+        appointment: { year: 2031, month: 7, hours: 17 },
+        wakeAt: { hours: 6, minutes: 47 },
+        stay: {
+          startTime: { seconds: 1_912_345_678n },
+          endTime: { seconds: 1_913_456_789n },
+        },
+        birthMonth: 3,
+        weekday: 5,
+        window: { from: { seconds: 1_811_111_111n } },
+      } as never),
+    );
+    expect(out).toEqual({
+      "forensics.arg.birth_time": "[type=Timestamp]",
+      "forensics.arg.ttl": "[type=Duration]",
+      "forensics.arg.birthday": "[type=Date]",
+      "forensics.arg.appointment": "[type=DateTime]",
+      "forensics.arg.wake_at": "[type=TimeOfDay]",
+      "forensics.arg.stay": "[type=Interval]",
+      "forensics.arg.birth_month": "[type=Month]",
+      "forensics.arg.weekday": "[type=DayOfWeek]",
+      "forensics.arg.window.from": "[type=Timestamp]",
+    });
+    // Nothing of any value survives, in any spelling.
+    const recorded = JSON.stringify(out);
+    for (const secret of [
+      "643334400",
+      "987654321",
+      "1990",
+      "86399",
+      "424242",
+      "1987",
+      "29",
+      "2031",
+      "17",
+      "47",
+      "1912345678",
+      "1913456789",
+      "1811111111",
+      "MARCH",
+      "FRIDAY",
+      "seconds",
+      "nanos",
+      "year",
+      "hours",
+    ]) {
+      expect(recorded, secret).not.toContain(secret);
+    }
   });
 
   it("never records a debug_redact field, not even its presence", () => {

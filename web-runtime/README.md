@@ -541,16 +541,16 @@ registers its own provider gets the spans through
 default by reflection (`src/rpc-forensics.ts`), keyed
 `forensics.arg.<proto field name>` (nested fields joined with `.`):
 
-| Field                                                                 | Recorded                                                       |
-| --------------------------------------------------------------------- | -------------------------------------------------------------- |
-| number, bool                                                          | the value (a 64-bit integer beyond 2^53 as its decimal string) |
-| enum                                                                  | the value's name                                               |
-| string named like an id (`id`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`) | the value, cut to 128 characters                               |
-| any other string, bytes                                               | `"[len=N]"`                                                    |
-| repeated, map                                                         | `"[count=N]"`                                                  |
-| `Timestamp` / `Duration`                                              | ISO-8601 instant / seconds                                     |
-| other message                                                         | its set fields, three levels deep (`"[message]"` below)        |
-| `[debug_redact = true]`                                               | never, not even its presence                                   |
+| Field                                                                                                    | Recorded                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| number, bool                                                                                             | the value (a 64-bit integer beyond 2^53 as its decimal string)                                                                  |
+| enum                                                                                                     | the value's name                                                                                                                |
+| string named like an id (`id`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`)                                    | the value, cut to 128 characters                                                                                                |
+| any other string, bytes                                                                                  | `"[len=N]"`                                                                                                                     |
+| repeated, map                                                                                            | `"[count=N]"`                                                                                                                   |
+| `Timestamp`, `Duration`, `google.type` `Date`, `DateTime`, `TimeOfDay`, `Interval`, `Month`, `DayOfWeek` | `"[type=<Name>]"`, e.g. `"[type=Timestamp]"`: never the value or its subfields (a time is content: a birthdate, an appointment) |
+| other message                                                                                            | its set fields, three levels deep (`"[message]"` below)                                                                         |
+| `[debug_redact = true]`                                                                                  | never, not even its presence                                                                                                    |
 
 Unset fields are left out; at most 32 fields are recorded
 (`forensics.truncated = true` says a record was cut). A record is attached at

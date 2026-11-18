@@ -18,8 +18,10 @@
 //   any other string                  "[len=N]": its length only
 //   bytes                             "[len=N]"
 //   repeated, map                     "[count=N]": its length only
-//   google.protobuf.Timestamp         the ISO-8601 instant
-//   google.protobuf.Duration          seconds, as a number
+//   a temporal type: Timestamp,       "[type=<Name>]" (e.g. "[type=Timestamp]"):
+//     Duration, google.type Date,     its type only, never its value and never
+//     DateTime, TimeOfDay, Interval,  its subfields. A time is request content
+//     Month, DayOfWeek                (a birthdate, an appointment), not shape.
 //   other message                     its set fields, recursively, down to
 //                                     MAX_DEPTH levels ("[message]" below that)
 //   field option `debug_redact`       never: the field is left out entirely
@@ -119,9 +121,9 @@ function walk(
     const path = prefix + field.name;
     if (field.fieldKind === "message") {
       const value = msg.get(field) as ReflectMessage;
-      const special = wellKnown(value);
-      if (special !== undefined) {
-        put(out, state, path, special);
+      const temporal = temporalName(field.message.typeName);
+      if (temporal !== undefined) {
+        put(out, state, path, `[type=${temporal}]`);
       } else if (depth >= MAX_DEPTH) {
         put(out, state, path, "[message]");
       } else {
@@ -164,6 +166,10 @@ function classifyLeaf(
   value: unknown,
 ): ForensicsValue | undefined {
   if (field.fieldKind === "enum") {
+    const temporal = temporalName(field.enum.typeName);
+    if (temporal !== undefined) {
+      return `[type=${temporal}]`;
+    }
     const n = Number(value);
     return field.enum.value[n]?.name ?? n;
   }
@@ -199,25 +205,24 @@ function number(value: unknown): ForensicsValue {
   return Number.isFinite(n) ? n : String(n);
 }
 
-/** Timestamp and Duration as one readable value; undefined for any other. */
-function wellKnown(msg: ReflectMessage): ForensicsValue | undefined {
-  const name = msg.desc.typeName;
-  if (
-    name !== "google.protobuf.Timestamp" &&
-    name !== "google.protobuf.Duration"
-  ) {
-    return undefined;
-  }
-  const m = msg.message as unknown as {
-    seconds?: bigint | number;
-    nanos?: number;
-  };
-  const seconds = Number(m.seconds ?? 0) + (m.nanos ?? 0) / 1e9;
-  if (name === "google.protobuf.Duration") {
-    return seconds;
-  }
-  const at = new Date(seconds * 1000);
-  return Number.isNaN(at.getTime()) ? "[invalid timestamp]" : at.toISOString();
+// Types whose value is a point or span of time. Their value is the request's
+// content (a birthdate, an appointment), so only their type is recorded.
+const TEMPORAL_TYPES = new Set([
+  "google.protobuf.Timestamp",
+  "google.protobuf.Duration",
+  "google.type.Date",
+  "google.type.DateTime",
+  "google.type.TimeOfDay",
+  "google.type.Interval",
+  "google.type.Month",
+  "google.type.DayOfWeek",
+]);
+
+/** The short name of a temporal type ("Timestamp"), or undefined. */
+function temporalName(typeName: string): string | undefined {
+  return TEMPORAL_TYPES.has(typeName)
+    ? typeName.slice(typeName.lastIndexOf(".") + 1)
+    : undefined;
 }
 
 // ── Once per failure signature per page session ─────────────────────────

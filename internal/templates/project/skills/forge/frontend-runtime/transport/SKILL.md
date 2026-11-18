@@ -65,8 +65,10 @@ A failed call's span carries one **`forge.forensics`** event:
 `forensics.reason = error` and `forensics.arg.<field>` for the request
 message, classified deny by default — numbers, bools, enums and id-named
 strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values; every other string and
-bytes as `"[len=N]"`; repeated and map fields as `"[count=N]"`; nested
-messages walked three levels; `[debug_redact = true]` fields never. Once per
+bytes as `"[len=N]"`; repeated and map fields as `"[count=N]"`; times
+(`Timestamp`, `Duration`, the `google.type` dates) as `"[type=<Name>]"`, never
+their value; nested messages walked three levels; `[debug_redact = true]`
+fields never. Once per
 procedure and error code per page load. Mark a request field that must never
 leave the browser with `[debug_redact = true]` in the proto.
 

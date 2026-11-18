@@ -360,14 +360,14 @@ on stock Windows. Four examples of the
 test -f pkg/app/wire_gen.go
 rg -q 'forge:server-set' internal/
 grep -q '^dev_target:' forge.yaml
-forge-detect zod3-frontend
+forge-detect pre-zod4-forms
 ```
 
 When forge itself reads the shape — `forge generate` decides from it, and a
 grep would read it differently — the detection asks forge instead:
 `forge-detect <name>` is a built-in that runs a Go detector registered in
 `internal/cli/upgrade_migration_detectors.go` (exit 0: the old shape is
-there). `zod3-frontend` is one: it reads each frontend's zod range with the
+there). `pre-zod4-forms` is one: it reads each frontend's zod range with the
 same semver parser generate writes pages from, so the playbook is offered to
 exactly the frontends generate still writes zod 3 for.
 

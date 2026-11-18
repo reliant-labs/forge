@@ -260,6 +260,51 @@ func TestZod4Migration_Detection(t *testing.T) {
 	}
 }
 
+// TestZod4Migration_EveryDetectedShapeHasASection: whatever the detection
+// offers the playbook for has a section of the playbook that says so — zod 3
+// is section 1, zod 4 with a resolver below 5 is section 2 — and the
+// resolver-only frontend is detected at all.
+func TestZod4Migration_EveryDetectedShapeHasASection(t *testing.T) {
+	body, err := templates.ProjectTemplates().Get("skills/forge/" + zod4MigrationSkill + "/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	sections := map[codegen.FormDialect]string{
+		zod3Dialect:            "## 1. Frontends move to zod 4",
+		zod3Only:               "## 1. Frontends move to zod 4",
+		{LegacyResolver: true}: "## 2. A zod 4 frontend still on @hookform/resolvers below 5",
+	}
+	useWhen := map[string]string{
+		"## 1. Frontends move to zod 4":                               "**Use when** a frontend declares `zod` 3",
+		"## 2. A zod 4 frontend still on @hookform/resolvers below 5": "**Use when** a frontend declares `zod` 4 but `@hookform/resolvers` below 5",
+	}
+	for heading, use := range useWhen {
+		i := strings.Index(text, heading)
+		if i < 0 {
+			t.Fatalf("playbook has no section %q", heading)
+		}
+		if !strings.Contains(text[i:], use) {
+			t.Errorf("section %q does not say %q", heading, use)
+		}
+	}
+
+	root := t.TempDir()
+	dialectFixture{pkg: `{"dependencies": {"zod": "^4.6.6", "@hookform/resolvers": "^3.9.0"}}`}.write(t, filepath.Join(root, "frontends", "web"))
+	if !projectHasPreZod4Frontend(root) {
+		t.Error("a zod 4 frontend on @hookform/resolvers 3 is not offered section 2")
+	}
+
+	for name, tc := range dialectFixtures() {
+		if tc.want == (codegen.FormDialect{}) {
+			continue
+		}
+		if _, ok := sections[tc.want]; !ok {
+			t.Errorf("%s: dialect %+v is detected, but no playbook section covers it", name, tc.want)
+		}
+	}
+}
+
 func TestForgeDetect_UnknownDetectorDoesNotApply(t *testing.T) {
 	if runDetection(t.TempDir(), "forge-detect no-such-detector") {
 		t.Error("an unknown detector read as applying")

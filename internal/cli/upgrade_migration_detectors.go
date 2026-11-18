@@ -27,7 +27,7 @@ const forgeDetectCommand = "forge-detect"
 // migrationDetector answers forge-detect <name> for a project root.
 func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 	switch name {
-	case "zod3-frontend":
+	case "pre-zod4-forms":
 		return projectHasPreZod4Frontend, true
 	}
 	return nil, false
@@ -57,7 +57,9 @@ func migrationDetectionCommands() map[string]shellrun.CommandFunc {
 
 // projectHasPreZod4Frontend reports whether any frontend of the project
 // reads, by frontendFormDialect — the same reading `forge generate` writes
-// pages from — as zod 3 or an @hookform/resolvers below 5. The frontends
+// pages from — as zod 3 (the v1.8.0 playbook's section 1) or as zod 4 with
+// an @hookform/resolvers below 5 (its section 2: those resolvers predate
+// zod 4 support, so the frontend's forms break either way). The frontends
 // are the project's load-time inventory (config.ResolveInventoryAtLoad),
 // plus the root package.json (a site) and every frontends/<name>, so a
 // project whose forge.yaml does not load is still read. A frontend only a

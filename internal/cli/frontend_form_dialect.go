@@ -24,7 +24,7 @@ const zod4MigrationSkill = "migrations/v1.8.0"
 // frontend at frontendAbsDir uses, and answers the form dialect its
 // generated create/edit pages must be written in. It is the ONE reading of
 // those majors: the v1.8.0 migration's detection (`forge-detect
-// zod3-frontend`) asks it too, so `forge generate` and `forge project
+// pre-zod4-forms`) asks it too, so `forge generate` and `forge project
 // upgrade list` cannot disagree about which frontends are still on zod 3.
 //
 // The frontend's package.json is its owner's: a frontend scaffolded before

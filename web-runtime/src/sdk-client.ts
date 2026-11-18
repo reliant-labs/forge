@@ -61,7 +61,12 @@ export type StartRecorder = typeof startReplayRecorder;
  * failure); initBrowserTelemetry treats that as "no telemetry".
  */
 export async function loadSdkClient(): Promise<HyperDXClient> {
-  const rum = resolveRum(await import("@hyperdx/otel-web"));
+  // Through package.json's "imports" map rather than by name. Bundlers get
+  // the SDK's ESM build. Under Node, which cannot load that build, the map
+  // resolves to dist/hyperdx-otel-web.node.js, the SDK pre-bundled for the
+  // browser platform. A test runner that loads this package natively starts
+  // the SDK through it. See the "//imports note".
+  const rum = resolveRum(await import("#hyperdx-otel-web"));
   if (!rum) {
     throw new Error("@hyperdx/otel-web has no Rum");
   }

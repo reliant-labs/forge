@@ -108,6 +108,22 @@ runtime declare `@hyperdx/browser` instead; a peer they don't declare would
 fail to resolve on their next install. Those apps need no edit, and their
 `@hyperdx/browser` entry is unused from then on.
 
+Under Node, `/telemetry` loads the SDK from `dist/hyperdx-otel-web.node.js`
+instead. That file is `@hyperdx/otel-web` bundled for the browser platform
+into one ES module, with `@opentelemetry/api` left external. The runtime
+reaches it through package.json's `#hyperdx-otel-web` import map, under the
+`node` condition, after a `browser` condition that comes first. Node is where a test runner (vitest with jsdom) runs this
+package natively, and Node cannot load the SDK's own ESM build, whose imports
+carry no file extensions. Its CommonJS build is no substitute: it loads the
+OpenTelemetry Node builds, so spans leave over `node:http` rather than
+`fetch`. Browser bundlers match `browser` first, even ones that also set
+`node`, so they never reach this file: Vite, webpack (Next.js) and esbuild
+were all checked, and `src/sdk-conditions.test.ts` holds esbuild to it. The
+file needs nothing of Node anyway: its only import is `@opentelemetry/api`,
+with no builtin and no `require()`.
+When the SDK cannot start at all, `initBrowserTelemetry` resolves `false` and
+logs `[telemetry] failed to start` with `console.warn`.
+
 Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 (forge's generated `next.config.ts` sets it). The reason changed with the
 build — it is no longer "these are `.tsx` files" but "these modules carry

@@ -50,7 +50,9 @@
 //     above 0. Each names the newest commit that changed the op. Both warn
 //     unless fail_on lists them. When the subject names a release, an op is
 //     judged only on after figures of that release's service.version
-//     (OpHealth.AfterVersion); one without them is named in not_evaluated.
+//     (OpHealth.AfterVersion) against before figures of one other version
+//     (OpHealth.BeforeVersion, the caller's baseline); one without either is
+//     named in not_evaluated.
 //     Being the release's own calls, they are attributed whatever their
 //     service's version share. They never prove a release good: a PASS
 //     still rests on the services.
@@ -821,7 +823,7 @@ func Evaluate(in Input) Report {
 		}
 	}
 
-	fs, thin := changedOpFindings(in.Ops, t.changedOps(), in.Subject.Release)
+	fs, thin := changedOpFindings(in.Ops, t.changedOps(), in.Subject)
 	for _, f := range fs {
 		add(f) // changed_ops.go
 	}

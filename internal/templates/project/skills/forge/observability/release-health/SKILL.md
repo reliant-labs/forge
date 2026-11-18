@@ -73,9 +73,12 @@ An op is compared only with `changed_op_min_calls` (50) calls in both
 windows; the thinner ones are named in one `not_evaluated` entry,
 `changed_op: N op(s) below changed_op_min_calls …`.
 On a hosted env an op's after-window figures count only the judged release's
-`service.version` (`changed_ops[].after_version`), so an old version still in
-rotation never makes it a finding, and an op without per-version figures is
-listed under `not_evaluated` instead of judged.
+`service.version` (`changed_ops[].after_version`) and its before-window
+figures only one baseline version's (`changed_ops[].before_version`: the
+previous release, else the version that served most of the op's before window,
+never the judged release itself), so an old version still in rotation on
+either side never makes it a finding, and an op without per-version figures
+for either window is listed under `not_evaluated` instead of judged.
 `--threshold k=v` overrides each, and `thresholds` lists each with its source.
 Both warn by default; add them to `fail_on` (KCL `release_health`, or
 `--fail-on`) to gate. Each finding carries `op`, `commit` and `pr` (from a

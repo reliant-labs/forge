@@ -52,7 +52,7 @@ var obsCheckSchema = obsout.Schema{
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed", "findings.op", "findings.commit", "findings.pr",
 		"changed_ops", "changed_ops.op", "changed_ops.service", "changed_ops.kind",
 		"changed_ops.before", "changed_ops.before.requests", "changed_ops.before.error_rate", "changed_ops.before.p50_ms", "changed_ops.before.p95_ms", "changed_ops.before.p99_ms",
-		"changed_ops.after", "changed_ops.after.requests", "changed_ops.after.error_rate", "changed_ops.after.p50_ms", "changed_ops.after.p95_ms", "changed_ops.after.p99_ms", "changed_ops.after_version",
+		"changed_ops.after", "changed_ops.after.requests", "changed_ops.after.error_rate", "changed_ops.after.p50_ms", "changed_ops.after.p95_ms", "changed_ops.after.p99_ms", "changed_ops.after_version", "changed_ops.before_version",
 		"changed_ops.commits", "changed_ops.commits.sha", "changed_ops.commits.subject", "changed_ops.commits.pr",
 		"version_share", "window_not_live", "rollout_incomplete",
 		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "workload_findings",
@@ -248,7 +248,10 @@ since P, uncommitted changes included) are judged on their own figures:
 changed_op_errors and changed_op_latency, warn unless --fail-on names them,
 each naming the op and the commit that changed it (changed_ops). On a
 promotion the after figures count only the judged release's service.version
-(changed_ops.after_version); an op whose spans carry none is not judged. When
+(changed_ops.after_version) and the before figures only one baseline
+version's (changed_ops.before_version: the previous release, else the version
+that served most of the op's before window, never the judged release); an op
+missing either is not judged. When
 the commits are not in this checkout, or the backend cannot read per-op
 figures, not_evaluated says so (changed_op: ...) and nothing else changes.
 

@@ -196,6 +196,17 @@ func afterReply(svc, name string, calls, errs, p95 float64) string {
 	return `{"rows":[` + panelRow(svc, name, "v2", calls, errs, p95) + `]}`
 }
 
+// beforeReply is a hosted before window's QueryPanel answer, read per
+// version: one row of the previous release, v1 (cloudFacts).
+func beforeReply(svc, name string, calls, errs, p95 float64) string {
+	return `{"rows":[` + panelRow(svc, name, "v1", calls, errs, p95) + `]}`
+}
+
+// rowsReply is a QueryPanel answer of the given panelRow rows.
+func rowsReply(rows ...string) string {
+	return `{"rows":[` + strings.Join(rows, ",") + `]}`
+}
+
 // panelRow is one ops-server row; version "" is a row of spans with no
 // service.version (or a panel not grouped by it).
 func panelRow(svc, name, version string, calls, errs, p95 float64) string {
@@ -214,7 +225,7 @@ func TestObsCheckHostedAnswerGetsItsChangedOps(t *testing.T) {
 	run := func(t *testing.T, args ...string) (int, map[string]any, *seqCaller, []releasehealth.Subject) {
 		var asked []releasehealth.Subject
 		caller := &seqCaller{replies: map[string][]string{procHealth: {reply},
-			procPanel: {panelReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)}}}
+			procPanel: {beforeReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)}}}
 		h := newObsCheckHarness()
 		h.opChanges = fixedOpChanges(&asked, rpc)
 		out, _, err := h.run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
@@ -273,7 +284,7 @@ func TestObsCheckHostedAnswerGetsItsChangedOps(t *testing.T) {
 // window, as any finding does; the diff is read once however many polls.
 func TestObsCheckChangedOpBlocksAnEarlyPass(t *testing.T) {
 	var asked []releasehealth.Subject
-	before, after := panelReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)
+	before, after := beforeReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)
 	caller := &seqCaller{replies: map[string][]string{
 		procHealth: {healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", ""), healthReply("RELEASE_VERDICT_PASS", true, "", "")},
 		procPanel:  {before, after, before, after},
@@ -320,7 +331,7 @@ func TestObsCheckExplainListsTheChangedOpStatements(t *testing.T) {
 func TestObsCheckHoldsTheChangedOpThresholdsBackFromTheControlPlane(t *testing.T) {
 	var asked []releasehealth.Subject
 	caller := &seqCaller{replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
-		procPanel: {panelReply("api", createTodo, 30, 0, 20), afterReply("api", createTodo, 30, 0, 90)}}}
+		procPanel: {beforeReply("api", createTodo, 30, 0, 20), afterReply("api", createTodo, 30, 0, 90)}}}
 	h := newObsCheckHarness()
 	h.opChanges = fixedOpChanges(&asked, changedOp{Name: createTodo, Kind: releasehealth.OpKindRPC})
 	out, _, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json",
@@ -425,24 +436,15 @@ func TestObsCheckChangedOpFields(t *testing.T) {
 	}
 }
 
-// On a promotion the after window is read per service.version and the
-// changed op judged on the release's own calls: errors of the old version
+// On a promotion both windows are read per service.version and the changed
+// op judged on the release's own after-window calls (against v1's before
+// window here): errors of the old version
 // still in rotation are not the release's, and an op whose spans carry no
 // version is not judged at all.
 func TestObsCheckHostedChangedOpsAreTheReleasesVersion(t *testing.T) {
 	run := func(t *testing.T, after string) (map[string]any, *seqCaller) {
 		t.Helper()
-		var asked []releasehealth.Subject
-		caller := &seqCaller{replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
-			procPanel: {panelReply("api", createTodo, 400, 0, 20), after}}}
-		h := newObsCheckHarness()
-		h.opChanges = fixedOpChanges(&asked, changedOp{Name: createTodo, Kind: releasehealth.OpKindRPC})
-		out, _, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json", "--fail-on", "error_rate,changed_op_errors")
-		doc := decode(t, out)
-		if code, fail := exitCodeForError(err), doc["verdict"] == "FAIL"; (code == exitWrong) != fail || (code != 0 && code != exitWrong) {
-			t.Fatalf("exit %d (%v) for verdict %v", code, err, doc["verdict"])
-		}
-		return doc, caller
+		return runHostedChangedOp(t, beforeReply("api", createTodo, 400, 0, 20), after)
 	}
 	panelGroupBy := func(caller *seqCaller) []string {
 		var out []string
@@ -458,8 +460,8 @@ func TestObsCheckHostedChangedOpsAreTheReleasesVersion(t *testing.T) {
 
 	// v1 still serves most calls, and fails a third of them; v2 is healthy.
 	doc, caller := run(t, `{"rows":[`+panelRow("api", createTodo, "v1", 600, 200, 20)+`,`+panelRow("api", createTodo, "v2", 300, 0, 20)+`]}`)
-	if got := panelGroupBy(caller); fmt.Sprint(got) != "[[service.name span.name] [service.name span.name resource.attr.service.version]]" {
-		t.Errorf("panels groupBy %v: the before window whole, the after window per version", got)
+	if got := panelGroupBy(caller); fmt.Sprint(got) != "[[service.name span.name resource.attr.service.version] [service.name span.name resource.attr.service.version]]" {
+		t.Errorf("panels groupBy %v: both windows per version", got)
 	}
 	if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
 		t.Errorf("old-version errors judged against the release: %v %v", doc["verdict"], doc["findings"])
@@ -488,6 +490,25 @@ func TestObsCheckHostedChangedOpsAreTheReleasesVersion(t *testing.T) {
 	}
 }
 
+// runHostedChangedOp runs `forge obs check prod` (release v2, previous
+// release v1; cloudFacts) over one changed rpc whose before and after
+// windows' QueryPanel answers are before and after, failing on
+// changed_op_errors.
+func runHostedChangedOp(t *testing.T, before, after string) (map[string]any, *seqCaller) {
+	t.Helper()
+	var asked []releasehealth.Subject
+	caller := &seqCaller{replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
+		procPanel: {before, after}}}
+	h := newObsCheckHarness()
+	h.opChanges = fixedOpChanges(&asked, changedOp{Name: createTodo, Kind: releasehealth.OpKindRPC})
+	out, _, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json", "--fail-on", "error_rate,changed_op_errors")
+	doc := decode(t, out)
+	if code, fail := exitCodeForError(err), doc["verdict"] == "FAIL"; (code == exitWrong) != fail || (code != 0 && code != exitWrong) {
+		t.Fatalf("exit %d (%v) for verdict %v", code, err, doc["verdict"])
+	}
+	return doc, caller
+}
+
 func TestJoinOpHealthPicksTheReleasesRows(t *testing.T) {
 	v := func(s obsbackend.OpStats, version string) obsbackend.OpStats { s.Version = version; return s }
 	before := map[opKey][]obsbackend.OpStats{
@@ -506,7 +527,7 @@ func TestJoinOpHealthPicksTheReleasesRows(t *testing.T) {
 		// jobs: no after row at all.
 	}
 	got := map[string]releasehealth.OpHealth{}
-	for _, o := range joinOpHealth([]changedOp{notifyOp(), {Name: "never.Seen"}}, before, after, "v2") {
+	for _, o := range joinOpHealth([]changedOp{notifyOp(), {Name: "never.Seen"}}, before, after, releasehealth.Subject{Release: "v2"}) {
 		got[o.Op+"/"+o.Service] = o
 	}
 	for key, want := range map[string]struct {
@@ -523,9 +544,144 @@ func TestJoinOpHealthPicksTheReleasesRows(t *testing.T) {
 	}
 
 	// A local env names no release: the whole figures, no version.
-	for _, o := range joinOpHealth([]changedOp{notifyOp()}, before, map[opKey][]obsbackend.OpStats{{"api", notifySend}: {stats("api", notifySend, 300, 0.5, 10)}}, "") {
+	for _, o := range joinOpHealth([]changedOp{notifyOp()}, before, map[opKey][]obsbackend.OpStats{{"api", notifySend}: {stats("api", notifySend, 300, 0.5, 10)}}, releasehealth.Subject{}) {
 		if o.AfterVersion != "" || (o.Service == "api" && o.After.Requests != 300) {
 			t.Errorf("local: %+v", o)
+		}
+	}
+}
+
+// On a promotion the before window is version-scoped too: the op is
+// compared with the version it replaced, not with every version that
+// served the before window.
+func TestObsCheckHostedChangedOpBaselineIsOneVersion(t *testing.T) {
+	// A FALSE finding avoided: v0 (an older version still in rotation)
+	// served most of the before window cleanly, v1 (the previous release)
+	// failed 10% of its calls, and v2 fails 12%, about v1's level. Against
+	// the aggregated before window (10 errors in 1000 calls, 1%) v2's 12%
+	// is +11 points and would fire changed_op_errors; against v1 it is +2.
+	doc, caller := runHostedChangedOp(t,
+		rowsReply(panelRow("api", createTodo, "v0", 900, 0, 20), panelRow("api", createTodo, "v1", 100, 10, 20)),
+		afterReply("api", createTodo, 300, 36, 20))
+	if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
+		t.Errorf("v2 at v1's error level was judged against v0's: %v %v", doc["verdict"], doc["findings"])
+	}
+	co := doc["changed_ops"].([]any)[0].(map[string]any)
+	if co["before_version"] != "v1" || co["before"].(map[string]any)["requests"] != float64(100) || co["before"].(map[string]any)["error_rate"] != 0.1 {
+		t.Errorf("changed op = %v: Before is v1's calls", co)
+	}
+	var panels int
+	for _, c := range caller.calls {
+		if c.procedure == procPanel {
+			panels++
+			if !strings.Contains(c.body, "resource.attr.service.version") {
+				t.Errorf("a window read whole: %s", c.body)
+			}
+		}
+	}
+	if panels != 2 {
+		t.Errorf("QueryPanel ran %d times, want once per window", panels)
+	}
+
+	// A TRUE finding no longer masked: v0 failed half its calls in the
+	// before window, v1 none, and v2 fails 10%. The aggregated before window
+	// (45%) would hide it; against v1 it is +10 points.
+	doc, _ = runHostedChangedOp(t,
+		rowsReply(panelRow("api", createTodo, "v0", 900, 450, 20), panelRow("api", createTodo, "v1", 100, 0, 20)),
+		afterReply("api", createTodo, 300, 30, 20))
+	if f := findingOf(doc, release.HealthChangedOpErrors); doc["verdict"] != "FAIL" || f == nil {
+		t.Errorf("v2's regression over v1: %v %v", doc["verdict"], doc["findings"])
+	}
+
+	// The judged release's own calls before the promotion (a canary) are no
+	// baseline either: only v2 and unversioned spans served the before
+	// window, so the op is not judged.
+	for name, before := range map[string]string{
+		"no version on any before span": panelReply("api", createTodo, 400, 0, 20),
+		"only the canary":               rowsReply(panelRow("api", createTodo, "v2", 100, 0, 20), panelRow("api", createTodo, "", 50, 0, 20)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, _ := runHostedChangedOp(t, before, afterReply("api", createTodo, 300, 100, 20))
+			if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
+				t.Errorf("judged with no baseline: %v %v", doc["verdict"], doc["findings"])
+			}
+			want := "changed_op: 1 op(s) have no before-window figures of the previous release v1 to compare with (none of their before-window spans carries a service.version other than v2, or none was read per version): " + createTodo
+			if ne := fmt.Sprint(doc["not_evaluated"]); !strings.Contains(ne, want) {
+				t.Errorf("not_evaluated = %s, want %q", ne, want)
+			}
+			if co := doc["changed_ops"].([]any)[0].(map[string]any); co["before_version"] != nil || co["after_version"] != "v2" {
+				t.Errorf("changed op = %v", co)
+			}
+		})
+	}
+}
+
+func TestJoinOpHealthPicksTheBaselineVersion(t *testing.T) {
+	v := func(s obsbackend.OpStats, version string) obsbackend.OpStats { s.Version = version; return s }
+	row := func(svc, version string, calls float64) obsbackend.OpStats {
+		return v(stats(svc, notifySend, calls, 0, 10), version)
+	}
+	before := map[opKey][]obsbackend.OpStats{
+		// v0 the busiest, v1 the previous release, v2 the canary (busiest
+		// of all, never the baseline).
+		{"api", notifySend}: {row("api", "v0", 300), row("api", "v1", 100), row("api", "v2", 900)},
+		// A tie: the lower version wins, so the choice is deterministic.
+		{"tie", notifySend}: {row("tie", "v1", 100), row("tie", "v0", 100)},
+		// Versions, none the previous release.
+		{"old", notifySend}: {row("old", "v0", 100)},
+		// No version at all.
+		{"bare", notifySend}: {row("bare", "", 100)},
+		// The canary alone.
+		{"canary", notifySend}: {row("canary", "v2", 100)},
+	}
+	after := map[opKey][]obsbackend.OpStats{}
+	for k := range before {
+		after[k] = []obsbackend.OpStats{row(k.service, "v2", 100)}
+	}
+	after[opKey{"new", notifySend}] = []obsbackend.OpStats{row("new", "v2", 100)} // no before row
+	ops := []changedOp{notifyOp(), {Name: "never.Seen"}}
+	type pick struct {
+		version string
+		calls   int64
+	}
+	join := func(s releasehealth.Subject) map[string]pick {
+		out := map[string]pick{}
+		for _, o := range joinOpHealth(ops, before, after, s) {
+			out[o.Op+"/"+o.Service] = pick{o.BeforeVersion, o.Before.Requests}
+		}
+		return out
+	}
+
+	// The previous release recorded: its row, or zero calls (too thin) when
+	// it made none; no baseline when no span names another version.
+	got := join(releasehealth.Subject{Release: "v2", PreviousRelease: "v1"})
+	for key, want := range map[string]pick{
+		"notify.Send/api": {"v1", 100}, "notify.Send/tie": {"v1", 100}, "notify.Send/old": {"v1", 0},
+		"notify.Send/bare": {"", 100}, "notify.Send/canary": {"", 0}, "notify.Send/new": {"v1", 0}, "never.Seen/": {"v1", 0},
+	} {
+		if got[key] != want {
+			t.Errorf("previous release v1: %s = %+v, want %+v", key, got[key], want)
+		}
+	}
+
+	// None recorded (or the release itself, a re-promotion): the version
+	// that served most of the op's before window, the canary excluded.
+	for _, prev := range []string{"", "v2"} {
+		got = join(releasehealth.Subject{Release: "v2", PreviousRelease: prev})
+		for key, want := range map[string]pick{
+			"notify.Send/api": {"v0", 300}, "notify.Send/tie": {"v0", 100}, "notify.Send/old": {"v0", 100},
+			"notify.Send/bare": {"", 100}, "notify.Send/canary": {"", 0}, "notify.Send/new": {"", 0}, "never.Seen/": {"", 0},
+		} {
+			if got[key] != want {
+				t.Errorf("previous release %q: %s = %+v, want %+v", prev, key, got[key], want)
+			}
+		}
+	}
+
+	// A local env scopes nothing.
+	for key, p := range join(releasehealth.Subject{}) {
+		if p.version != "" {
+			t.Errorf("local: %s = %+v", key, p)
 		}
 	}
 }

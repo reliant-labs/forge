@@ -39,9 +39,16 @@ package releasehealth
 // hosted env's promotion), an op is judged only on after-window figures of
 // that release's own service.version ([OpHealth.AfterVersion]): the calls an
 // old version still in rotation made can push an op's error rate up while the
-// release is healthy, and they are not the release's. An op whose after
-// figures are not the release's (its spans carry no service.version, or the
-// caller did not read them per version) is not judged; it is named in a
+// release is healthy, and they are not the release's. Its baseline is one
+// version too ([OpHealth.BeforeVersion]), never the judged release itself (a
+// canary of it before the promotion is not a baseline): a before window that
+// mixes the previous release with an older one still in rotation would
+// otherwise compare the release against neither. Which version the baseline
+// is, is the caller's choice, recorded on the op (`forge obs check` takes the
+// previous release, else the version that served most of the op's before
+// window). An op whose after figures are not the release's, or that has no
+// baseline version, is not judged (its spans carry no service.version, or
+// the caller did not read them per version); each case is named in a
 // not_evaluated entry of its own. Being the release's own calls, a judged
 // op's findings are attributed whatever its service's version share
 // (attribution.go): only a window that is not the live release's moves them.
@@ -111,9 +118,14 @@ type OpHealth struct {
 	// AfterVersion is the service.version the After figures are restricted
 	// to; "" is every version's spans. When the report's subject names a
 	// release, an op is judged only when AfterVersion is that release (the
-	// rule above). Before is never version-scoped: it is all pre-promotion
-	// traffic.
+	// rule above).
 	AfterVersion string `json:"after_version,omitempty"`
+	// BeforeVersion is the service.version the Before figures are
+	// restricted to: the baseline the op is compared against, chosen by the
+	// caller; "" is every version's spans. When the report's subject names
+	// a release, an op is judged only when BeforeVersion is set and is not
+	// that release (the rule above).
+	BeforeVersion string `json:"before_version,omitempty"`
 	// Commits are the range's commits that changed the op, newest first.
 	Commits []OpCommit `json:"commits,omitempty"`
 }
@@ -181,17 +193,23 @@ func (t Thresholds) changedOps() changedOpLimits {
 	return l
 }
 
-// changedOpFindings judges ops under l for the judged release rel ("" when
-// the subject names none): the findings (no policy yet), and the
-// not_evaluated entries of the ops with no after figures of rel and of the
-// ops too thin to compare (none when every op was compared).
-func changedOpFindings(ops []OpHealth, l changedOpLimits, rel string) ([]Finding, []string) {
+// changedOpFindings judges ops under l for the judged subject s: the
+// findings (no policy yet), and the not_evaluated entries of the ops with no
+// after figures of s's release, of those with no baseline version, and of
+// those too thin to compare (none when every op was compared). A subject
+// with no release scopes nothing.
+func changedOpFindings(ops []OpHealth, l changedOpLimits, s Subject) ([]Finding, []string) {
+	rel := s.Release
 	var out []Finding
-	var thin, unversioned []string
+	var thin, noAfter, noBefore []string
 	floor := int64(l.minCalls)
 	for _, o := range ops {
 		if rel != "" && o.AfterVersion != rel {
-			unversioned = append(unversioned, o.Op)
+			noAfter = append(noAfter, o.Op)
+			continue
+		}
+		if rel != "" && (o.BeforeVersion == "" || o.BeforeVersion == rel) {
+			noBefore = append(noBefore, o.Op)
 			continue
 		}
 		if o.Before.Requests < floor || o.After.Requests < floor {
@@ -234,8 +252,11 @@ func changedOpFindings(ops []OpHealth, l changedOpLimits, rel string) ([]Finding
 		}
 	}
 	var entries []string
-	if len(unversioned) > 0 {
-		entries = append(entries, unversionedOpsEntry(unversioned, rel))
+	if len(noAfter) > 0 {
+		entries = append(entries, unversionedOpsEntry(noAfter, rel))
+	}
+	if len(noBefore) > 0 {
+		entries = append(entries, noBaselineOpsEntry(noBefore, s))
 	}
 	if len(thin) > 0 {
 		entries = append(entries, thinOpsEntry(thin, l.minCalls))
@@ -258,6 +279,19 @@ func unversionedOpsEntry(names []string, rel string) string {
 	names, list := fewNames(names)
 	return fmt.Sprintf("%s %d op(s) have no after-window figures of %s (their spans carry no service.version, or none was read per version): %s",
 		NotEvaluatedChangedOps, len(names), rel, list)
+}
+
+// noBaselineOpsEntry is the one not_evaluated entry naming the ops with no
+// before-window figures of a version other than the judged release, in
+// thinOpsEntry's style.
+func noBaselineOpsEntry(names []string, s Subject) string {
+	names, list := fewNames(names)
+	of := "a version before " + s.Release
+	if s.PreviousRelease != "" && s.PreviousRelease != s.Release {
+		of = "the previous release " + s.PreviousRelease
+	}
+	return fmt.Sprintf("%s %d op(s) have no before-window figures of %s to compare with (none of their before-window spans carries a service.version other than %s, or none was read per version): %s",
+		NotEvaluatedChangedOps, len(names), of, s.Release, list)
 }
 
 // fewNames is names sorted and deduplicated, and the first few of them
@@ -306,7 +340,7 @@ func WithChangedOps(r Report, ops []OpHealth, overrides map[string]string) Repor
 	}
 	out.NotEvaluated = slices.DeleteFunc(slices.Clone(r.NotEvaluated), func(e string) bool { return strings.HasPrefix(e, NotEvaluatedChangedOps) })
 
-	fs, thin := changedOpFindings(ops, l, r.Subject.Release)
+	fs, thin := changedOpFindings(ops, l, r.Subject)
 	failOn := failOnOf(ths)
 	for _, f := range fs {
 		f.Policy = policyOf(f.Code, failOn)

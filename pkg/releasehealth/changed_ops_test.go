@@ -14,10 +14,10 @@ import (
 
 const opSHA = "3f2c1ab9e0d4c7b6a5f4e3d2c1b0a9f8e7d6c5b4"
 
-// op is a changed op whose after figures are the judged release's own: v2,
-// the release input() names.
+// op is a changed op whose after figures are the judged release's own (v2,
+// the release input() names) and whose before figures are v1's.
 func op(name string, beforeCalls, afterCalls int64, beforeErr, afterErr, beforeP95, afterP95 float64) OpHealth {
-	return OpHealth{Op: name, Service: "api", Kind: OpKindComponent, AfterVersion: "v2",
+	return OpHealth{Op: name, Service: "api", Kind: OpKindComponent, AfterVersion: "v2", BeforeVersion: "v1",
 		Before:  WindowStats{Requests: beforeCalls, ErrorRate: beforeErr, P95Ms: beforeP95},
 		After:   WindowStats{Requests: afterCalls, ErrorRate: afterErr, P95Ms: afterP95},
 		Commits: []OpCommit{{SHA: opSHA, Subject: "fix(notify): batch sends (#42)"}, {SHA: "aaaaaaaa", Subject: "older (#7)"}}}
@@ -516,5 +516,90 @@ func TestChangedOpsAreJudgedOnTheReleasesVersion(t *testing.T) {
 	r = Evaluate(in)
 	if codes := codes(r.Findings); !slices.Equal(codes, []string{release.HealthChangedOpErrors}) || r.Findings[0].Unattributed != "" || len(changedOpEntries(r)) != 0 {
 		t.Errorf("local: %+v %q", r.Findings, r.NotEvaluated)
+	}
+}
+
+// TestChangedOpsNeedABaselineVersion: on a promotion an op is compared only
+// against before figures of one version other than the judged release.
+func TestChangedOpsNeedABaselineVersion(t *testing.T) {
+	in := input(t, true, healthy())
+	in.Thresholds.FailOn = []string{release.HealthChangedOpErrors}
+	entries := func(r Report) []string {
+		var out []string
+		for _, e := range r.NotEvaluated {
+			if strings.HasPrefix(e, NotEvaluatedChangedOps) {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	const tail = " to compare with (none of their before-window spans carries a service.version other than v2, or none was read per version): notify.Send"
+	failing := op("notify.Send", 100, 100, 0, 0.2, 10, 10)
+
+	for name, tc := range map[string]struct {
+		before, previous string
+		want             string
+	}{
+		"no baseline version":               {"", "", NotEvaluatedChangedOps + " 1 op(s) have no before-window figures of a version before v2" + tail},
+		"the judged release's own canary":   {"v2", "", NotEvaluatedChangedOps + " 1 op(s) have no before-window figures of a version before v2" + tail},
+		"no baseline, previous release set": {"", "v1", NotEvaluatedChangedOps + " 1 op(s) have no before-window figures of the previous release v1" + tail},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := in
+			in.Subject.PreviousRelease = tc.previous
+			o := failing
+			o.BeforeVersion = tc.before
+			in.Ops = []OpHealth{o}
+			r := Evaluate(in)
+			if len(r.Findings) != 0 || r.Verdict != Pass {
+				t.Errorf("judged without a baseline version: %s %+v", r.Verdict, r.Findings)
+			}
+			if got := entries(r); !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("not_evaluated = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Any version but the release is a baseline: the caller chose it.
+	o := failing
+	o.BeforeVersion = "v0"
+	in.Ops = []OpHealth{o}
+	if r := Evaluate(in); r.Verdict != Fail || len(entries(r)) != 0 {
+		t.Errorf("baseline v0: %s %q", r.Verdict, r.NotEvaluated)
+	}
+
+	// The three entries, each its own, in a fixed order.
+	noAfter, noBefore, thin := failing, failing, op("thin.Op", 1, 1, 0, 1, 1, 1)
+	noAfter.Op, noAfter.AfterVersion = "a.NoAfter", ""
+	noBefore.Op, noBefore.BeforeVersion = "b.NoBefore", ""
+	in.Ops = []OpHealth{thin, noBefore, noAfter}
+	r := Evaluate(in)
+	got := entries(r)
+	if len(r.Findings) != 0 || len(got) != 3 || !strings.Contains(got[0], "no after-window figures of v2") ||
+		!strings.Contains(got[1], "no before-window figures") || !strings.Contains(got[2], "below changed_op_min_calls") {
+		t.Errorf("entries %q, findings %+v", got, r.Findings)
+	}
+
+	// WithChangedOps: the same rule, equal to Evaluate, idempotent.
+	old := Evaluate(Input{Subject: in.Subject, Windows: in.Windows, Services: in.Services, Thresholds: in.Thresholds})
+	for _, ops := range [][]OpHealth{{failing}, {noBefore}, {thin, noBefore, noAfter}, {o, noBefore}} {
+		in.Ops = ops
+		want := Evaluate(in)
+		got := WithChangedOps(old, ops, nil)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("WithChangedOps(%+v):\n got %+v\nwant %+v", ops, got, want)
+		}
+		if again := WithChangedOps(got, nil, nil); !reflect.DeepEqual(again, got) {
+			t.Errorf("not idempotent:\n got %+v\nwant %+v", again, got)
+		}
+	}
+
+	// A local env scopes nothing: no versions on either side, judged.
+	in.Subject.Release = ""
+	plain := failing
+	plain.AfterVersion, plain.BeforeVersion = "", ""
+	in.Ops = []OpHealth{plain}
+	if r := Evaluate(in); r.Verdict != Fail || len(entries(r)) != 0 {
+		t.Errorf("local: %s %q", r.Verdict, r.NotEvaluated)
 	}
 }

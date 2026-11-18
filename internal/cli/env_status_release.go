@@ -23,7 +23,9 @@ package cli
 //	MISSING      declared by the binding, running nowhere.
 //	UNTAGGED     the workload runs by mutable tag, so there is no digest to
 //	             compare. Nothing is proven either way.
-//	UNREACHABLE  the cluster could not be read. Says NOTHING about the env.
+//	UNREACHABLE  what runs could not be observed: the cluster, observer or
+//	             site could not be read, or a hosted static site answered
+//	             without a release marker. Says NOTHING about the env.
 //
 // Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential
 // is not evidence that a release is wrong, and a gate that reports drift and

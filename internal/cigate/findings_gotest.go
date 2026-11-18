@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"path"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,9 +14,13 @@ import (
 // A test log line names only a file's base name (`orders_test.go:9: msg`), so
 // it waits in its package's testState until the package is known to have
 // failed: in plain output that is the `FAIL <pkg>` summary line that ends the
-// package's block; in -json it is the package's own terminal `fail` event,
-// and every event carries its Package and Test, so interleaved packages (and
-// parallel tests) are attributed by the event, never by what came before it.
+// package's block; in -json it is the package's own terminal `fail` event.
+//
+// In -json, every event carries its Package, and an event's Test is the only
+// thing that attributes output to a test. Output with no Test (TestMain, an
+// init panic, a leak checker, `FAIL`, `exit status`) is the package's: it goes
+// to the package's own buffer and is never assigned to a test, whichever test
+// happens to be running or printed last.
 
 var (
 	reTestRun     = regexp.MustCompile(`^=== (?:RUN|CONT|NAME|PAUSE)\s+(\S+)`)
@@ -26,52 +29,47 @@ var (
 	rePkgFail     = regexp.MustCompile(`^FAIL\s+(\S+)(?:\s|$)`)
 	rePkgOK       = regexp.MustCompile(`^ok\s+(\S+)\s`)
 	reBuildHeader = regexp.MustCompile(`^# (\S+)`)
+	reExitStatus  = regexp.MustCompile(`^exit status \d+$`)
 )
+
+// packageLogTail is how many of a package's own output lines a package-level
+// finding carries.
+const packageLogTail = 10
 
 // testState is one package's go test output read so far.
 type testState struct {
+	// plain is true for plain output, where nothing attributes a panic to a
+	// test or to the package, so the first panic stands for the package.
+	plain bool
+
 	test      string   // the test whose output is being read
 	failed    []string // tests that failed, in order
 	failedSet map[string]bool
 	panics    map[string]string // each test's first panic line
-	panic     string            // the package's first panic, whichever test it was in
 	pending   []pendingLog
 	// last indexes the pending log line continuation lines extend; -1 none.
 	last   int
 	indent int
-	// running is the -json tests started (a run event) and not yet finished
-	// (pass, fail or skip), in start order.
-	running []string
+
+	// The package's own output (-json events with no Test): the first panic,
+	// its located diagnostics, and the tail of its log.
+	panic    string
+	diags    []Finding
+	log      []string
+	building bool // a `# <pkg>` build header opened the package's output
 }
 
-// pendingLog is a test log line waiting for its package to fail, which names
-// the directory its bare file name is in.
+// pendingLog is a test's located line, waiting for its package to fail. A
+// test log line names a base name in the package's directory (file); a
+// located line a test printed has its project-relative path (rel).
 type pendingLog struct {
-	test, file, msg string
-	line            int
+	test, file, rel, msg string
+	line, column         int
 }
 
 func newTestState() *testState { return &testState{last: -1} }
 
-func (s *testState) start(test string) {
-	if !slices.Contains(s.running, test) {
-		s.running = append(s.running, test)
-	}
-}
-
-func (s *testState) finish(test string) {
-	s.running = slices.DeleteFunc(s.running, func(t string) bool { return t == test })
-}
-
-// owner is the test a -json output line with no Test belongs to: the one test
-// still running in the package, or "" — the package itself — when none is,
-// or when several are and the line could be any of theirs.
-func (s *testState) owner() string {
-	if len(s.running) == 1 {
-		return s.running[0]
-	}
-	return ""
-}
+func newPlainState() *testState { return &testState{last: -1, plain: true} }
 
 func (s *testState) setTest(name string) {
 	if name != s.test {
@@ -96,14 +94,14 @@ func (s *testState) recordPanic(line string) {
 	if _, ok := s.panics[s.test]; !ok {
 		s.panics[s.test] = line
 	}
-	if s.panic == "" {
+	if s.plain && s.panic == "" {
 		s.panic = line
 	}
 	s.last = -1
 }
 
-// consume reads one line of a package's test output, reporting whether it was
-// go test's own (a test header, a test log line or its continuation, a panic).
+// consume reads one line of a test's output, reporting whether it was go
+// test's own (a test header, a test log line or its continuation, a panic).
 func (s *testState) consume(line string) bool {
 	if m := reTestRun.FindStringSubmatch(line); m != nil {
 		s.setTest(m[1])
@@ -139,6 +137,13 @@ func (s *testState) consume(line string) bool {
 	return false
 }
 
+// testLocated keeps a located line a test printed: it is a finding only if
+// that test fails.
+func (s *testState) testLocated(f Finding) {
+	s.pending = append(s.pending, pendingLog{test: s.test, rel: f.Path, line: f.Line, column: f.Column, msg: f.Message})
+	s.last = -1
+}
+
 // plainSummary ends the plain-output package block a `FAIL <pkg>` or
 // `ok <pkg>` line closes, placing a failed package's findings.
 func (p *findingParser) plainSummary(line string) bool {
@@ -147,7 +152,7 @@ func (p *findingParser) plainSummary(line string) bool {
 	} else if !rePkgOK.MatchString(line) {
 		return false
 	}
-	p.plain, p.header = newTestState(), ""
+	p.plain, p.header = newPlainState(), ""
 	return true
 }
 
@@ -172,11 +177,7 @@ func (p *findingParser) jsonLine(line string) {
 	switch ev.Action {
 	case "build-output":
 		for _, l := range eventLines(ev.Output) {
-			p.locatedLine(l, buildPackage(ev.ImportPath))
-		}
-	case "run":
-		if ev.Test != "" {
-			p.state(ev.Package).start(ev.Test)
+			p.addLocated(l, buildPackage(ev.ImportPath))
 		}
 	case "output":
 		p.jsonOutput(ev)
@@ -185,29 +186,63 @@ func (p *findingParser) jsonLine(line string) {
 	case "pass", "skip":
 		if ev.Test == "" {
 			delete(p.pkgs, ev.Package)
-		} else {
-			p.state(ev.Package).finish(ev.Test)
 		}
 	}
 }
 
-// jsonOutput reads an output event's lines. A line whose event names no Test
-// is the package's own output (a TestMain or init panic, `FAIL`, exit status)
-// or a test's that test2json could not attribute: it belongs to the one test
-// still running in the package when there is exactly one, and to the package
-// otherwise — never to whichever test printed last.
+// jsonOutput reads an output event's lines: a test's when the event names its
+// Test, the package's own otherwise.
 func (p *findingParser) jsonOutput(ev testEvent) {
 	st := p.state(ev.Package)
-	test := ev.Test
-	if test == "" {
-		test = st.owner()
-	}
 	for _, l := range eventLines(ev.Output) {
-		st.setTest(test)
-		if !st.consume(l) {
-			// A build error printed as test output (Go before 1.24).
-			p.locatedLine(l, ev.Package)
+		if ev.Test == "" {
+			p.packageLine(ev.Package, st, l)
+			continue
 		}
+		st.setTest(ev.Test)
+		if st.consume(l) {
+			continue
+		}
+		if f, ok := p.located(l); ok {
+			st.testLocated(f)
+		}
+	}
+}
+
+// packageLine keeps one line of the package's own output. A located line under
+// a `# <pkg>` header is a build error (Go before 1.24 printed those as package
+// output): a finding at once, and the package's build failed. Any other
+// located line is a package diagnostic, placed when the package fails. The
+// first panic and the tail of the log, minus go test's own summary lines,
+// describe a failure nothing located.
+func (p *findingParser) packageLine(pkg string, st *testState, line string) {
+	trim := strings.TrimSpace(line)
+	switch {
+	case trim == "":
+		return
+	case reBuildHeader.MatchString(line):
+		st.building = true
+		return
+	}
+	if f, ok := p.located(line); ok {
+		if st.building {
+			p.add(f)
+			p.buildErr[pkg] = true
+		} else {
+			st.diags = append(st.diags, f)
+		}
+		return
+	}
+	if strings.HasPrefix(trim, "panic: ") && st.panic == "" {
+		st.panic = trim
+		return
+	}
+	if trim == "PASS" || trim == "FAIL" || rePkgFail.MatchString(trim) || rePkgOK.MatchString(trim) || reExitStatus.MatchString(trim) {
+		return
+	}
+	st.log = append(st.log, trim)
+	if len(st.log) > packageLogTail {
+		st.log = st.log[len(st.log)-packageLogTail:]
 	}
 }
 
@@ -221,16 +256,10 @@ func (p *findingParser) jsonFail(ev testEvent) {
 	st := p.state(ev.Package)
 	if ev.Test != "" {
 		st.fail(ev.Test)
-		st.finish(ev.Test)
 		return
 	}
-	if ev.FailedBuild != "" && p.compiled[buildPackage(ev.FailedBuild)] {
-		p.compiled[ev.Package] = true
-	}
-	// A test still running when its package failed was cut short by that
-	// failure (a panic, os.Exit, a timeout): it failed too.
-	for _, t := range st.running {
-		st.fail(t)
+	if ev.FailedBuild != "" && p.buildErr[buildPackage(ev.FailedBuild)] {
+		p.buildErr[ev.Package] = true
 	}
 	p.flushPackage(ev.Package, st, true)
 	delete(p.pkgs, ev.Package)
@@ -247,9 +276,9 @@ func (p *findingParser) state(pkg string) *testState {
 
 // flushUnfinished places what a -json stream cut short (a killed run, a
 // truncated log) left: the failed tests of packages with no terminal event.
-// Without that event nothing says the package itself failed, so no
-// package-level finding is added. Plain output's pending block has no package
-// line, so it cannot be placed.
+// Without that event nothing says the package itself failed, so neither its
+// diagnostics nor a package-level finding are added. Plain output's pending
+// block has no package line, so it cannot be placed.
 func (p *findingParser) flushUnfinished() {
 	pkgs := make([]string, 0, len(p.pkgs))
 	for pkg := range p.pkgs {
@@ -261,16 +290,45 @@ func (p *findingParser) flushUnfinished() {
 	}
 }
 
-// flushPackage places st's failed tests in pkg's directory. A test that failed
-// with no log line of its own (nor a subtest's) becomes a finding on the
-// package directory, carrying its panic when there was one. A package that
-// failed (pkgFailed) with no failed test and no located build error (a
-// timeout, a TestMain exit) becomes one too.
+// flushPackage places a package's findings. Each failed test's located lines
+// are findings; a failed test with none (nor a subtest with one) is a finding
+// on the package directory, carrying its panic when there was one. When the
+// package itself failed (pkgFailed), its own located diagnostics are findings
+// too, and a package with no failed test, no diagnostic and no build error
+// (a TestMain exit, a timeout, an init panic) is a finding on its directory
+// with its panic and the tail of its log.
 func (p *findingParser) flushPackage(pkg string, st *testState, pkgFailed bool) {
 	dir, ok := p.pkgDir(pkg)
 	if !ok {
 		return
 	}
+	located := p.flushTests(dir, st)
+	if !pkgFailed {
+		return
+	}
+	for _, f := range st.diags {
+		p.add(f)
+	}
+	switch {
+	case len(st.failed) == 0 && len(st.diags) == 0 && !p.buildErr[pkg]:
+		msg := pkg + " failed"
+		if st.panic != "" {
+			msg += ": " + st.panic
+		}
+		if len(st.log) > 0 {
+			msg += "\n" + strings.Join(st.log, "\n")
+		}
+		p.add(Finding{Path: dir, Level: LevelError, Message: msg})
+	case !st.plain && st.panic != "" && len(located) > 0:
+		// Tests failed, and the package's own output also panicked (in
+		// plain output that panic was the failing test's, already placed).
+		p.add(Finding{Path: dir, Level: LevelError, Message: pkg + ": " + st.panic})
+	}
+}
+
+// flushTests places the failed tests' findings in dir and returns the tests
+// placed.
+func (p *findingParser) flushTests(dir string, st *testState) map[string]bool {
 	located := map[string]bool{}
 	for _, l := range st.pending {
 		// Under -v (and -json) a passing test's log is printed too.
@@ -278,7 +336,11 @@ func (p *findingParser) flushPackage(pkg string, st *testState, pkgFailed bool) 
 			continue
 		}
 		located[l.test] = true
-		p.add(Finding{Path: path.Join(dir, l.file), Line: l.line, Level: LevelError, Message: l.test + ": " + l.msg})
+		f := Finding{Path: l.rel, Line: l.line, Column: l.column, Level: LevelError, Message: l.test + ": " + l.msg}
+		if f.Path == "" {
+			f.Path = path.Join(dir, l.file)
+		}
+		p.add(f)
 	}
 	for _, t := range st.failed {
 		if located[t] || hasLocatedSubtest(located, t) {
@@ -291,18 +353,7 @@ func (p *findingParser) flushPackage(pkg string, st *testState, pkgFailed bool) 
 		located[t] = true
 		p.add(Finding{Path: dir, Level: LevelError, Message: msg})
 	}
-	switch {
-	case pkgFailed && len(st.failed) == 0 && !p.compiled[pkg]:
-		msg := pkg + " failed"
-		if st.panic != "" {
-			msg += ": " + st.panic
-		}
-		p.add(Finding{Path: dir, Level: LevelError, Message: msg})
-	case pkgFailed && st.panics[""] != "":
-		// Tests failed, and the package also panicked where no one test can
-		// own the panic (several were running): the package carries it.
-		p.add(Finding{Path: dir, Level: LevelError, Message: pkg + ": " + st.panics[""]})
-	}
+	return located
 }
 
 func hasLocatedSubtest(located map[string]bool, test string) bool {

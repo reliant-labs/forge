@@ -66,10 +66,10 @@ var (
 // `path:line[:col]: message` lines (go build, go vet, golangci-lint, buf),
 // tsc's `path(line,col): error …`, and go test's failures, plain or -json
 // (findings_gotest.go). A failed test with no log line is a finding on its
-// package's directory, with line 0. The result is sorted and de-duplicated, so the same output always
-// gives the same list, and holds at most MaxFindings; omitted counts the rest.
+// package's directory, with line 0. The result is sorted and de-duplicated,
+// so the same output always gives the same list, and holds at most MaxFindings; omitted counts the rest.
 func ExtractFindings(output string, in FindingsInput) (findings []Finding, omitted int) {
-	p := findingParser{in: in, seen: map[Finding]bool{}, plain: newTestState(), compiled: map[string]bool{}, pkgs: map[string]*testState{}}
+	p := findingParser{in: in, seen: map[Finding]bool{}, plain: newPlainState(), buildErr: map[string]bool{}, pkgs: map[string]*testState{}}
 	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
 		if strings.HasPrefix(line, "{") {
 			p.jsonLine(line)
@@ -106,10 +106,11 @@ type findingParser struct {
 	// output; a `FAIL <pkg>` or `ok <pkg>` line ends the block.
 	plain *testState
 	// header is the package a `# <pkg>` build header named, until the next
-	// package line; compiled marks each package whose build output located a
-	// line, so its failure is not reported a second time.
+	// package line. buildErr marks each package whose build output located a
+	// line, so its failure is not reported a second time; only a build error
+	// does that, never a line a test or the package printed.
 	header   string
-	compiled map[string]bool
+	buildErr map[string]bool
 	// pkgs is the go test -json state of each package, keyed by the events'
 	// Package, so interleaved packages never share a test or a failure.
 	pkgs map[string]*testState
@@ -135,15 +136,16 @@ func (p *findingParser) line(line string) {
 	if p.plainSummary(line) || p.plain.consume(line) {
 		return
 	}
-	p.locatedLine(line, p.header)
+	p.addLocated(line, p.header)
 }
 
-// locatedLine adds a generic located line, crediting it to pkg's build.
-func (p *findingParser) locatedLine(line, pkg string) {
+// addLocated adds a generic located line at once. buildPkg, when set, is the
+// package whose build printed it: that package's build failed.
+func (p *findingParser) addLocated(line, buildPkg string) {
 	if f, ok := p.located(line); ok {
 		p.add(f)
-		if pkg != "" {
-			p.compiled[pkg] = true
+		if buildPkg != "" {
+			p.buildErr[buildPkg] = true
 		}
 	}
 }

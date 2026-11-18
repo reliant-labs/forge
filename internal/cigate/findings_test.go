@@ -153,70 +153,143 @@ func TestExtractFindings_GoTestJSONInterleaved(t *testing.T) {
 	})
 }
 
-// go test -json output events that name no Test: the package's own output, or
-// a test's test2json could not attribute. Each is owned by the one test still
-// running in its package, else by the package — never by the test that
-// printed last.
-//
-//   - f: TestF1 passed, TestF2 is running when a Test-less panic is printed and
-//     the binary dies (no fail event for TestF2): the panic is TestF2's.
-//   - g: TestG passed and logged, then TestMain panics in teardown: the
-//     package failed, carrying the panic; TestG (the last printer) is not
-//     blamed and its log is no finding.
-//   - h: an init panic before any test: the package failed, carrying it.
-//   - i: two parallel tests running when a Test-less panic is printed: no one
-//     test owns it, so the package carries it beside the two failed tests.
-func TestExtractFindings_GoTestJSONPackageOutput(t *testing.T) {
-	const m = testModule
-	ev := func(pkg, action, test, output string) string {
-		b, err := json.Marshal(map[string]string{"Action": action, "Package": m + "/internal/" + pkg, "Test": test, "Output": output})
+// jsonEvents builds a go test -json stream of events in package m/internal/<pkg>.
+func jsonEvents(t *testing.T, events ...[4]string) string {
+	t.Helper()
+	lines := make([]string, 0, len(events))
+	for _, e := range events {
+		b, err := json.Marshal(map[string]string{"Package": testModule + "/internal/" + e[0], "Action": e[1], "Test": e[2], "Output": e[3]})
 		if err != nil {
 			t.Fatal(err)
 		}
-		return string(b)
+		lines = append(lines, string(b))
 	}
-	out := strings.Join([]string{
-		ev("f", "run", "TestF1", ""),
-		ev("f", "output", "TestF1", "=== RUN   TestF1\n"),
-		ev("f", "output", "TestF1", "--- PASS: TestF1 (0.00s)\n"),
-		ev("f", "pass", "TestF1", ""),
-		ev("f", "run", "TestF2", ""),
-		ev("f", "output", "TestF2", "=== RUN   TestF2\n"),
-		ev("f", "output", "", "panic: assignment to entry in nil map\n"),
-		ev("f", "output", "", "\n"),
-		ev("f", "output", "", "goroutine 7 [running]:\n"),
-		ev("f", "output", "", "FAIL\t"+m+"/internal/f\t0.020s\n"),
-		ev("f", "fail", "", ""),
+	return strings.Join(lines, "\n")
+}
 
-		ev("g", "run", "TestG", ""),
-		ev("g", "output", "TestG", "=== RUN   TestG\n"),
-		ev("g", "output", "TestG", "    g_test.go:4: setting up\n"),
-		ev("g", "output", "TestG", "--- PASS: TestG (0.00s)\n"),
-		ev("g", "pass", "TestG", ""),
-		ev("g", "output", "", "PASS\n"),
-		ev("g", "output", "", "panic: teardown: connection refused\n"),
-		ev("g", "output", "", "FAIL\t"+m+"/internal/g\t0.011s\n"),
-		ev("g", "fail", "", ""),
+// Output events that name no Test are the package's own (TestMain, an init
+// panic, a leak checker, `FAIL`, `exit status`). They are never assigned to a
+// test, whichever test is running or printed last; a package's own located
+// diagnostics are placed when the package fails, and a failure nothing
+// located is reported on the package with its panic and the tail of its log.
+//
+//   - j: every test passed, then TestMain's leak check prints a located line
+//     and the package fails: the diagnostic is the finding; no test is blamed
+//     and no package-level fallback is added.
+//   - f: TestF2 is running when a Test-less panic is printed and the binary
+//     dies: the panic is the package's, not TestF2's.
+//   - g: TestG passed and logged, then TestMain panics in teardown: the
+//     package carries the panic and its log tail; TestG's log is no finding.
+//   - h: an init panic before any test.
+//   - i: two tests failed, and the package's own output panicked: both tests,
+//     and the package carrying its panic.
+func TestExtractFindings_GoTestJSONPackageOutput(t *testing.T) {
+	root := findingsRoot(t, "internal/j/main_test.go")
+	const m = testModule
+	out := jsonEvents(t,
+		[4]string{"j", "run", "TestJ", ""},
+		[4]string{"j", "output", "TestJ", "=== RUN   TestJ\n"},
+		[4]string{"j", "output", "TestJ", "--- PASS: TestJ (0.00s)\n"},
+		[4]string{"j", "pass", "TestJ", ""},
+		[4]string{"j", "output", "", "PASS\n"},
+		[4]string{"j", "output", "", "internal/j/main_test.go:14: goroutine leak: 1 goroutine still running\n"},
+		[4]string{"j", "output", "", "FAIL\t" + m + "/internal/j\t0.010s\n"},
+		[4]string{"j", "fail", "", ""},
 
-		ev("h", "output", "", "panic: init: missing config\n"),
-		ev("h", "output", "", "FAIL\t"+m+"/internal/h\t0.003s\n"),
-		ev("h", "fail", "", ""),
+		[4]string{"f", "run", "TestF1", ""},
+		[4]string{"f", "output", "TestF1", "=== RUN   TestF1\n"},
+		[4]string{"f", "output", "TestF1", "--- PASS: TestF1 (0.00s)\n"},
+		[4]string{"f", "pass", "TestF1", ""},
+		[4]string{"f", "run", "TestF2", ""},
+		[4]string{"f", "output", "TestF2", "=== RUN   TestF2\n"},
+		[4]string{"f", "output", "", "panic: assignment to entry in nil map\n"},
+		[4]string{"f", "output", "", "\n"},
+		[4]string{"f", "output", "", "goroutine 7 [running]:\n"},
+		[4]string{"f", "output", "", "exit status 2\n"},
+		[4]string{"f", "output", "", "FAIL\t" + m + "/internal/f\t0.020s\n"},
+		[4]string{"f", "fail", "", ""},
 
-		ev("i", "run", "TestI1", ""),
-		ev("i", "run", "TestI2", ""),
-		ev("i", "output", "", "panic: send on closed channel\n"),
-		ev("i", "fail", "TestI1", ""),
-		ev("i", "fail", "TestI2", ""),
-		ev("i", "fail", "", ""),
-	}, "\n")
-	got, _ := ExtractFindings(out, FindingsInput{Module: m})
+		[4]string{"g", "run", "TestG", ""},
+		[4]string{"g", "output", "TestG", "=== RUN   TestG\n"},
+		[4]string{"g", "output", "TestG", "    g_test.go:4: setting up\n"},
+		[4]string{"g", "output", "TestG", "--- PASS: TestG (0.00s)\n"},
+		[4]string{"g", "pass", "TestG", ""},
+		[4]string{"g", "output", "", "PASS\n"},
+		[4]string{"g", "output", "", "teardown: closing db\n"},
+		[4]string{"g", "output", "", "panic: teardown: connection refused\n"},
+		[4]string{"g", "output", "", "FAIL\t" + m + "/internal/g\t0.011s\n"},
+		[4]string{"g", "fail", "", ""},
+
+		[4]string{"h", "output", "", "panic: init: missing config\n"},
+		[4]string{"h", "output", "", "FAIL\t" + m + "/internal/h\t0.003s\n"},
+		[4]string{"h", "fail", "", ""},
+
+		[4]string{"i", "run", "TestI1", ""},
+		[4]string{"i", "run", "TestI2", ""},
+		[4]string{"i", "output", "", "panic: send on closed channel\n"},
+		[4]string{"i", "fail", "TestI1", ""},
+		[4]string{"i", "fail", "TestI2", ""},
+		[4]string{"i", "fail", "", ""},
+	)
+	got, _ := ExtractFindings(out, FindingsInput{Root: root, Module: m})
 	assertFindings(t, got, []Finding{
-		{Path: "internal/f", Level: LevelError, Message: "TestF2: panic: assignment to entry in nil map"},
-		{Path: "internal/g", Level: LevelError, Message: m + "/internal/g failed: panic: teardown: connection refused"},
+		{Path: "internal/f", Level: LevelError, Message: m + "/internal/f failed: panic: assignment to entry in nil map\ngoroutine 7 [running]:"},
+		{Path: "internal/g", Level: LevelError, Message: m + "/internal/g failed: panic: teardown: connection refused\nteardown: closing db"},
 		{Path: "internal/h", Level: LevelError, Message: m + "/internal/h failed: panic: init: missing config"},
 		{Path: "internal/i", Level: LevelError, Message: "TestI1 failed"},
 		{Path: "internal/i", Level: LevelError, Message: "TestI2 failed"},
 		{Path: "internal/i", Level: LevelError, Message: m + "/internal/i: panic: send on closed channel"},
+		{Path: "internal/j/main_test.go", Line: 14, Level: LevelError, Message: "goroutine leak: 1 goroutine still running"},
+	})
+}
+
+// One test running, and the package prints a located line and a panic with
+// no Test: neither is attributed to the running test, which never failed.
+func TestExtractFindings_GoTestJSONRunningTestNotBlamed(t *testing.T) {
+	root := findingsRoot(t, "internal/k/k.go")
+	out := jsonEvents(t,
+		[4]string{"k", "run", "TestK", ""},
+		[4]string{"k", "output", "TestK", "=== RUN   TestK\n"},
+		[4]string{"k", "output", "", "internal/k/k.go:9: background worker: unexpected EOF\n"},
+		[4]string{"k", "output", "", "panic: worker died\n"},
+		[4]string{"k", "fail", "", ""},
+	)
+	got, _ := ExtractFindings(out, FindingsInput{Root: root, Module: testModule})
+	assertFindings(t, got, []Finding{
+		{Path: "internal/k/k.go", Line: 9, Level: LevelError, Message: "background worker: unexpected EOF"},
+	})
+	for _, f := range got {
+		if strings.Contains(f.Message, "TestK") {
+			t.Errorf("package output blamed on the running test: %+v", f)
+		}
+	}
+}
+
+// A located line a test printed is that test's: no finding while the test
+// passes, and it does not count as a build error, so a package that then
+// fails with nothing else located still gets its package-level finding. The
+// same line from a failed test is a finding at its own path.
+func TestExtractFindings_GoTestJSONTestLocatedLine(t *testing.T) {
+	root := findingsRoot(t, "internal/l/l.go")
+	out := jsonEvents(t,
+		[4]string{"l", "run", "TestL", ""},
+		[4]string{"l", "output", "TestL", "=== RUN   TestL\n"},
+		[4]string{"l", "output", "TestL", "internal/l/l.go:5: fixture loaded\n"},
+		[4]string{"l", "output", "TestL", "--- PASS: TestL (0.00s)\n"},
+		[4]string{"l", "pass", "TestL", ""},
+		[4]string{"l", "output", "", "os.Exit(3) after tests\n"},
+		[4]string{"l", "fail", "", ""},
+
+		[4]string{"n", "run", "TestN", ""},
+		[4]string{"n", "output", "TestN", "--- FAIL: TestN (0.00s)\n"},
+		[4]string{"n", "output", "TestN", "internal/l/l.go:7: wrong value\n"},
+		[4]string{"n", "fail", "TestN", ""},
+		[4]string{"n", "fail", "", ""},
+	)
+	got, _ := ExtractFindings(out, FindingsInput{Root: root, Module: testModule})
+	assertFindings(t, got, []Finding{
+		{Path: "internal/l", Level: LevelError, Message: testModule + "/internal/l failed\nos.Exit(3) after tests"},
+		{Path: "internal/l/l.go", Line: 7, Level: LevelError, Message: "TestN: wrong value"},
 	})
 }
 

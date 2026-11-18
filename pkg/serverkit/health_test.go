@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"connectrpc.com/otelconnect"
@@ -145,6 +146,44 @@ func TestListenerServesTheHealthRPC(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("rpc.server.calls = %d, want 1: the monitor's call counted, the 2 probes not", calls)
+	}
+}
+
+// serverkit.Run serves the health rpc for a Server mounted on Mux, both when
+// Handler is the Mux (the generated default) and when Handler is a swap that
+// does not route to it (a REST transcoder serving only the project's
+// services). Run hands its listener an already-mounted handler, so this is
+// the path `forge env up` probes in a generated app.
+func TestRunServesTheHealthRPC(t *testing.T) {
+	requireSelfSIGTERM(t)
+	// Not parallel — sends SIGTERM.
+	for _, tc := range []struct {
+		name    string
+		handler func(mux *http.ServeMux) http.Handler
+	}{
+		{"handler is the mux", func(*http.ServeMux) http.Handler { return nil }},
+		{"handler does not route to the mux", func(*http.ServeMux) http.Handler { return http.NotFoundHandler() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr := freeAddr(t)
+			mux := http.NewServeMux()
+			errCh, _ := runInBackground(t, baseConfig(addr), serverkit.Server{Mux: mux, Handler: tc.handler(mux)})
+			waitReady(t, addr, 2*time.Second)
+
+			client := connect.NewClient[healthpb.HealthCheckRequest, healthpb.HealthCheckResponse](
+				http.DefaultClient, "http://"+addr+serverkit.HealthCheckProcedure)
+			req := connect.NewRequest(&healthpb.HealthCheckRequest{})
+			req.Header().Set(observe.HeaderHealthProbe, "env-up")
+			resp, err := client.CallUnary(context.Background(), req)
+			if err != nil || resp.Msg.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+				t.Errorf("health rpc through Run: %v %v, want SERVING", resp, err)
+			}
+
+			http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+			if err := shutdownAndWait(t, errCh, 5*time.Second); err != nil {
+				t.Fatalf("Run returned error: %v", err)
+			}
+		})
 	}
 }
 

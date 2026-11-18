@@ -1,0 +1,237 @@
+package cli
+
+import (
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/testkit"
+)
+
+var (
+	sourceCommitA = strings.Repeat("a", 40)
+	sourceCommitB = strings.Repeat("b", 40)
+)
+
+// fixedCodeSource is a probe that captures src without running git.
+func fixedCodeSource(src codeSource) *codeSourceProbe {
+	return &codeSourceProbe{capture: func(context.Context, string, func(string) string) codeSource { return src }}
+}
+
+func TestShareableRemote(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"https://github.com/Acme/Shop.git":                       "github.com/Acme/Shop",
+		"git@GitHub.com:acme/shop.git":                           "github.com/acme/shop",
+		"ssh://git@gitlab.example.com:2222/group/sub/shop.git":   "gitlab.example.com/group/sub/shop",
+		"https://x-access-token:ghp_secret@github.com/acme/shop": "github.com/acme/shop",
+		"https://oauth2:glpat-secret@gitlab.com/acme/shop.git/":  "gitlab.com/acme/shop",
+		// Nothing that names this machine, and nothing still carrying a
+		// credential or a query, is shareable.
+		"/home/sean/src/shop":                    "",
+		"file:///home/sean/src/shop":             "",
+		"../shop":                                "",
+		`C:\src\shop`:                            "",
+		"C:/src/shop":                            "",
+		"https://github.com/acme/shop?token=abc": "",
+		"github.com":                             "",
+		"":                                       "",
+	}
+	for in, want := range cases {
+		if got := shareableRemote(in); got != want {
+			t.Errorf("shareableRemote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestReliantProjectIDIsAnOpaqueID(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"6f1c2b9e-0d3a-4f8e-9b7c-2a1d0e5f4c3b": "6f1c2b9e-0d3a-4f8e-9b7c-2a1d0e5f4c3b",
+		"  proj_123  ":                         "proj_123",
+		"":                                     "",
+		"has space":                            "",
+		"line\nbreak":                          "",
+		"-leading-dash":                        "",
+		strings.Repeat("x", 129):               "",
+		"proj/../../etc":                       "",
+	} {
+		if got := reliantProjectID(in); got != want {
+			t.Errorf("reliantProjectID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCodeSourceWireOmitsWhatIsUnknown(t *testing.T) {
+	t.Parallel()
+	if w := (codeSource{}).wire(); w != nil {
+		t.Errorf("an empty source sends %v, want nothing", w)
+	}
+	w := codeSource{Remote: "github.com/acme/shop", ReliantProjectID: "p1"}.wire()
+	if len(w) != 2 || w["remote"] != "github.com/acme/shop" || w["reliantProjectId"] != "p1" {
+		t.Errorf("wire = %v", w)
+	}
+}
+
+// A cut sends the release's commit, not whatever the checkout is at now; the
+// checkout's HEAD only when the release names none.
+func TestCodeSourceForReleasePrefersTheReleasesCommit(t *testing.T) {
+	t.Parallel()
+	checkout := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA}
+
+	got := checkout.forRelease(release.Release{Git: release.Git{Commit: sourceCommitB}})
+	if got.Commit != sourceCommitB || got.Subpath != "apps/web" || got.Remote != "github.com/acme/shop" {
+		t.Errorf("recorded commit: %+v", got)
+	}
+	got = checkout.forRelease(release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Commit: sourceCommitB}})
+	if got.Commit != sourceCommitB {
+		t.Errorf("provenance commit should win: %+v", got)
+	}
+	if got = checkout.forRelease(release.Release{}); got.Commit != sourceCommitA {
+		t.Errorf("no release commit falls back to HEAD: %+v", got)
+	}
+	// No checkout behind the ledger: the provenance's remote, still screened.
+	got = codeSource{}.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}})
+	if got.Remote != "github.com/acme/shop" || got.Commit != sourceCommitB {
+		t.Errorf("provenance fallback: %+v", got)
+	}
+	if got = (codeSource{}).forRelease(release.Release{Provenance: &release.Provenance{Repo: "/home/sean/shop"}}); got.Remote != "" {
+		t.Errorf("a path remote leaked: %+v", got)
+	}
+}
+
+// Every cut sends the source: the legacy request and the snapshot one, where
+// it rides beside the strictly decoded document rather than in it.
+func TestCutSendsTheCodeSource(t *testing.T) {
+	t.Parallel()
+	src := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+
+	legacy := &snapshotCaller{}
+	store := &hostedStore{client: legacy, project: "shop", source: fixedCodeSource(src)}
+	rec := release.Release{Version: "v1", Project: "shop", RecordOnly: true, Git: release.Git{Commit: sourceCommitB}, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if _, err := store.Cut(context.Background(), rec); err != nil {
+		t.Fatalf("legacy cut: %v", err)
+	}
+	want := map[string]any{"remote": "github.com/acme/shop", "subpath": "apps/web", "commit": sourceCommitB, "reliantProjectId": "proj-1"}
+	assertCodeSource(t, "legacy cut", legacy.cut, want)
+
+	snap := &snapshotCaller{capable: true}
+	store = &hostedStore{client: snap, source: fixedCodeSource(src)}
+	if _, err := store.Cut(context.Background(), snapshotCatalogRelease(t)); err != nil {
+		t.Fatalf("snapshot cut: %v", err)
+	}
+	if snap.cut["snapshotRelease"] == nil {
+		t.Fatalf("not a snapshot cut: %v", snap.cut)
+	}
+	if doc, _ := snap.cut["snapshotRelease"].(map[string]any); doc["codeSource"] != nil {
+		t.Errorf("the source leaked into the strictly decoded document")
+	}
+	want["commit"] = sourceCommitA // the catalog release names no commit of its own
+	assertCodeSource(t, "snapshot cut", snap.cut, want)
+}
+
+// A ledger with no checkout behind it and a release with no provenance sends
+// no codeSource key at all: the request is the one it always was.
+func TestCutWithoutASourceSendsNone(t *testing.T) {
+	t.Parallel()
+	fake := &snapshotCaller{}
+	store := &hostedStore{client: fake, project: "shop"}
+	rec := release.Release{Version: "v1", Project: "shop", RecordOnly: true, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if _, err := store.Cut(context.Background(), rec); err != nil {
+		t.Fatalf("cut: %v", err)
+	}
+	if _, ok := fake.cut["codeSource"]; ok {
+		t.Errorf("sent codeSource %v with nothing known", fake.cut["codeSource"])
+	}
+}
+
+func TestDeployAttemptOpenSendsTheCodeSource(t *testing.T) {
+	t.Parallel()
+	c := &attemptCaller{}
+	ctx, a := newTestAttempt("prod", "apply", io.Discard)
+	l := envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(codeSource{
+		Remote: "github.com/acme/shop", Commit: sourceCommitA, ReliantProjectID: "proj-1",
+	})}, Hosted: true}
+	attachDeployAttempt(ctx, "prod", l)
+	defer a.finish(ctx, nil)
+	assertCodeSource(t, "open", c.last(procOpenDeployAttempt), map[string]any{
+		"remote": "github.com/acme/shop", "commit": sourceCommitA, "reliantProjectId": "proj-1",
+	})
+}
+
+func TestAttachCodeSourceOnlyToAHostedLedger(t *testing.T) {
+	t.Parallel()
+	hs := &hostedStore{}
+	attachCodeSource(envLedger{Bindings: hs, Releases: hs, Hosted: true}, "/checkout", nil)
+	if hs.source == nil || hs.source.dir != "/checkout" {
+		t.Errorf("hosted ledger: source = %+v", hs.source)
+	}
+	empty := &hostedStore{}
+	attachCodeSource(envLedger{Bindings: empty, Hosted: true}, "", nil)
+	if empty.source != nil {
+		t.Errorf("no checkout should attach no source")
+	}
+	// A file ledger is unchanged (and must not panic).
+	_ = attachCodeSource(envLedger{}, "/checkout", nil)
+}
+
+// The capture against real checkouts: a nested forge.yaml in a repository
+// with a credentialed remote, a repository with no commit and no remote, and
+// a directory outside any checkout.
+func TestCaptureCodeSource(t *testing.T) {
+	testkit.Slow(t, "runs git")
+	t.Parallel()
+	env := func(k string) string { return map[string]string{reliantProjectIDEnv: "proj-1"}[k] }
+
+	repo := t.TempDir()
+	app := filepath.Join(repo, "apps", "web")
+	if err := os.MkdirAll(app, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFixtureFile(t, app, "forge.yaml", "name: web\n")
+	mustGit(t, repo, "init", "-q")
+	mustGit(t, repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A")
+	mustGit(t, repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "init")
+	mustGit(t, repo, "remote", "add", "origin", "https://x-access-token:secret@GitHub.com/Acme/Shop.git")
+	// A dirty tree still sends its HEAD.
+	writeFixtureFile(t, app, "dirty.txt", "uncommitted\n")
+	head := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+
+	got := captureCodeSource(context.Background(), app, env)
+	want := codeSource{Remote: "github.com/Acme/Shop", Subpath: "apps/web", Commit: head, ReliantProjectID: "proj-1"}
+	if got != want {
+		t.Errorf("nested app: %+v, want %+v", got, want)
+	}
+	if got := captureCodeSource(context.Background(), repo, nil); got.Subpath != "" || got.Commit != head {
+		t.Errorf("repo root: %+v", got)
+	}
+
+	unborn := t.TempDir()
+	mustGit(t, unborn, "init", "-q")
+	if got := captureCodeSource(context.Background(), unborn, env); got != (codeSource{ReliantProjectID: "proj-1"}) {
+		t.Errorf("no commit, no remote: %+v", got)
+	}
+
+	if got := captureCodeSource(context.Background(), t.TempDir(), env); got != (codeSource{ReliantProjectID: "proj-1"}) {
+		t.Errorf("not a checkout: %+v", got)
+	}
+}
+
+func assertCodeSource(t *testing.T, what string, body map[string]any, want map[string]any) {
+	t.Helper()
+	got, _ := body["codeSource"].(map[string]any)
+	if len(got) != len(want) {
+		t.Errorf("%s: codeSource = %v, want %v", what, got, want)
+		return
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: codeSource.%s = %v, want %v", what, k, got[k], v)
+		}
+	}
+}

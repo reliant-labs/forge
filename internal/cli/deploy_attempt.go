@@ -196,6 +196,11 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 		req["run"] = map[string]any{"id": a.runID, "url": a.runURL}
 	}
 	a.mu.Unlock()
+	// The checkout this deploy runs from (code_source.go). Read outside the
+	// lock: the first read runs git.
+	if src := store.source.get(ctx).wire(); src != nil {
+		req["codeSource"] = src
+	}
 
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptCallTimeout)
 	defer cancel()

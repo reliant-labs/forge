@@ -7862,6 +7862,11 @@ schema IdentityOnHost:
     check:
         infra, "IdentityOnHost.infra is required: name the HostInfra (engine 'zitadel') the identity runs on"
 
+# The minutes a ManagedIdentity.code_lifetime ("30m", "24h", "7d") names.
+_idn_code_lifetime_minutes = lambda s: str -> int {
+    int(s[:-1]) * (1 if s[-1] == "m" else (60 if s[-1] == "h" else 1440))
+}
+
 schema ManagedIdentity:
     """The env's users: which roles exist, which workloads sign users in
     (applications), which read their tokens (consumers), and where the
@@ -7995,6 +8000,14 @@ schema ManagedIdentity:
     # declared. Dev: delivered to Mailpit.
     email?: IdentityEmail
 
+    # How long a password-set code stays redeemable: the code a reset link
+    # carries, and the one `forge cloud identity invite|reset --return-code`
+    # prints for you to deliver. "<n>m", "<n>h" or "<n>d", from 5m to 7d.
+    # Empty is the provider's default, one hour. The code works like a
+    # password: lengthen it for an env with no mail, where codes travel by
+    # hand (code_lifetime = "24h"), not by default.
+    code_lifetime: str = ""
+
     check:
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
             "ManagedIdentity.name '${name}' must be an RFC-1123 label of at most 40 characters: it names the delivered Secret forge-identity-<name>"
@@ -8051,6 +8064,12 @@ schema ManagedIdentity:
             "ManagedIdentity.share_with '${share_with}' must be the bare name of an env of THIS project. Sharing across projects is not supported"
         not share_with or (len(roles) == 0 and not smtp and len(seed_users) == 0 and len(machine_users) == 0 and not domain and not project_name), \
             "ManagedIdentity.share_with '${share_with}' reuses that env's instance, so roles, smtp, seed_users, machine_users, domain and project_name belong to the owner and must be empty here. A sharer declares only applications and consumers"
+        not code_lifetime or regex.match(code_lifetime, r"^[1-9][0-9]*[mhd]$"), \
+            "ManagedIdentity.code_lifetime '${code_lifetime}' must be <n>m, <n>h or <n>d (\"30m\", \"24h\", \"7d\")"
+        not code_lifetime or not regex.match(code_lifetime, r"^[1-9][0-9]*[mhd]$") or (_idn_code_lifetime_minutes(code_lifetime) >= 5 and _idn_code_lifetime_minutes(code_lifetime) <= 10080), \
+            "ManagedIdentity.code_lifetime '${code_lifetime}' must be from 5m to 7d: a password-set code works like a password"
+        not share_with or not code_lifetime, \
+            "ManagedIdentity.share_with '${share_with}' reuses that env's instance, so code_lifetime belongs to the owner and must be empty here"
         not share_with or not runtime or runtime.type == "hosted", \
             "ManagedIdentity.share_with needs a hosted instance to share: a host-run IdP belongs to one machine"
 

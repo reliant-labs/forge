@@ -1012,6 +1012,12 @@ _idn_app_keys = lambda a: any -> [str] {
 # leaves the policy alone and delivers no `login_policy`, and the broker keeps
 # its legacy behaviour. pkg/release.ShapeIdentity.DeclaresLoginPolicy is the
 # same predicate over the shape.
+# The minutes a ManagedIdentity.code_lifetime ("30m", "24h", "7d") names
+# (schema.k checks it with its own copy: a `_` name is private to its file).
+_idn_code_lifetime_minutes = lambda s: str -> int {
+    int(s[:-1]) * (1 if s[-1] == "m" else (60 if s[-1] == "h" else 1440))
+}
+
 _idn_declares_login_policy = lambda id: any -> bool {
     True if id and (id.methods != ["password"] or _idn_declares_signup(id) or len(id.social) > 0) else False
 }
@@ -1343,6 +1349,9 @@ _render_identity = lambda b: Bundle -> any {
             }
         if _idn_dev_mail(_id, b.infra):
             "dev_mail": _idn_dev_mail(_id, b.infra)
+        # A Go duration, so the control plane parses it as it is.
+        if _id.code_lifetime:
+            "code_lifetime": str(_idn_code_lifetime_minutes(_id.code_lifetime)) + "m"
     }
 }
 

@@ -292,6 +292,9 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	}
 	var warnings []string
 	spec := identity.Spec{Project: identity.ProjectSpec{Name: firstNonEmpty(id.ProjectName, in.Project)}}
+	if id.CodeLifetime != "" {
+		spec.CodeLifetime = id.PasswordCodeLifetime()
+	}
 
 	for _, r := range id.Roles {
 		spec.Roles = append(spec.Roles, identity.Role{

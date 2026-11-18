@@ -342,7 +342,7 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 		return errors.New("the instance accepted the password-reset request but returned no code")
 	}
 	p.rep.change(Issued, "sign-in code", email, "")
-	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode, ExpiresAt: p.o.Now().Add(SignInCodeLifetime)})
+	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode, ExpiresAt: p.o.Now().Add(p.spec.codeLifetime())})
 	return nil
 }
 

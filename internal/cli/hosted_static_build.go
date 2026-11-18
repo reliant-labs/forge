@@ -18,6 +18,13 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 	if err != nil {
 		return "", err
 	}
+	// The stamp is how `env status` witnesses what the live site serves
+	// (deploytarget/staticsite_stamp.go): written into the tree before it
+	// is packed, and named again in the manifest.
+	treeDigest, err := deploytarget.StampStaticSiteTree(tree)
+	if err != nil {
+		return "", err
+	}
 	layer, err := deploytarget.PackStaticSiteTree(tree)
 	if err != nil {
 		return "", err
@@ -31,7 +38,7 @@ var hostedStaticPusher = func(ctx context.Context, projectDir, repository string
 	if err := deploytarget.FileStageSourcemaps(ctx, fe.SourcemapPublisher, "build", fe.Project, fe.Name, res); err != nil {
 		return "", err
 	}
-	return deploytarget.PushStaticSiteArtifact(ctx, repository, layer)
+	return deploytarget.PushStaticSiteArtifact(ctx, repository, layer, treeDigest)
 }
 
 // buildHostedStaticSites is the BUILD half of a hosted frontend: every

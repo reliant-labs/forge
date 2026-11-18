@@ -173,11 +173,11 @@ func TestPackStaticSiteTreeIsDeterministic(t *testing.T) {
 func TestPushStaticSiteArtifactShape(t *testing.T) {
 	store := memory.New()
 	layer := []byte("layer-bytes")
-	d1, err := pushStaticSite(context.Background(), store, layer)
+	d1, err := pushStaticSite(context.Background(), store, layer, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := pushStaticSite(context.Background(), store, layer)
+	d2, err := pushStaticSite(context.Background(), store, layer, "")
 	if err != nil || d1 != d2 {
 		t.Fatalf("re-push: %v, %s != %s", err, d1, d2)
 	}

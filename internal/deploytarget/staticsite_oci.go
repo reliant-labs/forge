@@ -172,12 +172,16 @@ const fixedCreated = "1970-01-01T00:00:00Z"
 //
 // A failed push is a *hostedimage.PushError naming repository, so a message
 // built further out names the repository that refused rather than guessing.
-func PushStaticSiteArtifact(ctx context.Context, repository string, layer []byte) (string, error) {
+//
+// tree is the stamped tree's digest (StampStaticSiteTree), recorded as the
+// manifest's StaticSiteTreeAnnotation so `env status` can witness the live
+// site against it; "" pushes an unstamped release.
+func PushStaticSiteArtifact(ctx context.Context, repository string, layer []byte, tree string) (string, error) {
 	repo, err := newRegistryRepository("static site", repository)
 	if err != nil {
 		return "", err
 	}
-	digest, err := pushStaticSite(ctx, repo, layer)
+	digest, err := pushStaticSite(ctx, repo, layer, tree)
 	if err != nil {
 		return "", &hostedimage.PushError{Repository: repository, Err: err}
 	}
@@ -211,8 +215,12 @@ func newRegistryRepository(what, repository string) (*remote.Repository, error) 
 // rather than by oras.PackManifest so its digest is a pure function of the
 // layer: a re-push of an unchanged site returns the same release digest even
 // when the target answers "already exists".
-func pushStaticSite(ctx context.Context, target content.Pusher, layer []byte) (string, error) {
-	desc, err := pushArtifact(ctx, target, StaticSiteArtifactType, StaticSiteLayerMediaType, nil, layer)
+func pushStaticSite(ctx context.Context, target content.Pusher, layer []byte, tree string) (string, error) {
+	var annotations map[string]string
+	if tree != "" {
+		annotations = map[string]string{StaticSiteTreeAnnotation: tree}
+	}
+	desc, err := pushArtifact(ctx, target, StaticSiteArtifactType, StaticSiteLayerMediaType, annotations, layer)
 	if err != nil {
 		return "", err
 	}

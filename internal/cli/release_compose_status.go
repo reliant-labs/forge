@@ -80,7 +80,13 @@ func snapshotStatusImages(ctx context.Context, s release.Snapshot, opts envStatu
 		}
 		seen[c.Key.Cluster] = true
 		ns := namespaces[c.Key.Cluster]
-		if ns == "" || ns == "*" || c.Key.Cluster == release.BundleHostedCluster {
+		if c.Key.Cluster == release.BundleHostedCluster {
+			// The platform runs these: a hosted static site is witnessed
+			// by the stamp it serves (env_status_static_witness.go).
+			out = append(out, witnessHostedSites(ctx, s, opts.StaticSites)...)
+			continue
+		}
+		if ns == "" || ns == "*" {
 			out = append(out, verifySnapshotBindings(s, c.Key.Cluster, nil, fmt.Errorf("snapshot observation requires an explicit per-consumer witness for destination %s", c.Key.Cluster))...)
 			continue
 		}

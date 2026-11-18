@@ -275,6 +275,9 @@ type envStatusOptions struct {
 	// the same control plane the rollout is read from — unless HostedRollout
 	// is set, when a test that states no identity gets none.
 	HostedIdentity func(ctx context.Context, env string) (identityStatusDocument, error)
+	// StaticSites witnesses what a hosted static site serves. Nil reads the
+	// site's stamp over HTTP (env_status_static_witness.go).
+	StaticSites staticSiteWitness
 }
 
 // verifyExternalThenCluster reads forge.OnExternal workloads through their
@@ -400,6 +403,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	)
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
+		if opts.StaticSites == nil {
+			opts.StaticSites = newHTTPStaticSiteWitness(envName, opts.Timeout)
+		}
 		results = snapshotStatusImages(ctx, *binding.Snapshot, opts)
 	} else if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control

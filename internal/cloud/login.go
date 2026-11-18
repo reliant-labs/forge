@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"html"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -75,6 +76,7 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		OpenURL:           open,
 		Out:               b.Out,
 		Timeout:           timeout,
+		SuccessHTML:       LoginSuccessHTML(WebAppBase(b.Endpoint.URL)),
 		HTTPClient:        identifiedDoer{next: observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: oauth2.DefaultExchangeTimeout})},
 	}.Run(ctx)
 	if err != nil {
@@ -109,6 +111,31 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		return credentials.Credential{}, fmt.Errorf("control plane returned an unknown credential kind %q for login; upgrade forge", tokenCredentialKind(tok))
 	}
 	return CredentialFromToken(tok, time.Now()), nil
+}
+
+// LoginContinuePath is the page of the web app the browser goes on to once
+// the CLI has its code: the Apps list, where a person who has not finished
+// setting up their account is walked through it first (reliant
+// frontends/web OnboardingGate). The CLI never waits on that: the code is
+// delivered before the page is served.
+const LoginContinuePath = "/apps"
+
+// LoginSuccessHTML is the browser's page after the loopback callback. With a
+// known web app (WebAppBase) it says the terminal is signed in and goes on to
+// LoginContinuePath there; with none it is pkg/oauth2's default page.
+func LoginSuccessHTML(webApp string) string {
+	if webApp == "" {
+		return ""
+	}
+	next := html.EscapeString(webApp + LoginContinuePath)
+	return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Logged in</title>
+<meta http-equiv="refresh" content="2;url=` + next + `"></head>
+<body style="font-family:system-ui;text-align:center;padding-top:4rem">
+<h1>Logged in</h1>
+<p>Your terminal is signed in. Taking you to your apps&hellip;</p>
+<p><a href="` + next + `">Continue</a></p>
+</body></html>`
 }
 
 // Credential kinds a browser login can produce.

@@ -57,15 +57,23 @@ func (s *Session) announce(w io.Writer) {
 var active atomic.Pointer[Session]
 
 // Begin starts a quiet session writing every step's full output to path
-// (created, with its directory; truncated). out is where the one line per
-// step goes, read at each write so a caller that redirects stdout later is
-// followed. End stops it. A session already running is ended first.
+// (created, with its directory; truncated). The file is the invoking user's
+// alone (0600): build tools can print credentials, and the log outlives the
+// deploy. out is where the one line per step goes, read at each write so a
+// caller that redirects stdout later is followed. End stops it. A session
+// already running is ended first.
 func Begin(path string, out func() io.Writer) (*Session, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("build log: %w", err)
 	}
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
+		return nil, fmt.Errorf("build log: %w", err)
+	}
+	// OpenFile keeps an existing file's mode: tighten a log an earlier
+	// release left readable by others.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
 		return nil, fmt.Errorf("build log: %w", err)
 	}
 	if out == nil {

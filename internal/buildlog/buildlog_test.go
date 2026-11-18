@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,33 @@ func TestStepStreamsOutsideASession(t *testing.T) {
 		t.Fatal("outside a session a step must stream to the terminal, as it always did")
 	}
 	end(errors.New("ignored")) // no session: nothing to print, and no panic
+}
+
+// The log can hold credentials a build tool printed: it is the invoking
+// user's alone, including a log an earlier run left readable by others.
+func TestBeginLogIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes")
+	}
+	path := filepath.Join(t.TempDir(), "logs", "prod", "deploy.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Begin(path, func() io.Writer { return io.Discard })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.End() }()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fi.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("deploy log mode = %o, want 600", mode)
+	}
 }
 
 func TestQuietSession(t *testing.T) {

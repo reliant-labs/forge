@@ -60,8 +60,9 @@ Keep the command's outputs out of its inputs; forge warns when a build
 rewrites its own inputs.
 
 **Releases reuse the previous release's image.** `forge env build <env>
---release <v>` compares the same inputs, with the release tag and the
-checkout's location masked out, against the `inputs_digest` the image
+--release <v>` compares the same inputs, with `cmd`/`env` from a render
+whose `image_tag` is a sentinel (so only the tag the KCL composed in is left
+out; the cwd is keyed relative to the project), against the `inputs_digest` the image
 recorded in the release the env runs now, then the project's newest release.
 Equal, and the registry still serves that digest: forge points the new tag
 at it and records `carried_from`, without running the command, so a build

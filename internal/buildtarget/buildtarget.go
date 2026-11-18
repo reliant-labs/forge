@@ -374,8 +374,8 @@ type State struct {
 	// ShellBuild declares no inputs, and on state an older forge wrote.
 	InputsFingerprint string `json:"inputs_fingerprint,omitempty"`
 	// ReleaseInputsDigest is the same declared inputs fingerprinted the way a
-	// release compares them: with the tag and the checkout's location masked
-	// out, both of which differ on every cut. Written by a --release build of
+	// release compares them: without the release tag the declaration composed
+	// in, which differs on every cut. Written by a --release build of
 	// a ShellBuild that declares inputs; a release cut from this state records
 	// it as the artifact's inputs_digest, and the next release reuses the
 	// image when its own equals it. Empty otherwise.

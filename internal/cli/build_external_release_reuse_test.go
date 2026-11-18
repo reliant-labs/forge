@@ -102,12 +102,22 @@ func newReleaseFixture(t *testing.T, names ...string) *releaseFixture {
 }
 
 // svc is the api ShellBuild as a release's render produces it: the release
-// tag and the checkout's path are composed into the command, as
-// `TAG=${tag}` and `${file.workdir()}` compose them.
+// tag composed into the command (`TAG=${tag}`), plus the template the
+// sentinel render produces for it (renderReleaseTemplates).
 func (f *releaseFixture) svc(version string, inputs ...string) WorkloadEntity {
-	w := inputsSvc("api", inputs...)
-	w.Build.Shell.Cmd = "TAG=" + version + " " + f.projDir + "/scripts/build.sh"
-	return w
+	return templated(func(tag string) WorkloadEntity {
+		w := inputsSvc("api", inputs...)
+		w.Build.Shell.Cmd = "TAG=" + tag + " ./scripts/build.sh"
+		return w
+	}, version)
+}
+
+// templated renders a workload for tag, with the template the release's
+// sentinel render would attach: the same workload rendered for the sentinel.
+func templated(render func(tag string) WorkloadEntity, tag string) WorkloadEntity {
+	ents := &KCLEntities{Workloads: []WorkloadEntity{render(tag)}}
+	attachReleaseTemplates(ents, &KCLEntities{Workloads: []WorkloadEntity{render(releaseTagSentinel)}})
+	return ents.Workloads[0]
 }
 
 // cut builds version and records the release the build state harvests.
@@ -188,19 +198,30 @@ func TestReleaseBuild_RebuildsWhenItCannotProveReuse(t *testing.T) {
 		// workload v2 builds.
 		prepare func(f *releaseFixture) WorkloadEntity
 		opts    buildOptions
+		// unfingerprinted: the release cannot record an inputs digest.
+		unfingerprinted bool
 	}{
 		{name: "a declared input changed", prepare: func(f *releaseFixture) WorkloadEntity {
 			writeInput(f.t, f.projDir, "src/main.go", "package main // edited")
 			return f.svc("v2", "**/*.go")
 		}},
 		{name: "the command changed", prepare: func(f *releaseFixture) WorkloadEntity {
-			w := f.svc("v2", "**/*.go")
-			w.Build.Shell.Cmd += " --no-cache"
-			return w
+			return templated(func(tag string) WorkloadEntity {
+				w := f.svc(tag, "**/*.go")
+				w.Build.Shell.Cmd += " --no-cache"
+				return w
+			}, "v2")
 		}},
 		{name: "the env changed", prepare: func(f *releaseFixture) WorkloadEntity {
+			return templated(func(tag string) WorkloadEntity {
+				w := f.svc(tag, "**/*.go")
+				w.Build.Shell.Env = map[string]string{"MODE": "debug"}
+				return w
+			}, "v2")
+		}},
+		{name: "the template render is missing", unfingerprinted: true, prepare: func(f *releaseFixture) WorkloadEntity {
 			w := f.svc("v2", "**/*.go")
-			w.Build.Shell.Env = map[string]string{"MODE": "debug"}
+			w.releaseTemplate = nil
 			return w
 		}},
 		{name: "the registry no longer has the digest", prepare: func(f *releaseFixture) WorkloadEntity {
@@ -236,8 +257,8 @@ func TestReleaseBuild_RebuildsWhenItCannotProveReuse(t *testing.T) {
 			if r.digest == "" || r.digest == v1.digest {
 				t.Fatalf("rebuilt digest = %q, want the new build's (not v1's %s)", r.digest, v1.digest)
 			}
-			if v2 := f.artifact("v2"); v2.CarriedFrom != "" || !release.ValidDigest(v2.InputsDigest) {
-				t.Fatalf("rebuilt release's artifact = %+v, want no carry and a fresh inputs digest", v2)
+			if v2 := f.artifact("v2"); v2.CarriedFrom != "" || release.ValidDigest(v2.InputsDigest) == tc.unfingerprinted {
+				t.Fatalf("rebuilt release's artifact = %+v, want no carry, and an inputs digest unless it could not be fingerprinted", v2)
 			}
 		})
 	}
@@ -260,39 +281,92 @@ func TestReleaseBuild_NoDeclaredInputsAlwaysRuns(t *testing.T) {
 	}
 }
 
-// The release fingerprint masks what changes on every cut — the tag and the
-// checkout's location — and nothing else.
-func TestReleaseInputsFingerprint_MasksTagAndCheckoutLocationOnly(t *testing.T) {
-	fingerprint := func(projDir, tag string, mut func(*WorkloadEntity)) string {
+// The release fingerprint leaves out exactly what the KCL composed from the
+// release tag, and the checkout's location only through the cwd forge
+// resolved. A literal that equals the tag, or a path, is part of it.
+func TestReleaseInputsFingerprint_IsStructural(t *testing.T) {
+	type cut struct {
+		projDir, tag string
+		// render is the workload as the KCL composes it for a tag.
+		render func(tag string) WorkloadEntity
+		// overlay is the built_images env the build adds.
+		overlay map[string]string
+	}
+	fingerprint := func(c cut) string {
 		t.Helper()
-		writeInput(t, projDir, "src/main.go", "package main")
-		w := inputsSvc("api", "**/*.go")
-		w.Build.Shell.Cmd = "TAG=" + tag + " " + projDir + "/scripts/build.sh"
-		w.Build.Shell.Env = map[string]string{"ROOT": filepath.Dir(projDir) + "/reliant", "VERSION_TAG": tag}
-		if mut != nil {
-			mut(&w)
+		writeInput(t, c.projDir, "src/main.go", "package main")
+		w := templated(c.render, c.tag)
+		opts := buildOptions{env: "prod", release: c.tag}
+		spec := externalBuildSpec(w, opts, c.tag, c.projDir)
+		if len(c.overlay) > 0 {
+			merged := map[string]string{}
+			for k, v := range spec.BuildEnv {
+				merged[k] = v
+			}
+			for k, v := range c.overlay {
+				merged[k] = v
+			}
+			spec.BuildEnv = merged
 		}
-		opts := buildOptions{env: "prod", release: tag}
-		spec := externalBuildSpec(w, opts, tag, projDir)
-		fp, err := releaseInputsFingerprint(w, spec, filepath.Join(projDir, "src"), projDir, opts)
+		fp, err := releaseInputsFingerprint(w, spec, filepath.Join(c.projDir, "src"), c.projDir, opts)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return fp.Digest
 	}
-	a := fingerprint(filepath.Join(t.TempDir(), "proj"), "v1.0.0", nil)
-	if b := fingerprint(filepath.Join(t.TempDir(), "elsewhere", "proj"), "v1.0.1", nil); a != b {
-		t.Errorf("another checkout location and tag changed the release fingerprint: %s vs %s", a, b)
+	// literal is an argument the author wrote, not the tag the KCL composed.
+	render := func(literal string) func(string) WorkloadEntity {
+		return func(tag string) WorkloadEntity {
+			w := inputsSvc("api", "**/*.go")
+			w.Build.Shell.Cmd = "TAG=" + tag + " ./scripts/build.sh --base " + literal
+			w.Build.Shell.Env = map[string]string{"VERSION_TAG": tag, "MODE": "release"}
+			return w
+		}
 	}
-	if c := fingerprint(filepath.Join(t.TempDir(), "proj"), "v1.0.1", func(w *WorkloadEntity) {
-		w.Build.Shell.Cmd += " --platform linux/arm64"
-	}); a == c {
-		t.Error("a changed command must change the release fingerprint")
+	dir := func() string { return filepath.Join(t.TempDir(), "proj") }
+
+	base := fingerprint(cut{projDir: dir(), tag: "v1.0.0", render: render("stable")})
+	if other := fingerprint(cut{projDir: filepath.Join(t.TempDir(), "elsewhere", "proj"), tag: "v1.0.1", render: render("stable")}); other != base {
+		t.Errorf("only the release tag and the checkout location changed, yet the fingerprint did: %s vs %s", base, other)
 	}
-	if d := fingerprint(filepath.Join(t.TempDir(), "proj"), "v1.0.1", func(w *WorkloadEntity) {
-		w.Image = "reg.example/other"
-	}); a == d {
-		t.Error("another destination repository must change the release fingerprint")
+
+	// A literal that happens to equal the tag is the author's: when it
+	// changes, the fingerprint changes, though every value moved with the tag.
+	if a, b := fingerprint(cut{projDir: dir(), tag: "v1.0.0", render: render("v1.0.0")}),
+		fingerprint(cut{projDir: dir(), tag: "v1.0.1", render: render("v1.0.1")}); a == b {
+		t.Error("a literal equal to the tag changed with it, but the fingerprint did not: a stale image would be reused")
+	}
+
+	// The same for a literal that happens to equal the checkout's path.
+	p1, p2 := dir(), filepath.Join(t.TempDir(), "elsewhere", "proj")
+	if a, b := fingerprint(cut{projDir: p1, tag: "v1.0.0", render: render(p1)}),
+		fingerprint(cut{projDir: p2, tag: "v1.0.1", render: render(p2)}); a == b {
+		t.Error("a path literal equal to the checkout changed with it, but the fingerprint did not")
+	}
+
+	// The effective env: a declared value and a built_images overlay value.
+	envChanged := func(tag string) WorkloadEntity {
+		w := render("stable")(tag)
+		w.Build.Shell.Env["MODE"] = "debug"
+		return w
+	}
+	if got := fingerprint(cut{projDir: dir(), tag: "v1.0.1", render: envChanged}); got == base {
+		t.Error("a changed env value must change the fingerprint")
+	}
+	o1 := fingerprint(cut{projDir: dir(), tag: "v1.0.1", render: render("stable"), overlay: map[string]string{"BASE": "reg/base@" + pushedDigest}})
+	o2 := fingerprint(cut{projDir: dir(), tag: "v1.0.2", render: render("stable"), overlay: map[string]string{"BASE": "reg/base@" + otherDigest}})
+	if o1 == o2 || o1 == base {
+		t.Error("a built_images overlay in the effective env must change the fingerprint")
+	}
+
+	// A command the template does not reproduce is refused, not guessed at.
+	w := templated(render("stable"), "v1.0.0")
+	w.releaseTemplate.Cmd = "something else"
+	p := dir()
+	writeInput(t, p, "src/main.go", "package main")
+	opts := buildOptions{env: "prod", release: "v1.0.0"}
+	if _, err := releaseInputsFingerprint(w, externalBuildSpec(w, opts, "v1.0.0", p), filepath.Join(p, "src"), p, opts); err == nil {
+		t.Error("a command the template does not reproduce must not be fingerprinted")
 	}
 }
 

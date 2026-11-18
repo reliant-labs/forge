@@ -12,9 +12,12 @@
 //  1. Fingerprint the inputs the way a release compares them
 //     (releaseInputsFingerprint): every selected file's content plus the
 //     step's own declaration — command, cwd, env, built_images, platform,
-//     destination repository — with the release TAG and the checkout's
-//     LOCATION masked out, since both differ on every cut while the bytes the
-//     command reads do not.
+//     destination repository. The release TAG is kept out STRUCTURALLY: the
+//     command and env are fingerprinted as a second render composed them
+//     with image_tag bound to a sentinel (renderReleaseTemplates), so a
+//     literal that merely equals the tag still counts, and forge proves the
+//     template plus the tag reproduces exactly what runs. The cwd is keyed
+//     relative to the project; nothing else is masked.
 //  2. Look for that fingerprint on the same image in the release the env runs
 //     now, then in the newest release of the project (releaseReuseBase). An
 //     older release, or a record without the fingerprint, means rebuild.
@@ -34,7 +37,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,17 +49,75 @@ import (
 // releaseInputsScheme names the layout of the recipe releaseInputsFingerprint
 // hashes. Bump it whenever that layout changes, so a digest an older forge
 // recorded can never match one a newer forge computes under other rules.
-const releaseInputsScheme = "forge-shellbuild-release-inputs/v1"
+const releaseInputsScheme = "forge-shellbuild-release-inputs/v2"
 
-// Sentinels the masked values are replaced with. Each holds a NUL, which a
-// rendered command, an env value and a path can never contain, so masking
-// cannot make two different declarations equal unless they differ ONLY in
-// the masked values.
-const (
-	maskTag       = "\x00forge:release-tag\x00"
-	maskProject   = "\x00forge:project-dir\x00"
-	maskWorkspace = "\x00forge:workspace-dir\x00"
-)
+// releaseTagSentinel is the image_tag the template render binds. A valid
+// image tag, so KCL that composes an image reference accepts it, and one no
+// author writes: if a command did contain it, substituting the real tag back
+// would not reproduce the command, and the build runs.
+const releaseTagSentinel = "forge-release-tag-template-7f3c9a1e"
+
+// shellBuildTemplate is a ShellBuild's command and declared env as the
+// template render composed them, with releaseTagSentinel where the tag went.
+type shellBuildTemplate struct {
+	Cmd string
+	Env map[string]string
+}
+
+// renderReleaseTemplates renders env a second time with image_tag bound to
+// releaseTagSentinel (the build's other bindings unchanged) and attaches each
+// ShellBuild's template to the workload in ents. Only a --release build that
+// can carry an image, and only when a ShellBuild declares inputs, pays for it.
+// A failed render attaches nothing: those builds run, and say why.
+func renderReleaseTemplates(ctx context.Context, opts buildOptions, extra []string, ents *KCLEntities) {
+	if ents == nil || !releaseBuildCanCarry(opts) || opts.rebuild || !anyShellInputs(ents) {
+		return
+	}
+	bindings := make([]string, 0, len(extra)+1)
+	for _, b := range extra {
+		if !strings.HasPrefix(b, "image_tag=") {
+			bindings = append(bindings, b)
+		}
+	}
+	bindings = append(bindings, "image_tag="+strconv.Quote(releaseTagSentinel))
+	tpl, err := RenderKCLWith(ctx, projectDirForKCL(), opts.env, bindings)
+	if err != nil {
+		fmt.Printf("[build] warning: could not render the ShellBuild templates a release compares (%v); every ShellBuild runs\n", err)
+		return
+	}
+	attachReleaseTemplates(ents, tpl)
+}
+
+func anyShellInputs(ents *KCLEntities) bool {
+	for _, w := range ents.Workloads {
+		if externalBuildInputs(w) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// attachReleaseTemplates gives every ShellBuild in ents that declares inputs
+// the command and env its namesake in tpl (the sentinel render) carries.
+func attachReleaseTemplates(ents, tpl *KCLEntities) {
+	byName := map[string]WorkloadEntity{}
+	for _, w := range tpl.Workloads {
+		byName[w.Name] = w
+	}
+	for i, w := range ents.Workloads {
+		t, ok := byName[w.Name]
+		if externalBuildInputs(w) == nil || !ok || t.shell() == nil {
+			continue
+		}
+		ents.Workloads[i].releaseTemplate = &shellBuildTemplate{Cmd: t.EffectiveBuildCmd(), Env: t.EffectiveBuildEnv()}
+	}
+}
+
+// fromTemplate is the template value standing for actual, given the real tag:
+// the template's when substituting the tag back reproduces actual exactly.
+func fromTemplate(template, actual, tag string) (string, bool) {
+	return template, strings.ReplaceAll(template, releaseTagSentinel, tag) == actual
+}
 
 // externalImageRetag points dst (`<repository>:<tag>`) at src
 // (`<repository>@<digest>`) in the registry. A package var so tests can
@@ -166,22 +227,35 @@ func loadReleaseReuseCandidates(ctx context.Context, projectDir, env string) ([]
 // a release compares them: the files' content, plus every field of the
 // artifact identity (externalArtifactIdentity — the command, cwd, platform,
 // inputs_file, env, built_images, source and patterns) and what only an
-// execution knows (the effective env with the built_images overlay, the
-// destination repository, unit, output name and inputs_file content).
+// execution knows (the COMPLETE effective env, spec.BuildEnv with the
+// built_images overlay, every key and value; the destination repository,
+// unit, output name and inputs_file content).
 //
-// Two things are masked before hashing, because both differ on every cut
-// while the bytes the command reads do not:
+// The release tag changes on every cut, so the command and env are taken from
+// the template render (shellBuildTemplate), where the tag is a sentinel at
+// exactly the places the KCL composed it in. Nothing is substring-masked: a
+// literal that equals the tag, or a path, stays in the fingerprint as itself.
+// The template is used only where substituting the tag back reproduces the
+// actual value byte for byte; a command that does not reproduce is refused (the
+// build runs), and an env value that does not is hashed as it is.
 //
-//   - the release tag, wherever it appears in the command or an env value
-//     (the render composes it into the command: `TAG=${tag}`);
-//   - the checkout's location: the project directory and the directory that
-//     holds it (a command composed with `${file.workdir()}`), and the cwd,
-//     which is keyed relative to the project.
+// The cwd is keyed relative to the project (forge resolved it, so it knows
+// what is location). A command that composes the checkout's absolute path
+// (`${file.workdir()}`) hashes that path, so it reuses only across cuts from
+// the same location — a rebuild, never a stale reuse.
 //
-// So a command that bakes the tag into the image itself (a version stamp)
-// would be carried with the earlier release's stamp: such a build should
-// declare no inputs, or take its version from a file it declares as one.
+// A command that bakes the tag into the image itself (a version stamp) would
+// be carried with the earlier release's stamp: such a build should declare no
+// inputs, or take its version from a file it declares as one.
 func releaseInputsFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, projectDir string, opts buildOptions) (buildtarget.Fingerprint, error) {
+	tpl := svc.releaseTemplate
+	if tpl == nil {
+		return buildtarget.Fingerprint{}, fmt.Errorf("no template render of its command, so forge cannot tell the release tag from the rest of it")
+	}
+	cmd, ok := fromTemplate(tpl.Cmd, svc.EffectiveBuildCmd(), spec.Tag)
+	if !ok {
+		return buildtarget.Fingerprint{}, fmt.Errorf("its command depends on the release tag in a way the template render does not reproduce")
+	}
 	canonical, err := canonicalDir(cwd)
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
@@ -190,10 +264,9 @@ func releaseInputsFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, pr
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
-	mask := releaseInputsMasker(spec.Tag, projectDir, project)
 	identity := externalBuildIdentity(svc, canonical, opts)
-	identity.Cmd = mask.Replace(identity.Cmd)
-	identity.Env = maskValues(mask, identity.Env)
+	identity.Cmd = cmd
+	identity.Env = templatedEnv(tpl.Env, identity.Env, spec.Tag)
 	identity.Cwd = releaseInputsCwd(project, canonical, identity.Source != nil)
 	inputsFileDigest, err := shellBuildInputsFileDigest(svc, projectDir)
 	if err != nil {
@@ -201,18 +274,36 @@ func releaseInputsFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, pr
 	}
 	recipe, err := json.Marshal(struct {
 		Scheme           string                   `json:"scheme"`
+		Sentinel         string                   `json:"sentinel"`
 		Identity         externalArtifactIdentity `json:"identity"`
 		Repository       string                   `json:"repository"`
 		Env              map[string]string        `json:"env"`
 		Unit             string                   `json:"unit"`
 		OutputName       string                   `json:"output_name"`
 		InputsFileDigest string                   `json:"inputs_file_digest"`
-	}{releaseInputsScheme, identity, externalPushedRepository(svc, opts.pushPlan.pushBase), maskValues(mask, spec.BuildEnv),
-		svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest})
+	}{releaseInputsScheme, releaseTagSentinel, identity, externalPushedRepository(svc, opts.pushPlan.pushBase),
+		templatedEnv(tpl.Env, spec.BuildEnv, spec.Tag), svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
 	return buildtarget.FingerprintInputs(shellBuildInputScope(canonical, projectDir), externalBuildInputs(svc), recipe)
+}
+
+// templatedEnv is actual — every key, every value; encoding/json sorts the
+// keys — with each value the template reproduces replaced by its template
+// form. A value it does not reproduce (a built_images overlay, an env the
+// template render composed differently) is hashed exactly as it is.
+func templatedEnv(template, actual map[string]string, tag string) map[string]string {
+	out := make(map[string]string, len(actual))
+	for k, v := range actual {
+		out[k] = v
+		if t, ok := template[k]; ok {
+			if tv, same := fromTemplate(t, v, tag); same {
+				out[k] = tv
+			}
+		}
+	}
+	return out
 }
 
 func canonicalDir(dir string) (string, error) {
@@ -221,68 +312,6 @@ func canonicalDir(dir string) (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(abs)
-}
-
-// releaseInputsMasker replaces the release tag and the checkout's location
-// (the project directory and the one holding it, both as written and as
-// resolved) with fixed sentinels. Longer strings are listed first, so a path
-// is masked whole before any shorter value inside it.
-func releaseInputsMasker(tag, projectDir, canonicalProject string) *strings.Replacer {
-	type pair struct{ old, new string }
-	var pairs []pair
-	add := func(old, new string, minLen int) {
-		if len(old) >= minLen {
-			pairs = append(pairs, pair{old, new})
-		}
-	}
-	for _, p := range distinctNonEmpty(absOr(projectDir), canonicalProject) {
-		add(p, maskProject, 2)
-		// The directory holding the project is where its sibling checkouts
-		// live (`cwd = "../reliant"`). A filesystem root is never masked: it
-		// would rewrite every separator.
-		if parent := filepath.Dir(p); parent != p && parent != string(filepath.Separator) {
-			add(parent, maskWorkspace, 2)
-		}
-	}
-	add(tag, maskTag, 1)
-	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].old) > len(pairs[j].old) })
-	args := make([]string, 0, 2*len(pairs))
-	seen := map[string]bool{}
-	for _, p := range pairs {
-		if !seen[p.old] {
-			seen[p.old] = true
-			args = append(args, p.old, p.new)
-		}
-	}
-	return strings.NewReplacer(args...)
-}
-
-func absOr(p string) string {
-	if abs, err := filepath.Abs(p); err == nil {
-		return abs
-	}
-	return p
-}
-
-func distinctNonEmpty(ss ...string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, s := range ss {
-		if s != "" && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// maskValues masks every value of env; nil and empty are one environment.
-func maskValues(mask *strings.Replacer, env map[string]string) map[string]string {
-	out := make(map[string]string, len(env))
-	for k, v := range env {
-		out[k] = mask.Replace(v)
-	}
-	return out
 }
 
 // releaseInputsCwd keys the build's cwd without the checkout's location:

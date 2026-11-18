@@ -186,8 +186,8 @@ type Artifact struct {
 	// InputsDigest is the content address of what a ShellBuild that declares
 	// `inputs` was built from: the declared files' content plus the step's
 	// own declaration (command, cwd, env, built_images, platform, destination
-	// repository), with the release tag and the checkout's location masked
-	// out so the next release can compare it. A later release whose
+	// repository), with the release tag left out where the declaration
+	// composed it in, so the next release can compare it. A later release whose
 	// inputs digest is equal reuses this artifact's image instead of running
 	// the command again. Informational like BuiltFrom, and NOT part of the
 	// identity. Empty for an artifact whose build declares no inputs, and on

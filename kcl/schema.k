@@ -3368,9 +3368,12 @@ schema ShellBuild(Build):
         runs the command. A release build is compared against earlier
         releases instead (next bullet).
       * release reuse — `forge env build <env> --release <v>` fingerprints
-        the same inputs with the release TAG and the checkout's LOCATION
-        (the project directory, the directory holding it, the cwd) masked
-        out, since both change on every cut. When that equals the
+        the same inputs, with `cmd` and `env` taken from a second render
+        that binds `image_tag` to a sentinel: the release tag is left out
+        exactly where the KCL composed it in, and a literal that merely
+        equals it still counts. The cwd is keyed relative to the project; a
+        `cmd` that composes the checkout's absolute path (`file.workdir()`)
+        reuses only across cuts from the same path. When that equals the
         `inputs_digest` the same image recorded in the release the env runs
         now, or in the project's newest release, AND the registry still
         serves that release's digest, forge reuses it: it points the new
@@ -3380,7 +3383,7 @@ schema ShellBuild(Build):
         It prints the inputs that matched and the digest it reused, or why
         it ran: no inputs declared, no earlier release, a release recorded
         without an inputs digest (one an older forge cut), inputs changed,
-        or the digest gone from the registry. Because the tag is masked, a
+        or the digest gone from the registry. Because the tag is left out, a
         command that bakes the tag into the image (a version stamp) is
         carried with the earlier stamp: such a build should declare no
         inputs. A snapshot-composition release (`--base-promotion`) carries
@@ -3430,7 +3433,7 @@ schema ShellBuild(Build):
     # platform, tag and built_images — are unchanged since its last
     # successful run and the registry still serves the image it pushed. A
     # --release build reuses the previous release's image instead when the
-    # same inputs (tag and checkout location masked) are unchanged since it.
+    # same inputs (minus the release tag the KCL composed in) are unchanged.
     # Empty: the command runs on every build. See the docstring.
     inputs: [str] = []
 

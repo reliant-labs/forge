@@ -23,7 +23,7 @@
 // providers.go and compose.go were before the graph. Those projects keep the
 // legacy generators byte-for-byte until they migrate (`forge fix
 // composition-graph`, internal/codemod; the rest of the path is the
-// migrations/v1.0.0 skill).
+// migrations/v1.0.0/composition-graph skill).
 
 package codegen
 

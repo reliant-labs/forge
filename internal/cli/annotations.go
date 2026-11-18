@@ -589,7 +589,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:root",
 			AppliesTo: "root",
-			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it), migrate=apply|wait|none (what its process does about the schema) and adopt (in a project still on the legacy Infra / NewComponents composition, generate this root's graph beside it — one root at a time, migrations/v1.0.0); an unknown option fails generate.",
+			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it), migrate=apply|wait|none (what its process does about the schema) and adopt (in a project still on the legacy Infra / NewComponents composition, generate this root's graph beside it — one root at a time, migrations/v1.0.0/composition-graph); an unknown option fails generate.",
 			Placement: "on the struct's doc comment, unspaced",
 			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
 		},

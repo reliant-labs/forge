@@ -365,20 +365,8 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 	// unaliased import binds its package's DECLARED name, which is not
 	// always its last path element (github.com/nats-io/nats.go binds
 	// `nats`) — the resolver asks the toolchain.
-	for _, f := range files {
-		for _, imp := range f.Imports {
-			name, impPath, explicit := r.importLocalName(imp)
-			if name == "_" || name == "." {
-				continue
-			}
-			if prev, ok := cf.Imports[name]; ok && prev != impPath {
-				return nil, fmt.Errorf("%s: %s names two packages across the contract's files (%s and %s); alias one of the imports", dir, name, prev, impPath)
-			}
-			if explicit {
-				cf.ExplicitImports[name] = true
-			}
-			cf.Imports[name] = impPath
-		}
+	if err := collectContractImports(cf, files, r, dir); err != nil {
+		return nil, err
 	}
 
 	// First pass: collect all interface AST nodes by name.
@@ -1314,6 +1302,28 @@ func zeroValue(typeExpr string, interfaceNames map[string]bool, primitiveAliases
 		// the long-standing behavior.
 		return "nil"
 	}
+}
+
+// collectContractImports maps each local import name of the contract's files
+// to its path in cf. A name bound to two different packages across the files
+// is an error naming dir.
+func collectContractImports(cf *File, files []*ast.File, r *Resolver, dir string) error {
+	for _, f := range files {
+		for _, imp := range f.Imports {
+			name, impPath, explicit := r.importLocalName(imp)
+			if name == "_" || name == "." {
+				continue
+			}
+			if prev, ok := cf.Imports[name]; ok && prev != impPath {
+				return fmt.Errorf("%s: %s names two packages across the contract's files (%s and %s); alias one of the imports", dir, name, prev, impPath)
+			}
+			if explicit {
+				cf.ExplicitImports[name] = true
+			}
+			cf.Imports[name] = impPath
+		}
+	}
+	return nil
 }
 
 // contractSourceName is the hand-written file a contract read from path is

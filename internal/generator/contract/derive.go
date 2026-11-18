@@ -47,16 +47,16 @@ import (
 type DeriveOutcome int
 
 const (
-	// DeriveNone: the package has no marked type and no contract_gen.go.
+	// DeriveNone means the package has no marked type and no contract_gen.go.
 	DeriveNone DeriveOutcome = iota
-	// DeriveWritten: contract_gen.go was written from the marked type and
+	// DeriveWritten means contract_gen.go was written from the marked type and
 	// its bytes changed (or it was created).
 	DeriveWritten
-	// DeriveUnchanged: contract_gen.go is current; the render matched.
+	// DeriveUnchanged means contract_gen.go is current; the render matched.
 	DeriveUnchanged
-	// DeriveRemoved: the marker is gone, so the stale contract_gen.go was.
+	// DeriveRemoved means the marker is gone, so the stale contract_gen.go was.
 	DeriveRemoved
-	// DeriveKept: the marker is gone but contract_gen.go is the user's
+	// DeriveKept means the marker is gone but contract_gen.go is the user's
 	// (disowned, or bytes forge never certified), so it was left alone.
 	DeriveKept
 )
@@ -196,6 +196,34 @@ func CheckMarkedContract(dir string) (contractsrc.MarkedType, error) {
 	return m, nil
 }
 
+// fileImports is one source file's imports, as a derived method's
+// qualifiers resolve against them.
+type fileImports struct {
+	byName  map[string]ImportDef // local name → import
+	unnamed []ImportDef          // unaliased, name to resolve
+	dot     bool
+}
+
+func newFileImports(file *ast.File) *fileImports {
+	fi := &fileImports{byName: map[string]ImportDef{}}
+	for _, imp := range file.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			fi.unnamed = append(fi.unnamed, ImportDef{Path: p})
+		case imp.Name.Name == ".":
+			fi.dot = true
+		case imp.Name.Name == "_":
+		default:
+			fi.byName[imp.Name.Name] = ImportDef{Path: p, Name: imp.Name.Name, Explicit: true}
+		}
+	}
+	return fi
+}
+
 // deriveContract parses dir and collects the marked type's exported method
 // set, refusing every shape the derived interface could not express.
 //
@@ -209,11 +237,6 @@ func deriveContract(dir string, r *Resolver) (*derived, error) {
 
 	fset := token.NewFileSet()
 	d := &derived{typeName: m.Name, typeFile: m.File}
-	type fileImports struct {
-		byName  map[string]ImportDef // local name → import
-		unnamed []ImportDef          // unaliased, name to resolve
-		dot     bool
-	}
 	perFile := map[string]*fileImports{}
 	var qualified []struct {
 		file, qualifier string
@@ -232,22 +255,7 @@ func deriveContract(dir string, r *Resolver) (*derived, error) {
 		if collides := topLevelServiceDecl(file); collides != "" {
 			return nil, fmt.Errorf("%s declares a %s named %s, the name of the interface forge derives from the //forge:contract type %s; rename it", path, collides, contractsrc.InterfaceName, m.Name)
 		}
-		fi := &fileImports{byName: map[string]ImportDef{}}
-		for _, imp := range file.Imports {
-			p, uerr := strconv.Unquote(imp.Path.Value)
-			if uerr != nil {
-				continue
-			}
-			switch {
-			case imp.Name == nil:
-				fi.unnamed = append(fi.unnamed, ImportDef{Path: p})
-			case imp.Name.Name == ".":
-				fi.dot = true
-			case imp.Name.Name == "_":
-			default:
-				fi.byName[imp.Name.Name] = ImportDef{Path: p, Name: imp.Name.Name, Explicit: true}
-			}
-		}
+		fi := newFileImports(file)
 		perFile[name] = fi
 
 		for _, decl := range file.Decls {

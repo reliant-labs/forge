@@ -1051,7 +1051,7 @@ func verify(p *pkgSrc, svc *serviceDecl, outputs map[string][]byte) ([]string, e
 		files[name] = content
 	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(tmp, name), content, 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(tmp, name), content, 0o644); err != nil {
 			return nil, err
 		}
 	}

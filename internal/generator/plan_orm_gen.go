@@ -321,19 +321,35 @@ func writeRepoExtSetUpdate(b *strings.Builder, ent config.PlanEntity, msgName, p
 			stamped = true
 		}
 	}
+	version := versionColumn(ent)
 	b.WriteString("//\n")
-	b.WriteString("// A write over many rows is ONE set-based statement, never List then an\n")
-	fmt.Fprintf(b, "// Update%sMasked per row (N round trips: it times out at scale). The\n", msgName)
-	fmt.Fprintf(b, "// generated Update%sWhere(ctx, db, values, fields, filters...) is that\n", msgName)
-	b.WriteString("// statement over List's own filters. For one it cannot express, go through\n")
-	b.WriteString("// db.Bun() like any raw query (there is no orm.Ident — name columns in the\n")
-	b.WriteString("// SQL, values as `?` arguments):\n")
+	if version != "" {
+		// No Update<Entity>Where for a versioned entity (setBasedUpdateDelegate):
+		// say why, and what a raw set-based write gives up.
+		fmt.Fprintf(b, "// %s is version-checked (forge:version on %s): every generated write is a\n", msgName, version)
+		b.WriteString("// compare-and-swap against the version its caller read, so there is no\n")
+		fmt.Fprintf(b, "// generated Update%sWhere — a set-based write has no version of each row\n", msgName)
+		b.WriteString("// to compare. A raw one, through db.Bun(), overwrites concurrent writes;\n")
+		fmt.Fprintf(b, "// write it only when that is the intent, and advance %s so a reader\n", version)
+		b.WriteString("// holding a row is Aborted on its next write (there is no orm.Ident — name\n")
+		b.WriteString("// columns in the SQL, values as `?` arguments):\n")
+	} else {
+		b.WriteString("// A write over many rows is ONE set-based statement, never List then an\n")
+		fmt.Fprintf(b, "// Update%sMasked per row (N round trips: it times out at scale). The\n", msgName)
+		fmt.Fprintf(b, "// generated Update%sWhere(ctx, db, values, fields, filters...) is that\n", msgName)
+		b.WriteString("// statement over List's own filters. For one it cannot express, go through\n")
+		b.WriteString("// db.Bun() like any raw query (there is no orm.Ident — name columns in the\n")
+		b.WriteString("// SQL, values as `?` arguments):\n")
+	}
 	b.WriteString("//\n")
 	fmt.Fprintf(b, "//\tfunc Move%s(ctx context.Context, db orm.Context, from, to any) (int64, error) {\n", naming.Pluralize(msgName))
 	fmt.Fprintf(b, "//\t\tres, err := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
 	fmt.Fprintf(b, "//\t\t\tSet(\"%s = ?\", to).\n", col)
 	if stamped {
 		b.WriteString("//\t\t\tSet(\"updated_at = now()\"). // a builder write is not the generated path: stamp it\n")
+	}
+	if version != "" {
+		fmt.Fprintf(b, "//\t\t\tSet(\"%s = %s + 1\"). // not compared, so at least advanced\n", version, version)
 	}
 	fmt.Fprintf(b, "//\t\t\tWhere(\"%s = ?\", from).\n", col)
 	b.WriteString("//\t\t\tExec(ctx)\n")
@@ -342,6 +358,16 @@ func writeRepoExtSetUpdate(b *strings.Builder, ent config.PlanEntity, msgName, p
 	b.WriteString("//\t\t}\n")
 	b.WriteString("//\t\treturn res.RowsAffected()\n")
 	b.WriteString("//\t}\n")
+}
+
+// versionColumn is the entity's `forge:version` column, "" when it has none.
+func versionColumn(ent config.PlanEntity) string {
+	for _, f := range ent.Fields {
+		if f.Version {
+			return f.Name
+		}
+	}
+	return ""
 }
 
 // entityExtraTypeName is the name of the embedded computed-field carrier
@@ -571,8 +597,13 @@ func renderORMEntityIn(dbDir, pkgName string, ent config.PlanEntity, hasExtra bo
 // it must not break a project that compiled). It is a package-level function
 // only: the generated <Entity>Store interface gains no method, so no
 // hand-written implementation of a store stops compiling either.
+//
+// A `forge:version` entity gets none: crud.Repo.UpdateWhere refuses it (a
+// set-based write has no version of each row to compare), so the delegate
+// would be a function that always fails. Leaving it out makes that a
+// compile-time fact instead of a runtime error.
 func setBasedUpdateDelegate(dbDir string, ent config.PlanEntity) string {
-	if ent.ReadOnly || ent.AppendOnly {
+	if ent.ReadOnly || ent.AppendOnly || versionColumn(ent) != "" {
 		return ""
 	}
 	msgName := ent.Name

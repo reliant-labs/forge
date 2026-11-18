@@ -284,9 +284,15 @@ n, err := db.UpdateOrderWhere(ctx, s.deps.DB, &db.Order{Status: "archived"}, []s
 	orm.WhereEq("customer_id", customerID), orm.WhereNotEq("status", "archived"))
 ```
 
-It stamps `updated_at`, advances a `forge:version` column, never writes a
-soft-deleted row, and refuses a call with no filter (`orm.WhereIsNotNull` on the
-key means every row); `orm.WithOrderBy` + `orm.WithLimit` write a bounded batch.
+It stamps `updated_at`, never writes a soft-deleted row, and refuses a call
+with no filter (`orm.WhereIsNotNull` on the key means every row);
+`orm.WithOrderBy` + `orm.WithLimit` write a bounded batch. An entity with a
+`forge:version` column gets no `Update<Entity>Where` (and `crud.Repo.UpdateWhere`
+refuses it): each of its writes is a compare-and-swap against the version the
+caller read, and a set-based write has no version of each row to compare, so it
+would overwrite the concurrent writes the column exists to catch. Write such rows
+per row with `Update<Entity>Masked`, or — only when overwriting is the intent — a
+raw `UPDATE` that also sets `version = version + 1`.
 For a write it cannot express, write one set-based `UPDATE` in the entity's
 `internal/db/<entity>_repo_ext.go` (the seam's header carries an example for
 your entity), and call it from the handler:

@@ -1239,9 +1239,20 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 // names which of its columns are written (AIP-134 paths; a path outside the
 // updatable allowlist is *orm.UnknownFieldError, and a ,skipupdate column
 // named here is written, as in UpdateMasked). values itself is not modified.
-// updated_at is stamped under managed timestamps, and a forge:version column
-// is advanced on every row written, so a reader holding one of them gets
-// Aborted on its next versioned write rather than overwriting this one.
+// updated_at is stamped under managed timestamps.
+//
+// An entity with a `forge:version` column is refused, before any SQL runs.
+// Every write this repo makes to a versioned row is a compare-and-swap
+// against the version the caller read (applyVersionGuard), and a lost race
+// is Aborted. A set-based write has no such version: values is a template,
+// not a row anyone read, and the rows the filters match each carry their
+// own. Comparing all of them to one expected version would quietly skip the
+// rows at any other version — indistinguishable, in the count, from rows the
+// filters never matched — and advancing the version without comparing it
+// would overwrite every concurrent write the column exists to catch. So a
+// versioned entity's many-row write stays per row: List, then UpdateMasked
+// each, every one version-checked; or, deliberately, a raw statement in the
+// entity's repo-ext seam that owns its own concurrency story.
 //
 // filters are List's own orm.QueryOptions (orm.WhereEq, orm.WhereIn, …),
 // applied to the same scope List reads: they pick the rows by key, in a
@@ -1252,7 +1263,7 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 // (orm.WhereIsNotNull on the key).
 //
 // Nothing that runs per row in Update or UpdateMasked runs here: no
-// read-back and no per-row version check. Callers that apply a client's
+// read-back. Callers that apply a client's
 // write policy (forge:read-only, forge:immutable) decide which fields to
 // pass themselves.
 func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fields []string, filters ...orm.QueryOption) (int64, error) {
@@ -1262,6 +1273,9 @@ func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fi
 	}
 	if len(filters) == 0 {
 		return 0, fmt.Errorf("update %s where: no filter — UpdateWhere never writes every row of a table by default; pass a filter (orm.WhereIsNotNull(%q) to mean every row)", r.m.table, r.m.pkColumn)
+	}
+	if r.m.versionColumn != "" {
+		return 0, fmt.Errorf("update %s where: %s is version-checked (forge:version %q), and a set-based write has no version of each row to compare — it would overwrite concurrent writes; write the rows with UpdateMasked, each checked against the version read", r.m.table, r.m.entityName, r.m.versionColumn)
 	}
 	if len(r.m.updatableSet) == 0 {
 		return 0, &orm.UnknownFieldError{Field: fields[0]}
@@ -1304,10 +1318,6 @@ func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fi
 	}
 	for _, f := range forced {
 		q.SetColumn(f, "?", b.value(v.Field(r.m.skipUpdate[f]).Interface()))
-	}
-	if r.m.versionColumn != "" {
-		col := bun.Ident(r.m.versionColumn)
-		q.Set("? = ? + 1", col, col)
 	}
 	// The rows, by key, exactly as List would read them.
 	keys := r.pkIdents()

@@ -48,6 +48,22 @@ func TestGeneratePlanORM_SetBasedUpdateWhere(t *testing.T) {
 		t.Error("an append-only entity got a set-based update")
 	}
 
+	// Version-checked: crud.Repo.UpdateWhere refuses it (forge#2335 [B1]), so
+	// no delegate that always fails, and the seam says why.
+	vr := t.TempDir()
+	versioned := widgetEntity()
+	versioned[0].Fields = append(versioned[0].Fields, config.PlanEntityField{Name: "version", Type: "int64", NotNull: true, Version: true})
+	if err := GeneratePlanORM(vr, config.ORMConfig{}, versioned, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(readDB(t, vr, "widget_orm_gen.go"), "UpdateWidgetWhere") {
+		t.Error("a forge:version entity got a set-based update, which crud.Repo.UpdateWhere refuses")
+	}
+	seam := readDB(t, vr, "widget_repo_ext.go")
+	if !strings.Contains(seam, "there is no\n// generated UpdateWidgetWhere") || !strings.Contains(seam, `Set("version = version + 1")`) {
+		t.Errorf("the versioned seam header does not say there is no UpdateWidgetWhere and advance the version:\n%s", seam)
+	}
+
 	// A project that wrote its own keeps it.
 	own := t.TempDir()
 	writeDBFile(t, own, "widget_repo_ext.go", "package db\n\nimport \"context\"\n\n// UpdateWidgetWhere is mine.\nfunc UpdateWidgetWhere(ctx context.Context) error { return nil }\n")

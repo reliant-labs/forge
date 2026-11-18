@@ -76,3 +76,42 @@ func TestRepoUpdateWhere(t *testing.T) {
 		t.Errorf("no match: %d, %v; want 0, nil", n, err)
 	}
 }
+
+// forge#2335 [B1]: a forge:version entity is refused, and nothing is written.
+// The set-based write has no version of each row to compare, so advancing
+// the version without comparing it would let a caller overwrite a row another
+// writer changed in between — the lost update the column exists to catch.
+func TestRepoUpdateWhere_VersionedEntityRefused(t *testing.T) {
+	db := newRepoTestDB(t)
+	ctx := context.Background()
+	versionedSchema(ctx, t, db)
+	repo := NewRepo[ledger]()
+
+	if err := repo.Create(ctx, db, &ledger{ID: "l1", Balance: 100, Note: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	// Another writer moves the row on after the caller formed its intent.
+	newer, err := repo.Get(ctx, db, "l1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer.Balance = 250
+	if err := repo.Update(ctx, db, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := repo.UpdateWhere(ctx, db, &ledger{Balance: 0}, []string{"balance"}, orm.WhereEq("note", "open"))
+	if err == nil {
+		t.Fatalf("UpdateWhere on a versioned entity wrote %d rows without a version check; want a refusal", n)
+	}
+	if n != 0 {
+		t.Errorf("rows changed = %d alongside a refusal, want 0", n)
+	}
+	stored, err := repo.Get(ctx, db, "l1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Balance != 250 || stored.Version != 1 {
+		t.Errorf("stored row = balance %d version %d; want the other writer's 250 at version 1, untouched", stored.Balance, stored.Version)
+	}
+}

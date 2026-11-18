@@ -188,13 +188,10 @@ nodes:
       && (inputs.base == '' || inputs.base.matches('^[0-9a-f]{40}$'))
       && inputs.default_branch.matches('^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$')
       && (inputs.tier != 'queue' || inputs.branch.matches('^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]{40}$'))
-      && workflow.chat_id.matches('^[A-Za-z0-9-]{1,64}$')
       && has(workflow.path) && workflow.path.matches('^/[A-Za-z0-9 ._/+@=,:~-]*$') }}
     tier: '{{ inputs.tier }}'
     sha: '{{ inputs.sha }}'
     default_branch: '{{ inputs.default_branch }}'
-    # The run's private ref namespace: refs/reliant-ci/<run>/{head,base}.
-    run: '{{ workflow.chat_id }}'
     path: "{{ has(workflow.path) ? workflow.path : '' }}"
     # A merge group's base is the commit its branch name ends in.
     base: "{{ inputs.tier == 'queue' ? regex.extract(inputs.branch, '-([0-9a-f]{40})$').orValue('') : inputs.base }}"
@@ -205,22 +202,30 @@ nodes:
     role: assistant
     content: >-
       Refused: the gate needs a known tier, a 40-character commit sha, a valid base and default branch, a
-      gh-readonly-queue branch for a merge group, and a run id and project directory a shell can take as they are.
+      gh-readonly-queue branch for a merge group, and a project directory a shell can take as it is.
 # Fetches the commit (and its base) into the project's checkout on this
 # machine and writes them as a git bundle to a directory of this run's own,
-# <cache>/reliant-ci/<run>/head.bundle: the gate reads that bundle and never
-# the checkout. This step holds the machine's git credentials, so it runs git
-# only (fetch, bundle, rev-parse): it never checks out, reads or runs the
-# commit's files. The refs it fetches into (refs/reliant-ci/<run>/) are
-# dropped when it exits.
+# which the gate reads instead of the checkout. This step holds the machine's
+# git credentials, so it runs git only (fetch, bundle, rev-parse): it never
+# checks out, reads or runs the commit's files.
+#
+# The run directory is mktemp -d's run.XXXXXXXX (mode 0700, a name no other
+# run can predict or share) under <cache>/reliant-ci, which must be a real
+# directory this user owns with mode 0700, or this step refuses. Its refs
+# (refs/reliant-ci/run.XXXXXXXX/) go when it exits; the directory goes with
+# it when it fails, and in finally otherwise. The only other thing it ever
+# deletes is a run directory a lost run left: a run.XXXXXXXX child of the
+# root, not a symlink, owned by this user, carrying this workflow's marker
+# file, and older than two days.
 #
 # The pr and queue tiers' affected tests are measured from a base commit, so
 # a base that does not fetch or resolve fails this step. A merge group's base
 # is its branch name's suffix (gh-readonly-queue/<base>/pr-<n>-<base sha>),
 # the commit the group was built on: it must be an ancestor of the group.
 #
-# stdout is three lines and nothing else: root=<the run directories' parent>,
-# prefix=./<the project's directory in the repository>, base=<sha> (not on main).
+# stdout is four lines and nothing else: root=<the run directories' parent>,
+# run=run.XXXXXXXX, prefix=./<the project's directory in the repository>, and
+# base=<sha> (not on main).
 - id: fetch
   type: run
   timeout: 15m
@@ -231,20 +236,35 @@ nodes:
       sha='{{ nodes.facts.sha }}'
       base='{{ nodes.facts.base }}'
       default_branch='{{ nodes.facts.default_branch }}'
-      run='{{ nodes.facts.run }}'
       dir='{{ nodes.facts.path }}'
-      case "$run" in ''|*[!A-Za-z0-9-]*) echo "refused: run id '$run' is not [A-Za-z0-9-]+" >&2; exit 1 ;; esac
       case "$sha" in *[!0-9a-f]*|'') echo "refused: '$sha' is not a commit sha" >&2; exit 1 ;; esac
       cd "$dir"
+      uid=$(id -u)
       root="${XDG_CACHE_HOME:-$HOME/.cache}/reliant-ci"
-      out="$root/$run"
+      marker=.reliant-ci-run
+      # A real directory (not a symlink) owned by this user, mode 0700.
+      ours() { [ -d "$1" ] && [ ! -L "$1" ] && [ -n "$(find -P "$1" -maxdepth 0 -type d -user "$uid" -perm 700 2>/dev/null)" ]; }
+      if [ ! -e "$root" ] && [ ! -L "$root" ]; then
+        mkdir -p -- "${root%/*}"
+        mkdir -m 700 -- "$root" 2>/dev/null || true
+      fi
+      ours "$root" || { echo "refused: $root must be a directory (not a symlink) owned by uid $uid with mode 0700" >&2; exit 1; }
+      # Run directories a lost run left behind: only marked, owned, old run.XXXXXXXX ones.
+      find -P "$root" -mindepth 1 -maxdepth 1 -type d -user "$uid" -name 'run.*' -mtime +2 2>/dev/null |
+        while IFS= read -r old; do
+          name=${old##*/}
+          case "$name" in run.????????) ;; *) continue ;; esac
+          case "${name#run.}" in *[!A-Za-z0-9]*) continue ;; esac
+          [ "$old" = "$root/$name" ] && [ ! -L "$old" ] && [ -f "$old/$marker" ] && [ ! -L "$old/$marker" ] || continue
+          rm -rf -- "$root/$name" || true
+        done || true
+      out=''
+      ref=''
+      trap 'rc=$?; if [ -n "$ref" ]; then for r in head base; do git update-ref -d "$ref/$r" 2>/dev/null; done; fi; if [ "$rc" != 0 ] && [ -n "$out" ]; then rm -rf -- "$out"; fi' EXIT
+      out=$(mktemp -d "$root/run.XXXXXXXX")
+      run=${out##*/}
+      printf '%s\n' "$run" >"$out/$marker"
       ref="refs/reliant-ci/$run"
-      trap 'rc=$?; for r in head base; do git update-ref -d "$ref/$r" 2>/dev/null; done; [ "$rc" = 0 ] || rm -rf -- "$out"' EXIT
-      mkdir -p "$root"
-      # Run directories a lost run left behind.
-      find "$root" -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf -- {} + 2>/dev/null || true
-      rm -rf -- "$out"
-      mkdir -m 700 "$out"
       git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$sha:$ref/head"
       refs="$ref/head"
       if [ "$tier" != main ]; then
@@ -265,37 +285,43 @@ nodes:
       # shellcheck disable=SC2086 # two ref names, no spaces
       git bundle create --quiet "$out/head.bundle" $refs
       printf 'root=%s\n' "$root"
+      printf 'run=%s\n' "$run"
       printf 'prefix=./%s\n' "$(git rev-parse --show-prefix)"
       if [ "$tier" != main ]; then printf 'base=%s\n' "$(git rev-parse "$ref/base^{commit}")"; fi
 # fetch's output, checked like facts before a shell or a work_dir sees it: a
-# directory a shell can take as it is, a project prefix inside the repository,
-# and a base sha, which only the main tier may lack.
+# root a shell can take as it is, a run directory named as mktemp names it,
+# a project prefix inside the repository, and a base sha, which only the main
+# tier may lack. The run directory is these, never anything a shell or an
+# earlier step could choose.
 - id: resolved
   type: compute
   outputs:
     root: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') : '' }}"
-    dir: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') + '/' + nodes.facts.run : '' }}"
+    run: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^run=(run[.][A-Za-z0-9]{8})$').orValue('') : '' }}"
+    dir: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') + '/' + regex.extract(nodes.fetch.stdout, '(?m)^run=(run[.][A-Za-z0-9]{8})$').orValue('') : '' }}"
     prefix: "{{ regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') }}"
     base: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^base=([0-9a-f]{40})$').orValue('') : '' }}"
     ok: >-
       {{ nodes.fetch.exit_code == 0
       && regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
+      && !regex.extract(nodes.fetch.stdout, '(?m)^root=(.*)$').orValue('').contains('..')
+      && regex.extract(nodes.fetch.stdout, '(?m)^run=(run[.][A-Za-z0-9]{8})$').hasValue()
       && regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
       && !regex.extract(nodes.fetch.stdout, '(?m)^prefix=(.*)$').orValue('').contains('..')
       && (regex.extract(nodes.fetch.stdout, '(?m)^base=([0-9a-f]{40})$').hasValue() || nodes.facts.tier == 'main') }}
     error: >-
       {{ nodes.fetch.exit_code != 0
       ? 'fetching the commit failed: ' + nodes.fetch.stderr.substring(math.greatest(0, size(nodes.fetch.stderr) - 1500))
-      : !regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue() || !regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
+      : !regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue() || !regex.extract(nodes.fetch.stdout, '(?m)^run=(run[.][A-Za-z0-9]{8})$').hasValue() || !regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
         ? 'the run directory or the project directory is not one a shell can take as it is'
       : 'the ' + nodes.facts.tier + ' tier needs a base commit, and fetch resolved none' }}
 # The gate runs the commit's code, so it holds no credentials, and it never
 # touches the project's checkout: it starts in this run's directory (its
 # work_dir, the only directory the sandbox lets it write besides its private
-# /tmp) and makes its own repository in that /tmp from fetch's bundle, with
-# git hooks off. Nothing in it points at the checkout's object store (no
-# alternates, no origin). stdout is the gate's forge.ci.gate/v1 document and
-# nothing else.
+# /tmp), checks that it is that directory, and makes its own repository in
+# that /tmp from fetch's bundle, with git hooks off. Nothing in it points at
+# the checkout's object store (no alternates, no origin). stdout is the
+# gate's forge.ci.gate/v1 document and nothing else.
 - id: gate
   type: run
   # lint:allow shared-checkout-fetch — its one fetch reads the run's bundle into the repository it just made in its private /tmp, never a shared checkout
@@ -309,6 +335,7 @@ nodes:
       sha='{{ nodes.facts.sha }}'
       base='{{ nodes.resolved.base }}'
       prefix='{{ nodes.resolved.prefix }}'
+      run='{{ nodes.resolved.run }}'
       bundle="$PWD/head.bundle"
       work=$(mktemp -d)
       trap 'rm -rf "$work"' EXIT
@@ -321,8 +348,10 @@ nodes:
       case "$tier" in pr|queue|main) ;; *) fail 'refused: unknown tier' ;; esac
       case "$sha$base" in *[!0-9a-f]*) fail 'refused: the commit or its base is not a sha' ;; esac
       case "$prefix" in *..*) fail 'refused: the project directory leaves the repository' ;; esac
+      case "$run" in run.????????) ;; *) fail 'refused: not a run directory' ;; esac
+      if [ "${PWD##*/}" != "$run" ] || [ -L "$PWD" ] || [ ! -f .reliant-ci-run ]; then fail 'refused: the gate is not in its run directory'; fi
       if [ "$tier" != main ] && [ -z "$base" ]; then fail "the $tier tier needs a base commit"; fi
-      [ -f "$bundle" ] || fail 'the bundle of the commit is missing'
+      [ -f "$bundle" ] && [ ! -L "$bundle" ] || fail 'the bundle of the commit is missing'
       git init --quiet "$work/src" >>"$log" 2>&1 || fail 'git init failed'
       git -C "$work/src" -c core.hooksPath=/dev/null fetch --quiet --no-tags "$bundle" '+refs/reliant-ci/*:refs/reliant-ci/*' >>"$log" 2>&1 ||
         fail 'reading the bundle of the commit failed'
@@ -401,21 +430,26 @@ edges:
   default: report
 - from: report
   default: failed
-# Drops this run's directory (the bundle), however the run ended. It starts in
-# the directories' parent, which makes that real for a credentials: none
-# command; fetch already dropped its refs.
+# Drops this run's directory, however the run ended: the exact directory
+# fetch reported, checked again here (a run.XXXXXXXX child of the root it
+# starts in, not a symlink, owned by this user). It starts in the root, which
+# makes the removal real for a credentials: none command; fetch already
+# dropped its refs.
 finally:
   sequence:
   - id: cleanup
     type: run
-    condition: nodes.?resolved.root.orValue('') != '' && nodes.?facts.valid.orValue(false) == true
+    condition: nodes.?resolved.root.orValue('') != '' && nodes.?resolved.run.orValue('') != ''
     timeout: 2m
     args:
       credentials: none
       work_dir: "{{ nodes.?resolved.root.orValue('') }}"
       command: |
-        run='{{ nodes.?facts.run.orValue('') }}'
-        case "$run" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
+        run='{{ nodes.?resolved.run.orValue('') }}'
+        case "$run" in run.????????) ;; *) exit 0 ;; esac
+        case "${run#run.}" in *[!A-Za-z0-9]*) exit 0 ;; esac
+        [ "${PWD##*/}" = reliant-ci ] && [ ! -L "$PWD" ] || exit 0
+        [ -d "./$run" ] && [ ! -L "./$run" ] && [ -O "./$run" ] || exit 0
         rm -rf -- "./$run"
         exit 0
 `}}

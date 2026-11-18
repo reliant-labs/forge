@@ -85,12 +85,14 @@ read the change pushes the branch into the repository, and it runs from there.
 
 Inside a run, the `fetch` step holds the machine's git credentials and runs
 git only: it fetches the commit and its base and writes them as a bundle to a
-directory of the run's own (`<cache>/reliant-ci/<run>/`). The `gate` step
-runs the code with `credentials: none` (no tokens, credential files hidden on
-Linux), starting in that directory, in a repository it makes from the bundle
-in its private `/tmp`, with git hooks off: nothing in it points at the
-project's checkout or its object store. Caches the sandbox makes private
-start cold, so a run is slower than `task ci` on a warm checkout.
+directory of the run's own, `mktemp -d`'s `<cache>/reliant-ci/run.XXXXXXXX/`
+(mode 0700, under a root it refuses unless it is a real directory this user
+owns with mode 0700). The `gate` step runs the code with `credentials: none`
+(no tokens, credential files hidden on Linux), starting in that directory, in
+a repository it makes from the bundle in its private `/tmp`, with git hooks
+off: nothing in it points at the project's checkout or its object store.
+Caches the sandbox makes private start cold, so a run is slower than
+`task ci` on a warm checkout.
 
 ## Adding checks of your own
 

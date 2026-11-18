@@ -56,7 +56,11 @@ upgrade: the phase's detail names each one to run yourself ('forge fix <name>').
 Whatever is left is printed as "Still needs a person" (--json: needs_human): a
 lint error, a playbook whose old shape remains, a codemod that listed what it
 could not decide. Rules still in their warn-first grace are listed under
-"Gating soon" (--json: upcoming) with the release they gate from.
+"Gating soon" (--json: upcoming) with the release they gate from. Rules whose
+grace this pin bump ends (they warned under the old pin and gate under the new
+one) are listed under "Starts gating" (--json: starts_gating), with how many of
+their findings the lint phase now reports as errors. A pseudo-version pin is
+graded as the release it leads to, so moving from one to its tag ends nothing.
 
 EXIT CODES (the contract a pin bot branches on)
   0  converged: every fix applied, nothing left for a person
@@ -69,7 +73,8 @@ EXIT CODES (the contract a pin bot branches on)
 
 --json prints exactly one document on stdout (schema forge-project-upgrade/v1:
 ok, exit_code, error, mode, from, to, converged, phases, codemods, locks,
-playbooks, vendored_contracts, needs_human, upcoming, template_drift); progress
+playbooks, vendored_contracts, needs_human, upcoming, starts_gating,
+template_drift); progress
 goes to stderr. ok and exit_code are the process's own. It is also printed for
 a failing run, so a bot can read what was applied before the failure.
 

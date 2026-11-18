@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/config"
@@ -106,6 +107,9 @@ type upgradeReport struct {
 	// Upcoming are lint findings of rules still in their warn-first grace:
 	// not gating this pin, gating from GatesFrom.
 	Upcoming []upgradeUpcoming `json:"upcoming"`
+	// StartsGating are the rules whose warn-first grace this pin bump ends:
+	// they warned under From and gate under To (forge#2230).
+	StartsGating []upgradeStartsGating `json:"starts_gating"`
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
@@ -200,9 +204,21 @@ func newUpgradeReport(opts upgradeOptions) *upgradeReport {
 		Schema: upgradeSchema, Mode: mode,
 		Phases: []upgradePhase{}, Codemods: []upgradeCodemodRun{}, Locks: []upgradeLockRun{},
 		Playbooks: []upgradePlaybookRun{}, Vendored: []upgradeVendoredRun{},
-		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, TemplateDrift: []string{},
-		Offers: []upgradeOffer{},
+		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, StartsGating: []upgradeStartsGating{},
+		TemplateDrift: []string{},
+		Offers:        []upgradeOffer{},
 	}
+}
+
+// upgradeStartsGating is one rule that gates from this pin on.
+type upgradeStartsGating struct {
+	Rule         string `json:"rule"`
+	IntroducedIn string `json:"introduced_in"`
+	GatesFrom    string `json:"gates_from"`
+	Fix          string `json:"fix,omitempty"`
+	// Findings is how many of the rule's findings the lint phase reported
+	// as errors under the new pin; absent when lint did not run.
+	Findings *int `json:"findings,omitempty"`
 }
 
 // ── the run ──────────────────────────────────────────────────────────────────
@@ -513,6 +529,11 @@ func (r *upgradeRun) newAcrossRange(v string) bool {
 }
 
 func (r *upgradeRun) phasePin() error {
+	for _, g := range lint.RulesStartingToGate(r.cfg, r.from, r.target) {
+		r.rep.StartsGating = append(r.rep.StartsGating, upgradeStartsGating{
+			Rule: g.Rule, IntroducedIn: g.IntroducedIn, GatesFrom: g.GatesFrom, Fix: g.Fix,
+		})
+	}
 	return bumpForgeVersion(r.cfg, r.configPath, r.target, r.check)
 }
 
@@ -884,6 +905,7 @@ func (r *upgradeRun) phaseLint() error {
 			}
 		}
 	}
+	countStartsGating(r.rep.StartsGating, errs)
 	for _, it := range lintHumanItems(errs) {
 		r.human(it)
 	}
@@ -893,10 +915,37 @@ func (r *upgradeRun) phaseLint() error {
 	return nil
 }
 
+// countStartsGating records, on each rule this pin starts gating, how many of
+// lint's error findings are that rule's.
+func countStartsGating(rows []upgradeStartsGating, errs []lintDocFinding) {
+	for i := range rows {
+		n := 0
+		for _, f := range errs {
+			if f.Rule == rows[i].Rule {
+				n++
+			}
+		}
+		rows[i].Findings = &n
+	}
+}
+
 // ── printing ─────────────────────────────────────────────────────────────────
 
 // printUpgradeSummary is the human tail: what is left, and what is coming.
 func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
+	if len(rep.StartsGating) > 0 {
+		fmt.Fprintf(w, "\nStarts gating at %s (warn-first rules whose grace this pin ends):\n", rep.To)
+		for _, g := range rep.StartsGating {
+			line := fmt.Sprintf("  - %s (new in %s, gates from %s)", g.Rule, g.IntroducedIn, g.GatesFrom)
+			if g.Findings != nil {
+				line += fmt.Sprintf(": %d %s now %s", *g.Findings, plural(*g.Findings, "finding", "findings"), plural(*g.Findings, "gates", "gate"))
+			}
+			if g.Fix != "" {
+				line += "; fix with `" + g.Fix + "`"
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
 	if len(rep.Upcoming) > 0 {
 		fmt.Fprintln(w, "\nGating soon (warn-first rules this pin's lint reports; they gate from the release named):")
 		for _, u := range rep.Upcoming {

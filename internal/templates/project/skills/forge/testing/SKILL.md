@@ -160,6 +160,13 @@ migration CLI) must either read those inputs itself or skip under `-short`, or
 the cached tier can report a stale pass. The scaffolded CRUD tests are safe:
 they read `db/migrations` with `os.ReadFile` (or `go:embed`) in-process.
 
+A run expected to take more than ~2 minutes (`task test`, `task ci`, a full
+lane) goes in the background — your harness's `run_in_background` plus
+`shell_wait` — never a long foreground call, and never detached by hand with
+`nohup`, a trailing `&`, `setsid` or `disown`: the harness can then neither
+limit nor kill it, and one runaway detached gate can exhaust a shared
+machine's process limit for every agent on it.
+
 ### Mark the slow tests; everything else is fast
 
 A test is fast — it runs in the blocking `-short` tier — unless it says

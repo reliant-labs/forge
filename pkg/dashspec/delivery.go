@@ -36,7 +36,7 @@ func IsDeliveryKind(k PanelKind) bool {
 // Markdown and link are refused by panel itself, as on every other kind.
 func (v *validator) deliveryPanel(path string, o map[string]any, kind PanelKind) {
 	v.refuse(path, o, kind, "signal", "series", "ratio", "formula", "where", "groupBy", "columns", "unit",
-		"funnel", "hasError", "sql", "trendSql", "postgres", "minStep", "display", "browse")
+		"funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "minStep", "display", "browse")
 	v.positiveWidthHeight(path, o)
 	if kind != KindPromotions {
 		v.refuse(path, o, kind, "limit")

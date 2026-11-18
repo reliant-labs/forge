@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/observe"
-	"github.com/reliant-labs/forge/pkg/servicecatalog"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
 
 func TestComponentMethodIDsPreserveLegacyAndDoNotLeakToNestedCalls(t *testing.T) {

@@ -61,7 +61,7 @@ const (
 // hostedOnly reports whether d is a dashboard with nothing to draw in the local
 // stack, and so no HyperDX file: Workloads reads what a node agent delivers,
 // Jobs the Kubernetes Job events it delivers, Releases reads the release
-// ledger and the built-in Users, Product and Acquisition dashboards read
+// ledger and the built-in Product overview, Users, Product and Acquisition dashboards read
 // product_events (sql panels HyperDX cannot draw, over a table the local
 // ClickStack lacks), the AI hub's are sql panels too, and none of them exists
 // under `forge env up`. They are also constant text, independent of the

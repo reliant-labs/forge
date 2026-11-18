@@ -28,6 +28,13 @@ var (
 
 	// ErrSchemaValidationFailed is returned when schema validation fails
 	ErrSchemaValidationFailed = errors.New("orm: schema validation failed")
+
+	// ErrQuestionPlaceholders is returned by the raw Exec, Query and
+	// QueryRow of a Client or Tx for a statement written with bun's `?`
+	// placeholders: that path sends SQL to postgres as written, so its
+	// placeholders are $1, $2, … (see raw_placeholders.go).
+	ErrQuestionPlaceholders = errors.New("orm: raw SQL takes postgres placeholders $1, $2, ..., not bun's ?: " +
+		"number the parameters $1..$N, or build the statement with db.Bun().NewRaw(query, args...), which formats ?")
 )
 
 // UnknownFieldError is returned by the generated Update<Entity>Masked

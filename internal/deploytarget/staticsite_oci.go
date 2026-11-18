@@ -43,8 +43,10 @@ import (
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/retry"
+
+	"github.com/reliant-labs/forge/internal/dockercred"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 )
 
 const (
@@ -167,27 +169,40 @@ const fixedCreated = "1970-01-01T00:00:00Z"
 // PushStaticSiteArtifact pushes a packed site to repository and returns the
 // manifest digest. Credentials come from the ambient docker credential store
 // — the same one `docker push` of a backend image to the same push base uses.
+//
+// A failed push is a *hostedimage.PushError naming repository, so a message
+// built further out names the repository that refused rather than guessing.
 func PushStaticSiteArtifact(ctx context.Context, repository string, layer []byte) (string, error) {
 	repo, err := newRegistryRepository("static site", repository)
 	if err != nil {
 		return "", err
 	}
-	return pushStaticSite(ctx, repo, layer)
+	digest, err := pushStaticSite(ctx, repo, layer)
+	if err != nil {
+		return "", &hostedimage.PushError{Repository: repository, Err: err}
+	}
+	return digest, nil
 }
 
 // newRegistryRepository opens repository with the ambient docker credential
 // store, over plain HTTP for the loopback registries a local k3d publishes.
+//
+// The store is read the way the docker CLI reads it (dockercred), so a push
+// here presents the credential `docker push` would. oras's own reading differs
+// for a host pinned to config.json, which is how an anonymous deploy's login
+// is kept out of the user's keychain: the image pushed, and every site and
+// source-map push after it presented the keychain's stale entry and got 401.
 func newRegistryRepository(what, repository string) (*remote.Repository, error) {
 	repo, err := remote.NewRepository(repository)
 	if err != nil {
 		return nil, fmt.Errorf("%s repository %q: %w", what, repository, err)
 	}
 	repo.PlainHTTP = plainHTTPRegistry(repo.Reference.Registry)
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	credential, err := dockercred.Credential()
 	if err != nil {
 		return nil, fmt.Errorf("read docker credentials: %w", err)
 	}
-	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credential}
 	return repo, nil
 }
 

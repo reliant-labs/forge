@@ -1360,7 +1360,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// Non-disruptive layers only (no registry GC, no node restarts), gated on
 	// a 24h timestamp, and never fatal. See storage_converge.go.
 	if upReclaimsStorage(entities, clusterErr) {
-		maybeOpportunisticGC(ctx, os.Stdout)
+		maybeOpportunisticGC(ctx, os.Stdout, declaredRegistryContainers(entities.Clusters))
 	}
 
 	// PRESENCE, reported after the stack is actually up (§7.4). Here and

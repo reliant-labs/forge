@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +254,76 @@ func TestClaimableDeploy_PublishesAndPrintsTheClaim(t *testing.T) {
 	}
 }
 
+// A claimable deploy whose promotion was written is published, whatever its
+// rollout then does: a timed-out wait, with no address observed yet, must not
+// make status say nothing is deployed and hold the claim link back. And a
+// successful retry's documents report THAT attempt, not the stored failure.
+func TestClaimableDeploy_FailedRolloutStillReadsAsPublished(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	fake.noObservedURL = true
+	wait := capturedWait{err: &exitCodeError{code: exitTimedOut, msg: "web: still progressing"}}
+	wait.install(t)
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if got := exitCodeForError(err); got != exitTimedOut {
+		t.Fatalf("exit code = %d, want the wait's %d (%v)\n%s", got, exitTimedOut, err, out)
+	}
+	if fake.bundles[fake.envs["hosted"]]["web"] == nil {
+		t.Fatal("the promotion was not written; the test needs a deploy that published before its rollout failed")
+	}
+
+	statusOut, err := runForge(t, "env", "status", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("status --claimable --json: %v\n%s", err, statusOut)
+	}
+	claim, _ := decodeClaimDoc(t, statusOut)["claim"].(map[string]any)
+	if claim == nil {
+		t.Fatalf("status carries no claim:\n%s", statusOut)
+	}
+	if claim["published"] != true {
+		t.Fatalf("claim.published = %v after a written promotion whose rollout failed:\n%s", claim["published"], statusOut)
+	}
+	if u, _ := claim["url"].(string); u != "" {
+		t.Fatalf("claim.url = %q; the test needs no observed address", u)
+	}
+	last, _ := claim["last_attempt"].(map[string]any)
+	if last["outcome"] != "failed" || !strings.Contains(fmt.Sprint(last["error"]), "still progressing") {
+		t.Fatalf("claim.last_attempt = %v, want the rollout's failure", last)
+	}
+	text, err := runForge(t, "env", "status", "hosted", "--claimable")
+	if err != nil {
+		t.Fatalf("status --claimable: %v\n%s", err, text)
+	}
+	if strings.Contains(text, "Nothing is deployed") || !strings.Contains(text, "Claim:  https://app.reliant.dev/claim#rcl_9f3KQe") {
+		t.Fatalf("status of a published deploy withheld the claim:\n%s", text)
+	}
+
+	// The retry succeeds, starting from that stored failure.
+	wait.err = nil
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	for name, doc := range map[string]string{"deploy --json": out} {
+		claim, _ := decodeClaimDoc(t, doc)["claim"].(map[string]any)
+		last, _ := claim["last_attempt"].(map[string]any)
+		if claim["published"] != true || last["outcome"] != "published" || last["error"] != nil {
+			t.Fatalf("%s: claim = %v, want this attempt, published, with no error", name, claim)
+		}
+	}
+	statusOut, err = runForge(t, "env", "status", "hosted", "--claimable", "--json")
+	if err != nil {
+		t.Fatalf("status after the retry: %v\n%s", err, statusOut)
+	}
+	claim, _ = decodeClaimDoc(t, statusOut)["claim"].(map[string]any)
+	if last, _ := claim["last_attempt"].(map[string]any); last["outcome"] != "published" || last["error"] != nil {
+		t.Fatalf("stored last_attempt after a successful retry = %v", last)
+	}
+}
+
 // The text output is the design's block, in order.
 func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 	prev := claimableNow
@@ -259,7 +331,7 @@ func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 	defer func() { claimableNow = prev }()
 	var b strings.Builder
 	printClaimBlock(&b, "prod", &deployClaimJSON{
-		State: "live", URL: "https://amber-quokka.reliantpreview.dev", ClaimURL: "https://app.reliant.dev/claim#rcl_9f3KQe",
+		State: "live", Published: true, URL: "https://amber-quokka.reliantpreview.dev", ClaimURL: "https://app.reliant.dev/claim#rcl_9f3KQe",
 		ExpiresAt: time.Date(2026, 10, 29, 14, 2, 0, 0, time.UTC), PurgeAfter: time.Date(2026, 11, 5, 14, 2, 0, 0, time.UTC),
 	})
 	for _, want := range []string{
@@ -275,6 +347,84 @@ func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("claim block lacks %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// The claim and its 72h clock exist from the first attempt. When every
+// attempt failed, status must say nothing is deployed and why — never "goes
+// offline" as if something were online, and never hand out the claim link,
+// whose use would sign the human up for an empty deploy and revoke the token.
+func TestClaimDocument_NothingPublishedSaysSoAndHoldsTheLinkBack(t *testing.T) {
+	now := time.Date(2026, 11, 17, 22, 0, 0, 0, time.UTC)
+	prev := claimableNow
+	claimableNow = func() time.Time { return now }
+	defer func() { claimableNow = prev }()
+	failedAt := now.Add(-50 * time.Minute)
+	cred := credentials.Credential{Claimable: &credentials.Claimable{
+		ClaimURL:  "https://app.reliant.dev/claim#rcl_9f3KQe",
+		ExpiresAt: now.Add(71 * time.Hour), PurgeAfter: now.Add(239 * time.Hour),
+		LastAttemptAt: failedAt, LastAttemptError: "build env prod for deploy: hosted static site web: push: 401",
+	}}
+	doc := claimDocument("prod", cred, now, false)
+	if doc.Published {
+		t.Fatal("a deploy whose every attempt failed reads as published")
+	}
+	if doc.State != "live" {
+		t.Fatalf("state = %q: the claim's window is still open, and state keeps meaning that", doc.State)
+	}
+	if doc.LastAttempt == nil || doc.LastAttempt.Outcome != "failed" || !strings.Contains(doc.LastAttempt.Error, "401") {
+		t.Fatalf("last_attempt = %+v, want the failure", doc.LastAttempt)
+	}
+	for _, want := range []string{"Nothing is deployed", "401", "Do NOT give claim_url", "does not extend it"} {
+		if !strings.Contains(doc.AgentInstructions, want) {
+			t.Errorf("agent_instructions lacks %q:\n%s", want, doc.AgentInstructions)
+		}
+	}
+	b, _ := json.Marshal(doc)
+	if !strings.Contains(string(b), `"published":false`) {
+		t.Errorf("published=false is not serialised: %s", b)
+	}
+
+	var text strings.Builder
+	printClaimBlock(&text, "prod", doc)
+	out := text.String()
+	for _, want := range []string{
+		"Nothing is deployed: no deploy of prod has published yet.",
+		"The last attempt failed 2026-11-17 21:10 UTC: build env prod for deploy: hosted static site web: push: 401",
+		"env deploy prod --claimable",
+		"(in 71h)",
+		"deploying again does not extend it",
+		"do not give the claim link to your user yet",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("status lacks %q:\n%s", want, out)
+		}
+	}
+	for _, never := range []string{"✓ Live", "makes this site theirs", "Claim:  https://"} {
+		if strings.Contains(out, never) {
+			t.Errorf("status of an empty deploy says %q:\n%s", never, out)
+		}
+	}
+}
+
+// A deploy that published is published even before its address is known
+// (a service still starting), and an entry written by an older forge that
+// saw an address reads as published too.
+func TestClaimDocument_PublishedFromEitherFact(t *testing.T) {
+	now := time.Date(2026, 11, 17, 22, 0, 0, 0, time.UTC)
+	base := credentials.Claimable{ClaimURL: "https://app.reliant.dev/claim#rcl_x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)}
+	byTime := base
+	byTime.LastPublishedAt, byTime.LastAttemptAt = now, now
+	byURL := base
+	byURL.URL = "https://amber-quokka.reliantpreview.dev"
+	for name, cl := range map[string]credentials.Claimable{"recorded": byTime, "older entry with url": byURL} {
+		doc := claimDocument("prod", credentials.Credential{Claimable: &cl}, now, false)
+		if !doc.Published || !strings.Contains(doc.AgentInstructions, "Give claim_url to your user") {
+			t.Errorf("%s: %+v", name, doc)
+		}
+	}
+	if doc := claimDocument("prod", credentials.Credential{Claimable: &byTime}, now, false); doc.LastAttempt == nil || doc.LastAttempt.Outcome != "published" {
+		t.Errorf("last_attempt = %+v, want published", doc.LastAttempt)
 	}
 }
 
@@ -747,6 +897,61 @@ func TestClaimableDeploy_PlanOnlyPreviewsAndCreatesNothing(t *testing.T) {
 	}
 	if fake.challenges != 0 || fake.starts != 0 || len(fake.authSeen) != 0 {
 		t.Errorf("a preview touched the account path: challenges=%d starts=%d authed=%d", fake.challenges, fake.starts, len(fake.authSeen))
+	}
+}
+
+// A migration the default branch does not hold is refused by the release cut
+// (checkUnmergedMigrations). The --plan-only preview used to say "fits" for
+// such a checkout, and the deploy refused it only after a full build. Both
+// now judge it from the checkout first: the preview fails, and the deploy is
+// refused before any proof of work, account or build — until it is committed.
+func TestClaimableDeploy_UnmergedMigrationIsRefusedBeforeAnythingIsCreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders KCL, execs git and runs the whole CLI; skipped in -short")
+	}
+	fake, _ := claimableFixture(t)
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	migGit(t, dir, "init", "-q", "-b", "main")
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "project")
+	writeMigFile(t, dir, "20260101000000_counters.up.sql")
+
+	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	if err == nil || exitCodeForError(err) != exitRefused {
+		t.Fatalf("preview of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
+	}
+	doc := decodeClaimDoc(t, out)
+	refusal, _ := doc["release_refusal"].(string)
+	if doc["ok"] != false || doc["eligible"] != true || !strings.Contains(refusal, "20260101000000_counters.up.sql") ||
+		doc["error_reason"] != reasonUnmergedMigrations {
+		t.Errorf("preview doc = %v", doc)
+	}
+	if !strings.Contains(refusal, "git add db/migrations && git commit") {
+		t.Errorf("the refusal does not say how to commit the migration:\n%s", refusal)
+	}
+
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	if err == nil || exitCodeForError(err) != exitRefused {
+		t.Fatalf("deploy of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
+	}
+	if doc := decodeClaimDoc(t, out); doc["error_reason"] != reasonUnmergedMigrations {
+		t.Errorf("deploy doc = %v", doc)
+	}
+	if fake.challenges != 0 || fake.starts != 0 {
+		t.Errorf("the refusal came after the account path: challenges=%d starts=%d", fake.challenges, fake.starts)
+	}
+
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "migration")
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	if err != nil {
+		t.Fatalf("preview once the migration is on main: %v\n%s", err, out)
+	}
+	if doc := decodeClaimDoc(t, out); doc["release_refusal"] != nil {
+		t.Errorf("a committed migration is still refused: %v", doc["release_refusal"])
 	}
 }
 

@@ -11,8 +11,11 @@ package cli
 // --allow-inconclusive; 1 FAIL; 2 INCONCLUSIVE, or could not look (control
 // plane unreachable, auth refused, telemetry off, the control plane does not
 // serve release health yet); 8 --wait ran out before the after window
-// finished. Exit 2 deliberately covers "low traffic" and "unreachable": both
-// mean "not proven good", and a gate must not read either as a pass. Low
+// finished, or the read was refused by a spent query quota or a throttle
+// (reason_code quota_exhausted / rate_limited; obs_check_retry.go), which
+// --wait waits out first. Exit 2 deliberately covers "low traffic" and
+// "unreachable": both mean "not proven good", and a gate must not read
+// either as a pass. Low
 // traffic is NOT exit 8: 8 says "check again later", and a closed after
 // window with too few requests is final for that promotion — a later check
 // reads the same window and reaches the same verdict.
@@ -42,13 +45,13 @@ var obsCheckSchema = obsout.Schema{
 	Name: schemaObsCheck,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.env_id", "scope.from", "scope.to",
-		"query_mode", "verdict", "reason", "reason_code",
+		"query_mode", "verdict", "reason", "reason_code", "retry_at",
 		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release", "subject.live_at",
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
 		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed",
 		"version_share", "window_not_live", "rollout_incomplete",
-		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "workload_findings",
+		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -72,9 +75,13 @@ type obsCheckDoc struct {
 	QueryMode string       `json:"query_mode"`
 	Verdict   string       `json:"verdict,omitempty"`
 	// Reason says why the verdict is INCONCLUSIVE; ReasonCode says it as
-	// one of releasehealth's Reason* codes, for a gate to branch on.
-	Reason          string                        `json:"reason,omitempty"`
-	ReasonCode      string                        `json:"reason_code,omitempty"`
+	// one of releasehealth's Reason* codes, for a gate to branch on. A check
+	// whose read was refused judged nothing: it has no verdict, exits 8, and
+	// says why as quota_exhausted or rate_limited (obs_check_retry.go).
+	Reason     string `json:"reason,omitempty"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	// RetryAt is when a refused read's allowance refills: ask again after it.
+	RetryAt         *time.Time                    `json:"retry_at,omitempty"`
 	Subject         *releasehealth.Subject        `json:"subject,omitempty"`
 	Windows         *obsCheckWindows              `json:"windows,omitempty"`
 	Services        []releasehealth.ServiceHealth `json:"services,omitempty"`
@@ -91,7 +98,11 @@ type obsCheckDoc struct {
 	// IssueAlerts fired for an issue release health judges itself (the
 	// platform's NewIssue and IssueRegressed alerts), so they are not
 	// counted again as alert_firing findings.
-	IssueAlerts      []releasehealth.Alert     `json:"issue_alerts,omitempty"`
+	IssueAlerts []releasehealth.Alert `json:"issue_alerts,omitempty"`
+	// BaselineAlerts opened after the promotion, but the same alert also
+	// fired in the baseline window before it: flapping before the release,
+	// so each is a warn finding, not a failing one.
+	BaselineAlerts   []releasehealth.Alert     `json:"baseline_alerts,omitempty"`
 	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
 	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
 	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
@@ -197,9 +208,19 @@ Exit status:
      min_requests in its release_health (or --threshold min_requests=N) or
      widen --window. window_open (no --wait): check again, or use --wait.
      window_not_live: the release went live (its deploy gates) after the
-     after window ended; suggested[] names the --window that covers it.
-  8  --wait ran out (--timeout) before the after window finished: check
-     again later. Low traffic is never 8.
+     after window ended; suggested[] names the --window that covers it. A
+     current control plane starts the after window when the release went
+     live (subject.live_at), so a retried promotion is judged on what it
+     served; only an older one, which anchors it at promoted_at, gets here.
+  8  check again later; nothing final was learned. Either --wait ran out
+     (--timeout) before the after window finished, or the control plane
+     refused the read because the org's query quota is spent
+     (reason_code quota_exhausted) or this caller is throttled
+     (rate_limited); retry_at says when it refills. --wait waits a refusal
+     out, asking again every few minutes, and exits 8 only when --timeout
+     ends first. Low traffic is never 8.
+     With --wait, an unavailable or timed-out control plane is asked again
+     with a backoff; one that stays down for all of --timeout is exit 2.
 
 Thresholds come from the env's release_health declaration (KCL); --threshold
 name=value overrides one for this call (` + strings.Join(releasehealth.OverrideNames, ", ") + `).
@@ -308,10 +329,10 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	deadline := d.Now().Add(o.timeout)
 	var res obsbackend.HealthResult
 	var liveWin checkLive
+	poll := checkPoll{d: d, reader: reader, info: b.Info(), env: env, o: o, deadline: deadline}
 	for {
-		req.Now = d.Now()
-		if res, err = reader.ReleaseHealth(ctx, req); err != nil {
-			return bad(err)
+		if res, doc, err = poll.read(ctx, req, doc); err != nil {
+			return doc, err
 		}
 		// When the release went liveWin, from the promotion's deploy gates. A
 		// promotion none of whose attempts has shipped has no window of its
@@ -362,45 +383,7 @@ func obsCheck(ctx context.Context, d obsDeps, env string, o obsCheckOpts) (obsCh
 	// an issue whose events are another version's) never fails it. Before the
 	// alert read, which a FAIL skips (obs_check_attribution.go).
 	res.Report = attributeCheck(ctx, d, b, res.Report, liveWin)
-	// A release promoted into a firing critical alert is not proven good, and
-	// one that opened a critical alert fails. The alert state is read here
-	// rather than trusted to the control plane's answer, which lists only the
-	// alerts that opened after the promotion and judges them by the env's
-	// policy; a check that cannot read it is INCONCLUSIVE, never a PASS.
-	// The answer's own firing alerts are judged first, so a critical alert it
-	// already proves cannot be softened by a failed second read.
-	// An alert whose rule says it is not about the env's workloads (a build
-	// machine's load, a fleet the env watches: label release_health=exclude)
-	// judges no release, whichever side judged the report. The alert state,
-	// read once, names such a rule when an alert_firing finding's answer
-	// lists no alert of it.
-	ar, readable := b.(obsbackend.AlertReader)
-	var live []releasehealth.Alert
-	var aerr error
-	read := false
-	readLive := func() {
-		if read {
-			return
-		}
-		read = true
-		var alerts []obsbackend.Alert
-		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
-			live = firingHealthAlerts(alerts)
-		}
-	}
-	if readable && slices.ContainsFunc(res.Report.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
-		readLive()
-	}
-	res.Report = releasehealth.WithoutExcludedAlerts(res.Report, live)
-	res.Report = releasehealth.WithStandingAlerts(res.Report, nil)
-	if readable && res.Report.Verdict != releasehealth.Fail {
-		readLive()
-		if aerr != nil {
-			res.Report = releasehealth.WithAlertStateUnread(res.Report, aerr.Error())
-		} else {
-			res.Report = releasehealth.WithStandingAlerts(res.Report, live)
-		}
-	}
+	res.Report = judgeCheckAlerts(ctx, d, b, res.Report, opts.Overrides)
 	// Attribution again, over the alerts that read added: idempotent.
 	res.Report = releasehealth.Attribute(res.Report)
 	// --early-pass: the open window is judged as far as it goes, after every
@@ -440,6 +423,54 @@ func withCurrentRules(r releasehealth.Report, overrides map[string]string) relea
 	// v1.20.1-rc.1: 8 errors, one daemon's websockets; pkg/releasehealth
 	// error_rate.go).
 	return releasehealth.WithErrorRateMinErrors(r, overrides)
+}
+
+// judgeCheckAlerts holds a judged report to the env's alert state. A release
+// promoted into a firing critical alert is not proven good, and one that
+// opened a critical alert fails. The alert state is read here rather than
+// trusted to the control plane's answer, which lists only the alerts that
+// opened after the promotion and judges them by the env's policy; a check that
+// cannot read it is INCONCLUSIVE, never a PASS. The answer's own firing alerts
+// are judged first, so a critical alert it already proves cannot be softened
+// by a failed second read. An alert whose rule says it is not about the env's
+// workloads (a build machine's load, a fleet the env watches: label
+// release_health=exclude) judges no release, whichever side judged the
+// report. The alert state, read once, names such a rule when an alert_firing
+// finding's answer lists no alert of it. An alert that already fired in the
+// baseline window before the promotion was flapping before the release
+// (IdentityLatency, rc.6): a warn, not a failure. The history is read only
+// when an alert_firing finding could fail; a read that fails discounts
+// nothing. overrides are the request's --threshold pairs.
+func judgeCheckAlerts(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, overrides map[string]string) releasehealth.Report {
+	ar, readable := b.(obsbackend.AlertReader)
+	var live []releasehealth.Alert
+	var aerr error
+	read := false
+	readLive := func() {
+		if read {
+			return
+		}
+		read = true
+		var alerts []obsbackend.Alert
+		if alerts, aerr = ar.Alerts(ctx); aerr == nil {
+			live = firingHealthAlerts(alerts)
+		}
+	}
+	if readable && slices.ContainsFunc(r.Findings, func(f releasehealth.Finding) bool { return f.Code == release.HealthAlertFiring }) {
+		readLive()
+	}
+	r = releasehealth.WithoutExcludedAlerts(r, live)
+	r = withAlertBaseline(ctx, d, b, r, live, overrides)
+	r = releasehealth.WithStandingAlerts(r, nil)
+	if readable && r.Verdict != releasehealth.Fail {
+		readLive()
+		if aerr != nil {
+			r = releasehealth.WithAlertStateUnread(r, aerr.Error())
+		} else {
+			r = releasehealth.WithStandingAlerts(r, live)
+		}
+	}
+	return r
 }
 
 // earlyPassVersionShare is how much of every service's after-window traffic the
@@ -483,6 +514,43 @@ func earlyPassWhy(r releasehealth.Report, min time.Duration) string {
 	}
 	return fmt.Sprintf("%s of the after window observed (until %s), the judged version serving all traffic, nothing found",
 		observed.Round(time.Second), r.After.To.UTC().Format(time.RFC3339))
+}
+
+// withAlertBaseline applies the baseline-alert rule (pkg/releasehealth
+// alert_baseline.go) over the env's alert history, read from the backend when
+// a counted alert_firing finding is in the report. A backend with no history,
+// or a read that fails, leaves the report as judged: without the history
+// nothing proves an alert was flapping, so it counts.
+func withAlertBaseline(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, live []releasehealth.Alert, overrides map[string]string) releasehealth.Report {
+	hr, ok := b.(obsbackend.AlertHistoryReader)
+	if !ok || r.Subject.PromotedAt.IsZero() || !slices.ContainsFunc(r.Findings, func(f releasehealth.Finding) bool {
+		return f.Code == release.HealthAlertFiring && f.Unattributed == ""
+	}) {
+		return r
+	}
+	since := r.Subject.PromotedAt.Add(-checkBaselineWindow(r.Thresholds))
+	events, err := hr.AlertHistory(ctx, since)
+	if err != nil {
+		fmt.Fprintf(d.Stderr, "could not read the alert history, so an alert that was firing before the promotion counts as the release's: %v\n", err)
+		return r
+	}
+	history := make([]releasehealth.AlertEvent, 0, len(events))
+	for _, e := range events {
+		history = append(history, releasehealth.AlertEvent{Rule: e.Rule, Fingerprint: e.Fingerprint, Labels: e.Labels, Transition: e.Transition, At: e.At})
+	}
+	return releasehealth.WithAlertBaseline(r, history, live, overrides)
+}
+
+// checkBaselineWindow is the baseline window a report was judged with.
+func checkBaselineWindow(ths []releasehealth.Threshold) time.Duration {
+	for _, th := range ths {
+		if th.Name == releasehealth.ThresholdBaselineWindow {
+			if v, err := time.ParseDuration(th.Value); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	return release.DefaultHealthBaselineWindow
 }
 
 // firingHealthAlerts maps the firing alerts onto the rule's vocabulary.
@@ -624,7 +692,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	}
 	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
-	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts
+	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts, doc.BaselineAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts, r.BaselineAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -790,8 +858,12 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		obsout.Table(w, []string{"SERVICE", "REQUESTS", "ERRORS", "P95", "ON RELEASE"}, rows, 40)
 	}
 	if doc.Subject.LiveAt.After(doc.Subject.PromotedAt) {
-		fmt.Fprintf(w, "live   %s (promoted %s; its deploy gates say when it shipped)\n",
-			doc.Subject.LiveAt.Format(time.RFC3339), doc.Subject.PromotedAt.Format(time.RFC3339))
+		anchor := "its deploy gates say when it shipped"
+		if doc.Windows != nil && doc.Windows.After.From.Equal(doc.Subject.LiveAt) {
+			anchor += "; the after window starts there"
+		}
+		fmt.Fprintf(w, "live   %s (promoted %s; %s)\n",
+			doc.Subject.LiveAt.Format(time.RFC3339), doc.Subject.PromotedAt.Format(time.RFC3339), anchor)
 	}
 	if len(doc.Findings) > 0 {
 		fmt.Fprintln(w)
@@ -820,6 +892,13 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		for _, a := range doc.IssueAlerts {
 			fmt.Fprintf(w, "alert %s firing for issue %s: judged as the issue (%s), not counted again\n",
 				a.Rule, a.Labels[releasehealth.LabelIssueID], a.IssueCode())
+		}
+	}
+	if len(doc.BaselineAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.BaselineAlerts {
+			fmt.Fprintf(w, "alert %s firing%s: not counted (it also fired %d time(s) in the baseline window before the promotion: flapping before this release)\n",
+				a.Rule, alertSubject(a.Labels), a.BaselineFirings)
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {

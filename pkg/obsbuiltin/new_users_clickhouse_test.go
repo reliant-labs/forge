@@ -19,9 +19,15 @@ import (
 //	mature    reports no sign-ups; its data begins 09-01, before the range,
 //	          so the whole range is decided. m1 (09-01, back 11-10) and m3
 //	          (10-10, back 11-01) were first seen before it; m2 (10-20) is new.
-//	signups   reports sign-ups: unchanged. g1 signed up at the very start of
-//	          its data (10-24 14:03) and is new; g2 never signed up; g3
-//	          signed up 09-01.
+//	signups   reports sign-ups since 09-01, before the range, so no figure
+//	          says "since". g1 signed up at the very start of its data
+//	          (10-24 14:03) and is new; g2 never signed up; g3 signed up
+//	          09-01.
+//	latesignups reports sign-ups only from 11-05 09:00, inside the range
+//	          (and inside the Overview's two weeks), so New and Returning
+//	          say "since 5 Nov". l1 was active before the range; l2 joined
+//	          inside it before sign-ups were reported, has none and counts
+//	          returning; l3 signed up 11-05 and is new.
 //	brandnew  reports no sign-ups; its data begins 11-10, so nothing in the
 //	          range is decided.
 //	empty     no events.
@@ -42,6 +48,11 @@ INSERT INTO forge_obsbuiltin_newusers.product_events (Timestamp, ServiceName, En
     ('2026-10-30 09:00:00', 'api', 'signups', 'g2', 'task_created', {}, 'backend'),
     ('2026-09-01 09:00:00', 'api', 'signups', 'g3', 'auth_signed_up', {'method': 'password'}, 'backend'),
     ('2026-11-01 09:00:00', 'api', 'signups', 'g3', 'task_created', {}, 'backend'),
+    ('2026-10-01 09:00:00', 'api', 'latesignups', 'l1', 'task_created', {}, 'backend'),
+    ('2026-11-10 09:00:00', 'api', 'latesignups', 'l1', 'task_created', {}, 'backend'),
+    ('2026-10-20 09:00:00', 'api', 'latesignups', 'l2', 'task_created', {}, 'backend'),
+    ('2026-11-05 09:00:00', 'api', 'latesignups', 'l3', 'auth_signed_up', {'method': 'password'}, 'backend'),
+    ('2026-11-06 09:00:00', 'api', 'latesignups', 'l3', 'task_created', {}, 'backend'),
     ('2026-11-10 09:00:00', 'api', 'brandnew', 'b1', 'task_created', {}, 'backend'),
     ('2026-11-11 09:00:00', 'api', 'brandnew', 'b2', 'task_created', {}, 'backend'),
     ('2026-11-10 09:00:00', 'api', 'signedout', 's1', 'auth_signed_out', {}, 'backend');
@@ -49,7 +60,9 @@ INSERT INTO forge_obsbuiltin_newusers.product_events (Timestamp, ServiceName, En
 
 // TestNewUsersPanelsDecideNewFromFirstSeen runs the new and returning panels
 // over each case: first-seen new users exclude the first week of the data,
-// and a range with nothing decided shows no figure (\N) instead of a guess.
+// a range with nothing decided shows no figure (\N) instead of a guess, and
+// where sign-ups are reported only from inside the range every New and
+// Returning figure says "since" that day, and the auth-sources note says why.
 func TestNewUsersPanelsDecideNewFromFirstSeen(t *testing.T) {
 	ch := newClickHouse(t, "forge_obsbuiltin_newusers", newUsersSeed)
 	end := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
@@ -67,7 +80,22 @@ func TestNewUsersPanelsDecideNewFromFirstSeen(t *testing.T) {
 		// want is each panel's TSV answer, by dashboard/panel; "/trend" reads
 		// the panel's TrendSQL.
 		want map[string]string
+		// since is the subtitle (SubtitleSQL) of every New and Returning
+		// figure, the Users dashboard's and the Overview's; "" is none.
+		since string
 	}{
+		{name: "sign-ups reported only since inside the range", env: "latesignups", since: "since 5 Nov", want: map[string]string{
+			"users/active":    "3",
+			"users/new":       "1",
+			"users/new/trend": "2026-11-05\t1",
+			"users/returning": "2",
+			"users/auth-sources": "backend\t1\t0\t0\t0\n" +
+				"sign-ups reported from 2026-11-05 09:00 UTC, the earliest auth_signed_up retained: new users are the users who signed up since then; " +
+				"a user who signed up before then has no sign-up and counts as returning\t0\t0\t0\t0",
+			// This week: l1 and l3 back; the week before: l3 signed up.
+			"overview/new-7d":       "0\t1",
+			"overview/returning-7d": "2\t0",
+		}},
 		{name: "data start inside the range", env: "fresh", want: map[string]string{
 			"users/active":    "4",
 			"users/new":       "2",
@@ -88,7 +116,7 @@ func TestNewUsersPanelsDecideNewFromFirstSeen(t *testing.T) {
 			"overview/new-7d":       "0\t0",
 			"overview/returning-7d": "1\t1",
 		}},
-		{name: "sign-up event present", env: "signups", want: map[string]string{
+		{name: "sign-ups reported since before the range", env: "signups", want: map[string]string{
 			"users/active":          "3",
 			"users/new":             "1",
 			"users/new/trend":       "2026-10-24\t1",
@@ -118,11 +146,17 @@ func TestNewUsersPanelsDecideNewFromFirstSeen(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range []string{"users/new/subtitle", "users/returning/subtitle", "overview/new-7d/subtitle", "overview/returning-7d/subtitle"} {
+				tc.want[key] = tc.since
+			}
 			for key, want := range tc.want {
 				parts := strings.Split(key, "/")
 				p := panel(t, byID[parts[0]], parts[1])
 				sql := p.SQL
-				if len(parts) == 3 {
+				switch {
+				case len(parts) == 3 && parts[2] == "subtitle":
+					sql = p.SubtitleSQL
+				case len(parts) == 3:
 					sql = p.TrendSQL
 				}
 				got, err := ch.try(sql, start, end, tc.env)

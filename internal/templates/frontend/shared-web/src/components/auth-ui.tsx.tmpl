@@ -1,36 +1,10 @@
 {{if eq .Platform "nextjs"}}"use client";
 
 {{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// The pieces every /auth screen is built from: the page frame, the card, the
-// inline alerts, the password field with its show/hide control, the "or"
-// divider and the text links. Sign-in, sign-up, forgot, reset, invite, magic
-// link, verify and the social return all compose these, so restyling the
-// sign-in experience is an edit here rather than eight.
-//
-// ── What is deliberately NOT here ─────────────────────────────────────
-//
-// A logo or an illustration. The mark above the card is the product's
-// initial on an accent tile and its name, drawn from the theme tokens, so it
-// is honest placeholder branding: replace <AuthBrand> with your logo. There is
-// no marketing panel beside the card either; add one in AuthPage if your
-// product wants it.
-//
-// ── Colour, type and geometry ─────────────────────────────────────────
-//
-// Only the semantic tokens from globals.css / index.css (`bg-surface`,
-// `text-ink`, `text-danger-ink`, …), so dark mode, the theme toggle and a
-// rebrand all reach these screens with no edit here. The page sits on
-// `surface-sunken` and the card on `surface`, which reads as a raised card in
-// both palettes.
-//
-// ── Accessibility ─────────────────────────────────────────────────────
-//
-//   - Every alert carries an icon AND words; colour is never the only signal.
-//   - An error is role="alert" (announced at once); a notice is role="status".
-//   - The show/hide control is a real button with a name and aria-pressed,
-//     44px square, so it is a comfortable touch target.
-//   - Every focusable thing has a visible keyboard focus outline.
+// The pieces every /auth screen is built from (frame, card, alerts, password field, divider, links):
+// restyle sign-in here, once. Semantic tokens only, so dark mode and a rebrand reach it. <AuthBrand>
+// is placeholder branding: replace it with your logo. Keep alerts icon + words (never colour alone),
+// role="alert" for errors. Depth: `forge skill load frontend/design`.
 
 import { Eye, EyeOff, Info, MailCheck, TriangleAlert } from "lucide-react";
 import { forwardRef, useState } from "react";

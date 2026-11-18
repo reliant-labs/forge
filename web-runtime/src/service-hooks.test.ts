@@ -816,6 +816,68 @@ describe("createMutationHook", () => {
     expect(captured.mutation).not.toHaveProperty("options");
   });
 
+  it("skips the invalidation on invalidate: false, and still calls onSuccess", () => {
+    // The report this guards: a caller wrote the response into the cache in
+    // onSuccess, and the default invalidation refetched over it (41 → 42 →
+    // back to 41 against a static mock). onSuccess is additive by design, so
+    // opting out of the refresh is its own, explicit option.
+    captured.invalidated = [];
+    const seen: unknown[] = [];
+    const useClick = createMutationHook(keys.all, async () => ({ count: 42 }));
+
+    useClick({
+      invalidate: false,
+      onSuccess: (res) => {
+        seen.push(res);
+      },
+    });
+    (captured.mutation?.onSuccess as (...a: unknown[]) => void)(
+      { count: 42 },
+      {},
+      undefined,
+    );
+
+    expect(captured.invalidated).toEqual([]);
+    expect(seen).toEqual([{ count: 42 }]);
+  });
+
+  it("replaces the invalidation with an invalidate function, run before onSuccess", () => {
+    captured.invalidated = [];
+    const order: string[] = [];
+    const useCreateOrder = createMutationHook(
+      keys.entity("order"),
+      async () => ({ id: "new" }),
+    );
+
+    useCreateOrder({
+      invalidate: (qc) => {
+        order.push("invalidate");
+        void qc.invalidateQueries({ queryKey: keys.entity("invoice") });
+      },
+      onSuccess: () => {
+        order.push("caller");
+      },
+    });
+    (captured.mutation?.onSuccess as (...a: unknown[]) => void)(
+      { id: "new" },
+      {},
+      undefined,
+    );
+
+    // Only the caller's scope: the generated entity scope is replaced.
+    expect(captured.invalidated).toEqual([["orderService", "invoice"]]);
+    expect(order).toEqual(["invalidate", "caller"]);
+  });
+
+  it("keeps invalidate out of the options React Query receives", () => {
+    const useCreateOrder = createMutationHook(
+      keys.entity("order"),
+      async () => ({}),
+    );
+    useCreateOrder({ invalidate: false });
+    expect(captured.mutation).not.toHaveProperty("invalidate");
+  });
+
   it("passes the caller's other options through untouched", () => {
     const useCreateOrder = createMutationHook(
       keys.entity("order"),
@@ -1009,6 +1071,17 @@ describe("createMutationCall + createServiceMutations", () => {
     // Overrides belong to one call, not to the bound table or later writes.
     await write({});
     expect(client.getQueryState(otherKey)?.isInvalidated).toBe(true);
+  });
+
+  it("invalidates nothing on invalidate: false", async () => {
+    const { client, orderKey, otherKey } = seeded();
+    const write = createServiceMutations({
+      write: createMutationCall(keys.all, async () => ({ id: "written" })),
+    })(client).write;
+
+    expect(await write({}, { invalidate: false })).toEqual({ id: "written" });
+    expect(client.getQueryState(orderKey)?.isInvalidated).toBe(false);
+    expect(client.getQueryState(otherKey)?.isInvalidated).toBe(false);
   });
 
   it("does not call the override on RPC rejection or aborted rejection", async () => {

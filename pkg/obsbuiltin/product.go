@@ -70,10 +70,10 @@ SELECT round(avg(dateDiff('second', start, stop))) AS "Visit duration" FROM visi
 		dashspec.UnitCount, dashspec.ColorFuchsia)
 	events.Width = 12
 	window := a.EffectiveActivationWindow()
-	activation := chart("funnels", "funnel-activation", "Visit → sign-up → activation",
+	activation := steps(chart("funnels", "funnel-activation", "Visit → sign-up → activation",
 		"Visitor-days in the range, the sign-ups of the range (persons; a sign-up with no visit, an API sign-up or one on another device, counts too), "+
 			"and those that reached "+activationTitle(a)+" within "+window+" of signing up. The first step counts visitor-days, the others persons.",
-		activationFunnelSQL(a), &dashspec.Display{Style: dashspec.StyleFunnel, Color: colorSignups}, 18, 8)
+		activationFunnelSQL(a), &dashspec.Display{Style: dashspec.StyleFunnel, Color: colorSignups}, 18, 8))
 
 	d.Panels = []dashspec.Panel{
 		figure("glance", "pageviews", "Page views", "page_viewed events in the range. The trend is each UTC day's.",
@@ -86,12 +86,11 @@ SELECT count() AS "Visits" FROM visits`, visitTrend("Visits", "count()"), dashsp
 			visits+`
 SELECT round(sum(views) / nullIf(count(), 0), 2) AS "Views per visit" FROM visits`, "", dashspec.UnitNone, colorVisitors),
 		figure("glance", "bounce", "Bounce rate", "The share of visits with exactly one page view and nothing else (Plausible's definition).",
-			visits+`
-SELECT round(avg(views = 1 AND actions = 0), 4) AS "Bounce rate" FROM visits`, "", dashspec.UnitPercent, colorNeutral),
+			bounceSQL, "", dashspec.UnitPercent, colorNeutral),
 		duration,
 		events,
 
-		table("pages", "top-pages", "Pages",
+		ranking("pages", "top-pages", "Pages",
 			"Each route's page views, distinct visitor-days, signed-in users, and the visits that started (Entries) and ended (Exits) on it.",
 			visits+`,
 p AS (SELECT Props['route'] AS route, count() AS views, uniqExact(`+visitor+`) AS visitors, uniqExactIf(`+user+`, UserId != '') AS users
@@ -100,37 +99,37 @@ en AS (SELECT entry_route AS route, count() AS entries FROM visits WHERE entry_r
 ex AS (SELECT exit_route AS route, count() AS exits FROM visits WHERE exit_route != '' GROUP BY route)
 SELECT p.route AS "Route", p.views AS "Views", p.visitors AS "Visitors", p.users AS "Signed-in users", en.entries AS "Entries", ex.exits AS "Exits"
 FROM p LEFT JOIN en ON en.route = p.route LEFT JOIN ex ON ex.route = p.route
-ORDER BY "Views" DESC, "Route" LIMIT 50`, 24, 9),
-		table("pages", "entry-pages", "Entry pages",
+ORDER BY "Views" DESC, "Route" LIMIT 50`, dashspec.Display{Color: colorVisitors}, 24, 9),
+		ranking("pages", "entry-pages", "Entry pages",
 			"Visits by the route they started on: the share that bounced, and the share whose visitor signed up the same day.",
 			with(web, visitsCTE, stitchCTE(inRange), suCTE(from, to), suhCTE)+`
 SELECT entry_route AS "Entry page", count() AS "Visits",
        round(100 * avg(views = 1 AND actions = 0), 1) AS "Bounce %",
        round(100 * countIf(`+visitor+` IN (SELECT EnvId, h FROM su_h WHERE h != '')) / count(), 1) AS "Sign-up %"
 FROM visits WHERE entry_route != ''
-GROUP BY entry_route ORDER BY "Visits" DESC, "Entry page" LIMIT 50`, 12, 9),
-		table("pages", "exit-pages", "Exit pages",
+GROUP BY entry_route ORDER BY "Visits" DESC, "Entry page" LIMIT 50`, dashspec.Display{Color: colorVisitors}, 12, 9),
+		ranking("pages", "exit-pages", "Exit pages",
 			"Visits by the route they ended on, and the exit rate: exits over the route's page views.",
 			visits+`,
 ex AS (SELECT exit_route AS route, count() AS exits FROM visits WHERE exit_route != '' GROUP BY route),
 p AS (SELECT Props['route'] AS route, count() AS views FROM web WHERE EventName = 'page_viewed' GROUP BY route)
 SELECT ex.route AS "Exit page", ex.exits AS "Exits", round(100 * ex.exits / nullIf(p.views, 0), 1) AS "Exit rate %"
 FROM ex LEFT JOIN p ON p.route = ex.route
-ORDER BY "Exits" DESC, "Exit page" LIMIT 50`, 12, 9),
+ORDER BY "Exits" DESC, "Exit page" LIMIT 50`, dashspec.Display{Color: colorNeutral}, 12, 9),
 	}
 	if a != nil && len(a.Goals) > 0 {
-		d.Panels = append(d.Panels, table("events", "goals", "Goals",
+		d.Panels = append(d.Panels, ranking("events", "goals", "Goals",
 			"One row per goal declared in forge.Analytics: the persons who reached it (a signed-in user, the user a same-day sign-in links a visitor to, else the visitor-day), "+
 				"every time it was reached, and its conversion rate: persons over the range's visitor-days.",
-			goalsSQL(a.Goals), 24, 7))
+			goalsSQL(a.Goals), dashspec.Display{Color: colorSignups}, 24, 7))
 	}
 	d.Panels = append(d.Panels,
-		table("events", "events-by-name", "Events by name",
+		ranking("events", "events-by-name", "Events by name",
 			"Every product event in the range but page views: how often, by how many persons, and when it was last seen.",
 			with(stitchCTE(inRange), personsCTE(inRange, "EventName NOT IN ('page_viewed', 'auth_accounts')"))+`
 SELECT EventName AS "Event", count() AS "Events", uniqExactIf((EnvId, person), person != '') AS "Persons",
        toDateTime(max(ts), 'UTC') AS "Last seen"
-FROM persons GROUP BY EventName ORDER BY "Events" DESC, "Event" LIMIT 50`, 24, 9),
+FROM persons GROUP BY EventName ORDER BY "Events" DESC, "Event" LIMIT 50`, dashspec.Display{Color: dashspec.ColorViolet}, 24, 9),
 		chart("events", "records-by-entity", "Records written per entity",
 			"The automatic CRUD product events (creates, updates and deletes together), one colour per entity, stacked: the top edge is every write.",
 			`SELECT toStartOfInterval(Timestamp, toIntervalSecond({step:UInt32})) AS t,
@@ -168,12 +167,22 @@ SELECT round(countIf(h != '') / nullIf(count(), 0), 4) AS "From a visit" FROM su
 			d.Panels = append(d.Panels, countPanel(c))
 		}
 	}
-	d.Panels = append(d.Panels, table("experiments", "flag-exposure", "Flag exposures",
+	d.Panels = append(d.Panels, ranking("experiments", "flag-exposure", "Flag exposures",
 		"Each flag and variant: the persons exposed in the range, and the share of them whose first "+activationTitle(a)+
 			" came within "+window+" after their first exposure. Descriptive, not a significance test.",
-		flagExposureSQL(a), 24, 8))
+		flagExposureSQL(a), dashspec.Display{Bar: "Activated %", Color: dashspec.ColorViolet}, 24, 8))
+	d.Panels = withGood(d.Panels, map[string]dashspec.Direction{
+		"pageviews": up, "visits": up, "views-per-visit": up, "bounce": down, "visit-duration": up, "signups-from-visit": up})
 	return in.withActivity(d)
 }
+
+// productVisits is the range's browser rows sessionised into visits.
+var productVisits = with(webCTE(inRange), visitsCTE)
+
+// bounceSQL is the range's bounce rate: the share of visits with exactly one
+// page view and nothing else.
+var bounceSQL = productVisits + `
+SELECT round(avg(views = 1 AND actions = 0), 4) AS "Bounce rate" FROM visits`
 
 // activationFunnelSQL is the built-in funnel: visitor-days, the range's
 // sign-ups, and the sign-ups activated within the activation window (read
@@ -190,6 +199,30 @@ FROM (
   SELECT 3, 'Activated', (SELECT countIf(x.UserId != '' AND x.at >= s.at AND x.at < s.at + ` + w + `)
                           FROM su_h AS s LEFT JOIN act AS x ON x.EnvId = s.EnvId AND x.UserId = s.UserId))
 ORDER BY i`
+}
+
+// signupActivationSQL is the built-in funnel without its first step, for a
+// project with no browser frontend: the range's sign-ups, and those
+// activated within the activation window, as activationFunnelSQL counts them.
+func signupActivationSQL(a *Analytics) string {
+	w := activationWindow(a)
+	return with(suCTE(from, to), actCTE(a, from, to+" + "+w)) + `
+SELECT step AS "Step", n AS "Persons"
+FROM (
+  SELECT 1 AS i, 'Signed up' AS step, (SELECT count() FROM su) AS n
+  UNION ALL
+  SELECT 2, 'Activated', (SELECT countIf(x.UserId != '' AND x.at >= s.at AND x.at < s.at + ` + w + `)
+                          FROM su AS s LEFT JOIN act AS x ON x.EnvId = s.EnvId AND x.UserId = s.UserId))
+ORDER BY i`
+}
+
+// activationRateSQL is the share of the range's sign-ups activated within
+// the activation window: the built-in funnel's last step over its sign-ups.
+func activationRateSQL(a *Analytics) string {
+	w := activationWindow(a)
+	return with(suCTE(from, to), actCTE(a, from, to+" + "+w)) + `
+SELECT round(countIf(x.UserId != '' AND x.at >= s.at AND x.at < s.at + ` + w + `) / nullIf(count(), 0), 4) AS "Activation rate"
+FROM su AS s LEFT JOIN act AS x ON x.EnvId = s.EnvId AND x.UserId = s.UserId`
 }
 
 // goalsSQL is one row per declared goal, in declaration order, reached or
@@ -291,9 +324,9 @@ FROM (
   GROUP BY %s)
 ARRAY JOIN range(1, %d) AS i
 GROUP BY i ORDER BY i`, lits(labels), unit, level, src, group, len(f.Steps)+1)
-	return chart("funnels", "funnel-"+f.ID, title,
+	return steps(chart("funnels", "funnel-"+f.ID, title,
 		fmt.Sprintf("Product events in order (%s), %s, counted per %s.", strings.Join(labels, " → "), how, who),
-		sql, &dashspec.Display{Style: dashspec.StyleFunnel, Color: colorSignups}, 24, 8)
+		sql, &dashspec.Display{Style: dashspec.StyleFunnel, Color: colorSignups}, 24, 8))
 }
 
 // sequenceLevel is the highest step a key reached in order, each step within

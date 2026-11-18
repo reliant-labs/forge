@@ -1,5 +1,6 @@
 // Package orm is forge's typed data-access layer: a postgres-pinned query
-// builder over uptrace/bun, plus the schema-truth machinery that projects
+// builder over uptrace/bun (bun's ? placeholders; the raw Exec/Query/QueryRow
+// take postgres $1, $2), plus the schema-truth machinery that projects
 // entity types out of the applied migrations.
 //
 // The generated internal/db/<entity>_orm.go consumes it, so most projects
@@ -25,6 +26,14 @@
 //   - [WhereILikeAny] the multi-column case-insensitive search predicate
 //     behind generated search/query/q filters.
 //   - [NullTime]      the tolerant nullable-timestamp scanner.
+//
+// Placeholders depend on the path. Everything off Bun() — the builders,
+// NewRaw, bun.IDB's ExecContext — takes bun's `?`. [Client.Exec],
+// [Client.Query] and [Client.QueryRow] (and their [Tx] twins) are
+// database/sql: the SQL reaches postgres as written, so they take postgres's
+// $1, $2, …, and `?` there is the jsonb operator. A raw statement with
+// arguments written with `?` is refused with [ErrQuestionPlaceholders]
+// instead of failing as a 42601 syntax error.
 //
 // Schema truth flows one way: db/migrations/*.up.sql is the source, and the
 // entity types, ORM and CRUD wiring are PROJECTIONS of the applied schema

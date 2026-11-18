@@ -327,7 +327,7 @@ func TestEveryGeneratedDashboardHasAGroup(t *testing.T) {
 	want := map[string]Group{
 		"overview": GroupOverview, "process-admin-api": GroupServices, "process-workers": GroupServices, "process-workspace": GroupServices,
 		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct,
-		"users": GroupProduct, "product": GroupProduct, "acquisition": GroupProduct,
+		"product-overview": GroupProduct, "users": GroupProduct, "product": GroupProduct, "acquisition": GroupProduct,
 		"ai": GroupAI, "ai-workflows": GroupAI, "ai-models": GroupAI, "ai-users": GroupAI,
 		"ai-errors": GroupAI, "ai-tools": GroupAI,
 	}
@@ -366,7 +366,7 @@ func TestProcessDashboardIDIsTheForgeWorkloadName(t *testing.T) {
 // frontend's, and the built-in product dashboards over its own page views.
 func TestWithoutProcessDashboardsKeepsTheFrontendAndProductDashboards(t *testing.T) {
 	sp := WithoutProcessDashboards(Build(Input{Project: "shop", Frontends: []string{"web"}}))
-	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend", "users", "product", "acquisition"}) {
+	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend", "product-overview", "users", "product", "acquisition"}) {
 		t.Fatalf("dashboards = %v", got)
 	}
 }

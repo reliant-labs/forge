@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/testkit"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // prodBootstrap mirrors the names control-plane's provisioning created in

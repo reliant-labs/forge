@@ -122,6 +122,8 @@ The evidence is the env's alert history (the control plane's `ListAlertHistory`,
 
 Per env: `alert_baseline_min_firings = 3` in `release_health` asks for a flap rate rather than one prior firing, and `0` counts every alert opened after the promotion, the rule before this one. Per call: `--threshold alert_baseline_min_firings=0`. The check holds a control plane's answer to the rule even when that control plane predates it.
 
+**The stored verdict does not apply this rule yet.** The control plane's evaluator applies it only once its judge reads the env's alert history and passes it to forge's rule; until a control-plane release does, the stored verdict, `ReleaseRegressed` and the promotion health gate still count every alert opened after the promotion, flapping or not. So for a baseline alert, `obs check` exiting 0 is not what the gate will see: `--threshold alert_baseline_min_firings=0` reproduces the stored verdict.
+
 ```bash
 forge obs check prod --json | jq '{verdict, baseline_alerts: [.baseline_alerts[]? | {rule, baseline_firings, labels}], discounted: [.findings[] | select(.code == "alert_firing" and .unattributed) | .unattributed]}'
 ```
@@ -132,4 +134,14 @@ Error rate, latency and the browser findings compare the after window with the b
 
 ## Low traffic: exit 2, final for the promotion
 
-`reason_code` `low_traffic` ("no service had at least N requests after the promotion") or `thin_baseline` is INCONCLUSIVE, exit 2: not 8. Exit 8 says only that `--wait` ran out while the after window was still open, so checking again later can change it. A low-traffic verdict is reached on a CLOSED window, and a later check of the same promotion reads the same window and says the same thing. Report it as "not proven good", never "passed", and do not poll it. To make a quiet env (a new service, a landing page) judgeable for its next promotion, lower `min_requests` in its `release_health` (or `--threshold min_requests=N` for one call), widen `--window` (max 6h), or set `require_baseline = "none"`; `--allow-inconclusive` turns exit 2 into 0, a decision to accept "not proven" that the caller makes deliberately. `window_open` (no `--wait`, window still open) is the exit 2 that checking again does change.
+`reason_code` `low_traffic` ("no service had at least N requests after the promotion") or `thin_baseline` is INCONCLUSIVE, exit 2: not 8. Exit 8 says only that checking again later can change the answer. Either `--wait` ran out while the after window was still open, or the control plane refused the read because the org's query quota was spent or the caller was throttled (`reason_code` `quota_exhausted` / `rate_limited`, no verdict; A refused read, below). A low-traffic verdict is reached on a CLOSED window, and a later check of the same promotion reads the same window and says the same thing. Report it as "not proven good", never "passed", and do not poll it. To make a quiet env (a new service, a landing page) judgeable for its next promotion, lower `min_requests` in its `release_health` (or `--threshold min_requests=N` for one call), widen `--window` (max 6h), or set `require_baseline = "none"`; `--allow-inconclusive` turns exit 2 into 0, a decision to accept "not proven" that the caller makes deliberately. `window_open` (no `--wait`, window still open) is the exit 2 that checking again does change.
+
+## A refused read: exit 8, check again later
+
+The control plane can refuse `obs check`'s read. One cause is a spent org query quota: ResourceExhausted, reason `obs_query_quota`, with a Retry-After that runs until the quota refills at the top of the hour. The quota is shared with every other CLI and token read in the org, so a busy hour of agents can spend it. The other cause is a throttle on the caller (`in_flight_limit`, `rate_limited`, or a 429 with Retry-After). Nothing was judged, so a refusal is not "not proven good":
+
+- With `--wait`, obs check waits the refusal out. It sleeps for the Retry-After (at most 5m at a time, jittered) and asks again, until `--timeout`.
+- It exits **8** when the allowance would refill only after `--timeout`. Without `--wait` it exits 8 at once.
+- The document has no `verdict`. It has `reason_code` `quota_exhausted` or `rate_limited`, `retry_at` (when the allowance refills, when the control plane said) and `suggested[]` (the check to run again after `retry_at`). With `--gate-json`, the gate is `error`, never a pass.
+- Under `--wait`, an Unavailable or DeadlineExceeded control plane, a 502/503/504 or a dropped connection is also asked again, with a backoff (15s, doubling, at most 2m). A control plane that stays down for all of `--timeout` exits **2**, as it does without `--wait`: forge could not look.
+- Every other failure keeps its exit code: auth, an unknown procedure, a request too large, a ResourceExhausted that gives neither a reason nor a retry time.

@@ -42,9 +42,17 @@
 //   - A pin that is absent, the forge-as-its-own-first-user sentinel (0.0.0),
 //     or not a version at all gates: nothing says the project is behind. So
 //     does forge's own tree, which builds the forge it lints with.
-//   - A pseudo-version (v0.1.47-0.<ts>-<sha>) sorts BELOW the release it leads
-//     to, so a project pinned between releases is "behind" the next one. That is
-//     the right reading: it has not been through a release with the rule.
+//   - A pseudo-version reads as the release it leads to: v1.5.1-0.<ts>-<sha>
+//     grades as v1.5.1, and v1.7.0-rc.1.0.<ts>-<sha> as v1.7.0 (rolloutPin).
+//     Semver sorts a pseudo-version BELOW that release, and grading by that
+//     order made one forge commit's verdict depend on how the pin was spelled:
+//     control-plane pinned v1.5.1-0.…-685069ed7 and the testwait rules
+//     (gates from v1.5.1) warned; the same commit tagged v1.6.0 gated them
+//     (forge#2230). A pseudo-version with no tag behind it (v0.0.0-<ts>-<sha>)
+//     keeps its semver order, below every release. One inconsistency is left,
+//     and no comparison of versions can remove it: a row names the release
+//     NEXT_VERSION predicted, so a commit that ships as v1.6.0 where the row
+//     said v1.5.1 grades by the row.
 //   - Only findings that would have failed the gate are softened. A warning
 //     stays a warning and carries no note; a rule at or before the baseline
 //     never softens.
@@ -74,6 +82,7 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -197,7 +206,14 @@ func comparablePin(cfg *config.ProjectConfig) (string, bool) {
 	if cfg == nil || cfg.ModulePath == forgecompat.ModulePath {
 		return "", false
 	}
-	pin := strings.TrimSpace(cfg.ForgeVersion)
+	return rolloutPin(cfg.ForgeVersion)
+}
+
+// rolloutPin is a forge_version pin as the release the rollout grades it as,
+// and whether it says anything about how far behind the project is: a
+// pseudo-version reads as the release it leads to (see the file header).
+func rolloutPin(raw string) (string, bool) {
+	pin := strings.TrimSpace(raw)
 	if pin == "" || pin == "0.0.0" {
 		return "", false
 	}
@@ -207,7 +223,60 @@ func comparablePin(cfg *config.ProjectConfig) (string, bool) {
 	if !semver.IsValid(pin) || pin == "v0.0.0" {
 		return "", false
 	}
+	if module.IsPseudoVersion(pin) {
+		if base, err := module.PseudoVersionBase(pin); err == nil && base != "" {
+			canon := semver.Canonical(pin)
+			pin = strings.TrimSuffix(canon, semver.Prerelease(canon))
+		}
+	}
 	return pin, true
+}
+
+// GatingRule is one rule whose warn-first grace a pin bump ends: it warned
+// under the old pin and gates under the new one.
+type GatingRule struct {
+	Rule         string
+	IntroducedIn string
+	GatesFrom    string
+	Fix          string
+}
+
+// RulesStartingToGate lists, by rule ID, the rules that warn under the pin
+// from and gate under the pin to, for the project cfg describes. A rule the
+// project's lint.rules names (or `*` reaches) is left out: lint.rules, not
+// the pin, decides its severity. Nothing starts gating when either pin says
+// nothing about the project's place (unpinned, not a version, forge's own
+// tree), because such a pin already gates every rule or does not move.
+func RulesStartingToGate(cfg *config.ProjectConfig, from, to string) []GatingRule {
+	return rulesStartingToGate(lintRollouts, cfg, from, to)
+}
+
+func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig, from, to string) []GatingRule {
+	if cfg != nil && cfg.ModulePath == forgecompat.ModulePath {
+		return nil
+	}
+	oldPin, okOld := rolloutPin(from)
+	newPin, okNew := rolloutPin(to)
+	if !okOld || !okNew {
+		return nil
+	}
+	rules := effectiveRules(cfg)
+	_, wild := rules[suppress.Wildcard]
+	gradable := gradableRuleSet()
+	var out []GatingRule
+	for id, ro := range table {
+		if ro.GatesFrom == "" {
+			continue
+		}
+		if _, exact := rules[id]; exact || (wild && gradable[id]) {
+			continue
+		}
+		if semver.Compare(oldPin, ro.GatesFrom) < 0 && semver.Compare(newPin, ro.GatesFrom) >= 0 {
+			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Rule < out[j].Rule })
+	return out
 }
 
 // tagRollout marks the findings a pass added with the pseudo-rule key whose

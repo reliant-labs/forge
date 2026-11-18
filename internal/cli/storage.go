@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -375,6 +376,18 @@ func registerBuildStorage(_ context.Context, project string, entities *KCLEntiti
 // unreadable or registry-less config yields "", which converges the other facts
 // and records no registry.
 func declaredRegistryContainer(clusters []ClusterEntity) string {
+	if containers := declaredRegistryContainers(clusters); len(containers) > 0 {
+		return containers[0]
+	}
+	return ""
+}
+
+// declaredRegistryContainers is every standalone registry (`registries.use`)
+// the declared clusters' k3d configs reference, in declaration order and
+// without repeats: the registries this env pulls from, which are the only
+// ones `env up` reports retention health for.
+func declaredRegistryContainers(clusters []ClusterEntity) []string {
+	var containers []string
 	for _, c := range clusters {
 		if c.Config == "" {
 			continue
@@ -383,11 +396,11 @@ func declaredRegistryContainer(clusters []ClusterEntity) string {
 		if err != nil {
 			continue
 		}
-		if container, _, err := registryFactsFromConfig(data); err == nil && container != "" {
-			return container
+		if container, _, err := registryFactsFromConfig(data); err == nil && container != "" && !slices.Contains(containers, container) {
+			containers = append(containers, container)
 		}
 	}
-	return ""
+	return containers
 }
 
 // releasePinLockWait bounds how long a release cut waits for a running

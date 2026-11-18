@@ -18,6 +18,14 @@ decides:
 | `gates_from` or later            | an error, as before                              |
 | no pin / `0.0.0` / not a version | an error (nothing says you are behind)           |
 
+A pseudo-version pin (`v1.5.1-0.20261113062323-685069ed7517`) is read as the
+release it leads to (`v1.5.1`), so a commit pinned by pseudo-version and the
+same commit pinned by its tag get the same verdict.
+
+`forge project upgrade` lists the rules whose grace the pin bump ends under
+"Starts gating" (`starts_gating` in `--json`), with how many of their findings
+now gate, so bump the pin with it rather than by hand.
+
 The warning says what to do:
 
 ```

@@ -7057,6 +7057,11 @@ schema ObservabilityAgent:
 # the render agree. (Prometheus's d and w are not accepted: Go cannot parse them.)
 _ALERT_DURATION_RE: str = r"^([0-9]+[smh])+$"
 _ALERT_NAME_RE: str = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
+# The start of an AlertRule expr: SELECT or WITH, after any whitespace and SQL
+# comments (`-- …`, `# …`, `/* … */`), which pkg/alerting.ValidateExpr's lexer
+# also skips. The two must agree, or a rule the evaluator runs fails to
+# render. A line comment runs to its newline, so `-- select` cannot pass.
+_ALERT_EXPR_START_RE: str = r"(?s)^(\s+|--[^\n]*(\n|$)|#[^\n]*(\n|$)|/\*.*?\*/)*(?i:select|with)\b"
 _ALERT_SEVERITIES: [str] = ["critical", "warning", "info"]
 # A receiver is a NAME the control plane resolves. These are the two it always
 # has: in-app notifications and the org's Slack receiver.
@@ -7124,7 +7129,7 @@ schema AlertRule:
         regex.match(alert, _ALERT_NAME_RE), \
             "AlertRule.alert '${alert}' must be a metric-style name (letters, digits and '_', not starting with a digit)"
         len(expr) > 0, "AlertRule '${alert}': expr is required"
-        regex.match(expr, r"(?is)^\s*(select|with)\b"), \
+        regex.match(expr, _ALERT_EXPR_START_RE), \
             "AlertRule '${alert}': expr must be a single SELECT (it must start with SELECT or WITH)"
         ";" not in expr, \
             "AlertRule '${alert}': expr must be a single statement, with no ';'"

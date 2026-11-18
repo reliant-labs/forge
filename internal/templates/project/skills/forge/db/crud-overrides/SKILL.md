@@ -217,6 +217,14 @@ function forms `jsonb_exists`, `jsonb_exists_any`, `jsonb_exists_all`.
 Conversely, a `$1` left in bun-formatted SQL reaches postgres literally with
 nothing bound (`there is no parameter $1`).
 
+The raw passthrough never rewrites `?`: there it is postgres's jsonb operator
+(`payload ? $1` works as written). A raw statement that has arguments, no
+`$N`, and a `?` outside literals and comments is bun-style SQL on the wrong
+path, so `db.Exec` / `db.Query` refuse it with `orm.ErrQuestionPlaceholders`
+(and `db.QueryRow` returns it from `Scan`) instead of sending it to fail as
+`syntax error at or near ","` (SQLSTATE 42601). Number the parameters `$1..$N`,
+or move the statement to `db.Bun().NewRaw`.
+
 `forge lint` catches both in string literals and named constants:
 `forgeconv-bun-dollar-placeholder` and `forgeconv-bun-literal-question-mark`.
 A query assembled at run time is not judged — keep hand SQL in a constant.

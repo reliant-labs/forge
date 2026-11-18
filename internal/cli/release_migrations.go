@@ -336,6 +336,33 @@ func passedMigrationsRemedy(env string) string {
 		fmt.Sprintf("\n  Only if the SQL was already applied to %s's database by hand and recorded in schema_migrations_applied, pass --%s.", env, allowPassedMigrationsFlag)
 }
 
+// unmergedMigrationGuard is THE rule for when the unmerged-migration check
+// applies, shared by every place that judges it: the cut and the build's
+// preflight (releaseMigrationGuard), a preflight whose ledger could not be
+// resolved, and `forge env deploy <env> --claimable` before it mints an
+// account. It applies only to an env that keeps its ledger on a control plane
+// (hosted; see releaseMigrationGuard for why), and not to a project whose
+// migrations another tool applies (foreignToolGuardNote).
+func unmergedMigrationGuard(out io.Writer, prefix, projectDir, version string, hosted, allow bool) error {
+	if !hosted || foreignToolGuardNote(projectDir) != "" {
+		return nil
+	}
+	return checkUnmergedMigrations(out, prefix, projectDir, version, allow)
+}
+
+// envKeepsHostedLedger is whether env's ledger is a control plane, decided
+// from its render alone, exactly as ledgerForEntities decides it: the env
+// declares a control plane and FORGE_LEDGER does not send it to this machine.
+// For the callers that must judge unmergedMigrationGuard without resolving
+// the ledger itself (which needs a credential).
+func envKeepsHostedLedger(entities *KCLEntities) bool {
+	if declarationFromEntities(entities) == nil {
+		return false
+	}
+	sel, err := ledgerSelectionFromEnv()
+	return err == nil && sel != ledgerSelectMachine
+}
+
 // checkUnmergedMigrations refuses a cut whose own migrations include a file
 // the default branch does not hold, unless allow. Unknowable without a
 // default branch, and then a note.
@@ -380,9 +407,33 @@ func checkUnmergedMigrations(out io.Writer, prefix, projectDir, version string, 
 		fmt.Fprintf(out, "%s WARNING (--%s): %s\n", prefix, allowUnmergedMigrationsFlag, msg)
 		return nil
 	}
-	return exitCodeError{code: exitRefused, msg: msg +
-		fmt.Sprintf("\n  Merge them first and cut from a commit that carries them (a hotfix branch can cherry-pick the merged file), "+
-			"or pass --%s for a hotfix that cannot wait — the passed-migration check still guards the next release.", allowUnmergedMigrationsFlag)}
+	rel, ok := migrationgit.RepoRelative(root, dir)
+	if !ok {
+		rel = config.MigrationsDirIn(projectDir)
+	}
+	return exitCodeError{code: exitRefused, msg: msg + unmergedMigrationsRemedy(ref, rel)}
+}
+
+// unmergedMigrationsRemedy is the refusal's fix, with the commands for the
+// common case — a fresh project whose migrations were never committed — as
+// well as the merge a team's branch needs. ref is the default branch as
+// DefaultBranchFiles names it ("main", "origin/main",
+// "refs/remotes/origin/main"); dir is the migrations directory, repository-relative.
+func unmergedMigrationsRemedy(ref, dir string) string {
+	// Every ref defaultBranchRef answers with a slash in it is a remote's.
+	branch, remote := strings.TrimPrefix(ref, "refs/remotes/"), ""
+	if r, b, ok := strings.Cut(branch, "/"); ok {
+		remote, branch = r, b
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n  Put them on %s first, then deploy from a commit that carries them:", branch)
+	fmt.Fprintf(&b, "\n    not committed yet:  git switch %s && git add %s && git commit -m \"Add migrations\"", branch, dir)
+	b.WriteString("\n    on another branch:  merge it into " + branch + " (a hotfix branch can cherry-pick the merged file)")
+	if remote != "" {
+		fmt.Fprintf(&b, "\n    then:               git push %s %s", remote, branch)
+	}
+	fmt.Fprintf(&b, "\n  Or pass --%s for a hotfix that cannot wait — the passed-migration check still guards the next release.", allowUnmergedMigrationsFlag)
+	return b.String()
 }
 
 // releaseMigrationGuard is a release build's two migration checks, run
@@ -408,10 +459,8 @@ func releaseMigrationGuard(ctx context.Context, out io.Writer, rel releaseRef, p
 		fmt.Fprintf(out, "[build]   note: %s\n", note)
 		return m, nil
 	}
-	if ledger.Hosted {
-		if err := checkUnmergedMigrations(out, "[build]  ", projectDir, version, opts.allowUnmergedMigrations); err != nil {
-			return nil, err
-		}
+	if err := unmergedMigrationGuard(out, "[build]  ", projectDir, version, ledger.Hosted, opts.allowUnmergedMigrations); err != nil {
+		return nil, err
 	}
 	if err := checkPassedMigrations(ctx, out, "[build]  ", rel, m, ledger, opts.allowPassedMigrations); err != nil {
 		return nil, err
@@ -422,14 +471,19 @@ func releaseMigrationGuard(ctx context.Context, out io.Writer, rel releaseRef, p
 // preflightReleaseMigrations is releaseMigrationGuard before a release-bound
 // build, over the checkouts as they are, so a refused release builds and
 // pushes nothing. A ledger that cannot be resolved here is left to the cut,
-// which needs it anyway and fails loudly.
+// which needs it anyway and fails loudly — but the unmerged-migration half
+// needs no ledger, only whether the env keeps one on a control plane, which
+// the render already says. So that half is judged here regardless: a
+// checkout the cut would refuse for it is refused before the build, not
+// after twenty minutes of it.
 func preflightReleaseMigrations(ctx context.Context, projectDir string, entities *KCLEntities, opts buildOptions) error {
 	if opts.release == "" || opts.env == "" {
 		return nil
 	}
 	ledger, err := ledgerForRendered(ctx, projectDir, opts.env, entities)
 	if err != nil {
-		return nil //nolint:nilerr // the cut resolves the ledger again and owns that failure
+		// The cut resolves the ledger again and owns that failure.
+		return unmergedMigrationGuard(os.Stdout, "[build]  ", projectDir, opts.release, envKeepsHostedLedger(entities), opts.allowUnmergedMigrations)
 	}
 	var uses []sourceUse
 	if entities != nil {

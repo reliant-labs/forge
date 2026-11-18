@@ -113,6 +113,12 @@ forge env deploy prod      # build → push → release → plan → apply
 forge env status prod      # then verify
 ```
 
+Commit every migration on the default branch first (and push it, with a
+remote): a hosted deploy refuses a release carrying a migration main does not
+hold, before it builds, and says how to fix it. No account? Create the project
+with `forge project new --claimable`, which sizes prod to the free anonymous
+plan, then `forge env deploy prod --claimable` (`deploy/hosting`).
+
 One static site per person is free (counted across the orgs they own without
 a plan); a second (another env's included) or any
 compute (service, worker, job, managed DB, image build) needs billing.

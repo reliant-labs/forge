@@ -34,9 +34,12 @@ it prints. Load a skill only when a row names one.
 
 The first claimable deploy adopts the app where it stands: it adds forge.yaml
 and deploy/kcl/, leaves the app's own files alone, then installs, builds and
-publishes it. No account, git repository or commit is needed. It takes a few
-minutes; let it finish. An unclaimed service (not a static site) has no
-outbound internet until it is claimed.
+publishes it. No account is needed, and no git repository, with one catch:
+in a repository, every database migration must first be committed on the
+default branch (` + "`git add db/migrations && git commit`" + `), or the deploy refuses
+it before building. ` + "`forge env deploy prod --claimable --plan-only`" + ` checks all
+of it first. A deploy takes a few minutes; let it finish. An unclaimed service
+(not a static site) has no outbound internet until it is claimed.
 
 ## The directory is empty
 
@@ -47,7 +50,10 @@ outbound internet until it is claimed.
 | An app with an API (Go services, a database) | ` + "`forge start app`" + ` |
 
 A site starts as a placeholder page: build what the user asked for (load
-` + "`frontend/design`" + ` first), then ` + "`forge env deploy prod --claimable`" + `.
+` + "`frontend/design`" + ` first), then ` + "`forge env deploy prod --claimable`" + `. An app
+with an API that will deploy with no account needs ` + "`--claimable`" + ` on its
+` + "`forge project new`" + `: it sizes prod to the free anonymous plan, which the
+default prod does not fit.
 
 ## No account: what --claimable gives back
 

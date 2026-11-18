@@ -44,10 +44,12 @@ package releasehealth
 // history that could not be read can only leave the rule as strict as it
 // was, never looser; a truncated one likewise only misses discounts.
 //
-// The control plane judges with [Evaluate] and passes the history in
-// [Input.AlertHistory]; `forge obs check` reads it itself and applies
+// `forge obs check` reads the history itself and applies
 // [WithAlertBaseline], so the rule reaches a control plane's answer judged
-// without it.
+// without it. A control plane's own judge applies it only when it passes the
+// history in [Input.AlertHistory] to [Evaluate]; one that does not yet (the
+// stored verdict and promotion health gate at this release) counts every
+// alert, as before.
 
 import (
 	"fmt"

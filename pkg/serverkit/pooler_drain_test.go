@@ -353,6 +353,34 @@ func TestPoolerDrainConn_KeepsThePgxConnInterfaces(t *testing.T) {
 	}
 }
 
+// rawConn stands in for the tracing driver's wrapper, which exposes the
+// connection it wraps through Raw.
+type rawConn struct{ driver.Conn }
+
+func (c rawConn) Raw() driver.Conn { return c.Conn }
+
+// PgxConn must reach the pgx connection under the pooler-drain wrapper,
+// whether it is handed the wrapper itself or the tracing wrapper around it.
+// The embedded field named Conn shadows *stdlib.Conn's Conn() method, so the
+// wrapper has to expose the connection another way.
+func TestPgxConn_ReachesThroughThePoolerDrainConn(t *testing.T) {
+	t.Parallel()
+	drain := poolerDrainConn{Conn: &stdlib.Conn{}}
+	for name, conn := range map[string]any{
+		"pooler-drain conn":            drain,
+		"tracing wrapper around it":    rawConn{drain},
+		"the stdlib conn on its own":   &stdlib.Conn{},
+		"tracing wrapper, stdlib conn": rawConn{&stdlib.Conn{}},
+	} {
+		if _, ok := PgxConn(conn); !ok {
+			t.Errorf("%s: PgxConn found no *pgx.Conn", name)
+		}
+	}
+	if _, ok := PgxConn(rawConn{}); ok {
+		t.Error("a wrapper around nothing must not report a *pgx.Conn")
+	}
+}
+
 // closeNotifyBrokenPipe is the prod error, as crypto/tls builds it when the
 // pooler has already dropped the connection whose close_notify it writes.
 func closeNotifyBrokenPipe() error {

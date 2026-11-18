@@ -43,7 +43,30 @@ import (
 const (
 	reasonClaimableSignedIn   = "claimable_signed_in"
 	reasonClaimableIneligible = "claimable_ineligible"
+	// reasonUnmergedMigrations: the checkout carries a migration the default
+	// branch does not hold, which the release cut refuses
+	// (checkUnmergedMigrations).
+	reasonUnmergedMigrations = "unmerged_migrations"
 )
+
+// claimableReleaseLabel names the release a claimable preflight judges: it
+// has no version yet, because the deploy picks one after these checks.
+const claimableReleaseLabel = "from this checkout"
+
+// claimableMigrationRefusal is the release cut's unmerged-migration refusal
+// (unmergedMigrationGuard, the same rule and the same predicate), judged from
+// the checkout BEFORE an anonymous deploy solves a proof of work, mints an
+// account or builds anything — and by --plan-only, which used to report
+// "fits" for a checkout the deploy then refused after a full build. The
+// refusal is a claimableRefusal so a --json caller gets its envelope.
+func claimableMigrationRefusal(out io.Writer, projectDir string, e *KCLEntities, allow bool) error {
+	err := unmergedMigrationGuard(out, "[deploy]", projectDir, claimableReleaseLabel, envKeepsHostedLedger(e), allow)
+	var coded exitCodeError
+	if !errors.As(err, &coded) {
+		return err
+	}
+	return &claimableRefusal{exit: coded.code, code: cloud.CodeFailedPrecondition, reason: reasonUnmergedMigrations, msg: coded.msg}
+}
 
 // The claimable plan's caps are the control plane's, read from its public
 // GetClaimableAvailability answer (claimable_limits.go): the one value the
@@ -246,7 +269,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
 		if f.promote.planOnly {
-			return previewClaimable(envName, entities, ep, answer, limits, f.jsonOut)
+			return previewClaimable(envName, entities, ep, answer, limits, claimableMigrations{projectDir, f.promote.allowUnmergedMigrations}, f.jsonOut)
 		}
 		fmt.Fprintf(out, "  %s\n", limits.note())
 		if err := refuseClaimableWhenSignedIn(ep, envName); err != nil {
@@ -254,6 +277,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
+		}
+		if err := claimableMigrationRefusal(out, projectDir, entities, f.promote.allowUnmergedMigrations); err != nil {
+			return err
 		}
 		project := hostedProjectName()
 		if project == "" {
@@ -339,6 +365,19 @@ type claimablePreviewJSON struct {
 	Limits          claimableLimitsJSON `json:"limits"`
 	LimitsPublished bool                `json:"limits_published"`
 	LimitsNote      string              `json:"limits_note"`
+	// ReleaseRefusal is why the deploy would refuse to cut a release from
+	// this checkout, judged by the cut's own rule before anything is built:
+	// today, a migration the default branch does not hold. Empty when none.
+	// Not part of Eligible (which is the env's fit to the plan), but it
+	// fails the preview all the same: the deploy cannot succeed.
+	ReleaseRefusal string `json:"release_refusal,omitempty"`
+}
+
+// claimableMigrations is what the preview needs to judge the release cut's
+// unmerged-migration refusal: the checkout, and whether it is waived.
+type claimableMigrations struct {
+	projectDir string
+	allow      bool
 }
 
 // claimableLimitsJSON is the caps in the preview document.
@@ -373,13 +412,18 @@ func limitsJSON(l deploy.ClaimableLimits) claimableLimitsJSON {
 // the caps, the hosted plan's admission, the resource rule — and asks the
 // control plane's public availability question. It uses no identity, solves
 // no proof of work, builds nothing and creates nothing. The verdict (and the
-// exit code) is the project's eligibility; availability describes the
-// platform and is reported beside it.
-func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer claimableAnswer, limits claimableLimitsSource, jsonOut bool) error {
+// exit code) is the project's eligibility, and then the checkout's: a
+// migration the release cut would refuse fails it too. Availability
+// describes the platform and is reported beside it.
+func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer claimableAnswer, limits claimableLimitsSource, mig claimableMigrations, jsonOut bool) error {
 	doc := claimablePreviewJSON{Env: env, Endpoint: ep.URL}
 	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
 	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
+	refusal := claimableMigrationRefusal(progressWriter(jsonOut), mig.projectDir, e, mig.allow)
+	if refusal != nil {
+		doc.ReleaseRefusal = refusal.Error()
+	}
 	doc.NoOutboundInternet = needsCompute(e)
 	if _, err := cloud.ResolveCredential("", ep); err == nil {
 		doc.SignedIn = true
@@ -396,6 +440,11 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	}
 	if !doc.Eligible {
 		err := claimableIneligibleError(env, limits.limits, doc.Reasons)
+		if refusal != nil && !jsonOut {
+			// The fit is the verdict; the checkout's refusal is said too, so
+			// the second preview after fixing the caps holds no surprise.
+			fmt.Fprintf(os.Stderr, "also: %s\n", refusal.Error())
+		}
 		if jsonOut {
 			doc.stamp(err)
 			if eerr := emitJSONDocument(doc); eerr != nil {
@@ -409,8 +458,15 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 		return err
 	}
 	if jsonOut {
-		doc.stamp(nil)
-		return emitJSONDocument(doc)
+		doc.stamp(refusal)
+		if err := emitJSONDocument(doc); err != nil {
+			return err
+		}
+		var r *claimableRefusal
+		if errors.As(refusal, &r) {
+			r.emitted = true
+		}
+		return refusal
 	}
 	fmt.Printf("Anonymous deploy preview of env %s at %s (checked locally; no identity used, nothing created)\n", env, ep.URL)
 	fmt.Printf("  %s\n", limits.note())
@@ -432,6 +488,11 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	}
 	if doc.SignedIn {
 		fmt.Printf("  note: you are signed in to %s, so --claimable is refused from this machine; drop it to deploy to your organization\n", ep.URL)
+	}
+	if refusal != nil {
+		// The message itself is printed once, by the caller, as the error.
+		fmt.Printf("  ✗ the deploy would refuse this checkout before building anything (below)\n")
+		return refusal
 	}
 	fmt.Printf("\nDeploy it: %s env deploy %s --claimable\n", Name(), env)
 	return nil

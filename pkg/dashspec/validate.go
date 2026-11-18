@@ -417,7 +417,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -450,7 +450,7 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	if raw, has := o["display"]; has && kind != "" {
 		v.display(path, o, PanelKind(kind), raw)
 	}
-	for _, only := range []string{"minStep", "trendSql"} {
+	for _, only := range []string{"minStep", "trendSql", "subtitleSql"} {
 		if _, has := o[only]; has && kind != string(KindSQL) {
 			v.add(childPath(path, only), "only a sql panel takes %q", only)
 		}
@@ -612,6 +612,27 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 	if _, has := o["trendSql"]; has {
 		v.trendSQL(path, o)
 	}
+	if _, has := o["subtitleSql"]; has {
+		v.subtitleSQL(path, o)
+	}
+}
+
+// subtitleSQL validates a sql panel's subtitle statement: the same guard as
+// its sql. Any sql panel may carry one, whatever it is drawn as.
+func (v *validator) subtitleSQL(path string, o map[string]any) {
+	sp := childPath(path, "subtitleSql")
+	s, ok := o["subtitleSql"].(string)
+	if !ok {
+		v.add(sp, "must be a string")
+		return
+	}
+	if strings.TrimSpace(s) == "" {
+		v.add(sp, "must not be empty: one read-only SELECT returning the subtitle's text")
+		return
+	}
+	if err := CheckSQL(s); err != nil {
+		v.add(sp, "%v", err)
+	}
 }
 
 // trendSQL validates a sql panel's sparkline statement: the same guard as its
@@ -640,7 +661,7 @@ func (v *validator) trendSQL(path string, o map[string]any) {
 // textPanel validates a KindText panel: Markdown is all it carries, besides
 // the common presentation fields.
 func (v *validator) textPanel(path string, o map[string]any) {
-	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "trendSql", "postgres", "minStep", "display", "browse")
+	v.refuse(path, o, KindText, "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "minStep", "display", "browse")
 	raw, present := o["markdown"]
 	if !present {
 		v.add(path, "a text panel needs \"markdown\"")

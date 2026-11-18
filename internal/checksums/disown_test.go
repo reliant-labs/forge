@@ -313,3 +313,26 @@ func TestScanTier1Drift_SkipsNestedCheckouts(t *testing.T) {
 		t.Errorf("the project's own edited file must still drift; got %+v", drift)
 	}
 }
+
+// A staged copy of ANOTHER Go module (control-plane copies ../reliant into a
+// gitignored context/reliant/ for an image build — no .git, so it is not a
+// nested checkout) is not this project's: its markers are invisible to the
+// scan, so the stale sweep cannot delete them and the stomp guard cannot
+// trip on them. The project's own nested module (gen/) is still scanned.
+func TestScanMarkers_SkipsForeignModules(t *testing.T) {
+	root := t.TempDir()
+	stamped, _ := Stamp("buf.yaml", []byte("version: v2\n"))
+	writeDisownFixture(t, root, "go.mod", []byte("module github.com/acme/cp\n\ngo 1.24\n"))
+	writeDisownFixture(t, root, "context/reliant/go.mod", []byte("module github.com/acme/reliant\n\ngo 1.24\n"))
+	writeDisownFixture(t, root, "context/reliant/buf.yaml", stamped)
+	writeDisownFixture(t, root, "gen/go.mod", []byte("module github.com/acme/cp/gen\n\ngo 1.24\n"))
+	writeDisownFixture(t, root, "gen/buf.yaml", stamped)
+
+	got := ScanMarkers(root)
+	if _, ok := got["context/reliant/buf.yaml"]; ok {
+		t.Errorf("a foreign module's marker was scanned as this project's: %v", got)
+	}
+	if _, ok := got["gen/buf.yaml"]; !ok {
+		t.Errorf("the project's own nested module was not scanned: %v", got)
+	}
+}

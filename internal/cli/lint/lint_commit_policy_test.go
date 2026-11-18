@@ -82,6 +82,10 @@ func TestCommitPolicyStep_WarnsOnIgnoredBirthLedger(t *testing.T) {
 		{"directory ignored, anchored", "/.forge/\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n",
 			[]string{".forge/disowned.json", ".forge/hashes/", ".forge/scaffolded/"}},
 		{"scaffold's rules", ".forge/*\n!.forge/scaffolded/\n!.forge/disowned.json\n!.forge/hashes/\n", nil},
+		// Children ignored, one negation missing: only that path is reported,
+		// and the hint keeps `.forge/*` and adds the negation.
+		{"children ignored, negation missing", ".forge/*\n!.forge/disowned.json\n!.forge/hashes/\n",
+			[]string{".forge/scaffolded/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

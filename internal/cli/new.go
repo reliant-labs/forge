@@ -207,7 +207,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&nameFlag, "name", "", "Project name. Same as the positional arg, and the way to name an --in-place project whose directory (a worktree, a branch checkout) is not the product name; defaults to the directory name")
 	cmd.Flags().BoolVar(&force, "force", false, "With --in-place: scaffold over an existing forge.yaml, and REPLACE every pre-existing file the scaffold writes (README.md, go.mod, Taskfile.yml, …) with forge's version. Without it, existing files are kept and listed. .gitignore is always merged, never replaced")
 	cmd.Flags().StringSliceVar(&disableFeatures, "disable", nil, "Features to leave out of the scaffold (comma-separated): "+strings.Join(disableableFeatures, ", ")+". Each is pinned off in forge.yaml's features: block (orm, which has no key, only steers this scaffold).")
-	cmd.Flags().StringVar(&harness, "harness", "", "AI harness to scaffold for: reliant, claude, cursor, copilot, codex, or none (no agent files at all: no AGENTS.md, pointers or .mcp.json). Default: detected from the agent running this command (RELIANT_AGENT_SHELL, CLAUDECODE, CODEX_THREAD_ID, CURSOR_AGENT), else reliant. Every harness gets AGENTS.md, the project guide; claude adds CLAUDE.md (imports AGENTS.md) and a .claude/skills/forge pointer skill, cursor adds .cursorrules and .cursor/rules/forge.mdc, copilot adds .github/copilot-instructions.md, reliant renders the guide in memory from forge.yaml. The pointers hold no skill bodies: skills are read from the forge binary ('forge skill search|load'). Recorded as 'harness:' in forge.yaml and honored by every later generate")
+	cmd.Flags().StringVar(&harness, "harness", "", "AI harness to scaffold for: reliant, claude, cursor, copilot, codex, or none (no agent files at all: no AGENTS.md, pointers or .mcp.json). Default: detected from the agent running this command (RELIANT_AGENT_SHELL, CLAUDECODE, CODEX_THREAD_ID, CURSOR_AGENT), else reliant. Every harness gets AGENTS.md, the project guide; claude adds CLAUDE.md (imports AGENTS.md), a .claude/skills/forge pointer skill and forge's own MCP server in .mcp.json, cursor adds .cursorrules and .cursor/rules/forge.mdc, copilot adds .github/copilot-instructions.md, reliant renders the guide in memory from forge.yaml. The pointers hold no skill bodies: skills are read from the forge binary ('forge skill search|load'). Recorded as 'harness:' in forge.yaml and honored by every later generate")
 	cmd.Flags().BoolVar(&skipTools, "skip-tools", false, "Skip auto-installing protoc-gen-go / protoc-gen-connect-go (run 'forge tools install' later)")
 	cmd.Flags().StringVar(&bufPlugins, "buf-plugins", "local", "Default proto plugin source: 'local' (resolved from PATH; no BSR auth needed) or 'remote' (BSR-hosted, requires login under load)")
 	cmd.Flags().StringVar(&binaryMode, "binary", "per-service", "Binary packaging: 'per-service' (default — canonical cmd/server.go cobra root, one Application per service) or 'shared' (one Go binary, cobra subcommand per service, KCL MultiServiceApplication for deploy)")
@@ -503,6 +503,8 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 
 	announceNewProject(projectName, targetPath, serviceNames, frontendNames)
 
+	_, statErr := os.Stat(filepath.Join(targetPath, ".mcp.json"))
+	hadMCP := statErr == nil
 	scaffold, err := beginScaffold(targetPath, inPlace)
 	if err != nil {
 		return err
@@ -581,6 +583,9 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	if genErr == nil {
 		fmt.Printf("\n✅ Project '%s' created successfully!\n", projectName)
 		printNewNextSteps(projectName, inPlace, kindNormalized, serviceNames, len(frontendNames) > 0)
+		if hint := mcpRestartHint(targetPath, hadMCP); hint != "" {
+			fmt.Printf("\n%s\n", hint)
+		}
 	}
 	printNewProjectNotes(targetPath, existingRepo, merged, existingApps)
 	if genErr != nil {

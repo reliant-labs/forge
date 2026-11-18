@@ -110,6 +110,7 @@ func (in Input) withActivity(d dashspec.Dashboard) dashspec.Dashboard {
 	for i, p := range d.Panels {
 		p.SQL = strings.ReplaceAll(p.SQL, obsquery.UserActivityEvidence, evidence)
 		p.TrendSQL = strings.ReplaceAll(p.TrendSQL, obsquery.UserActivityEvidence, evidence)
+		p.SubtitleSQL = strings.ReplaceAll(p.SubtitleSQL, obsquery.UserActivityEvidence, evidence)
 		panels[i] = p
 	}
 	d.Panels = panels
@@ -135,6 +136,14 @@ func exact(p dashspec.Panel) dashspec.Panel {
 	d := *p.Display
 	d.Exact = true
 	p.Display = &d
+	return p
+}
+
+// sinceSignups gives a New or Returning figure over [lo, to) its subtitle:
+// "since <date>" while sign-ups are reported only from inside it
+// (signupsSince).
+func sinceSignups(p dashspec.Panel, lo string) dashspec.Panel {
+	p.SubtitleSQL = signupsSince(lo, to)
 	return p
 }
 

@@ -142,26 +142,41 @@ func (c *Client) Close() error { return c.bun.Close() }
 // Exec runs a raw SQL statement (escape hatch). It goes straight to the
 // underlying *sql.DB — or to the RunTx transaction ctx carries for it — NOT
 // through bun's query formatter: callers write native postgres SQL with
-// $1/$2 placeholders, and bun's `?`-rewriting must not touch it. (Generated
-// code uses db.Bun()'s typed builders, which handle their own placeholders.)
+// $1, $2, … placeholders, and `?` reaches postgres as written (where it is
+// the jsonb operator). For bun's `?` placeholders, build the statement with
+// c.Bun().NewRaw(query, args...) instead. A statement with args, no $N and a
+// `?` is refused with ErrQuestionPlaceholders (raw_placeholders.go).
+// (Generated code uses Bun()'s typed builders, which handle their own
+// placeholders.)
 func (c *Client) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if err := rawPlaceholderErr("orm.Client.Exec", query, args); err != nil {
+		return nil, err
+	}
 	if c.capture != nil {
 		c.capture.Record(query)
 	}
 	return c.conn(ctx).ExecContext(ctx, query, args...)
 }
 
-// Query runs a raw SQL query (escape hatch). See Exec for the
-// raw-passthrough rationale.
+// Query runs a raw SQL query (escape hatch): postgres $1, $2, …
+// placeholders, as for Exec.
 func (c *Client) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if err := rawPlaceholderErr("orm.Client.Query", query, args); err != nil {
+		return nil, err
+	}
 	if c.capture != nil {
 		c.capture.Record(query)
 	}
 	return c.conn(ctx).QueryContext(ctx, query, args...)
 }
 
-// QueryRow runs a raw SQL query returning at most one row (escape hatch).
+// QueryRow runs a raw SQL query returning at most one row (escape hatch):
+// postgres $1, $2, … placeholders, as for Exec. A refused statement's
+// ErrQuestionPlaceholders comes back from the row's Scan.
 func (c *Client) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if err := rawPlaceholderErr("orm.Client.QueryRow", query, args); err != nil {
+		return c.conn(ctx).QueryRowContext(ctx, query, rejectedRow{err})
+	}
 	if c.capture != nil {
 		c.capture.Record(query)
 	}
@@ -224,21 +239,32 @@ func (t *Tx) Rollback() error {
 }
 
 // Exec runs a raw SQL statement within the transaction. Like Client.Exec
-// it bypasses bun's query formatter (native $1/$2 placeholders) by going
-// to the embedded *sql.Tx.
+// it bypasses bun's query formatter (native $1, $2, … placeholders; `?` is
+// refused with ErrQuestionPlaceholders) by going to the embedded *sql.Tx.
 func (t *Tx) Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	if err := rawPlaceholderErr("orm.Tx.Exec", query, args); err != nil {
+		return nil, err
+	}
 	t.record(query)
 	return t.tx.Tx.ExecContext(ctx, query, args...)
 }
 
-// Query runs a raw SQL query within the transaction (raw passthrough).
+// Query runs a raw SQL query within the transaction (raw passthrough, $N
+// placeholders as for Exec).
 func (t *Tx) Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	if err := rawPlaceholderErr("orm.Tx.Query", query, args); err != nil {
+		return nil, err
+	}
 	t.record(query)
 	return t.tx.Tx.QueryContext(ctx, query, args...)
 }
 
-// QueryRow runs a raw SQL query within the transaction (raw passthrough).
+// QueryRow runs a raw SQL query within the transaction (raw passthrough, $N
+// placeholders as for Exec; a refusal comes back from the row's Scan).
 func (t *Tx) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	if err := rawPlaceholderErr("orm.Tx.QueryRow", query, args); err != nil {
+		return t.tx.Tx.QueryRowContext(ctx, query, rejectedRow{err})
+	}
 	t.record(query)
 	return t.tx.Tx.QueryRowContext(ctx, query, args...)
 }

@@ -1,68 +1,10 @@
 {{if eq .Platform "nextjs"}}"use client";
 
 {{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// RouteGuard — what an anonymous visitor sees.
-//
-// Without it, a signed-out visitor gets the full app shell and then a wall of
-// failed fetches: the pages render fine (they are just markup), every RPC
-// behind them answers 401, and the result looks like a broken app rather than
-// one that is asking you to sign in. The server is behaving correctly; it is
-// the browser that has not been told what to do about it. This component is
-// that instruction.
-//
-// ── It gates on what the SERVER says ─────────────────────────────────
-//
-// Auth state comes from this app's own API (GET /auth/session), not from
-// an identity provider the browser talks to. The session cookie is
-// HttpOnly, so the server is the only thing that can answer the question at
-// all — which is exactly the property that keeps the token away from
-// scripts.
-//
-// ── Why a component and not middleware ────────────────────────────────
-//
-// The session cookie IS visible to a server-side middleware, so a Next.js
-// middleware guard is now possible — it just cannot be shared. This file is
-// rendered byte-for-byte into both the Next.js and the Vite scaffolds, and
-// a Vite SPA has no server to run middleware on. One component that both
-// trees mount at the top of the tree beats two divergent implementations of
-// the same rule. Add middleware on top if you want the redirect to happen
-// before the bundle is even served; keep this as the backstop.
-//
-// ── Yours to change ───────────────────────────────────────────────────
-//
-// Common edits, all local to this file:
-//
-//   - PUBLIC ROUTES: list them below. There are two lists, because a path
-//     can mean two things:
-//       `publicExactPaths` — that one page and nothing under it. A landing
-//                            page at "/", a pricing page, a share link.
-//       `publicPaths`      — the path AND every route under it ("/docs"
-//                            opens "/docs/intro" too). A whole section.
-//     A public home page is `const publicExactPaths = ["/"];`. "/" is never
-//     a prefix, in either list: it matches the home page alone, so it cannot
-//     make every route in the app public by accident.
-//   - INVERT IT: if most of your product is public and only a section is
-//     gated, drop this from the layout and wrap just that section instead.
-//   - DELETE IT: if a proxy authenticates before the app ever loads, this
-//     check is redundant — remove the import from the layout and this file.
-//
-// ── A published RPC does not publish a page ──────────────────────────
-//
-// `option (forge.v1.method) = { auth_required: false }` in a proto lets a
-// signed-out caller reach THAT RPC. It makes no page reachable: this guard
-// decides that, and it does not read the proto. It cannot, soundly — a page
-// may call several RPCs, published or not, and which ones is only knowable
-// by running it. So when you publish the RPCs a page needs, list the page
-// here too, or a signed-out visitor is sent to sign in before the page can
-// call any of them.
-//
-// ── Links follow this decision ───────────────────────────────────────
-//
-// While mounted, the guard provides `canVisit` through RouteAccessContext
-// (route-access_gen.ts). The scaffolded sidebar reads it with useCanVisit(),
-// so a signed-out visitor is offered only the routes listed below instead of
-// links that bounce them to sign in. Use it for any link of your own too.
+// RouteGuard: a signed-out visitor is sent to sign in, not shown a wall of 401s. It asks this app's
+// API (GET /auth/session; the cookie is HttpOnly), so one component serves Next.js and Vite alike.
+// `auth_required: false` publishes an RPC, NOT a page: list public pages in publicExactPaths or
+// publicPaths below; links ask useCanVisit(). Depth: `forge skill load auth/public-pages`.
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
@@ -116,7 +58,8 @@ const publicPaths = [SIGN_IN_PATH, FORGOT_PATH, RESET_PATH, ...EMAIL_LINK_PATHS]
  * scaffolded app calls RPCs that need a session.
  *
  * Add "/" here for a public home page whose RPCs are published
- * (`auth_required: false`).
+ * (`auth_required: false`). "/" is never a prefix, in either list: it matches
+ * the home page alone.
  */
 const publicExactPaths: string[] = [];
 

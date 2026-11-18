@@ -1,23 +1,8 @@
-// internal/app/providers.go — YOURS. forge writes it once and never again.
-//
-// Every func here shaped `func New<X>(<X>Deps) (T, error)` is a PROVIDER: a
-// node of the composition graph, exactly like every handler, package, worker
-// and operator. forge discovers it, resolves each <X>Deps field BY TYPE —
-// another node's value, one of the graph's inputs (Ctx, Cfg, Log, ServerCfg,
-// Probes), a config block, or a scalar config field of the same name —
-// writes its constructor newX in compose.go, and generates the memoized
-// accessor g.X() in graph_gen.go. Add a dependency — a NATS connection, a
-// third-party client, an adapter — by adding a provider; its consumers'
-// fields resolve to it on the next `forge generate`.
-//
-// Nothing is opened eagerly. A process builds only what its root reaches, so
-// a provider nothing reaches is never constructed and never dialled.
-//
-// Instance identity is the Go type. Two listeners are two types (type
-// DaemonListener struct{ *serverkit.Listener }), and that is what keeps
-// resolution unambiguous without names. A provider whose value has Run,
-// Drain, Close or Ready methods (func(context.Context) error) is supervised:
-// started after everything it depends on, drained and closed before it.
+// yours: scaffolded once, never touched again — forge will not overwrite this file.
+// Every `func New<X>(<X>Deps) (T, error)` here is a PROVIDER: a graph node whose Deps fields forge
+// resolves BY TYPE and wires in compose.go. Add a dependency (a client, an adapter) by adding a
+// provider. Nothing is built unless a root reaches it; a value with Run/Drain/Close/Ready methods is
+// supervised. Depth: `forge skill load architecture`.
 package app
 
 import (

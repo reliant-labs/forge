@@ -3370,34 +3370,40 @@ _Enforced · Reliant hosting_
 
 <a id="hosting-pay-as-you-go"></a>
 
-### Pay-as-you-go hosting, no base fee
+### Posted pay-as-you-go hosting rates
 
-Hosting bills only what your pods request, at $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage: about $8.34 a month for a small always-on service (0.1 vCPU, 512 MiB) and $20.14 for managed Postgres (0.25 vCPU, 1 GiB, 10 GiB), with a $5 minimum only in a month with usage, no machine plan, and static-site egress free to 10 GiB a month, then $0.10 per GiB.
+Hosting is priced on what your pods request, at $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage (about $8.34 a month for a small always-on service at 0.1 vCPU and 512 MiB, and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB), with a $5 minimum only in a month with usage and static-site egress free to 10 GiB a month, then $0.10 per GiB; pay-as-you-go hosting billing is not switched on yet, so hosted usage is metered and held, not charged.
 
 _Enforced · Reliant hosting_
 
 **Use:** `forge env shape <env>` prints what each workload requests; the public rates are at https://reliantlabs.io/pricing#hosting.
 
-**Why:** The rates are the pricing-v2 list (2026-11-06), the same for every plan; monthly figures assume 730 hours always on. Backend egress is measured but not billed today, and extra static sites are free once billing is set up.
+**Why:** The rates are the pricing-v2 list (2026-11-06), the same for every plan; monthly figures assume 730 hours always on. The control plane invoices a hosted kind only when `usage_billing_enabled` is on and the org has an active, consented hosting agreement; until then the drain holds the usage ("PAYG hosting billing is disabled"). Backend egress and extra static sites are shadow-only: measured, never billed.
 
 **Evidence:**
 
 - command `forge env shape`
 - `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `internal/billing/inframeter/hosting.go` in the control-plane repo
 - `internal/billing/inframeter/shadow_only.go` in the control-plane repo
+- `deploy/kcl/config_gen.k` in the control-plane repo
 - `src/content/pricing.catalog.json` in the landing-page repo
 
 <a id="observability-allowance"></a>
 
 ### 10 GiB of telemetry included
 
-Every organization gets 10 GiB of stored logs, traces, metrics and profiles a month, with or without a plan, then $0.10 per GiB; an org with no payment method is never charged for more and keeps its errors and metrics past the allowance.
+Every organization gets 10 GiB of stored logs, traces, metrics and profiles a month, with or without a plan; above it, an org with a paid Stripe subscription is billed $0.10 per GiB up to its observability spend cap with nothing dropped, and any other org is never charged: its debug logs and error-free traces are dropped instead (past 150%, all but error logs, error spans and metrics) until the month resets.
 
 _Enforced · Reliant hosting_
+
+**Why:** "Paid" is the control plane's funding predicate: an in-force, Stripe-sourced compute subscription. A funded org that reaches its spend cap keeps only error logs, error spans and metrics for the rest of the month.
 
 **Evidence:**
 
 - `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `internal/obsmeter/service.go` in the control-plane repo
+- `internal/app/observability_metering_wire.go` in the control-plane repo
 - `docs/observability/quota.md` in the control-plane repo
 - `src/content/pricing.catalog.json` in the landing-page repo
 

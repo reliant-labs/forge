@@ -184,7 +184,7 @@ const (
 	// The issue alerts need the issue registry (new / regressed are state
 	// transitions, and a spike is measured per issue), which the control plane
 	// owns. They cover every issue the env has, browser or server.
-	PlatformNewIssue       = "new-issue"
+	PlatformNewIssue = "new-issue"
 	// PClientTimeoutMinSessions is new-issue's one param: a client-side timeout
 	// issue (the browser gave up on a request, or several of its requests hung
 	// together) pages only once this many distinct sessions have hit it. One
@@ -192,7 +192,7 @@ const (
 	// two sessions are a pattern. The issue opens at once either way.
 	PClientTimeoutMinSessions = "client_timeout_min_sessions"
 	PlatformIssueRegressed    = "issue-regressed"
-	PlatformIssueSpike     = "issue-spike"
+	PlatformIssueSpike        = "issue-spike"
 	// PlatformReleaseRegressed fires when a promotion's after-window closes
 	// and the release-health verdict is FAIL: the env's release_health.fail_on
 	// findings, evaluated by the control plane with the same rule as

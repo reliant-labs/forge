@@ -200,16 +200,23 @@ Examples:
 	registerRunFlags(cmd.Flags(), &opts.run)
 
 	// A release cut ends with its RESULT line (command_result.go).
+	endReleaseCutWithResult(cmd, &opts, &noBuild)
+
+	return cmd
+}
+
+// endReleaseCutWithResult wraps the build command's RunE so a release cut
+// ends with finishReleaseCut. opts and noBuild are pointers because the flags
+// are parsed after the command is built.
+func endReleaseCutWithResult(cmd *cobra.Command, opts *buildOptions, noBuild *bool) {
 	build := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		err := build(cmd, args)
 		if opts.release == "" || opts.plan || opts.planJSON {
 			return err
 		}
-		return finishReleaseCut(cmd.OutOrStdout(), args[0], opts.release, noBuild, err)
+		return finishReleaseCut(cmd.OutOrStdout(), args[0], opts.release, *noBuild, err)
 	}
-
-	return cmd
 }
 
 // finishReleaseCut ends `forge env build <env> --release <v>`: the RESULT line

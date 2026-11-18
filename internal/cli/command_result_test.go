@@ -91,7 +91,7 @@ func TestWithResultLineIsLastAndKeepsTheExitCode(t *testing.T) {
 }
 
 func TestReasonAndFixOf(t *testing.T) {
-	err := errors.New("build env prod for deploy: hosted static site web: push failed\n  more detail\n  fix: forge login, then forge env deploy prod\n")
+	err := errors.New("build env prod for deploy: hosted static site web: push failed\n  more detail\n  fix: forge login, then forge env deploy prod\n") //nolint:revive // the multi-line, newline-terminated error a failed deploy returns is the input under test
 	if got := reasonOf(err); got != "build env prod for deploy: hosted static site web: push failed" {
 		t.Errorf("reasonOf = %q", got)
 	}

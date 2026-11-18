@@ -493,7 +493,7 @@ func noticeUnwiredMergeDriver(w io.Writer, root string) {
 			r.problems[0], cmdutil.Name())
 	}
 	if err := os.MkdirAll(dir, 0o755); err == nil {
-		_ = os.WriteFile(stamp, nil, 0o644)
+		_ = atomicfile.WriteFile(stamp, nil, 0o644)
 	}
 }
 

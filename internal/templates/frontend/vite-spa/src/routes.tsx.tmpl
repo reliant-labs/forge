@@ -1,25 +1,7 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// Tanstack-router setup for the {{.FrontendName}} SPA. Forge writes this
-// file once at scaffold time and never overwrites it. New routes added by
-// `forge scaffold page <Entity>` are appended in the marker block below.
-//
-// Routing model
-// -------------
-// We use the code-based router (createRootRoute / createRoute / addChildren)
-// rather than file-based routing. The code-based form keeps the route tree
-// inspectable in one place and lets the page generator stitch new entity
-// routes into the same array without touching anything else.
-//
-// Common edits:
-//   - Replace <App /> with your own root layout
-//   - Add static routes (login, settings) above the FORGE-ROUTES marker
-//   - Filter or reorder ALL_ROUTES in the marker block
-//
-// Conventions
-//   - Search-param validation lives on the route via `validateSearch: schema`.
-//     Read it inside the component with `useSearch({ from: '/<route-id>' })`.
-//   - Path params: `parseParams: z.object({...}).parse` on the route.
+// TanStack Router, code-based: the route tree lives here, and `forge scaffold page <Entity>`
+// appends entity routes inside the FORGE-ROUTES marker block. Add your own routes above it.
+// Search params: `validateSearch` on the route, read with useSearch. Depth: `forge skill load frontend`.
 
 import {
   createRootRoute,
@@ -133,7 +115,9 @@ export const rootRoute = createRootRoute({
 
 // Index route — the welcome / dashboard landing page. Replace with your own
 // dashboard component once you have services with CRUD entities and have
-// run `forge generate` to scaffold them.
+// run `forge generate` to scaffold them. Like every route inside <App />, it
+// renders inside App's <main>: use a <div> or <section>, never a second
+// <main>.
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",

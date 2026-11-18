@@ -1,54 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// The browser half of NATIVE SIGN-IN — and it is deliberately small.
-//
-// ── What this file does NOT do ────────────────────────────────────────
-//
-// It does not know what OIDC is. There is no issuer URL here, no client
-// id, no PKCE, no discovery document, no redirect to a provider, no hidden
-// iframe, no token parsing, and no token storage. The browser never
-// contacts the identity provider at all.
-//
-// Everything below is an ordinary POST to this app's own API. Your server
-// runs the whole OIDC flow (internal/app/login_broker.go) and answers with
-// an HttpOnly session cookie.
-//
-//	sign in  →  POST /auth/login     → cookie set, identity returned
-//	sign up  →  POST /auth/register  → cookie set, identity returned
-//	who am I →  GET  /auth/session   → identity, or not authenticated
-//	sign out →  POST /auth/logout    → cookie cleared
-//
-//	what must a password contain →  GET  /auth/password-policy
-//	forgot password              →  POST /auth/forgot  → reset link requested
-//	reset password               →  POST /auth/reset   → password set, signed in
-//
-// And the methods a LOGIN_POLICY turns on (GET /auth/options says which):
-//
-//	passkey        →  POST /auth/passkey/begin, /finish  (navigator.credentials.get)
-//	add a passkey  →  POST /auth/passkey/register/begin, /finish  (…credentials.create)
-//	magic link     →  POST /auth/magic/request, then /auth/magic/consume
-//	Google/GitHub  →  POST /auth/social/start → the provider → /auth/social/callback
-//	invitation     →  POST /auth/invite/accept
-//	verify address →  POST /auth/verify, /auth/verify/resend
-//
-// ── Why the token is not here ─────────────────────────────────────────
-//
-// The session cookie is HttpOnly, so this code CANNOT read it — and that
-// is the point rather than a limitation. A token no script can reach is a
-// token an XSS cannot steal. The cookie rides along automatically on
-// same-origin requests, so nothing here has to attach an Authorization
-// header.
-//
-// What you get instead is an `Identity`: who is signed in, for rendering.
-// Use it to decide what to SHOW. Never to decide what is ALLOWED — the
-// server validates the real token on every request.
-//
-// ── Where these requests go ───────────────────────────────────────────
-//
-// Wherever src/lib/connect.ts sends RPCs: both ask src/lib/api-base.ts. In
-// the dev loop that is this page's own origin (`/_api`, proxied to the API
-// by the dev server), so the cookie the API sets is first-party to whatever
-// host the page was opened on — localhost, or a workspace preview URL.
+// The browser half of native sign-in: plain POSTs to this app's own API (/auth/login, /register,
+// /session, /logout, …), which runs the whole OIDC flow (internal/app/login_broker.go) and answers
+// with an HttpOnly cookie. No token is readable here, by design: the Identity it returns decides
+// what to SHOW, never what is ALLOWED. Depth: `forge skill load auth/frontend`.
 {{if .HasTypedConfig}}
 import { apiBase } from "@/lib/api-base";
 import { loadConfig } from "@/lib/config_gen";

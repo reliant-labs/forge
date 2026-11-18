@@ -1,17 +1,13 @@
 <!-- forge:version=1 -->
 # shop
 
-This is a **Forge** project managed by the `forge` CLI. Forge here is **Reliant Forge** (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's `forge` (Solidity) or Laravel Forge; do not use their commands. It is an **adopted project**: an existing app, in its own language and layout, that uses only the pieces of forge it opted into.
+This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands. It is an **adopted project**: an existing app, in its own language and layout, that uses only the pieces of forge it opted into.
 
-This file is auto-loaded into LLM context every session. Treat it as the authoritative quick-reference. For depth, load the named skills.
+This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge skill load <name>` away, named where you need it.
 
 ## Engineering disposition
 
-This is a long-lived product. For consequential decisions — architecture, public APIs, schemas, lifecycle, anything that ships and is hard to change later — reason to the production-grade, durable solution first, not the quick fix. Before building a non-trivial design, name the realistic alternatives and the trade-off, and devil's-advocate the chosen approach **including your own proposals**; bias toward the coherent design that won't hit a ceiling.
-
-**Don't manufacture urgency.** There is almost never real time pressure — user frustration usually means you haven't converged on the right thing, not "go faster / cut corners." Commit to the right design and ship it decisively; never rationalize a hack with invented pressure. When tempted by a shortcut, the question is "is this correct?", not "is this faster?"
-
-Skip this depth for trivial/mechanical work — there, just do it.
+This is a long-lived product. For anything hard to change later — architecture, public APIs, schemas — name the realistic alternatives, argue against your own pick, and choose the durable design over the quick fix. There is almost never real time pressure, so never justify a hack with it. Trivial work: just do it.
 
 ## What this project is
 
@@ -65,41 +61,12 @@ A run expected to take more than ~2 minutes goes in the background (`run_in_back
 
 ## When forge itself is wrong — FIX IT
 
-**One of our biggest priorities is dogfooding forge and making sure it is
-incredibly robust for all of our use cases.** When forge is the thing standing
-in your way, improving forge IS the task, not a detour from it.
-
-So if forge emits something wrong — bad codegen, a lint false-positive, a
-scaffold quirk, a missing capability — reproduce it, then **fix it in forge**.
-Do not paper over it with a workaround and a TODO, and do not hand-edit
-generated output to compensate: the next `forge generate` overwrites your
-patch and the defect comes back.
-
-Every workaround is a bug report that never got filed and a defect that ships
-to users instead. Hitting forge's rough edges is the single most valuable
-signal we get about what to fix — routing around them throws that signal away
-and leaves the next person to rediscover it.
-
-Bias toward the durable fix over the minimal one: if a default is wrong, change
-the default; if a behavior needs a knob, add the flag; if the design is wrong,
-redesign it. Forge is semver at major 1, so a fix never breaks the projects
-that pin it: keep the old flag, field, API or default working beside the new
-one, mark it deprecated, and leave its removal to the next major, which only
-forge's owner cuts.
-
-When you cannot fix it here — forge is not this checkout, or the fix is out of
-scope — **report it**, then carry on:
+If forge emits something wrong — bad codegen, a lint false positive, a scaffold quirk, a missing capability — fix it in forge when you can; never paper over it or hand-edit generated output, which the next `forge generate` overwrites. forge is semver at major 1: a fix keeps the old flag, field or default working beside the new one, marked deprecated. When you cannot fix it here, report it and carry on:
 
     forge report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
 
-(`forge mcp` exposes the same as its `report_bug` tool.) Use it for defects in
-forge itself — a forge command that fails, hangs or generates something wrong,
-or a lint, skill or doc that is wrong — not for bugs in this project's code,
-its failing tests, or your own mistakes. Never put credentials or file contents
-in a report. A repeat of the same title within 30 minutes returns the first
-report's id and sends nothing. forge sends nothing unless someone runs this;
-`--dry-run` prints exactly what would go.
+Only for defects in forge itself (a command, codegen, lint, skill or doc), not this project's code or tests. Never put credentials or file contents in a report; `--dry-run` shows exactly what would be sent.
 
 ## Project Notes
 

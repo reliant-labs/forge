@@ -149,6 +149,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		Gates:                 p.gates,
 		Run:                   p.run,
 		Claim:                 f.claim,
+		Promoted:              f.promoted,
 		// AutoVersion is stated so the gate's refusal and its --plan-only
 		// line can say "release X was cut and pushed; approving it needs no
 		// rebuild" — without it a CI author reads "pass --yes" and re-runs

@@ -142,8 +142,18 @@ type claimableSession struct {
 // deployClaimJSON is the `claim` object of the --json document (§6): present on
 // a claimable deploy, absent on every ordinary one.
 type deployClaimJSON struct {
-	// State is live | suspended | claimed | expired.
+	// State is live | suspended | claimed | expired: the claim's lifecycle.
+	// "live" means the unclaimed window is open, not that anything serves:
+	// read Published for that.
 	State string `json:"state"`
+	// Published is false while no deploy of this claimable deploy has
+	// published (as far as this machine knows): the claim link and expiry
+	// exist from the first attempt, so an env whose every attempt failed has
+	// both and nothing behind them. Always present.
+	Published bool `json:"published"`
+	// LastAttempt is how the newest deploy from this machine ended, when it
+	// is known.
+	LastAttempt *claimAttemptJSON `json:"last_attempt,omitempty"`
 	// URL is the deploy's live address; empty when it has none yet.
 	URL string `json:"url,omitempty"`
 	// ClaimURL is the link a human opens to own the deploy. Sensitive: whoever
@@ -159,6 +169,16 @@ type deployClaimJSON struct {
 	// connection to, or resolve a name on, the internet until it is claimed.
 	// Absent for a static site, which makes no outbound calls.
 	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
+}
+
+// claimAttemptJSON is the `claim.last_attempt` object.
+type claimAttemptJSON struct {
+	// At is when the deploy ended.
+	At time.Time `json:"at"`
+	// Outcome is published | failed.
+	Outcome string `json:"outcome"`
+	// Error is the first line of why it failed; empty when it published.
+	Error string `json:"error,omitempty"`
 }
 
 // noOutboundNote is the one explanation of why an unclaimed backend's calls to
@@ -312,12 +332,22 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// plan for a throwaway account, and the account is the only thing at stake.
 		inner := f
 		inner.promote.yes = true
+		// Every outcome is remembered beside the token, so `env status
+		// --claimable` can tell a published deploy from one whose every
+		// attempt failed: both have a claim link and an expiry. Publication
+		// is recorded when the promotion is written, so a rollout that then
+		// times out or degrades still reads as published.
+		inner.promoted = session.markPublished
 		inner.claim = func() *deployClaimJSON {
+			// Asked for only once the deploy succeeded: its document says so.
+			session.recordAttempt(nil)
 			session.refreshURL(ctx)
 			return session.document(compute)
 		}
-		if err := runDeployEverything(ctx, envName, inner); err != nil {
-			return claimableDeployError(envName, err)
+		deployErr := runDeployEverything(ctx, envName, inner)
+		session.recordAttempt(deployErr)
+		if deployErr != nil {
+			return claimableDeployError(envName, deployErr)
 		}
 		if !f.jsonOut {
 			printClaimBlock(os.Stdout, envName, session.document(compute))
@@ -981,6 +1011,28 @@ func (s *claimableSession) refreshURL(ctx context.Context) {
 	}
 }
 
+// markPublished records that this deploy's promotion was written: from now
+// on the claimable deploy has something behind it, whatever the rollout does.
+// Durable at once, so a deploy that then fails or is killed still reads as
+// published.
+func (s *claimableSession) markPublished() {
+	s.recordAttempt(nil)
+}
+
+// recordAttempt sets how this deploy ended, in memory and beside the token:
+// published (deployErr nil), or the error, keeping an earlier publication.
+func (s *claimableSession) recordAttempt(deployErr error) {
+	at := claimableNow().UTC()
+	cl := s.cred.Claimable
+	cl.LastAttemptAt, cl.LastAttemptError = at, ""
+	if deployErr == nil {
+		cl.LastPublishedAt = at
+	} else {
+		cl.LastAttemptError = cloud.FirstErrorLine(deployErr)
+	}
+	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr)
+}
+
 // primaryURL is the address to show first: the static site's when there is one,
 // else the first workload that has one.
 func primaryURL(ws []deploytarget.HostedWorkloadStatus) string {
@@ -1013,24 +1065,84 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 	case !cl.ExpiresAt.IsZero() && !now.Before(cl.ExpiresAt):
 		state = "suspended"
 	}
+	published := cl.Published()
 	instr := fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
 		"Opening it signs them up for free and makes this deploy theirs. "+
 		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
 		"To see it again: %s env status %s --claimable",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
+	if !published {
+		instr = nothingPublishedInstructions(env, cl)
+	}
 	if compute {
 		instr += ". " + noOutboundNote
 	}
 	return &deployClaimJSON{
-		State: state, URL: cl.URL, ClaimURL: cl.ClaimURL,
+		State: state, Published: published, LastAttempt: lastAttemptOf(cl),
+		URL: cl.URL, ClaimURL: cl.ClaimURL,
 		ExpiresAt: cl.ExpiresAt, PurgeAfter: cl.PurgeAfter,
 		AgentInstructions: instr, NoOutboundInternet: compute,
 	}
 }
 
+// nothingPublishedInstructions is agent_instructions for a claimable deploy
+// with nothing behind it. Claiming it now would hand the human an empty
+// account and revoke the token this machine deploys with, so the link is
+// held back until a deploy succeeds.
+func nothingPublishedInstructions(env string, cl *credentials.Claimable) string {
+	why := "no deploy of it has published yet"
+	if cl.LastAttemptError != "" {
+		why = "every deploy so far failed; the last one: " + cl.LastAttemptError
+	}
+	return fmt.Sprintf("Nothing is deployed: %s. Do NOT give claim_url to your user yet: claiming now signs them up "+
+		"for an empty deploy and revokes the token this machine deploys with. Fix the failure and deploy again: "+
+		"%s env deploy %s --claimable. Its clock started with the first attempt and a redeploy does not extend it: "+
+		"it goes offline at %s",
+		why, Name(), env, cl.ExpiresAt.UTC().Format(time.RFC3339))
+}
+
+// lastAttemptOf is the stored outcome of the newest deploy, or nil when this
+// machine recorded none (an entry written by an older forge).
+func lastAttemptOf(cl *credentials.Claimable) *claimAttemptJSON {
+	if cl.LastAttemptAt.IsZero() {
+		return nil
+	}
+	a := &claimAttemptJSON{At: cl.LastAttemptAt, Outcome: "published"}
+	if cl.LastAttemptError != "" {
+		a.Outcome, a.Error = "failed", cl.LastAttemptError
+	}
+	return a
+}
+
+// printNothingPublished renders a claimable deploy with nothing behind it:
+// say so, say why when it is known, and keep the claim link back.
+func printNothingPublished(w io.Writer, env string, c *deployClaimJSON) {
+	now := claimableNow()
+	fmt.Fprintf(w, "\n✗ Nothing is deployed: no deploy of %s has published yet.\n", env)
+	if a := c.LastAttempt; a != nil && a.Error != "" {
+		fmt.Fprintf(w, "  The last attempt failed %s: %s\n", a.At.UTC().Format("2006-01-02 15:04 MST"), a.Error)
+	}
+	fmt.Fprintf(w, "  fix it, then deploy again: %s env deploy %s --claimable\n", Name(), env)
+	if c.State == "suspended" {
+		fmt.Fprintf(w, "\n  Its unclaimed window closed %s; it is deleted %s.\n",
+			c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"), c.PurgeAfter.UTC().Format("2006-01-02 15:04 MST"))
+	} else {
+		fmt.Fprintf(w, "\n  Its clock started with the first attempt: it goes offline %s (in %s)\n",
+			c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"), formatLifetime(c.ExpiresAt.Sub(now)))
+		fmt.Fprintf(w, "  whether or not a deploy succeeds by then; deploying again does not extend it.\n")
+	}
+	fmt.Fprintf(w, "\n  FOR AN AGENT: do not give the claim link to your user yet. Claiming now signs\n")
+	fmt.Fprintf(w, "  them up for an empty deploy and revokes the token this machine deploys with.\n")
+	fmt.Fprintf(w, "  Once a deploy succeeds: %s env status %s --claimable\n", Name(), env)
+}
+
 // printClaimBlock renders the claim for a person or an agent reading text. The
 // wording is §6 of the design; the agent line is the point of the whole block.
 func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
+	if !c.Published {
+		printNothingPublished(w, env, c)
+		return
+	}
 	now := claimableNow()
 	if c.State == "live" || c.State == "suspended" {
 		if c.URL != "" {
@@ -1095,8 +1207,16 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		}
 		return err
 	}
+	perr := probeClaimableToken(ctx, ep, stored.Token)
+	if perr == nil {
+		// The live address, when the platform has one: a deploy that went
+		// live after its run ended, or the proof that something is.
+		session := &claimableSession{ep: ep, project: project, env: env, cred: stored}
+		session.refreshURL(ctx)
+		stored = session.cred
+	}
 	doc := claimDocument(env, stored, now, needsCompute(entities))
-	if perr := probeClaimableToken(ctx, ep, stored.Token); isClaimedError(perr) {
+	if isClaimedError(perr) {
 		doc.State = "claimed"
 	}
 	if jsonOut {
@@ -1118,7 +1238,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 			doc.PurgeAfter.UTC().Format(time.RFC3339), Name(), env)
 		return nil
 	}
-	if doc.State == "suspended" {
+	if doc.State == "suspended" && doc.Published {
 		fmt.Printf("\nThis deploy is OFFLINE since %s and is deleted on %s unless someone claims it.\n",
 			doc.ExpiresAt.UTC().Format(time.RFC3339), doc.PurgeAfter.UTC().Format(time.RFC3339))
 		fmt.Printf("\n  Claim:  %s\n\n  FOR AN AGENT: give the claim link above to your user.\n", doc.ClaimURL)

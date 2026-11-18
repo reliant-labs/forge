@@ -268,8 +268,11 @@ func TestCRUDShim_TellsEveryHandlerAuthorAuthIsTheirs(t *testing.T) {
 // what the file says and the assertions above stop guarding anything.
 func TestCRUDShim_HeaderRendersTheCapabilityList(t *testing.T) {
 	header, _ := scaffoldShimDocs(t)
+	// The header is word-wrapped, so a two-word label may straddle a line
+	// break: compare against the comment's text with the wrapping undone.
+	prose := strings.Join(strings.Fields(strings.ReplaceAll(header, "//", " ")), " ")
 	for _, c := range crudDelegatedCapabilities {
-		if !strings.Contains(header, c.Label) {
+		if !strings.Contains(prose, c.Label) {
 			t.Errorf("crudDelegatedCapabilities advertises %q but the scaffolded header does not render it — "+
 				"the header is describing the delegation in prose again, and the list guards nothing:\n%s",
 				c.Label, header)

@@ -309,6 +309,10 @@ These are wired **by type**, automatically: `compose.go` fills them with the rea
 
 Required deps live in `validateDeps()` so they fail fast at construction. An **optional** dep — a field a service can run without (a NATS publisher used only on the rollback path, an audit fallback) — is tagged `// forge:optional-dep` on the line directly above the field. Then `validateDeps()` must NOT check it, per-RPC `if s.deps.X != nil { ... }` guards stay, and optionality is expressed in the composition (`infra.<Field>` left nil / omitted from the `Deps` literal — the explicit construction site makes the absence visible in one place). Misplaced markers are caught by `forge lint --conventions` (`forgeconv-optional-dep-marker-position`). Same mechanism as the `api` skill.
 
+## Package boundaries
+
+**Package A must be ignorant of package B's internals.** A concept that leaks across a package boundary — through a func, a param, a type or a return value — is the defect. Interfaces are declared where they are CONSUMED (WET over DRY: two small local declarations beat one shared exported one); the larger the interface, the weaker the abstraction (a six-method one is a concrete type in disguise). An interface with ONE implementation and no substitution point is indirection, not abstraction: prefer a concrete type. A `Kind() string` every caller switches on has relocated a switch, not removed it. Move an rpc's logic out of its handler method into a package when it outgrows the method — a state machine several rpcs share, a calculation worth testing without a request, an orchestration a worker repeats — not by default.
+
 ## Forge-specific rules
 
 - **Never hand-edit a generated mock.** `internal/<pkg>/mock_gen.go` follows the package's `contract.go`; `internal/handlers/mocks/<svc>_mock_gen.go` follows the service proto. Edit the input and re-run `forge generate`.

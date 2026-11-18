@@ -1,29 +1,7 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// Entity URLs — the one place the generated CRUD pages build and read them,
-// so no page hand-rolls a query string.
-//
-// Every generated route is a STATIC route:
-//
-//   /<slug>                 list
-//   /<slug>/new             create
-//   /<slug>/view?id=<id>    detail
-//   /<slug>/edit?id=<id>    edit
-//
-// The id rides in the query string rather than in a `[id]` path segment, and
-// that is what lets `output: "export"` build them. A static export can only
-// emit the pages it can enumerate at build time, and an entity id exists only
-// at runtime — so `/<slug>/[id]` fails `next build` ("missing
-// generateStaticParams()") while `/<slug>/view` exports once, as
-// `out/<slug>/view.html`, and reads its id in the browser. The same pages
-// work unchanged under `output: "standalone"`.
-//
-// No trailing slash (Next's default, `trailingSlash: false`): the export
-// writes `<slug>/view.html`, and both the hosted static origin and the
-// scaffold's nginx image resolve `/<slug>/view` to it by trying `.html`.
-// A plain file server that only maps directories to index.html needs
-// `trailingSlash: true` in next.config.ts instead; these helpers do not
-// change, because Next adds the slash to every <Link> and router call.
+// Entity URLs for the generated CRUD pages: /<slug>, /<slug>/new, /<slug>/view?id=, /<slug>/edit?id=.
+// The id rides in the query string because a static export cannot build a `[id]` segment — never add
+// one. No trailing slash; a host that needs one sets `trailingSlash: true`. Depth: `frontend/serving`.
 
 import { useSearchParams } from "next/navigation";
 

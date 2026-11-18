@@ -31,11 +31,15 @@ Eight endpoints, and that is the entire contract the browser knows about:
 - **`src/app/auth/sign-in/page.tsx`** (Next.js) / the `/auth/sign-in` route in `src/routes.tsx` (Vite) — an ordinary form, in the theme's semantic tokens (light and dark follow the palette and the theme toggle).
 - **`src/components/auth-ui.tsx`** — the pieces every `/auth` screen is built from: `AuthPage` (the full-viewport frame and placeholder brand mark), `AuthCard`, `AuthAlert` (error / info / success, icon plus words, `role="alert"` or `"status"`), `PasswordInput` (a show/hide button with `aria-pressed`), `AuthInput`, `AuthDivider`, `AuthLink`. Restyle sign-in here once, not per screen; swap `AuthBrand` for your logo.
 - **`src/components/{password-requirements,forgot-password-form,reset-password-form}.tsx`** and the `/auth/forgot` and `/auth/reset` routes (`src/app/auth/{forgot,reset}/page.tsx` in Next.js, `forgotRoute` / `resetRoute` in `src/routes.tsx` in Vite). Static-export safe: `/auth/reset?userID=…&code=…&orgID=…` reads its query in the browser, which is the shape of the link the control plane gives the provider as its reset template.
-- **`src/lib/auth/route-guard.tsx`** — what an anonymous visitor sees. Without it a signed-out visitor gets the full app shell and then a wall of 401s, which looks like a broken app rather than one asking you to sign in.
+- **`src/lib/auth/route-guard.tsx`** — what an anonymous visitor sees. Without it a signed-out visitor gets the full app shell and then a wall of 401s, which looks like a broken app rather than one asking you to sign in. See `auth/public-pages`.
 - **`src/lib/auth/context.tsx`** (the provider) and **`src/lib/auth/use-auth.ts`** — `useAuth()`, exposing `{ identity, isAuthenticated, isLoading, refresh, logout }`. In mock mode (`MOCK_API` set to `"true"` or `"hybrid"`) it never calls `GET /auth/session`. The identity is instead the fixture user from `createSessionAuthProvider()` in `src/lib/auth/session-provider.ts`, gated on that file's `isMockMode()`. In hybrid the fixture is for the UI only, and forwarded RPCs carry only the browser's real cookie. See the `frontend` skill's mock-mode table.
 - **`src/components/session_nav.tsx`** — the header's user menu (the library `dropdown_menu`): avatar and name, then name and address, the theme as radio items, and sign-out. Signed out it renders the compact `theme-toggle.tsx` instead. `GET /auth/session` sends `name`, `email` and `picture`; the broker fills them from the issuer's userinfo when the access token carries only a subject (Zitadel's do), cached per token (`sessionIdentity` in `internal/app/login_broker.go`). The subject id is shown only when the issuer has neither name nor address.
 
 There is no `/auth/callback`. It belonged to the browser redirect flow — the issuer sent the browser back there with a code — and with the exchange moved server-side there is nothing for it to do. The auth routes are sign-in, forgot and reset.
+
+## Public pages
+
+The route guard sends a signed-out visitor to sign in unless the page is listed in `route-guard.tsx` (`publicExactPaths` for one page such as `"/"`, `publicPaths` for a section). Publishing an RPC (`auth_required: false`) publishes no page. Lists, the sidebar's `useCanVisit()`, and older projects: **`auth/public-pages`**.
 
 ## Password requirements
 

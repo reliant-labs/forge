@@ -1,6 +1,6 @@
 ---
 name: observability/query
-description: The feedback loop from the CLI — forge obs status for what is wrong now, forge obs check after a deploy, then issues, traces, logs, endpoints and metrics; forge env releases for what was live when; forge db query for the rows. Backends (local ClickStack, the control plane), the JSON contract, suggested next commands, and the exit codes a CI gate branches on.
+description: The feedback loop from the CLI — forge obs status for what is wrong now, forge obs check after a deploy, then issues, traces, logs, endpoints, ops, blast radius and metrics; forge env releases for what was live when; forge db query for the rows. Backends (local ClickStack, the control plane), the JSON contract, suggested next commands, and the exit codes a CI gate branches on.
 ---
 
 # Querying the running system: `forge obs`
@@ -67,7 +67,9 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, over the trace's own time range; `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
 | `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started. Each span line shows how it ended (`rpc=CANCELED`, `http=403`, `error.type`, a statement's summary, ClickHouse `read_rows` and `query_id`) and a failed span's exception; a log that warns, fails or carries an `error` is printed under its span with its error and cause; a span whose children cover little of it gets `⋯ uninstrumented 9.99s of 10.00s`: the time went to code that emitted no span, so look there. Past 10,000 spans the read stops and says so (`158,864 spans (10,000 read)`): time past it is `⋯ not read`, runs carry the whole trace's count, and its spans by name follow |
-| `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10) |
+| `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10); CLIENT P95 (`client_p95_ms`, `client_calls`) is the browser's view of the rpc, from `forge.rpc.client` spans, `client_note` when unreadable |
+| `forge obs ops [env]` | Component ops (`<pkg>.<Method>`) and RPCs by traffic, with each op's code location (`--sort calls\|p95\|errors\|rate`, `--top`, default 20, `--kind rpc,endpoint,component`) |
+| `forge obs blast-radius [env]` | The diff (`--base`, default the merge-base with origin/main; `--head`, default the working tree) mapped to the ops it changes, with their traffic (`--since`, default 7d); no env: the mapping alone. Which to run when: `observability/query/ops` |
 | `forge obs metrics list [env]` | The metric catalog (`--contains`): kind, monotonic, temporality, services, last seen, series estimate; locally, merged with the declared schema (`declared`, `seen`) |
 | `forge obs metrics describe [env] <metric>` | One metric: interval, attribute keys with value counts, suggested breakdowns, the declared spec |
 | `forge obs metrics query [env] <metric>` | A metrics panel, as the console explorer runs it: `--agg`/`--quantile`, `--query NAME=metric[:agg[:q]]`, `--where NAME:key=value`, `--filter`, `--group-by` (repeatable), `--formula`, `--kind line\|number\|table\|bar`, `--top`, `--compare 24h\|prev-release`, `--step`, `--panel-out FILE` |
@@ -77,6 +79,8 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs profile`, `forge obs alerts check`, `forge obs dashboards check` | Flamegraphs, alerts-as-code and dashboards (`observability/profiles`, `observability/alerts`, `observability/dashboards`) |
 
 Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service` (repeatable), `--filter k=v` / `k!=v` (repeatable; `k` is an allowlisted key such as `http.route`, or any attribute named by its map: `span.attr.<k>` on traces, `log.attr.<k>` on logs, `resource.attr.<k>` anywhere, so `forge obs traces prod --filter span.attr.chat.id=<id>` finds every trace one of whose spans carries that chat), `--backend local|cloud`, `--limit` (list verbs), `--json`, `--fields a,b.c`, and `--explain` (alias `--print-sql`), which adds the compiled `statements[]{purpose,sql,params}` to the document instead of running them. Copy a statement into `forge obs query --sql` when the structured verbs can't express what you need. `FORGE_OBS_DEBUG=1` logs each raw query's literal-free shape to stderr. `status` and `changes` take the time, backend and output flags but not `--filter` or `--explain`; `check` has its own (below).
+
+**Which ops, when** (`observability/query/ops`): before editing a component or handler, `forge obs ops <env>` or `forge obs blast-radius <env>` says how hot and fragile the code is; reviewing a PR, `forge obs blast-radius <env> --json`; after a deploy, `forge obs check` (its `changed_op_*` findings).
 
 ## Issue assignment filters
 
@@ -152,7 +156,7 @@ forge env releases at prod 2h                # …two hours ago (or `now`)
 
 ## The JSON contract
 
-- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `sessions`, `session`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
+- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `sessions`, `session`, `logs`, `traces`, `trace`, `endpoints`, `ops`, `blast_radius`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
 - **`query_mode`** is `structured` or `raw` on every document: which path answered.
 - **`scope`** echoes env, backend, env id, time range and services.
 - **Bounded by default.** Lists carry `truncated`, `next_page_token`, and `omitted` where a cap cut items.
@@ -168,8 +172,4 @@ CI tokens read telemetry with `obs:read`; a person mints the CI token in the web
 
 ## One cause, many issues
 
-Two things keep an outage from burying the inbox.
-
-**The cause is part of the fingerprint.** A log line that puts its failure in the `error` attribute with no `exception.type` (a logger that formats the error to a string, or a library outside `forge/pkg/observe`) used to group by its message template alone, so one `Transaction failed` was UTF-8 corruption, serialization failures, prepared-statement clashes and timeouts at once. The fingerprint (sfp2) folds a normalized error class into exactly those records: the `(SQLSTATE nnnnn)` the text carries, else a leading Go type name (`*pgconn.PgError`), else the message with numbers, ids and quoted values masked. The class refines the call site, never replaces it: an error that carries a stack still groups by the frame it began at. A record with an `exception.type` or an `error.group` keeps the fingerprint it always had, so nothing already filed is re-keyed.
-
-**An incident is not a merge.** A dead database fails every caller, and each caller is its own call site and so its own issue. `forge obs issues` marks issues that share a *cause* (the SQLSTATE, the refused dial target, or the error class) and first fired within `--incident-window` of each other, in any service, with an `incident_key` and a `related_count`, and collapses each incident to its first issue. The hidden issues still exist with their own counts and state; `--expand-incidents` lists them, and `forge obs issue <id>` lists the rest of its incident. The window is anchored on the incident's first issue, so a slow drip of one cause is several incidents, not one that never ends.
+The fingerprint (sfp2) folds a normalized error class into records with no `exception.type`, and issues that share a cause and first fired together collapse into one incident without being merged: `observability/query/incidents`.

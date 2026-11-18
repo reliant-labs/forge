@@ -6643,7 +6643,7 @@ _render_data_access = lambda data_access: DataAccess, lifecycle: str -> {str:str
 }
 
 # The release-health finding codes (pkg/release Health*).
-_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency"]
+_RELEASE_HEALTH_FINDINGS = ["error_rate", "latency", "new_issue", "regressed_issue", "alert_firing", "workload_restarts", "browser_errors", "browser_failed_requests", "browser_page_load", "probe_failed", "probe_latency", "changed_op_errors", "changed_op_latency"]
 
 # A release-health window ("15m", "2h", "90s") in seconds; 0 when malformed.
 _release_health_seconds = lambda w: str -> int {
@@ -6700,7 +6700,15 @@ schema ReleaseHealth:
     unless listed in `fail_on`. For an env with release probes (forge.Probe),
     probe_failed (a probe failed after the promotion; fails by default) and
     probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
-    default, as latency does).
+    default, as latency does). For the ops the release's commits changed (a
+    component method, an rpc, an endpoint), each compared only with at least
+    `--threshold changed_op_min_calls` (50) calls in both windows:
+    changed_op_errors (the op's error rate rose by more than
+    changed_op_max_error_rate_increase, 0.05, with at least
+    changed_op_min_errors, 5, errors after the promotion) and
+    changed_op_latency (its p95 grew by more than changed_op_max_p95_ratio,
+    2); each names the newest commit that changed the op, and both warn
+    unless listed in `fail_on`.
 
     Recorded in the release shape (`release_health`) when any value differs
     from the default, so every reader judges by this one declaration.

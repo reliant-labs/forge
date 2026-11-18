@@ -191,6 +191,14 @@ const (
 	// nothing for the env, and its validation refuses a finding code it does
 	// not know, so it is sent neither.
 	BundleFeatureReleaseProbes = "shape-release-probes"
+	// BundleFeatureReleaseHealthChangedOps is the changed-op finding codes
+	// (HealthChangedOpErrors, HealthChangedOpLatency) in
+	// ShapeReleaseHealth.FailOn. A value feature, like
+	// BundleFeatureFunnelPerson: it adds no key, but a control plane that
+	// predates it refuses a fail_on naming a code it does not know, and with
+	// it the whole shape. So it is sent the policy without them, and judges
+	// them as the default does: warn.
+	BundleFeatureReleaseHealthChangedOps = "shape-release-health-changed-ops"
 )
 
 // CapabilityEnforcesPromotionChecks is advertised beside the bundle features
@@ -207,7 +215,7 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -315,6 +323,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		}
 		if !r.Supports(BundleFeatureReleaseHealthAlertBaseline) && h.AlertBaselineMinFirings != nil {
 			h.AlertBaselineMinFirings, limited = nil, true
+		}
+		if changedOp := func(c string) bool { return slices.Contains(ChangedOpFindings, c) }; !r.Supports(BundleFeatureReleaseHealthChangedOps) && slices.ContainsFunc(h.FailOn, changedOp) {
+			h.FailOn, limited = slices.DeleteFunc(slices.Clone(h.FailOn), changedOp), true
 		}
 		switch {
 		case !limited:

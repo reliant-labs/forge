@@ -31,7 +31,8 @@
 //     judged beside either (browser_* findings), or alone.
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts, browser_errors, browser_failed_requests,
-//     browser_page_load. A finding's policy is "fail" when its code is in
+//     browser_page_load, probe_failed, probe_latency, changed_op_errors,
+//     changed_op_latency. A finding's policy is "fail" when its code is in
 //     fail_on, "warn" otherwise.
 //   - error_rate (error_rate.go): with per-endpoint figures, the rise is the
 //     after-window request-weighted mean of each endpoint's rise over its
@@ -39,6 +40,17 @@
 //     that held fewer than min_requests), so an endpoint the before window
 //     happened to miss does not read as new errors; and it fires only with
 //     error_rate_min_errors errors in the after window.
+//   - Changed ops (changed_ops.go): each op the release's commit range
+//     changed (Input.Ops, chosen by the caller) is judged on its own figures
+//     once it has changed_op_min_calls calls in BOTH windows; a thinner op
+//     is named in not_evaluated, never a finding. changed_op_errors: its
+//     error rate rose by more than changed_op_max_error_rate_increase, with
+//     changed_op_min_errors errors after the promotion. changed_op_latency:
+//     its p95 grew by more than changed_op_max_p95_ratio over a before p95
+//     above 0. Each names the newest commit that changed the op. Both warn
+//     unless fail_on lists them, and follow error_rate and latency's
+//     attribution: they are their service's figures. They never prove a
+//     release good: a PASS still rests on the services.
 //   - Issues count with enough after-window events: new_issue_min_events for
 //     a new issue, regressed_issue_min_events (unset: the same) for a
 //     regressed one. The platform's NewIssue and IssueRegressed alerts are
@@ -126,6 +138,15 @@ const (
 	ThresholdAlertBaselineMinFirings = "alert_baseline_min_firings"
 	ThresholdFailOn                  = "fail_on"
 	ThresholdRequireBaseline         = "require_baseline"
+	// The changed-op thresholds (changed_ops.go): the calls an op needs in
+	// both windows to be compared, the error-rate rise and the after-window
+	// errors changed_op_errors needs, and the p95 ratio changed_op_latency
+	// needs. No release shape carries them yet: each is the default or the
+	// request's.
+	ThresholdChangedOpMinCalls             = "changed_op_min_calls"
+	ThresholdChangedOpMaxErrorRateIncrease = "changed_op_max_error_rate_increase"
+	ThresholdChangedOpMinErrors            = "changed_op_min_errors"
+	ThresholdChangedOpMaxP95Ratio          = "changed_op_max_p95_ratio"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -199,6 +220,12 @@ type Thresholds struct {
 	// RequireBaseline is release.BaselineAny, BaselineEvery or BaselineNone
 	// (baseline.go); empty reads as BaselineAny.
 	RequireBaseline string
+	// The changed-op thresholds (changed_ops.go); 0 reads as the default
+	// (DefaultChangedOp*), which Resolve fills in.
+	ChangedOpMinCalls             int
+	ChangedOpMaxErrorRateIncrease float64
+	ChangedOpMinErrors            int
+	ChangedOpMaxP95Ratio          float64
 	// Sources maps a threshold name to SourceReleaseShape, SourceDefault or
 	// SourceRequest.
 	Sources map[string]string
@@ -225,7 +252,8 @@ type Options struct {
 
 // OverrideNames are the thresholds a request may override by name.
 var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline,
-	ThresholdErrorRateMinErrors, ThresholdBaselineWindow, ThresholdAlertBaselineMinFirings}
+	ThresholdErrorRateMinErrors, ThresholdBaselineWindow, ThresholdAlertBaselineMinFirings,
+	ThresholdChangedOpMinCalls, ThresholdChangedOpMaxErrorRateIncrease, ThresholdChangedOpMinErrors, ThresholdChangedOpMaxP95Ratio}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -274,12 +302,21 @@ func Resolve(o Options) (Thresholds, error) {
 		// alert_baseline_min_firings: 0 is a value (count every alert), so
 		// the policy's own accessor fills the default.
 		AlertBaselineMinFirings: base.AlertBaselineFirings(),
+		// No release shape carries the changed-op thresholds: whatever the
+		// env's policy, they are the defaults until a request overrides one.
+		ChangedOpMinCalls:             DefaultChangedOpMinCalls,
+		ChangedOpMaxErrorRateIncrease: DefaultChangedOpMaxErrorRateIncrease,
+		ChangedOpMinErrors:            DefaultChangedOpMinErrors,
+		ChangedOpMaxP95Ratio:          DefaultChangedOpMaxP95Ratio,
 		Sources: map[string]string{
 			ThresholdWindow: src, ThresholdMinRequests: src, ThresholdMaxErrorRateIncrease: src,
 			ThresholdMaxP95Ratio: src, ThresholdNewIssueMinEvents: src, ThresholdFailOn: src,
 			ThresholdRequireBaseline: src, ThresholdErrorRateMinErrors: src, ThresholdBaselineWindow: src,
 			ThresholdAlertBaselineMinFirings: src,
 		},
+	}
+	for _, n := range ChangedOpThresholds {
+		t.Sources[n] = SourceDefault
 	}
 	// regressed_issue_min_events follows new_issue_min_events (after any
 	// override of it) unless the policy or the request sets it.
@@ -315,6 +352,14 @@ func Resolve(o Options) (Thresholds, error) {
 			t.MaxErrorRateIncrease, err = strconv.ParseFloat(v, 64)
 		case ThresholdMaxP95Ratio:
 			t.MaxP95Ratio, err = strconv.ParseFloat(v, 64)
+		case ThresholdChangedOpMinCalls:
+			t.ChangedOpMinCalls, err = strconv.Atoi(v)
+		case ThresholdChangedOpMinErrors:
+			t.ChangedOpMinErrors, err = strconv.Atoi(v)
+		case ThresholdChangedOpMaxErrorRateIncrease:
+			t.ChangedOpMaxErrorRateIncrease, err = strconv.ParseFloat(v, 64)
+		case ThresholdChangedOpMaxP95Ratio:
+			t.ChangedOpMaxP95Ratio, err = strconv.ParseFloat(v, 64)
 		case ThresholdRequireBaseline:
 			if !slices.Contains(release.BaselinePolicies, v) {
 				return Thresholds{}, invalid("threshold require_baseline=%q: use one of %s", v, strings.Join(release.BaselinePolicies, ", "))
@@ -356,6 +401,14 @@ func (t Thresholds) validate() error {
 		return invalid("baseline_window %s is outside the window (%s) to %s", t.BaselineWindow, t.Window, release.MaxHealthBaselineWindow)
 	case t.RequireBaseline != "" && !slices.Contains(release.BaselinePolicies, t.RequireBaseline):
 		return invalid("require_baseline %q is not a policy; use %s", t.RequireBaseline, strings.Join(release.BaselinePolicies, ", "))
+	case t.ChangedOpMinCalls < 1:
+		return invalid("changed_op_min_calls must be at least 1")
+	case t.ChangedOpMaxErrorRateIncrease <= 0 || t.ChangedOpMaxErrorRateIncrease > 1:
+		return invalid("changed_op_max_error_rate_increase %v must be a fraction in (0, 1]", t.ChangedOpMaxErrorRateIncrease)
+	case t.ChangedOpMinErrors < 1:
+		return invalid("changed_op_min_errors must be at least 1")
+	case t.ChangedOpMaxP95Ratio <= 1:
+		return invalid("changed_op_max_p95_ratio %v must be above 1", t.ChangedOpMaxP95Ratio)
 	}
 	for _, c := range t.FailOn {
 		if !slices.Contains(release.HealthFindings, c) {
@@ -394,6 +447,7 @@ func (t Thresholds) List() []Threshold {
 		}
 		return SourceDefault
 	}
+	c := t.changedOps()
 	return []Threshold{
 		{ThresholdWindow, durationText(t.Window), src(ThresholdWindow)},
 		{ThresholdBaselineWindow, durationText(t.BaselineWindow), src(ThresholdBaselineWindow)},
@@ -404,6 +458,10 @@ func (t Thresholds) List() []Threshold {
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
 		{ThresholdRegressedIssueMinEvents, strconv.Itoa(t.RegressedIssueMinEvents), src(ThresholdRegressedIssueMinEvents)},
 		{ThresholdAlertBaselineMinFirings, strconv.Itoa(t.AlertBaselineMinFirings), src(ThresholdAlertBaselineMinFirings)},
+		{ThresholdChangedOpMinCalls, strconv.Itoa(c.minCalls), src(ThresholdChangedOpMinCalls)},
+		{ThresholdChangedOpMaxErrorRateIncrease, strconv.FormatFloat(c.maxIncrease, 'g', -1, 64), src(ThresholdChangedOpMaxErrorRateIncrease)},
+		{ThresholdChangedOpMinErrors, strconv.Itoa(c.minErrors), src(ThresholdChangedOpMinErrors)},
+		{ThresholdChangedOpMaxP95Ratio, strconv.FormatFloat(c.maxRatio, 'g', -1, 64), src(ThresholdChangedOpMaxP95Ratio)},
 		{ThresholdFailOn, strings.Join(t.FailOn, ","), src(ThresholdFailOn)},
 		{ThresholdRequireBaseline, baselineOr(t.RequireBaseline), src(ThresholdRequireBaseline)},
 	}
@@ -615,7 +673,10 @@ type Input struct {
 	// (alert_baseline.go). Nil when not read, which counts every alert.
 	AlertHistory []AlertEvent
 	Workloads    []Workload
-	Thresholds   Thresholds
+	// Ops are the figures of the ops the release's commit range changed,
+	// selected by the caller (changed_ops.go); nil judges no op.
+	Ops        []OpHealth
+	Thresholds Thresholds
 	// NotEvaluated names the checks the backend could not run (a local env has
 	// no alert state or workload restarts), so a PASS is not read as covering
 	// them.
@@ -631,7 +692,8 @@ type Finding struct {
 	// Ref names the object (issue id, alert rule, workload).
 	Ref string `json:"ref,omitempty"`
 	// Value and Threshold are in the unit the code implies: a fraction for
-	// error_rate, a ratio for latency, a count for the rest.
+	// error_rate and changed_op_errors, a ratio for latency and
+	// changed_op_latency, a count for the rest.
 	Value     float64 `json:"value"`
 	Threshold float64 `json:"threshold"`
 	// Policy is PolicyFail or PolicyWarn.
@@ -640,6 +702,13 @@ type Finding struct {
 	// Unattributed says why the finding is not the judged release's doing
 	// ([Attribute]); such a finding is a warn whatever fail_on says.
 	Unattributed string `json:"unattributed,omitempty"`
+	// Op, Commit and PR are set on a changed-op finding (changed_ops.go):
+	// the op (its span name, also the Ref), the newest commit of the
+	// release's range that changed it, and that commit's pull request when
+	// known.
+	Op     string `json:"op,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	PR     int    `json:"pr,omitempty"`
 }
 
 // Report is a judged release: the facts and the verdict.
@@ -682,11 +751,15 @@ type Report struct {
 	// third-party image, not by forge, which instruments what it builds
 	// (WithUninstrumented). Read only to say why a report with no request
 	// telemetry could not be judged; it never changes a verdict.
-	Uninstrumented []string    `json:"uninstrumented_services,omitempty"`
-	Verdict        Verdict     `json:"verdict"`
-	Findings       []Finding   `json:"findings"`
-	Thresholds     []Threshold `json:"thresholds"`
-	NotEvaluated   []string    `json:"not_evaluated,omitempty"`
+	Uninstrumented []string `json:"uninstrumented_services,omitempty"`
+	// ChangedOps are the figures of the ops the release's commit range
+	// changed, as judged (changed_ops.go): the thin ones too, which are
+	// named in NotEvaluated rather than judged.
+	ChangedOps   []OpHealth  `json:"changed_ops,omitempty"`
+	Verdict      Verdict     `json:"verdict"`
+	Findings     []Finding   `json:"findings"`
+	Thresholds   []Threshold `json:"thresholds"`
+	NotEvaluated []string    `json:"not_evaluated,omitempty"`
 	// VersionShare is the judged release's share (0..1) of the after
 	// window's traffic, over the services whose share was measured; nil when
 	// none was.
@@ -744,6 +817,13 @@ func Evaluate(in Input) Report {
 			add(f)
 		}
 	}
+
+	fs, thin := changedOpFindings(in.Ops, t.changedOps())
+	for _, f := range fs {
+		add(f) // changed_ops.go
+	}
+	r.ChangedOps = in.Ops
+	r.NotEvaluated = withNotEvaluated(r.NotEvaluated, thin)
 
 	for _, is := range in.NewIssues {
 		if in.Subject.Release != "" && is.FirstVersion != "" && is.FirstVersion != in.Subject.Release {

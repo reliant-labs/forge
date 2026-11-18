@@ -90,6 +90,16 @@ type OverviewReader interface {
 	Overview(ctx context.Context, req OverviewRequest) (OverviewResult, error)
 }
 
+// OpsReader ranks the env's ops — rpcs, endpoints and component methods —
+// by RED figures (`forge obs ops`), and reads them for named ops over any
+// window (release health, blast radius). Both backends implement it with the
+// same pkg/obsquery panels; the cloud one runs them through QueryPanel.
+//
+//forge:contract
+type OpsReader interface {
+	Ops(ctx context.Context, req OpsRequest) (OpsResult, error)
+}
+
 // AlertReader lists the env's active alerts, firing or pending. Only the
 // cloud backend implements it: locally the alert state is the `alerts`
 // workload's own (`forge obs alerts check` evaluates the rules once).

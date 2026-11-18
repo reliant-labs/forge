@@ -356,6 +356,32 @@ func (m *MockOverviewReader) Overview(ctx context.Context, req OverviewRequest) 
 // Compile-time check.
 var _ OverviewReader = (*MockOverviewReader)(nil)
 
+// forge:section MockOpsReader
+// forge:hash=3d037264bb35953b01f3280113a8373a5719b31b6dfa76660f75e744bfc08b0e
+
+// MockOpsReader is a test mock for the OpsReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments. Set XxxFunc fields to
+// override per-method behaviour; unset methods return the canonical
+// "MockOpsReader.<Method>Func not set" error.
+type MockOpsReader struct {
+	contractkit.Recorder
+	OpsFunc func(context.Context, OpsRequest) (OpsResult, error)
+}
+
+// Ops records the call and delegates to OpsFunc when set.
+func (m *MockOpsReader) Ops(ctx context.Context, req OpsRequest) (OpsResult, error) {
+	m.Recorder.Record("Ops", ctx, req)
+	if m.OpsFunc != nil {
+		return m.OpsFunc(ctx, req)
+	}
+	return OpsResult{}, contractkit.MockNotSet("MockOpsReader", "Ops")
+}
+
+// Compile-time check.
+var _ OpsReader = (*MockOpsReader)(nil)
+
 // forge:section MockAlertReader
 // forge:hash=6b4f83d1c00daee2ec5591a1ac51e5f7b1721e2d1b102ab695a8302217c0323a
 

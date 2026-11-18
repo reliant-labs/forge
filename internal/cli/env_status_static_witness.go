@@ -29,6 +29,11 @@ import (
 //
 // A site built before forge stamped markers serves none, so it stays
 // UNREACHABLE until its next release, with a detail that says so.
+//
+// Which bindings are static sites is read from the sealed snapshot: a
+// frontend slot whose consumer has a StaticSite record among the hosted
+// resources (sealedStaticSite). Which release built one is the artifact's,
+// else the snapshot's (staticSiteRelease).
 
 // errNoReleaseMarker is a live site that answers 404 for the marker.
 var errNoReleaseMarker = errors.New("serves no forge release marker")
@@ -89,9 +94,10 @@ func fetchStaticReleaseMarker(ctx context.Context, siteURL string) (deploytarget
 }
 
 // verifyHostedSnapshotBindings is the verdict for every binding of the
-// snapshot's hosted tree: a static site's frontend slot through its release
-// marker, and everything else UNREACHABLE, as forge has no witness for it.
-func verifyHostedSnapshotBindings(ctx context.Context, s release.Snapshot, env string, opts envStatusOptions) []imageVerification {
+// snapshot's hosted tree: a hosted static site's frontend slot through its
+// release marker, and everything else UNREACHABLE, as forge has no witness
+// for it. sealed is the release the promotion names (the snapshot's seal).
+func verifyHostedSnapshotBindings(ctx context.Context, s release.Snapshot, env, sealed string, opts envStatusOptions) []imageVerification {
 	readURLs := opts.StaticSiteURLs
 	if readURLs == nil {
 		readURLs = readDeclaredStaticSiteURLs
@@ -113,7 +119,13 @@ func verifyHostedSnapshotBindings(ctx context.Context, s release.Snapshot, env s
 		a := s.Artifacts[b.Artifact]
 		result := imageVerification{Image: b.Consumer.Workload + "/" + b.Slot, Declared: a.Content, State: imageUnreachable,
 			Detail: "snapshot observation requires an explicit per-consumer witness for destination " + release.BundleHostedCluster}
-		if b.Slot != "frontend" {
+		if !sealedStaticSite(s, b) {
+			out = append(out, result)
+			continue
+		}
+		want, why := staticSiteRelease(s, b, a, sealed)
+		if want == "" {
+			result.Detail = why
 			out = append(out, result)
 			continue
 		}
@@ -121,22 +133,80 @@ func verifyHostedSnapshotBindings(ctx context.Context, s release.Snapshot, env s
 			urlRead = true
 			urls, urlErr = readURLs(ctx, env)
 		}
-		out = append(out, verifyStaticSite(ctx, result, b.Consumer.Workload, a, urls, urlErr, fetch))
+		out = append(out, verifyStaticSite(ctx, result, b.Consumer.Workload, want, urls, urlErr, fetch))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Image < out[j].Image })
 	return out
 }
 
+// sealedStaticSite reports whether binding b is a hosted static site: its
+// frontend slot, and a StaticSite record for its consumer in the snapshot's
+// sealed hosted resources. That record is what the deploy path publishes
+// for a frontend on forge.OnHosted's static tier (deploytarget.HostedRecords,
+// HostedTierStatic), so it decides, not the slot's name: a hosted frontend
+// published another way has no StaticSite record and no release marker.
+func sealedStaticSite(s release.Snapshot, b release.ConsumerBinding) bool {
+	if b.Slot != "frontend" {
+		return false
+	}
+	for _, r := range s.Resources {
+		if r.Key.Cluster != release.BundleHostedCluster || r.Key.Kind != "StaticSite" {
+			continue
+		}
+		if r.Key.Name == b.Consumer.Workload {
+			return true
+		}
+		for _, o := range r.Owners {
+			if o == b.Consumer {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// staticSiteRelease is the release whose build stamped the marker the site
+// serves, or "" and why the snapshot does not say:
+//
+//   - the artifact's own release (its origin), which survives carry-forward,
+//     so a site carried from an earlier release is judged by that release;
+//   - else a build event of this snapshot for the same consumer and
+//     artifact that records one;
+//   - else, when this snapshot built the consumer (it is selected), the
+//     release the snapshot is sealed as: that is the release env build cut,
+//     and the one it stamped into the site.
+//
+// A carried site whose artifact records no release, and that no build
+// event names, has nothing to compare its marker with.
+func staticSiteRelease(s release.Snapshot, b release.ConsumerBinding, a release.SnapshotArtifact, sealed string) (string, string) {
+	if r := strings.TrimSpace(a.Origin.Release); r != "" {
+		return r, ""
+	}
+	for _, e := range s.BuildEvents {
+		if e.Consumer == b.Consumer && e.Artifact == b.Artifact {
+			if r := strings.TrimSpace(e.Origin.Release); r != "" {
+				return r, ""
+			}
+		}
+	}
+	for _, k := range s.Selected {
+		if k == b.Consumer {
+			if r := strings.TrimSpace(sealed); r != "" {
+				return r, ""
+			}
+			return "", "the snapshot built this site but the promotion names no release to compare its marker with"
+		}
+	}
+	return "", "the site is carried from an earlier release, and neither its artifact nor a build event records which; " +
+		"its release marker cannot be checked until a release rebuilds it"
+}
+
 // verifyStaticSite judges one hosted static site by the marker its live URL
-// serves. result arrives UNREACHABLE and leaves that way unless the marker
-// says otherwise.
-func verifyStaticSite(ctx context.Context, result imageVerification, name string, a release.SnapshotArtifact, urls map[string]string, urlErr error,
+// serves against want, the release that built it. result arrives
+// UNREACHABLE and leaves that way unless the marker says otherwise.
+func verifyStaticSite(ctx context.Context, result imageVerification, name, want string, urls map[string]string, urlErr error,
 	fetch func(context.Context, string) (deploytarget.StaticSiteReleaseMarker, error)) imageVerification {
-	want := a.Origin.Release
 	switch {
-	case want == "":
-		result.Detail = "the snapshot records no release for this site, so there is nothing to compare its marker with"
-		return result
 	case urlErr != nil:
 		result.Detail = "read the site's live URL from the control plane: " + urlErr.Error()
 		return result
@@ -164,7 +234,7 @@ func verifyStaticSite(ctx context.Context, result imageVerification, name string
 	}
 	if m.Release != want {
 		result.State = imageDrift
-		result.Detail = fmt.Sprintf("%s serves release %s; the snapshot binds release %s", site, m.Release, want)
+		result.Detail = fmt.Sprintf("%s serves release %s; the snapshot binds the site built by release %s", site, m.Release, want)
 		return result
 	}
 	result.State = imageMatch

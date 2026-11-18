@@ -407,7 +407,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	)
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
-		results = snapshotStatusImages(ctx, *binding.Snapshot, envName, opts)
+		results = snapshotStatusImages(ctx, *binding.Snapshot, envName, binding.Release, opts)
 	} else if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control
 		// plane's observer is the witness (env_verify_hosted.go). The

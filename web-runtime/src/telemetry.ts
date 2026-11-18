@@ -1013,7 +1013,13 @@ async function start(
     // A startup that failed after the hooks went in takes them out again.
     abandon();
     removeBenignFilter();
-    console.debug("[telemetry] disabled:", err);
+    // A warning, not a debug line. The page goes on without a single span,
+    // and a debug line hid that: a test runner that could not load the SDK
+    // looked exactly like a working one that had nothing to send.
+    console.warn(
+      "[telemetry] failed to start; this page records no spans:",
+      err,
+    );
     return false;
   }
 }

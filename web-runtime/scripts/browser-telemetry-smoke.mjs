@@ -24,7 +24,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const apiDir = resolve(dirname(require.resolve("@opentelemetry/api")), "../..");
 const protoDir = resolve(dirname(require.resolve("@bufbuild/protobuf")), "../..");
-// The SDK's parts as an app's bundle carries them, each its own module.
+// The SDK's parts as an app's bundle carries them, each its own module. Each
+// page's import map stands in for the app's bundler. That includes mapping
+// "#hyperdx-otel-web", the specifier sdk-client.js imports, to the SDK, as a
+// bundler resolves it through package.json's "imports" map.
 const vendor = {};
 for (const [path, source] of [
   ["/vendor/otel-web.js", 'export * from "@hyperdx/otel-web"; export { default } from "@hyperdx/otel-web";'],
@@ -143,7 +146,7 @@ test("raw interactions stay in masked replay, one span per click; explicit actio
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p><input value="PRIVATE_INPUT_SENTINEL"><button id="idle">Idle</button><button id="action">Run</button>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, context, trace } from '/runtime/telemetry.js';
 import { disableTelemetry, grantAnalyticsConsent } from '/runtime/track.js';
@@ -316,7 +319,7 @@ test(`${withdraw}(): no replay record or replay span leaves the page after it, n
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { disableTelemetry, grantAnalyticsConsent, revokeAnalyticsConsent } from '/runtime/track.js';
@@ -430,7 +433,7 @@ window.addEventListener("error", (e) => window.seen.push("before/error " + what(
 window.addEventListener("unhandledrejection", (e) => window.seen.push("before/rejection " + what(e.reason)));
 window.addEventListener("unhandledrejection", (e) => window.seen.push("before/rejection-capture " + what(e.reason)), true);
 </script>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -544,7 +547,7 @@ test("every span carries the viewport and screen current when it started, restam
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -628,7 +631,7 @@ test(`analytics mode ${mode ?? "unset (identified)"} stores nothing on the devic
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { analyticsTier, track } from '/runtime/track.js';
@@ -755,7 +758,7 @@ test("interaction(): unary and stream fetch spans made after the click are the c
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><button id="open">Open</button>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js","@bufbuild/protobuf/wkt":"/proto/wkt/index.js","@bufbuild/protobuf":"/proto/index.js","@bufbuild/protobuf/wire":"/proto/wire/index.js","@bufbuild/protobuf/reflect":"/proto/reflect/index.js","@bufbuild/protobuf/codegenv2":"/proto/codegenv2/index.js","@connectrpc/connect":"/connect/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { buildRuntimeInterceptors } from '/runtime/interceptors.js';
@@ -870,7 +873,7 @@ test("page_engaged reports each view once: on a route change, and on leaving the
       } else if (url.startsWith("/blog/")) {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><body style="margin:0"><div style="height:4000px">a long post</div>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 window.tracing = trace;
@@ -980,7 +983,7 @@ test("an idle start waits for load, and loses nothing that happened before it", 
       } else if (url === "/") {
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><h1>Early</h1><button id="early">Early</button><img src="/slow.svg">
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry, trace } from '/runtime/telemetry.js';
 import { track } from '/runtime/track.js';
@@ -1100,7 +1103,7 @@ test("rrweb loads lazily, only with replay on and, with replayStart: interaction
         const replay = url === "/";
         res.setHeader("content-type", "text/html");
         res.end(`<!doctype html><p>PRIVATE_TEXT_SENTINEL</p><button id="go">Go</button>
-<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="importmap">{"imports":{"@hyperdx/otel-web":"/vendor/otel-web.js","#hyperdx-otel-web":"/vendor/otel-web.js","rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
 <script type="module">
 import { initBrowserTelemetry } from '/runtime/telemetry.js';
 import { grantAnalyticsConsent } from '/runtime/track.js';

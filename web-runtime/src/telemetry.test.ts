@@ -167,7 +167,7 @@ describe("initBrowserTelemetry", () => {
     init.mockImplementation(() => {
       throw new Error("boom");
     });
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { t } = await load();
 
     await expect(
@@ -501,7 +501,7 @@ describe("benign browser errors", () => {
   });
 
   it("leaves everything as it was when the SDK fails to start", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await start({}, { initThrows: true });
     expect(console.error).toBe(consoleUnderSdk);
     const { trace } = await import("@opentelemetry/api");
@@ -517,7 +517,7 @@ describe("benign browser errors", () => {
   });
 
   it("undoes the tracer wrap and the console tap when startup fails after the SDK init", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     setGlobalAttributes.mockImplementationOnce(() => {
       throw new Error("late failure");
     });

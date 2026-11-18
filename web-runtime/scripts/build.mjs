@@ -97,6 +97,46 @@ if (!existsSync(tsc) || missingDevDeps.length > 0) {
     : ["install", ...installArgs]);
 }
 
+// The browser SDK for Node: dist/hyperdx-otel-web.node.js, which package.json's
+// "#hyperdx-otel-web" import resolves to under the `node` condition (see its
+// "//imports note"). It is @hyperdx/otel-web bundled for the browser platform,
+// as an app's bundler builds it, into one ES module that Node can load. That
+// lets a test runner running this package natively (vitest, jsdom) start the
+// same SDK a browser does. Browser bundles never reach this file.
+// @opentelemetry/api stays external, so the SDK and the runtime share the
+// app's copy. It is built before tsc so that tsc, resolving the import map
+// under nodenext, finds its declaration file.
+{
+  const { build } = await import("esbuild");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  mkdirSync(join(pkgDir, "dist"), { recursive: true });
+  await build({
+    stdin: {
+      contents: 'export * from "@hyperdx/otel-web";',
+      resolveDir: pkgDir,
+      loader: "js",
+    },
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    external: ["@opentelemetry/api"],
+    // Some bundled CommonJS dependencies require() the external API, and an
+    // ES module has no require of its own. This file only ever runs in Node.
+    banner: {
+      js: 'import { createRequire as __forgeCreateRequire } from "node:module";\nconst require = __forgeCreateRequire(import.meta.url);',
+    },
+    // Each bundled package's license comment, kept at the end of the file.
+    legalComments: "eof",
+    outfile: join(pkgDir, "dist", "hyperdx-otel-web.node.js"),
+    logLevel: "error",
+  });
+  writeFileSync(
+    join(pkgDir, "dist", "hyperdx-otel-web.node.d.ts"),
+    '// @hyperdx/otel-web bundled for Node; see scripts/build.mjs.\nexport * from "@hyperdx/otel-web";\n',
+  );
+}
+
 // Invoke the compiler through node rather than PATH: an npm lifecycle script
 // gets node_modules/.bin on PATH, but a bare `npm run build` from a shell in
 // a half-installed checkout may not.

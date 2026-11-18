@@ -1,6 +1,9 @@
 package lint
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // A scoped run that names no path inside any frontend skips the frontend
 // typecheck (an install plus a whole-frontend tsc whose findings the scope
@@ -38,9 +41,13 @@ func TestLintScopeReachesAnyDir(t *testing.T) {
 // contains and reachesAnyDir share scopeRel, so a scope's spelling never
 // changes which files it holds.
 func TestLintScopeContainsNormalizesBothSides(t *testing.T) {
+	// A real absolute root: "/p" has no volume, so on Windows it is not
+	// absolute and contains would never strip it from an absolute file.
+	root := t.TempDir()
+	absFile := filepath.Join(root, "frontends", "web", "src", "app.tsx")
 	for _, raw := range []string{"frontends/web/src", "./frontends/web/src", "frontends/web/../web/src", "frontends/web/src/"} {
-		s := &lintScope{root: "/p", paths: []string{raw}}
-		for _, f := range []string{"frontends/web/src/app.tsx", "./frontends/web/src/app.tsx", "/p/frontends/web/src/app.tsx"} {
+		s := &lintScope{root: root, paths: []string{raw}}
+		for _, f := range []string{"frontends/web/src/app.tsx", "./frontends/web/src/app.tsx", absFile} {
 			if !s.contains(f) {
 				t.Errorf("scope %q: contains(%q) = false, want true", raw, f)
 			}

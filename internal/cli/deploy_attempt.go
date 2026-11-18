@@ -183,6 +183,7 @@ func deployAttemptFrom(ctx context.Context) *deployAttempt {
 // attachDeployAttempt opens the attempt on the env's hosted ledger, the
 // first time this invocation's env resolves to one.
 func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
+	noteDeployHosted(ctx, env, l)
 	a := deployAttemptFrom(ctx)
 	if a == nil || !l.Hosted || env != a.env {
 		return
@@ -260,6 +261,7 @@ func attemptRelease(ctx context.Context, store *hostedStore, shipsCheckout bool,
 // noteDeployPhase records that the invocation entered a phase.
 func noteDeployPhase(ctx context.Context, phase string) {
 	deployAttemptFrom(ctx).set(func(a *deployAttempt) { a.phase = phase })
+	deployOutcomeFrom(ctx).set(func(o *deployOutcome) { o.phase = phase })
 }
 
 // noteDeployRelease records the release the invocation ships.
@@ -268,6 +270,7 @@ func noteDeployRelease(ctx context.Context, version string) {
 		return
 	}
 	deployAttemptFrom(ctx).set(func(a *deployAttempt) { a.release = version })
+	deployOutcomeFrom(ctx).set(func(o *deployOutcome) { o.release = version })
 }
 
 // noteDeployPromotion records the promotion the invocation wrote.

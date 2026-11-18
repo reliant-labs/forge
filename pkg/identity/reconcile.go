@@ -247,6 +247,11 @@ type run struct {
 	machine       map[string]MachineOutput
 	apps          map[string]AppOutput
 	idpIDs        map[string]string // identity provider name -> Zitadel id
+	// codeLifetimeErr is why the password-reset code generator could not be
+	// converged to Spec.CodeLifetime this pass. While it is set no
+	// password-set code is minted: its real expiry is unknown, so the
+	// ExpiresAt reported beside it would be wrong.
+	codeLifetimeErr error
 }
 
 func (p *run) dry() bool { return p.o.DryRun }

@@ -416,8 +416,10 @@ var defaultPasswordCodeGenerator = map[string]any{
 // ensurePasswordCodeGenerator converges the expiry of the instance's
 // password-reset code generator — the code a reset link carries and the one
 // return_code hands back — to Spec.CodeLifetime, keeping its length and
-// alphabet as they are. Zero declares nothing.
-func (p *run) ensurePasswordCodeGenerator(ctx context.Context) error {
+// alphabet as they are. Zero declares nothing. A failure withholds this
+// pass's password-set codes (run.codeLifetimeErr); every other step goes on.
+func (p *run) ensurePasswordCodeGenerator(ctx context.Context) (err error) {
+	defer func() { p.codeLifetimeErr = err }()
 	if p.spec.CodeLifetime == 0 {
 		return nil
 	}

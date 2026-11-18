@@ -329,6 +329,12 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 	if p.o.HeldSignInCode != nil && p.o.HeldSignInCode(email) {
 		return nil
 	}
+	// A code minted while the generator's expiry is not the declared one
+	// would live longer, or shorter, than the ExpiresAt reported with it.
+	// Withhold it; the next pass that converges the generator issues it.
+	if p.codeLifetimeErr != nil {
+		return fmt.Errorf("withheld a sign-in code: the password reset code generator is not at the declared lifetime: %w", p.codeLifetimeErr)
+	}
 	var out struct {
 		VerificationCode string `json:"verificationCode"`
 	}

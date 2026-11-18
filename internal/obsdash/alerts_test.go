@@ -569,8 +569,13 @@ func TestNewIssueClientTimeoutSessionsParam(t *testing.T) {
 	}
 
 	for _, bad := range []float64{0, -1, 1.5} {
-		if err := ValidateAlertTuning(map[string]AlertTuning{"new-issue": {Enabled: true, Params: map[string]float64{PClientTimeoutMinSessions: bad}}}); err == nil {
+		tuning := map[string]AlertTuning{"new-issue": {Enabled: true, Params: map[string]float64{PClientTimeoutMinSessions: bad}}}
+		if err := ValidateAlertTuning(tuning); err == nil {
 			t.Errorf("client_timeout_min_sessions = %v must be refused", bad)
+		}
+		// Refused at render, not recorded for the control plane to round.
+		if rules, err := ResolveAlertDefaults(in, "dev", tuning); err == nil {
+			t.Errorf("rendering client_timeout_min_sessions = %v must fail, got %d rules", bad, len(rules))
 		}
 	}
 	var def float64

@@ -67,6 +67,9 @@ func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag
 		verify bool
 		// claimable scaffolds prod for an anonymous deploy.
 		claimable bool
+		// authMode is --auth-mode: the sign-in system a service project
+		// with a frontend is scaffolded with (native, the default, or none).
+		authMode string
 		// dryRun prints what --kind app would write, and writes nothing.
 		dryRun bool
 	)
@@ -118,10 +121,21 @@ back on (orm has no key; --disable orm only leaves db/migrations out):
 Valid feature names: orm, codegen, migrations, ci, build, deploy,
 contracts, docs, frontend, observability, hot_reload.
 
+--auth-mode picks the sign-in system of a service project with a frontend.
+native (the default) scaffolds today's: the users in deploy/kcl/identity.k,
+the dev identity provider and mail catcher, the sign-in pages and the route
+guard. none scaffolds an app nobody signs in to: no identity, no dev IdP, a
+public frontend with no route guard and no sign-in pages, and a login broker
+that is never mounted. The API still authenticates, fail-closed: an rpc
+answers anonymous callers only when its proto declares
+` + "`option (forge.v1.method) = { auth_required: false }`" + `; every other rpc
+answers 401, because nothing can issue the token it requires.
+
 Example:
   forge project new my-project --mod github.com/example/my-project
   forge project new my-project --mod github.com/example/my-project --service gateway
   forge project new my-project --mod github.com/example/my-project --frontend web
+  forge project new my-project --mod github.com/example/my-project --frontend web --auth-mode none
   forge project new mycli      --mod github.com/example/mycli --kind cli
   forge project new mylib      --mod github.com/example/mylib --kind library
   forge project new landing    --kind site                          # new static site (Next.js export)
@@ -182,6 +196,11 @@ checkout stop being the same source; drop the bridge with
 			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
 			newClaimable = claimable
 			defer func() { newClaimable = false }()
+			newAuthMode, err = resolveNewAuthMode(cmd.Flags().Changed("auth-mode"), authMode, kindFlag, frontendNames)
+			if err != nil {
+				return err
+			}
+			defer func() { newAuthMode = "" }()
 			if dryRun && !strings.EqualFold(strings.TrimSpace(kindFlag), projectKindApp) {
 				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app would write, and needs --kind app", "",
 					"add --kind app --in-place inside the app, or drop --dry-run")
@@ -216,6 +235,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -502,6 +522,9 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 	}
 
 	announceNewProject(projectName, targetPath, serviceNames, frontendNames)
+	if kindNormalized == config.ProjectKindService {
+		fmt.Println(newAuthSummary(newAuthMode, len(frontendNames) > 0))
+	}
 
 	_, statErr := os.Stat(filepath.Join(targetPath, ".mcp.json"))
 	hadMCP := statErr == nil
@@ -888,6 +911,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.GenInRootModule = c.genInRootModule
 	gen.Adopting = c.adopting
 	gen.Claimable = newClaimable
+	gen.AuthNone = newAuthMode == authModeNone
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1248,7 +1272,19 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 			scaffold,
 			"      ↳ births every marked message — migration pair + CRUD quintet — then generates",
 			fmt.Sprintf("  %s env up dev", n))
-		if hasFrontend {
+		if hasFrontend && newAuthMode == authModeNone {
+			// No sign-in system: nothing can issue a token, so an rpc the
+			// public frontend calls answers only once it is declared public.
+			out = append(out,
+				"      ↳ applies migrations, seeds demo rows, prints your URLs",
+				"",
+				"  No sign-in (--auth-mode none): every rpc the frontend calls needs",
+				"      option (forge.v1.method) = { auth_required: false };",
+				"      ↳ without it the rpc answers 401 — the API still fails closed",
+				"",
+				"  The UI you will see is starter code, not a design — yours to rewrite.",
+				"      ↳ why, and what finishing it takes, is in your project memory file")
+		} else if hasFrontend {
 			// Auth is fail-closed, so every RPC 401s until an identity
 			// provider is wired. `forge env up` does that wiring itself and
 			// prints the credentials — but a reader who never gets there
@@ -1464,6 +1500,65 @@ func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
 // newClaimable is --claimable for the `project new` run in progress
 // (generator.ProjectGenerator.Claimable).
 var newClaimable bool
+
+// newAuthMode is --auth-mode for the `project new` run in progress: "" when
+// not passed, else authModeNative or authModeNone
+// (generator.ProjectGenerator.AuthNone).
+var newAuthMode string
+
+// The --auth-mode values. They are the same two `forge scaffold frontend
+// --auth-mode` takes, and mean the same for the frontend; here they also
+// decide whether the project declares users at all.
+const (
+	authModeNative = "native"
+	authModeNone   = "none"
+)
+
+// resolveNewAuthMode validates --auth-mode. It returns "" when the flag was
+// not passed, so the default stays today's behaviour: a service project with
+// a frontend gets the native sign-in system, one without a frontend gets
+// none, because it has nobody to sign in.
+//
+// It is optional on purpose. A required flag would break every existing
+// `forge project new` invocation, and forge is semver major 1.
+func resolveNewAuthMode(changed bool, value, kindFlag string, frontendNames []string) (string, error) {
+	if !changed {
+		return "", nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode != authModeNative && mode != authModeNone {
+		return "", cliutil.UserErr("forge project new",
+			fmt.Sprintf("invalid --auth-mode %q", value), "",
+			"pass --auth-mode native (sign-in: managed identity, dev IdP, sign-in pages) or none (no sign-in system)")
+	}
+	if kind := strings.ToLower(strings.TrimSpace(kindFlag)); kind != "" && kind != config.ProjectKindService {
+		return "", cliutil.UserErr("forge project new",
+			fmt.Sprintf("--auth-mode picks the sign-in system of a service project; --kind %s has none to pick", kind), "",
+			"drop --auth-mode, or use --kind service")
+	}
+	if mode == authModeNative && len(frontendNames) == 0 {
+		return "", cliutil.UserErr("forge project new",
+			"--auth-mode native needs a --frontend: the sign-in system is scaffolded for a project people sign in to through a browser", "",
+			"add --frontend web, or drop --auth-mode (a project with no frontend gets no sign-in system; its rpcs take a bearer token or an API key)")
+	}
+	return mode, nil
+}
+
+// newAuthSummary is the one line `project new` prints about authentication,
+// so the choice is visible whether or not --auth-mode was passed: what was
+// scaffolded, and the flag that picks the other.
+func newAuthSummary(mode string, hasFrontend bool) string {
+	switch {
+	case mode == authModeNone && hasFrontend:
+		return "  Auth: none (--auth-mode none) — no identity, dev IdP or sign-in pages; the frontend is public. " +
+			"An rpc answers anonymous callers only if its proto declares `auth_required: false`; every other rpc answers 401."
+	case hasFrontend:
+		return "  Auth: native sign-in — managed identity (deploy/kcl/identity.k), the dev IdP, sign-in pages and a route guard. " +
+			"--auth-mode none scaffolds an app nobody signs in to."
+	default:
+		return "  Auth: no sign-in system (no --frontend) — an rpc needs a bearer token or API key unless its proto declares `auth_required: false`."
+	}
+}
 
 // devForgeBridgeRoot is the local forge checkout --link-forge bridges a
 // scaffold to, or "" when none can be found. A path stated by --forge-root or

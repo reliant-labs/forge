@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // pinnedProducer is a module in the project's tree that the root module
@@ -106,11 +108,11 @@ func producerPinLag(projectDir string) (string, compileReport) {
 		return "", compileReport{}
 	}
 	modPath := filepath.Join(tmp, "go.mod")
-	if err := os.WriteFile(modPath, out, 0o644); err != nil {
+	if err := atomicfile.WriteFile(modPath, out, 0o644); err != nil {
 		return "", compileReport{}
 	}
 	if sum, err := os.ReadFile(filepath.Join(projectDir, "go.sum")); err == nil {
-		if err := os.WriteFile(filepath.Join(tmp, "go.sum"), sum, 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(tmp, "go.sum"), sum, 0o644); err != nil {
 			return "", compileReport{}
 		}
 	}

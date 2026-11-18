@@ -40,7 +40,7 @@ func emitFreshness(t *testing.T, root, feRel string) (manifest, guard string) {
 		t.Fatalf("LoadChecksums: %v", err)
 	}
 	fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
-	if err := EmitFixtureFreshnessSurface(root, feRel, 1, fpFiles, fpConfig, cs); err != nil {
+	if err := EmitFixtureFreshnessSurface(root, feRel, 1, fpFiles, fpConfig, nil, cs); err != nil {
 		t.Fatalf("EmitFixtureFreshnessSurface: %v", err)
 	}
 	read := func(name string) string {
@@ -164,7 +164,7 @@ func TestFreshnessSurfaceIsOnlyEmittedBesideFixtures(t *testing.T) {
 			t.Fatalf("LoadChecksums: %v", err)
 		}
 		fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
-		if err := EmitFixtureFreshnessSurface(root, feRel, fixtures, fpFiles, fpConfig, cs); err != nil {
+		if err := EmitFixtureFreshnessSurface(root, feRel, fixtures, fpFiles, fpConfig, nil, cs); err != nil {
 			t.Fatalf("EmitFixtureFreshnessSurface(fixtures=%d): %v", fixtures, err)
 		}
 	}
@@ -383,4 +383,82 @@ func extractConst(t *testing.T, src, name string) string {
 		t.Fatalf("%s is not terminated", name)
 	}
 	return strings.Trim(strings.TrimSpace(rest[:end]), `"`)
+}
+
+// forge#2287: with the dataset known, the marker records each seed input's
+// digest and what each entity fixture is built from, so the guard can tell a
+// pulled migration that touches no fixture from a stale fixture. Without it
+// (nil inputs: no dataset) the marker is the whole-digest record it was.
+func TestFixtureMarkerRecordsPerFixtureInputs(t *testing.T) {
+	root := freshnessProject(t, map[string]string{
+		"20260101000000_patients.up.sql":   "CREATE TABLE patients (id TEXT PRIMARY KEY);\r\n",
+		"20260101000000_patients.down.sql": "DROP TABLE patients;\n",
+	})
+	if err := os.MkdirAll(filepath.Join(root, "db", "seeds"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "db", "seeds", "vocab.yaml"), []byte("pools: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const feRel = "frontends/web"
+	cs, err := LoadChecksums(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fpFiles, fpConfig := codegen.SeedFingerprint(root, seedplan.DefaultConfig())
+	inputs := map[string][]string{"patients_gen.ts": {"patients", "visits"}}
+	if err := EmitFixtureFreshnessSurface(root, feRel, 1, fpFiles, fpConfig, inputs, cs); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, FixtureMarkerPath(feRel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m fixtureMarker
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	// The guard hashes CRLF-normalized bodies; so must the marker.
+	if want := seedInputDigest([]byte("CREATE TABLE patients (id TEXT PRIMARY KEY);\n")); m.Migrations["20260101000000_patients.up.sql"] != want {
+		t.Errorf("migrations = %v, want the up migration's normalized digest %s", m.Migrations, want)
+	}
+	if _, down := m.Migrations["20260101000000_patients.down.sql"]; down || len(m.Migrations) != 1 {
+		t.Errorf("only *.up.sql are seed inputs, got %v", m.Migrations)
+	}
+	if m.Vocab != seedInputDigest([]byte("pools: {}\n")) {
+		t.Errorf("vocab = %q", m.Vocab)
+	}
+	if !reflectDeepEqual(m.FixtureInputs, inputs) {
+		t.Errorf("fixture_inputs = %v, want %v", m.FixtureInputs, inputs)
+	}
+
+	// No dataset: the record stays the whole digest alone.
+	if err := EmitFixtureFreshnessSurface(root, feRel, 1, fpFiles, fpConfig, nil, cs); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(filepath.Join(root, FixtureMarkerPath(feRel)))
+	if strings.Contains(string(raw), "fixture_inputs") || strings.Contains(string(raw), `"migrations"`) {
+		t.Errorf("a marker with no dataset recorded per-fixture inputs:\n%s", raw)
+	}
+
+	// The guard reads the record it writes.
+	_, guard := emitFreshness(t, root, feRel)
+	for _, want := range []string{"fixture_inputs", "staleFixtures", "Changed since the last generate"} {
+		if !strings.Contains(guard, want) {
+			t.Errorf("the guard does not use the per-fixture record (%q missing)", want)
+		}
+	}
+}
+
+func reflectDeepEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv := b[k]
+		if strings.Join(av, ",") != strings.Join(bv, ",") || len(av) != len(bv) {
+			return false
+		}
+	}
+	return true
 }

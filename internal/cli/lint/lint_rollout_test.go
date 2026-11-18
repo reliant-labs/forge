@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,8 +275,11 @@ func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
 		rules    map[string]string
 		want     bool
 	}{
-		"crossing gates_from ends the grace":                {from: "v1.0.0", to: "v1.0.1", want: true},
-		"a later release crosses it too":                    {from: "v0.1.46", to: "v1.2.0", want: true},
+		"crossing gates_from ends the grace":               {from: "v1.0.0", to: "v1.0.1", want: true},
+		"a later release from the shipping one crosses it": {from: "v1.0.0", to: "v1.2.0", want: true},
+		// forge#2282: a pin that jumps the whole window warns at the new
+		// pin, so this bump ends nothing; the next one does.
+		"a jump over the whole window ends nothing yet":     {from: "v0.1.46", to: "v1.2.0"},
 		"a pseudo-version leading to gates_from crosses it": {from: "v1.0.0", to: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", want: true},
 		"a pseudo-version to its own tag crosses nothing":   {from: "v1.0.1-0.20261030000000-aaaaaaaaaaaa", to: "v1.0.1"},
 		"a bump that stays before gates_from ends nothing":  {from: "v0.1.46", to: "v1.0.0"},
@@ -299,9 +303,191 @@ func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
 			}
 		})
 	}
+	// The bump after a jump ends the jump's warn pin.
+	withPreviousPin(t, "v0.1.46")
+	if got := rulesStartingToGate(testRollouts, pinnedCfg("v1.2.0", nil), "v1.2.0", "v1.3.0"); len(got) != 1 || got[0].Rule != rolloutRule {
+		t.Errorf("the pin after a jump must report the jumped rule starting to gate, got %+v", got)
+	}
 	if got := rulesStartingToGate(testRollouts, &config.ProjectConfig{ModulePath: "github.com/reliant-labs/forge"}, "v1.0.0", "v1.0.1"); len(got) != 0 {
 		t.Errorf("forge's own tree builds the forge it lints with; got %+v", got)
 	}
+}
+
+// withPreviousPin stands in for the git history lookup: the project came
+// from prev ("" = history cannot say).
+func withPreviousPin(t *testing.T, prev string) {
+	t.Helper()
+	saved := previousPinFromHistory
+	t.Cleanup(func() { previousPinFromHistory = saved })
+	previousPinFromHistory = func(string, string) (string, bool) {
+		if prev == "" {
+			return "", false
+		}
+		return rolloutPin(prev)
+	}
+}
+
+// forge#2282: a project whose pin jumps past a rule's whole warn-first window
+// (introduced and gating after its previous pin) gets one pin of warnings, by
+// the previous forge_version git history shows, instead of gating on arrival.
+// A project that moved one release at a time grades exactly as before.
+func TestPreviousPinGivesAJumpedRuleItsWarnPin(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pin, prev string
+		wantGrace bool
+		wantAfter string // the pin the jump grace names; "" for the plain grace
+	}{
+		"no history: the pin alone decides, as before":     {pin: "v1.2.0"},
+		"came from before the rule: warns at this pin":     {pin: "v1.2.0", prev: "v0.1.46", wantGrace: true, wantAfter: "v1.2.0"},
+		"came from the shipping release: gates, as before": {pin: "v1.0.1", prev: "v1.0.0"},
+		"came from past the rule: gates":                   {pin: "v1.2.0", prev: "v1.0.1"},
+		"a pseudo-version pin keeps its spelling in the note": {
+			pin: "v1.2.1-0.20261030000000-aaaaaaaaaaaa", prev: "v0.1.46", wantGrace: true, wantAfter: "v1.2.1-0.20261030000000-aaaaaaaaaaaa",
+		},
+		"before gates_from the plain grace still applies": {pin: "v1.0.0", prev: "v0.1.40", wantGrace: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withPreviousPin(t, tc.prev)
+			got, gated := gradeProjectLaneWith(testRollouts, pinnedCfg(tc.pin, nil), []lintJSONFinding{rolloutFinding(lintSevError)}, true)
+			if (got[0].Grace != nil) != tc.wantGrace || gated == tc.wantGrace {
+				t.Fatalf("grace=%+v gated=%v, want grace=%v", got[0].Grace, gated, tc.wantGrace)
+			}
+			if tc.wantGrace && got[0].Grace.GatesAfter != tc.wantAfter {
+				t.Errorf("gates_after = %q, want %q", got[0].Grace.GatesAfter, tc.wantAfter)
+			}
+		})
+	}
+
+	// The note says why the rule warns past its gates_from, and when it gates.
+	withPreviousPin(t, "v0.1.46")
+	cfg := pinnedCfg("v1.2.0", nil)
+	got, _ := gradeProjectLaneWith(testRollouts, cfg, []lintJSONFinding{rolloutFinding(lintSevError)}, true)
+	note := got[0].Grace.note(rolloutRule)
+	for _, want := range []string{"new in v1.0.0", "previous forge pin v0.1.46", "warns at v1.2.0", "gates from the next pin", "{" + rolloutRule + ": error}"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note %q does not say %q", note, want)
+		}
+	}
+	if verdict := describeGraced(gracedFindings([]lintStepOutcome{{ran: true, findings: got}})); !strings.Contains(verdict, "gates from the pin after v1.2.0") {
+		t.Errorf("verdict clause %q does not say when the rule gates", verdict)
+	}
+	// lint.rules still wins over history.
+	cfg.Lint.Rules = map[string]string{rolloutRule: "error"}
+	if _, gated := gradeProjectLaneWith(testRollouts, cfg, []lintJSONFinding{rolloutFinding(lintSevError)}, true); !gated {
+		t.Error("lint.rules <rule>: error must gate whatever the previous pin was")
+	}
+}
+
+// writePinRepo makes a git repository whose forge.yaml moved through pins,
+// one commit each, and returns its directory.
+func writePinRepo(t *testing.T, pins ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com", "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	for i, pin := range pins {
+		body := fmt.Sprintf("# manifest\nname: app\nmodule_path: example.com/app\nforge_version: %s # pinned\n", pin)
+		if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// An unrelated forge.yaml edit between pins is not a pin move.
+		if i == 1 {
+			run("add", "forge.yaml")
+			run("commit", "-q", "-m", fmt.Sprintf("pin %s", pin))
+			if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body+"lint:\n  rules: {}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		run("add", "forge.yaml")
+		run("commit", "-q", "--allow-empty", "-m", fmt.Sprintf("forge.yaml at %s", pin))
+	}
+	return dir
+}
+
+// The previous pin, read from git history: the forge_version before the
+// newest change to it, through an unrelated forge.yaml edit, and a pin moved
+// but not yet committed. No git, or a clone too shallow to show the change,
+// says nothing — the pin alone decides.
+func TestGitPreviousPin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs git; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := writePinRepo(t, "v0.1.46", "v1.0.0", "v1.7.0")
+	if prev, ok := gitPreviousPin(repo, "v1.7.0"); !ok || prev != "v1.0.0" {
+		t.Errorf("previous pin = %q, %v; want v1.0.0", prev, ok)
+	}
+
+	// The pin jump through the real lookup: a rule introduced after v1.0.0
+	// warns at v1.7.0.
+	cfg, err := config.LoadProject(mustRead(t, filepath.Join(repo, "forge.yaml")), filepath.Join(repo, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jump := map[string]ruleRollout{rolloutRule: {IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"}}
+	got, gated := gradeProjectLaneWith(jump, cfg, []lintJSONFinding{rolloutFinding(lintSevError)}, true)
+	if gated || got[0].Grace == nil || got[0].Grace.PreviousPin != "v1.0.0" {
+		t.Errorf("a v1.0.0 -> v1.7.0 jump gated a rule introduced in v1.5.0: grace=%+v gated=%v", got[0].Grace, gated)
+	}
+
+	// Lint wrote nothing, and forge.yaml carries no key an older v1 forge's
+	// strict loader would refuse.
+	before := mustRead(t, filepath.Join(repo, "forge.yaml"))
+	if _, err := config.LoadProject(before, filepath.Join(repo, "forge.yaml")); err != nil {
+		t.Errorf("forge.yaml no longer loads strictly: %v", err)
+	}
+	if strings.Contains(string(before), "rollout") {
+		t.Errorf("forge.yaml gained rollout state:\n%s", before)
+	}
+
+	// A pin moved in the working tree, not committed: HEAD's is previous.
+	body := strings.Replace(string(before), "v1.7.0", "v1.8.0", 1)
+	if err := os.WriteFile(filepath.Join(repo, "forge.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if prev, ok := gitPreviousPin(repo, "v1.8.0"); !ok || prev != "v1.7.0" {
+		t.Errorf("uncommitted bump: previous pin = %q, %v; want v1.7.0", prev, ok)
+	}
+
+	// No git at all.
+	if _, ok := gitPreviousPin(t.TempDir(), "v1.7.0"); ok {
+		t.Error("a directory with no git history named a previous pin")
+	}
+	// A shallow clone that stops at the pin bump.
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	if out, err := exec.Command("git", "clone", "-q", "--depth", "1", "file://"+repo, shallow).CombinedOutput(); err != nil {
+		t.Fatalf("shallow clone: %v\n%s", err, out)
+	}
+	if prev, ok := gitPreviousPin(shallow, "v1.7.0"); ok {
+		t.Errorf("a depth-1 clone named previous pin %q; it cannot see one", prev)
+	}
+	// ... and grades by the pin alone, as before.
+	scfg, err := config.LoadProject(mustRead(t, filepath.Join(shallow, "forge.yaml")), filepath.Join(shallow, "forge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, gated := gradeProjectLaneWith(jump, scfg, []lintJSONFinding{rolloutFinding(lintSevError)}, true); !gated {
+		t.Error("with no history the pin alone decides: v1.7.0 is past gates_from v1.5.1")
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // lint.rules decides severity when it names the rule; the rollout only

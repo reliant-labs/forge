@@ -994,6 +994,11 @@ func effectiveSeverity(value, fallback string) string {
 // generator never read (the template's `range .ExtraJobs` was fed from a
 // struct nothing populated), so declared jobs silently vanished.
 type CIConfig struct {
+	// Provider is where the project's CI runs: "github" (the default) writes
+	// GitHub Actions workflows under .github/workflows/, "reliant" writes
+	// Reliant workflows under .reliant/workflows/ that run on GitHub events
+	// and post GitHub check runs as the Reliant App. Any other value writes
+	// no CI files. See EffectiveProvider.
 	Provider    string       `yaml:"provider"`
 	Lint        CILintConfig `yaml:"lint,omitempty"`
 	Test        CITestConfig `yaml:"test,omitempty"`

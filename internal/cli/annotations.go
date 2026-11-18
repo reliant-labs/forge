@@ -352,6 +352,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "leading full-line comment above the field, or a trailing comment on the field line",
 			Example:   "string api_token = 2; // forge:secret",
 		},
+		{
+			Name:      codegen.ProtoMarkerRequestOption,
+			AppliesTo: "field",
+			Effect:    "Declares a List request field a request knob, not a filter: the generated List op neither filters on it nor refuses it for naming no column, the scaffolded list page renders no control for it, and forgeconv-list-filter-optional does not judge it. The lint already leaves alone a field that names none of the listed message's fields (the generated filter never reads one); the marker is for a knob that shares its name with one. Read on every `forge generate`. Use it for an opt-in behaviour flag whose zero value is the old behaviour — `optional` would change a shipped field's cardinality, and `required` would forbid turning the flag off.",
+			Placement: "leading full-line comment above the field, or a trailing comment after the field's `;`",
+			Example:   "bool archived = 8; // forge:request-option — also return archived rows; not a filter on the archived column",
+		},
 
 		// ── Column-comment markers ──
 		//

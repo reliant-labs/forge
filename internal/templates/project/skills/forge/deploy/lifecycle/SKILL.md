@@ -1,6 +1,6 @@
 ---
 name: deploy/lifecycle
-description: Stopping, starting and deleting a HOSTED environment from the CLI — `forge env stop|start|delete`, --target and --wait, billing refusals, data retention, and why `forge env down` is not the same thing; plus the domain commands and scope errors.
+description: Stopping, starting and deleting a HOSTED environment from the CLI — `forge env stop|start|delete`, --target and --wait, billing refusals, data retention and `forge env retained list|purge`, and why `forge env down` is not the same thing; the whole app with `forge app stop|teardown|delete`; plus the domain commands and scope errors.
 ---
 
 # Hosted env lifecycle
@@ -46,6 +46,65 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
   confirming and deletes nothing.
 - All three refuse an env that is not hosted. `forge env down` only stops local
   host processes and never touches a control plane.
+
+## Retained databases
+
+A database kept by `--keep-data` is a RETAINED database: still running, still
+billing as storage, never reattached by a later deploy.
+
+```
+forge env retained list [--all]          # this app's (--all: the organization's), with size and dates
+forge env retained purge <id> [--all] [--yes]  # destroy one: type its name to confirm. IRREVERSIBLE
+```
+
+`purge` takes the id `list` prints, or a database name when exactly one of
+this app's retained databases has it. Either resolves among THIS app's: another
+app's is refused and named; `--all` resolves among the organization's, and the
+confirmation names the owning app. A control plane that purges retained
+databases by itself shows the date in a `PURGE AFTER` column; an older one
+does not, and its databases stay until purged. Purging needs an org owner or
+admin.
+
+## The whole app: stop, tear down, delete
+
+The app is every hosted env of this project (forge.yaml `name`) on the control
+plane the project is bound to (`.forge/hosted-projects.json`, or
+`--endpoint`). Least to most destructive:
+
+```
+forge app stop [--yes]                   # suspend every env; storage keeps billing
+forge app teardown [--yes] [--keep-data] # delete every env, keep the app; nothing bills
+forge app delete [--yes]                 # schedule the app's deletion (7-day grace window)
+forge app delete --status | --cancel     # show it / cancel it until the purge starts
+```
+
+- Each asks you to type the app name (`--yes` skips it; with no TTY or `CI=1`
+  it fails fast without `--yes`), and `stop` and `teardown` print each env's
+  outcome. An env the control plane refuses (`stop` needs `deploy:write` on
+  it; `teardown` an org owner or admin) is reported and left as it was, the
+  rest still change, and the command exits non-zero.
+- `stop` keeps URLs, data, secrets and domains; `forge env start <env>`
+  resumes an env. Storage keeps billing: `teardown` is the zero-cost state.
+- `teardown` is `forge env delete` for every env: data destroyed unless
+  `--keep-data` (then listed by `forge env retained list`). It keeps the app's
+  name, release history and release images (not billed) and its custom domains
+  (unbound), so `forge env deploy <env> <release>` recreates an env. Each env's
+  secrets are not given back to a recreated env: set them again. It deletes
+  nothing while a custom domain is bound to one of the envs (`forge domain
+  unbind` it first), when the bound domains cannot be read (the domain service
+  failing, or a control plane without one), or while an env this project
+  declares also runs parts on a cluster you operate.
+- `delete` stops every env at once and refuses new deploys, promotions and
+  envs (reason `app_deletion_scheduled`). After the grace window the control
+  plane purges every env and its data, retained databases, release history and
+  images, domains and certificates, and secrets, and frees the name; activity,
+  audit and spend history stay. `--cancel` starts again what the deletion
+  stopped. `--status` also says when the purge waits on a paused secret
+  destroy. It needs an org owner or admin signed in as a person (tokens are
+  refused) with a live step-up on every protected env: on a `step_up_required`
+  refusal, step up in the Reliant web app and re-run. A control plane that
+  predates app deletion answers Unimplemented; forge says so and changes
+  nothing (`teardown` still works there).
 
 ## Preview environments
 

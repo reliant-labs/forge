@@ -37,6 +37,24 @@
 // drops it. The rollout only supplies the DEFAULT for a rule the project has
 // not spoken about.
 //
+// ── A pin that jumps a rule's window ──────────────────────────────────────
+//
+// The pin alone cannot tell a project that went through a rule's warning
+// release from one that jumped over it: v1.0.0 → v1.7.0 lands past the
+// testwait rules' GatesFrom (v1.5.1) with no release in which they warned, so
+// they gated on arrival (forge#2282). So the rollout also reads the pin the
+// project came from — forge.yaml's previous forge_version, from git history
+// (previousPin) — and a rule the project's previous pin predates (previous < IntroducedIn) warns for the
+// whole of the current pin, then gates from the next one. A project that
+// moves one release at a time sees exactly what it saw before: its previous
+// pin is the release that introduced the rule.
+//
+// Nothing is written for it: lint stays read-only, and forge.yaml gains no
+// key an older v1 forge's strict loader would refuse. A pin moved but not yet
+// committed counts too (the working tree's value against HEAD's). Without
+// history to read — no git, a shallow clone that stops at the pin bump —
+// the previous pin is unknown and the pin alone decides, as it always did.
+//
 // ── What it deliberately does not do ──────────────────────────────────────
 //
 //   - A pin that is absent, the forge-as-its-own-first-user sentinel (0.0.0),
@@ -78,9 +96,12 @@
 package lint
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -115,12 +136,23 @@ type ruleGrace struct {
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
 	Fix          string `json:"fix,omitempty"`
+	// PreviousPin and GatesAfter are set when the pin is already past
+	// GatesFrom but the project came from a pin older than IntroducedIn:
+	// the rule warns while forge_version is GatesAfter and gates from the
+	// next pin. See "A pin that jumps a rule's window" in the file header.
+	PreviousPin string `json:"previous_pin,omitempty"`
+	GatesAfter  string `json:"gates_after,omitempty"`
 }
 
 // note is the line the text report prints under the finding.
 func (g ruleGrace) note(rule string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "warn: [%s] is new in %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
+	if g.GatesAfter != "" {
+		fmt.Fprintf(&b, "warn: [%s] is new in %s, after this project's previous forge pin %s, so it warns at %s and gates from the next pin",
+			rule, g.IntroducedIn, g.PreviousPin, g.GatesAfter)
+	} else {
+		fmt.Fprintf(&b, "warn: [%s] is new in %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
+	}
 	if g.Fix != "" {
 		fmt.Fprintf(&b, "; fix with `%s`", g.Fix)
 	}
@@ -153,6 +185,10 @@ func applyRollout(table map[string]ruleRollout, cfg *config.ProjectConfig, rules
 	}
 	gradable := gradableRuleSet()
 	pin, known := comparablePin(cfg)
+	prev, prevKnown := "", false
+	if known {
+		prev, prevKnown = previousPin(cfg, pin)
+	}
 	out := make([]lintJSONFinding, 0, len(fs))
 	errorsBefore, raised, touched := false, false, false
 	for _, f := range fs {
@@ -185,11 +221,12 @@ func applyRollout(table map[string]ruleRollout, cfg *config.ProjectConfig, rules
 		} else if _, wild := rules[suppress.Wildcard]; wild && !tagged && gradable[key] {
 			dialed = true
 		}
-		if declared && !dialed && known && f.Severity == lintSevError && ro.GatesFrom != "" &&
-			semver.Compare(pin, ro.GatesFrom) < 0 {
-			f.Severity = lintSevWarning
-			f.Grace = &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix}
-			touched = true
+		if declared && !dialed && known && f.Severity == lintSevError && ro.GatesFrom != "" {
+			if g := graceFor(ro, pin, prev, prevKnown, cfg.ForgeVersion); g != nil {
+				f.Severity = lintSevWarning
+				f.Grace = g
+				touched = true
+			}
 		}
 		out = append(out, f)
 	}
@@ -232,6 +269,99 @@ func rolloutPin(raw string) (string, bool) {
 	return pin, true
 }
 
+// graceFor is the note a gating finding of a rule declared ro carries under
+// pin, or nil when the finding gates. prev is the pin the project came from
+// (prevKnown false when forge never saw an earlier one); raw is the pin as
+// forge.yaml spells it, for the note.
+func graceFor(ro ruleRollout, pin, prev string, prevKnown bool, raw string) *ruleGrace {
+	g := &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix}
+	if semver.Compare(pin, ro.GatesFrom) < 0 {
+		return g
+	}
+	if prevKnown && semver.Compare(prev, ro.IntroducedIn) < 0 {
+		g.PreviousPin, g.GatesAfter = prev, strings.TrimSpace(raw)
+		return g
+	}
+	return nil
+}
+
+// previousPin is the pin the project came from, as the rollout grades it:
+// the forge_version forge.yaml held before it held pin, read from git history
+// (previousPinFromHistory). ok=false when history cannot say — no git, a
+// shallow clone that stops at the pin bump, a pin never changed, a previous
+// value that is not a version — and the pin alone then decides, as it always
+// did.
+func previousPin(cfg *config.ProjectConfig, pin string) (string, bool) {
+	if cfg == nil {
+		return "", false
+	}
+	return previousPinFromHistory(cfg.ProjectDir(), pin)
+}
+
+// previousPinFromHistory is gitPreviousPin; a variable so the grading tests
+// need no git repository.
+var previousPinFromHistory = gitPreviousPin
+
+// gitPreviousPin reads, newest first, the forge_version values forge.yaml in
+// projectDir has held — the working tree's, then each commit that changed
+// the line (`git log -G`) — and returns the first that is a different
+// release from pin.
+//
+// History, not a record forge writes: anything written into forge.yaml is a
+// key an older v1 forge's strict loader refuses, and a separate file would be
+// one more piece of state to commit. The history is already committed. A
+// clone too shallow to reach the pin bump (actions/checkout's default depth
+// of 1) grades by the pin alone, which is never stricter than before.
+func gitPreviousPin(projectDir, pin string) (string, bool) {
+	if projectDir == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", projectDir, "log", "-n", "50",
+		"--format=%x00commit", "-p", "--unified=0", "-G", "^forge_version:", "--", "forge.yaml").Output()
+	if err != nil {
+		return "", false
+	}
+	// Per commit the diff lists the removed value before the added one;
+	// newest first, the added value is the later state, so it is read
+	// first.
+	for _, chunk := range strings.Split(string(out), "\x00commit") {
+		var added, removed string
+		for _, line := range strings.Split(chunk, "\n") {
+			switch {
+			case strings.HasPrefix(line, "+forge_version:"):
+				added = pinValue(strings.TrimPrefix(line, "+forge_version:"))
+			case strings.HasPrefix(line, "-forge_version:"):
+				removed = pinValue(strings.TrimPrefix(line, "-forge_version:"))
+			}
+		}
+		for _, v := range []string{added, removed} {
+			if v == "" {
+				continue
+			}
+			prev, ok := rolloutPin(v)
+			if !ok {
+				return "", false
+			}
+			if prev != pin {
+				return prev, true
+			}
+		}
+	}
+	return "", false
+}
+
+// pinValue is a forge_version line's value, without quotes or a trailing
+// comment.
+func pinValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return strings.Trim(v, `"'`)
+}
+
 // GatingRule is one rule whose warn-first grace a pin bump ends: it warned
 // under the old pin and gates under the new one.
 type GatingRule struct {
@@ -263,6 +393,9 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 	rules := effectiveRules(cfg)
 	_, wild := rules[suppress.Wildcard]
 	gradable := gradableRuleSet()
+	// Before the move the project came from whatever history says; after
+	// it, from the old pin.
+	oldPrev, oldPrevKnown := previousPin(cfg, oldPin)
 	var out []GatingRule
 	for id, ro := range table {
 		if ro.GatesFrom == "" {
@@ -271,7 +404,9 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 		if _, exact := rules[id]; exact || (wild && gradable[id]) {
 			continue
 		}
-		if semver.Compare(oldPin, ro.GatesFrom) < 0 && semver.Compare(newPin, ro.GatesFrom) >= 0 {
+		warnedBefore := graceFor(ro, oldPin, oldPrev, oldPrevKnown, from) != nil
+		gatesAfter := graceFor(ro, newPin, oldPin, oldPin != newPin, to) == nil
+		if warnedBefore && gatesAfter {
 			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
 		}
 	}
@@ -317,7 +452,8 @@ func withoutRollout(more, base []lintJSONFinding) []lintJSONFinding {
 
 // gracedRule is one rule's softened findings in a run, for the verdict line.
 type gracedRule struct {
-	rule      string
+	rule string
+	// gatesFrom says when it gates ("gates from v1.0.1").
 	gatesFrom string
 	n         int
 }
@@ -340,7 +476,11 @@ func gracedFindings(outcomes []lintStepOutcome) []gracedRule {
 			}
 			g := byRule[key]
 			if g == nil {
-				g = &gracedRule{rule: key, gatesFrom: f.Grace.GatesFrom}
+				when := "gates from " + f.Grace.GatesFrom
+				if f.Grace.GatesAfter != "" {
+					when = "gates from the pin after " + f.Grace.GatesAfter
+				}
+				g = &gracedRule{rule: key, gatesFrom: when}
 				byRule[key] = g
 			}
 			g.n++
@@ -361,7 +501,7 @@ func describeGraced(graced []gracedRule) string {
 	parts := make([]string, 0, len(graced))
 	for _, g := range graced {
 		total += g.n
-		parts = append(parts, fmt.Sprintf("%s ×%d, gates from %s", g.rule, g.n, g.gatesFrom))
+		parts = append(parts, fmt.Sprintf("%s ×%d, %s", g.rule, g.n, g.gatesFrom))
 	}
 	return fmt.Sprintf("%s warn until they gate (%s)", plural(total, "new-rule finding"), strings.Join(parts, "; "))
 }

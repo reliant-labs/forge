@@ -51,12 +51,21 @@ func TestBeginDeployBuildLogJSONKeepsStdoutForTheDocument(t *testing.T) {
 	}
 	realStdout, realStderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = stdout, stderr
-	t.Cleanup(func() { os.Stdout, os.Stderr = realStdout, realStderr })
+	// Close both files before t.TempDir's cleanup removes them (cleanups
+	// run last-registered first): Windows cannot delete an open file.
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = realStdout, realStderr
+		_ = stdout.Close()
+		_ = stderr.Close()
+	})
 
 	s := beginDeployBuildLog("prod", deployCmdFlags{jsonOut: true})
 	if s == nil {
 		t.Fatal("a writing --json deploy started no quiet session")
 	}
+	// End is idempotent; this closes deploy.log even when the test fails
+	// before its own End.
+	t.Cleanup(func() { _ = s.End() })
 	for i, stepErr := range []error{nil, errors.New("exit status 1")} {
 		w, _, end := buildlog.Step(fmt.Sprintf("step %d", i))
 		_, _ = fmt.Fprintln(w, "some build output")

@@ -75,7 +75,7 @@ func BuildReleases(project string) Dashboard {
 		DefaultRange: "7d",
 	}
 	byVersion := []string{fieldVersion}
-	server := []Predicate{{Field: "span.kind", Op: OpEq, Value: "server"}}
+	server := []Predicate{{Field: "span.kind", Op: OpEq, Value: "server"}, notProbe}
 	share := func(id, title, desc, sql string) Panel {
 		return Panel{Section: "adoption", ID: id, Title: title, Description: desc, Kind: KindSQL, SQL: sql, Unit: UnitPercent,
 			Display: &dashspec.Display{Style: dashspec.StyleArea, Stack: true, TopN: 8}, Width: 12, Height: 8}
@@ -134,7 +134,7 @@ func BuildReleases(project string) Dashboard {
 // dashboards draw too.
 func requestsByVersionPanel() Panel {
 	return Panel{ID: "request-rate-by-version", Title: "Requests by version",
-		Kind: KindLine, Signal: Traces, Where: []Predicate{{Field: "span.kind", Op: OpEq, Value: "server"}},
+		Kind: KindLine, Signal: Traces, Where: []Predicate{{Field: "span.kind", Op: OpEq, Value: "server"}, notProbe},
 		Series: []Series{{Label: "requests", Agg: AggCount}}, GroupBy: []string{fieldVersion}, Unit: UnitCount, Width: 12, Height: 7}
 }
 
@@ -168,7 +168,7 @@ FROM (
     SELECT toStartOfInterval(Timestamp, toIntervalSecond({step:UInt32})) AS t, ` + releasesVersion + ` AS version,
            ` + weightedRequests + ` AS n
     FROM otel_traces
-    WHERE ` + obsquery.SpanServerSQL + ` AND ` + releasesTraceScope + `
+    WHERE ` + obsquery.SpanServerSQL + ` AND ` + obsquery.SpanNotProbeSQL + ` AND ` + releasesTraceScope + `
     GROUP BY t, version
 )
 ORDER BY t, version`
@@ -224,7 +224,7 @@ var versionComparisonSQL = `SELECT ` + releasesVersion + ` AS "Version",
        round(quantileExactWeightedIf(0.95)(Duration / 1000000, ` + obsquery.SpanWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p95 (ms)",
        round(quantileExactWeightedIf(0.99)(Duration / 1000000, ` + obsquery.SpanWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p99 (ms)"
 FROM otel_traces
-WHERE ` + obsquery.SpanServerSQL + ` AND ` + releasesTraceScope + `
+WHERE ` + obsquery.SpanServerSQL + ` AND ` + obsquery.SpanNotProbeSQL + ` AND ` + releasesTraceScope + `
 GROUP BY ` + releasesVersion + `
 ORDER BY min(Timestamp) DESC, "Version"
 LIMIT 20`

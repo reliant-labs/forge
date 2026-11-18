@@ -370,7 +370,14 @@ var (
 	rpcServer = []Predicate{
 		{Field: "span.kind", Op: OpEq, Value: "server"},
 		{Field: "span.name", Op: OpMatch, Value: `^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$`},
+		notProbe,
 	}
+
+	// notProbe keeps probes out of a request panel: the spans a workload
+	// marked forge.probe=true (the health rpc, a platform release probe), as
+	// obsquery.SpanNotProbeSQL does for release health. A span with no such
+	// attribute reads '' and stays in.
+	notProbe = Predicate{Field: "span.attr.forge.probe", Op: OpNeq, Value: "true"}
 )
 
 func scoped(base []Predicate, extra ...Predicate) []Predicate {

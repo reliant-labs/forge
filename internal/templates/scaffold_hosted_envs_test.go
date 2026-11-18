@@ -48,7 +48,7 @@ appConfigEnvMap = lambda c: AppConfig, config_secrets: [str] -> {str: str | forg
 // scaffoldForRender generates a fresh service project and stubs the config
 // trio `forge generate` would write, so every env can be rendered offline
 // through forge's own evaluation seam.
-func scaffoldForRender(t *testing.T, name string, services []string, frontend string) string {
+func scaffoldForRender(t *testing.T, name string, services []string, frontend string, configure ...func(*generator.ProjectGenerator)) string {
 	t.Helper()
 	tmp := t.TempDir()
 	g := generator.NewProjectGenerator(name, tmp, "github.com/acme/"+name)
@@ -58,6 +58,9 @@ func scaffoldForRender(t *testing.T, name string, services []string, frontend st
 		g.ServiceName, g.AdditionalServices = services[0], services[1:]
 	}
 	g.FrontendName = frontend
+	for _, c := range configure {
+		c(g)
+	}
 	if err := g.Generate(); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

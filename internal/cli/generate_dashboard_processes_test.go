@@ -324,7 +324,7 @@ func TestProcessLessEnvironmentGetsItsFrontendAndProductDashboards(t *testing.T)
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{"frontend", "users", "product", "acquisition"}) {
+	if !reflect.DeepEqual(ids, []string{"frontend", "product-overview", "users", "product", "acquisition"}) {
 		t.Fatalf("a process-less env has dashboards %v, want the frontend and the built-in product dashboards", ids)
 	}
 	b, err := json.Marshal(sp)

@@ -60,7 +60,7 @@ const client = {
   getSessionId: () => sdkSessionId(),
 };
 
-vi.mock("@hyperdx/browser", () => ({ default: client }));
+vi.mock("./sdk-client.js", () => ({ loadSdkClient: async () => client }));
 
 /** A cookie jar with a browser's semantics, on the prototype like Document's. */
 class FakeDocument {

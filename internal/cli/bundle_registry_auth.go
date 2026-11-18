@@ -117,11 +117,19 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 	if err != nil {
 		return bundleRegistryAuth{}, fmt.Errorf("env %q pushes its bundle to %s with its control-plane credential: %w", env, host, err)
 	}
+	fix := fmt.Sprintf("%s — or, in CI, refresh $%s. Check the credential's scopes with `forge cloud status %s` (a push needs deploy:write)",
+		cloud.SignInHint(), ep.TokenEnv, env)
+	if cred.Source == cloud.SourceClaimable {
+		// An anonymous deploy has no sign-in, token variable or scopes to
+		// check; its credential dies with the claim, takedown or expiry.
+		fix = fmt.Sprintf("this anonymous deploy's credential stops working once it is claimed, taken down or expires — "+
+			"`forge env status %s --claimable` says which. If it was claimed, sign in as the account that claimed it (`forge login`) "+
+			"and deploy without --claimable", env)
+	}
 	return bundleRegistryAuth{
 		Host:     host,
 		Identity: fmt.Sprintf("the control-plane credential for %s (%s: %s)", ep.URL, cred.Source, cred.From),
-		Fix: fmt.Sprintf("%s — or, in CI, refresh $%s. Check the credential's scopes with `forge cloud status %s` (a push needs deploy:write)",
-			cloud.SignInHint(), ep.TokenEnv, env),
+		Fix:      fix,
 		credential: func(context.Context) (string, error) {
 			fresh, err := cloud.ResolveCredential("", ep)
 			if err != nil {

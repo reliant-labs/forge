@@ -3849,7 +3849,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Built-in product analytics dashboards
 
-A hosted app gets Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
+A hosted app gets Product overview, Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
 
 _In progress · Reliant hosting_
 

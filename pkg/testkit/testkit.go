@@ -366,6 +366,13 @@ func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
 // shape failed only under test, and an unrecognised error published its raw
 // text here while production redacts it. Passing svcerr.Interceptor yourself
 // stays harmless: Wrap is idempotent.
+//
+// Production also validates every request against its protovalidate rules
+// before svcerr, rejecting an invalid one with invalid_argument. The test
+// server checks the same rules but, for now, only logs a violation on t and
+// lets the request through: pass [ValidateRequests] to reject it as
+// production does. A later release makes rejecting the default (see
+// validate.go).
 func NewConnectClient[C any](
 	t *testing.T,
 	register func(mux *http.ServeMux, opts ...connect.HandlerOption),
@@ -373,7 +380,11 @@ func NewConnectClient[C any](
 	handlerOpts ...connect.HandlerOption,
 ) (*httptest.Server, C) {
 	t.Helper()
-	opts := append(append([]connect.HandlerOption(nil), handlerOpts...), connect.WithInterceptors(svcerr.Interceptor()))
+	opts := append([]connect.HandlerOption(nil), handlerOpts...)
+	if warn := newWarnInvalidRequests(t); warn != nil {
+		opts = append(opts, connect.WithInterceptors(warn))
+	}
+	opts = append(opts, connect.WithInterceptors(svcerr.Interceptor()))
 	srv := NewTestServer(t, func(mux *http.ServeMux) { register(mux, opts...) })
 	// Traced, so a test's own span is the parent of the server's.
 	return srv, newClient(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL)

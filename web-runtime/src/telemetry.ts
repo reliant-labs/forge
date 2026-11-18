@@ -10,7 +10,8 @@
 //
 // ── Why HyperDX REPLACES the old OTel web wiring, not joins it ───────────
 //
-// @hyperdx/browser wraps @hyperdx/otel-web, which builds its own
+// The SDK is @hyperdx/otel-web, driven through the runtime's port of
+// @hyperdx/browser's wrapper (sdk-client.ts). It builds its own
 // WebTracerProvider and calls provider.register() — the global tracer
 // provider, context manager and propagator. A second registration (the old
 // `./otel` subpath did exactly that) is rejected by @opentelemetry/api with a
@@ -42,7 +43,8 @@
 //
 // ── Replay: shipped, off, masked, media blocked ─────────────────────────
 //
-// The SDK bundles an rrweb recorder. It is DISABLED unless `replay: true`.
+// Replay is rrweb, recorded by the runtime (replay-recorder.ts). It is
+// DISABLED unless `replay: true`.
 // Privacy is forced, not offered: every input and all text is masked, canvas is
 // never recorded, and images, video, audio, iframes and embeds are BLOCKED
 // (replaced by a same-size placeholder; their pixels never leave the browser).
@@ -58,32 +60,31 @@
 //
 // ── Replay costs the page little ─────────────────────────────────────────
 //
-// The recorder does its work on the main thread: it serializes every DOM
-// mutation and input event as it happens, and every 5 s protobuf-encodes and
-// gzips the batch. On a phone that cost every tap 15–45% and stalled scrolling
-// for 300–400 ms every few seconds. So continuous input is sampled
-// (REPLAY_SAMPLING: the pointer at half rate, scroll positions each 150 ms,
-// a field's final value rather than every keystroke) and snapshots leave out
-// scripts, comments and head metadata (rrweb slimDOM). `replaySampling` and
-// `replaySlimDOM: false` take either back.
+// The recorder HyperDX's SDK bundled did its export on the main thread: every
+// 5 s it protobuf-encoded and gzipped the batch, which on a phone cost every
+// tap 15–45% and stalled scrolling for 300–400 ms every few seconds. The
+// runtime's recorder (replay-recorder.ts) loads rrweb in its own chunk only
+// when replay runs, encodes batches as OTLP/JSON and gzips them in a Worker,
+// sends every REPLAY_FLUSH_INTERVAL_MS (`replayFlushIntervalMs`) and whenever
+// the page is hidden or left (keepalive), and with `replayStart:
+// "interaction"` records nothing until the person first interacts. rrweb
+// itself still serializes mutations and input on the main thread, so
+// continuous input is sampled (REPLAY_SAMPLING: the pointer at half rate,
+// scroll positions each 150 ms, a field's final value rather than every
+// keystroke) and snapshots leave out scripts, comments and head metadata
+// (rrweb slimDOM). `replaySampling` and `replaySlimDOM: false` take either
+// back.
 //
 // ── Withdrawal stops replay now ──────────────────────────────────────────
 //
 // When the tier leaves `full` (revokeAnalyticsConsent, optOutOfAnalytics) or
 // telemetry is disabled, no replay leaves the page from that instant: not a
 // record made afterwards, not one made before it and still buffered, and not
-// a span from stopping the recorder. Stopping the SDK's recorder alone does not
-// do that. It buffers rrweb records and posts them to `${ingest}/v1/logs` on
-// its own 5 s timer (and on unload), so a stopped recorder still sends what it
-// held; and a stop() on an already stopped recorder starts a `record stop`
-// span on its `rum.rr-web` tracer, so stopping twice exported one replay span
-// at the moment of withdrawal. So when replay runs, two gates go in right after
-// init and close for good, BEFORE the one stop: the recorder's record posts
-// (told from other OTLP logs to the same URL by their `rum.rr-web` scope) are
-// answered locally without the network (gateReplayRecords), and its
-// tracer's spans are never ended (gateReplaySpans). The recorder is stopped
-// once however many paths ask. Replay that already left before the withdrawal
-// stays where it is.
+// a span from stopping the recorder. The recorder's stop() is final: rrweb
+// stops, the records it held are dropped, a batch still being encoded is
+// never sent, and it emits nothing on the way out (replay-recorder.ts,
+// "Withdrawal"). It is stopped once however many paths ask. Replay that
+// already left before the withdrawal stays where it is.
 //
 // ── One session per visit, even where cookies are dropped ────────────────
 //
@@ -205,15 +206,17 @@
 //
 // ── Loading ──────────────────────────────────────────────────────────────
 //
-// The SDK is ~600 KB minified (rrweb and the OTel web stack are bundled in
-// it), so it is imported lazily: bundlers split it into its own chunk.
+// The SDK (@hyperdx/otel-web, ~430 KB minified) is imported lazily, so
+// bundlers split it into its own chunk; rrweb (~180 KB) is a second chunk,
+// loaded only when replay runs.
 // initBrowserTelemetry is therefore async and idempotent — every caller gets
 // the same promise, which is what survives React StrictMode's double mount and
 // Fast Refresh. It is a no-op without a DOM (SSR, prerender) and without an
 // endpoint, and it never throws.
 //
 // Evaluating that chunk is one long main-thread task (~540 ms, plus ~170 ms
-// of init, at 4x CPU on a phone-class emulation of reliantlabs.io). Started as
+// of init, at 4x CPU on a phone-class emulation of reliantlabs.io, when it was
+// @hyperdx/browser's single UMD file; about half that as otel-web's ESM). Started as
 // soon as the page was visible it ran right after first paint, inside
 // hydration, and a tap in that window waited ~1.1 s instead of ~0.4 s. So by
 // default (`start: "idle"`) the SDK starts once the page has loaded, in the
@@ -279,6 +282,11 @@ import {
   watchFrameStalls,
 } from "./frame-stalls.js";
 import { installFetchContext } from "./interaction-context.js";
+import {
+  REPLAY_FLUSH_INTERVAL_MS,
+  type ReplayStart,
+} from "./replay-recorder.js";
+import { type HyperDXClient, loadSdkClient } from "./sdk-client.js";
 import { installPageViews, type PageViewOptions } from "./page-views.js";
 import {
   type IdentifyOptions,
@@ -340,6 +348,10 @@ export {
 } from "./session-cookie-fallback.js";
 
 export { type PageViewOptions } from "./page-views.js";
+export {
+  REPLAY_FLUSH_INTERVAL_MS,
+  type ReplayStart,
+} from "./replay-recorder.js";
 export {
   START_IDLE_TIMEOUT_MS,
   START_LOAD_TIMEOUT_MS,
@@ -487,6 +499,19 @@ export interface BrowserTelemetryConfig {
    * Default true; false records the DOM whole. Ignored without replay.
    */
   replaySlimDOM?: boolean;
+  /**
+   * When session replay starts recording, with `replay` on. "load" (the
+   * default): as soon as the SDK runs. "interaction": not until the person
+   * first taps, clicks or types; rrweb is not even loaded before then, and
+   * the recording starts from the page as it is at that moment.
+   */
+  replayStart?: ReplayStart;
+  /**
+   * How often (ms) recorded replay is sent. Default REPLAY_FLUSH_INTERVAL_MS
+   * (15 s); a batch also goes within a second once 48 KB are held, and
+   * whenever the page is hidden or left.
+   */
+  replayFlushIntervalMs?: number;
   /** Verbose SDK diagnostics to the console. Default false. */
   debug?: boolean;
   /**
@@ -573,16 +598,6 @@ export interface BrowserTelemetryConfig {
   identify?: IdentifyOptions;
 }
 
-/** The slice of the SDK this module calls. Typed here, not imported, so the module loads without it. */
-interface HyperDXClient {
-  init(config: Record<string, unknown>): void;
-  recordException(error: unknown, attributes?: Record<string, unknown>): void;
-  addAction?(name: string, attributes?: Record<string, TrackValue>): void;
-  setGlobalAttributes?(attributes: Record<string, string>): void;
-  stopSessionRecorder?(): void;
-  getSessionId?(): string | undefined;
-}
-
 let started: Promise<boolean> | null = null;
 
 // Attribution state shared by start() and enableAttribution(): whichever runs
@@ -591,6 +606,42 @@ let attributionWanted = false;
 let attributionOptions: { search?: string } = {};
 let runningConfig: BrowserTelemetryConfig | null = null;
 let runningClient: HyperDXClient | null = null;
+// setTelemetryAttributes calls made before the SDK runs, applied when it does.
+let heldAttributes: Record<string, string> = {};
+
+/**
+ * Stamp `attributes` on every span from here on: the app's own dimensions
+ * (a build id, a deployment cohort) beside the runtime's `app.client`. Values
+ * are strings; an empty string clears a key. Safe to call before
+ * initBrowserTelemetry resolves (held, then applied when the SDK starts), more
+ * than once (keys merge, the latest value wins), and on the server (a no-op).
+ * Use it instead of reaching for the SDK: the runtime owns the SDK's client.
+ */
+export function setTelemetryAttributes(
+  attributes: Record<string, string>,
+): void {
+  if (typeof window === "undefined" || isTelemetryDisabled()) {
+    return;
+  }
+  const clean: Record<string, string> = {};
+  for (const [key, value] of Object.entries(attributes ?? {})) {
+    if (typeof key === "string" && key !== "" && typeof value === "string") {
+      clean[key] = value;
+    }
+  }
+  if (Object.keys(clean).length === 0) {
+    return;
+  }
+  if (runningClient) {
+    try {
+      runningClient.setGlobalAttributes?.(clean);
+    } catch {
+      // Telemetry must never break the app.
+    }
+    return;
+  }
+  heldAttributes = { ...heldAttributes, ...clean };
+}
 
 function captureVisitor(config: BrowserTelemetryConfig): string {
   return captureAttribution({
@@ -676,344 +727,6 @@ function applyTier(
       hdx.setGlobalAttributes?.({ "visitor.id": "" });
     }
   }
-}
-
-/** The scope (name, version) the SDK's session recorder records spans under. */
-const SDK_REPLAY_SCOPE = { name: "rum.rr-web", version: "4.0.0" } as const;
-
-/** Where the SDK's recorder posts its records: `${ingest}${this}`. */
-const SDK_REPLAY_LOGS_PATH = "/v1/logs";
-
-/**
- * Puts both replay exports behind a gate that closes for good when the
- * returned stop runs, and stops the recorder then, once. See "Withdrawal stops
- * replay now" in the header. Call it right after hdx.init, with replay on.
- */
-function gateReplay(hdx: HyperDXClient, ingest: string): () => void {
-  let open = true;
-  const closed = () => !open;
-  gateReplayRecords(`${ingest}${SDK_REPLAY_LOGS_PATH}`, closed);
-  gateReplaySpans(closed);
-  return () => {
-    if (!open) {
-      return;
-    }
-    // Closed before the stop, so nothing the stop emits gets out.
-    open = false;
-    try {
-      hdx.stopSessionRecorder?.();
-    } catch {
-      // Telemetry must never break the app; the gates hold either way.
-    }
-  };
-}
-
-type FetchFn = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
-
-/**
- * Answers the recorder's record posts itself, without the network, once
- * `closed()`: the batch it had buffered when replay stopped is dropped, not
- * sent. Every other request passes through untouched, including other OTLP
- * logs posted to the same `${ingest}/v1/logs`: a post is the recorder's only
- * when its OTLP body names the recorder's scope (isReplayBatch). The recorder
- * calls the global fetch when it exports, so this layer is reached whatever
- * wraps fetch after it.
- */
-function gateReplayRecords(logsUrl: string, closed: () => boolean): void {
-  const g = globalThis as { fetch?: FetchFn };
-  const inner = g.fetch;
-  if (typeof inner !== "function") {
-    return;
-  }
-  const target = canonicalUrl(logsUrl, logsUrl);
-  g.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
-    if (
-      !closed() ||
-      target === undefined ||
-      canonicalUrl(requestUrl(args[0]), logsUrl) !== target
-    ) {
-      return inner.apply(this, args);
-    }
-    return isReplayBatch(args[0], args[1]).then((replay) =>
-      replay
-        ? typeof Response === "function"
-          ? new Response(null, { status: 204 })
-          : (undefined as unknown as Response)
-        : inner.apply(this, args),
-    );
-  };
-}
-
-/**
- * Whether a request carries the recorder's records: an OTLP logs body
- * (gzip-compressed, as the recorder sends it, or not) one of whose ScopeLogs
- * has the recorder's scope name, read at its field path (hasReplayScope), so
- * the same bytes inside a log body or attribute do not count. A gzip body this
- * browser cannot decompress counts as the recorder's when it is protobuf, the
- * recorder's shape: after a withdrawal, dropping an unreadable log batch is
- * the side to err on.
- */
-async function isReplayBatch(
-  input: unknown,
-  init: RequestInit | undefined,
-): Promise<boolean> {
-  try {
-    const headers = requestHeaders(input, init);
-    let bytes = await requestBody(input, init);
-    if (!bytes) {
-      return false;
-    }
-    if (/\bgzip\b/i.test(headers?.get("content-encoding") ?? "")) {
-      const plain = await gunzip(bytes);
-      if (!plain) {
-        return /x-protobuf/i.test(headers?.get("content-type") ?? "");
-      }
-      bytes = plain;
-    }
-    return hasReplayScope(bytes);
-  } catch {
-    // Unreadable: not provably the recorder's, so it goes out as asked.
-    return false;
-  }
-}
-
-/** SDK_REPLAY_SCOPE.name as the UTF-8 bytes protobuf carries. */
-const REPLAY_SCOPE_NAME: readonly number[] = Array.from(
-  SDK_REPLAY_SCOPE.name,
-  (c) => c.charCodeAt(0),
-);
-
-/**
- * Whether an OTLP ExportLogsServiceRequest, protobuf-encoded, has a ScopeLogs
- * whose scope is the recorder's: the path resource_logs (1) → scope_logs (2)
- * → scope (1) → name (1), as opentelemetry-proto's logs.proto defines it.
- * Every other field, a log record's body and attributes included, is skipped
- * unread. Throws on a body that is not well-formed protobuf.
- */
-function hasReplayScope(request: Uint8Array): boolean {
-  let found = false;
-  forEachField(request, 1, (resourceLogs) => {
-    forEachField(resourceLogs, 2, (scopeLogs) => {
-      // A scalar field repeated on the wire: the last one is its value.
-      let name: Uint8Array | undefined;
-      forEachField(scopeLogs, 1, (scope) => {
-        forEachField(scope, 1, (n) => {
-          name = n;
-        });
-      });
-      if (name && sameBytes(name, REPLAY_SCOPE_NAME)) {
-        found = true;
-      }
-    });
-  });
-  return found;
-}
-
-/**
- * Calls `visit` with the payload of every length-delimited field numbered
- * `field` in `message`, in order, skipping all others by their wire type.
- * Throws on a truncated or malformed message.
- */
-function forEachField(
-  message: Uint8Array,
-  field: number,
-  visit: (payload: Uint8Array) => void,
-): void {
-  let at = 0;
-  const varint = (): number => {
-    let value = 0;
-    for (let shift = 0; shift < 64; shift += 7) {
-      if (at >= message.length) {
-        throw new Error("protobuf: truncated varint");
-      }
-      const b = message[at++] as number;
-      // Lengths and tags fit in 53 bits; higher bits only matter to skip.
-      value += (b & 0x7f) * 2 ** shift;
-      if ((b & 0x80) === 0) {
-        return value;
-      }
-    }
-    throw new Error("protobuf: varint too long");
-  };
-  const skip = (n: number) => {
-    if (at + n > message.length) {
-      throw new Error("protobuf: truncated field");
-    }
-    at += n;
-  };
-  while (at < message.length) {
-    const tag = varint();
-    const wire = tag % 8;
-    const number = Math.floor(tag / 8);
-    switch (wire) {
-      case 0:
-        varint();
-        break;
-      case 1:
-        skip(8);
-        break;
-      case 2: {
-        const length = varint();
-        const start = at;
-        skip(length);
-        if (number === field) {
-          visit(message.subarray(start, start + length));
-        }
-        break;
-      }
-      case 5:
-        skip(4);
-        break;
-      default:
-        // Groups (3, 4) are not in OTLP; anything else is not protobuf.
-        throw new Error(`protobuf: wire type ${wire}`);
-    }
-  }
-}
-
-function sameBytes(a: Uint8Array, b: readonly number[]): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function requestHeaders(
-  input: unknown,
-  init: RequestInit | undefined,
-): Headers | undefined {
-  if (typeof Headers !== "function") {
-    return undefined;
-  }
-  if (init?.headers) {
-    return new Headers(init.headers);
-  }
-  if (typeof Request === "function" && input instanceof Request) {
-    return input.headers;
-  }
-  return undefined;
-}
-
-async function requestBody(
-  input: unknown,
-  init: RequestInit | undefined,
-): Promise<Uint8Array | undefined> {
-  const body: unknown = init?.body;
-  if (body == null) {
-    if (typeof Request === "function" && input instanceof Request) {
-      return new Uint8Array(await input.clone().arrayBuffer());
-    }
-    return undefined;
-  }
-  if (body instanceof Uint8Array) {
-    return body;
-  }
-  if (body instanceof ArrayBuffer) {
-    return new Uint8Array(body);
-  }
-  if (ArrayBuffer.isView(body)) {
-    return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
-  }
-  if (typeof Blob === "function" && body instanceof Blob) {
-    return new Uint8Array(await body.arrayBuffer());
-  }
-  if (typeof body === "string") {
-    return new TextEncoder().encode(body);
-  }
-  return undefined;
-}
-
-async function gunzip(bytes: Uint8Array): Promise<Uint8Array | undefined> {
-  if (
-    typeof DecompressionStream !== "function" ||
-    typeof Response !== "function"
-  ) {
-    return undefined;
-  }
-  try {
-    const stream = new Response(bytes as BodyInit).body?.pipeThrough(
-      new DecompressionStream("gzip"),
-    );
-    if (!stream) {
-      return undefined;
-    }
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * `url` resolved against `base`, without query, fragment or a trailing slash,
- * so equivalent spellings of the logs endpoint compare equal.
- */
-function canonicalUrl(url: string | undefined, base: string) {
-  if (url === undefined || typeof URL === "undefined") {
-    return url;
-  }
-  try {
-    const u = new URL(url, base);
-    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
-  } catch {
-    return url;
-  }
-}
-
-function requestUrl(input: unknown): string | undefined {
-  try {
-    if (typeof input === "string") {
-      return input;
-    }
-    if (typeof URL !== "undefined" && input instanceof URL) {
-      return input.href;
-    }
-    const url = (input as { url?: unknown } | null)?.url;
-    return typeof url === "string" ? url : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Leaves unended, so unexported, every span the recorder's tracer would end
- * once `closed()`. The SDK's recorder starts a `record stop` span when it is
- * stopped a second time; any later stop, from the app or the SDK, is caught
- * here.
- */
-function gateReplaySpans(closed: () => boolean): void {
-  const proxy = trace.getTracerProvider() as { getDelegate?: () => unknown };
-  const provider = (proxy.getDelegate?.() ?? proxy) as {
-    getTracer?: (name: string, version?: string) => unknown;
-  };
-  const tracer = provider.getTracer?.(
-    SDK_REPLAY_SCOPE.name,
-    SDK_REPLAY_SCOPE.version,
-  ) as StartSpanTracer | undefined;
-  if (!tracer || typeof tracer.startSpan !== "function") {
-    return;
-  }
-  const original = tracer.startSpan;
-  tracer.startSpan = function (
-    this: unknown,
-    name: string,
-    ...rest: unknown[]
-  ): unknown {
-    const span = original.call(this, name, ...rest) as RecordingSpan;
-    if (typeof span?.end !== "function") {
-      return span;
-    }
-    const end = span.end;
-    span.end = function (this: unknown, ...args: unknown[]) {
-      // Never ended, so never exported.
-      return closed() ? undefined : end.apply(this, args);
-    };
-    return span;
-  };
 }
 
 /**
@@ -1151,10 +864,9 @@ async function start(
       abandon();
       return false;
     }
-    const mod = await import("@hyperdx/browser");
+    const hdx = await loadSdkClient();
     // Evaluating the chunk was one task; the SDK's init gets its own.
     await yieldToMain();
-    const hdx = resolveClient(mod);
     if (!hdx || isTelemetryDisabled()) {
       abandon();
       return false;
@@ -1187,7 +899,18 @@ async function start(
     installFetchContext();
     // From init on, so the gates hold whatever the recorder does after a
     // withdrawal (see "Withdrawal stops replay now").
-    const stopReplay = replay ? gateReplay(hdx, ingest) : () => {};
+    let replayStopped = false;
+    const stopReplay = () => {
+      if (replayStopped) {
+        return;
+      }
+      replayStopped = true;
+      try {
+        hdx.stopSessionRecorder?.();
+      } catch {
+        // Telemetry must never break the app.
+      }
+    };
     // From here web-vitals watches visibility itself.
     hidden.stop();
     dropBackgroundPaintVitals(hidden.at());
@@ -1206,7 +929,8 @@ async function start(
     if (attributionWanted) {
       globals["visitor.id"] = captureVisitor(config);
     }
-    hdx.setGlobalAttributes?.(globals);
+    hdx.setGlobalAttributes?.({ ...heldAttributes, ...globals });
+    heldAttributes = {};
     // The viewport and screen ride on every span, refreshed on resize
     // (client-context.ts): the SDK's global attributes are a span processor
     // that stamps the current set on each span as it starts, so a span carries
@@ -1256,6 +980,7 @@ async function start(
       // SDK's exporter posts with fetch keepalive, which outlives the page.
       flush: () => flushSdk(),
       disable: () => {
+        runningClient = null;
         stopReplay();
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
@@ -2070,7 +1795,16 @@ export function buildSdkOptions(
     maskAllText: true,
     recordCanvas: false,
     blockSelector: REPLAY_BLOCK_SELECTOR,
-    // The SDK passes these to rrweb's record() as they are. The plugin strips
+    // When the runtime's recorder starts and how often it sends
+    // (replay-recorder.ts). Not HyperDX options: the runtime's client reads
+    // them (sdk-client.ts).
+    replayStart: config.replayStart === "interaction" ? "interaction" : "load",
+    replayFlushIntervalMs:
+      typeof config.replayFlushIntervalMs === "number" &&
+      config.replayFlushIntervalMs > 0
+        ? config.replayFlushIntervalMs
+        : REPLAY_FLUSH_INTERVAL_MS,
+    // Handed to rrweb's record() as they are. The plugin strips
     // the query and fragment from the replay's page URL (see "No URL leaves
     // the browser" in the header).
     replay: {
@@ -2093,7 +1827,7 @@ export function buildSdkOptions(
  * rrweb's `sampling` for continuous input, as the runtime records it. rrweb
  * records every scroll position at most each 100 ms, the pointer each 50 ms
  * and every keystroke of every field; each one is serialized, queued and, on
- * the recorder's 5 s flush, protobuf-encoded and gzipped on the main thread.
+ * sent in a batch.
  * Half the pointer rate, a 150 ms scroll throttle, media each 800 ms (rrweb:
  * 500) and a field's final value replay the same session at a fraction of the
  * cost; inputs are masked, so a keystroke-by-keystroke record only ever
@@ -2397,42 +2131,6 @@ function propagationTargets(
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// @hyperdx/browser is a UMD/CJS bundle whose module.exports IS the client, and
-// its methods use `this`. A bundler hands back a module NAMESPACE that exposes
-// both the client's members at the top level (as read-only getters) and the
-// client itself as `default`. Calling init on the namespace binds `this` to that
-// frozen object and the SDK throws on its first property write, which disabled
-// telemetry silently. So descend to the deepest `default` that is still a
-// client, the real instance, and never settle for the namespace in front of it.
-function resolveClient(mod: unknown): HyperDXClient | null {
-  let cur: unknown = mod;
-  for (let depth = 0; depth < 4; depth++) {
-    const next = peek(cur, "default");
-    if (!isClient(next)) {
-      break;
-    }
-    cur = next;
-  }
-  return isClient(cur) ? cur : null;
-}
-
-function isClient(v: unknown): v is HyperDXClient {
-  return (
-    typeof peek(v, "init") === "function" &&
-    typeof peek(v, "recordException") === "function"
-  );
-}
-
-// A module namespace object may throw on an absent key (strict ESM
-// interop shims and test doubles do), and "absent" is an answer here.
-function peek(obj: unknown, key: string): unknown {
-  try {
-    return (obj as Record<string, unknown>)[key];
-  } catch {
-    return undefined;
-  }
 }
 
 /** The tracer to open manual spans on. Resolves HyperDX's provider once it is running. */

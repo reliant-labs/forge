@@ -306,26 +306,12 @@ func lintPipeline() []linterStep {
 		// severity dial, which is what a project downgrades or disables —
 		// so `warn` mode returns nil here and never trips this gate.
 		{
-			name:    "frontend typecheck",
-			gates:   true,
-			gatesIn: func(rc *lintRunCtx) bool { return typecheckGates(rc.cfg) },
-			scope:   scopeByFile,
-			shouldRun: func(rc *lintRunCtx) (bool, string) {
-				if rc.skipFrontends {
-					return false, "--skip-frontends — skipping frontend typecheck"
-				}
-				if rc.cfg != nil && rc.cfg.Lint.Frontend.EffectiveTypecheck() == "off" {
-					return false, "lint.frontend.typecheck is \"off\" — skipping frontend typecheck"
-				}
-				// No declared frontend and no frontends/ directory: a clean
-				// silent no-op, not a finding. A backend-only project must
-				// not be told about a lane that does not apply to it.
-				if len(frontendTypecheckTargets(rc.cfg)) == 0 {
-					return false, ""
-				}
-				return true, ""
-			},
-			collect: collectFrontendTypecheckJSON,
+			name:      "frontend typecheck",
+			gates:     true,
+			gatesIn:   func(rc *lintRunCtx) bool { return typecheckGates(rc.cfg) },
+			scope:     scopeByFile,
+			shouldRun: shouldRunFrontendTypecheck,
+			collect:   collectFrontendTypecheckJSON,
 		},
 
 		// 5c. Frontend lockfile drift. A package.json whose dependency
@@ -1085,5 +1071,60 @@ func dbGrantsShouldRun(rc *lintRunCtx) (bool, string) {
 	if rc.cfg == nil {
 		return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
 	}
+	if rc.scope != nil {
+		if why := dbGrantsDescriptorGap(rc.cwd); why != "" {
+			return false, "skipping db-grants lint under --scope: " + why +
+				"; run `forge generate`, then an unscoped `forge lint` before merging"
+		}
+	}
 	return true, ""
+}
+
+// shouldRunFrontendTypecheck gates the frontend typecheck lane. Its own
+// function so lintPipeline's step table stays within gocognit's budget.
+func shouldRunFrontendTypecheck(rc *lintRunCtx) (bool, string) {
+	if rc.skipFrontends {
+		return false, "--skip-frontends — skipping frontend typecheck"
+	}
+	if rc.cfg != nil && rc.cfg.Lint.Frontend.EffectiveTypecheck() == "off" {
+		return false, "lint.frontend.typecheck is \"off\" — skipping frontend typecheck"
+	}
+	// No declared frontend and no frontends/ directory: a clean
+	// silent no-op, not a finding. A backend-only project must
+	// not be told about a lane that does not apply to it.
+	targets := frontendTypecheckTargets(rc.cfg)
+	if len(targets) == 0 {
+		return false, ""
+	}
+	// A --scope that names no path inside any frontend cannot
+	// report a single typecheck finding (the lane is by file),
+	// so running it — a dependency install and a whole-frontend
+	// tsc — is work the scoped run was asked not to do.
+	if !rc.scope.reachesAnyDir(frontendTargetDirs(targets)) {
+		return false, "--scope reaches no frontend — skipping frontend typecheck"
+	}
+	return true, ""
+}
+
+// dbGrantsDescriptorGap says why the proto `forge:secret` markers cannot be
+// read in projectDir, or "" when they can (or there are no protos to read).
+//
+// Unscoped, a missing descriptor fails the lane (forge-db-grants-unverified):
+// a whole-project gate must not pass over a check that did not run. Under
+// --scope it skips instead, naming why (forge#2282). A scoped run is the
+// inner loop on a slice of the tree, often in a fresh worktree that has not
+// run `forge generate`, and the verdict already says a scoped pass is not a
+// merge gate.
+func dbGrantsDescriptorGap(projectDir string) string {
+	if !dirExists(filepath.Join(projectDir, protoDirDefault)) {
+		return ""
+	}
+	services, err := codegen.ParseReadOnlyGrantsServices(projectDir)
+	switch {
+	case err != nil:
+		return "the forge descriptor (" + codegen.DescriptorDir + "/) could not be read or extracted from proto/: " + err.Error()
+	case services == nil:
+		return codegen.DescriptorDir + "/ is missing, so the proto `// forge:secret` markers cannot be read"
+	}
+	return ""
 }

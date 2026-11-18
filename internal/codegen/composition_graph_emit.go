@@ -469,6 +469,11 @@ func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView
 	for _, n := range nodes {
 		byName[n.Name] = n
 	}
+	// A left-out manager cannot register its catalogue: emitting its types
+	// and registrations would import the very helpers scope left out.
+	if byName["Operators"] == nil {
+		opsView = nil
+	}
 	gv := graphGenView{Module: module, Roots: make([]graphRootView, len(rootViews)), Operators: opsView}
 	for i, rv := range rootViews {
 		if !rv.ServesProbes {
@@ -521,6 +526,14 @@ func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *g
 	f := graphComposeFile{existing: string(raw)}
 	if disownedFilePresent(in.Checksums, composeRel, composeAbs) {
 		f.compose, f.disowned = f.existing, true
+		// Disowning forbids reconciliation, not analysis of the owned
+		// expressions. Apply construction scope to those exact bytes too.
+		if scope != nil {
+			var err error
+			if f.unbuilt, err = scope(f.compose, nil); err != nil {
+				return graphComposeFile{}, err
+			}
+		}
 		return f, nil
 	}
 	out, problems, err := reconcileGraphCompose(f.existing, nodes, resolver)

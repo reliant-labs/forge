@@ -15,10 +15,11 @@ import (
 // Bun engine (epic Phase 2): the query/CRUD engine is uptrace/bun. The
 // canonical accessor is Bun(), which returns a bun.IDB — generated ops
 // build their SELECT/INSERT/UPDATE/DELETE on Bun's typed query builders
-// off this handle. The raw escape hatch (Exec/Query/QueryRow) wraps
-// Bun's IConn, preserved here so user-owned handlers can run hand-written
-// SQL and so the kept schema-truth machinery (introspect/differ/
-// migration) keeps a database/sql seam.
+// off this handle. The raw escape hatch (Exec/Query/QueryRow) goes to the
+// database/sql pool or transaction underneath — postgres $1, $2, …
+// placeholders, not bun's `?` — preserved here so user-owned handlers can
+// run hand-written SQL and so the kept schema-truth machinery (introspect/
+// differ/migration) keeps a database/sql seam.
 type Context interface {
 	// Bun returns the underlying bun.IDB. Generated CRUD functions build
 	// their queries on it (db.Bun().NewSelect()/NewInsert()/...). It is
@@ -26,15 +27,27 @@ type Context interface {
 	// IConn methods below.
 	Bun() bun.IDB
 
-	// Exec executes a query without returning any rows. Thin wrapper over
-	// bun's ExecContext — the raw-SQL path for user handlers.
+	// Exec executes a query without returning any rows — the raw-SQL path
+	// for user handlers. It is database/sql, not bun: the text reaches
+	// postgres as written, so placeholders are postgres's $1, $2, …, and
+	// `?` stays postgres's jsonb operator:
+	//
+	//	db.Exec(ctx, `UPDATE notes SET body = $1 WHERE id = $2`, body, id)
+	//
+	// For bun's `?` placeholders use the bun path instead:
+	// db.Bun().NewRaw(`... = ?`, v).Exec(ctx) (or .Scan(ctx, &dst)). A
+	// statement with args, no $N and a `?` is refused with
+	// ErrQuestionPlaceholders rather than sent to fail as a 42601 syntax
+	// error.
 	Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 
-	// Query executes a query that returns rows (raw-SQL path).
+	// Query executes a query that returns rows (raw-SQL path; $N
+	// placeholders, as for Exec).
 	Query(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 
 	// QueryRow executes a query expected to return at most one row
-	// (raw-SQL path).
+	// (raw-SQL path; $N placeholders, as for Exec). A refused statement's
+	// ErrQuestionPlaceholders comes back from the row's Scan.
 	QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row
 
 	// RunTransaction executes fn inside a transaction, committing when it

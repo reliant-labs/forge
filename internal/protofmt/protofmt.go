@@ -202,7 +202,7 @@ func Format(ctx context.Context, bin string, src []byte) ([]byte, error) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	in := filepath.Join(dir, "in.proto")
-	if err := os.WriteFile(in, src, 0o600); err != nil {
+	if err := atomicfile.WriteFile(in, src, 0o600); err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, bin, "format", in)

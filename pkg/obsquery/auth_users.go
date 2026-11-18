@@ -123,22 +123,42 @@ func newUsersSource(table, to, scope, evidence string) string {
 //	EnvId, ReportsSignups UInt8, DataFrom DateTime64(9), DecidedFrom DateTime64(9)
 //
 // DataFrom is the environment's earliest such row. DecidedFrom is the moment
-// from which NewUsersSource tells a new user from a returning one: the epoch
-// when the environment reports sign-ups (they decide it), else DataFrom plus
-// FirstSeenGraceDays. Before DecidedFrom a user's first event cannot say
-// whether they are new, so NewUsersSource counts them returning; a range that
-// starts before DecidedFrom is only partly decided, and one that ends at or
-// before it is not decided at all. scope is NewUsersSource's.
+// from which NewUsersSource tells a new user from a returning one. When the
+// environment reports sign-ups it is the earliest auth_signed_up still
+// retained (within MaxSeenTotalDays before to): a user who signed up before
+// the environment began reporting sign-ups has none, so NewUsersSource counts
+// them returning. Otherwise it is DataFrom plus FirstSeenGraceDays: before
+// then a user's first event cannot say whether they are new, so
+// NewUsersSource counts them returning. Either way a range that starts before
+// DecidedFrom is only partly decided, and one that ends at or before it is
+// not decided at all (which sign-ups, always reported before to, never are).
+// scope is NewUsersSource's.
 func NewUsersDecidedFrom(table, to, scope string) string {
 	return newUsersDecidedFrom(table, to, scope, UserActivityEvidence)
 }
 
 // newUsersDecidedFrom is NewUsersDecidedFrom over evidence (NewUsersSource's).
+// The window's users (k = 'u') carry DataFrom and whether the environment
+// reports sign-ups; one row per environment (k = 's') carries its earliest
+// sign-up over the whole retention, which reaches further back than the
+// window, so a range as long as the window is not mistaken for one that
+// starts before sign-ups were reported.
 func newUsersDecidedFrom(table, to, scope, evidence string) string {
-	return "SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, min(first_at) AS DataFrom,\n" +
-		"       if(max(has_signup) = 1, toDateTime64(0, 9), min(first_at) + INTERVAL " + strconv.Itoa(FirstSeenGraceDays) + " DAY) AS DecidedFrom\n" +
-		"FROM (\n" + newUsersPerUser(table, to, scope, evidence) + ")\n" +
-		"GROUP BY EnvId"
+	and := ""
+	if scope != "" {
+		and = " AND " + scope
+	}
+	return "SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, minIf(first_at, k = 'u') AS DataFrom,\n" +
+		"       if(max(has_signup) = 1, minIf(first_at, k = 's'), minIf(first_at, k = 'u') + INTERVAL " + strconv.Itoa(FirstSeenGraceDays) + " DAY) AS DecidedFrom\n" +
+		"FROM (\n" +
+		"  SELECT 'u' AS k, EnvId, first_at, has_signup FROM (\n" + newUsersPerUser(table, to, scope, evidence) + ")\n" +
+		"  UNION ALL\n" +
+		"  SELECT 's' AS k, EnvId, min(Timestamp) AS first_at, toUInt8(0) AS has_signup\n" +
+		"  FROM " + table + "\n" +
+		"  WHERE " + evidence + " AND EventName = '" + string(observe.AuthSignedUp) + "' AND Timestamp >= " + to + " - INTERVAL " + strconv.Itoa(MaxSeenTotalDays) + " DAY AND Timestamp < " + to + and + "\n" +
+		"  GROUP BY EnvId)\n" +
+		"GROUP BY EnvId\n" +
+		"HAVING countIf(k = 'u') > 0"
 }
 
 // newUsersPerUser is the read NewUsersSource and NewUsersDecidedFrom share:
@@ -201,12 +221,15 @@ type EnvUserActivity struct {
 	Clients []string
 	// NewRule is how New was counted.
 	NewRule NewUsersRule
-	// NewDecidedFrom is, under NewUsersFirstSeen, the moment from which
-	// Current's New tells a new user from a returning one
-	// (NewUsersDecidedFrom): a user first seen before it is counted
-	// returning, because the data, not the user, begins there. Zero when
-	// sign-ups decide New, or the window holds no rows. NewDecided reads it
-	// against the window ([Scope.Start, Scope.End)).
+	// NewDecidedFrom is the moment from which Current's New tells a new user
+	// from a returning one (NewUsersDecidedFrom). Under NewUsersSignups it is
+	// the environment's earliest retained sign-up: a user who signed up
+	// before it reported sign-ups has no sign-up, and is counted returning.
+	// Under NewUsersFirstSeen a user first seen before it is counted
+	// returning, because the data, not the user, begins there. Zero when the
+	// window holds no rows. NewDecided reads it against the window
+	// ([Scope.Start, Scope.End)): NewDecidedPart is the case a reader labels
+	// "since <NewDecidedFrom>".
 	NewDecidedFrom time.Time
 	// PreviousNewDecidedFrom is NewDecidedFrom for Previous (the window of
 	// the range's length before Scope.Start).
@@ -458,13 +481,10 @@ func (q UserActivityQuery) Parse(rows Rows) ([]EnvUserActivity, error) {
 		case "rule":
 			if flag == 1 {
 				e.NewRule = NewUsersSignups
-			} else {
-				e.NewDecidedFrom = decidedFrom(firstAt)
 			}
+			e.NewDecidedFrom = decidedFrom(firstAt)
 		case "rule_prev":
-			if flag == 0 {
-				e.PreviousNewDecidedFrom = decidedFrom(firstAt)
-			}
+			e.PreviousNewDecidedFrom = decidedFrom(firstAt)
 		case "seen":
 			n := int64(active)
 			e.SeenTotal = &n
@@ -492,8 +512,7 @@ func (q UserActivityQuery) Parse(rows Rows) ([]EnvUserActivity, error) {
 	return out, nil
 }
 
-// decidedFrom is a DecidedFrom column in UTC; zero for the epoch (sign-ups
-// decide).
+// decidedFrom is a DecidedFrom column in UTC; zero for the epoch (no rows).
 func decidedFrom(t time.Time) time.Time {
 	if t.IsZero() || t.Unix() == 0 {
 		return time.Time{}

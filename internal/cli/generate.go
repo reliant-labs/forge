@@ -123,8 +123,12 @@ Hooks:
   them, and says so.
   FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
   core.hooksPath=.githooks in your clone. FORGE_NO_HOOKS=1 is its older name
-  and means the same. Neither stops forge pointing the clone's merge driver
-  for generated files at the pinned forge; FORGE_NO_MERGE_DRIVER=1 does.
+  and means the same. Neither is about the clone's merge driver for
+  generated files: generate leaves git config alone and says once when the
+  clone has no usable driver ('forge merge-driver install' wires it), unless
+  forge.yaml says git: {merge_driver: auto}, or says nothing in a clone that
+  already has forge's driver: then it keeps the driver pointed at the pinned
+  forge ('manual' stops that). FORGE_NO_MERGE_DRIVER=1 silences both.
 
 Skipping:
   A full run that changes nothing records the tree as a verified fixed point
@@ -146,7 +150,7 @@ Examples:
   forge generate --check    # Run generate into a tmpdir; exit 1 if it would change the tree (CI guard)
   forge generate --no-cache # Run every step even if nothing changed since the last verified run
   forge generate --explain  # Print per-file provenance log after generate
-  forge generate --verbose  # Print one line per gate-off skipped step
+  forge generate --verbose  # Also print routine lines (skipped steps, pinned-tool resolution)
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
@@ -296,7 +300,7 @@ func newGenerateCmd() *cobra.Command {
 	// changed nothing — the long form was declared without a shorthand
 	// precisely to dodge that collision. The root flag is gone; the
 	// shorthand belongs to the command that actually consumes it.
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print one line per gate-off skipped step ('⏩ skipped: <step name> (<reason>)'). Default is silent skip.")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Also print routine lines: one per gate-off skipped step ('⏩ skipped: <step name> (<reason>)') and which pinned build each codegen tool resolved to ('📌 <tool> resolved to <version>'). Default prints progress and what needs action only.")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
 	// --dry-run is the spelling every other forge verb uses for "show me,
 	// don't do it" (`forge scaffold`, `disown`, `secrets`, `project upgrade`).

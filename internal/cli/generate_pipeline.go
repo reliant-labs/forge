@@ -2626,6 +2626,7 @@ func stepCRDKCL(ctx *pipelineContext) error {
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
+	defer ctx.forgetFailedRenders()
 	return ctx.warnOrFail("CRD KCL manifest generation",
 		generateCRDKCL(ctx.AbsPath, filepath.Join(ctx.AbsPath, kclDir), ctx.Checksums))
 }
@@ -2797,6 +2798,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // proto defaults for each environment on disk. The env's `main.k` imports
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
+	defer ctx.forgetFailedRenders()
 	return ctx.warnOrFail("per-env deploy config generation",
 		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }

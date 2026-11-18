@@ -39,6 +39,7 @@ func renderClickstackCompose(t *testing.T) (clickstackCompose, string) {
 	out, err := ProjectTemplates().Render("docker-compose.yml.tmpl", struct {
 		ProjectName string
 		HasFrontend bool
+		NoIdentity  bool
 	}{ProjectName: "shopdemo"})
 	if err != nil {
 		t.Fatalf("render docker-compose.yml.tmpl: %v", err)

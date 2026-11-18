@@ -48,12 +48,12 @@ import (
 type PushAccessVerdict int
 
 const (
-	// PushAccessUnknown: the probe could not get an authoritative answer.
+	// PushAccessUnknown means the probe could not get an authoritative answer.
 	PushAccessUnknown PushAccessVerdict = iota
-	// PushAccessGranted: the realm issued a token granting push on every
+	// PushAccessGranted means the realm issued a token granting push on every
 	// repository asked about.
 	PushAccessGranted
-	// PushAccessDenied: the realm refused the credential, or granted no
+	// PushAccessDenied means the realm refused the credential, or granted no
 	// push on at least one repository (Missing).
 	PushAccessDenied
 )
@@ -142,7 +142,7 @@ func probePushAccess(ctx context.Context, client *http.Client, credential auth.C
 	if err != nil {
 		return PushAccess{Reason: fmt.Sprintf("could not reach the token realm %s: %v", realm, err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:

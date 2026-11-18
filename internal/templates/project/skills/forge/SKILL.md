@@ -1,12 +1,16 @@
 ---
 name: forge
-description: Start here for any project — static site, SPA, landing page, docs site, web/mobile app or API. The two paths (frontend-only sites, and apps with an API), the four commands that print forge's whole surface, the pre-flight checklist that stops you hand-writing what forge already scaffolds, and the rules; greenfield end to end and proto authoring are one load away.
+description: Load first in any Reliant Forge project — static site, SPA, landing page, docs site, web/mobile app or API. What the project gets with no setup (traces, per-endpoint latency and errors, alerts, release health checks, build-once deploys), the two paths, the commands that print forge's whole surface, the pre-flight checklist that stops you hand-writing what forge already scaffolds, and the rules.
 ---
 
-# Forge — start here
+# Reliant Forge — start here
 
 The essentials for any forge project are here; depth is named at the point you
 would need it — load it then, not before.
+
+<!-- @benefits glance app -->
+
+A frontend-only site's list: `deploy/static-site`.
 
 pnpm: `migrations/v1.0.0/pnpm`.
 

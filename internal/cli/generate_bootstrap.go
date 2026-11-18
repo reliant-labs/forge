@@ -140,6 +140,25 @@ func generateHybridComposition(services []codegen.ServiceDef, packages []codegen
 	// generateCmdGroups + stepCmdGroups.
 
 	fmt.Println("  ✅ Generated internal/app composition layer (compose.go + mounts_services.go + lifecycle.go)")
+
+	// Roots adopted one at a time beside the legacy composition
+	// (forge#2285): the graph of exactly what they reach, from their own
+	// constructor file. Deploy config keeps the legacy env (no roots
+	// returned) until the project is in graph mode.
+	if codegen.ProjectComposition(projectDir) == codegen.CompositionMixed {
+		if err := codegen.GenerateGraph(codegen.GraphGenInput{
+			GenContext:      codegen.GenContext{ProjectDir: projectDir, ModulePath: modulePath, Checksums: cs},
+			Services:        services,
+			Packages:        packages,
+			Workers:         workers,
+			Operators:       operators,
+			WebhookServices: webhookServices,
+			Mixed:           true,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to generate the adopted roots' composition graph (internal/app/%s): %w", codegen.MixedComposeFile, err)
+		}
+		fmt.Printf("  ✅ Generated the adopted roots' composition graph beside the legacy composition (%s + graph_gen.go + routes_gen.go)\n", codegen.MixedComposeFile)
+	}
 	return nil, nil
 }
 

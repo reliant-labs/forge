@@ -532,6 +532,9 @@ func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	if err != nil || scope != SkillScopeForge {
 		return body, scope, err
 	}
+	if body, err = expandBenefitDirectives(body); err != nil {
+		return nil, scope, fmt.Errorf("skill %s: %w", skillPath, err)
+	}
 	binaryVersion := runningForgeVersion()
 	projectVersion := projectForgeVersionAt(projectRoot)
 	if !isForgeVersionSkew(binaryVersion, projectVersion) {

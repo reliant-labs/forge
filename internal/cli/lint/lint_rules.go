@@ -118,7 +118,7 @@ func gradableRules() []string {
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
 		// auth scaffold
-		ruleOpenSignup, ruleIdentityMethods,
+		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
@@ -126,6 +126,8 @@ func gradableRules() []string {
 		// schema markers
 		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
+		// proto formatting (the pre-commit buf-format hook's check)
+		ruleProtoFormat,
 		// write policy
 		ruleCreateRequestNullability, computedFieldRuleID, readOnlyFieldRuleID, "forgeconv-guarded-field-written",
 		// fixtures, SQL

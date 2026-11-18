@@ -1,12 +1,14 @@
 ---
 name: deploy/hosting
-description: The scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, why the API is one workload (`_api`, the binary's `server`) so the browser reaches every service at one origin, rebinding to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
+description: Reliant hosting for Reliant Forge projects: the scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, why the API is one workload (`_api`, the binary's `server`) so the browser reaches every service at one origin, rebinding to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
 ---
 
 # Hosted by default
 
 `forge project new` scaffolds `staging` and `prod` hosted on the forge control
 plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
+
+<!-- @benefits glance app -->
 
 | In the env | What it is |
 |---|---|

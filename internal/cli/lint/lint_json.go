@@ -323,6 +323,12 @@ func jsonRunOptions(flags lintFlags, allow skipAllowances, off map[string]bool, 
 // once per lane. handled=false means no lane flag was set; it is distinct
 // from a nil report, which a selected linter can legitimately return
 // alongside an error.
+//
+// scope is --scope (nil: the whole project). The caller narrows the REPORT to
+// it afterwards; a lane that WRITES under --fix takes it here too, so its
+// writes stay inside the scope.
+//
+//nolint:funlen // flat dispatch table: one single-statement arm per lane, so it grows by one with every lane
 func collectSingleLinterJSON(
 	ctx context.Context,
 	flags lintFlags,
@@ -330,6 +336,7 @@ func collectSingleLinterJSON(
 	cwd string,
 	store *projectstore.Store,
 	cfg *config.ProjectConfig,
+	scope *lintScope,
 ) (*lintJSONReport, bool, error) {
 	// Each arm returns through this closure so the switch stays a flat
 	// one-line-per-linter dispatch table.
@@ -430,6 +437,10 @@ func collectSingleLinterJSON(
 		return report(collectSlowTestsJSON(ctx, paths))
 	case flags.testWaits:
 		return report(collectTestWaitsJSON(cwd))
+	case flags.protoFormat:
+		// `forge lint --proto-format --fix` writes buf's output (--json
+		// refuses --fix, so it stays detect-only).
+		return report(collectProtoFormatJSON(ctx, cwd, formatKeep(scope, paths), flags.autoFix()))
 	}
 
 	return nil, false, nil

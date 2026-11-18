@@ -42,7 +42,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
-				"forge_version", "generate", "harness", "k8s",
+				"forge_version", "generate", "git", "harness", "k8s",
 				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
 			},
 		},
@@ -193,6 +193,13 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			name: "UpgradeConfig",
 			typ:  reflect.TypeFor[UpgradeConfig](),
 			want: []string{"vendored_contracts"},
+		},
+		{
+			// merge_driver: read by internal/cli/merge_generated.go
+			// (ensureGeneratedMergeDriverTo) before every writing command.
+			name: "GitConfig",
+			typ:  reflect.TypeFor[GitConfig](),
+			want: []string{"merge_driver"},
 		},
 		{
 			name: "VendoredContract",

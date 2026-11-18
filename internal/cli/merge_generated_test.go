@@ -231,7 +231,7 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 		t.Fatalf("git init: %v\n%s", err, out)
 	}
 	project := filepath.Join(repo, "svc")
-	writeTreeFileT(t, filepath.Join(project, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(project, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
 	prev := mergeDriverExecutable
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge bin/forge", nil }
 	t.Cleanup(func() { mergeDriverExecutable = prev })
@@ -287,6 +287,94 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 
 }
 
+// forge#2232: by default a writing command changes no git config. It says,
+// once per checkout and forge version, that the clone merges forge's files as
+// plain text and how to install the driver; a clone whose driver works hears
+// nothing. `git: {merge_driver: auto}` in forge.yaml restores the wiring.
+func TestEnsureGeneratedMergeDriver_DefaultWritesNoGitConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	prevExe, prevNotice, prevID := mergeDriverExecutable, mergeDriverNoticeDir, mergeDriverIdentity
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverNoticeDir, mergeDriverIdentity = prevExe, prevNotice, prevID })
+	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
+	notices := t.TempDir()
+	mergeDriverNoticeDir = func() (string, error) { return notices, nil }
+	mergeDriverIdentity = func() string { return "pin-a" }
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
+		t.Setenv(e, "")
+	}
+
+	for name, yamlTail := range map[string]string{"unset": "", "manual": "git:\n  merge_driver: manual\n"} {
+		t.Run(name, func(t *testing.T) {
+			repo := t.TempDir()
+			gitT(t, repo, "init", "-q", "-b", "main")
+			writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n"+yamlTail)
+			configBefore, _ := os.ReadFile(filepath.Join(repo, ".git", "config"))
+
+			var first strings.Builder
+			ensureGeneratedMergeDriverTo(&first, repo)
+			if after, _ := os.ReadFile(filepath.Join(repo, ".git", "config")); string(after) != string(configBefore) {
+				t.Errorf("a writing command changed the clone's git config:\n--- before\n%s\n--- after\n%s", configBefore, after)
+			}
+			if _, err := os.Stat(filepath.Join(repo, ".git", "info", "attributes")); err == nil {
+				t.Error("a writing command wrote info/attributes")
+			}
+			for _, want := range []string{"as plain text", "merge-driver install", "merge_driver: auto", "once per checkout"} {
+				if !strings.Contains(first.String(), want) {
+					t.Errorf("the notice does not say %q:\n%s", want, first.String())
+				}
+			}
+
+			var second strings.Builder
+			ensureGeneratedMergeDriverTo(&second, repo)
+			if second.Len() != 0 {
+				t.Errorf("the notice is said once per checkout and forge version, said again:\n%s", second.String())
+			}
+			// A new forge version checks again.
+			mergeDriverIdentity = func() string { return "pin-b" }
+			t.Cleanup(func() { mergeDriverIdentity = func() string { return "pin-a" } })
+			var third strings.Builder
+			ensureGeneratedMergeDriverTo(&third, repo)
+			if !strings.Contains(third.String(), "merge-driver install") {
+				t.Errorf("a new forge version must check the clone again, said:\n%s", third.String())
+			}
+		})
+	}
+
+	// A clone whose driver works hears nothing.
+	mergeDriverIdentity = func() string { return "pin-c" }
+	repo := t.TempDir()
+	gitT(t, repo, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	bin := filepath.Join(t.TempDir(), "forge")
+	writeTreeFileT(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitT(t, repo, "config", "merge.forge-generated.driver", driverCommandLine(bin, "forge"))
+	if _, ok := writeMergeAttributes(repo); !ok {
+		t.Fatal("precondition: routes written")
+	}
+	var wired strings.Builder
+	ensureGeneratedMergeDriverTo(&wired, repo)
+	if wired.Len() != 0 {
+		t.Errorf("a clone with a working driver was told to install one:\n%s", wired.String())
+	}
+
+	// auto wires it, as before.
+	auto := t.TempDir()
+	gitT(t, auto, "init", "-q", "-b", "main")
+	writeTreeFileT(t, filepath.Join(auto, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
+	ensureGeneratedMergeDriverTo(io.Discard, auto)
+	if got := gitConfig(t, auto, "merge.forge-generated.driver"); !strings.HasPrefix(got, "[ -x '/opt/forge/bin/forge' ]") {
+		t.Errorf("git.merge_driver: auto did not wire the driver: %q", got)
+	}
+}
+
 // FORGE_NO_MERGE_DRIVER skips the driver. FORGE_NO_GIT_HOOKS (and its old
 // spelling FORGE_NO_HOOKS) is about hooks and does not: reliant's pin script
 // sets FORGE_NO_HOOKS, and with it skipping the driver the clone kept the
@@ -308,7 +396,7 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 		if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
 			t.Fatalf("git init: %v\n%s", err, out)
 		}
-		writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: o\nmodule_path: example.com/o\n")
+		writeTreeFileT(t, filepath.Join(dir, "forge.yaml"), "name: o\nmodule_path: example.com/o\ngit:\n  merge_driver: auto\n")
 		return dir
 	}
 	configured := func(dir string) string {
@@ -386,7 +474,7 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 	}
 	repo := t.TempDir()
 	gitT(t, repo, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
 	writeTreeFileT(t, filepath.Join(repo, "README"), "x\n")
 	gitT(t, repo, "add", "-A")
 	gitT(t, repo, "commit", "-qm", "init")
@@ -476,7 +564,7 @@ func TestEnsureGeneratedMergeDriver_OneCommandServesEveryWorktree(t *testing.T) 
 	}
 	repo := t.TempDir()
 	gitT(t, repo, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
 	writeTreeFileT(t, filepath.Join(repo, "README"), "x\n")
 	gitT(t, repo, "add", "-A")
 	gitT(t, repo, "commit", "-qm", "init")
@@ -570,7 +658,7 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	}
 	repo := t.TempDir()
 	gitT(t, repo, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
 	attrs, err := os.ReadFile(filepath.Join("..", "templates", "project", ".gitattributes"))
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +689,7 @@ func TestEnsureGeneratedMergeDriver_CommittedRoutesNeedNoSharedCopy(t *testing.T
 	// A project that commits no routes still gets the shared block.
 	repo2 := t.TempDir()
 	gitT(t, repo2, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(repo2, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
+	writeTreeFileT(t, filepath.Join(repo2, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
 	ensureGeneratedMergeDriverTo(io.Discard, repo2)
 	if data, _ := os.ReadFile(filepath.Join(repo2, ".git", "info", "attributes")); !strings.Contains(string(data), mergeAttributesBegin) {
 		t.Errorf("a project with no committed routes lost them:\n%s", data)

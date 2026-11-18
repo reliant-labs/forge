@@ -42,13 +42,19 @@ package cli
 //
 // Wiring needs nothing committed, and touches only the project's own
 // repository (the project directory is the top of its work tree):
-//   - every forge command that writes generated or state files (generate,
-//     scaffold, disown, …: cmdutil.ConfiguresClone), and not on a --dry-run,
-//     writes the driver's command into the repository's config
-//     (ensureGeneratedMergeDriver) when it has none that works. Read-only and
-//     slot commands never write there. One command serves every worktree,
-//     whatever each pins: the driver hands each merge to the forge the
-//     merged file's project pins (merge_driver_pin.go).
+//   - `forge merge-driver install` writes the driver's command into the
+//     repository's config. That is the one writer by default (forge#2232):
+//     the config is shared by every linked worktree of the clone, and a
+//     command that changes it as a side effect surprised agents running under
+//     "never update git config". A writing command (generate, scaffold,
+//     upgrade, …: cmdutil.ConfiguresClone) only says, once per checkout and
+//     forge version, when the clone has no usable driver.
+//   - forge.yaml `git: {merge_driver: auto}` restores the old wiring: every
+//     writing command, and not on a --dry-run, writes the driver's command
+//     (ensureGeneratedMergeDriver) when the clone has none that works.
+//     Read-only and slot commands never write there. One command serves
+//     every worktree, whatever each pins: the driver hands each merge to the
+//     forge the merged file's project pins (merge_driver_pin.go).
 //   - the attributes that route forge's files to the driver are a committed
 //     .gitattributes in a scaffolded project. A project adopted in place,
 //     which never got forge's .gitattributes, gets the same routes in the
@@ -70,6 +76,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,6 +97,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/config"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -416,7 +425,12 @@ func newMergeGeneratedCmd() *cobra.Command {
 // hand-off made that unnecessary, so a per-worktree command an earlier forge
 // wrote is removed here and the shared one applies.
 //
-// FORGE_NO_MERGE_DRIVER=1 is the one opt-out. FORGE_NO_GIT_HOOKS (and
+// It wires only for a project whose forge.yaml says `git: {merge_driver:
+// auto}`. Otherwise it writes no git config and, once per checkout and forge
+// version, says when the clone's driver is missing or unusable
+// (noticeUnwiredMergeDriver; forge#2232).
+//
+// FORGE_NO_MERGE_DRIVER=1 silences both. FORGE_NO_GIT_HOOKS (and
 // FORGE_NO_HOOKS) used to skip the driver as well, and that is how
 // reliant's pin script — which sets FORGE_NO_HOOKS to leave core.hooksPath
 // alone — left the driver naming the previous pin's forge: the driver is
@@ -431,7 +445,56 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 	if os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
+	if !config.ReadGitConfig(root).AutoMergeDriver() {
+		noticeUnwiredMergeDriver(w, root)
+		return
+	}
 	wireGeneratedMergeDriver(w, root, false)
+}
+
+// mergeDriverNoticeDir is where noticeUnwiredMergeDriver records the
+// checkouts it has checked, one empty file per checkout and forge identity. It
+// is outside the repository, so the check writes nothing into the clone. A
+// seam for tests.
+var mergeDriverNoticeDir = func() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "forge", "merge-driver-checked"), nil
+}
+
+// noticeUnwiredMergeDriver checks, once per checkout and forge identity, that
+// the clone's merge driver can merge forge's files, and says how to install it
+// when it cannot. It changes no git config. A project inside another
+// repository is not checked: the automatic wiring never touched one either.
+func noticeUnwiredMergeDriver(w io.Writer, root string) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return
+	}
+	dir, err := mergeDriverNoticeDir()
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256([]byte(abs + "\x00" + mergeDriverIdentity()))
+	stamp := filepath.Join(dir, hex.EncodeToString(sum[:12]))
+	if _, err := os.Stat(stamp); err == nil {
+		return
+	}
+	top := gitTrimmed(root, "rev-parse", "--show-toplevel")
+	if top == "" || !sameDirectory(top, root) {
+		return
+	}
+	if r := checkMergeDriver(root); len(r.problems) > 0 {
+		fmt.Fprintf(w, "forge: git merges forge's generated files in this clone as plain text: %s.\n"+
+			"  Wire the merge driver once per clone with `%s merge-driver install` (it changes the clone's git config, shared by every worktree),\n"+
+			"  or set `git: {merge_driver: auto}` in forge.yaml to have writing commands keep it wired. Said once per checkout and forge version.\n",
+			r.problems[0], cmdutil.Name())
+	}
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		_ = atomicfile.WriteFile(stamp, nil, 0o644)
+	}
 }
 
 // wireGeneratedMergeDriver is ensureGeneratedMergeDriverTo without the

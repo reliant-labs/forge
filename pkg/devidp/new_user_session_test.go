@@ -186,6 +186,7 @@ type neighbour struct {
 	name       string
 	email      string // the existing account's address
 	loginName  string // its login name ("" = its address)
+	username   string // its username ("" = its login name)
 	newAddress string // the address the new account signs up with
 	// routeRefuses: the policy sign-up refuses the address as already
 	// registered (its pre-check sees the neighbour), so no account is made.
@@ -193,7 +194,7 @@ type neighbour struct {
 }
 
 var neighbours = []neighbour{
-	{name: "login name equal to the new address", email: "bob.personal@else.com", loginName: "bob@acme.com", newAddress: "bob@acme.com"},
+	{name: "login name equal to the new address", email: "bob.personal@else.com", loginName: "bob@acme.com", username: "bob", newAddress: "bob@acme.com"},
 	{name: "same address, other case", email: "BOB@acme.com", loginName: "bob-old", newAddress: "bob@acme.com", routeRefuses: true},
 	{name: "shared local-part prefix and domain", email: "bob.smith@acme.com", newAddress: "bob@acme.com"},
 	{name: "address extending the new one", email: "bob@acme.com.au", newAddress: "bob@acme.com"},
@@ -207,7 +208,10 @@ func seedNeighbour(t *testing.T, z *fakeZitadel, n neighbour) *fakeUser {
 	other := z.addUser(n.email, true, sharedPassword)
 	if n.loginName != "" {
 		z.mu.Lock()
-		other.loginName = n.loginName
+		other.loginName, other.username = n.loginName, n.loginName
+		if n.username != "" {
+			other.username = n.username // the login name is <username>@<org domain>
+		}
 		z.mu.Unlock()
 	}
 	return other

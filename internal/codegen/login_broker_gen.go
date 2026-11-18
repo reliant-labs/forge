@@ -48,11 +48,6 @@ type LoginBrokerTemplateData struct {
 	// trusted_proxy_hops, how many proxies' X-Forwarded-For entries the
 	// broker's rate limits may trust.
 	TrustedProxyHopsField bool
-	// DatabaseURLField reports whether that config declares database_url:
-	// the database every replica shares, on which the broker serialises an
-	// account's address proofs (devidp.NewPostgresProofLocker, forge#2121).
-	// Without it the broker keeps the in-process lock.
-	DatabaseURLField bool
 }
 
 // Go names of the optional broker fields.
@@ -61,7 +56,6 @@ const (
 	loginPolicyConfigField = "IdpLoginPolicy"
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
-	databaseURLConfigField = "DatabaseUrl"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -151,7 +145,6 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		LoginPolicyField:                      declares(loginPolicyConfigField),
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
-		DatabaseURLField:                      declares(databaseURLConfigField),
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

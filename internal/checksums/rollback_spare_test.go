@@ -166,3 +166,124 @@ func TestRestore_WithoutSettlePointsRewindsEverything(t *testing.T) {
 		t.Errorf("go.mod = %q", got)
 	}
 }
+
+// Review on forge#2329: the rewind fails closed. A path it cannot read is
+// left as is and reported unverified — never overwritten, and never deleted
+// as though it were absent.
+func TestRestore_LeavesAnUnreadablePathAsIs(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file; the unreadable case cannot be built")
+	}
+	root := t.TempDir()
+	seedFile(t, root, "a.go", "package a // pre-run\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	recordPreWrite(root, "a.go")
+	recordPreWrite(root, "born.go")
+	seedFile(t, root, "a.go", "package a // forge\n")
+	seedFile(t, root, "born.go", "package a // forge created me\n")
+	SettleJournal(root)
+	// Another writer's files, which the rewind cannot read.
+	seedFile(t, root, "a.go", "package a // theirs\n")
+	seedFile(t, root, "born.go", "package a // theirs too\n")
+	for _, rel := range []string{"a.go", "born.go"} {
+		full := filepath.Join(root, rel)
+		if err := os.Chmod(full, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(full, 0o644) })
+	}
+
+	res := RestoreRollbackDetailed(root)
+	if want := []string{"a.go", "born.go"}; !reflect.DeepEqual(res.Unverified, want) || len(res.Restored) != 0 {
+		t.Errorf("unverified = %v, restored = %v; want both left as is and reported", res.Unverified, res.Restored)
+	}
+	for rel, want := range map[string]string{"a.go": "package a // theirs\n", "born.go": "package a // theirs too\n"} {
+		full := filepath.Join(root, rel)
+		_ = os.Chmod(full, 0o644)
+		if got := readFileT(t, root, rel); got != want {
+			t.Errorf("%s = %q, want the other writer's bytes untouched", rel, got)
+		}
+	}
+}
+
+// A pre-run file the capture cannot read is never treated as absent (the
+// rewind would delete it): it is unverifiable, and left as is.
+func TestRestore_UnreadableBeforeTheRunIsNotTreatedAsAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file; the unreadable case cannot be built")
+	}
+	root := t.TempDir()
+	seedFile(t, root, "secret.go", "package a // pre-run\n")
+	full := filepath.Join(root, "secret.go")
+	if err := os.Chmod(full, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(full, 0o644) })
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	recordPreWrite(root, "secret.go")
+
+	restored, failed := RestoreRollbackReport(root)
+	if len(restored) != 0 || !reflect.DeepEqual(failed, []string{"secret.go"}) {
+		t.Errorf("restored = %v, failed = %v; want secret.go reported, not restored", restored, failed)
+	}
+	if _, err := os.Lstat(full); err != nil {
+		t.Errorf("the unreadable pre-run file was removed: %v", err)
+	}
+}
+
+// A journaled file another writer replaced with a symlink, or with a
+// directory, is a change: spared and reported, the link never followed or
+// written through, and nothing removed.
+func TestRestore_SparesAFileReplacedByASymlinkOrADirectory(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(target, []byte("package outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedFile(t, root, "linked.go", "package a // pre-run\n")
+	seedFile(t, root, "dir.go", "package a // pre-run\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	for _, rel := range []string{"linked.go", "dir.go", "born_link.go"} {
+		recordPreWrite(root, rel)
+		seedFile(t, root, rel, "package a // forge\n")
+	}
+	SettleJournal(root)
+
+	// Another writer: two paths become symlinks (one forge created), one a
+	// directory with a file of theirs in it.
+	for _, rel := range []string{"linked.go", "born_link.go"} {
+		if err := os.Remove(filepath.Join(root, rel)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(root, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, "dir.go")); err != nil {
+		t.Fatal(err)
+	}
+	seedFile(t, root, "dir.go/theirs.txt", "theirs\n")
+
+	res := RestoreRollbackDetailed(root)
+	if want := []string{"born_link.go", "dir.go", "linked.go"}; !reflect.DeepEqual(res.Spared, want) {
+		t.Errorf("spared = %v, want %v", res.Spared, want)
+	}
+	if len(res.Restored) != 0 || len(res.Failed) != 0 {
+		t.Errorf("restored = %v, failed = %v; want nothing rewound", res.Restored, res.Failed)
+	}
+	for _, rel := range []string{"linked.go", "born_link.go"} {
+		info, err := os.Lstat(filepath.Join(root, rel))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s is no longer the other writer's symlink: %v %v", rel, info, err)
+		}
+	}
+	if got, _ := os.ReadFile(target); string(got) != "package outside\n" {
+		t.Errorf("the rewind wrote through the symlink: %q", got)
+	}
+	if got := readFileT(t, root, "dir.go/theirs.txt"); got != "theirs\n" {
+		t.Errorf("the directory's content was touched: %q", got)
+	}
+}

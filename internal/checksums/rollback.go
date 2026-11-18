@@ -96,13 +96,50 @@ type rollbackEntry struct {
 	// restore rewinds only a path still in that state; one that differs
 	// was changed by another writer after forge's write, and is spared.
 	left forgeLeft
+	// unverifiable marks a path whose pre-run state could not be captured
+	// faithfully: it existed but could not be read, or was not a regular
+	// file (a symlink, a directory). A restore never rewrites or removes
+	// it: it is left as is and reported (forge#2329 review).
+	unverifiable bool
 }
 
-// forgeLeft is the state this run's writers last left a path in.
+// forgeLeft is the state this run's writers last left a path in: absent, or
+// a regular file with these bytes. known=false when it could not be
+// observed, or was not a regular file, and then nothing can show the path
+// is still forge's.
 type forgeLeft struct {
 	known  bool
 	absent bool
 	sum    [sha256.Size]byte
+}
+
+// pathKind is what a path is on disk, observed WITHOUT following a symlink.
+type pathKind int
+
+const (
+	kindAbsent     pathKind = iota // Lstat says it does not exist
+	kindRegular                    // a regular file, read
+	kindOther                      // a symlink, directory, device, ...
+	kindUnreadable                 // exists (or Lstat failed otherwise) but could not be read
+)
+
+// observe reads full's kind and, for a regular file, its bytes. Absence is
+// reported only when Lstat confirms it; a symlink is never followed.
+func observe(full string) (pathKind, []byte) {
+	info, err := os.Lstat(full)
+	switch {
+	case os.IsNotExist(err):
+		return kindAbsent, nil
+	case err != nil:
+		return kindUnreadable, nil
+	case !info.Mode().IsRegular():
+		return kindOther, nil
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return kindUnreadable, nil
+	}
+	return kindRegular, data
 }
 
 // rollbackJournal is the per-run capture set: relPath -> pre-run state.
@@ -211,21 +248,23 @@ func recordPreWrite(root, relPath string) {
 // capture made ahead of an external tool rather than at a forge write.
 func captureEntry(root, relPath string, external bool) {
 	full := filepath.Join(root, relPath)
-	info, statErr := os.Stat(full)
-	if statErr != nil {
-		// Absent (or unreadable) before this run: restore = delete.
+	kind, content := observe(full)
+	switch kind {
+	case kindAbsent:
+		// Confirmed absent before this run: restore = delete.
 		rollbackJournal[relPath] = rollbackEntry{existed: false, external: external}
-		return
+	case kindRegular:
+		mode := os.FileMode(0o644)
+		if info, err := os.Lstat(full); err == nil {
+			mode = info.Mode().Perm()
+		}
+		rollbackJournal[relPath] = rollbackEntry{existed: true, content: content, mode: mode, external: external}
+	default:
+		// There, but not as bytes a restore could put back: unreadable,
+		// or not a regular file. Never treated as absent — a restore would
+		// delete it — and never rewritten: left as is, and reported.
+		rollbackJournal[relPath] = rollbackEntry{existed: true, unverifiable: true, external: external}
 	}
-	content, readErr := os.ReadFile(full)
-	if readErr != nil {
-		// Exists but unreadable — best effort: treat as absent so a
-		// failed run at least removes the half-written forge output rather
-		// than leaving a corrupt file claiming to be pristine.
-		rollbackJournal[relPath] = rollbackEntry{existed: false, external: external}
-		return
-	}
-	rollbackJournal[relPath] = rollbackEntry{existed: true, content: content, mode: info.Mode().Perm(), external: external}
 }
 
 // CaptureExternalWrites journals the paths an external tool is about to
@@ -345,31 +384,24 @@ func SettleJournal(root string) {
 }
 
 // currentState is full's state as a forgeLeft; unknown when it cannot be
-// read, so a restore falls back to rewinding it.
+// read or is not a regular file, so a restore spares it.
 func currentState(full string) forgeLeft {
-	data, err := os.ReadFile(full)
-	switch {
-	case os.IsNotExist(err):
+	switch kind, data := observe(full); kind {
+	case kindAbsent:
 		return forgeLeft{known: true, absent: true}
-	case err != nil:
-		return forgeLeft{}
+	case kindRegular:
+		return forgeLeft{known: true, sum: sha256.Sum256(data)}
 	}
-	return forgeLeft{known: true, sum: sha256.Sum256(data)}
+	return forgeLeft{}
 }
 
-// changedSinceForge reports whether full is no longer in the state this
-// run's writers left it in: another writer changed it after forge did. A
-// path whose state is unknown, or cannot be read now, is not.
-func changedSinceForge(left forgeLeft, full string) bool {
-	if !left.known {
-		return false
-	}
-	data, err := os.ReadFile(full)
-	switch {
-	case os.IsNotExist(err):
+// changedSinceForge reports whether a path observed as (kind, data) is no
+// longer in the state this run's writers left it in: another writer changed
+// it after forge did. The caller has already refused a path that is not
+// absent or a regular file.
+func changedSinceForge(left forgeLeft, kind pathKind, data []byte) bool {
+	if kind == kindAbsent {
 		return !left.absent
-	case err != nil:
-		return false
 	}
 	return left.absent || sha256.Sum256(data) != left.sum
 }
@@ -680,7 +712,7 @@ func RestoreRollback(root string) []string {
 // (RestoreResult.Spared) is one of them.
 func RestoreRollbackReport(root string) (restored, failed []string) {
 	res := RestoreRollbackDetailed(root)
-	failed = append(res.Failed, res.Spared...)
+	failed = append(append(res.Failed, res.Spared...), res.Unverified...)
 	sort.Strings(failed)
 	return res.Restored, failed
 }
@@ -692,9 +724,15 @@ type RestoreResult struct {
 	// Failed could not be put back (a write or delete error).
 	Failed []string
 	// Spared were left alone because another writer changed them after
-	// this run's writers did: rewinding them would destroy that writer's
-	// bytes (forge#2267). They are neither the pre-run nor forge's state.
+	// this run's writers did — new bytes, or a different kind of path (a
+	// symlink, a directory): rewinding them would destroy that writer's
+	// work (forge#2267). They are neither the pre-run nor forge's state.
 	Spared []string
+	// Unverified were left alone because their state could not be
+	// verified — unreadable now or before the run, or with no readable
+	// record of what forge left. A restore fails closed: could not verify,
+	// left as is.
+	Unverified []string
 }
 
 // RestoreRollbackDetailed rewinds the journal like RestoreRollbackReport and
@@ -718,7 +756,22 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 		if entry.external && externalSettled(entry, full) {
 			continue
 		}
-		if changedSinceForge(entry.left, full) && !atPreRunState(entry, full) {
+		// Fail closed. A path whose state cannot be verified — unreadable
+		// now, not a regular file now (a symlink is never followed, written
+		// through or removed), unverifiable before the run, or with no
+		// readable record of what forge left — is left as is and reported.
+		kind, data := observe(full)
+		switch {
+		case kind == kindUnreadable || entry.unverifiable:
+			res.Unverified = append(res.Unverified, relPath)
+			continue
+		case kind == kindOther:
+			res.Spared = append(res.Spared, relPath)
+			continue
+		case !entry.left.known:
+			res.Unverified = append(res.Unverified, relPath)
+			continue
+		case changedSinceForge(entry.left, kind, data) && !atPreRunState(entry, kind, data):
 			res.Spared = append(res.Spared, relPath)
 			continue
 		}
@@ -762,7 +815,13 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	// writer created there, or changed since, is theirs.
 	for _, rel := range createdUnderTrees(root) {
 		full := filepath.Join(root, rel)
-		if !createdByThisRun(rel, full) {
+		switch kind, data := observe(full); {
+		case kind == kindUnreadable:
+			res.Unverified = append(res.Unverified, rel)
+			continue
+		case kind == kindAbsent:
+			continue
+		case kind != kindRegular || !createdByThisRun(rel, data):
 			res.Spared = append(res.Spared, rel)
 			continue
 		}
@@ -782,29 +841,27 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	sort.Strings(restored)
 	sort.Strings(failed)
 	sort.Strings(res.Spared)
+	sort.Strings(res.Unverified)
 	res.Restored, res.Failed = restored, failed
 	return res
 }
 
-// atPreRunState reports whether full is already in the state a restore
-// of entry would put it in — there is nothing to spare then, whoever wrote
-// it.
-func atPreRunState(entry rollbackEntry, full string) bool {
-	return !entryChanged(entry, full)
+// atPreRunState reports whether a path observed as (kind, data) is already
+// in the state a restore of entry would put it in — there is nothing to
+// spare then, whoever wrote it.
+func atPreRunState(entry rollbackEntry, kind pathKind, data []byte) bool {
+	if !entry.existed {
+		return kind == kindAbsent
+	}
+	return kind == kindRegular && bytes.Equal(data, entry.content)
 }
 
-// createdByThisRun reports whether a file under a captured directory, absent
-// from the journal, is one this run's tool created and left as it is now.
-func createdByThisRun(rel, full string) bool {
+// createdByThisRun reports whether a regular file under a captured
+// directory, absent from the journal, holds the bytes this run's tool left
+// there.
+func createdByThisRun(rel string, data []byte) bool {
 	sum, ok := rollbackCreated[rel]
-	if !ok {
-		return false
-	}
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return os.IsNotExist(err)
-	}
-	return sha256.Sum256(data) == sum
+	return ok && sha256.Sum256(data) == sum
 }
 
 // externalSettled reports whether a path captured ahead of an external tool

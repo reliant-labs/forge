@@ -1171,10 +1171,10 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	journaled := checksums.JournaledPaths()
 	born := checksums.ScaffoldsCreatedThisRun()
 	res := checksums.RestoreRollbackDetailed(absPath)
-	restored, failed, spared := res.Restored, res.Failed, res.Spared
-	// A spared path is not back to its pre-run state either: the residue
-	// check below must not count it as restored.
-	failed = append(append([]string(nil), failed...), spared...)
+	restored, failed, spared, unverified := res.Restored, res.Failed, res.Spared, res.Unverified
+	// A spared or unverified path is not back to its pre-run state either:
+	// the residue check below must not count it as restored.
+	failed = append(append(append([]string(nil), failed...), spared...), unverified...)
 	var unborn []string
 	for _, p := range born {
 		if _, statErr := os.Stat(filepath.Join(absPath, filepath.FromSlash(p))); os.IsNotExist(statErr) {
@@ -1196,6 +1196,7 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 				"tree could not be checked — run `git status` to confirm it is as you left it.")
 		}
 		writeSparedFiles(os.Stderr, spared)
+		writeUnverifiedFiles(os.Stderr, unverified)
 		reprintCompilerOutput(stepErr, "")
 		return true
 	}
@@ -1223,6 +1224,7 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 		Residue:     residue,
 		Unborn:      unborn,
 		Spared:      spared,
+		Unverified:  unverified,
 	})
 
 	preservedAt := ""

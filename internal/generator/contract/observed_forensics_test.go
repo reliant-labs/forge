@@ -21,8 +21,9 @@ func TestClassifyParam(t *testing.T) {
 		"tspb":      "google.golang.org/protobuf/types/known/timestamppb",
 		"domain":    "example.com/shop/internal/domain",
 		"generator": "example.com/shop/internal/generator", // "gen" is not a path segment here
+		"units":     "example.com/shop/internal/units",
 	}
-	aliases := map[string]string{"Status": "int", "OrderRef": "string", "Email": "string"}
+	aliases := map[string]string{"Status": "int", "OrderRef": "string", "Email": "string", "OTPCode": "int64", "Chained": "Status", "Wave": "complex128"}
 	for _, tc := range []struct {
 		name, typ string
 		want      captureKind
@@ -76,6 +77,15 @@ func TestClassifyParam(t *testing.T) {
 		{"sessionID", "Status", captureDigits}, // local named int
 		{"counterID", "int64", captureInt},
 		{"tokenOK", "bool", captureBool},
+		// Named types fail closed: a value only through a resolved local
+		// primitive, and still under the secret-name rule.
+		{"otpID", "OTPCode", captureDigits},      // local int64, secret-shaped name
+		{"retries", "OTPCode", captureInt},       // same type, plain name
+		{"otpID", "units.Cents", captureType},    // imported numeric: unresolved
+		{"amountID", "units.Cents", captureType}, // unresolved even under a plain ID name
+		{"otpID", "Chained", captureType},        // a named type over a named type
+		{"otpID", "Unknown", captureType},        // declared nowhere this generator reads
+		{"w", "Wave", captureType},               // resolved, but not a value it records
 	} {
 		if got := classifyParam(tc.name, tc.typ, imports, aliases); got != tc.want {
 			t.Errorf("classifyParam(%q, %q) = %s, want %s", tc.name, tc.typ, got, tc.want)
@@ -284,4 +294,42 @@ func TestParseNoCapture(t *testing.T) {
 
 func commentGroup(text string) *ast.CommentGroup {
 	return &ast.CommentGroup{List: []*ast.Comment{{Text: text}}}
+}
+
+// TestObservedDecoratorNamedTypesFailClosed is the regression for named
+// parameter types: a secret-named local alias over int64 records its digit
+// count, never its value; an imported numeric type the generator cannot
+// resolve records its type only and is not even stored.
+func TestObservedDecoratorNamedTypesFailClosed(t *testing.T) {
+	_, dir := writeModule(t, map[string]string{
+		"contract.go": `package orders
+
+import (
+	"context"
+
+	"example.com/shop/internal/units"
+)
+
+// OTPCode is a one-time-password counter.
+type OTPCode int64
+
+type Service interface {
+	Redeem(ctx context.Context, otpID OTPCode, fee units.Cents, retries OTPCode) error
+}
+`,
+	})
+	got := renderOrders(t, dir, Options{})
+	for _, want := range []string{
+		`forgeMiddlewareServiceRedeemArgs{otpID, retries}`,
+		`r.IntDigits("otpID", int64(a.otpID))`,
+		`r.Type("fee", "units.Cents")`,
+		`r.Int("retries", int64(a.retries))`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("decorator missing %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "a.fee") || strings.Contains(got, `r.Int("otpID"`) {
+		t.Errorf("a named type leaked a value:\n%s", got)
+	}
 }

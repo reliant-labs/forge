@@ -247,11 +247,28 @@ const slowWindow = 32
 // a burst of slow calls stays slow instead of becoming the new normal; a real,
 // lasting shift still converges (by ln(factor)/32 per call).
 //
-// Lock-free and deliberately lossy: concurrent updates may overwrite one
-// another, which costs a sample, never correctness.
+// The mean and the sample count live in ONE atomic word — the mean of ln(ns)
+// as a float32 in the high half, the count (saturating at 2^32-1) in the low
+// half — updated by compare-and-swap, so every sample is folded into the
+// estimate it was compared against and none is lost to a concurrent writer.
+// float32 is ample: ln(ns) stays under 50 for any duration, where its
+// resolution is about 4e-6, a 0.0004% error in the normal.
 type opStats struct {
-	n       atomic.Uint64
-	logMean atomic.Uint64 // math.Float64bits of the mean of ln(ns)
+	state atomic.Uint64
+}
+
+func packStats(logMean float64, n uint32) uint64 {
+	return uint64(math.Float32bits(float32(logMean)))<<32 | uint64(n)
+}
+
+func unpackStats(v uint64) (logMean float64, n uint32) {
+	return float64(math.Float32frombits(uint32(v >> 32))), uint32(v)
+}
+
+// snapshot is the op's current normal (as the mean of ln(ns)) and how many
+// samples it holds.
+func (s *opStats) snapshot() (logMean float64, n uint32) {
+	return unpackStats(s.state.Load())
 }
 
 // observe folds d into the estimate and reports whether d is slow under p.
@@ -261,23 +278,34 @@ func (s *opStats) observe(d time.Duration, p *spanPolicy) bool {
 		ns = 1
 	}
 	x := math.Log(ns)
-	n := s.n.Add(1)
-	if n == 1 {
-		s.logMean.Store(math.Float64bits(x))
-		return false
+	for {
+		old := s.state.Load()
+		mean, n := unpackStats(old)
+		next := n
+		if next < math.MaxUint32 {
+			next++
+		}
+		slow := false
+		if n == 0 {
+			mean = x
+		} else {
+			limit := mean + p.logFactor
+			past := uint64(next) > p.warmup
+			slow = past && x > limit && d > p.floor
+			sample := x
+			if past && sample > limit {
+				sample = limit
+			}
+			alpha := 1 / float64(next)
+			if next > slowWindow {
+				alpha = 1.0 / slowWindow
+			}
+			mean += alpha * (sample - mean)
+		}
+		if s.state.CompareAndSwap(old, packStats(mean, next)) {
+			return slow
+		}
 	}
-	mean := math.Float64frombits(s.logMean.Load())
-	limit := mean + p.logFactor
-	slow := n > p.warmup && x > limit && d > p.floor
-	if n > p.warmup && x > limit {
-		x = limit
-	}
-	alpha := 1 / float64(n)
-	if n > slowWindow {
-		alpha = 1.0 / slowWindow
-	}
-	s.logMean.Store(math.Float64bits(mean + alpha*(x-mean)))
-	return slow
 }
 
 // ─── Forensics rate limit ───────────────────────────────────────────────

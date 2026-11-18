@@ -116,12 +116,25 @@ func classifyParam(name, typeExpr string, imports, aliases map[string]string) ca
 		}
 		return captureType
 	}
+	// A named type fails CLOSED: its value is recorded only when it resolves
+	// to a predeclared primitive declared in this package (`type OTPCode
+	// int64`), and then under the same name rules as that primitive — a
+	// secret-shaped ID name still hides it (digits only). Anything not
+	// resolved — another package's named type, a type over another named
+	// type, a struct — records its type and nothing else.
 	if isIdent(t) {
-		if under, ok := aliases[t]; ok && under != t {
-			return classifyParam(name, under, imports, nil)
+		if under, ok := aliases[t]; ok && under != t && isPredeclaredValue(under) {
+			return classifyParam(name, under, nil, nil)
 		}
 	}
 	return captureType
+}
+
+// isPredeclaredValue reports whether t is a predeclared type classifyParam
+// records by value (a number or a bool) or by name rule (a string).
+func isPredeclaredValue(t string) bool {
+	_, ok := capturePrimitives[t]
+	return ok || t == "string"
 }
 
 // selector splits "pkg.Name" (no further structure) into its parts.

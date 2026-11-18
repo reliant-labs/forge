@@ -23,16 +23,17 @@ import (
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
-// stepClock advances by step on every reading, so a call measured as two
-// readings lasts exactly step.
-type stepClock struct {
-	t    time.Time
+// ticker is the tests' deterministic clock: a counter of nanoseconds since
+// the Unix epoch that moves by step on every tick, so a call measured as two
+// ticks lasts exactly step. It never consults the system clock.
+type ticker struct {
+	ns   int64
 	step time.Duration
 }
 
-func (c *stepClock) now() time.Time {
-	c.t = c.t.Add(c.step)
-	return c.t
+func (k *ticker) tick() time.Time {
+	k.ns += int64(k.step)
+	return time.Unix(0, k.ns)
 }
 
 // testArgs is what a generated capture looks like for
@@ -55,11 +56,11 @@ func newRecordedChain(t *testing.T, opts ...ComponentSpanOption) (*ComponentChai
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
-	// A fixed, stepping clock unless the test brings its own (a later option
-	// wins): no assertion depends on the wall clock or where a call falls
-	// against a time boundary.
-	clock := &stepClock{t: time.Unix(1_700_000_000, 0), step: time.Microsecond}
-	opts = append([]ComponentSpanOption{withSpanClock(clock.now)}, opts...)
+	// A ticker unless the test brings its own (a later option wins): no
+	// assertion depends on the system clock or where a call falls against a
+	// time boundary.
+	clock := &ticker{ns: 1_700_000_000 * int64(time.Second), step: time.Microsecond}
+	opts = append([]ComponentSpanOption{withSpanClock(clock.tick)}, opts...)
 	return NewComponentChain(TraceMiddlewareWith(tp.Tracer("test"), opts...)), rec
 }
 
@@ -143,8 +144,8 @@ func TestComponentOpLegacyRunCarriesNoOp(t *testing.T) {
 }
 
 func TestComponentOpSlowMarkingAndForensics(t *testing.T) {
-	clock := &stepClock{t: time.Unix(0, 0), step: 10 * time.Millisecond}
-	chain, rec := newRecordedChain(t, withSpanClock(clock.now), WithSlowWarmup(10))
+	clock := &ticker{step: 10 * time.Millisecond}
+	chain, rec := newRecordedChain(t, withSpanClock(clock.tick), WithSlowWarmup(10))
 	op := NewOp("checkout.Do", "", "")
 	args := testArgs{orderID: "ord_123", note: "deliver to the back door", n: 3}
 	call := func() {
@@ -191,8 +192,8 @@ func TestComponentOpSlowMarkingAndForensics(t *testing.T) {
 }
 
 func TestComponentOpSlowNeedsTheFloor(t *testing.T) {
-	clock := &stepClock{t: time.Unix(0, 0), step: 10 * time.Microsecond}
-	chain, rec := newRecordedChain(t, withSpanClock(clock.now), WithSlowWarmup(5))
+	clock := &ticker{step: 10 * time.Microsecond}
+	chain, rec := newRecordedChain(t, withSpanClock(clock.tick), WithSlowWarmup(5))
 	op := NewOp("checkout.Do", "", "")
 	for range 10 {
 		_ = RunOp(chain, context.Background(), op, NoArgs{}, func(context.Context) error { return nil })
@@ -206,8 +207,8 @@ func TestComponentOpSlowNeedsTheFloor(t *testing.T) {
 }
 
 func TestComponentOpForensicsOnServerFaultsOnlyAndRateLimited(t *testing.T) {
-	clock := &stepClock{t: time.Unix(0, 0), step: time.Millisecond}
-	chain, rec := newRecordedChain(t, withSpanClock(clock.now), WithForensicsRate(2, time.Hour))
+	clock := &ticker{step: time.Millisecond}
+	chain, rec := newRecordedChain(t, withSpanClock(clock.tick), WithForensicsRate(2, time.Hour))
 	op := NewOp("checkout.Do", "", "")
 	args := testArgs{orderID: "ord_1"}
 	run := func(err error) {

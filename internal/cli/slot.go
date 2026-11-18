@@ -35,6 +35,12 @@ func newSlotCmd() *cobra.Command {
 			"Slots per class default to min(CPUs / 2, memory GiB / 8), read from the cgroup limit when\n" +
 			"there is one, at least 1. FORGE_HEAVY_SLOTS=<n> overrides it; FORGE_HEAVY_SLOTS=off turns\n" +
 			"the limit off. FORGE_SLOTS_DIR relocates the slot files (default: the user cache dir).\n\n" +
+			"Two lanes share the slots. bulk, the default, is for anything heavy however long it runs.\n" +
+			"express is for commands bounded to minutes — the tests or lint of named packages: express\n" +
+			"waiters go before bulk ones, and the top R slots are reserved for them (bulk holders never\n" +
+			"lock those), so a one-minute command never waits behind hour-long jobs. R defaults to\n" +
+			"max(1, N/4) (none when N is 1); FORGE_HEAVY_EXPRESS_SLOTS=<r> overrides it, at most N-1.\n" +
+			"FORGE_SLOT_LANE=express (or `forge slot run --lane express`) picks the express lane.\n\n" +
 			"`forge generate`, `forge lint` and the heavy checks of `forge ci gate` take a slot on\n" +
 			"their own. Anything running inside a slot passes it to its children (FORGE_SLOT_HELD),\n" +
 			"so a nested heavy command never waits on its own parent.",
@@ -47,28 +53,35 @@ func newSlotRunCmd() *cobra.Command {
 	var (
 		class string
 		slots int
+		lane  string
 	)
 	cmd := &cobra.Command{
-		Use:   "run [--class heavy] -- <command> [args...]",
+		Use:   "run [--class heavy] [--lane express|bulk] -- <command> [args...]",
 		Short: "Run a command holding a host slot, waiting while every slot is held",
 		Long: "Runs <command> once a slot of --class is free, holding the slot until the command\n" +
 			"exits, and exits with the command's status. While it waits it prints who holds the\n" +
 			"slots, and repeats that every 30s. Ctrl-C while waiting gives up (exit 130).\n\n" +
 			"Already inside a slot of the class — a parent ran under `forge slot run`, or a gate\n" +
-			"check — it runs the command at once: a child never queues behind its own parent.",
+			"check — it runs the command at once: a child never queues behind its own parent.\n\n" +
+			"--lane express is for a command bounded to minutes (the tests or lint of named\n" +
+			"packages): it waits apart from bulk work, ahead of it, and may use the slots reserved\n" +
+			"for express. Nothing enforces the bound; long work in the express lane takes slots\n" +
+			"from bulk jobs that queued first. The default lane is FORGE_SLOT_LANE, else bulk.",
 		Example: "  forge slot run -- go test -race ./...\n" +
 			"  forge slot run --class heavy -- npm run build\n" +
+			"  forge slot run --class heavy --lane express -- go test -short ./internal/billing/\n" +
 			"  FORGE_HEAVY_SLOTS=2 forge slot run -- task test",
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInSlot(cmd.Context(), class, slots, args, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runInSlotLane(cmd.Context(), class, slots, lane, args, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	// Everything after the command name belongs to the command.
 	cmd.Flags().SetInterspersed(false)
 	cmd.Flags().StringVar(&class, "class", hostslot.Heavy, "Slot class")
 	cmd.Flags().IntVar(&slots, "slots", 0, "Slots in the class (default: FORGE_<CLASS>_SLOTS, else derived from the machine)")
+	cmd.Flags().StringVar(&lane, "lane", "", "Lane to wait in: express (a command bounded to minutes) or bulk (default: FORGE_SLOT_LANE, else bulk)")
 	return cmd
 }
 
@@ -77,12 +90,18 @@ func newSlotRunCmd() *cobra.Command {
 // and a background process the command leaves behind cannot keep the slot
 // after the command itself has finished.
 func runInSlot(ctx context.Context, class string, slots int, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return runInSlotLane(ctx, class, slots, "", argv, stdin, stdout, stderr)
+}
+
+// runInSlotLane is runInSlot in a named lane; "" is FORGE_SLOT_LANE, else bulk.
+func runInSlotLane(ctx context.Context, class string, slots int, lane string, argv []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	waitCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	slot, err := hostslot.Acquire(waitCtx, class, hostslot.Options{
 		Slots:   slots,
+		Lane:    lane,
 		Out:     stderr,
 		Label:   strings.Join(argv, " "),
 		Subtree: true,
@@ -176,7 +195,12 @@ func newSlotStatusCmd() *cobra.Command {
 
 func writeSlotStatus(w io.Writer, rep hostslot.Report) {
 	c := rep.Capacity
-	fmt.Fprintf(w, "%s slots: %s — %s overrides\n", c.Class, c, hostslot.SlotsEnv(c.Class))
+	if c.Unlimited {
+		fmt.Fprintf(w, "%s slots: %s — %s overrides\n", c.Class, c, hostslot.SlotsEnv(c.Class))
+	} else {
+		fmt.Fprintf(w, "%s slots: %s, %d reserved for express (%s) — %s and %s override\n",
+			c.Class, c, c.Express, c.ExpressSource, hostslot.SlotsEnv(c.Class), hostslot.ExpressSlotsEnv(c.Class))
+	}
 	fmt.Fprintf(w, "machine:  %s\n", c.Machine)
 	fmt.Fprintf(w, "dir:      %s\n", rep.Dir)
 	if c.Unlimited {
@@ -189,13 +213,19 @@ func writeSlotStatus(w io.Writer, rep hostslot.Report) {
 	}
 	fmt.Fprintln(tw, "):")
 	for _, h := range rep.Holders {
-		fmt.Fprintf(tw, "  slot %d\tpid %d\t%s\t%s\n", h.Slot+1, h.PID, age(h.Since), h.Command)
+		fmt.Fprintf(tw, "  slot %d\t%s\tpid %d\t%s\t%s\n", h.Slot+1, h.Lane, h.PID, age(h.Since), h.Command)
 	}
-	fmt.Fprintf(tw, "waiting (%d):\n", len(rep.Waiting))
+	fmt.Fprintf(tw, "waiting (%d):\n", len(rep.Waiting)) // in the order they are served: express first
 	for _, h := range rep.Waiting {
-		fmt.Fprintf(tw, "  \tpid %d\t%s\t%s\n", h.PID, age(h.Since), h.Command)
+		fmt.Fprintf(tw, "  \t%s\tpid %d\t%s\t%s\n", h.Lane, h.PID, age(h.Since), h.Command)
 	}
 	_ = tw.Flush()
+	for _, h := range rep.Holders {
+		if h.Overdue() {
+			fmt.Fprintf(w, "⚠ slot %d (pid %d) has held an express slot for %s: the express lane is for commands bounded to minutes; run long work in the bulk lane\n",
+				h.Slot+1, h.PID, age(h.Since))
+		}
+	}
 }
 
 func age(t time.Time) string {
@@ -208,29 +238,34 @@ func age(t time.Time) string {
 func writeSlotStatusJSON(w io.Writer, rep hostslot.Report) error {
 	type holder struct {
 		Slot    int       `json:"slot,omitempty"`
+		Lane    string    `json:"lane"`
 		PID     int       `json:"pid"`
 		Command string    `json:"command"`
 		Since   time.Time `json:"since"`
+		Overdue bool      `json:"overdue,omitempty"`
 	}
 	out := struct {
 		Class     string   `json:"class"`
 		Slots     int      `json:"slots"`
 		Unlimited bool     `json:"unlimited"`
 		Source    string   `json:"source"`
+		Express   int      `json:"express_slots"`
+		ExpSource string   `json:"express_source,omitempty"`
 		Machine   string   `json:"machine"`
 		Dir       string   `json:"dir"`
 		Holders   []holder `json:"holders"`
 		Waiting   []holder `json:"waiting"`
 	}{
 		Class: rep.Capacity.Class, Slots: rep.Capacity.Slots, Unlimited: rep.Capacity.Unlimited,
-		Source: rep.Capacity.Source, Machine: rep.Capacity.Machine.String(), Dir: rep.Dir,
+		Source: rep.Capacity.Source, Express: rep.Capacity.Express, ExpSource: rep.Capacity.ExpressSource,
+		Machine: rep.Capacity.Machine.String(), Dir: rep.Dir,
 		Holders: []holder{}, Waiting: []holder{},
 	}
 	for _, h := range rep.Holders {
-		out.Holders = append(out.Holders, holder{Slot: h.Slot + 1, PID: h.PID, Command: h.Command, Since: h.Since})
+		out.Holders = append(out.Holders, holder{Slot: h.Slot + 1, Lane: h.Lane, PID: h.PID, Command: h.Command, Since: h.Since, Overdue: h.Overdue()})
 	}
 	for _, h := range rep.Waiting {
-		out.Waiting = append(out.Waiting, holder{PID: h.PID, Command: h.Command, Since: h.Since})
+		out.Waiting = append(out.Waiting, holder{Lane: h.Lane, PID: h.PID, Command: h.Command, Since: h.Since})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")

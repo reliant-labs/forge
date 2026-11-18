@@ -166,7 +166,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		// The zod / resolver API this frontend's own package.json declares:
 		// a page added to a frontend that predates zod 4 is written for the
 		// zod 3 it still has.
-		formDialect := frontendFormDialect(filepath.Join(projectDir, feDir))
+		formDialect, dialectWarnings := frontendFormDialect(filepath.Join(projectDir, feDir))
 
 		var pageCount, skipCount int
 		// Entities whose detail/edit pages are still the dynamic `[id]`
@@ -254,6 +254,13 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 			// rather than on every generate of a frontend nobody is touching.
 			fmt.Printf("  ⚠️  frontend %s declares zod 3, so its new pages were written for zod 3; zod below 4.6.6 has a high advisory (GHSA-mrhx-c7xc-m3w5) — `%s skill load %s`\n",
 				fe.Name, Name(), zod4MigrationSkill)
+		}
+		if pageCount > 0 {
+			// Same rule: only when a page was written on an assumed
+			// dialect, and could therefore fail to compile.
+			for _, w := range dialectWarnings {
+				fmt.Printf("  ⚠️  frontend %s: %s\n", fe.Name, w)
+			}
 		}
 		if skipCount > 0 {
 			routinef("  ⏭️  Preserved %d existing CRUD page(s) for frontend %s (delete a file and regenerate to re-scaffold it)\n", skipCount, fe.Name)

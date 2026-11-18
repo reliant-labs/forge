@@ -2,7 +2,7 @@
 name: v1.8.0
 description: Upgrade a project to forge v1.8.0. Frontends move to zod 4 for GHSA-mrhx-c7xc-m3w5 (high; zod below 4.6.6, with no 3.x fix). A frontend scaffolded since v1.8.0 pins zod ^4.6.6, @hookform/resolvers ^7.0.7 and react-hook-form ^7.55.0, and its generated create/edit forms use the zod 4 API (z.enum over a TypeScript enum, z.email(), and a form typed by z.input and z.output). Nothing breaks on upgrade: forge reads each frontend's package.json and keeps writing pages for the zod it declares, but the advisory stays until you bump. Use when a frontend's package.json declares zod 3 or an @hookform/resolvers below 5.
 version: v1.8.0
-detection: for f in package.json frontends/*/package.json; do [ -f "$f" ] || continue; grep -qsE '"zod" *: *"[~^>=v ]*[0-3](\.|x|"|$)' "$f" && exit 0; grep -qsE '"@hookform/resolvers" *: *"[~^>=v ]*[0-4](\.|x|"|$)' "$f" && exit 0; done; exit 1
+detection: forge-detect zod3-frontend
 ---
 
 # Upgrading to v1.8.0
@@ -11,7 +11,12 @@ detection: for f in package.json frontends/*/package.json; do [ -f "$f" ] || con
 
 **Use when** a frontend's `package.json` (`frontends/<name>/package.json`, or
 the root `package.json` of a site) declares `zod` 3 or `@hookform/resolvers`
-below 5.
+below 5, in `dependencies` or `devDependencies`. A range that admits one
+major is that major (`^3.23.0`, `~3.22`, `3.x`, `v3.23.8`, `>=3.0.0 <4`,
+`npm:zod@^3.22`); one that admits several (`>=3.0.0`, `*`) or is not a
+range (`catalog:`) is the version installed — `node_modules`, then
+`package-lock.json` or `pnpm-lock.yaml`. `forge generate` reads it the same
+way.
 
 ### What changed
 

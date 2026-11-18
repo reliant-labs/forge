@@ -14,7 +14,7 @@ import (
 // after window with too few requests is final for that promotion. Guidance
 // that mapped "not enough data yet" to 8 had agents waiting forever on a quiet
 // static site's deploy (forge bug report 07d1d05f). The command's help and the
-// observability/query skill must both say where low traffic lands, by the
+// observability/check skill must both say where low traffic lands, by the
 // reason_code a gate branches on.
 func TestObsCheckGuidanceSaysLowTrafficIsExit2(t *testing.T) {
 	help := newObsCheckCmd().Long
@@ -28,12 +28,21 @@ func TestObsCheckGuidanceSaysLowTrafficIsExit2(t *testing.T) {
 	}
 
 	skills := filepath.Join("..", "templates", "project", "skills", "forge", "observability")
+	check, err := os.ReadFile(filepath.Join(skills, "check", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(check), "Low traffic is exit 2, not 8") {
+		t.Error("observability/check skill (the exit-code table) does not say low traffic is exit 2, not 8")
+	}
+	// observability/query is where older guidance sends a reader for the exit
+	// codes: it must name where they are now.
 	query, err := os.ReadFile(filepath.Join(skills, "query", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(query), "Low traffic is exit 2, not 8") {
-		t.Error("observability/query skill (the exit-code table) does not say low traffic is exit 2, not 8")
+	if !strings.Contains(string(query), "the exit codes and the INCONCLUSIVE `reason_code`s are in **`observability/check`**") {
+		t.Error("observability/query skill does not point to observability/check for obs check's exit codes")
 	}
 	health, err := os.ReadFile(filepath.Join(skills, "release-health", "SKILL.md"))
 	if err != nil {

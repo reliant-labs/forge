@@ -6685,7 +6685,16 @@ schema ReleaseHealth:
             fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "latency"]
         }
 
-    A finding in `fail_on` fails the release (exit 1); any other warns. Below
+    A finding in `fail_on` fails the release (exit 1); any other warns.
+    `warn_on` demotes findings to warnings without restating `fail_on`: a
+    finding in it warns whatever `fail_on` says, so
+
+        release_health = forge.ReleaseHealth {
+            warn_on = ["browser_page_load"]
+        }
+
+    keeps every default failing finding but that one. An explicit `fail_on`
+    list means what it always did; `warn_on` only takes codes out of it. Below
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
@@ -6721,8 +6730,9 @@ schema ReleaseHealth:
     browser_errors (JavaScript errors per page view rose by more than
     `max_error_rate_increase`), browser_failed_requests (the share of its
     fetch/XHR requests that failed rose by as much) and browser_page_load (p95
-    page load grew by more than `max_p95_ratio`). The browser findings warn
-    unless listed in `fail_on`. For an env with release probes (forge.Probe),
+    page load grew by more than `max_p95_ratio`). The browser findings fail
+    by default (they need `min_requests` page views in both windows first);
+    `warn_on` demotes any of them. For an env with release probes (forge.Probe),
     probe_failed (a probe failed after the promotion; fails by default) and
     probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
     default, as latency does).
@@ -6739,7 +6749,8 @@ schema ReleaseHealth:
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
     alert_baseline_min_firings: int = 1
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
+    warn_on: [str] = []
     require_baseline: str = "any"
 
     check:
@@ -6761,6 +6772,9 @@ schema ReleaseHealth:
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        all c in warn_on { c in _RELEASE_HEALTH_FINDINGS }, \
+            "ReleaseHealth.warn_on names ${[c for c in warn_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
+        isunique(warn_on), "ReleaseHealth.warn_on names a finding twice"
         require_baseline in ["any", "every", "none"], \
             "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 

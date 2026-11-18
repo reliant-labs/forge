@@ -1983,7 +1983,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 }
 
 # ReleaseHealth, resolved. The key set is the release shape's
-# `release_health`; the window is in seconds and fail_on is sorted.
+# `release_health`; the window is in seconds and fail_on is sorted, without
+# the findings warn_on demotes (the shape records only the failing set, so
+# every reader, of any age, judges by it).
 # require_baseline is present only when it is not the default ("any"), and
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
@@ -1997,7 +1999,7 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_error_rate_increase": h.max_error_rate_increase
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
-        "fail_on": sorted(h.fail_on)
+        "fail_on": sorted([c for c in h.fail_on if c not in h.warn_on])
         if h.require_baseline != "any":
             "require_baseline": h.require_baseline
         if h.regressed_issue_min_events and h.regressed_issue_min_events != h.new_issue_min_events:

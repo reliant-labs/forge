@@ -189,7 +189,9 @@ const (
 	// finding codes (HealthProbeFailed, HealthProbeLatency) in
 	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
 	// nothing for the env, and its validation refuses a finding code it does
-	// not know, so it is sent neither.
+	// not know, so it is sent neither. It is also sent no browser finding
+	// code in FailOn: those predate this feature by hours but have none of
+	// their own, and such a reader judges no browser telemetry.
 	BundleFeatureReleaseProbes = "shape-release-probes"
 )
 
@@ -333,9 +335,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureReleaseProbes) {
 		// A probed env that keeps the default policy records none, and the
 		// default now fails on probe_failed. A reader of release health is
-		// sent that policy stated, without the probe codes, so what it judges
-		// by is the producer's policy rather than its own default. An env
-		// without probes is sent as before.
+		// sent that policy stated, without the probe (or browser) codes, so
+		// what it judges by is the producer's policy rather than its own
+		// default. An env without probes is sent as before.
 		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
 			def := DefaultReleaseHealth()
 			s.ReleaseHealth = &def

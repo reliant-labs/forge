@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,8 +330,8 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, defaultChain, contractOpts); decErr != nil {
 				return fmt.Errorf("generate observability decorator for %s: %w", rel, decErr)
 			}
-		} else if remErr := contract.RemoveObservedDecorator(path); remErr != nil {
-			return fmt.Errorf("remove stale observability decorator for %s: %w", rel, remErr)
+		} else if remErr := removeObservedDecorator(path, rel, os.Stderr); remErr != nil {
+			return remErr
 		}
 		if before.ChangedIn(path) {
 			fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)
@@ -511,6 +512,26 @@ func reportRetirement(r contract.Retirement, err error) error {
 	}
 	for _, p := range r.Kept {
 		fmt.Fprintf(os.Stderr, "  ⚠️  %s is left over from contract codegen the package has since opted out of, but its bytes differ from forge's render — forge won't delete your edits. Remove it by hand, or `%s project disown %s --reason \"<why>\"` to keep it deliberately.\n", p, Name(), p)
+	}
+	return nil
+}
+
+// removeObservedDecorator removes the generated observability decorator of a
+// package that is not instrumented, and warns when the package opted out with
+// `// forge:no-observe` while keeping its owned newObserveChain seam: the
+// decorator was the seam's only caller, so it is now dead code that golangci's
+// `unused` rejects. The seam is the user's file, so forge names it and leaves
+// it alone.
+func removeObservedDecorator(path, rel string, w io.Writer) error {
+	if err := contract.RemoveObservedDecorator(path); err != nil {
+		return fmt.Errorf("remove stale observability decorator for %s: %w", rel, err)
+	}
+	if !codegen.HasPackageNoObserveDirective(path) {
+		return nil
+	}
+	if seam := codegen.UnreferencedObserveChainSeam(path); seam != "" {
+		seamRel := filepath.ToSlash(filepath.Join(rel, seam))
+		fmt.Fprintf(w, "  ⚠️  %s: %s opts out of observability (forge:no-observe), so nothing calls newObserveChain any more — delete the file (it is yours; forge won't), or drop forge:no-observe\n", seamRel, rel)
 	}
 	return nil
 }

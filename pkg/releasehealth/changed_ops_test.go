@@ -7,14 +7,17 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
 const opSHA = "3f2c1ab9e0d4c7b6a5f4e3d2c1b0a9f8e7d6c5b4"
 
+// op is a changed op whose after figures are the judged release's own: v2,
+// the release input() names.
 func op(name string, beforeCalls, afterCalls int64, beforeErr, afterErr, beforeP95, afterP95 float64) OpHealth {
-	return OpHealth{Op: name, Service: "api", Kind: OpKindComponent,
+	return OpHealth{Op: name, Service: "api", Kind: OpKindComponent, AfterVersion: "v2",
 		Before:  WindowStats{Requests: beforeCalls, ErrorRate: beforeErr, P95Ms: beforeP95},
 		After:   WindowStats{Requests: afterCalls, ErrorRate: afterErr, P95Ms: afterP95},
 		Commits: []OpCommit{{SHA: opSHA, Subject: "fix(notify): batch sends (#42)"}, {SHA: "aaaaaaaa", Subject: "older (#7)"}}}
@@ -402,11 +405,12 @@ func TestRejudgeChangedOps(t *testing.T) {
 	}
 }
 
-// TestChangedOpsFollowTheirServicesAttribution: an op's figures are its
-// service's traffic, so a service the judged release served too little of
-// takes its changed-op findings off the release, as it does error_rate.
-func TestChangedOpsFollowTheirServicesAttribution(t *testing.T) {
-	low, high := 0.2, 1.0
+// TestChangedOpsAreAttributedOnTheReleasesOwnCalls: a changed op's after
+// figures are the judged release's own version's calls, so a service the
+// release served little of does not take its findings off the release, as it
+// does error_rate's.
+func TestChangedOpsAreAttributedOnTheReleasesOwnCalls(t *testing.T) {
+	low, high := 0.1, 1.0
 	api := healthy()
 	api.After.Requests, api.VersionShare = 100, &low
 	web := svc("web", 1000, 1000, 0, 0, 100, 100)
@@ -416,11 +420,11 @@ func TestChangedOpsFollowTheirServicesAttribution(t *testing.T) {
 	in.Thresholds.FailOn = []string{release.HealthChangedOpErrors}
 
 	r := Evaluate(in)
-	if len(r.Findings) != 1 || r.Findings[0].Unattributed == "" || r.Findings[0].Policy != PolicyWarn {
-		t.Fatalf("findings = %+v, want one unattributed warn", r.Findings)
+	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthChangedOpErrors || r.Findings[0].Unattributed != "" || r.Findings[0].Policy != PolicyFail {
+		t.Fatalf("findings = %+v, want one attributed changed_op_errors failing by fail_on", r.Findings)
 	}
-	if r.Verdict == Fail || r.RolloutIncomplete == "" {
-		t.Errorf("verdict %s, rollout %q: an op of a service the rollout had not reached leaves the release unproven", r.Verdict, r.RolloutIncomplete)
+	if r.Verdict != Fail {
+		t.Errorf("verdict %s", r.Verdict)
 	}
 
 	old := Evaluate(Input{Subject: in.Subject, Windows: in.Windows, Services: in.Services, Thresholds: in.Thresholds})
@@ -428,7 +432,89 @@ func TestChangedOpsFollowTheirServicesAttribution(t *testing.T) {
 	if !reflect.DeepEqual(got.Findings, r.Findings) || got.Verdict != r.Verdict || got.RolloutIncomplete != r.RolloutIncomplete {
 		t.Errorf("WithChangedOps attributes as Evaluate does:\n got %s %q %+v\nwant %s %q %+v", got.Verdict, got.RolloutIncomplete, got.Findings, r.Verdict, r.RolloutIncomplete, r.Findings)
 	}
-	if again := Rejudge(r, []string{release.HealthChangedOpErrors}); again.Findings[0].Policy != PolicyWarn {
-		t.Error("Rejudge made an unattributed changed-op finding fail")
+
+	// A window that is not the live release's still moves them.
+	notLive := WithLiveAt(r, r.After.To.Add(time.Minute), LiveShipped)
+	if f := notLive.Findings[0]; f.Unattributed == "" || f.Policy != PolicyWarn || notLive.Verdict == Fail {
+		t.Errorf("window not live: %s %+v", notLive.Verdict, notLive.Findings)
+	}
+}
+
+// TestChangedOpsAreJudgedOnTheReleasesVersion is the hosted case: requests of
+// the old version (v1) still in rotation push the op's error rate up while
+// the judged release's own (v2) calls are healthy.
+func TestChangedOpsAreJudgedOnTheReleasesVersion(t *testing.T) {
+	share := 0.6
+	api := healthy()
+	api.VersionShare = &share
+	in := input(t, true, api)
+	in.Thresholds.FailOn = []string{release.HealthChangedOpErrors}
+	const unversioned = NotEvaluatedChangedOps + " 1 op(s) have no after-window figures of v2 (their spans carry no service.version, or none was read per version): notify.Send"
+	changedOpEntries := func(r Report) []string {
+		var out []string
+		for _, e := range r.NotEvaluated {
+			if strings.HasPrefix(e, NotEvaluatedChangedOps) {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
+	// The caller read the after window per version and kept v2's calls.
+	scoped := op("notify.Send", 100, 100, 0, 0, 10, 10)
+	in.Ops = []OpHealth{scoped}
+	r := Evaluate(in)
+	if len(r.Findings) != 0 || r.Verdict != Pass || len(changedOpEntries(r)) != 0 {
+		t.Errorf("v2's healthy figures: %s %+v %q", r.Verdict, r.Findings, r.NotEvaluated)
+	}
+
+	// The same op's unscoped figures (v1's errors among them) are not v2's:
+	// not judged, and never a share-based unattributed finding.
+	mixed := op("notify.Send", 100, 400, 0, 0.225, 10, 10)
+	mixed.AfterVersion = ""
+	in.Ops = []OpHealth{mixed}
+	r = Evaluate(in)
+	if len(r.Findings) != 0 || r.Verdict != Pass {
+		t.Errorf("unscoped figures were judged: %s %+v", r.Verdict, r.Findings)
+	}
+	if got := changedOpEntries(r); !slices.Equal(got, []string{unversioned}) {
+		t.Errorf("not_evaluated = %q, want %q", got, unversioned)
+	}
+	if !reflect.DeepEqual(r.ChangedOps, []OpHealth{mixed}) {
+		t.Errorf("changed_ops = %+v: the unjudged op is still reported", r.ChangedOps)
+	}
+
+	// Another version's figures labelled as such are not judged either, and
+	// with a thin op the two entries are separate, the version one first.
+	other := op("notify.Send", 100, 400, 0, 0.225, 10, 10)
+	other.AfterVersion = "v1"
+	thin := op("thin.Op", 1, 1, 0, 1, 1, 1)
+	in.Ops = []OpHealth{other, thin}
+	r = Evaluate(in)
+	if got := changedOpEntries(r); len(r.Findings) != 0 || len(got) != 2 || got[0] != unversioned || !strings.Contains(got[1], "below changed_op_min_calls") {
+		t.Errorf("v1 figures and a thin op: %+v %q", r.Findings, got)
+	}
+
+	// WithChangedOps: the same rule, idempotent, and equal to Evaluate.
+	old := Evaluate(Input{Subject: in.Subject, Windows: in.Windows, Services: in.Services, Thresholds: in.Thresholds})
+	for _, ops := range [][]OpHealth{{scoped}, {mixed}, {other, thin}, {op("notify.Send", 100, 100, 0, 0.2, 10, 10), mixed}} {
+		in.Ops = ops
+		want := Evaluate(in)
+		got := WithChangedOps(old, ops, nil)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("WithChangedOps(%+v):\n got %+v\nwant %+v", ops, got, want)
+		}
+		if again := WithChangedOps(got, nil, nil); !reflect.DeepEqual(again, got) {
+			t.Errorf("not idempotent:\n got %+v\nwant %+v", again, got)
+		}
+	}
+
+	// A local env names no release: every span is the judged code, and an
+	// unscoped op is judged as it always was.
+	in.Subject.Release = ""
+	in.Ops = []OpHealth{mixed}
+	r = Evaluate(in)
+	if codes := codes(r.Findings); !slices.Equal(codes, []string{release.HealthChangedOpErrors}) || r.Findings[0].Unattributed != "" || len(changedOpEntries(r)) != 0 {
+		t.Errorf("local: %+v %q", r.Findings, r.NotEvaluated)
 	}
 }

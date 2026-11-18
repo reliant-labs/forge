@@ -81,7 +81,7 @@ type blastRadiusInput struct {
 	dirInput
 	Env   string `json:"env,omitempty" jsonschema:"env whose telemetry weighs each op by its traffic, e.g. prod; omit for the static mapping alone"`
 	Base  string `json:"base,omitempty" jsonschema:"commit the diff starts from (default: the merge base of origin/main, else main, with the head)"`
-	Head  string `json:"head,omitempty" jsonschema:"commit the diff ends at (default: the working tree, uncommitted and untracked changes included)"`
+	Head  string `json:"head,omitempty" jsonschema:"commit the diff ends at (default: the working tree: base..HEAD's commits, then base against the working tree, staged and unstaged, plus every untracked file .gitignore does not exclude)"`
 	Since string `json:"since,omitempty" jsonschema:"traffic window with env, e.g. 24h or 7d (default 7d)"`
 }
 

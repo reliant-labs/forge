@@ -33,8 +33,20 @@ package releasehealth
 // neither): the op a diff changed is inferred — through the call graph, or
 // whole packages as a fallback — and a thin sample of one op is noisier than
 // its service, whose error_rate already fails a release. An env that trusts
-// them lists them in fail_on. They take attribution from their service, as
-// error_rate and latency do (attribution.go), and never prove a release good.
+// them lists them in fail_on. They never prove a release good.
+//
+// Their evidence is version-scoped. When the subject names a release (a
+// hosted env's promotion), an op is judged only on after-window figures of
+// that release's own service.version ([OpHealth.AfterVersion]): the calls an
+// old version still in rotation made can push an op's error rate up while the
+// release is healthy, and they are not the release's. An op whose after
+// figures are not the release's (its spans carry no service.version, or the
+// caller did not read them per version) is not judged; it is named in a
+// not_evaluated entry of its own. Being the release's own calls, a judged
+// op's findings are attributed whatever its service's version share
+// (attribution.go): only a window that is not the live release's moves them.
+// A subject with no release (a local env: everything running is the judged
+// code) has no version to scope by, and its ops are judged on all their spans.
 
 import (
 	"fmt"
@@ -71,8 +83,9 @@ const (
 	OpKindEndpoint = "endpoint"
 )
 
-// NotEvaluatedChangedOps prefixes the one not_evaluated entry that names the
-// changed ops too thin to compare.
+// NotEvaluatedChangedOps prefixes the not_evaluated entries that name the
+// changed ops not judged: one for those with no after figures of the judged
+// release, one for those too thin to compare.
 const NotEvaluatedChangedOps = "changed_op:"
 
 // OpCommit is a commit of the release's range that changed an op.
@@ -95,6 +108,12 @@ type OpHealth struct {
 	// Before and After are the op's figures; Requests counts its calls.
 	Before WindowStats `json:"before"`
 	After  WindowStats `json:"after"`
+	// AfterVersion is the service.version the After figures are restricted
+	// to; "" is every version's spans. When the report's subject names a
+	// release, an op is judged only when AfterVersion is that release (the
+	// rule above). Before is never version-scoped: it is all pre-promotion
+	// traffic.
+	AfterVersion string `json:"after_version,omitempty"`
 	// Commits are the range's commits that changed the op, newest first.
 	Commits []OpCommit `json:"commits,omitempty"`
 }
@@ -162,14 +181,19 @@ func (t Thresholds) changedOps() changedOpLimits {
 	return l
 }
 
-// changedOpFindings judges ops under l: the findings (no policy yet), and the
-// not_evaluated entry of the ops too thin to compare (none when every op was
-// compared).
-func changedOpFindings(ops []OpHealth, l changedOpLimits) ([]Finding, []string) {
+// changedOpFindings judges ops under l for the judged release rel ("" when
+// the subject names none): the findings (no policy yet), and the
+// not_evaluated entries of the ops with no after figures of rel and of the
+// ops too thin to compare (none when every op was compared).
+func changedOpFindings(ops []OpHealth, l changedOpLimits, rel string) ([]Finding, []string) {
 	var out []Finding
-	var thin []string
+	var thin, unversioned []string
 	floor := int64(l.minCalls)
 	for _, o := range ops {
+		if rel != "" && o.AfterVersion != rel {
+			unversioned = append(unversioned, o.Op)
+			continue
+		}
 		if o.Before.Requests < floor || o.After.Requests < floor {
 			thin = append(thin, o.Op)
 			continue
@@ -209,24 +233,43 @@ func changedOpFindings(ops []OpHealth, l changedOpLimits) ([]Finding, []string) 
 			}
 		}
 	}
-	if len(thin) == 0 {
-		return out, nil
+	var entries []string
+	if len(unversioned) > 0 {
+		entries = append(entries, unversionedOpsEntry(unversioned, rel))
 	}
-	return out, []string{thinOpsEntry(thin, l.minCalls)}
+	if len(thin) > 0 {
+		entries = append(entries, thinOpsEntry(thin, l.minCalls))
+	}
+	return out, entries
 }
 
 // thinOpsEntry is the one not_evaluated entry naming the ops below
 // changed_op_min_calls, sorted, the first few by name: a range that changed
 // fifty ops must not bury the report's other entries.
 func thinOpsEntry(names []string, minCalls int) string {
+	names, list := fewNames(names)
+	return fmt.Sprintf("%s %d op(s) below changed_op_min_calls (%d calls in each window): %s",
+		NotEvaluatedChangedOps, len(names), minCalls, list)
+}
+
+// unversionedOpsEntry is the one not_evaluated entry naming the ops with no
+// after-window figures of the judged release rel, in thinOpsEntry's style.
+func unversionedOpsEntry(names []string, rel string) string {
+	names, list := fewNames(names)
+	return fmt.Sprintf("%s %d op(s) have no after-window figures of %s (their spans carry no service.version, or none was read per version): %s",
+		NotEvaluatedChangedOps, len(names), rel, list)
+}
+
+// fewNames is names sorted and deduplicated, and the first few of them
+// joined, the rest counted.
+func fewNames(names []string) ([]string, string) {
 	names = slices.Compact(slices.Sorted(slices.Values(names)))
 	const shown = 3
 	list := names
 	if len(list) > shown {
 		list = append(slices.Clone(list[:shown]), fmt.Sprintf("%d more", len(names)-shown))
 	}
-	return fmt.Sprintf("%s %d op(s) below changed_op_min_calls (%d calls in each window): %s",
-		NotEvaluatedChangedOps, len(names), minCalls, strings.Join(list, ", "))
+	return names, strings.Join(list, ", ")
 }
 
 func shortSHA(sha string) string {
@@ -263,7 +306,7 @@ func WithChangedOps(r Report, ops []OpHealth, overrides map[string]string) Repor
 	}
 	out.NotEvaluated = slices.DeleteFunc(slices.Clone(r.NotEvaluated), func(e string) bool { return strings.HasPrefix(e, NotEvaluatedChangedOps) })
 
-	fs, thin := changedOpFindings(ops, l)
+	fs, thin := changedOpFindings(ops, l, r.Subject.Release)
 	failOn := failOnOf(ths)
 	for _, f := range fs {
 		f.Policy = policyOf(f.Code, failOn)

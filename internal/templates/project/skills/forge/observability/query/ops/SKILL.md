@@ -63,7 +63,7 @@ forge obs blast-radius                           # no env: the static mapping al
 | Flag | Meaning |
 |---|---|
 | `--base REV` | default: the merge-base with `origin/main` |
-| `--head REV` | default: the working tree, uncommitted and untracked files included |
+| `--head REV` | the commits `base..REV`, tree to tree (nothing uncommitted is read). Default: the working tree — the commits `base..HEAD` plus a pseudo-commit of HEAD against the working tree: staged and unstaged changes (the working tree's content wins) and every untracked file `.gitignore` does not exclude |
 | `--since D` | the traffic window (default `7d`) |
 
 It reads the diff, maps each changed declaration to the ops it can change, and

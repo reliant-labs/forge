@@ -40,6 +40,12 @@ type OpsRequest struct {
 	Names []string
 	// Kinds restricts the answer to these OpKind* values; empty is every kind.
 	Kinds []string
+	// ByVersion splits each op's figures by the service.version of its spans
+	// (OpStats.Version): one row per service, op and version. Release health
+	// reads a hosted env's after window this way, so a changed op is judged on
+	// the judged release's own calls, not on an old version's still in
+	// rotation. Unset, each op is one row over every version.
+	ByVersion bool
 }
 
 // OpStats is the RED summary of one op of one service, and where its code
@@ -55,6 +61,10 @@ type OpStats struct {
 	P50Ms         float64
 	P95Ms         float64
 	P99Ms         float64
+	// Version is the service.version (a resource attribute) of the spans the
+	// figures count, set only for an OpsRequest.ByVersion answer; "" there
+	// is the spans that carry none.
+	Version string
 	// CodeFilePath and CodeFunction are the span's code.file.path and
 	// code.function.name: set for component ops whose build emits the
 	// attribute contract, empty otherwise.
@@ -112,10 +122,24 @@ func opsSeries() []obsquery.PanelSeries {
 	}
 }
 
-// opsServerPanel is server spans by service and span name: rpcs and
-// endpoints. rpcOnly narrows it to Connect procedures, so a request for rpcs
-// alone is not crowded out of the row cap by HTTP routes.
-func opsServerPanel(names []string, rpcOnly bool) obsquery.Panel {
+// opsVersionField is the service.version a release stamps on its spans'
+// resource: what the control plane's version share counts too.
+const opsVersionField = "resource.attr.service.version"
+
+// opsGroupBy is the figures panels' grouping: service and span name, then
+// the version when byVersion (obsquery.MaxPanelGroupBy fields).
+func opsGroupBy(byVersion bool) []string {
+	if byVersion {
+		return []string{"service.name", "span.name", opsVersionField}
+	}
+	return []string{"service.name", "span.name"}
+}
+
+// opsServerPanel is server spans by service and span name (and version, when
+// byVersion): rpcs and endpoints. rpcOnly narrows it to Connect procedures,
+// so a request for rpcs alone is not crowded out of the row cap by HTTP
+// routes.
+func opsServerPanel(names []string, rpcOnly, byVersion bool) obsquery.Panel {
 	where := []obsquery.PanelPredicate{{Field: "span.kind", Op: "eq", Value: "server"}}
 	if rpcOnly {
 		where = append(where, obsquery.PanelPredicate{Field: "span.name", Op: "match", Value: rpcOpPattern})
@@ -125,7 +149,7 @@ func opsServerPanel(names []string, rpcOnly bool) obsquery.Panel {
 	}
 	return obsquery.Panel{
 		ID: "ops-server", Kind: "table", Signal: "traces", Where: where, Series: opsSeries(),
-		GroupBy: []string{"service.name", "span.name"}, Limit: obsquery.MaxTableRows,
+		GroupBy: opsGroupBy(byVersion), Limit: obsquery.MaxTableRows,
 	}
 }
 
@@ -141,11 +165,12 @@ func componentWhere(names []string) []obsquery.PanelPredicate {
 	return where
 }
 
-// opsComponentPanel is component spans by service and span name.
-func opsComponentPanel(names []string) obsquery.Panel {
+// opsComponentPanel is component spans by service and span name (and
+// version, when byVersion).
+func opsComponentPanel(names []string, byVersion bool) obsquery.Panel {
 	return obsquery.Panel{
 		ID: "ops-component", Kind: "table", Signal: "traces", Where: componentWhere(names), Series: opsSeries(),
-		GroupBy: []string{"service.name", "span.name"}, Limit: obsquery.MaxTableRows,
+		GroupBy: opsGroupBy(byVersion), Limit: obsquery.MaxTableRows,
 	}
 }
 
@@ -248,6 +273,9 @@ func ops(ctx context.Context, req OpsRequest, run panelRun) (OpsResult, error) {
 		}
 		v := func(i int) float64 { return finite(r.values[i]) }
 		o := OpStats{Service: r.group[0], Name: r.group[1], Kind: kind, Calls: v(0), Errors: v(1), P50Ms: v(2), P95Ms: v(3), P99Ms: v(4)}
+		if req.ByVersion && len(r.group) > 2 {
+			o.Version = r.group[2]
+		}
 		if o.Calls > 0 {
 			o.ErrorRatio = o.Errors / o.Calls
 		}
@@ -271,13 +299,14 @@ func ops(ctx context.Context, req OpsRequest, run panelRun) (OpsResult, error) {
 		return nil
 	}
 	if plan.server {
-		server := func(n []string) obsquery.Panel { return opsServerPanel(n, plan.rpcOnly) }
+		server := func(n []string) obsquery.Panel { return opsServerPanel(n, plan.rpcOnly, req.ByVersion) }
 		if err := each("ops server", plan.serverNames, server, func(r panelRow) { add("", r) }); err != nil {
 			return res, err
 		}
 	}
 	if plan.component {
-		if err := each("ops component", plan.componentNames, opsComponentPanel, func(r panelRow) { add(OpKindComponent, r) }); err != nil {
+		component := func(n []string) obsquery.Panel { return opsComponentPanel(n, req.ByVersion) }
+		if err := each("ops component", plan.componentNames, component, func(r panelRow) { add(OpKindComponent, r) }); err != nil {
 			return res, err
 		}
 		// The code panel's rows come heaviest first, so the first location

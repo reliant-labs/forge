@@ -19,7 +19,9 @@ import (
 func TestOpsAgainstClickHouse(t *testing.T) {
 	testkit.Slow(t, "boots a ClickHouse container and runs the ops panels against it")
 	runner, write := obstest.Start(t)
-	now := time.Now().UTC().Truncate(time.Second)
+	// A fixed instant: every span sits a few seconds before it, and the query
+	// range is pinned around it, so nothing depends on the wall clock.
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	span := func(i int, svc, name, kind, status string, dur time.Duration, env, attrs string) string {
 		return fmt.Sprintf(`INSERT INTO otel_traces (Timestamp, TraceId, SpanId, SpanName, SpanKind, ServiceName, ResourceAttributes, SpanAttributes, Duration, StatusCode)
 SELECT toDateTime64('%s', 9), 't%d', 's%d', '%s', '%s', '%s', map('deployment.environment.name','%s'), map(%s), %d, '%s'`,

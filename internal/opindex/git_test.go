@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // TestMapRangeGit maps a real repository's history: per-commit attribution,
@@ -15,9 +17,7 @@ import (
 // a project that is a subdirectory of its repository (paths relative to the
 // project, files outside it left out).
 func TestMapRangeGit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("execs git; runs in task test")
-	}
+	testkit.Slow(t, "execs git")
 	repo := t.TempDir()
 	app := filepath.Join(repo, "app")
 	git := func(args ...string) string {
@@ -65,7 +65,16 @@ func TestMapRangeGit(t *testing.T) {
 	c3 := commit("feat(todo): done flag")
 
 	edit("internal/billing/service.go", "if n > limit {", "if n >= limit {")
-	writeTree(t, app, map[string]string{"internal/billing/extra.go": "package billing\n\nfunc extra() {}\n"})
+	writeTree(t, app, map[string]string{
+		"internal/billing/extra.go": "package billing\n\nfunc extra() {}\n",
+		// Untracked and not Go: accounted for as unattributed, not dropped.
+		"internal/billing/NOTES.txt": "why refunds round down\n",
+		// Untracked but ignored: never read.
+		"internal/billing/scratch.log": "noise\n",
+	})
+	if err := os.WriteFile(filepath.Join(repo, ".git", "info", "exclude"), []byte("*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	m, err := MapRange(ctx, app, c1, "")
@@ -113,10 +122,24 @@ func TestMapRangeGit(t *testing.T) {
 			t.Errorf("CreateTodo reasons = %v, want %v", vias, wantVias)
 		}
 	}
+	notes := Unattributed{File: "internal/billing/NOTES.txt", Reason: ReasonNotGo, Commits: []Commit{uncommitted}}
+	var sawNotes bool
 	for _, u := range m.Unattributed {
 		if strings.Contains(u.File, "README") {
 			t.Errorf("a file outside the project was mapped: %+v", u)
 		}
+		if strings.HasSuffix(u.File, ".log") {
+			t.Errorf("an ignored untracked file was mapped: %+v", u)
+		}
+		if u.File == notes.File {
+			sawNotes = true
+			if !reflect.DeepEqual(u, notes) {
+				t.Errorf("untracked non-Go file = %+v, want %+v", u, notes)
+			}
+		}
+	}
+	if !sawNotes {
+		t.Errorf("untracked non-Go file missing from unattributed: %+v", m.Unattributed)
 	}
 
 	one, err := MapCommit(ctx, app, c2)

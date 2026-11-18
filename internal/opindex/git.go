@@ -39,9 +39,12 @@ func MapCommit(ctx context.Context, dir, sha string) (Mapping, error) {
 }
 
 // MapRange maps every non-merge commit of base..head on its own, so each
-// mapped op lists the commits that changed it. head "" is the working tree:
-// the commits base..HEAD, then the uncommitted changes (untracked .go and
-// .proto files included) as a pseudo-commit with SHA "". At most the newest
+// mapped op lists the commits that changed it. With a head, only those
+// commits are read; the checkout's index and working tree are not. head ""
+// is the working tree: the commits base..HEAD, then a pseudo-commit with
+// SHA "" holding what [Changes] reports for HEAD against the working tree —
+// staged and unstaged edits (the working tree's content winning) and every
+// untracked file .gitignore does not exclude. At most the newest
 // release.MaxRangeCommits commits are mapped; Truncated says when more
 // were in the range.
 //

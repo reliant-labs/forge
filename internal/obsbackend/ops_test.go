@@ -317,3 +317,87 @@ func TestCloudOpsRunsThePanelsThroughQueryPanel(t *testing.T) {
 		t.Errorf("the control plane's refusal: %v", err)
 	}
 }
+
+func TestOpsByVersionSplitsTheFiguresPanels(t *testing.T) {
+	r := &opsRunner{
+		server: [][]any{
+			opRow([]string{"api", "todo.v1.TodoService/CreateTodo", "v2"}, 100, 0, 4, 20, 40),
+			opRow([]string{"api", "todo.v1.TodoService/CreateTodo", "v1"}, 300, 90, 4, 20, 40),
+		},
+		component: [][]any{opRow([]string{"api", "todo.Create", ""}, 50, 0, 3, 9, 15)},
+		code:      fixtureOpsRunner().code,
+	}
+	res, err := Local{Env: "dev", Runner: r}.Ops(context.Background(), OpsRequest{Narrow: rng(), ByVersion: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.ran) != 3 {
+		t.Fatalf("ran %d", len(r.ran))
+	}
+	for i, st := range r.ran {
+		byVersion := strings.Contains(params(st), "service.version")
+		if want := i < 2; byVersion != want {
+			t.Errorf("statement %d groups by service.version: %v, want %v (only the figures panels):\n%s", i, byVersion, want, st.SQL)
+		}
+	}
+	got := map[string]OpStats{}
+	for _, o := range res.Ops {
+		got[o.Name+"@"+o.Version] = o
+	}
+	if o := got["todo.v1.TodoService/CreateTodo@v2"]; o.Calls != 100 || o.ErrorRatio != 0 {
+		t.Errorf("v2 row: %+v", o)
+	}
+	if o := got["todo.v1.TodoService/CreateTodo@v1"]; o.Calls != 300 || o.ErrorRatio != 0.3 {
+		t.Errorf("v1 row: %+v", o)
+	}
+	if o, ok := got["todo.Create@"]; !ok || o.CodeFilePath != "internal/todo/service.go" {
+		t.Errorf("a component row with no version keeps Version \"\" and its code: %+v", res.Ops)
+	}
+
+	// Unset: today's panels, and no row carries a version even when a
+	// backend answers a third label.
+	r = fixtureOpsRunner()
+	r.server = [][]any{opRow([]string{"api", "GET /x", "v9"}, 10, 0, 1, 2, 3)}
+	res, err = Local{Env: "dev", Runner: r}.Ops(context.Background(), OpsRequest{Narrow: rng()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range r.ran {
+		if strings.Contains(params(st), "service.version") {
+			t.Errorf("unversioned request groups by service.version:\n%s", st.SQL)
+		}
+	}
+	for _, o := range res.Ops {
+		if o.Version != "" {
+			t.Errorf("unversioned request: %+v", o)
+		}
+	}
+}
+
+func TestCloudOpsByVersion(t *testing.T) {
+	pc := &panelCaller{replies: map[string]string{
+		"ops-server": `{"rows":[
+			{"group":{"service.name":"api","span.name":"todo.v1.TodoService/CreateTodo","resource.attr.service.version":"v2"},"values":[100,1,2,5,9]},
+			{"group":{"service.name":"api","span.name":"todo.v1.TodoService/CreateTodo","resource.attr.service.version":"v1"},"values":[10,5,20,50,90]}]}`,
+		"ops-component": `{"rows":[{"group":{"service.name":"api","span.name":"todo.Create"},"values":[50,0,1,3,4]}]}`,
+		"ops-code":      `{"rows":[]}`,
+	}}
+	c := Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: pc}
+	res, err := c.Ops(context.Background(), OpsRequest{Narrow: narrowC(), ByVersion: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"[service.name span.name resource.attr.service.version]", "[service.name span.name resource.attr.service.version]", "[span.name span.attr.code.file.path span.attr.code.function.name]"} {
+		if g := fmt.Sprint(pc.panels[i]["groupBy"]); g != want {
+			t.Errorf("panel %d groupBy %s, want %s", i, g, want)
+		}
+	}
+	var got []string
+	for _, o := range res.Ops {
+		got = append(got, fmt.Sprintf("%s@%s=%v", o.Name, o.Version, o.Calls))
+	}
+	slices.Sort(got)
+	if want := "[todo.Create@=50 todo.v1.TodoService/CreateTodo@v1=10 todo.v1.TodoService/CreateTodo@v2=100]"; fmt.Sprint(got) != want {
+		t.Errorf("rows %v, want %s", got, want)
+	}
+}

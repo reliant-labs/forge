@@ -14,6 +14,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // connectMCP serves a forge MCP server on an in-memory pipe and returns a
@@ -210,9 +212,7 @@ func TestMCP_BlastRadiusArgs(t *testing.T) {
 
 // blast_radius answers with the --json document alone, also when it fails.
 func TestMCP_BlastRadiusIsTheDocument(t *testing.T) {
-	if testing.Short() {
-		t.Skip("execs git; runs in task test")
-	}
+	testkit.Slow(t, "execs git")
 	repo, _ := brGitRepo(t)
 	plain := t.TempDir()
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(plain))

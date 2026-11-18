@@ -48,9 +48,12 @@
 //     changed_op_min_errors errors after the promotion. changed_op_latency:
 //     its p95 grew by more than changed_op_max_p95_ratio over a before p95
 //     above 0. Each names the newest commit that changed the op. Both warn
-//     unless fail_on lists them, and follow error_rate and latency's
-//     attribution: they are their service's figures. They never prove a
-//     release good: a PASS still rests on the services.
+//     unless fail_on lists them. When the subject names a release, an op is
+//     judged only on after figures of that release's service.version
+//     (OpHealth.AfterVersion); one without them is named in not_evaluated.
+//     Being the release's own calls, they are attributed whatever their
+//     service's version share. They never prove a release good: a PASS
+//     still rests on the services.
 //   - Issues count with enough after-window events: new_issue_min_events for
 //     a new issue, regressed_issue_min_events (unset: the same) for a
 //     regressed one. The platform's NewIssue and IssueRegressed alerts are
@@ -818,7 +821,7 @@ func Evaluate(in Input) Report {
 		}
 	}
 
-	fs, thin := changedOpFindings(in.Ops, t.changedOps())
+	fs, thin := changedOpFindings(in.Ops, t.changedOps(), in.Subject.Release)
 	for _, f := range fs {
 		add(f) // changed_ops.go
 	}

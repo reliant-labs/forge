@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // checkP is the promotion every changed-op test judges: 11:40, so the before
@@ -109,7 +110,7 @@ func TestObsCheckLocalChangedOpErrorsWarn(t *testing.T) {
 		t.Errorf("the source is asked once, about the local instant: %+v", asked)
 	}
 	// One read per window, of the changed ops' names alone.
-	if len(ops.reqs) != 2 || !slices.Equal(ops.reqs[0].Names, []string{notifySend}) ||
+	if len(ops.reqs) != 2 || !slices.Equal(ops.reqs[0].Names, []string{notifySend}) || ops.reqs[0].ByVersion || ops.reqs[1].ByVersion ||
 		!ops.reqs[0].Range.From.Equal(checkP.Add(-15*time.Minute)) || !ops.reqs[0].Range.To.Equal(checkP) ||
 		!ops.reqs[1].Range.From.Equal(checkP) || !ops.reqs[1].Range.To.Equal(checkP.Add(15*time.Minute)) {
 		t.Errorf("ops reads: %+v", ops.reqs)
@@ -186,7 +187,23 @@ func TestObsCheckLocalChangedOpFailsWhenFailOnNamesIt(t *testing.T) {
 
 // panelReply is a QueryPanel answer of one ops-server row.
 func panelReply(svc, name string, calls, errs, p95 float64) string {
-	return fmt.Sprintf(`{"rows":[{"group":{"service.name":%q,"span.name":%q},"values":[%g,%g,%g,%g,%g]}]}`, svc, name, calls, errs, p95/2, p95, p95*2)
+	return `{"rows":[` + panelRow(svc, name, "", calls, errs, p95) + `]}`
+}
+
+// afterReply is a hosted after window's QueryPanel answer, read per version:
+// one row of the judged release, v2 (cloudFacts).
+func afterReply(svc, name string, calls, errs, p95 float64) string {
+	return `{"rows":[` + panelRow(svc, name, "v2", calls, errs, p95) + `]}`
+}
+
+// panelRow is one ops-server row; version "" is a row of spans with no
+// service.version (or a panel not grouped by it).
+func panelRow(svc, name, version string, calls, errs, p95 float64) string {
+	ver := ""
+	if version != "" {
+		ver = fmt.Sprintf(`,"resource.attr.service.version":%q`, version)
+	}
+	return fmt.Sprintf(`{"group":{"service.name":%q,"span.name":%q%s},"values":[%g,%g,%g,%g,%g]}`, svc, name, ver, calls, errs, p95/2, p95, p95*2)
 }
 
 // A control plane that predates the changed-op rule sends no ops: the CLI
@@ -197,7 +214,7 @@ func TestObsCheckHostedAnswerGetsItsChangedOps(t *testing.T) {
 	run := func(t *testing.T, args ...string) (int, map[string]any, *seqCaller, []releasehealth.Subject) {
 		var asked []releasehealth.Subject
 		caller := &seqCaller{replies: map[string][]string{procHealth: {reply},
-			procPanel: {panelReply("api", createTodo, 400, 0, 20), panelReply("api", createTodo, 400, 0, 90)}}}
+			procPanel: {panelReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)}}}
 		h := newObsCheckHarness()
 		h.opChanges = fixedOpChanges(&asked, rpc)
 		out, _, err := h.run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
@@ -256,7 +273,7 @@ func TestObsCheckHostedAnswerGetsItsChangedOps(t *testing.T) {
 // window, as any finding does; the diff is read once however many polls.
 func TestObsCheckChangedOpBlocksAnEarlyPass(t *testing.T) {
 	var asked []releasehealth.Subject
-	before, after := panelReply("api", createTodo, 400, 0, 20), panelReply("api", createTodo, 400, 0, 90)
+	before, after := panelReply("api", createTodo, 400, 0, 20), afterReply("api", createTodo, 400, 0, 90)
 	caller := &seqCaller{replies: map[string][]string{
 		procHealth: {healthReply("RELEASE_VERDICT_INCONCLUSIVE", false, "", ""), healthReply("RELEASE_VERDICT_PASS", true, "", "")},
 		procPanel:  {before, after, before, after},
@@ -303,7 +320,7 @@ func TestObsCheckExplainListsTheChangedOpStatements(t *testing.T) {
 func TestObsCheckHoldsTheChangedOpThresholdsBackFromTheControlPlane(t *testing.T) {
 	var asked []releasehealth.Subject
 	caller := &seqCaller{replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
-		procPanel: {panelReply("api", createTodo, 30, 0, 20), panelReply("api", createTodo, 30, 0, 90)}}}
+		procPanel: {panelReply("api", createTodo, 30, 0, 20), afterReply("api", createTodo, 30, 0, 90)}}}
 	h := newObsCheckHarness()
 	h.opChanges = fixedOpChanges(&asked, changedOp{Name: createTodo, Kind: releasehealth.OpKindRPC})
 	out, _, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json",
@@ -408,6 +425,111 @@ func TestObsCheckChangedOpFields(t *testing.T) {
 	}
 }
 
+// On a promotion the after window is read per service.version and the
+// changed op judged on the release's own calls: errors of the old version
+// still in rotation are not the release's, and an op whose spans carry no
+// version is not judged at all.
+func TestObsCheckHostedChangedOpsAreTheReleasesVersion(t *testing.T) {
+	run := func(t *testing.T, after string) (map[string]any, *seqCaller) {
+		t.Helper()
+		var asked []releasehealth.Subject
+		caller := &seqCaller{replies: map[string][]string{procHealth: {healthReply("RELEASE_VERDICT_PASS", true, "", "")},
+			procPanel: {panelReply("api", createTodo, 400, 0, 20), after}}}
+		h := newObsCheckHarness()
+		h.opChanges = fixedOpChanges(&asked, changedOp{Name: createTodo, Kind: releasehealth.OpKindRPC})
+		out, _, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json", "--fail-on", "error_rate,changed_op_errors")
+		doc := decode(t, out)
+		if code, fail := exitCodeForError(err), doc["verdict"] == "FAIL"; (code == exitWrong) != fail || (code != 0 && code != exitWrong) {
+			t.Fatalf("exit %d (%v) for verdict %v", code, err, doc["verdict"])
+		}
+		return doc, caller
+	}
+	panelGroupBy := func(caller *seqCaller) []string {
+		var out []string
+		for _, c := range caller.calls {
+			if c.procedure == procPanel {
+				var m map[string]any
+				_ = json.Unmarshal([]byte(c.body), &m)
+				out = append(out, fmt.Sprint(m["panel"].(map[string]any)["groupBy"]))
+			}
+		}
+		return out
+	}
+
+	// v1 still serves most calls, and fails a third of them; v2 is healthy.
+	doc, caller := run(t, `{"rows":[`+panelRow("api", createTodo, "v1", 600, 200, 20)+`,`+panelRow("api", createTodo, "v2", 300, 0, 20)+`]}`)
+	if got := panelGroupBy(caller); fmt.Sprint(got) != "[[service.name span.name] [service.name span.name resource.attr.service.version]]" {
+		t.Errorf("panels groupBy %v: the before window whole, the after window per version", got)
+	}
+	if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
+		t.Errorf("old-version errors judged against the release: %v %v", doc["verdict"], doc["findings"])
+	}
+	co := doc["changed_ops"].([]any)[0].(map[string]any)
+	if co["after_version"] != "v2" || co["after"].(map[string]any)["requests"] != float64(300) || co["after"].(map[string]any)["error_rate"] != float64(0) {
+		t.Errorf("changed op = %v: After is v2's calls", co)
+	}
+
+	// v2's own calls failing is the release's finding.
+	doc, _ = run(t, `{"rows":[`+panelRow("api", createTodo, "v1", 600, 0, 20)+`,`+panelRow("api", createTodo, "v2", 300, 100, 20)+`]}`)
+	if f := findingOf(doc, release.HealthChangedOpErrors); doc["verdict"] != "FAIL" || f == nil || f["unattributed"] != nil {
+		t.Errorf("v2's errors: %v %v", doc["verdict"], doc["findings"])
+	}
+
+	// Spans with no service.version: not judged, and said so.
+	doc, _ = run(t, panelReply("api", createTodo, 900, 200, 20))
+	if doc["verdict"] != "PASS" || findingOf(doc, release.HealthChangedOpErrors) != nil {
+		t.Errorf("unversioned figures were judged: %v %v", doc["verdict"], doc["findings"])
+	}
+	if ne := fmt.Sprint(doc["not_evaluated"]); !strings.Contains(ne, "changed_op: 1 op(s) have no after-window figures of v2 (their spans carry no service.version, or none was read per version): "+createTodo) {
+		t.Errorf("not_evaluated = %s", ne)
+	}
+	if co := doc["changed_ops"].([]any)[0].(map[string]any); co["after_version"] != nil {
+		t.Errorf("changed op = %v: no after_version", co)
+	}
+}
+
+func TestJoinOpHealthPicksTheReleasesRows(t *testing.T) {
+	v := func(s obsbackend.OpStats, version string) obsbackend.OpStats { s.Version = version; return s }
+	before := map[opKey][]obsbackend.OpStats{
+		{"api", notifySend}:    {stats("api", notifySend, 200, 0, 10)},
+		{"worker", notifySend}: {stats("worker", notifySend, 200, 0, 10)},
+		{"cron", notifySend}:   {stats("cron", notifySend, 200, 0, 10)},
+		{"jobs", notifySend}:   {stats("jobs", notifySend, 200, 0, 10)},
+	}
+	after := map[opKey][]obsbackend.OpStats{
+		// v1 and v2: v2's row.
+		{"api", notifySend}: {v(stats("api", notifySend, 500, 0.5, 10), "v1"), v(stats("api", notifySend, 100, 0, 10), "v2")},
+		// Only another version: the release made no calls.
+		{"worker", notifySend}: {v(stats("worker", notifySend, 300, 0.5, 10), "v1")},
+		// No version on any span: the unscoped figures, AfterVersion "".
+		{"cron", notifySend}: {stats("cron", notifySend, 300, 0.5, 10)},
+		// jobs: no after row at all.
+	}
+	got := map[string]releasehealth.OpHealth{}
+	for _, o := range joinOpHealth([]changedOp{notifyOp(), {Name: "never.Seen"}}, before, after, "v2") {
+		got[o.Op+"/"+o.Service] = o
+	}
+	for key, want := range map[string]struct {
+		version string
+		calls   int64
+	}{
+		"notify.Send/api": {"v2", 100}, "notify.Send/worker": {"v2", 0}, "notify.Send/cron": {"", 300},
+		"notify.Send/jobs": {"v2", 0}, "never.Seen/": {"v2", 0},
+	} {
+		o, ok := got[key]
+		if !ok || o.AfterVersion != want.version || o.After.Requests != want.calls || (o.Service != "" && o.Before.Requests != 200) {
+			t.Errorf("%s = %+v, want after_version %q with %d calls", key, o, want.version, want.calls)
+		}
+	}
+
+	// A local env names no release: the whole figures, no version.
+	for _, o := range joinOpHealth([]changedOp{notifyOp()}, before, map[opKey][]obsbackend.OpStats{{"api", notifySend}: {stats("api", notifySend, 300, 0.5, 10)}}, "") {
+		if o.AfterVersion != "" || (o.Service == "api" && o.After.Requests != 300) {
+			t.Errorf("local: %+v", o)
+		}
+	}
+}
+
 func TestPromotionSubject(t *testing.T) {
 	if promotionSubject(releasehealth.Subject{PromotedAt: checkP}) || !promotionSubject(releasehealth.Subject{Release: "v2"}) {
 		t.Error("a local subject is only its instant; a promotion names a release")
@@ -418,9 +540,7 @@ func TestPromotionSubject(t *testing.T) {
 // newest commit before P, and a range this checkout does not hold is
 // not_evaluated, never an error.
 func TestLocalOpBaseOverGit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("runs git in a temporary repository; runs in task test")
-	}
+	testkit.Slow(t, "runs git in a temporary repository")
 	dir := t.TempDir()
 	git := func(date string, args ...string) string {
 		t.Helper()

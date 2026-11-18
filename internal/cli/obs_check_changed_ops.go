@@ -266,6 +266,14 @@ func opGit(ctx context.Context, dir string, args ...string) (string, error) {
 // windows, one OpHealth per service the op ran in (an op no window saw is
 // one, with no service and no calls). note, when not "", is why the figures
 // could not be read. explain compiles the statements without running them.
+//
+// When r's subject names a release (a hosted promotion), the after window is
+// read per service.version and each op's After is the release's own calls
+// (AfterVersion set to it; joinOpHealth), so an old version still in
+// rotation cannot make a changed op look broken, or healthy. The before
+// window is all pre-promotion traffic and is read whole. A local subject
+// names no release: every span is the judged code, and both windows are read
+// whole, as `forge obs ops` reads them.
 func changedOpHealth(ctx context.Context, b obsbackend.Backend, r releasehealth.Report, ops []changedOp, explain bool) (out []releasehealth.OpHealth, stmts []obsbackend.Statement, note string) {
 	if len(ops) == 0 {
 		return []releasehealth.OpHealth{}, nil, ""
@@ -278,29 +286,32 @@ func changedOpHealth(ctx context.Context, b obsbackend.Backend, r releasehealth.
 	for _, o := range ops {
 		names = append(names, o.Name)
 	}
-	read := func(w releasehealth.Range) (map[opKey]obsbackend.OpStats, error) {
-		got := map[opKey]obsbackend.OpStats{}
+	rel := r.Subject.Release
+	read := func(w releasehealth.Range, byVersion bool) (map[opKey][]obsbackend.OpStats, error) {
+		got := map[opKey][]obsbackend.OpStats{}
 		if w.To.Sub(w.From) < time.Second {
 			return got, nil // a window too short to compile has no calls to count
 		}
 		res, err := reader.Ops(ctx, obsbackend.OpsRequest{
-			Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: w.From, To: w.To}, Explain: explain},
-			Names:  names,
+			Narrow:    obsbackend.Narrow{Range: obsbackend.Range{From: w.From, To: w.To}, Explain: explain},
+			Names:     names,
+			ByVersion: byVersion,
 		})
 		stmts = append(stmts, res.Statements...)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range res.Ops {
-			got[opKey{s.Service, s.Name}] = s
+			k := opKey{s.Service, s.Name}
+			got[k] = append(got[k], s)
 		}
 		return got, nil
 	}
-	before, err := read(r.Before)
+	before, err := read(r.Before, false)
 	if err == nil {
-		var after map[opKey]obsbackend.OpStats
-		if after, err = read(r.After); err == nil {
-			out = joinOpHealth(ops, before, after)
+		var after map[opKey][]obsbackend.OpStats
+		if after, err = read(r.After, rel != ""); err == nil {
+			out = joinOpHealth(ops, before, after, rel)
 		}
 	}
 	if err != nil {
@@ -313,10 +324,17 @@ func changedOpHealth(ctx context.Context, b obsbackend.Backend, r releasehealth.
 type opKey struct{ service, op string }
 
 // joinOpHealth pairs each changed op's per-service figures across the two
-// windows, ordered by op and service.
-func joinOpHealth(ops []changedOp, before, after map[opKey]obsbackend.OpStats) []releasehealth.OpHealth {
+// windows, ordered by op and service. rel is the judged release, "" for a
+// local env: the after rows are then each op's whole figures, one per key.
+// With a release they are its rows per service.version, and After is the
+// release's own (AfterVersion rel; zero calls when the release made none,
+// which the rule reads as too thin to compare) — unless every after row of
+// the op carries no version at all: the spans say nothing of which release
+// served them, so After keeps their unscoped figures with AfterVersion "",
+// which the rule names in not_evaluated rather than judges.
+func joinOpHealth(ops []changedOp, before, after map[opKey][]obsbackend.OpStats, rel string) []releasehealth.OpHealth {
 	services := map[string][]string{}
-	for _, side := range []map[opKey]obsbackend.OpStats{before, after} {
+	for _, side := range []map[opKey][]obsbackend.OpStats{before, after} {
 		for k := range side {
 			if !slices.Contains(services[k.op], k.service) {
 				services[k.op] = append(services[k.op], k.service)
@@ -326,17 +344,40 @@ func joinOpHealth(ops []changedOp, before, after map[opKey]obsbackend.OpStats) [
 	window := func(s obsbackend.OpStats) releasehealth.WindowStats {
 		return releasehealth.WindowStats{Requests: int64(math.Round(s.Calls)), ErrorRate: s.ErrorRatio, P50Ms: s.P50Ms, P95Ms: s.P95Ms, P99Ms: s.P99Ms}
 	}
+	first := func(rows []obsbackend.OpStats) obsbackend.OpStats {
+		if len(rows) == 0 {
+			return obsbackend.OpStats{}
+		}
+		return rows[0]
+	}
+	// afterOf is a key's After and the version it is restricted to.
+	afterOf := func(rows []obsbackend.OpStats) (obsbackend.OpStats, string) {
+		if rel == "" {
+			return first(rows), ""
+		}
+		if len(rows) > 0 && !slices.ContainsFunc(rows, func(s obsbackend.OpStats) bool { return s.Version != "" }) {
+			return first(rows), "" // no span says which release served it
+		}
+		for _, s := range rows {
+			if s.Version == rel {
+				return s, rel
+			}
+		}
+		return obsbackend.OpStats{}, rel // the release made no calls of it
+	}
 	out := []releasehealth.OpHealth{}
 	for _, o := range ops {
 		svcs := services[o.Name]
 		if len(svcs) == 0 {
-			out = append(out, releasehealth.OpHealth{Op: o.Name, Kind: o.Kind, Commits: o.Commits})
+			_, v := afterOf(nil)
+			out = append(out, releasehealth.OpHealth{Op: o.Name, Kind: o.Kind, AfterVersion: v, Commits: o.Commits})
 			continue
 		}
 		for _, svc := range svcs {
 			k := opKey{svc, o.Name}
+			a, v := afterOf(after[k])
 			out = append(out, releasehealth.OpHealth{Op: o.Name, Service: svc, Kind: o.Kind,
-				Before: window(before[k]), After: window(after[k]), Commits: o.Commits})
+				Before: window(first(before[k])), After: window(a), AfterVersion: v, Commits: o.Commits})
 		}
 	}
 	slices.SortStableFunc(out, func(a, b releasehealth.OpHealth) int {

@@ -47,14 +47,51 @@ func (r LineRange) touches(start, end int) bool {
 
 // Changes lists what changed between base and head in the git checkout
 // around dir, with paths relative to dir (files outside it are left out).
-// head "" is the working tree: staged and unstaged edits, plus untracked .go
-// and .proto files (as additions) that .gitignore does not exclude.
+// It has two modes, chosen by head:
+//
+//   - head set: the trees of the two commits, compared directly
+//     ([treeChanges]). The index and the working tree are not read at all.
+//   - head "": base against the working tree ([workingTreeChanges]), so
+//     staged and unstaged edits alike, the working tree's content winning
+//     where it and the index disagree; plus every untracked file .gitignore
+//     does not exclude, each as a whole-file addition.
 func Changes(ctx context.Context, dir, base, head string) ([]FileChange, error) {
-	args := append(diffArgs("diff"), base)
-	if head != "" {
-		args = append(args, head)
+	if head == "" {
+		return workingTreeChanges(ctx, dir, base)
 	}
-	patch, err := gitOut(ctx, dir, args...)
+	return treeChanges(ctx, dir, base, head)
+}
+
+// treeChanges is `git diff <base> <head>`: tree to tree, whatever the
+// checkout holds.
+func treeChanges(ctx context.Context, dir, base, head string) ([]FileChange, error) {
+	return diffChanges(ctx, dir, base, head)
+}
+
+// workingTreeChanges is `git diff <base>` — base's tree against the files on
+// disk, which already carry any staged edit (a change staged and then undone
+// on disk is no change) — followed by `git ls-files --others
+// --exclude-standard`: every untracked file that is not ignored, as an
+// addition (Status "A") whose NewRanges cover all its lines. An untracked
+// file of any kind is listed, so one that is not Go or proto source is
+// accounted for (unattributed) rather than dropped; an empty, binary or
+// unreadable one is listed with no ranges.
+func workingTreeChanges(ctx context.Context, dir, base string) ([]FileChange, error) {
+	changes, err := diffChanges(ctx, dir, base)
+	if err != nil {
+		return nil, err
+	}
+	untracked, err := untrackedFiles(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	return append(changes, untracked...), nil
+}
+
+// diffChanges runs `git diff` over revs (one: against the working tree; two:
+// tree to tree) and parses the patch.
+func diffChanges(ctx context.Context, dir string, revs ...string) ([]FileChange, error) {
+	patch, err := gitOut(ctx, dir, append(diffArgs("diff"), revs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -64,15 +101,7 @@ func Changes(ctx context.Context, dir, base, head string) ([]FileChange, error) 
 			return nil, err
 		}
 	}
-	changes := pp.finish()
-	if head == "" {
-		untracked, err := untrackedSources(ctx, dir)
-		if err != nil {
-			return nil, err
-		}
-		changes = append(changes, untracked...)
-	}
-	return changes, nil
+	return pp.finish(), nil
 }
 
 // diffArgs are the arguments every diff this package reads is produced
@@ -232,30 +261,31 @@ func atoiDefault(s string, def int) int {
 	return n
 }
 
-// untrackedSources lists untracked, unignored .go and .proto files under dir
-// as whole-file additions. Other untracked files (scratch notes, build
-// output) say nothing about ops and are left out.
-func untrackedSources(ctx context.Context, dir string) ([]FileChange, error) {
+// untrackedFiles lists every untracked file under dir that .gitignore does
+// not exclude, as a whole-file addition with paths relative to dir. Its
+// NewRanges are its lines, as git would number them were the file added;
+// an empty, binary (a NUL byte in it, git's own test) or unreadable file
+// has none, as git reports such an addition with no hunks.
+func untrackedFiles(ctx context.Context, dir string) ([]FileChange, error) {
 	out, err := gitOut(ctx, dir, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
 	var changes []FileChange
 	for _, p := range strings.Split(string(out), "\x00") {
-		if !strings.HasSuffix(p, ".go") && !strings.HasSuffix(p, ".proto") {
+		if p == "" {
 			continue
 		}
-		src, rerr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(p)))
-		if rerr != nil {
-			continue // removed since git listed it
-		}
-		n := bytes.Count(src, []byte("\n"))
-		if len(src) > 0 && src[len(src)-1] != '\n' {
-			n++
-		}
 		fc := FileChange{Path: p, Status: "A"}
-		if n > 0 {
-			fc.NewRanges = []LineRange{{Start: 1, Count: n}}
+		src, rerr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(p)))
+		if rerr == nil && bytes.IndexByte(src, 0) < 0 {
+			n := bytes.Count(src, []byte("\n"))
+			if len(src) > 0 && src[len(src)-1] != '\n' {
+				n++
+			}
+			if n > 0 {
+				fc.NewRanges = []LineRange{{Start: 1, Count: n}}
+			}
 		}
 		changes = append(changes, fc)
 	}

@@ -76,8 +76,14 @@
 // [Index.MapRange] maps each non-merge commit of base..head on its own
 // diff (against its first parent), so each [MappedOp] lists the commits
 // that changed it, newest first, with the PR number a squash-merge subject
-// ends with ([ParsePR]). The working tree (head "") adds its uncommitted
-// changes as a pseudo-commit with SHA "" and subject "uncommitted changes".
+// ends with ([ParsePR]). With a head, the range is those commits alone,
+// tree to tree: nothing uncommitted is read. Without one (head ""), it is
+// the commits base..HEAD plus a pseudo-commit with SHA "" and subject
+// "uncommitted changes": HEAD against the working tree, so staged and
+// unstaged edits alike (where the index and the working tree disagree, the
+// working tree's content is what counts), and every untracked file
+// .gitignore does not exclude, as a whole-file addition. An untracked file
+// that is not Go or proto source is unattributed like any other.
 // Only the newest release.MaxRangeCommits commits are mapped, and
 // [Mapping.Truncated] says when the range held more. [MergeBase] resolves a
 // branch's fork point, the usual base.

@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/opindex"
 	"github.com/reliant-labs/forge/pkg/obsquery"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // brMapping is a synthetic diff: two component ops and two rpcs (one
@@ -550,9 +551,7 @@ func brGitRepo(t *testing.T) (string, func(args ...string) string) {
 }
 
 func TestObsBlastRadiusGit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("execs git; runs in task test")
-	}
+	testkit.Slow(t, "execs git")
 	dir, git := brGitRepo(t)
 	run := func(args ...string) (map[string]any, error) {
 		t.Helper()
@@ -604,9 +603,7 @@ func TestObsBlastRadiusGit(t *testing.T) {
 // TestObsBlastRadiusGitExitParity: the document's exit_code is the
 // process's, through git, for each way the verb ends.
 func TestObsBlastRadiusGitExitParity(t *testing.T) {
-	if testing.Short() {
-		t.Skip("execs git; runs in task test")
-	}
+	testkit.Slow(t, "execs git")
 	dir, _ := brGitRepo(t)
 	plain := t.TempDir()
 	// Keep git from finding a repository above the temp dir.

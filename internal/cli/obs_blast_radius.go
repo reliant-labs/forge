@@ -203,10 +203,14 @@ An op is a unit the running code names a span after:
 
 The diff is base..head, read commit by commit, so each op names the commits
 that changed it. --base defaults to the merge base of origin/main (main when
-there is no origin/main) and the head; --head defaults to the working tree,
-uncommitted and untracked .go/.proto files included, as the pseudo-commit
-with sha "" and subject "uncommitted changes". At most the newest 100 commits
-are mapped (truncated says when the range held more).
+there is no origin/main) and the head. With --head, the diff is the commits
+base..head, tree to tree: nothing uncommitted is read. Without it, the diff is
+the commits base..HEAD plus the pseudo-commit with sha "" and subject
+"uncommitted changes": HEAD against the working tree, so staged and unstaged
+changes alike (where they disagree, the working tree's content wins), and
+every untracked file .gitignore does not exclude, as a whole-file addition.
+At most the newest 100 commits are mapped (truncated says when the range held
+more).
 
 A changed Go declaration reaches an op through its package's static
 reference graph (via: method, handler, helper, or package when nothing in the
@@ -294,7 +298,7 @@ The --json document (fields are stable under the schema name):
 	}
 	o.register(cmd, 7*24*time.Hour, 0)
 	cmd.Flags().StringVar(&o.base, "base", "", "the commit the diff starts from (default: the merge base of origin/main, else main, with the head)")
-	cmd.Flags().StringVar(&o.head, "head", "", "the commit the diff ends at (default: the working tree, uncommitted and untracked changes included)")
+	cmd.Flags().StringVar(&o.head, "head", "", "the commit the diff ends at, read tree to tree (default: the working tree — HEAD's commits plus staged, unstaged and untracked, unignored files)")
 	_ = cmd.Flags().MarkHidden("limit")
 	return cmd
 }

@@ -12,9 +12,10 @@ package releasehealth
 //     window's measured traffic, the rollout had not happened, or had not
 //     finished, there ([Report.RolloutIncomplete]).
 //   - The finding is the release's. Only VERSION-SPECIFIC evidence takes a
-//     finding off the release: a service's figures (error_rate, latency, and
-//     the changed_op_* findings of its ops) are not its when that
-//     service's own traffic was mostly another version's; an issue is not
+//     finding off the release: a service's figures (error_rate, latency) are
+//     not its when that service's own traffic was mostly another version's
+//     (a changed op's findings are judged on the release's own version's
+//     calls alone, changed_ops.go, so they stay its); an issue is not
 //     its when every one of its after-window events is tagged another
 //     version ([Report.IssueWindowVersions]). A low aggregate share alone moves no
 //     finding: an alert or a restart carries no version, and a release on a
@@ -219,8 +220,7 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 	}
 	rel := r.Subject.Release
 	switch f.Code {
-	case release.HealthErrorRate, release.HealthLatency, release.HealthChangedOpErrors, release.HealthChangedOpLatency:
-		// A changed op's figures are its service's traffic: the same rule.
+	case release.HealthErrorRate, release.HealthLatency:
 		s, ok := r.service(f.Service)
 		if !ok {
 			return "", false
@@ -243,6 +243,9 @@ func (r Report) unattributed(f Finding) (why string, otherVersion bool) {
 			return fmt.Sprintf("first seen in %s, not %s", is.FirstVersion, rel), true
 		}
 		// No version-specific evidence: the issue stays the release's.
+	case release.HealthChangedOpErrors, release.HealthChangedOpLatency:
+		// Judged on the release's own version's calls (changed_ops.go): its
+		// service's share of other versions is not evidence against them.
 	case release.HealthAlertFiring, release.HealthWorkloadRestarts:
 		// An alert carries no version, and a restart is not tied to the
 		// version its workload ran, so neither is ever taken off the

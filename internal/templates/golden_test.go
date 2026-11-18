@@ -290,6 +290,22 @@ func TestGoldenSnapshots(t *testing.T) {
 				return renderCI(t, "github", "proto-breaking.yml.tmpl", CIWorkflowData{ProjectName: "demo", PermContents: "read"})
 			},
 		},
+		// ci.provider reliant: the Reliant workflows that replace the
+		// GitHub Actions set. Almost all literal YAML, so the snapshot is
+		// the review surface for the triggers, the trust filter and the
+		// gate-document-to-check-run mapping.
+		{
+			name: "reliant_ci.yaml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "reliant", "ci.yaml.tmpl", ReliantCIWorkflowData{Check: "demo/ci"})
+			},
+		},
+		{
+			name: "reliant_review.yaml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "reliant", "review.yaml.tmpl", ReliantCIWorkflowData{Check: "demo/review"})
+			},
+		},
 		{
 			name: "build-images.yml",
 			render: func(t *testing.T) []byte {

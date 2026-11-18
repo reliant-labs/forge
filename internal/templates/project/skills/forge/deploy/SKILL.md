@@ -119,6 +119,7 @@ tool.
 | keep Helm / Fly.io / Cloud Run / ECS / Argo CD and let forge drive it; prove parity first with `forge env verify` | `deploy/external` |
 | the local loop: `forge env up` flags, host runners, `--target` | `dev` |
 | Reliant hosting: what it wires, refuses, bills; `--claimable` | `deploy/hosting`, `deploy/hosted-capacity`, `deploy/hosted-registry`, `deploy/lifecycle` |
+| stop, start or delete a hosted env; list or purge kept databases (`forge env retained`); stop, tear down or delete the whole app (`forge app stop\|teardown\|delete`) | `deploy/lifecycle` |
 | a frontend's runtime (`OnHost`, `OnHosted`, `OnBucket`, `OnFirebase`), runtime config; a site alone | `deploy/frontends`, `deploy/static-site` |
 | a custom hostname | `deploy/domains` |
 | reading the plan; release gates (`health_gate_*`, signing) | `deploy/plan`, `deploy/delivery-policy` |

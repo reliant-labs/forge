@@ -144,10 +144,11 @@ describe("traceparent propagation", () => {
   });
 
   it("buildRuntimeInterceptors composes the full stack", () => {
-    // error-normalize → auth → brand headers → traceparent.
+    // error-normalize → auth → brand headers → rpc span → traceparent.
     // retryInterceptor is intentionally NOT in the default chain — React
     // Query is the single retry owner (see interceptors.ts).
-    expect(buildRuntimeInterceptors()).toHaveLength(4);
+    expect(buildRuntimeInterceptors()).toHaveLength(5);
+    expect(buildRuntimeInterceptors({ rpcSpans: false })).toHaveLength(4);
   });
 });
 

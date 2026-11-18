@@ -1377,6 +1377,15 @@ func runGoBuildValidate(projectDir string) error {
 		return nil
 	}
 	if rep.Build != "" {
+		// A root that consumes an in-tree producer (a generated SDK) at a
+		// published version fails here after an additive producer change
+		// until the producer is published and the pin moved. That is a
+		// pending pin bump, not invalid generated code — proven, not
+		// assumed (producerPinLag).
+		if lag, local := producerPinLag(projectDir); lag != "" {
+			fmt.Fprintf(os.Stderr, "\n⚠️  %s\n", lag)
+			return validateTestFiles(projectDir, local.TestFiles)
+		}
 		fmt.Fprint(os.Stderr, rep.Build)
 		return goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
 	}

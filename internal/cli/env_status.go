@@ -68,13 +68,16 @@ WHAT ONE ENV'S REPORT CARRIES:
     verify half exists to measure);
   * VERIFY — the digests the env is actually RUNNING against the ones the
     binding froze, per declared image, in five states: match / drift /
-    missing / untagged / unreachable. A hosted env is read through its
-    control plane's observer, because forge cannot read a hosted cluster. A
-    hosted static site is read from the site itself: env build stamps the
-    release into /.well-known/forge-release.json, and status fetches it from
-    the live URL (MATCH when it names the bound release, DRIFT when it names
-    another, UNREACHABLE when the site serves none, as a release built before
-    forge stamped one does);
+    missing / untagged / unreachable. UNREACHABLE means forge could not
+    observe what runs, so it says nothing about the env either way: the
+    cluster, observer or site could not be read, or it answered without
+    saying which release it runs. A hosted env is read through its control
+    plane's observer, because forge cannot read a hosted cluster. A hosted
+    static site is read from the site itself: env build stamps the release
+    into /.well-known/forge-release.json, and status fetches it from the live
+    URL (MATCH when it names the bound release, DRIFT when it names another,
+    UNREACHABLE when the fetch fails or the site, though it answers, serves
+    no marker, as a release built before forge stamped one does);
   * the ROLLOUT PHASE per workload, as the control plane computes it;
   * IDENTITY — a hosted env that declares forge.ManagedIdentity gets one line,
     "identity: ready / provisioning / failed: <reason>", as its control plane

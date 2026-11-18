@@ -414,10 +414,12 @@ func OperatorSource(source string) bool {
 // request the client walked away from (forge#1666) is not a failure of the
 // server, so it counts in no error rate, error trace or release-health
 // verdict. spanCanceledExpr recognises one by forge's error_class (which
-// observe.RecordSpanError stamps, leaving such a span's status unset, and
-// observe.RequestSpanInterceptor stamps on a Connect server span whose
-// otelconnect status says Error for a drain's Unavailable), by Connect's
-// canceled code, and by the 499 a proxy answers a closed client.
+// observe.RecordSpanError stamps, leaving such a span's status unset), by
+// Connect's canceled code, and by the 499 a proxy answers a closed client.
+// A Connect server span from a current forge chain needs none of it: the
+// chain sets a user- or canceled-class failure's status OK before
+// otelconnect can mark it Error (observe.RequestSpanInterceptor); the
+// attribute test still covers spans from older emitters.
 const (
 	spanCanceledExpr = "(SpanAttributes['error_class'] = 'canceled' OR SpanAttributes['rpc.connect_rpc.error_code'] = 'canceled'" +
 		" OR SpanAttributes['http.response.status_code'] = '499' OR SpanAttributes['http.status_code'] = '499')"

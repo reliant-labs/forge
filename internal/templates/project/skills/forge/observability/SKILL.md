@@ -126,6 +126,9 @@ Nothing is hidden: a user error is still written, with `error`,
 claiming to be an incident. Its volume stays countable: the RPC error counter
 (and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
 
+A failed call's server span follows the class too (OK for `user` and
+`canceled`, Error for `server`): `observability/error-levels`.
+
 Where the policy applies (the RPC edge, the component chain, every
 hand-written `logger.Error`), wrapping a log forwarder, and marking an error
 `svcerr.WithClass` or `observe.WithErrorClassifier`: `observability/error-levels`.

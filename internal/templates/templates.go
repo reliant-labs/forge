@@ -305,6 +305,15 @@ func listTemplates(root string, recursive bool) ([]string, error) {
 	return files, nil
 }
 
+// ReliantCIWorkflowData is what a ci.provider reliant workflow
+// (ci/reliant/*.yaml.tmpl) renders with. The workflow's logic is all
+// literal YAML; the only project fact in it is the check's name.
+type ReliantCIWorkflowData struct {
+	// Check is the GitHub check run the workflow posts, "<project>/ci" or
+	// "<project>/review": the name a branch ruleset requires.
+	Check string
+}
+
 // CIWorkflowData holds data for the spec-driven CI workflow template.
 type CIWorkflowData struct {
 	ProjectName  string

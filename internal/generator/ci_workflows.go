@@ -14,12 +14,23 @@ import (
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
-// CIWorkflowFile is one scaffolded GitHub Actions file: the template that
-// renders it, where it lands, and the data it renders with.
+// CIWorkflowFile is one scaffolded CI file: the template that renders it,
+// where it lands, and the data it renders with.
 type CIWorkflowFile struct {
 	Template string
 	Dest     string
 	Data     any
+}
+
+// Render renders the file from its provider's templates
+// (internal/templates/ci/<provider>/): the provider whose files include its
+// Dest (CIProviderOfPath).
+func (f CIWorkflowFile) Render() ([]byte, error) {
+	provider := config.CIProviderGitHub
+	if isReliantCIPath(f.Dest) {
+		provider = config.CIProviderReliant
+	}
+	return templates.CITemplates(provider).Render(f.Template, f.Data)
 }
 
 // CIWorkflows is THE mapping from a project to its scaffolded GitHub Actions
@@ -86,8 +97,20 @@ func CIWorkflowDataFor(root string, cfg *config.ProjectConfig, in CIInputs) temp
 // workflows forge.yaml's `ci.workflows` switches off. Every writer — `forge
 // project new`, `forge generate`, rescaffold and the upgrade advisory — goes
 // through it, so a switched-off workflow is one forge never offers anywhere.
+//
+// It answers for the project's `ci.provider`: GitHub Actions files for
+// github, the Reliant workflows under .reliant/workflows/ for reliant
+// (reliantCIWorkflows), and nothing for a provider forge has no templates
+// for. A project that switches provider keeps the other provider's files —
+// they are scaffold-once and the user's — but forge offers only the new ones.
 func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWorkflowFile {
-	all := ciWorkflowsAll(root, cfg, in)
+	var all []CIWorkflowFile
+	switch cfg.CI.EffectiveProvider() {
+	case config.CIProviderGitHub:
+		all = ciWorkflowsAll(root, cfg, in)
+	case config.CIProviderReliant:
+		all = reliantCIWorkflows(cfg)
+	}
 	out := all[:0:0]
 	for _, f := range all {
 		if cfg.CI.WorkflowEnabled(CIWorkflowName(f.Dest)) {
@@ -99,8 +122,9 @@ func CIWorkflowsFor(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 
 // CIWorkflowName is the `ci.workflows` switch that governs relPath: the
 // workflow file's name without .yml, "release" for the vendored forge-deploy
-// action release.yml calls, "dependabot" for .github/dependabot.yml, and ""
-// for a path the CI mapper does not own.
+// action release.yml calls, "dependabot" for .github/dependabot.yml, a
+// Reliant workflow's name without .yaml (.reliant/workflows/ci.yaml is "ci"),
+// and "" for a path the CI mapper does not own.
 func CIWorkflowName(relPath string) string {
 	rel := filepath.ToSlash(relPath)
 	switch {
@@ -110,6 +134,8 @@ func CIWorkflowName(relPath string) string {
 		return "dependabot"
 	case strings.HasPrefix(rel, ".github/workflows/") && strings.HasSuffix(rel, ".yml"):
 		return strings.TrimSuffix(strings.TrimPrefix(rel, ".github/workflows/"), ".yml")
+	case strings.HasPrefix(rel, reliantWorkflowDir) && strings.HasSuffix(rel, ".yaml"):
+		return strings.TrimSuffix(strings.TrimPrefix(rel, reliantWorkflowDir), ".yaml")
 	}
 	return ""
 }

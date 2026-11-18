@@ -116,15 +116,15 @@ once per failure signature per page session.
 
 ## Attribute contract (shared by B, C and D)
 
-| Attribute | Set by | Meaning |
-|---|---|---|
-| `forge.op` | B | `<pkg>.<Method>`, equal to the component span's name |
-| `code.function.name` | B | `<import path>.<Iface>.<Method>` |
-| `code.file.path` | B | project-relative source file of the implementation |
-| `forge.slow` | B | bool, the call was far above its op's own normal |
-| event `forge.forensics` | B, D | attributes `forensics.arg.<name>` (classified values), `forensics.reason` = `error` or `slow` |
-| `forge.rpc.client` | D | bool, a browser-side RPC span |
-| `rpc.service`, `rpc.method` | D (and otelconnect server side) | the join key between client and server |
+| Attribute                   | Set by                          | Meaning                                                                                       |
+| --------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `forge.op`                  | B                               | `<pkg>.<Method>`, equal to the component span's name                                          |
+| `code.function.name`        | B                               | `<import path>.<Iface>.<Method>`                                                              |
+| `code.file.path`            | B                               | project-relative source file of the implementation                                            |
+| `forge.slow`                | B                               | bool, the call was far above its op's own normal                                              |
+| event `forge.forensics`     | B, D                            | attributes `forensics.arg.<name>` (classified values), `forensics.reason` = `error` or `slow` |
+| `forge.rpc.client`          | D                               | bool, a browser-side RPC span                                                                 |
+| `rpc.service`, `rpc.method` | D (and otelconnect server side) | the join key between client and server                                                        |
 
 ## Not copied from Hud
 

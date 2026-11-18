@@ -29,7 +29,7 @@ func DeclareCloudScopes(c ScopeDeclarer) {
 	c.DeclareScope("obs:read",
 		procSearchLogs, procListTraces, procGetTrace, procListMetrics, procQueryPanel,
 		procGetMetric, procListMetricExemplars,
-		procGetServiceOverview, procListAlerts, procListTelemetryDeliveries, procListWorkloads,
+		procGetServiceOverview, procListAlerts, procListAlertHistory, procListTelemetryDeliveries, procListWorkloads,
 		procGetReleaseHealth, procListActivity, procGetUserActivity,
 		procListIssues, procGetIssue, procListIssueEvents, procListIssueTimeline,
 		procListSessions, procGetSession, procGetSessionTimeline,

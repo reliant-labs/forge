@@ -197,11 +197,16 @@ func TestHostedStaticBuildShipsNoRuntimeConfig(t *testing.T) {
 	}
 	t.Cleanup(func() { hostedStaticPusher = prev })
 	t.Setenv("FORGE_HOME", t.TempDir())
-	if err := buildHostedStaticSites(context.Background(), dir, entities, buildOptions{env: "prod", pushPlan: pushPlan{push: true, env: "prod"}}); err != nil {
+	if err := buildHostedStaticSites(context.Background(), dir, entities, buildOptions{env: "prod", release: "v0.1.0", pushPlan: pushPlan{push: true, env: "prod"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("pushed %d sites, want 1", len(got))
+	}
+	// forge#2231: the release is stamped into the site, so `env status` can
+	// read it back from the live URL. It is the same in every env.
+	if got[0].Release != "v0.1.0" {
+		t.Errorf("hosted artifact release marker = %q, want v0.1.0", got[0].Release)
 	}
 	if got[0].RuntimeConfigJS != "" || !got[0].StripRuntimeConfig {
 		t.Errorf("hosted artifact runtime config: RuntimeConfigJS=%q Strip=%v; want none written and the dev copy stripped",

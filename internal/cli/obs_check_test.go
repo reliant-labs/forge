@@ -23,7 +23,10 @@ import (
 
 const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
 
-const procListAlertsCheck = "controlplane.v1.AlertingService/ListAlerts"
+const (
+	procListAlertsCheck       = "controlplane.v1.AlertingService/ListAlerts"
+	procListAlertHistoryCheck = "controlplane.v1.AlertingService/ListAlertHistory"
+)
 
 const (
 	procListGatesCheck = "controlplane.v1.DeployService/ListGates"
@@ -68,9 +71,10 @@ func (s *seqCaller) Call(ctx context.Context, procedure string, req, out any) er
 	if s.n == nil {
 		s.n = map[string]int{}
 	}
-	// No alerts firing, unless the test says otherwise: obs check reads the
-	// alert state on every cloud check.
-	fc := &fakeCloudCaller{replies: map[string]string{procListAlertsCheck: `{"alerts":[]}`}, errs: s.errs}
+	// No alerts firing and no alert history, unless the test says
+	// otherwise: obs check reads the alert state on every cloud check, and
+	// the history when an alert_firing finding could fail.
+	fc := &fakeCloudCaller{replies: map[string]string{procListAlertsCheck: `{"alerts":[]}`, procListAlertHistoryCheck: `{"events":[]}`}, errs: s.errs}
 	if rs := s.replies[procedure]; len(rs) > 0 {
 		i := s.n[procedure]
 		if i >= len(rs) {
@@ -875,6 +879,80 @@ func TestObsCheckExcludedAlertJudgesNoRelease(t *testing.T) {
 	}
 	if doc := decode(t, out); doc["verdict"] != "FAIL" || !strings.Contains(fmt.Sprint(doc["findings"]), "Down") || strings.Contains(fmt.Sprint(doc["findings"]), "MachineLoadHigh") {
 		t.Errorf("doc = %v", doc)
+	}
+}
+
+// control-plane v1.21.0-rc.6 (2026-11-17): prod's check failed on
+// IdentityLatency, a warning that fired 2-27 times a day and twice that day
+// before the release rolled. The check reads the alert history and holds the
+// control plane's answer to the baseline-alert rule: the alert fired in the
+// baseline window, so its finding warns, it is listed in baseline_alerts, and
+// the check passes. An alert the history never saw, --threshold
+// alert_baseline_min_firings=0, or a history it cannot read still fails.
+func TestObsCheckAlertThatFlappedBeforeThePromotionDoesNotFail(t *testing.T) {
+	const latency = `{"rule":"IdentityLatency","fingerprint":"fp4","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","n":"15","slow":"4"}}`
+	const finding = `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert IdentityLatency opened after the promotion and is still firing"}`
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+latency+`],"verdict"`, 1)
+	// Newest first: the after-window firing, then two before the promotion
+	// (11:40), one of them with another sample count.
+	const flapped = `{"events":[` +
+		`{"rule":"IdentityLatency","fingerprint":"fp4","labels":{"severity":"warning","n":"15","slow":"4"},"transition":"firing","at":"2026-10-22T11:45:00Z"},` +
+		`{"rule":"IdentityLatency","fingerprint":"fp3","labels":{"severity":"warning","n":"14","slow":"3"},"transition":"resolved","at":"2026-10-22T11:30:00Z"},` +
+		`{"rule":"IdentityLatency","fingerprint":"fp3","labels":{"severity":"warning","n":"14","slow":"3"},"transition":"firing","at":"2026-10-22T11:20:00Z"},` +
+		`{"rule":"IdentityLatency","fingerprint":"fp5","labels":{"severity":"warning","n":"15","slow":"5"},"transition":"firing","at":"2026-10-22T02:00:00Z"}]}`
+	run := func(t *testing.T, history string, errs map[string]error, args ...string) (map[string]any, string, *seqCaller, error) {
+		t.Helper()
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procListAlertHistoryCheck: {history}}, errs: errs}
+		out, stderr, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, append([]string{"check", "prod", "--json"}, args...)...)
+		return decode(t, out), stderr, caller, err
+	}
+
+	doc, _, caller, err := run(t, flapped, nil)
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
+	}
+	fs, _ := doc["findings"].([]any)
+	if doc["verdict"] != "PASS" || len(fs) != 1 || doc["firing_alerts"] != nil {
+		t.Fatalf("doc = %v", doc)
+	}
+	if f := fs[0].(map[string]any); f["policy"] != "warn" || !strings.Contains(fmt.Sprint(f["unattributed"]), "fired 2 time(s) in the 24h before the promotion") {
+		t.Errorf("finding = %v, want a warn naming the baseline firings", f)
+	}
+	if ba, _ := doc["baseline_alerts"].([]any); len(ba) != 1 || ba[0].(map[string]any)["baseline_firings"] != float64(2) {
+		t.Errorf("baseline_alerts = %v", doc["baseline_alerts"])
+	}
+	var body string
+	for _, c := range caller.calls {
+		if c.procedure == procListAlertHistoryCheck {
+			body = c.body
+		}
+	}
+	// The history since the baseline window's start (24h before 11:40), for
+	// this env, as much of it as one call returns.
+	if !strings.Contains(body, `"since":"2026-10-21T11:40:00Z"`) || !strings.Contains(body, `"envId":"env-prod"`) || !strings.Contains(body, `"limit":1000`) {
+		t.Errorf("ListAlertHistory request = %s", body)
+	}
+
+	for name, tc := range map[string]struct {
+		history string
+		errs    map[string]error
+		args    []string
+		stderr  string
+	}{
+		"never fired before":            {history: `{"events":[]}`},
+		"alert_baseline_min_firings=0":  {history: flapped, args: []string{"--threshold", "alert_baseline_min_firings=0"}},
+		"history unreadable":            {errs: map[string]error{procListAlertHistoryCheck: errors.New("permission denied")}, stderr: "could not read the alert history"},
+		"a flap rate it does not reach": {history: flapped, args: []string{"--threshold", "alert_baseline_min_firings=3"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, stderr, _, err := run(t, tc.history, tc.errs, tc.args...)
+			if exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || doc["baseline_alerts"] != nil {
+				t.Errorf("exit = %d (%v), doc = %v; want FAIL", exitCodeForError(err), err, doc)
+			}
+			if !strings.Contains(stderr, tc.stderr) {
+				t.Errorf("stderr = %q, want %q", stderr, tc.stderr)
+			}
+		})
 	}
 }
 

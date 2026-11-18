@@ -1074,6 +1074,19 @@ func metadataOf(err error) map[string]string {
 	return out
 }
 
+// ReasonOf returns the reason code [WithReason] annotated on err — the one
+// [ToConnect] delivers as [ReasonHeader] — and whether there is one. It
+// reads the same chain ToConnect does, so it agrees with what the client
+// received: the nearest WithReason wins, wrapping is transparent, and a
+// reason behind a [WithCause] cause is not err's. Observability reads it to
+// label a failed call (the server span's rpc.error_reason).
+func ReasonOf(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	return reasonOf(err)
+}
+
 // reasonOf returns the nearest reason code annotated on err's chain, if
 // any. Additional wrapping (fmt.Errorf("...: %w", err)) around a
 // WithReason error is transparent because the walk follows Unwrap. A reason

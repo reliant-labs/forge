@@ -27,13 +27,26 @@ func TestActivityRulesReachEveryUserCount(t *testing.T) {
 	}
 	counted := map[string]int{}
 	for _, d := range every(in) {
-		for i, p := range d.Panels {
+		for _, p := range statementPanels(d) {
 			for _, sql := range []string{p.SQL, p.TrendSQL} {
+				// The plain fragment is a prefix of the ruled evidence.
 				bare, ruled := strings.Count(sql, obsquery.UserActivityEvidence), strings.Count(sql, evidence)
 				if bare != ruled {
 					t.Errorf("%s/%s reads UserActivityEvidence %d times but the rules only %d", d.ID, p.ID, bare, ruled)
 				}
 				counted[d.ID] += ruled
+			}
+		}
+		for i, p := range d.Panels {
+			if d.ID == ProductOverviewID && p.ID == "top-features" {
+				// The one other reader of the rules: an event the project
+				// declares is not activity is not a feature either.
+				for _, want := range []string{"'billing_subscription_state'", "EventName IN ('internal_user')", "person NOT IN ('u:canary-subject')"} {
+					if !strings.Contains(p.SQL, want) {
+						t.Errorf("top-features does not apply the activity rules (%s):\n%s", want, p.SQL)
+					}
+				}
+				continue
 			}
 			if was := plain[d.ID].Panels[i]; !strings.Contains(was.SQL+was.TrendSQL, obsquery.UserActivityEvidence) &&
 				(was.SQL != p.SQL || was.TrendSQL != p.TrendSQL) {

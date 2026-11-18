@@ -394,6 +394,40 @@ func TestWithReason_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// ReasonOf reads the reason the client receives as ReasonHeader: the nearest
+// WithReason, through wrapping and ToConnect, never one behind a cause.
+func TestReasonOf_AgreesWithTheWire(t *testing.T) {
+	t.Parallel()
+	waking := svcerr.WithReason(svcerr.Unavailable("your machine is waking up"), "machine_waking")
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"direct":             {waking, "machine_waking"},
+		"wrapped":            {fmt.Errorf("connect daemon: %w", waking), "machine_waking"},
+		"classed":            {svcerr.WithClass(waking, svcerr.ClassUser), "machine_waking"},
+		"to connect":         {svcerr.ToConnect(waking), "machine_waking"},
+		"nearest wins":       {svcerr.WithReason(waking, "outer"), "outer"},
+		"cause is not err's": {svcerr.WithCause(svcerr.Internal("x"), waking), ""},
+		"none":               {svcerr.NotFound("chat"), ""},
+		"nil":                {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := svcerr.ReasonOf(tc.err)
+			if got != tc.want || ok != (tc.want != "") {
+				t.Fatalf("ReasonOf = %q, %v; want %q", got, ok, tc.want)
+			}
+			if tc.err == nil {
+				return
+			}
+			if wire := svcerr.ToConnect(tc.err).Meta().Get(svcerr.ReasonHeader); wire != tc.want {
+				t.Fatalf("ReasonOf = %q but the wire carries %q", got, wire)
+			}
+		})
+	}
+}
+
 // TestDraining_IsItsOwnIdentity pins what lets a drain be told apart from an
 // outage: a transport's drain in its own words still matches
 // ErrServerDraining through any wrapping, reads Unavailable with exactly its

@@ -116,11 +116,12 @@ The issuer treats "which credentials were checked" as the **caller's** decision.
 ## Public frontends (`--auth-mode none`)
 
 `forge scaffold frontend --auth-mode none` scaffolds a frontend with **no
-sign-in gate**: no route guard around the app and no `/auth/sign-in` screen. It
+sign-in gate**: no route guard around the app, and no `/auth/*` screens or
+forms only they use. It
 is what the command picks by default when `deploy/kcl/dev/main.k` declares no
 identity provider — a gated frontend there could only redirect every page to a
 form nothing can complete. `--auth-mode native|none` overrides the default
-either way.
+either way (`project new` takes it too: `auth`).
 
 The choice is **not recorded in `forge.yaml`** (there is no `auth_mode` key). It
 is visible in the files: a public frontend simply has no `RouteGuard` in

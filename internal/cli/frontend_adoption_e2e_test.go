@@ -96,10 +96,10 @@ func TestE2EGenerateIntoAdoptedFrontend(t *testing.T) {
 			t.Errorf("summary does not name %q:\n%s", want, summary)
 		}
 	}
-	// The runtime range is raised (and the SDK otel_gen.ts imports declared),
-	// in place: the app's other manifest content is untouched.
+	// The runtime range is raised in place (the runtime carries the SDK, so
+	// nothing else is declared): the app's other manifest content is untouched.
 	manifest := readFileE2E(t, manifestPath)
-	if strings.Contains(manifest, `"^0.5.0"`) || !strings.Contains(manifest, `"@hyperdx/browser"`) ||
+	if strings.Contains(manifest, `"^0.5.0"`) || strings.Contains(manifest, `"@hyperdx/browser"`) ||
 		!strings.Contains(manifest, `"name": "legacy"`) {
 		t.Errorf("generate did not reconcile the adopted frontend's dependency ranges:\n%s", manifest)
 	}

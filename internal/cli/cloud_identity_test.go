@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 )
@@ -67,7 +68,8 @@ func TestCloudIdentityWire(t *testing.T) {
 			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}}, []string{"Invited recipient@example.com (user existing, created=false)"}},
 		{"invite --return-code", procIdentityInvite, `{"userId":"new-user","created":true,"code":{"code":"c0de","resetUrl":"https://app.example/auth/reset?code=c0de"}}`,
 			[]string{"invite", "prod", "--email", "recipient@example.com", "--role", "member", "--return-code"},
-			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}, "returnCode": true}, []string{"created=true", "a credential", "https://app.example/auth/reset?code=c0de"}},
+			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}, "returnCode": true}, []string{"created=true", "a credential", "https://app.example/auth/reset?code=c0de",
+				"It expires within the hour, and its lifetime cannot be extended", "If it lapses", "cloud identity reset prod --user recipient@example.com --return-code"}},
 		{"invite --return-code, account has a credential", procIdentityInvite, `{"userId":"existing","created":false}`,
 			[]string{"invite", "prod", "--email", "recipient@example.com", "--role", "member", "--return-code"},
 			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}, "returnCode": true}, []string{"already has a credential", "reset --return-code"}},
@@ -286,5 +288,18 @@ func TestCloudIdentityNoCredential(t *testing.T) {
 	out, err := executeIdentity("status", "prod")
 	if err == nil || !strings.Contains(err.Error(), "credential") || out != "" {
 		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+// forge#2265: a returned code's lifetime is the identity provider's and no
+// flag extends it, so it is said with the time left and the reissue command.
+func TestWritePasswordCode_SaysWhenItLapsesAndHowToReissue(t *testing.T) {
+	var b strings.Builder
+	now := time.Date(2026, 11, 16, 17, 0, 0, 0, time.UTC)
+	writePasswordCode(&b, &identityPasswordCodeWire{Code: "c0de", ExpiresAt: "2026-11-16T18:00:00Z"}, "forge cloud identity reset prod --user a@b.c --return-code", now)
+	for _, want := range []string{"expires at 2026-11-16T18:00:00Z (in 1h0m0s)", "cannot be extended", "code: c0de", "forge cloud identity reset prod --user a@b.c --return-code"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, b.String())
+		}
 	}
 }

@@ -63,7 +63,7 @@ import ..workloads as wl
 # How any env binds a workload or frontend — shared by every deployed env.
 # This file keeps only what is this env's own (deploy/kcl/base/env.k).
 import ..base.env as envbase
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
 
 # The users — declared once, shared by every env; only where they run differs.
 import ..identity as idn
@@ -206,7 +206,7 @@ _bundle = forge.Bundle {
 {{- end}}
     workloads = _workloads
 {{if not .DatabaseDisabled}}    databases = [_db]{{end}}
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
     # THE USERS (deploy/kcl/identity.k), hosted: the control plane gives this
     # env its own identity instance and delivers its issuer, audience, client
     # id and broker token to the API (forge.IdentityRef): nothing is copied by

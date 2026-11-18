@@ -42,7 +42,7 @@ func TestValidationAcceptsDisplayStylesAndTextPanels(t *testing.T) {
 func TestValidationRefusesMisusedDisplayAndTextPanels(t *testing.T) {
 	bad := []struct{ name, src, path, want string }{
 		{"display on a table", onePanel(`"kind":"table","signal":"traces","display":{"style":"bar"},` + oneCount), "display", `a table panel is drawn one way and takes no "display"`},
-		{"display on a funnel", onePanel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"]},"display":{"style":"bar"}`), "display", `takes no "display"`},
+		{"display on a funnel", onePanel(`"kind":"funnel","signal":"traces","funnel":{"steps":["a","b"]},"display":{"style":"bar"}`), "display.style", `display takes only "layout"`},
 		{"display not an object", onePanel(`"kind":"line","signal":"traces","display":"area",` + oneCount), "display", "must be an object"},
 		{"unknown display field", onePanel(`"kind":"line","signal":"traces","display":{"legend":"table"},` + oneCount), "display.legend", `unknown field "legend"`},
 		{"pie on a line", onePanel(`"kind":"line","signal":"traces","display":{"style":"pie"},` + oneCount), "display.style", `"pie" is not one of: line, area, bars`},

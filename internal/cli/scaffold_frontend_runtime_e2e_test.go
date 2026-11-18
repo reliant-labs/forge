@@ -332,10 +332,25 @@ func assertRuntimePeersDedupedE2E(t *testing.T, distDir, runtimeDir string) {
 			"build, so the single-copy assertion is vacuous", runtimeDir)
 	}
 
+	// A package read out of the runtime's own node_modules is a second copy
+	// only when the app supplies one too: a peer of the runtime (the app is
+	// the supplier by contract), or any package the app's node_modules chain
+	// holds (the redirect puts the app's copy first, so reaching the
+	// runtime's means the redirect is missing). The runtime's own
+	// dependencies (@hyperdx/otel-web, rrweb and what they pull in) exist
+	// only under the runtime, as they do under a registry install's nested
+	// layout, so resolving them there is the one copy, not a duplicate.
+	peers := map[string]bool{}
+	for _, name := range runtimePeersE2E(t, filepath.Join(runtimeDir, "package.json")) {
+		peers[name] = true
+	}
+	appModules := nodeModulesChainE2E(filepath.Dir(distDir))
 	seen := map[string]bool{}
 	for _, d := range dirs {
 		for _, name := range shadowedPackagesE2E(trace, filepath.Join(d, "node_modules")) {
-			seen[name] = true
+			if peers[name] || appHasPackageE2E(appModules, name) {
+				seen[name] = true
+			}
 		}
 	}
 	if len(seen) == 0 {
@@ -351,6 +366,35 @@ func assertRuntimePeersDedupedE2E(t *testing.T, distDir, runtimeDir string) {
 		"classes and module state: %s\n"+
 		"next.config.ts must redirect the linked runtime's bare imports at %s/node_modules.",
 		len(dupes), strings.Join(dupes, ", "), filepath.Dir(distDir))
+}
+
+// nodeModulesChainE2E lists every node_modules directory from dir up to the
+// filesystem root: the same ancestor chain the scaffolded next.config.ts
+// redirects the linked runtime's bare imports at.
+func nodeModulesChainE2E(dir string) []string {
+	var out []string
+	for {
+		candidate := filepath.Join(dir, "node_modules")
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			out = append(out, candidate)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return out
+		}
+		dir = parent
+	}
+}
+
+// appHasPackageE2E reports whether any directory of the app's node_modules
+// chain holds the named package.
+func appHasPackageE2E(chain []string, name string) bool {
+	for _, base := range chain {
+		if _, err := os.Stat(filepath.Join(base, filepath.FromSlash(name), "package.json")); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // shadowedPackagesE2E returns the distinct package names the trace resolved

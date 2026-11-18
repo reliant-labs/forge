@@ -1644,6 +1644,44 @@ func TestGeneratePlanORM_ComputedFieldSeam_FreshEntity(t *testing.T) {
 	}
 }
 
+// forge#2266: the generated writes are single-row, so the seam shows the
+// set-based write — one UPDATE through db.Bun() — that List + a per-row
+// Update<Entity>Masked loop should have been. It names no orm helper that
+// does not exist (an agent guessed orm.Ident), and stamps updated_at, which
+// a builder write bypasses, only when the table has one.
+func TestGeneratePlanORM_RepoExtSeamShowsASetBasedUpdate(t *testing.T) {
+	for _, stamped := range []bool{false, true} {
+		root := t.TempDir()
+		ents := widgetEntity()
+		if stamped {
+			ents[0].Fields = append(ents[0].Fields, config.PlanEntityField{Name: "updated_at", Type: "time", NotNull: true})
+		}
+		if err := GeneratePlanORM(root, config.ORMConfig{}, ents, nil); err != nil {
+			t.Fatalf("GeneratePlanORM() error = %v", err)
+		}
+		b, err := os.ReadFile(filepath.Join(root, "internal", "db", "widget_repo_ext.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		for _, want := range []string{
+			"never List then an\n// UpdateWidgetMasked per row",
+			"func MoveWidgets(ctx context.Context, db orm.Context, from, to any) (int64, error) {",
+			"db.Bun().NewUpdate().Model((*Widget)(nil)).",
+			`Set("name = ?", to).`,
+			`Where("name = ?", from).`,
+			"return res.RowsAffected()",
+		} {
+			if !strings.Contains(src, want) {
+				t.Errorf("seam lacks %q:\n%s", want, src)
+			}
+		}
+		if got := strings.Contains(src, `Set("updated_at = now()")`); got != stamped {
+			t.Errorf("updated_at stamp present = %v, want %v (only a table with updated_at has one):\n%s", got, stamped, src)
+		}
+	}
+}
+
 // TestGeneratePlanORM_ComputedFieldSeam_ExistingProjectWithoutExtra is the
 // backward-compat case the task calls out as the hardest part: a project
 // generated before this feature has <entity>_repo_ext.go WITHOUT the Extra

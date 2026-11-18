@@ -204,7 +204,7 @@ func AdvisoryFilesFor(projectDir string, cfg *config.ProjectConfig) ([]AdvisoryF
 // stays deleted, and `forge project rescaffold <path>` is how to get it
 // back. Reporting either as "absent" would be noise on every upgrade.
 func CIWorkflowAdvisoryFiles(projectDir string, cfg *config.ProjectConfig, in CIInputs) []AdvisoryFile {
-	if cfg == nil || (cfg.CI.Provider != "" && cfg.CI.Provider != "github") {
+	if cfg == nil {
 		return nil
 	}
 	var rows []AdvisoryFile
@@ -214,10 +214,8 @@ func CIWorkflowAdvisoryFiles(projectDir string, cfg *config.ProjectConfig, in CI
 			continue
 		}
 		rows = append(rows, AdvisoryFile{
-			Path: rel,
-			Render: func() ([]byte, error) {
-				return templates.CITemplates("github").Render(f.Template, f.Data)
-			},
+			Path:   rel,
+			Render: f.Render,
 		})
 	}
 	return rows
@@ -240,10 +238,11 @@ func onDisk(projectDir, rel string) bool {
 // renders each from one place, so what this lane compares against is what
 // the scaffold would write today — no second mapping to disagree with.
 func githubStarterAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) []AdvisoryFile {
-	if cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
+	// Both providers' projects live on GitHub, so both get the starters.
+	if p := cfg.CI.EffectiveProvider(); p != config.CIProviderGitHub && p != config.CIProviderReliant {
 		return nil
 	}
-	const provider = "github"
+	const provider = config.CIProviderGitHub
 	rows := []AdvisoryFile{{
 		Path: filepath.Join(".github", "pull_request_template.md"),
 		Render: func() ([]byte, error) {
@@ -266,7 +265,7 @@ func githubStarterAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) []
 	// that leaves no birth record, so an absent copy cannot be told apart
 	// from one the user deleted on purpose. Report it only while it is
 	// there — the same rule CIWorkflowAdvisoryFiles applies.
-	if cfg.Features.CIEnabled() && onDisk(projectDir, filepath.FromSlash(preCommitWorkflowPath)) {
+	if cfg.Features.CIEnabled() && cfg.CI.EffectiveProvider() == config.CIProviderGitHub && onDisk(projectDir, filepath.FromSlash(preCommitWorkflowPath)) {
 		rows = append(rows, AdvisoryFile{
 			Path: filepath.FromSlash(preCommitWorkflowPath),
 			Render: func() ([]byte, error) {

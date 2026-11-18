@@ -368,13 +368,28 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 	firstPassword, attempt := false, ""
 	switch {
 	case gate == gateFirstPassword && proves:
+		disqualified, derr := c.firstPasswordDisqualified(ctx, userID)
+		if derr != nil {
+			return derr
+		}
+		if disqualified {
+			break // installs the password; verifies nothing
+		}
 		if attempt, err = c.recordFirstPasswordAttempt(ctx, userID); err != nil {
 			return err
 		}
 		firstPassword = true
 	case gate == gateUnverifiedPassword && proves:
-		if firstPassword, err = c.passwordIsAFirstPasswordAttempt(ctx, userID); err != nil {
+		var disqualify bool
+		if firstPassword, disqualify, err = c.passwordIsAFirstPasswordAttempt(ctx, userID); err != nil {
 			return err
+		}
+		if disqualify {
+			// Before the password is replaced, or a later reset would read
+			// the replacement as a first password (forge#2179 review).
+			if err := c.disqualifyFirstPassword(ctx, userID); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -399,13 +414,14 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 	if gate == gateOpen || !proves {
 		return nil
 	}
-	if gate == gateUnverifiedPassword && !firstPassword {
+	if !firstPassword {
 		// A password-only account this broker did not give its first
-		// password: whoever registered the address set it, and may hold a
-		// session it passed before this reset. Replacing the password is the
-		// holder's recovery; the address is never verified on it, which would
-		// make that session usable (forge#2179 review). Its owner proves into
-		// a fresh account instead.
+		// password, or one disqualified for having held such a password:
+		// whoever registered the address set it, and may hold a session it
+		// passed before this reset. Replacing the password is the holder's
+		// recovery; the address is never verified on it, which would make
+		// that session usable (forge#2179 review). Its owner proves into a
+		// fresh account instead.
 		return nil
 	}
 	// The issuer accepted the code, and a reset code reaches a person only
@@ -456,6 +472,19 @@ func (c *Client) resetPassword(ctx context.Context, r PasswordReset, proves bool
 //     for a credential-less account). So any password set after an attempt
 //     is the address owner's, and verifying it is what the owner asked for.
 //
+// A reset that finds attempt records beside a password that predates them
+// all does not qualify, and it must not make the NEXT reset qualify: its
+// replacement password is dated after the attempts, so judged by date alone
+// it would pass. So it first marks the account disqualified
+// (MetaFirstPasswordDisqualified), and only then replaces the password. A
+// marked account is never verified by a reset again, and no attempt is
+// recorded on it. The mark needs no lock across broker replicas: a reset
+// reads the account (its passwordChanged) BEFORE its records, so one that
+// sees a disqualifying reset's replacement password also sees the mark that
+// was written before it. It never removes another request's attempt record,
+// and a reset that qualifies never writes it, so a wrong code cannot plant it
+// on an account a first password was installed on.
+//
 // A record is removed by the request that made it only when the issuer
 // refused that request's code outright (it installed nothing); an ambiguous
 // failure keeps it, since the password may be in. Every record goes once the
@@ -476,17 +505,36 @@ func (c *Client) recordFirstPasswordAttempt(ctx context.Context, userID string) 
 	return key, nil
 }
 
+// firstPasswordRecords is the prefix of every key below: the attempts
+// (MetaFirstPasswordPrefix) and the disqualifying mark, read in one search.
+const firstPasswordRecords = "forge.first_password"
+
 // passwordIsAFirstPasswordAttempt reports whether an unverified,
 // password-only account's password is one a recorded first-password attempt
-// installed (see above). It fails closed on a read that fails.
-func (c *Client) passwordIsAFirstPasswordAttempt(ctx context.Context, userID string) (bool, error) {
-	attempts, err := c.MetadataWithPrefix(ctx, userID, MetaFirstPasswordPrefix)
+// installed (see above). disqualify reports that it is not, though attempts
+// were recorded, and the account is not marked yet: the caller marks it
+// before replacing the password. It fails closed on a read that fails.
+//
+// The account is read BEFORE its records: that order is what makes the mark
+// work without a lock (see above).
+func (c *Client) passwordIsAFirstPasswordAttempt(ctx context.Context, userID string) (qualifies, disqualify bool, err error) {
+	u, err := c.FindUserByID(ctx, userID)
 	if err != nil {
-		return false, fmt.Errorf("read the account's first-password attempts: %w", err)
+		return false, false, fmt.Errorf("read when the account's password was set: %w", err)
+	}
+	records, err := c.MetadataWithPrefix(ctx, userID, firstPasswordRecords)
+	if err != nil {
+		return false, false, fmt.Errorf("read the account's first-password attempts: %w", err)
+	}
+	if _, marked := records[MetaFirstPasswordDisqualified]; marked {
+		return false, false, nil
 	}
 	now := c.clock()
 	var earliest time.Time
-	for _, v := range attempts {
+	for key, v := range records {
+		if !strings.HasPrefix(key, MetaFirstPasswordPrefix) {
+			continue
+		}
 		ms, perr := strconv.ParseInt(v, 10, 64)
 		start := time.UnixMilli(ms)
 		if perr != nil || ms <= 0 || start.After(now.Add(firstPasswordClockSkew)) {
@@ -497,13 +545,29 @@ func (c *Client) passwordIsAFirstPasswordAttempt(ctx context.Context, userID str
 		}
 	}
 	if earliest.IsZero() {
-		return false, nil
+		return false, false, nil
 	}
-	u, err := c.FindUserByID(ctx, userID)
+	qualifies = !u.PasswordChanged.IsZero() && !u.PasswordChanged.Before(earliest.Add(-firstPasswordClockSkew))
+	return qualifies, !qualifies, nil
+}
+
+// firstPasswordDisqualified reports whether the account carries
+// MetaFirstPasswordDisqualified. It fails closed on a read that fails.
+func (c *Client) firstPasswordDisqualified(ctx context.Context, userID string) (bool, error) {
+	_, marked, err := c.Metadata(ctx, userID, MetaFirstPasswordDisqualified)
 	if err != nil {
-		return false, fmt.Errorf("read when the account's password was set: %w", err)
+		return false, fmt.Errorf("read whether the account may take a first password: %w", err)
 	}
-	return !u.PasswordChanged.IsZero() && !u.PasswordChanged.Before(earliest.Add(-firstPasswordClockSkew)), nil
+	return marked, nil
+}
+
+// disqualifyFirstPassword writes MetaFirstPasswordDisqualified. A reset
+// that cannot write it does not replace the password.
+func (c *Client) disqualifyFirstPassword(ctx context.Context, userID string) error {
+	if err := c.SetMetadata(ctx, userID, MetaFirstPasswordDisqualified, strconv.FormatInt(c.clock().UnixMilli(), 10)); err != nil {
+		return fmt.Errorf("mark the account's password as no first password before replacing it: %w", err)
+	}
+	return nil
 }
 
 // clearFirstPasswordAttempts removes every attempt record of a verified

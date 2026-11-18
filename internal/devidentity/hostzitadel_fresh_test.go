@@ -294,6 +294,10 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 		t.Fatal("the adopted member's address was not marked verified")
 	}
 	guarded := &devidp.Client{Base: base, Token: token, ProvenCredentialsOnly: true}
+	// The issuer runs on this host, so its clock is this clock: the date it
+	// reports is judged against the moment the password was set, not a
+	// window around whenever the assertion happens to run.
+	setAt := time.Now()
 	if err := guarded.ResetPassword(ctx, devidp.PasswordReset{UserID: pendingID, Code: memberCode, NewPassword: "Member-Passw0rd!"}); err != nil {
 		t.Fatalf("the adopted member's sign-in code through the broker: %v", err)
 	}
@@ -304,7 +308,7 @@ func TestFreshAccount_TakesAnAddressOverOnTheRealHostZitadel(t *testing.T) {
 	// The issuer reports when a password was set (human.passwordChanged),
 	// which first-password attempts are judged against (forge#2179).
 	if m, err := client.FindUserByID(ctx, pendingID); err != nil || m.PasswordChanged.IsZero() ||
-		m.PasswordChanged.Before(time.Now().Add(-10*time.Minute)) {
-		t.Fatalf("passwordChanged of a just-set password = %v (%v), want a recent time", m.PasswordChanged, err)
+		m.PasswordChanged.Before(setAt.Add(-time.Minute)) {
+		t.Fatalf("passwordChanged of a password set at %v = %v (%v), want no earlier than that", setAt, m.PasswordChanged, err)
 	}
 }

@@ -45,6 +45,14 @@ const (
 	// first password whose verification failed from a squatter's password.
 	// See passwordIsAFirstPasswordAttempt.
 	MetaFirstPasswordPrefix = "forge.first_password."
+	// MetaFirstPasswordDisqualified marks an unverified account that held a
+	// password no first-password attempt installed, beside attempt records
+	// (its value: when that was seen, in unix milliseconds). From then on no
+	// reset verifies the account's address, whatever passwords follow: the
+	// password replaced may have passed a session its holder kept. Written
+	// before the replacing password, so no later reset can read the
+	// replacement as a first password. See passwordIsAFirstPasswordAttempt.
+	MetaFirstPasswordDisqualified = "forge.first_password_disqualified"
 	// MetaSelfSignup marks an account created by public sign-up (register,
 	// a magic link, a social sign-in), as opposed to one an owner invited
 	// or the identity declares. Only such an account gets signup_role.

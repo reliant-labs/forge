@@ -37,8 +37,9 @@ type fakeZitadel struct {
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
-	// clk is the issuer's clock (time.Now when nil): passwordChanged is
-	// dated by it. A test sets it, and the client's, to one fake clock.
+	// clk is the issuer's clock: passwordChanged is dated by it, and every
+	// client() shares it, so the broker's dates and the issuer's never
+	// disagree with the wall clock in between.
 	clk *fakeClock
 	// passwordSetAnswerLost makes the next password set succeed at the
 	// issuer and then answer 504, as a lost response does.
@@ -63,6 +64,8 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// failMetadataWrites makes that many metadata writes fail (500).
+	failMetadataWrites int
 	// failUserReads makes that many account reads (GET /v2/users/{id})
 	// fail (500); failMethodReads, that many sign-in-method reads.
 	failUserReads, failMethodReads int
@@ -137,7 +140,7 @@ type fakeMail struct {
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
 	t.Helper()
-	f := &fakeZitadel{t: t, users: map[string]*fakeUser{}, sessions: map[string]*fakeSession{}, intents: map[string]*fakeIntent{}}
+	f := &fakeZitadel{t: t, users: map[string]*fakeUser{}, sessions: map[string]*fakeSession{}, intents: map[string]*fakeIntent{}, clk: &fakeClock{t: fakeEpoch}}
 	mux := http.NewServeMux()
 	f.routes(mux)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +167,9 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	return f
 }
 
-func (f *fakeZitadel) client() *Client { return &Client{Base: f.srv.URL, Token: "broker-token"} }
+func (f *fakeZitadel) client() *Client {
+	return &Client{Base: f.srv.URL, Token: "broker-token", clk: f.clk}
+}
 
 // statusRecorder notes the status a handler answered with.
 type statusRecorder struct {
@@ -902,6 +907,11 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failMetadataWrites > 0 {
+			f.failMetadataWrites--
+			zerr(w, 500, "COMMAND-fake", "metadata write failed")
+			return
+		}
 		if u.metadata == nil {
 			u.metadata = map[string]string{}
 		}
@@ -985,12 +995,11 @@ func (f *fakeZitadel) snapshot(id string) string {
 		u.inviteCode, u.emailCode, u.resetCode, md, sessions)
 }
 
-func (f *fakeZitadel) clock() time.Time {
-	if f.clk != nil {
-		return f.clk.now()
-	}
-	return time.Now()
-}
+func (f *fakeZitadel) clock() time.Time { return f.clk.now() }
+
+// fakeEpoch is where every fake issuer's clock starts: fixed, so no
+// first-password date depends on the wall clock.
+var fakeEpoch = time.Date(2026, time.March, 2, 9, 0, 0, 0, time.UTC)
 
 // fakeClock is a settable clock shared by the fake issuer and a client.
 type fakeClock struct {

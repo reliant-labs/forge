@@ -147,7 +147,7 @@ each argument, classified at GENERATION time, deny by default:
 
 | Parameter | Recorded as |
 |---|---|
-| ints, uints, floats, bools (and local named types over them) | the value |
+| ints, uints, floats, bools (and local named types over them) | the value — except a number with a credential-mentioning ID name (`otp_counter_id`, `sessionID`): `[len=N]`, its digit count |
 | `time.Time`, `time.Duration`, proto `Timestamp` / `Duration` | `[type=Time]`, `[type=Duration]`, `[type=Timestamp]` — never the value: an exact time in a request is user content |
 | a string named like an ID (`id`, `ids`, `*ID`, `*Id`, `*IDs`, `*_id`) — unless the name mentions a credential (`token`, `secret`, `password`, `session`, `cookie`, `apikey`, …) | the value, at most 128 bytes |
 | any other string, `[]byte` | `[len=42]` — the length only |

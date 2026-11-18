@@ -69,6 +69,13 @@ func TestClassifyParam(t *testing.T) {
 		{"ref", "OrderRef", captureLen}, // local named string, not ID-named
 		{"orderRefID", "OrderRef", captureID},
 		{"c", "complex128", captureType},
+		// A secret-shaped ID name hides a number's value too: digit count only.
+		{"otpCounterID", "int64", captureDigits},
+		{"otp_counter_id", "uint32", captureDigits},
+		{"sessionID", "float64", captureDigits},
+		{"sessionID", "Status", captureDigits}, // local named int
+		{"counterID", "int64", captureInt},
+		{"tokenOK", "bool", captureBool},
 	} {
 		if got := classifyParam(tc.name, tc.typ, imports, aliases); got != tc.want {
 			t.Errorf("classifyParam(%q, %q) = %s, want %s", tc.name, tc.typ, got, tc.want)
@@ -120,6 +127,8 @@ type Service interface {
 	// Place takes an order.
 	// forge:no-capture coupon
 	Place(ctx context.Context, orderID string, note string, qty int, coupon string, wait time.Duration, items []string, in *Input) (string, error)
+	// Verify carries a one-time-password counter: its digit count only.
+	Verify(ctx context.Context, otpCounterID int64, attempt uint8) error
 	Get(ctx context.Context, orderID string) error
 	// Ping is answered by an embedded helper.
 	Ping(ctx context.Context) error
@@ -145,6 +154,8 @@ func New() Service { return &service{} }
 func (s *service) Place(ctx context.Context, orderID, note string, qty int, coupon string, wait time.Duration, items []string, in *Input) (string, error) {
 	return "", nil
 }
+
+func (s *service) Verify(ctx context.Context, otpCounterID int64, attempt uint8) error { return nil }
 `,
 		"get.go": `package orders
 
@@ -178,15 +189,16 @@ func (m *MockService) Place(ctx context.Context, orderID, note string, qty int, 
 }
 func (m *MockService) Get(ctx context.Context, orderID string) error { return nil }
 func (m *MockService) Ping(ctx context.Context) error             { return nil }
+func (m *MockService) Verify(ctx context.Context, otpCounterID int64, attempt uint8) error { return nil }
 `,
 	})
 	got := renderOrders(t, dir, Options{})
 	for _, want := range []string{
-		`Place: observe.NewOp("orders.Place", "example.com/shop/internal/orders.Service.Place", "internal/orders/service.go"),`,
-		`Get:   observe.NewOp("orders.Get", "example.com/shop/internal/orders.Service.Get", "internal/orders/get.go"),`,
+		`Place:  observe.NewOp("orders.Place", "example.com/shop/internal/orders.Service.Place", "internal/orders/service.go"),`,
+		`Get:    observe.NewOp("orders.Get", "example.com/shop/internal/orders.Service.Get", "internal/orders/get.go"),`,
 		// Ping is promoted from an embedded type: tied to the one type that
 		// declares it.
-		`Ping:  observe.NewOp("orders.Ping", "example.com/shop/internal/orders.Service.Ping", "internal/orders/ping.go"),`,
+		`Ping:   observe.NewOp("orders.Ping", "example.com/shop/internal/orders.Service.Ping", "internal/orders/ping.go"),`,
 		`o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Place, forgeMiddlewareServicePlaceArgs{orderID, note, qty, items}, func(ctx context.Context) (string, error) {`,
 		`r.ID("orderID", a.orderID)`,
 		`r.Len("note", len(a.note))`,
@@ -194,6 +206,8 @@ func (m *MockService) Ping(ctx context.Context) error             { return nil }
 		`r.Type("wait", "Duration")`,
 		`r.Count("items", len(a.items))`,
 		`r.Type("in", "*Input")`,
+		`r.IntDigits("otpCounterID", a.otpCounterID)`,
+		`r.Uint("attempt", uint64(a.attempt))`,
 		// Bare forge:no-capture on the implementation: nothing for Get.
 		`o.chain.RunOp(ctx, forgeMiddlewareServiceOps.Get, observe.NoArgs{}, func(ctx context.Context) error {`,
 	} {

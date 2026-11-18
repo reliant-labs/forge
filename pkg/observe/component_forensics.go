@@ -10,6 +10,7 @@
 //	time.Time, time.Duration                      "[type=Time]", "[type=Duration]" — never the value
 //	proto Timestamp, Duration                     "[type=Timestamp]", "[type=Duration]"
 //	string named like an ID (ForensicIDName)      the value, at most MaxForensicValue bytes
+//	ID-shaped name mentioning a credential        "[len=N]": a string's length, a number's digit count
 //	any other string, []byte                      "[len=42]" — the length only
 //	slice, array, map, variadic                   "[count=3]" — the element count only
 //	pointer to a proto message (a gen/ import)    walked here, under the same rules
@@ -34,6 +35,7 @@ package observe
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -228,6 +230,23 @@ func (r *ForensicRecorder) Uint(name string, v uint64) {
 	r.add(forensicKey(name).Int64(int64(v)))
 }
 
+// IntDigits records only the digit count of a secret-named integer
+// (ForensicSecretIDName): "[len=N]", N the length of its decimal form.
+func (r *ForensicRecorder) IntDigits(name string, v int64) {
+	r.Len(name, len(strconv.FormatInt(v, 10)))
+}
+
+// UintDigits is IntDigits for an unsigned integer.
+func (r *ForensicRecorder) UintDigits(name string, v uint64) {
+	r.Len(name, len(strconv.FormatUint(v, 10)))
+}
+
+// FloatDigits is IntDigits for a floating-point number (its shortest
+// decimal form).
+func (r *ForensicRecorder) FloatDigits(name string, v float64) {
+	r.Len(name, len(strconv.FormatFloat(v, 'g', -1, 64)))
+}
+
 // Float records a floating-point parameter.
 func (r *ForensicRecorder) Float(name string, v float64) { r.add(forensicKey(name).Float64(v)) }
 
@@ -312,11 +331,23 @@ func (r *ForensicRecorder) field(name string, fd protoreflect.FieldDescriptor, v
 		r.add(forensicKey(name).String(enumName(fd.Enum(), v.Enum())))
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		r.Int(name, v.Int())
+		if ForensicSecretIDName(string(fd.Name())) {
+			r.IntDigits(name, v.Int())
+		} else {
+			r.Int(name, v.Int())
+		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		r.Uint(name, v.Uint())
+		if ForensicSecretIDName(string(fd.Name())) {
+			r.UintDigits(name, v.Uint())
+		} else {
+			r.Uint(name, v.Uint())
+		}
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		r.Float(name, v.Float())
+		if ForensicSecretIDName(string(fd.Name())) {
+			r.FloatDigits(name, v.Float())
+		} else {
+			r.Float(name, v.Float())
+		}
 	case protoreflect.StringKind:
 		if ForensicIDName(string(fd.Name())) {
 			r.ID(name, v.String())
@@ -389,18 +420,31 @@ var forensicSensitive = []string{
 // an identifier whose value forensics may record: id / ids, a `_id` / `_ids`
 // suffix, or an `ID` / `Id` / `IDs` / `Ids` suffix — unless the name also
 // mentions a credential (token, secret, password, session, cookie, api key,
-// …), which records the length only. The generator and the proto walk share
-// this one rule.
+// …), which records the length only (ForensicSecretIDName). The generator
+// and the proto walk share this one rule.
 func ForensicIDName(name string) bool {
-	if name == "" {
-		return false
-	}
+	return idShapedName(name) && !sensitiveName(name)
+}
+
+// ForensicSecretIDName reports whether name is ID-shaped but mentions a
+// credential (`otp_counter_id`, `sessionID`): its value is never recorded,
+// whatever its type — a string records its length, a number its digit count
+// ("[len=9]"), as the browser runtime does.
+func ForensicSecretIDName(name string) bool {
+	return idShapedName(name) && sensitiveName(name)
+}
+
+func sensitiveName(name string) bool {
 	folded := strings.ReplaceAll(strings.ToLower(name), "_", "")
 	for _, s := range forensicSensitive {
 		if strings.Contains(folded, s) {
-			return false
+			return true
 		}
 	}
+	return false
+}
+
+func idShapedName(name string) bool {
 	switch name {
 	case "id", "ids", "ID", "IDs", "Id", "Ids":
 		return true

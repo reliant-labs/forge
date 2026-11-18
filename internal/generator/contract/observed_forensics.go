@@ -51,10 +51,11 @@ const (
 	captureProto                       // pointer to a generated proto message: walked
 	captureNamed                       // a named generated type (a proto enum): its name
 	captureType                        // anything else: the type only
+	captureDigits                      // a number with a secret-shaped ID name: its digit count
 )
 
 func (k captureKind) String() string {
-	return [...]string{"none", "int", "uint", "float", "bool", "duration", "time", "id", "len", "count", "proto", "named", "type"}[k]
+	return [...]string{"none", "int", "uint", "float", "bool", "duration", "time", "id", "len", "count", "proto", "named", "type", "digits"}[k]
 }
 
 // capturePrimitives maps a predeclared type to its capture kind; string is
@@ -76,6 +77,9 @@ func classifyParam(name, typeExpr string, imports, aliases map[string]string) ca
 		return captureCount
 	}
 	if kind, ok := capturePrimitives[t]; ok {
+		if kind != captureBool && observe.ForensicSecretIDName(name) {
+			return captureDigits
+		}
 		return kind
 	}
 	if t == "string" {
@@ -159,6 +163,9 @@ type captureField struct {
 	Attr  string // the attribute suffix: the contract's parameter name
 	Type  string // the parameter's type, as the field's type
 	Kind  captureKind
+	// Base is the numeric kind (int, uint, float) a captureDigits field
+	// counts the digits of.
+	Base  captureKind
 	Label string // the type named in a Type / Named record
 }
 
@@ -179,6 +186,14 @@ func (f captureField) recordStmt() string {
 		return fmt.Sprintf("r.Uint(%q, %s)", f.Attr, conv("uint64"))
 	case captureFloat:
 		return fmt.Sprintf("r.Float(%q, %s)", f.Attr, conv("float64"))
+	case captureDigits:
+		switch f.Base {
+		case captureUint:
+			return fmt.Sprintf("r.UintDigits(%q, %s)", f.Attr, conv("uint64"))
+		case captureFloat:
+			return fmt.Sprintf("r.FloatDigits(%q, %s)", f.Attr, conv("float64"))
+		}
+		return fmt.Sprintf("r.IntDigits(%q, %s)", f.Attr, conv("int64"))
 	case captureBool:
 		return fmt.Sprintf("r.Bool(%q, %s)", f.Attr, conv("bool"))
 	case captureDuration:
@@ -239,11 +254,17 @@ func buildCapture(orig, scoped MethodDef, typeName string, cf *File, excluded no
 			typ = "[]" + strings.TrimPrefix(typ, "...")
 			label = typ
 		}
+		var base captureKind
+		if kind == captureDigits {
+			// The same type under a name that is not secret: its numeric kind.
+			base = classifyParam("", p.TypeExpr, cf.Imports, cf.PrimitiveAliases)
+		}
 		mc.Fields = append(mc.Fields, captureField{
 			Field: concreteParamName(scoped.Params[i], i),
 			Attr:  attr,
 			Type:  typ,
 			Kind:  kind,
+			Base:  base,
 			Label: label,
 		})
 	}

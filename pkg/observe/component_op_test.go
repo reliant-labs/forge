@@ -253,7 +253,7 @@ func TestForensicIDName(t *testing.T) {
 	for name, want := range map[string]bool{
 		"id": true, "ID": true, "orderID": true, "orderId": true, "orderIDs": true,
 		"order_id": true, "order_ids": true, "UUID": true,
-		"sessionID": false, "session_id": false, "tokenID": false, "apiKeyID": false,
+		"sessionID": false, "session_id": false, "tokenID": false, "apiKeyID": false, "otp_counter_id": false,
 		"paid": false, "valid": false, "name": false, "": false, "Ident": false,
 	} {
 		if got := ForensicIDName(name); got != want {
@@ -500,6 +500,94 @@ func TestComponentOpForensicsNeverRecordsATimeValue(t *testing.T) {
 		for _, s := range secret {
 			if strings.Contains(string(kv.Key), s) || strings.Contains(kv.Value.Emit(), s) {
 				t.Fatalf("a time value reached forensics: %s=%s", kv.Key, kv.Value.Emit())
+			}
+		}
+	}
+}
+
+func TestForensicSecretIDName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"otp_counter_id": true, "sessionID": true, "apiTokenIds": true,
+		"orderID": false, "id": false, "otp": false, "session": false, "tokenCount": false,
+	} {
+		if got := ForensicSecretIDName(name); got != want {
+			t.Errorf("ForensicSecretIDName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
+// secretNumberArgs is what the generator emits for
+// Verify(ctx, otpCounterID int64, sessionID uint32, attempt int, req proto).
+type secretNumberArgs struct {
+	otpCounterID int64
+	sessionID    uint32
+	attempt      int
+	req          proto.Message
+}
+
+func (a secretNumberArgs) RecordForensics(r *ForensicRecorder) {
+	r.IntDigits("otpCounterID", a.otpCounterID)
+	r.UintDigits("sessionID", uint64(a.sessionID))
+	r.Int("attempt", int64(a.attempt))
+	r.Proto("req", a.req)
+}
+
+// TestComponentOpForensicsHidesSecretNamedNumbers: an ID-shaped name that
+// mentions a credential hides a number's value as it hides a string's — a
+// Go integer and a proto numeric field record "[len=N]", N the digit count,
+// as the browser runtime does.
+func TestComponentOpForensicsHidesSecretNamedNumbers(t *testing.T) {
+	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("otp_test.proto"),
+		Package: proto.String("otptest"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Verify"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("otp_counter_id"), Number: proto.Int32(1), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(), Label: opt, JsonName: proto.String("otpCounterId")},
+				{Name: proto.String("session_ids"), Number: proto.Int32(2), Type: descriptorpb.FieldDescriptorProto_TYPE_UINT32.Enum(), Label: opt, JsonName: proto.String("sessionIds")},
+				{Name: proto.String("account_id"), Number: proto.Int32(3), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(), Label: opt, JsonName: proto.String("accountId")},
+			},
+		}},
+	}
+	fd, err := protodesc.NewFile(fdp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := fd.Messages().ByName("Verify")
+	msg := dynamicpb.NewMessage(md)
+	msg.Set(md.Fields().ByName("otp_counter_id"), protoreflect.ValueOfInt64(483920175))
+	msg.Set(md.Fields().ByName("session_ids"), protoreflect.ValueOfUint32(7719))
+	msg.Set(md.Fields().ByName("account_id"), protoreflect.ValueOfInt64(42))
+
+	chain, rec := newRecordedChain(t)
+	args := secretNumberArgs{otpCounterID: 381057264, sessionID: 90210, attempt: 3, req: msg}
+	_ = chain.RunOp(context.Background(), NewOp("auth.Verify", "", ""), args, func(context.Context) error {
+		return errors.New("db down")
+	})
+	ev := forensicsEvents(rec.Ended()[0])
+	if len(ev) != 1 {
+		t.Fatalf("forensics events = %d", len(ev))
+	}
+	a := attrsOf(ev[0].Attributes)
+	for k, want := range map[string]string{
+		"forensics.arg.otpCounterID":       "[len=9]",
+		"forensics.arg.sessionID":          "[len=5]",
+		"forensics.arg.req.otp_counter_id": "[len=9]",
+		"forensics.arg.req.session_ids":    "[len=4]",
+	} {
+		if a[k].AsString() != want {
+			t.Errorf("%s = %q, want %q", k, a[k].AsString(), want)
+		}
+	}
+	if a["forensics.arg.attempt"].AsInt64() != 3 || a["forensics.arg.req.account_id"].AsInt64() != 42 {
+		t.Errorf("a plain number lost its value: attempt=%v account_id=%v", a["forensics.arg.attempt"], a["forensics.arg.req.account_id"])
+	}
+	for _, kv := range ev[0].Attributes {
+		for _, secret := range []string{"381057264", "90210", "483920175", "7719"} {
+			if strings.Contains(kv.Value.Emit(), secret) {
+				t.Fatalf("a secret-named number reached forensics: %s=%s", kv.Key, kv.Value.Emit())
 			}
 		}
 	}

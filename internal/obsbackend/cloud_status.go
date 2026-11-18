@@ -17,6 +17,7 @@ import (
 const (
 	procGetServiceOverview      = "controlplane.v1.ObservabilityService/GetServiceOverview"
 	procListAlerts              = "controlplane.v1.AlertingService/ListAlerts"
+	procListAlertHistory        = "controlplane.v1.AlertingService/ListAlertHistory"
 	procListTelemetryDeliveries = "controlplane.v1.TelemetryStatusService/ListTelemetryDeliveries"
 )
 
@@ -98,6 +99,43 @@ func (c Cloud) Alerts(ctx context.Context) ([]Alert, error) {
 		return a.since().Before(b.since())
 	})
 	return alerts, nil
+}
+
+// alertHistoryLimit is the most transitions ListAlertHistory returns in one
+// call (the control plane's cap).
+const alertHistoryLimit = 1000
+
+type wireAlertEvent struct {
+	Rule        string            `json:"rule"`
+	Fingerprint string            `json:"fingerprint"`
+	Labels      map[string]string `json:"labels"`
+	Transition  string            `json:"transition"`
+	At          time.Time         `json:"at"`
+}
+
+// AlertHistory implements AlertHistoryReader over ListAlertHistory for this
+// env: up to alertHistoryLimit transitions at or after since, newest first.
+// A busier history is cut at the oldest end, so a caller sees the most
+// recent part of the range.
+func (c Cloud) AlertHistory(ctx context.Context, since time.Time) ([]AlertTransition, error) {
+	body := map[string]any{"orgId": c.OrgID, "since": since.UTC().Format(time.RFC3339Nano), "limit": alertHistoryLimit}
+	if c.EnvID != "" {
+		body["envId"] = c.EnvID
+	}
+	var out struct {
+		Events []wireAlertEvent `json:"events"`
+	}
+	if err := c.call(ctx, procListAlertHistory, body, &out); err != nil {
+		return nil, notServed(err, "alert history", "ListAlertHistory")
+	}
+	events := make([]AlertTransition, 0, len(out.Events))
+	for _, e := range out.Events {
+		events = append(events, AlertTransition{
+			Rule: e.Rule, Fingerprint: e.Fingerprint, Labels: e.Labels,
+			Transition: strings.ToLower(e.Transition), At: unsetEpoch(e.At),
+		})
+	}
+	return events, nil
 }
 
 // since is when the alert's condition started holding (firing: when it

@@ -52,6 +52,13 @@ type wireReleaseHealth struct {
 		// no promotion carried, from its first sighting in telemetry.
 		Inferred     bool   `json:"inferred"`
 		MarkerSource string `json:"markerSource"`
+		// LiveAt: when the release went live, from the promotion's deploy
+		// gates (releasehealth.LiveAt). A control plane that sends it
+		// started the after window there when it is later than promotedAt
+		// (control-plane#2754), so a retried promotion is judged on what it
+		// served, not on its failed attempt's rollout (forge#2268). Zero
+		// from an older control plane, which anchored at promotedAt.
+		LiveAt time.Time `json:"liveAt"`
 	} `json:"promotion"`
 	Before        wireTimeRange `json:"before"`
 	After         wireTimeRange `json:"after"`
@@ -196,6 +203,9 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})
 	}
 	r.NotEvaluated = w.NotEvaluated
+	if !w.Promotion.LiveAt.IsZero() {
+		r.Subject.LiveAt = w.Promotion.LiveAt.UTC()
+	}
 	return r, nil
 }
 

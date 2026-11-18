@@ -206,12 +206,21 @@ nodes:
     content: >-
       Refused: the gate needs a known tier, a 40-character commit sha, a valid base and default branch, a
       gh-readonly-queue branch for a merge group, and a run id and project directory a shell can take as they are.
-# Fetches the commit (and its base) into this run's private refs in the
-# project's checkout on this machine. It holds the machine's git credentials,
-# so it runs git fetch only: it never checks out, reads or runs the commit's
-# files. It prints the base commit, or nothing for the main tier, and fails
-# when the pr or queue tier's base does not resolve: their affected tests are
-# measured from it, so a gate without it would judge the wrong change.
+# Fetches the commit (and its base) into the project's checkout on this
+# machine and writes them as a git bundle to a directory of this run's own,
+# <cache>/reliant-ci/<run>/head.bundle: the gate reads that bundle and never
+# the checkout. This step holds the machine's git credentials, so it runs git
+# only (fetch, bundle, rev-parse): it never checks out, reads or runs the
+# commit's files. The refs it fetches into (refs/reliant-ci/<run>/) are
+# dropped when it exits.
+#
+# The pr and queue tiers' affected tests are measured from a base commit, so
+# a base that does not fetch or resolve fails this step. A merge group's base
+# is its branch name's suffix (gh-readonly-queue/<base>/pr-<n>-<base sha>),
+# the commit the group was built on: it must be an ancestor of the group.
+#
+# stdout is three lines and nothing else: root=<the run directories' parent>,
+# prefix=./<the project's directory in the repository>, base=<sha> (not on main).
 - id: fetch
   type: run
   timeout: 15m
@@ -227,47 +236,80 @@ nodes:
       case "$run" in ''|*[!A-Za-z0-9-]*) echo "refused: run id '$run' is not [A-Za-z0-9-]+" >&2; exit 1 ;; esac
       case "$sha" in *[!0-9a-f]*|'') echo "refused: '$sha' is not a commit sha" >&2; exit 1 ;; esac
       cd "$dir"
+      root="${XDG_CACHE_HOME:-$HOME/.cache}/reliant-ci"
+      out="$root/$run"
       ref="refs/reliant-ci/$run"
+      trap 'rc=$?; for r in head base; do git update-ref -d "$ref/$r" 2>/dev/null; done; [ "$rc" = 0 ] || rm -rf -- "$out"' EXIT
+      mkdir -p "$root"
+      # Run directories a lost run left behind.
+      find "$root" -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf -- {} + 2>/dev/null || true
+      rm -rf -- "$out"
+      mkdir -m 700 "$out"
       git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$sha:$ref/head"
-      [ "$tier" = main ] && exit 0
-      if [ -n "$base" ]; then
-        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$base:$ref/base" ||
-          { echo "the $tier tier needs its base commit $base, and fetching it failed" >&2; exit 1; }
-      else
-        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+refs/heads/$default_branch:$ref/base" ||
-          { echo "the $tier tier needs a base commit, and fetching $default_branch for it failed" >&2; exit 1; }
+      refs="$ref/head"
+      if [ "$tier" != main ]; then
+        if [ -n "$base" ]; then
+          git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+$base:$ref/base" ||
+            { echo "the $tier tier needs its base commit $base, and fetching it failed" >&2; exit 1; }
+        else
+          git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin "+refs/heads/$default_branch:$ref/base" ||
+            { echo "the $tier tier needs a base commit, and fetching $default_branch for it failed" >&2; exit 1; }
+        fi
+        git rev-parse --verify --quiet "$ref/base^{commit}" >/dev/null ||
+          { echo "the $tier tier needs a base commit, and $ref/base did not resolve" >&2; exit 1; }
+        if [ "$tier" = queue ] && ! git merge-base --is-ancestor "$ref/base" "$ref/head"; then
+          echo "the merge group's base $base is not an ancestor of its head $sha" >&2; exit 1
+        fi
+        refs="$refs $ref/base"
       fi
-      git rev-parse --verify --quiet "$ref/base^{commit}" ||
-        { echo "the $tier tier needs a base commit, and $ref/base did not resolve" >&2; exit 1; }
-# fetch's output, checked like facts before a shell sees it: a base is a
-# commit sha, and only the main tier may have none.
+      # shellcheck disable=SC2086 # two ref names, no spaces
+      git bundle create --quiet "$out/head.bundle" $refs
+      printf 'root=%s\n' "$root"
+      printf 'prefix=./%s\n' "$(git rev-parse --show-prefix)"
+      if [ "$tier" != main ]; then printf 'base=%s\n' "$(git rev-parse "$ref/base^{commit}")"; fi
+# fetch's output, checked like facts before a shell or a work_dir sees it: a
+# directory a shell can take as it is, a project prefix inside the repository,
+# and a base sha, which only the main tier may lack.
 - id: resolved
   type: compute
   outputs:
-    base: "{{ nodes.fetch.exit_code == 0 ? nodes.fetch.stdout.trim() : '' }}"
+    root: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') : '' }}"
+    dir: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') + '/' + nodes.facts.run : '' }}"
+    prefix: "{{ regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').orValue('') }}"
+    base: "{{ nodes.fetch.exit_code == 0 ? regex.extract(nodes.fetch.stdout, '(?m)^base=([0-9a-f]{40})$').orValue('') : '' }}"
     ok: >-
       {{ nodes.fetch.exit_code == 0
-      && (nodes.fetch.stdout.trim().matches('^[0-9a-f]{40}$')
-          || (nodes.facts.tier == 'main' && nodes.fetch.stdout.trim() == '')) }}
+      && regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
+      && regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
+      && !regex.extract(nodes.fetch.stdout, '(?m)^prefix=(.*)$').orValue('').contains('..')
+      && (regex.extract(nodes.fetch.stdout, '(?m)^base=([0-9a-f]{40})$').hasValue() || nodes.facts.tier == 'main') }}
     error: >-
       {{ nodes.fetch.exit_code != 0
       ? 'fetching the commit failed: ' + nodes.fetch.stderr.substring(math.greatest(0, size(nodes.fetch.stderr) - 1500))
-      : nodes.fetch.stdout.trim() == '' ? 'the ' + nodes.facts.tier + ' tier needs a base commit, and fetch resolved none'
-      : 'fetch printed a base that is not a commit sha' }}
-# The gate runs the commit's code, so it holds no credentials: a fresh clone
-# sharing the checkout's objects, in this command's private /tmp, with git
-# hooks off. stdout is the gate's forge.ci.gate/v1 document and nothing else.
+      : !regex.extract(nodes.fetch.stdout, '(?m)^root=(/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue() || !regex.extract(nodes.fetch.stdout, '(?m)^prefix=([.]/[A-Za-z0-9 ._/+@=,:~-]*)$').hasValue()
+        ? 'the run directory or the project directory is not one a shell can take as it is'
+      : 'the ' + nodes.facts.tier + ' tier needs a base commit, and fetch resolved none' }}
+# The gate runs the commit's code, so it holds no credentials, and it never
+# touches the project's checkout: it starts in this run's directory (its
+# work_dir, the only directory the sandbox lets it write besides its private
+# /tmp) and makes its own repository in that /tmp from fetch's bundle, with
+# git hooks off. Nothing in it points at the checkout's object store (no
+# alternates, no origin). stdout is the gate's forge.ci.gate/v1 document and
+# nothing else.
 - id: gate
   type: run
+  # lint:allow shared-checkout-fetch — its one fetch reads the run's bundle into the repository it just made in its private /tmp, never a shared checkout
   timeout: 90m
   args:
     credentials: none
+    work_dir: '{{ nodes.resolved.dir }}'
     command: |
       set -u
-      repo='{{ nodes.facts.path }}'
       tier='{{ nodes.facts.tier }}'
       sha='{{ nodes.facts.sha }}'
       base='{{ nodes.resolved.base }}'
+      prefix='{{ nodes.resolved.prefix }}'
+      bundle="$PWD/head.bundle"
       work=$(mktemp -d)
       trap 'rm -rf "$work"' EXIT
       log="$work/setup.log"
@@ -278,12 +320,14 @@ nodes:
       }
       case "$tier" in pr|queue|main) ;; *) fail 'refused: unknown tier' ;; esac
       case "$sha$base" in *[!0-9a-f]*) fail 'refused: the commit or its base is not a sha' ;; esac
+      case "$prefix" in *..*) fail 'refused: the project directory leaves the repository' ;; esac
       if [ "$tier" != main ] && [ -z "$base" ]; then fail "the $tier tier needs a base commit"; fi
-      top=$(git -C "$repo" rev-parse --show-toplevel 2>>"$log") || fail 'the project directory is not a git checkout'
-      sub=$(git -C "$repo" rev-parse --show-prefix 2>>"$log")
-      git clone --quiet --shared --no-checkout "$top" "$work/src" >>"$log" 2>&1 || fail 'git clone of the project checkout failed'
+      [ -f "$bundle" ] || fail 'the bundle of the commit is missing'
+      git init --quiet "$work/src" >>"$log" 2>&1 || fail 'git init failed'
+      git -C "$work/src" -c core.hooksPath=/dev/null fetch --quiet --no-tags "$bundle" '+refs/reliant-ci/*:refs/reliant-ci/*' >>"$log" 2>&1 ||
+        fail 'reading the bundle of the commit failed'
       git -C "$work/src" -c core.hooksPath=/dev/null checkout --quiet --detach "$sha" >>"$log" 2>&1 || fail 'git checkout of the commit failed'
-      cd "$work/src/$sub" || fail 'the project directory is missing at this commit'
+      cd "$work/src/$prefix" || fail 'the project directory is missing at this commit'
       if [ -n "$base" ]; then
         reliant forge ci gate --tier "$tier" --base "$base" --json 2>"$work/gate.log"
       else
@@ -357,19 +401,21 @@ edges:
   default: report
 - from: report
   default: failed
-# Drops the refs fetch made, however the run ended.
+# Drops this run's directory (the bundle), however the run ended. It starts in
+# the directories' parent, which makes that real for a credentials: none
+# command; fetch already dropped its refs.
 finally:
   sequence:
   - id: cleanup
     type: run
-    condition: nodes.?fetch.exit_code.hasValue() && nodes.?facts.valid.orValue(false) == true
+    condition: nodes.?resolved.root.orValue('') != '' && nodes.?facts.valid.orValue(false) == true
     timeout: 2m
     args:
       credentials: none
+      work_dir: "{{ nodes.?resolved.root.orValue('') }}"
       command: |
         run='{{ nodes.?facts.run.orValue('') }}'
         case "$run" in ''|*[!A-Za-z0-9-]*) exit 0 ;; esac
-        cd '{{ nodes.?facts.path.orValue('') }}' || exit 0
-        for r in head base; do git update-ref -d "refs/reliant-ci/$run/$r" 2>/dev/null; done
+        rm -rf -- "./$run"
         exit 0
 `}}

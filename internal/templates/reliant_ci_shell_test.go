@@ -8,6 +8,7 @@ package templates
 // never gate without a base commit.
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,7 @@ type reliantCINode struct {
 	Args      struct {
 		Command     string `yaml:"command"`
 		Credentials string `yaml:"credentials"`
+		WorkDir     string `yaml:"work_dir"`
 	} `yaml:"args"`
 }
 
@@ -77,7 +79,7 @@ var templateAction = regexp.MustCompile(`'?\{\{\s*(.*?)\s*\}\}'?`)
 var checkedValues = map[string]bool{
 	"nodes.facts.tier": true, "nodes.facts.sha": true, "nodes.facts.base": true,
 	"nodes.facts.default_branch": true, "nodes.facts.run": true, "nodes.facts.path": true,
-	"nodes.resolved.base": true,
+	"nodes.resolved.base": true, "nodes.resolved.prefix": true,
 	// finally's cleanup may run when facts did not (a cancel before it).
 	"nodes.?facts.run.orValue('')": true, "nodes.?facts.path.orValue('')": true,
 }
@@ -103,6 +105,24 @@ func TestReliantCI_ShellsInterpolateOnlyCheckedQuotedValues(t *testing.T) {
 	}
 	if runs != 3 {
 		t.Fatalf("checked %d run nodes, want fetch, gate and cleanup", runs)
+	}
+	// The gate runs PR code: it starts in the run's own directory, never the
+	// project's checkout, and reads the commit from fetch's bundle, never
+	// from the checkout's object store.
+	gate := doc.node(t, "gate")
+	if gate.Args.WorkDir != "{{ nodes.resolved.dir }}" {
+		t.Errorf("gate work_dir = %q, want the run's own directory", gate.Args.WorkDir)
+	}
+	for _, banned := range []string{"nodes.facts.path", "--shared", "git clone", "objects/info/alternates", "--reference"} {
+		if strings.Contains(gate.Args.Command, banned) {
+			t.Errorf("the gate's command contains %q: it must not reach the project's checkout", banned)
+		}
+	}
+	if !strings.Contains(gate.Args.Command, `fetch --quiet --no-tags "$bundle"`) {
+		t.Error("the gate does not read the commit from the bundle")
+	}
+	if got := doc.node(t, "cleanup").Args.WorkDir; got != "{{ nodes.?resolved.root.orValue('') }}" {
+		t.Errorf("cleanup work_dir = %q, want the run directories' parent", got)
 	}
 	if doc.node(t, "gate").Args.Credentials != "none" || doc.node(t, "cleanup").Args.Credentials != "none" {
 		t.Error("gate and cleanup must run with credentials: none")
@@ -151,7 +171,7 @@ func TestReliantCI_FactsRefuseShellSyntax(t *testing.T) {
 func TestReliantCI_GateNeedsAResolvedBase(t *testing.T) {
 	doc := renderReliantCI(t)
 	ok := doc.node(t, "resolved").Outputs["ok"]
-	for _, want := range []string{"nodes.fetch.exit_code == 0", "matches('^[0-9a-f]{40}$')", "nodes.facts.tier == 'main'"} {
+	for _, want := range []string{"nodes.fetch.exit_code == 0", "(?m)^base=([0-9a-f]{40})$').hasValue()", "nodes.facts.tier == 'main'", "contains('..')"} {
 		if !strings.Contains(ok, want) {
 			t.Errorf("resolved.ok lacks %q:\n%s", want, ok)
 		}
@@ -176,15 +196,16 @@ func TestReliantCI_GateNeedsAResolvedBase(t *testing.T) {
 	}
 }
 
-// fetchScript is the fetch node's command as the engine would run it, with
-// facts' outputs substituted.
-func fetchScript(t *testing.T, facts map[string]string) string {
-	cmd := renderReliantCI(t).node(t, "fetch").Args.Command
+// script is a run node's command as the engine would run it, with the
+// checked values substituted (each lands inside the template's quotes).
+func script(t *testing.T, node string, values map[string]string) string {
+	t.Helper()
+	cmd := renderReliantCI(t).node(t, node).Args.Command
 	return templateAction.ReplaceAllStringFunc(cmd, func(s string) string {
 		m := templateAction.FindStringSubmatch(s)
-		v, ok := facts[strings.TrimPrefix(m[1], "nodes.facts.")]
+		v, ok := values[m[1]]
 		if !ok {
-			t.Fatalf("fetch interpolates %s", m[1])
+			t.Fatalf("%s interpolates %s", node, m[1])
 		}
 		return "'" + v + "'"
 	})
@@ -201,71 +222,192 @@ func git(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// ciFixture is an origin with two commits, the project's checkout cloned
+// from it (in a directory with a space), and a cache home for run
+// directories.
+type ciFixture struct {
+	tmp, origin, checkout, cache, base, head, side string
+}
+
+func newCIFixture(t *testing.T) ciFixture {
+	t.Helper()
+	tmp := t.TempDir()
+	f := ciFixture{tmp: tmp, origin: filepath.Join(tmp, "origin"), checkout: filepath.Join(tmp, "my project"), cache: filepath.Join(tmp, "cache")}
+	if err := os.MkdirAll(filepath.Join(f.origin, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.origin, "init", "-q")
+	if err := os.WriteFile(filepath.Join(f.origin, "sub", "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, f.origin, "add", ".")
+	git(t, f.origin, "commit", "-q", "-m", "base")
+	f.base = git(t, f.origin, "rev-parse", "HEAD")
+	git(t, f.origin, "commit", "-q", "--allow-empty", "-m", "head")
+	f.head = git(t, f.origin, "rev-parse", "HEAD")
+	git(t, f.origin, "checkout", "-q", "-b", "side", f.base)
+	git(t, f.origin, "commit", "-q", "--allow-empty", "-m", "side")
+	f.side = git(t, f.origin, "rev-parse", "HEAD")
+	git(t, f.origin, "checkout", "-q", "main")
+	git(t, f.origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+	git(t, tmp, "clone", "-q", f.origin, f.checkout)
+	return f
+}
+
+// run runs a script with HOME and XDG_CACHE_HOME in the fixture.
+func (f ciFixture) run(t *testing.T, dir, body string, env ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command("bash", "-c", body)
+	cmd.Dir = dir
+	cmd.Env = append(append(os.Environ(), "HOME="+f.tmp, "XDG_CACHE_HOME="+f.cache), env...)
+	var o, e strings.Builder
+	cmd.Stdout, cmd.Stderr = &o, &e
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(o.String()), e.String(), code
+}
+
+func (f ciFixture) fetch(t *testing.T, tier, base, branch, runID string) (map[string]string, string, int) {
+	t.Helper()
+	return f.fetchIn(t, filepath.Join(f.checkout, "sub"), tier, base, branch, runID)
+}
+
+func (f ciFixture) fetchIn(t *testing.T, project, tier, base, branch, runID string) (map[string]string, string, int) {
+	t.Helper()
+	out, errOut, code := f.run(t, f.tmp, script(t, "fetch", map[string]string{
+		"nodes.facts.tier": tier, "nodes.facts.sha": f.head, "nodes.facts.base": base,
+		"nodes.facts.default_branch": branch, "nodes.facts.run": runID, "nodes.facts.path": project,
+	}))
+	lines := map[string]string{}
+	for _, l := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok {
+			lines[k] = v
+		}
+	}
+	return lines, errOut, code
+}
+
 // The fetch step, run for real against a local origin: the pr and queue
 // tiers fail with a clear message when their base does not resolve, main
 // needs none, and a run id that is not [A-Za-z0-9-]+ is refused by the shell
 // as well (should facts ever let one through).
 func TestReliantCI_FetchRefusesAMissingBase(t *testing.T) {
 	testkit.Slow(t, "execs git and bash")
-	tmp := t.TempDir()
-	origin := filepath.Join(tmp, "origin")
-	if err := os.MkdirAll(origin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	git(t, origin, "init", "-q")
-	git(t, origin, "commit", "-q", "--allow-empty", "-m", "base")
-	base := git(t, origin, "rev-parse", "HEAD")
-	git(t, origin, "commit", "-q", "--allow-empty", "-m", "head")
-	head := git(t, origin, "rev-parse", "HEAD")
-	git(t, origin, "config", "uploadpack.allowAnySHA1InWant", "true")
-	checkout := filepath.Join(tmp, "my project")
-	git(t, tmp, "clone", "-q", origin, checkout)
+	f := newCIFixture(t)
+	root := filepath.Join(f.cache, "reliant-ci")
 
-	run := func(facts map[string]string) (string, string, int) {
-		cmd := exec.Command("bash", "-c", fetchScript(t, facts))
-		var stdout, stderr strings.Builder
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		err := cmd.Run()
-		code := 0
-		if ee, ok := err.(*exec.ExitError); ok {
-			code = ee.ExitCode()
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		return strings.TrimSpace(stdout.String()), stderr.String(), code
+	if out, errOut, code := f.fetch(t, "pr", f.base, "main", "run-1"); code != 0 || out["base"] != f.base || out["root"] != root || out["prefix"] != "./sub/" {
+		t.Errorf("pr with a base: exit %d, out %v (want base %s, root %s, prefix ./sub/)\n%s", code, out, f.base, root, errOut)
 	}
-	facts := func(tier, b, branch, runID string) map[string]string {
-		return map[string]string{"tier": tier, "sha": head, "base": b, "default_branch": branch, "run": runID, "path": checkout}
+	if _, err := os.Stat(filepath.Join(root, "run-1", "head.bundle")); err != nil {
+		t.Errorf("fetch wrote no bundle: %v", err)
 	}
-	missing := strings.Repeat("0", 39) + "1"
-
-	if out, errOut, code := run(facts("pr", base, "main", "run-1")); code != 0 || out != base {
-		t.Errorf("pr with a base: exit %d, stdout %q (want the base %s)\n%s", code, out, base, errOut)
+	if refs := git(t, f.checkout, "for-each-ref", "refs/reliant-ci"); refs != "" {
+		t.Errorf("fetch left its refs in the checkout: %q", refs)
 	}
 	// No base given: the default branch's tip (here head) is the base.
-	if out, errOut, code := run(facts("pr", "", "main", "run-2")); code != 0 || out != head {
-		t.Errorf("pr with no base: exit %d, stdout %q\n%s", code, out, errOut)
+	if out, errOut, code := f.fetch(t, "pr", "", "main", "run-2"); code != 0 || out["base"] != f.head {
+		t.Errorf("pr with no base: exit %d, out %v\n%s", code, out, errOut)
 	}
-	for _, tc := range []struct{ name, tier, base, branch string }{
-		{"pr, base not on origin", "pr", missing, "main"},
-		{"queue, base not on origin", "queue", missing, "main"},
-		{"pr, no base and no default branch", "pr", "", "no-such-branch"},
+	// A merge group's base must be an ancestor of the group.
+	if out, errOut, code := f.fetch(t, "queue", f.base, "main", "run-q"); code != 0 || out["base"] != f.base {
+		t.Errorf("queue with its base: exit %d, out %v\n%s", code, out, errOut)
+	}
+	missing := strings.Repeat("0", 39) + "1"
+	for i, tc := range []struct{ name, tier, base, branch, want string }{
+		{"pr, base not on origin", "pr", missing, "main", "tier needs"},
+		{"queue, base not on origin", "queue", missing, "main", "tier needs"},
+		{"pr, no base and no default branch", "pr", "", "no-such-branch", "tier needs"},
+		{"queue, base not an ancestor of the group", "queue", f.side, "main", "is not an ancestor"},
 	} {
-		_, errOut, code := run(facts(tc.tier, tc.base, tc.branch, "run-x"))
-		if code == 0 || !strings.Contains(errOut, "tier needs") {
-			t.Errorf("%s: exit %d, want a failure that says the tier needs its base:\n%s", tc.name, code, errOut)
+		_, errOut, code := f.fetch(t, tc.tier, tc.base, tc.branch, fmt.Sprintf("bad-%d", i))
+		if code == 0 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%s: exit %d, want a failure that says %q:\n%s", tc.name, code, tc.want, errOut)
+		}
+		if _, err := os.Stat(filepath.Join(root, fmt.Sprintf("bad-%d", i))); err == nil {
+			t.Errorf("%s: a failed fetch left its run directory", tc.name)
 		}
 	}
-	if out, errOut, code := run(facts("main", "", "main", "run-3")); code != 0 || out != "" {
-		t.Errorf("main with no base: exit %d, stdout %q (want success and no base)\n%s", code, out, errOut)
+	if out, errOut, code := f.fetch(t, "main", "", "main", "run-3"); code != 0 || out["base"] != "" || out["root"] != root {
+		t.Errorf("main with no base: exit %d, out %v (want success and no base)\n%s", code, out, errOut)
 	}
-	if _, errOut, code := run(facts("main", "", "main", "x;touch${IFS}pwned")); code == 0 || !strings.Contains(errOut, "refused: run id") {
+	// A project at the repository's root: the prefix is ./, never empty.
+	if out, errOut, code := f.fetchIn(t, f.checkout, "main", "", "main", "run-4"); code != 0 || out["prefix"] != "./" {
+		t.Errorf("a project at the repository root: exit %d, out %v (want prefix ./)\n%s", code, out, errOut)
+	}
+	if _, errOut, code := f.fetch(t, "main", "", "main", "x;touch${IFS}pwned"); code == 0 || !strings.Contains(errOut, "refused: run id") {
 		t.Errorf("a hostile run id: exit %d, want refused:\n%s", code, errOut)
 	}
-	if _, err := os.Stat(filepath.Join(checkout, "pwned")); err == nil {
+	if _, err := os.Stat(filepath.Join(f.tmp, "pwned")); err == nil {
 		t.Error("a hostile run id ran a command")
 	}
-	if refs := git(t, checkout, "for-each-ref", "--format=%(refname)", "refs/reliant-ci/run-1"); !strings.Contains(refs, "refs/reliant-ci/run-1/head") {
-		t.Errorf("fetch did not use the run's private refs: %q", refs)
+}
+
+// The gate, run for real after fetch, with a stand-in `reliant` that does what
+// hostile PR code could: it writes objects into the repository it runs in and
+// reports whether that repository can reach the project's checkout. The gate's
+// repository has no alternates and no remote, and nothing it writes reaches
+// the checkout's object store.
+func TestReliantCI_GateRepositoryIsIsolatedFromTheCheckout(t *testing.T) {
+	testkit.Slow(t, "execs git and bash")
+	f := newCIFixture(t)
+	out, errOut, code := f.fetch(t, "pr", f.base, "main", "run-1")
+	if code != 0 {
+		t.Fatalf("fetch: exit %d\n%s", code, errOut)
+	}
+	objects := func() string {
+		return git(t, f.checkout, "count-objects", "-v")
+	}
+	before := objects()
+
+	bin := filepath.Join(f.tmp, "bin")
+	report := filepath.Join(f.tmp, "report")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := `#!/bin/sh
+gd=$(git rev-parse --absolute-git-dir)
+{
+  echo "pwd=$(pwd)"
+  echo "head=$(git rev-parse HEAD)"
+  [ -e "$gd/objects/info/alternates" ] && echo "alternates=$(cat "$gd/objects/info/alternates")" || echo "alternates=none"
+  echo "remotes=$(git remote | tr '\n' ' ')"
+  echo "args=$*"
+} >"$REPORT"
+# What hostile code would do: write objects and a commit, and repack.
+echo hostile | git hash-object -w --stdin >/dev/null
+git -c user.email=x@x -c user.name=x commit -q --allow-empty -m hostile
+git gc -q --prune=now >/dev/null 2>&1
+echo '{"schema":"forge.ci.gate/v1","ok":true,"verdict":"pass","checks":[]}'
+`
+	if err := os.WriteFile(filepath.Join(bin, "reliant"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(out["root"], "run-1")
+	stdout, gateErr, code := f.run(t, runDir, script(t, "gate", map[string]string{
+		"nodes.facts.tier": "pr", "nodes.facts.sha": f.head, "nodes.resolved.base": out["base"], "nodes.resolved.prefix": out["prefix"],
+	}), "PATH="+bin+":"+os.Getenv("PATH"), "REPORT="+report)
+	if code != 0 || !strings.Contains(stdout, `"ok":true`) {
+		t.Fatalf("gate: exit %d, stdout %q\n%s", code, stdout, gateErr)
+	}
+	got, err := os.ReadFile(report)
+	if err != nil {
+		t.Fatalf("the gate never ran forge ci gate: %v\n%s", err, gateErr)
+	}
+	r := string(got)
+	for _, want := range []string{"head=" + f.head, "alternates=none", "remotes=\n", "args=forge ci gate --tier pr --base " + f.base + " --json"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("the gate's repository report lacks %q:\n%s", want, r)
+		}
+	}
+	if !strings.Contains(r, "/sub\n") || strings.Contains(r, "pwd="+f.checkout) {
+		t.Errorf("the gate ran outside its own repository's project directory:\n%s", r)
+	}
+	if after := objects(); after != before {
+		t.Errorf("the gate changed the checkout's object store:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }

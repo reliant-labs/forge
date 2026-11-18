@@ -83,11 +83,14 @@ dependabot[bot], 49699333, to gate its PRs). Anything else is filtered out
 before a run exists, so a required check stays pending: a maintainer who has
 read the change pushes the branch into the repository, and it runs from there.
 
-Inside a run, the `fetch` step holds the machine's git credentials and only
-runs `git fetch` into private refs. The `gate` step runs the code with
-`credentials: none` (no tokens, credential files hidden on Linux), in a fresh
-clone in its private `/tmp`, with git hooks off. Caches the sandbox makes
-private start cold, so a run is slower than `task ci` on a warm checkout.
+Inside a run, the `fetch` step holds the machine's git credentials and runs
+git only: it fetches the commit and its base and writes them as a bundle to a
+directory of the run's own (`<cache>/reliant-ci/<run>/`). The `gate` step
+runs the code with `credentials: none` (no tokens, credential files hidden on
+Linux), starting in that directory, in a repository it makes from the bundle
+in its private `/tmp`, with git hooks off: nothing in it points at the
+project's checkout or its object store. Caches the sandbox makes private
+start cold, so a run is slower than `task ci` on a warm checkout.
 
 ## Adding checks of your own
 

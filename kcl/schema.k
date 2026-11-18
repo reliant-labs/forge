@@ -3364,11 +3364,31 @@ schema ShellBuild(Build):
         the registry still resolves the recorded tag to the recorded
         digest. The deploy then pins that same digest. Anything else —
         no record, a changed input, a workload with no `image`, a registry
-        that no longer has it or now serves another digest at that tag, a
-        release build (`--release` always runs: it needs the builder's
-        receipt) — runs the command.
+        that no longer has it or now serves another digest at that tag —
+        runs the command. A release build is compared against earlier
+        releases instead (next bullet).
+      * release reuse — `forge env build <env> --release <v>` fingerprints
+        the same inputs with the release TAG and the checkout's LOCATION
+        (the project directory, the directory holding it, the cwd) masked
+        out, since both change on every cut. When that equals the
+        `inputs_digest` the same image recorded in the release the env runs
+        now, or in the project's newest release, AND the registry still
+        serves that release's digest, forge reuses it: it points the new
+        release's tag at that digest (`docker buildx imagetools create`,
+        no layers move), records it with `carried_from: <release>`, and
+        does not run the command — so nothing pinned to the digest rolls.
+        It prints the inputs that matched and the digest it reused, or why
+        it ran: no inputs declared, no earlier release, a release recorded
+        without an inputs digest (one an older forge cut), inputs changed,
+        or the digest gone from the registry. Because the tag is masked, a
+        command that bakes the tag into the image (a version stamp) is
+        carried with the earlier stamp: such a build should declare no
+        inputs. A snapshot-composition release (`--base-promotion`) carries
+        an unchanged workload by leaving it unselected instead; a selected
+        one always runs.
       * forcing — `--rebuild` on `forge build`, `forge env build` and
-        `forge env up` runs every ShellBuild regardless.
+        `forge env up` runs every ShellBuild regardless, release reuse
+        included.
 
     Keep the command's OUTPUTS out of its inputs (exclude them with `!`):
     a build that writes into what it reads changes its own fingerprint and
@@ -3408,7 +3428,9 @@ schema ShellBuild(Build):
     # Files the command reads, as globs relative to the resolved cwd. When
     # set, forge skips the command while they — and the command, env,
     # platform, tag and built_images — are unchanged since its last
-    # successful run and the registry still serves the image it pushed.
+    # successful run and the registry still serves the image it pushed. A
+    # --release build reuses the previous release's image instead when the
+    # same inputs (tag and checkout location masked) are unchanged since it.
     # Empty: the command runs on every build. See the docstring.
     inputs: [str] = []
 

@@ -114,6 +114,12 @@ type wireArtifact struct {
 	// JSON codec ignores unknown fields), and one that has it records it —
 	// so this side needs no change when the server gains it.
 	BuiltFrom *wireBuildSource `json:"builtFrom,omitempty"`
+	// InputsDigest and CarriedFrom are sent ahead of the control plane
+	// storing them, exactly like BuiltFrom. Until it does, a hosted release
+	// comes back without them, and the next release rebuilds rather than
+	// reuses: the safe reading of "not known".
+	InputsDigest string `json:"inputsDigest,omitempty"`
+	CarriedFrom  string `json:"carriedFrom,omitempty"`
 }
 
 type wireRelease struct {
@@ -659,6 +665,7 @@ func releaseToWire(r release.Release) []wireArtifact {
 		base := wireArtifact{
 			Name: name, Kind: string(a.Kind), Mode: string(a.Mode),
 			Platforms: a.Platforms, Version: a.Version, Integrity: a.Integrity, URI: a.URI,
+			InputsDigest: a.InputsDigest, CarriedFrom: a.CarriedFrom,
 		}
 		if a.Source != nil {
 			s := wireSource(*a.Source)
@@ -733,6 +740,11 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 			a = release.Artifact{
 				Kind: release.Kind(row.Kind), Mode: release.Mode(row.Mode),
 				Platforms: row.Platforms, Version: row.Version, Integrity: row.Integrity, URI: row.URI,
+			}
+			// Evidence for the next release's reuse check, never a reason the
+			// ledger cannot be read: a malformed value is dropped (rebuild).
+			if release.Kind(row.Kind) == release.KindOCI && release.ValidDigest(row.InputsDigest) {
+				a.InputsDigest, a.CarriedFrom = row.InputsDigest, row.CarriedFrom
 			}
 			if row.Source != nil {
 				s := release.Source(*row.Source)

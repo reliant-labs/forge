@@ -301,6 +301,7 @@ import {
   registerRumSession,
   registerTelemetryStartup,
   rumSessionId,
+  setRpcTelemetry,
 } from "./telemetry-gate.js";
 import {
   type StartGate,
@@ -486,6 +487,18 @@ export interface BrowserTelemetryConfig {
    * API, reports jank at all. Default true.
    */
   frameStalls?: boolean;
+  /**
+   * Attach a redacted `forge.forensics` event to the span of a failed RPC:
+   * the request's shape, never its content (rpc-forensics.ts: numbers,
+   * bools, enums and id-named strings as values, unless the name also names
+   * a secret, like `session_id`; every other string, bytes, list and map as
+   * a length; `debug_redact` fields never), once per
+   * procedure and error code per page load. Default true; forge's generated
+   * src/lib/otel_gen.ts passes false when the runtime config says
+   * `RPC_FORENSICS = "false"`. The RPC spans themselves (rpc-span.ts) are
+   * recorded either way.
+   */
+  rpcForensics?: boolean;
   /**
    * How finely session replay records continuous input, as rrweb's
    * `sampling` (mousemove and scroll throttles in ms, `input: "last"` to keep
@@ -793,6 +806,8 @@ export function initBrowserTelemetry(
       : watchFrameStalls(() => !isTelemetryDisabled());
   const gate = startGate(config.start);
   const visible = firstVisible();
+  // What the RPC span stage of the interceptor chain records (rpc-span.ts).
+  setRpcTelemetry({ spans: true, forensics: config.rpcForensics !== false });
   started = start(config, ingest, { clicks, errors, stalls, gate, visible });
   // An RPC that waits for telemetry starts it now (telemetry-gate.ts), unless
   // the page has never been visible: no session starts before it has been
@@ -982,6 +997,9 @@ async function start(
       disable: () => {
         runningClient = null;
         stopReplay();
+        // The SDK's tracer provider stays registered: the RPC span stage
+        // stops recording on its own.
+        setRpcTelemetry({ spans: false, forensics: false });
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);

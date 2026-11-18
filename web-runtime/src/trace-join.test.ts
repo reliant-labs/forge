@@ -47,7 +47,7 @@ describe("ConnectClientError.traceId", () => {
   // Through the runtime's own interceptors: with no traceresponse, the error a
   // caller catches still names the trace of the traceparent it sent.
   it("is set on errors the runtime interceptors raise", async () => {
-    const [errorNormalize, , , traceIC] = buildRuntimeInterceptors();
+    const [errorNormalize, , , , traceIC] = buildRuntimeInterceptors();
     if (!errorNormalize || !traceIC)
       throw new Error("interceptor chain changed shape");
     let sent = "";

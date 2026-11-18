@@ -354,7 +354,13 @@ func TestTelemetryPageViewsAndIdentity(t *testing.T) {
 				t.Errorf("a typed frontend's mock mode must come from loadConfig():\n%s", s)
 			}
 
-			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER"} {
+			// Forensics on failed RPCs stay on unless the runtime config
+			// explicitly says RPC_FORENSICS = "false".
+			if !strings.Contains(s, `rpcForensics: text(cfg.RPC_FORENSICS) !== "false",`) {
+				t.Errorf("rpc forensics must be on unless RPC_FORENSICS is \"false\":\n%s", s)
+			}
+
+			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER", "RPC_FORENSICS"} {
 				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(s) {
 					t.Errorf("%s is read from a build variable; it must come from config.js", buildVar)
 				}

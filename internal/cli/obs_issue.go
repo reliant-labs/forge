@@ -267,6 +267,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	if err != nil {
 		return fail(err)
 	}
+	res.Issue.Culprit = displayCulprit(res.Issue.Culprit, res.LatestEvent)
 	doc := obsIssueDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Suspects: []obsSuspectDoc{}, Statements: nil}
 	doc.Issue = issueRowDoc(res.Issue)
 	if n.Explain {
@@ -323,6 +324,22 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	}
 	renderIssue(d.Stdout, doc)
 	return nil
+}
+
+// displayCulprit is the culprit `forge obs issue` shows. An issue grouped
+// before forge#2235 may name forge's own interceptor as its culprit
+// ("…/pkg/observe/interceptors.go in …(*loggingInterceptor).log"), which says
+// nothing about what failed. When its newest event is a record forge logged
+// for an rpc, the rpc's procedure is shown instead, as obsquery.ServerIssueCulprit
+// now spells it. Display only: the issue and its grouping are unchanged.
+func displayCulprit(culprit string, latest *obsbackend.IssueEvent) string {
+	if latest == nil || !obsquery.ForgeLibraryCulprit(culprit) {
+		return culprit
+	}
+	if r := (obsquery.ServerErrorRecord{Attributes: latest.Attributes}); r.Attributes[obsquery.LogKeyCodeFunction] != "" && r.LoggedByForge() {
+		return obsquery.ServerIssueCulprit(r)
+	}
+	return culprit
 }
 
 // suspectCommits asks the checkout which commits touched the files the error

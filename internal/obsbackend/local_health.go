@@ -26,7 +26,7 @@ import (
 // pkg/obsquery's, the values are bound parameters.
 var localNewIssuesSQL = `SELECT ` + obsquery.ServerFingerprintSQL + ` AS fp,
        any(` + obsquery.ServerTitleSQL + `) AS title,
-       any(` + obsquery.ServerCulpritSQL + `) AS culprit,
+       any(` + obsquery.ServerIssueCulpritSQL + `) AS culprit,
        any(ServiceName) AS service,
        count() AS events,
        min(Timestamp) AS first_seen

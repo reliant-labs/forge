@@ -87,7 +87,7 @@ func TestEveryStatementIsAGuardedScopedRead(t *testing.T) {
 	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
 	sc := obsquery.Scope{Database: "t_org_a", Start: end.Add(-24 * time.Hour), End: end, EnvRestricted: true, EnvIDs: []string{"e1"}}
 	for _, d := range every(fullInput()) {
-		for _, p := range d.Panels {
+		for _, p := range statementPanels(d) {
 			for name, sql := range map[string]string{p.ID: p.SQL, p.ID + " trend": p.TrendSQL} {
 				if sql == "" {
 					continue
@@ -118,12 +118,26 @@ func TestEveryStatementIsAGuardedScopedRead(t *testing.T) {
 	}
 }
 
+// statementPanels are d's panels and the figures its attention panels read
+// alone: every panel that runs a statement.
+func statementPanels(d dashspec.Dashboard) []dashspec.Panel {
+	var out []dashspec.Panel
+	for _, p := range d.Panels {
+		if p.Attention != nil {
+			out = append(out, p.Attention.Figures...)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // Visitors are keyed by the hash alone: its day is the day the edge
 // received the batch, so pairing it with the event's date would split one
 // visitor (and one visit) at midnight.
 func TestVisitorsAreKeyedByTheHashAlone(t *testing.T) {
 	for _, d := range every(fullInput()) {
-		for _, p := range d.Panels {
+		for _, p := range statementPanels(d) {
 			for _, sql := range []string{p.SQL, p.TrendSQL} {
 				if regexp.MustCompile(`\(\s*(toDate\(Timestamp\)|d)\s*,\s*(h|DayVisitor)\s*\)`).MatchString(sql) {
 					t.Errorf("%s/%s pairs a visitor hash with a date:\n%s", d.ID, p.ID, sql)
@@ -192,11 +206,11 @@ func TestDashboardsFollowTheProject(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
-	if got := ids(Dashboards(Input{Project: "shop", Web: true})); got != "users,product,acquisition" {
+	if got := ids(Dashboards(Input{Project: "shop", Web: true})); got != "product-overview,users,product,acquisition" {
 		t.Errorf("with a frontend = %s", got)
 	}
 	// A backend alone has users and CRUD events, and no visitors.
-	if got := ids(Dashboards(Input{Project: "shop"})); got != "users,product" {
+	if got := ids(Dashboards(Input{Project: "shop"})); got != "product-overview,users,product" {
 		t.Errorf("without a frontend = %s", got)
 	}
 	off := &Analytics{NoDashboards: true}

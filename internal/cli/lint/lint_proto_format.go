@@ -42,9 +42,13 @@ const protoFormatFixHint = "run `forge lint --proto-format --fix`, or `buf forma
 	"(a directory inside the module needs `--path`: `buf format -w --path proto/services`)"
 
 // collectProtoFormatJSON is the lane. root is the project root (the lint
-// run's working directory); scope, when set, bounds both the report and the
-// fix to its files.
-func collectProtoFormatJSON(ctx context.Context, root string, scope *lintScope, fix bool) ([]lintJSONFinding, bool, error) {
+// run's working directory). keep (formatKeep: --scope, else the positional
+// paths; nil is every file) bounds the report AND the fix: it is applied
+// before anything is written, so `--fix --scope proto/services/a` never
+// rewrites a proto outside the slice — another agent's work in a shared
+// checkout. Filtering only the findings after the lane ran, as the
+// structured driver's scopeOutcome does, would be too late for the fix.
+func collectProtoFormatJSON(ctx context.Context, root string, keep func(rel string) bool, fix bool) ([]lintJSONFinding, bool, error) {
 	if !fileExists(filepath.Join(root, "buf.yaml")) {
 		return nil, false, nil
 	}
@@ -60,7 +64,7 @@ func collectProtoFormatJSON(ctx context.Context, root string, scope *lintScope, 
 	}
 	var fs []lintJSONFinding
 	for _, p := range pending {
-		if scope != nil && !scope.contains(p.File) {
+		if keep != nil && !keep(p.File) {
 			continue
 		}
 		if fix {

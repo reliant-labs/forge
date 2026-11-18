@@ -65,13 +65,83 @@ func TestProtoFormatDiffIsGradedWithItsFinding(t *testing.T) {
 	}
 }
 
+// `--fix --scope proto/a` rewrites the scoped proto and nothing else, on both
+// roads to the lane: the targeted `forge lint --proto-format` (whose driver
+// narrows the report only AFTER the lane ran) and the lane inside a bare
+// `forge lint`'s pipeline. A shared checkout holds other agents' protos; a
+// scoped fix that formatted them would rewrite work it was told to leave.
+func TestProtoFormatFixStaysInsideTheScope(t *testing.T) {
+	testkit.Slow(t, "execs buf")
+	if _, err := exec.LookPath("buf"); err != nil {
+		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge tools install buf`)")
+	}
+	const dirty = "syntax = \"proto3\";\npackage %s.v1;\nmessage   M {string id = 1;}\n"
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "buf.yaml"), []byte("version: v2\nmodules:\n  - path: proto\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inside, outside := "proto/a/v1/a.proto", "proto/b/v1/b.proto"
+	reset := func() {
+		for rel, pkg := range map[string]string{inside: "a", outside: "b"} {
+			p := filepath.Join(root, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(strings.Replace(dirty, "%s", pkg, 1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	reset() // the scope must name a path that exists
+	scope, err := parseLintScope(root, []string{"proto/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(road string) {
+		t.Helper()
+		if got := read(inside); strings.Contains(got, "message   M") {
+			t.Errorf("%s: the scoped proto was not formatted:\n%s", road, got)
+		}
+		if got, want := read(outside), strings.Replace(dirty, "%s", "b", 1); got != want {
+			t.Errorf("%s: a proto OUTSIDE --scope was rewritten:\n%s", road, got)
+		}
+	}
+
+	reset()
+	o, err := collectLaneOutcome(context.Background(), lintFlags{protoFormat: true, fix: true}, "proto-format",
+		[]string{"./..."}, root, nil, nil, scope)
+	if err != nil || !o.ran {
+		t.Fatalf("targeted lane: ran=%v err=%v", o.ran, err)
+	}
+	check("forge lint --proto-format --fix --scope proto/a")
+
+	reset()
+	step := findStep(t, "proto-format lint")
+	if step.scope != scopeByFile {
+		t.Fatalf("proto-format lint must be scopeByFile, is %v", step.scope)
+	}
+	outcomes := collectLintOutcomesFrom(&lintRunCtx{ctx: context.Background(), fix: true, cwd: root, scope: scope,
+		paths: []string{"./..."}}, []linterStep{step})
+	if len(outcomes) != 1 || !outcomes[0].ran {
+		t.Fatalf("pipeline lane did not run: %+v", outcomes)
+	}
+	check("forge lint --fix --scope proto/a")
+}
+
 // The lane runs the pre-commit hook's check: a proto buf would rewrite fails
 // it with buf's diff, --fix writes buf's output, and a project with no
 // buf.yaml has no lane.
 func TestProtoFormatLane(t *testing.T) {
 	testkit.Slow(t, "execs buf")
 	if _, err := exec.LookPath("buf"); err != nil {
-		t.Skip("buf not on PATH")
+		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge tools install buf`)")
 	}
 	ctx := context.Background()
 	root := t.TempDir()

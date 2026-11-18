@@ -470,7 +470,7 @@ func collectLaneOutcome(
 			}
 		}
 	}
-	report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg)
+	report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg, scope)
 	if err != nil {
 		return o, err
 	}

@@ -258,7 +258,7 @@ func lintPipeline() []linterStep {
 				return rc.cwd != "" && fileExists(filepath.Join(rc.cwd, "buf.yaml")), ""
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-				return collectProtoFormatJSON(rc.ctx, rc.cwd, rc.scope, rc.fix)
+				return collectProtoFormatJSON(rc.ctx, rc.cwd, formatKeep(rc.scope, rc.paths), rc.fix)
 			},
 		},
 

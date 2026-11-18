@@ -1,43 +1,10 @@
 //go:build ignore
 
-// Package middleware is YOUR authentication policy surface — forge
-// scaffolded it once and will not rewrite it.
-//
-// Authentication is a MIDDLEWARE: it validates the request's credential — a
-// bearer token or an API key — and puts *Claims on the context. It runs
-// FAIL-CLOSED — a request with no credential, or an invalid one, is rejected
-// before any handler runs, unless the RPC it names declared
-// `auth_required: false` in the proto.
-//
-// That is authentication and nothing more. Deciding what a caller may DO,
-// and WHICH ROWS they may see, is HANDLER LOGIC you write — call GetUser
-// below to resolve the caller and add the checks and query filters your
-// product needs. No annotation can express those.
-//
-// The middleware MECHANISMS (auth interceptor modes + refusal-to-start,
-// CORS, security headers, request-id, rate limiting, idempotency, the HTTP
-// stack, recovery/logging) live in the forge libraries —
-// github.com/reliant-labs/forge/pkg/{authn,middleware,observe} — versioned
-// with forge so they keep receiving fixes. That includes the claims stash
-// and GetUser, which this file re-exports as one-line delegations: they
-// were identical in every project, so they are library code wearing your
-// package's name.
-//
-// This file wires the POLICY: the three things projects actually customize.
-//
-//  1. Credential validator — passed EXPLICITLY into NewAuthInterceptor via
-//     AuthDeps.Validate (no package-global slot). The OWNED composition
-//     root internal/app/auth.go builds it — SetupAuth for bearer tokens,
-//     APIKeyValidator for API keys — and the generated cmd serve.go
-//     threads it in.
-//  2. Identity enricher — enrichClaims (hydrate roles/org/flags onto
-//     validated claims before handlers see them).
-//  3. Credential channel — credentialFrom (a Bearer header, else the
-//     APIKeyHeader, else the native sign-in session cookie).
-//
-// The allow-list is NOT a hook here: which RPCs are callable without
-// credentials is declared per-rpc in the proto (auth_required: false) and
-// projected into procedures_gen.go. See the note above UnauthenticatedProcedures.
+// Package middleware is YOUR authentication policy (scaffolded once; forge will not rewrite it).
+// Authentication fails CLOSED: no valid credential, no handler, unless the rpc declares
+// `auth_required: false` in the proto (procedures_gen.go). What a caller may DO and which rows it
+// sees is handler logic: call GetUser. Yours here: the validator (internal/app/auth.go),
+// enrichClaims and credentialFrom; the mechanisms live in forge/pkg/{authn,middleware}. Depth: `auth`.
 package middleware
 
 import (

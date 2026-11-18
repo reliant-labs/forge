@@ -192,6 +192,9 @@ func generateNextjsFrontend(cfg *config.ProjectConfig, projectDir string, fe con
 	if fe.Adopted {
 		return nil
 	}
+	if err := emitRouteAccessGen(projectDir, feDir, data, cs); err != nil {
+		return err
+	}
 	if err := emitNavRegistries(projectDir, feDir, data, cs); err != nil {
 		return err
 	}
@@ -219,6 +222,30 @@ func generateNextjsFrontend(cfg *config.ProjectConfig, projectDir string, fe con
 
 	if len(fePages) > 0 {
 		fmt.Printf("  ✅ Scaffolded nav.tsx + dashboard.tsx with %d page(s) for frontend %s (yours to edit)\n", len(fePages), fe.Name)
+	}
+	return nil
+}
+
+// emitRouteAccessGen writes src/lib/auth/route-access_gen.ts: the context
+// through which the owned route guard tells links (the scaffolded nav, and any
+// of the user's) which routes the current visitor may open.
+//
+// Tier-1 rather than part of the owned guard, so it exists in every scaffolded
+// frontend regardless of age. A pristine nav.tsx is refreshed while untouched
+// (emitScaffoldUntilTouched) and imports it; in a project whose guard predates
+// it, the guard provides nothing and the context's default — every route
+// reachable — keeps that nav showing exactly what it showed before.
+func emitRouteAccessGen(projectDir, feDir string, data templates.FrontendTemplateData, cs *checksums.FileChecksums) error {
+	content, err := templates.FrontendTemplates().Render("shared-web/src/lib/auth/route-access_gen.ts.tmpl", data)
+	if err != nil {
+		return fmt.Errorf("render route-access_gen.ts: %w", err)
+	}
+	rel := filepath.Join(feDir, "src", "lib", "auth", "route-access_gen.ts")
+	if err := os.MkdirAll(filepath.Join(projectDir, filepath.Dir(rel)), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(rel), err)
+	}
+	if _, err := checksums.WriteGeneratedFileTier1(projectDir, rel, content, cs, true); err != nil {
+		return fmt.Errorf("write route-access_gen.ts: %w", err)
 	}
 	return nil
 }
@@ -390,6 +417,9 @@ func generateViteFrontend(cfg *config.ProjectConfig, projectDir string, fe confi
 	if !fe.Adopted {
 		if err := ensureViteQueryResourceHook(projectDir, feDir); err != nil {
 			return fmt.Errorf("ensure use-query-resource for %s: %w", fe.Name, err)
+		}
+		if err := emitRouteAccessGen(projectDir, feDir, data, cs); err != nil {
+			return err
 		}
 	}
 	// ── package.json: the @reliantlabs/forge-web-runtime specifier ──

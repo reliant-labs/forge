@@ -794,6 +794,10 @@ type hostedStore struct {
 	// floorsCap is GetCapabilities.rollback_floors, asked once per process
 	// (floor.go); nil until asked.
 	floorsCap *bool
+	// source is the checkout this ledger records from (code_source.go):
+	// sent with every cut and deploy attempt. Nil when the ledger was opened
+	// with no checkout behind it, which sends none.
+	source *codeSourceProbe
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1153,6 +1157,13 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	}
 	if r.Migrations != nil {
 		req["migrations"] = r.Migrations
+	}
+	// Where the release came from (code_source.go), beside the snapshot
+	// document as the manifest is, and for the same reason: a control plane
+	// that predates the field ignores it. Not part of the release's identity,
+	// so a retry from another checkout is still a retry.
+	if src := s.source.get(ctx).forRelease(r).wire(); src != nil {
+		req["codeSource"] = src
 	}
 	var resp struct {
 		Created bool `json:"created"`

@@ -22,7 +22,6 @@ func TestEnvTemplatesWireIdentityOnlyWhenDeclared(t *testing.T) {
 			"identity = idn.IDENTITY",
 			`engine = "zitadel"`,
 			`engine = "mailpit"`,
-			"CORS_ALLOW_CREDENTIALS",
 		},
 		"kcl/cloud/main.k.tmpl": {
 			"import ..identity as idn",
@@ -48,6 +47,15 @@ func TestEnvTemplatesWireIdentityOnlyWhenDeclared(t *testing.T) {
 			// The frontend is declared either way: no users is not no site.
 			if !strings.Contains(rendered, "_web_frontend = forge.Frontend {") {
 				t.Errorf("%s (NoIdentity=%v): the frontend is no longer declared", tmpl, noIdentity)
+			}
+			// The frontend's transport fetches with credentials "include"
+			// whether or not anyone signs in, so the dev API must allow
+			// credentials either way, or the browser refuses every
+			// cross-origin response (FORGE_DEV_API_PROXY=off), public RPCs
+			// included. TestPublicFrontendTransportNeedsCredentialedCORS pins
+			// the browser side.
+			if tmpl == "kcl/dev/main.k.tmpl" && !strings.Contains(rendered, `CORS_ALLOW_CREDENTIALS = "true"`) {
+				t.Errorf("%s (NoIdentity=%v): the API no longer allows credentials, but the frontend still sends them", tmpl, noIdentity)
 			}
 		}
 	}

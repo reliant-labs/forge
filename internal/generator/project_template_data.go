@@ -12,10 +12,10 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// devEnvMentionsIdP matches a dev env main.k that runs an identity provider
+// devEnvMentionsIDP matches a dev env main.k that runs an identity provider
 // some way: the scaffolded HostInfra (`engine = "zitadel"`), or a workload
 // or binding naming the compose `idp` service.
-var devEnvMentionsIdP = regexp.MustCompile(`zitadel|"idp"`)
+var devEnvMentionsIDP = regexp.MustCompile(`zitadel|"idp"`)
 
 // projectDeclaresIdentity is the regenerate lane's answer to "does this
 // project have users to sign in?", read off the tree: deploy/kcl/identity.k,
@@ -38,7 +38,7 @@ func projectDeclaresIdentity(projectDir string) bool {
 	if err != nil {
 		return true
 	}
-	return devEnvMentionsIdP.Match(b)
+	return devEnvMentionsIDP.Match(b)
 }
 
 // guardTemplateMode maps a ConfigGuardConfig to the TypedAccessGuard string

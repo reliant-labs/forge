@@ -247,10 +247,14 @@ _env = lambda w: fw.Workload -> {str:} {
         PORT = str(_port_of(w.name))
         PPROF_ADDR = "127.0.0.1:${_pprof_port_of(w.name)}"
     } if w.kind in _LONG_RUNNING else {}
-{{- if .DeclaresIdentity}}
+{{- if .HasFrontend}}
     # The session cookie /auth/login sets only survives a cross-origin call
     # when the browser is told credentials are allowed. In dev the API and the
     # frontend are on different ports, so without this sign-in "does nothing".
+    # A frontend with no sign-in (--auth-mode none) keeps it too: its
+    # transport (src/lib/connect.ts) still fetches with credentials
+    # "include", and a browser refuses a credentialed cross-origin response
+    # that does not allow credentials — even an auth_required: false one.
     _sign_in = {CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}
     {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env | _machine | _port | _sign_in
 {{- else}}

@@ -34,9 +34,10 @@ type EnvTemplateData struct {
 	HasFrontend    bool
 	// NoIdentity leaves out the env's sign-in wiring though it has a
 	// frontend: the `identity` declaration and its import, and in dev the
-	// identity provider, the mail catcher and the credentialed CORS a
-	// sign-in cookie needs. Set for a project that declares no users
-	// (`forge project new --auth-mode none`, or a frontend with no backend).
+	// identity provider and the mail catcher. Credentialed CORS stays: the
+	// frontend's transport sends credentials either way. Set for a project
+	// that declares no users (`forge project new --auth-mode none`, or a
+	// frontend with no backend).
 	// Negative so the zero value keeps every caller's existing render.
 	NoIdentity bool
 	// DatabaseDisabled omits database infrastructure in a database-free project.

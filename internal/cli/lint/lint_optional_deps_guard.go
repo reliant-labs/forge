@@ -72,6 +72,17 @@
 //
 // Slices and arrays keep the plain rule: indexing one is a deref.
 //
+// Protobuf-message optional deps
+//
+// A field typed as a pointer to a protobuf message generated into this
+// project (`Cfg *configv1.Config`, where configv1 is a package of this module
+// holding a *.pb.go that declares Config) may call its getters while nil:
+// protoc-gen-go emits every `GetX()` as a nil-receiver check that returns the
+// zero value. So `s.deps.Cfg.GetFoo()` is not flagged. Field access
+// (`s.deps.Cfg.Foo`), every other method (`Reset()`, `ProtoReflect()`) and a
+// `Get*()` on any other type still are. The walker has no type checker; a
+// type it cannot resolve to such a message keeps the plain rule.
+//
 // Guard patterns recognized
 //
 // The walker is a single-function, forward-flow scan — deliberately NOT
@@ -148,6 +159,7 @@
 package lint
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -156,6 +168,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+
+	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 )
@@ -232,7 +247,7 @@ func optionalDepsGuardFixHint(f optionalDepsGuardFinding) string {
 		return fmt.Sprintf("read the element with comma-ok and check it (`v, ok := s.deps.%s[k]; if !ok { ... }`), or nil-check the value before use (`if v == nil { ... }`), which also covers a key the wired map lacks; %s", f.Field, suppress)
 	}
 	return fmt.Sprintf(
-		"add an early return `if %s == nil { return ... }` at the top of %s, or wrap the use in `if %s != nil { ... }`; %s",
+		"add an early return `if %s == nil { return ... }` at the top of %s, or wrap the use in `if %s != nil { ... }` (a no-argument `Get*()` getter on a generated protobuf message pointer is nil-safe and needs no guard); %s",
 		f.Expr, f.Method, f.Expr, suppress)
 }
 
@@ -313,6 +328,9 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 	// all holds every non-test file, generated ones included: a helper a
 	// handler calls may live in any of them.
 	var all []*ast.File
+	// depsImports are the imports of the file declaring Deps: the names
+	// an optional field's type (`*configv1.Config`) is qualified by.
+	var depsImports map[string]string
 	types := packageTypeDecls{}
 	fset := token.NewFileSet()
 	for _, e := range entries {
@@ -329,6 +347,9 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 			continue
 		}
 		types.collect(file)
+		if declaresType(file, "Deps") {
+			depsImports = fileImports(file)
+		}
 		all = append(all, file)
 		// Generated files (_gen.go) declare types the fields may name, but
 		// are forge-owned and regenerate — flagging them would be noise
@@ -339,8 +360,11 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 	}
 
 	pkg := newOptionalGuardPackage(fset)
+	protoMsgs := projectProtoMessages{projectDir: projectDir, imports: depsImports}
 	for _, d := range optionalDeps {
-		pkg.optional[d.Name] = types.shapeOf(d.Type)
+		shape := types.shapeOf(d.Type)
+		shape.protoMsgPtr = protoMsgs.isPointer(d.Type)
+		pkg.optional[d.Name] = shape
 	}
 	for _, f := range all {
 		pkg.collect(f)
@@ -1002,6 +1026,13 @@ func (w *optionalGuardWalker) scanExpr(e ast.Expr, guarded map[string]bool) {
 		case *ast.SelectorExpr:
 			w.checkDeref(v.X, guarded)
 		case *ast.CallExpr:
+			// A protobuf getter on an optional proto-message pointer
+			// (s.deps.Cfg.GetFoo()) is nil-safe: protoc-gen-go getters
+			// return the zero value on a nil receiver. Skip the inner
+			// SelectorExpr so it is not reported either.
+			if w.isNilSafeProtoGetter(v) {
+				return false
+			}
 			// Direct call of a func-typed optional field: s.deps.X(...).
 			// Method calls (s.deps.X.M(...)) are caught at the inner
 			// SelectorExpr instead, so no double report.
@@ -1198,10 +1229,129 @@ func copyGuards(base, extra map[string]bool) map[string]bool {
 
 // optionalFieldShape is what the walker knows of an optional field's
 // declared type: whether it is a map, and if so whether its element's zero
-// value is nil (so a looked-up element of the nil map is nil).
+// value is nil (so a looked-up element of the nil map is nil); and whether
+// it is a pointer to a protobuf message generated into this project, whose
+// getters are nil-safe.
 type optionalFieldShape struct {
 	isMap       bool
 	elemNilable bool
+	protoMsgPtr bool
+}
+
+// isNilSafeProtoGetter reports whether call is a no-argument `Get*()` method
+// call on an optional field (or an alias of one) typed as a pointer to a
+// generated protobuf message. protoc-gen-go emits every getter as
+// `if x != nil { return x.F }; return <zero>`, so the call cannot panic while
+// the dep is nil. Field access (`s.deps.Cfg.Foo`), any other method
+// (`Reset()`, `ProtoReflect()`) and a getter on a non-proto type are still
+// derefs.
+func (w *optionalGuardWalker) isNilSafeProtoGetter(call *ast.CallExpr) bool {
+	if len(call.Args) != 0 {
+		return false
+	}
+	sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || !isProtoGetterName(sel.Sel.Name) {
+		return false
+	}
+	k, kind, ok := w.resolve(sel.X)
+	return ok && kind == targetField && w.optional[k].protoMsgPtr
+}
+
+// isProtoGetterName reports whether name has protoc-gen-go's getter shape:
+// Get followed by an exported field name.
+func isProtoGetterName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "Get")
+	return ok && rest != "" && unicode.IsUpper([]rune(rest)[0])
+}
+
+// declaresType reports whether f declares a type named name.
+func declaresType(f *ast.File, name string) bool {
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// projectProtoMessages answers whether a Deps field type names a pointer to
+// a protobuf message generated into this project — without a type checker.
+// A type qualifies when it is `*<alias>.<Name>`, the alias (from the Deps
+// file's imports) is a package of this module, and a `*.pb.go` file in that
+// package's directory declares `type <Name> struct`. Anything it cannot
+// resolve — a dependency's package, an unreadable go.mod — is not a proto
+// message, which keeps the plain deref rule: the conservative direction.
+type projectProtoMessages struct {
+	projectDir string
+	imports    map[string]string
+
+	modulePath string
+	moduleRead bool
+}
+
+func (p *projectProtoMessages) isPointer(typ string) bool {
+	expr, err := parser.ParseExpr(typ)
+	if err != nil {
+		return false
+	}
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	alias, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	importPath, ok := p.imports[alias.Name]
+	if !ok {
+		return false
+	}
+	module := p.module()
+	if module == "" {
+		return false
+	}
+	rel, ok := strings.CutPrefix(importPath, module+"/")
+	if !ok {
+		return false
+	}
+	return pbGoDeclaresStruct(filepath.Join(p.projectDir, filepath.FromSlash(rel)), sel.Sel.Name)
+}
+
+func (p *projectProtoMessages) module() string {
+	if !p.moduleRead {
+		p.moduleRead = true
+		if data, err := os.ReadFile(filepath.Join(p.projectDir, "go.mod")); err == nil {
+			p.modulePath = modfile.ModulePath(data)
+		}
+	}
+	return p.modulePath
+}
+
+// pbGoDeclaresStruct reports whether a protoc-gen-go output file (*.pb.go)
+// in dir declares `type <name> struct`.
+func pbGoDeclaresStruct(dir, name string) bool {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.pb.go"))
+	if err != nil {
+		return false
+	}
+	decl := []byte("\ntype " + name + " struct {")
+	for _, m := range matches {
+		data, err := os.ReadFile(m)
+		if err == nil && bytes.Contains(data, decl) {
+			return true
+		}
+	}
+	return false
 }
 
 // packageTypeDecls are the type declarations of one package, by name — the

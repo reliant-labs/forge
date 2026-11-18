@@ -21,6 +21,7 @@ import {
   REPLAY_SCOPE,
   REPLAY_SNAPSHOT_FLUSH_MS,
   REPLAY_TAIL_MAX_BYTES,
+  SNAPSHOT_WAIT_MS,
   ReplayBatcher,
   type ReplayRecord,
   type RrwebRecord,
@@ -844,6 +845,7 @@ describe("startReplayRecorder", () => {
   });
 
   it("takes a full snapshot and renumbers when the RUM session changes, and records nothing past the 4 h cap", async () => {
+    vi.useFakeTimers();
     stubPage();
     const { state, record } = fakeRrweb();
     const { batches, transport } = fakeTransport();
@@ -863,6 +865,8 @@ describe("startReplayRecorder", () => {
     now += 10;
     state.emit!({ type: 3, timestamp: now, data: {} });
     expect(state.snapshots).toBe(1);
+    // This fake takes no snapshot: the new session's event waits for one, then goes anyway.
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_WAIT_MS);
     rec.flush();
     expect(
       batches[0]!.records.map((r) => r.attributes["rr-web.event"]),
@@ -905,6 +909,71 @@ describe("startReplayRecorder", () => {
     expect(records.map((r) => r.attributes["rr-web.offset"])).toEqual([
       1, 2, 3,
     ]);
+    rec.stop();
+  });
+
+  it("holds a new session's events until its full snapshot is recorded, even when the snapshot comes later", async () => {
+    vi.useFakeTimers();
+    stubPage();
+    const { state, record } = fakeRrweb();
+    // A recorder that emitted the snapshot asynchronously.
+    (record as unknown as { takeFullSnapshot: () => void }).takeFullSnapshot =
+      () => {
+        state.snapshots++;
+        setTimeout(() => {
+          state.emit!({ type: 4, timestamp: 2, data: { href: "/" } });
+          state.emit!({ type: 2, timestamp: 2, data: { node: {} } });
+        }, 50);
+      };
+    const { batches, transport } = fakeTransport();
+    let session = "s1";
+    const rec = startReplayRecorder({
+      ...base,
+      sessionId: () => session,
+      loadRecord: async () => record,
+      transport,
+    });
+    await rec.started;
+    session = "s2";
+    state.emit!({ type: 3, timestamp: 3, data: { source: 2 } });
+    state.emit!({ type: 3, timestamp: 4, data: { source: 2 } });
+    rec.flush();
+    expect(batches.flatMap((b) => b.records)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(50);
+    rec.flush();
+    const records = batches.flatMap((b) => b.records);
+    expect(
+      records.map((r) => (JSON.parse(r.body) as { type: number }).type),
+    ).toEqual([4, 2, 3, 3]);
+    expect(records.map((r) => r.attributes["rr-web.event"])).toEqual([
+      1, 2, 3, 4,
+    ]);
+    rec.stop();
+  });
+
+  it(`records a new session's events anyway after ${SNAPSHOT_WAIT_MS} ms if no snapshot comes`, async () => {
+    vi.useFakeTimers();
+    stubPage();
+    const { state, record } = fakeRrweb();
+    const { batches, transport } = fakeTransport();
+    let session = "s1";
+    const rec = startReplayRecorder({
+      ...base,
+      sessionId: () => session,
+      loadRecord: async () => record,
+      transport,
+    });
+    await rec.started;
+    session = "s2";
+    state.emit!({ type: 3, timestamp: 3, data: { source: 2 } });
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_WAIT_MS);
+    rec.flush();
+    expect(state.snapshots).toBe(1);
+    expect(
+      batches
+        .flatMap((b) => b.records)
+        .map((r) => r.attributes["rr-web.event"]),
+    ).toEqual([1]);
     rec.stop();
   });
 

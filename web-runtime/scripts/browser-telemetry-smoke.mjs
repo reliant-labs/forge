@@ -1162,3 +1162,77 @@ window.ready = await initBrowserTelemetry({ serviceName: 'browser-proof', endpoi
     await close(server);
   }
 });
+
+// A new RUM session's replay starts with its baseline, against real rrweb:
+// when the recorder sees the session change, the Meta and FullSnapshot
+// rrweb takes are recorded, numbered 1 and 2, before the event that found
+// the new session or any after it.
+test("a new session's replay records its Meta and full snapshot before any of its other events", { timeout: 30000 }, async () => {
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost").pathname;
+      if (vendor[url]) {
+        res.setHeader("content-type", "text/javascript");
+        res.end(vendor[url]);
+      } else if (url === "/") {
+        res.setHeader("content-type", "text/html");
+        res.end(`<!doctype html><button id="go">Go</button><p id="out"></p>
+<script type="importmap">{"imports":{"rrweb":"/vendor/rrweb.js","@opentelemetry/api":"/otel/index.js"}}</script>
+<script type="module">
+import { startReplayRecorder } from '/runtime/replay-recorder.js';
+window.session = 's1';
+window.records = [];
+document.getElementById('go').addEventListener('click', () => {
+  document.getElementById('out').textContent += 'x';
+});
+window.rec = startReplayRecorder({
+  url: '/_otel/v1/logs',
+  rrweb: {},
+  resource: () => ({}),
+  sessionId: () => window.session,
+  transport: { send: (records) => window.records.push(...records), close() {} },
+});
+window.ready = await window.rec.started;
+</script>`);
+      } else {
+        res.setHeader("content-type", "text/javascript");
+        res.end(await moduleFile(url));
+      }
+    } catch (error) {
+      res.statusCode = 500;
+      res.end(String(error));
+    }
+  });
+  const origin = await listen(server);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(origin);
+    await page.waitForFunction(() => window.ready === true, undefined, { timeout: 5000 });
+    await page.locator("#go").click();
+    await page.evaluate(() => {
+      window.rec.flush();
+      window.records.length = 0;
+      window.session = "s2";
+    });
+    // The click is the first event the recorder sees in the new session.
+    await page.locator("#go").click();
+    await page.locator("#go").click();
+    await new Promise((done) => setTimeout(done, 300));
+    const records = await page.evaluate(() => {
+      window.rec.flush();
+      return window.records.map((r) => ({ type: JSON.parse(r.body).type, event: r.attributes["rr-web.event"], chunk: r.attributes["rr-web.chunk"] }));
+    });
+    const events = records.filter((r) => r.chunk === 1);
+    assert.ok(events.length > 2, `the new session recorded events: ${JSON.stringify(events)}`);
+    assert.deepEqual(events.slice(0, 2).map((r) => [r.type, r.event]), [[4, 1], [2, 2]], `Meta then FullSnapshot first: ${JSON.stringify(events)}`);
+    assert.ok(events.slice(2).every((r) => r.type !== 4 && r.type !== 2 && r.event > 2), `every other event after them: ${JSON.stringify(events)}`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await close(server);
+  }
+});

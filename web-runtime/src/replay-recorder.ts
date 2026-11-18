@@ -722,7 +722,14 @@ interface MutationData {
 
 const FULL_SNAPSHOT = 2;
 const INCREMENTAL_SNAPSHOT = 3;
+const META = 4;
 const MUTATION_SOURCE = 0;
+
+/**
+ * The longest a new session's events wait for its full snapshot before they
+ * are recorded anyway (rrweb could not take one).
+ */
+export const SNAPSHOT_WAIT_MS = 1_000;
 
 /**
  * Drops attribute mutations of a node (or the svg it is in) that changes
@@ -973,6 +980,22 @@ export function startReplayRecorder(
         }, 1000);
       },
     });
+    // A new session's events wait here until its full snapshot is recorded:
+    // a replay cannot play an incremental event before its baseline. rrweb
+    // 2.x emits the snapshot synchronously, back through emit, so this holds
+    // nothing for longer than takeFullSnapshot() runs; the order does not
+    // depend on that, and a snapshot that never comes (rrweb could not take
+    // one) releases what waits after SNAPSHOT_WAIT_MS rather than hold it.
+    let held: RrwebEvent[] | null = null;
+    let heldTimer: ReturnType<typeof setTimeout> | undefined;
+    const release = () => {
+      clearTimeout(heldTimer);
+      const waiting = held ?? [];
+      held = null;
+      for (const event of waiting) {
+        add(event);
+      }
+    };
     const emit = (source: RrwebEvent) => {
       if (stopped) {
         return;
@@ -987,11 +1010,32 @@ export function startReplayRecorder(
           sessionStart = now();
           eventCounter = 1;
           logCounter = 1;
-          // rrweb (2.x) emits the snapshot's Meta and FullSnapshot events
-          // synchronously, back through this emit, with lastSession already
-          // the new one: they are batched, numbered 1 and 2, before the event
-          // that found the session goes on below.
-          record.takeFullSnapshot();
+          held = [source];
+          clearTimeout(heldTimer);
+          heldTimer = setTimeout(release, SNAPSHOT_WAIT_MS);
+          try {
+            record.takeFullSnapshot();
+          } catch {
+            release();
+          }
+          return;
+        }
+        if (held && source.type !== META && source.type !== FULL_SNAPSHOT) {
+          held.push(source);
+          return;
+        }
+        add(source);
+        if (held && source.type === FULL_SNAPSHOT) {
+          release();
+        }
+      } catch {
+        // Telemetry must never break the app.
+      }
+    };
+    const add = (source: RrwebEvent) => {
+      try {
+        if (stopped) {
+          return;
         }
         if (source.timestamp > sessionStart + MAX_RECORDING_MS) {
           return;

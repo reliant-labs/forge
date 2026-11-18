@@ -54,8 +54,6 @@ type commandResult struct {
 	Claim string
 	// Action is where a person resolves a queued deploy (billing).
 	Action string
-	// Log is the file with the full output of the step that failed.
-	Log string
 	// Reason is the failure in a few words (reasonOf). Empty on success.
 	Reason string
 	// Next is the command (or step) to take next.
@@ -69,7 +67,7 @@ func (r commandResult) Line() string {
 	b.WriteString(emptyAs(r.Status, "failed"))
 	for _, kv := range [][2]string{
 		{"stage", r.Stage}, {"env", r.Env}, {"url", r.URL}, {"release", r.Release},
-		{"claim", r.Claim}, {"action", r.Action}, {"log", r.Log}, {"reason", r.Reason},
+		{"claim", r.Claim}, {"action", r.Action}, {"reason", r.Reason},
 	} {
 		if kv[1] == "" {
 			continue

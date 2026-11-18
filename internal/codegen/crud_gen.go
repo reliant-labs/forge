@@ -1420,7 +1420,8 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 				if mf.Name == "descending" && mf.ProtoType == "bool" {
 					hasDescending = true
 				}
-				if classifySkipField(mf.Name) {
+				// A `// forge:request-option` knob is not a filter.
+				if classifySkipField(mf.Name) || mf.RequestOption {
 					continue
 				}
 				if mf.Name == "order_by" {
@@ -2516,7 +2517,7 @@ func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
 	}
 	var out []FilterFieldData
 	for _, mf := range msgFields {
-		if classifySkipField(mf.Name) || mf.Name == "order_by" {
+		if classifySkipField(mf.Name) || mf.Name == "order_by" || mf.RequestOption {
 			continue
 		}
 		// A declared (forge.v1.filter) facet is the generated List op's

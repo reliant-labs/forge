@@ -252,6 +252,8 @@ type RawProtoRPC struct {
 	// minus any `stream` keyword and leading dot ("ListOrdersRequest",
 	// "shared.v1.PageQuery"). Not resolved against the declared types.
 	Request string
+	// Response is the response message type, normalized like Request.
+	Response string
 	// Streaming reports a `stream` keyword on either side.
 	Streaming bool
 	// Custom reports a `// forge:custom` marker above the rpc
@@ -406,6 +408,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		readOnly  bool   // carries a `// forge:read-only` leading/trailing marker
 		generated string // the `// forge:generated <expr>` expression, if any
 		owner     bool   // carries a `// forge:owner` leading/trailing marker
+		// requestOption: carries a `// forge:request-option` leading/trailing marker
+		requestOption bool
 	}
 	type rawMessage struct {
 		msg    *RawProtoMessage
@@ -465,6 +469,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		// Tracked apart because a line may carry both (`// forge:read-only
 		// forge:owner`), and each is consumed — or reported — on its own.
 		var pendingFieldOwnerAt []int
+		// A `// forge:request-option` line, pending the same way.
+		pendingFieldRequestOption := false
 
 		// Every `// forge:read-only` occurrence in this file, and which of
 		// them a field actually consumed. Whatever is left over is a marker
@@ -499,6 +505,9 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				// another marker: attaches to the next captured field.
 				if loc := OwnerMarkerLineRE.FindStringIndex(line); loc != nil {
 					pendingFieldOwnerAt = append(pendingFieldOwnerAt, lineOffset+loc[0])
+				}
+				if requestOptionMarkerLineRE.MatchString(line) {
+					pendingFieldRequestOption = true
 				}
 				switch {
 				case entityMarkerRE.MatchString(trimmedRaw):
@@ -690,14 +699,21 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 								}
 								return len(sites) > 0
 							}
+							// The request-option marker, by the same rule.
+							takeRequestOption := func(fieldName string) bool {
+								_, trailing := rawFieldTrailingMarker(restFromLine, fieldName, requestOptionMarkerLineRE)
+								return pendingFieldRequestOption || trailing
+							}
 							if m := rawMapFieldRE.FindStringSubmatch(trimmed); m != nil {
 								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
 									typeToken: "map", mapKey: m[1], mapValue: m[2], name: m[3], oneof: oneofName,
 									readOnly: readOnly, generated: generated, owner: takeOwner(m[3]),
+									requestOption: takeRequestOption(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
 								pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
+								pendingFieldRequestOption = false
 							} else if m := rawFieldRE.FindStringSubmatch(trimmed); m != nil {
 								readOnly, generated := takeReadOnly(m[3])
 								currentMsg.fields = append(currentMsg.fields, rawField{
@@ -707,13 +723,15 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 									// brace-safety, which would erase a `pattern = "..."`.
 									// restFromLine (not `line`) so a braced value spanning
 									// several physical lines is captured whole.
-									options:   findInlineOptions(restFromLine, m[3]),
-									readOnly:  readOnly,
-									generated: generated,
-									owner:     takeOwner(m[3]),
+									options:       findInlineOptions(restFromLine, m[3]),
+									readOnly:      readOnly,
+									generated:     generated,
+									owner:         takeOwner(m[3]),
+									requestOption: takeRequestOption(m[3]),
 								})
 								currentMsg.msg.MaxFieldNumber = maxInt(currentMsg.msg.MaxFieldNumber, atoiOr(m[4], 0))
 								pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
+								pendingFieldRequestOption = false
 							}
 						}
 					}
@@ -768,6 +786,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				// Comment/blank lines `continue` above without reaching here, so
 				// the marker still survives those between it and its field.
 				pendingFieldReadOnly, pendingFieldReadOnlyAt, pendingFieldOwnerAt = false, nil, nil
+				pendingFieldRequestOption = false
 			}
 		}
 
@@ -867,6 +886,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				File:      path,
 				Service:   service,
 				Request:   rawRPCMessageType(req),
+				Response:  rawRPCMessageType(resp),
 				Streaming: strings.Contains(req, "stream ") || strings.Contains(resp, "stream "),
 				Custom:    CommentMarksCustom(rawRPCMarkerComments(content, loc[0])),
 			})
@@ -952,6 +972,9 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 			def.Generated = f.generated
 			// `// forge:owner` — the born column is the table's owner.
 			def.Owner = f.owner
+			// `// forge:request-option` — a List request knob, not a filter.
+			def.RequestOption = f.requestOption
+			def.FilterFacet = strings.Contains(f.options, "forge.v1.filter")
 			rm.msg.Fields = append(rm.msg.Fields, def)
 		}
 		scan.Messages = append(scan.Messages, *rm.msg)

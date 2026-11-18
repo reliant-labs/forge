@@ -40,6 +40,14 @@
 // scalar or an enum with no presence: not `optional`, not `repeated`, not a
 // map, not a oneof member (oneof members have presence).
 //
+// Only fields the generated filter would read are judged (judgedAsFilter,
+// forge#2264): when the rpc's response lists a message, a field sharing a
+// name with one of its fields, or declaring a `(forge.v1.filter)` facet. A
+// request knob that names none of them — an opt-in flag whose zero value is
+// the old behaviour — is not a filter, and a knob that does share a name says
+// so with `// forge:request-option`. With no listed message to read (no rpc,
+// a response from another module), every field is judged, as before.
+//
 // Deliberately NOT flagged:
 //
 //   - message-typed fields (Timestamp, wrappers, nested messages): message
@@ -131,6 +139,11 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 	// service is adopted, which is when they start to matter.
 	unmanagedRequests := map[string]bool{}
 	managedRequests := map[string]bool{}
+	// The response types of the managed List rpcs, by request (both
+	// readings), and every top-level message by fully-qualified name: what
+	// listedFieldNames resolves a request's listed message from.
+	listResponses := map[string][]string{}
+	messagesByFQ := map[string]codegen.RawProtoMessage{}
 	for _, d := range dirs {
 		scan, err := codegen.ScanRawProtoFiles(byDir[d])
 		if err != nil {
@@ -164,6 +177,14 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			// qualified; record both readings — only real names can match.
 			listRequests[rpc.Request] = true
 			listRequests[scan.Package+"."+rpc.Request] = true
+			if rpc.Response != "" {
+				for _, req := range []string{rpc.Request, scan.Package + "." + rpc.Request} {
+					listResponses[req] = append(listResponses[req], rpc.Response, scan.Package+"."+rpc.Response)
+				}
+			}
+		}
+		for _, msg := range scan.Messages {
+			messagesByFQ[scan.Package+"."+msg.Name] = msg
 		}
 	}
 
@@ -178,7 +199,11 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 			if unmanagedRequests[fq] && !managedRequests[fq] {
 				continue
 			}
+			listed := listedFieldNames(listResponses[fq], messagesByFQ)
 			for _, f := range msg.Fields {
+				if !judgedAsFilter(f, listed) {
+					continue
+				}
 				kind, ok := filterWithoutPresence(f, enums)
 				if !ok {
 					continue
@@ -201,6 +226,63 @@ func checkListFilterOptional(rootDir string, protoFiles []string) map[string][]F
 		}
 	}
 	return out
+}
+
+// listedFieldNames is the set of field names of the message a List rpc
+// lists — the element type of each repeated message field of its response —
+// or nil when no response resolves to one (a request no rpc uses, a response
+// in another module, a list of nested messages).
+//
+// Those fields stand for the entity's columns: forge's generated List op
+// returns the entity message, whose fields are the columns it projects, and
+// a filter it generates must name one of them (classifyEntityFilterField
+// refuses any other).
+func listedFieldNames(responses []string, messages map[string]codegen.RawProtoMessage) map[string]bool {
+	var listed map[string]bool
+	for _, resp := range responses {
+		msg, ok := messages[resp]
+		if !ok {
+			continue
+		}
+		for _, f := range msg.Fields {
+			if !f.Repeated || f.Kind != "message" {
+				continue
+			}
+			elem, ok := messages[f.TypeName]
+			if !ok {
+				continue
+			}
+			if listed == nil {
+				listed = map[string]bool{}
+			}
+			for _, ef := range elem.Fields {
+				listed[ef.Name] = true
+			}
+		}
+	}
+	return listed
+}
+
+// judgedAsFilter reports whether the rule judges a List request field at
+// all: it is a filter forge's generated List op would read (forge#2264).
+//
+//   - `// forge:request-option` declares a request knob: never judged.
+//   - A `(forge.v1.filter)` facet declares a filter on the column it names:
+//     always judged.
+//   - Otherwise, when the listed message is known, only a field sharing a
+//     name with one of its fields: the generated filter reads nothing else,
+//     so an opt-in flag like `bool withhold_costs_without_billing_read`
+//     (whose zero value is the old behaviour) is not a filter, and
+//     `optional` would only change a shipped field's cardinality.
+//   - When the listed message is unknown, every field, as before.
+func judgedAsFilter(f codegen.SchemaFieldDef, listed map[string]bool) bool {
+	switch {
+	case f.RequestOption:
+		return false
+	case f.FilterFacet, listed == nil:
+		return true
+	}
+	return listed[f.Name]
 }
 
 // filterWithoutPresence reports whether a List-request field is a filter

@@ -415,3 +415,69 @@ message ListTasksResponse {}
 		t.Fatalf("unmarked List rpc: want 1 finding, got %d: %+v", len(got), got)
 	}
 }
+
+// forge#2264: the rule's premise is forge's generated list filter, which
+// reads only fields that name a column of the listed entity. A request knob
+// that names none of the listed message's fields — an opt-in flag whose zero
+// value is the old behaviour — is not a filter: `optional` would change a
+// shipped field's cardinality (buf breaking), and `required` would forbid
+// turning it off. control-plane's ListDeployUsageRequest was the case.
+func TestListFilterOptional_JudgesOnlyFieldsTheListedMessageHas(t *testing.T) {
+	src := `syntax = "proto3";
+package deploy.v1;
+
+import "buf/validate/validate.proto";
+
+service DeployService {
+  rpc ListDeployUsage(ListDeployUsageRequest) returns (ListDeployUsageResponse);
+}
+
+message ListDeployUsageRequest {
+  string org_id = 1;
+  bool withhold_costs_without_billing_read = 8;
+  // A declared filter facet is a filter whatever its name.
+  int64 cost_above = 9 [(forge.v1.filter) = { column: "cost_cents", op: LIST_FILTER_OP_GT }];
+  bool archived = 10; // forge:request-option — returns archived rows too; not the archived column
+  // forge:request-option
+  string region = 11;
+  bool billable = 12;
+}
+
+message ListDeployUsageResponse {
+  repeated DeployUsage rows = 1;
+}
+
+message DeployUsage {
+  string id = 1;
+  string org_id = 2;
+  int64 cost_cents = 3;
+  bool archived = 4;
+  string region = 5;
+  bool billable = 6;
+}
+`
+	got := lintListFilters(t, "deploy.proto", src)
+	var flagged []string
+	for _, f := range got {
+		flagged = append(flagged, f.Message)
+	}
+	for _, want := range []string{".org_id ", ".cost_above ", ".billable "} {
+		found := false
+		for _, m := range flagged {
+			found = found || strings.Contains(m, want)
+		}
+		if !found {
+			t.Errorf("expected a finding for %q; got %q", want, flagged)
+		}
+	}
+	for _, not := range []string{"withhold_costs_without_billing_read", ".archived ", ".region "} {
+		for _, m := range flagged {
+			if strings.Contains(m, not) {
+				t.Errorf("%s is a request knob, not a filter the generated op reads; got %q", not, m)
+			}
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("expected 3 findings, got %d: %q", len(got), flagged)
+	}
+}

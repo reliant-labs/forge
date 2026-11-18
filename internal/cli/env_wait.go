@@ -157,6 +157,9 @@ type waitTarget struct {
 	EnvironmentID string
 	// Endpoint is display only — the Client already addresses it.
 	Endpoint string
+	// CodeSourceWarning is the env's app's two-repositories warning, read
+	// by the same lookup that resolved EnvironmentID (code_source_warning.go).
+	CodeSourceWarning string
 }
 
 // ─── The report ──────────────────────────────────────────────────────────────
@@ -314,7 +317,7 @@ func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, err
 		return waitTarget{}, undeterminedf("env %q keeps its promotions on the control plane at %s: %v", env, ep.URL, err)
 	}
 	client := cloud.NewClient(ep, cred)
-	envID, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
+	found, err := deploytarget.FindHostedEnvironment(ctx, client, hostedProjectName(), env)
 	if err != nil {
 		if errors.Is(err, errHostedEnvNotFound) {
 			// Never promoted, never deployed: a conflict with what
@@ -324,7 +327,7 @@ func resolveDeclaredWaitTarget(ctx context.Context, env string) (waitTarget, err
 		}
 		return waitTarget{Endpoint: ep.URL}, undeterminedf("resolve env %q on %s: %v", env, ep.URL, err)
 	}
-	return waitTarget{Client: client, EnvironmentID: envID, Endpoint: ep.URL}, nil
+	return waitTarget{Client: client, EnvironmentID: found.ID, Endpoint: ep.URL, CodeSourceWarning: found.CodeSourceWarning}, nil
 }
 
 // undeterminedf is exit 2: we could not look. Its own constructor because

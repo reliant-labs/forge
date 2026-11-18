@@ -92,20 +92,23 @@ type deployAttempt struct {
 	// (code_source.go, forAttempt).
 	shipsCheckout bool
 
-	mu        sync.Mutex
-	client    cloudCaller
-	id        string
-	opened    bool
-	dead      bool // stop trying: the open failed, or the server refused a write
-	phase     string
-	release   string
-	promotion string
-	pending   bytes.Buffer // output not yet sent
-	report    bytes.Buffer // stdout under --json: the deploy document
-	nudge     chan struct{}
-	stop      chan struct{}
-	beatDone  chan struct{}
-	restore   []func()
+	mu sync.Mutex
+	// codeSourceWarning is the two-repositories warning the cut or the open
+	// returned, printed once by finish (code_source_warning.go).
+	codeSourceWarning string
+	client            cloudCaller
+	id                string
+	opened            bool
+	dead              bool // stop trying: the open failed, or the server refused a write
+	phase             string
+	release           string
+	promotion         string
+	pending           bytes.Buffer // output not yet sent
+	report            bytes.Buffer // stdout under --json: the deploy document
+	nudge             chan struct{}
+	stop              chan struct{}
+	beatDone          chan struct{}
+	restore           []func()
 }
 
 // deployAttemptMode is the attempt mode for a deploy invocation, or "" when
@@ -224,7 +227,10 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptCallTimeout)
 	defer cancel()
-	err := a.client.Call(callCtx, procOpenDeployAttempt, req, &struct{}{})
+	var resp struct {
+		CodeSources *wireAppCodeSources `json:"codeSources"`
+	}
+	err := a.client.Call(callCtx, procOpenDeployAttempt, req, &resp)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -232,6 +238,9 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 		a.dead = true
 		a.warnLocked("not recorded", err)
 		return
+	}
+	if msg := resp.CodeSources.warning(); msg != "" {
+		a.codeSourceWarning = msg
 	}
 	a.opened = true
 	a.phase = "start"
@@ -356,6 +365,10 @@ func (a *deployAttempt) finish(ctx context.Context, runErr error) {
 	// Output first: restoring the streams drains the pipes, so the final
 	// chunk is in pending before the close sends it.
 	a.release1()
+	// After the deploy's own output, and whatever its outcome: it is about
+	// the app, not this deploy. Printed even if the attempt never opened, as
+	// a cut's warning may be held here.
+	a.printCodeSourceWarning()
 
 	a.mu.Lock()
 	opened, dead := a.opened, a.dead

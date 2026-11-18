@@ -55,9 +55,24 @@ only when the content fingerprint of the inputs, `cmd`, `env`, platform and
 destination match the last SUCCESSFUL build in this env, and the registry
 still serves that build's digest at the tag; deploy then pins that digest.
 `--rebuild` (on `forge build`, `forge env build`, `forge env up`) forces a
-run. An image-less build, an input glob that matches nothing, and `--release`
-always run. Keep the command's outputs out of its inputs; forge warns when a
-build rewrites its own inputs.
+run. An image-less build and an input glob that matches nothing always run.
+Keep the command's outputs out of its inputs; forge warns when a build
+rewrites its own inputs.
+
+**Releases reuse the previous release's image.** `forge env build <env>
+--release <v>` compares the same inputs, with `cmd`/`env` from a render
+whose `image_tag` is a sentinel (so only the tag the KCL composed in is left
+out; the cwd is keyed relative to the project), against the `inputs_digest` the image
+recorded in the release the env runs now, then the project's newest release.
+Equal, and the registry still serves that digest: forge points the new tag
+at it and records `carried_from`, without running the command, so a build
+that is not reproducible no longer rolls every workload pinned to it. The log
+names the matched inputs and the reused digest, or why it ran (no inputs,
+no earlier release, a release cut before forge recorded inputs, inputs
+changed, digest gone). A command that bakes the tag into the image (a
+version stamp) would carry the old stamp: give it no `inputs`. A hosted
+ledger keeps `inputs_digest` only once its control plane stores it; until
+then hosted releases rebuild as before.
 
 ## The hosted registry takes your control-plane credential
 

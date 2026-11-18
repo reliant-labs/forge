@@ -1251,6 +1251,7 @@ func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts
 		return nil, fmt.Errorf("re-render env %q with the build's resolved tag/arch (%s): %w",
 			opts.env, strings.Join(extra, " "), err)
 	}
+	renderReleaseTemplates(ctx, opts, extra, ents)
 	return ents, nil
 }
 

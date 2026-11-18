@@ -201,6 +201,40 @@ func TestArtifact_BuiltFrom(t *testing.T) {
 	}
 }
 
+// InputsDigest and CarriedFrom say what an image was built from and which
+// release it was reused from, not what it is: a canonical digest, images
+// only, and two releases with the same digests are the same release whether
+// or not either recorded them.
+func TestArtifact_InputsDigest(t *testing.T) {
+	carried := image(digest("a"))
+	carried.InputsDigest, carried.CarriedFrom = digest("b"), "v1"
+	if err := carried.Validate("api"); err != nil {
+		t.Fatalf("an image recording its inputs digest is valid: %v", err)
+	}
+	bad := carried
+	bad.InputsDigest = "sha256:abc"
+	if err := bad.Validate("api"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a non-canonical inputs_digest must be refused, got %v", err)
+	}
+	git := Artifact{Kind: KindGit, Mode: ModeSource, Source: &Source{Repo: "r", Ref: "v1"}, InputsDigest: digest("b")}
+	if err := git.Validate("web"); !errors.Is(err, ErrInvalid) {
+		t.Errorf("only an image records inputs_digest, got %v", err)
+	}
+	a := Release{Version: "v2", Artifacts: map[string]Artifact{"api": carried}}
+	b := Release{Version: "v2", Artifacts: map[string]Artifact{"api": image(digest("a"))}}
+	if err := CheckRecut(a, b); err != nil {
+		t.Errorf("same digests, different inputs evidence: an idempotent re-cut, got %v", err)
+	}
+	raw, err := json.Marshal(carried)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Artifact
+	if err := json.Unmarshal(raw, &back); err != nil || back.InputsDigest != carried.InputsDigest || back.CarriedFrom != "v1" {
+		t.Errorf("inputs_digest and carried_from must round-trip through the ledger's JSON: %s → %+v, %v", raw, back, err)
+	}
+}
+
 func TestPromotion_Validate(t *testing.T) {
 	good := Promotion{Env: "prod", Release: "v1", Kind: KindPromote, Resolved: map[string]string{"api": digest("a")}}
 	if err := good.Validate(); err != nil {

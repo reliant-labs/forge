@@ -12,7 +12,9 @@
 // and `forge generate` writes contract_gen.go — `type Service interface`
 // holding every exported method declared on the type (pointer and value
 // receivers), each method's doc comment copied, plus
-// `var _ Service = (*service)(nil)`. mock_gen.go and middleware_gen.go are
+// `var _ Service = (*service)(nil)` — or a `service{}` value when every
+// method has a value receiver, so the assertion names the method set that
+// actually satisfies Service. mock_gen.go and middleware_gen.go are
 // then generated from contract_gen.go exactly as from a hand-written
 // contract.go: ParseContract reads it, together with the package's
 // hand-declared dependency interfaces (contract.go, when one remains, and a
@@ -150,6 +152,9 @@ type derived struct {
 	typeName string
 	typeFile string
 	typeDoc  []string
+	// valueLit is the composite literal syntax the type accepts (a struct,
+	// array, slice or map), so a value-receiver assertion can spell `T{}`.
+	valueLit bool
 	methods  []derivedMethod
 	imports  []ImportDef
 }
@@ -158,6 +163,9 @@ type derivedMethod struct {
 	name string
 	doc  []string
 	sig  string // "(ctx context.Context) error" — the FuncType minus `func`
+	// pointer is true for a pointer receiver: then only *T's method set
+	// holds the method.
+	pointer bool
 }
 
 // CheckMarkedContract returns dir's `//forge:contract` type, refusing every
@@ -274,6 +282,10 @@ func deriveContract(dir string, r *Resolver) (*derived, error) {
 						doc = dd.Doc
 					}
 					d.typeDoc = proseLines(doc)
+					switch ts.Type.(type) {
+					case *ast.StructType, *ast.ArrayType, *ast.MapType:
+						d.valueLit = true
+					}
 				}
 			case *ast.FuncDecl:
 				if dd.Recv == nil || len(dd.Recv.List) != 1 || !dd.Name.IsExported() {
@@ -290,9 +302,10 @@ func deriveContract(dir string, r *Resolver) (*derived, error) {
 					return nil, fmt.Errorf("render %s.%s: %w", m.Name, dd.Name.Name, err)
 				}
 				d.methods = append(d.methods, derivedMethod{
-					name: dd.Name.Name,
-					doc:  methodDocLines(dd.Doc),
-					sig:  strings.TrimPrefix(buf.String(), "func"),
+					name:    dd.Name.Name,
+					doc:     methodDocLines(dd.Doc),
+					sig:     strings.TrimPrefix(buf.String(), "func"),
+					pointer: isPointerReceiver(dd.Recv.List[0].Type),
 				})
 				ast.Inspect(dd.Type, func(n ast.Node) bool {
 					sel, ok := n.(*ast.SelectorExpr)
@@ -379,6 +392,42 @@ func topLevelServiceDecl(file *ast.File) string {
 		}
 	}
 	return ""
+}
+
+// assertionValue is the value contract_gen.go asserts implements Service,
+// taken from the method set that holds the derived methods: `(*T)(nil)` when
+// any of them has a pointer receiver (only *T's method set has it), and a T
+// value when every one has a value receiver — `T{}` for a type that takes a
+// composite literal, `*new(T)` for any other.
+func (d *derived) assertionValue() string {
+	for _, m := range d.methods {
+		if m.pointer {
+			return "(*" + d.typeName + ")(nil)"
+		}
+	}
+	if len(d.methods) == 0 {
+		// No methods: an empty interface, which *T satisfies as well as T;
+		// keep the conventional spelling.
+		return "(*" + d.typeName + ")(nil)"
+	}
+	if d.valueLit {
+		return d.typeName + "{}"
+	}
+	return "*new(" + d.typeName + ")"
+}
+
+// isPointerReceiver reports whether a receiver type is `*T` (or `*T[...]`).
+func isPointerReceiver(expr ast.Expr) bool {
+	for {
+		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.StarExpr:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 // receiverTypeName is the base type name of a method receiver: `s *service`,
@@ -483,7 +532,7 @@ func (d *derived) render() ([]byte, error) {
 		fmt.Fprintf(&b, "\t%s%s\n", m.name, m.sig)
 	}
 	b.WriteString("}\n\n")
-	fmt.Fprintf(&b, "var _ %s = (*%s)(nil)\n", contractsrc.InterfaceName, d.typeName)
+	fmt.Fprintf(&b, "var _ %s = %s\n", contractsrc.InterfaceName, d.assertionValue())
 
 	out, err := format.Source([]byte(b.String()))
 	if err != nil {

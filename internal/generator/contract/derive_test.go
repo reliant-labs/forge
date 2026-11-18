@@ -250,3 +250,27 @@ func TestSyncDerivedContract_KeepsAContractGenForgeNeverWrote(t *testing.T) {
 		t.Fatalf("SyncDerivedContract = %v, %v; want DeriveKept", out, err)
 	}
 }
+
+// TestRenderDerivedContract_AssertionNamesTheSatisfyingMethodSet: the
+// compile-time assertion uses *T when a method has a pointer receiver, and a
+// T value when every method has a value receiver.
+func TestRenderDerivedContract_AssertionNamesTheSatisfyingMethodSet(t *testing.T) {
+	cases := []struct {
+		name, src, want string
+	}{
+		{"pointer", "package p\n\n//forge:contract\ntype service struct{}\n\nfunc (s service) A() {}\n\nfunc (s *service) B() {}\n", "var _ Service = (*service)(nil)"},
+		{"value struct", "package p\n\n//forge:contract\ntype service struct{}\n\nfunc (s service) A() {}\n", "var _ Service = service{}"},
+		{"value non-composite", "package p\n\n//forge:contract\ntype level int\n\nfunc (l level) A() {}\n", "var _ Service = *new(level)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := RenderDerivedContract(writeDeriveFiles(t, map[string]string{"service.go": tc.src}), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), tc.want) {
+				t.Fatalf("want %q in:\n%s", tc.want, got)
+			}
+		})
+	}
+}

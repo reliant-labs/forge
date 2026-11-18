@@ -8,16 +8,20 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // `forge fix derive-contract <dir>`: --dry-run reports and writes nothing; a
 // run rewrites the package and writes contract_gen.go at once; a package
 // that cannot derive its contract is refused with the reason.
 func TestFix_DeriveContract(t *testing.T) {
+	testkit.Slow(t, "type-checks the package with go/packages (execs go list)")
+	t.Setenv("GOWORK", "off") // the fixture is its own module
 	root := t.TempDir()
 	dir := filepath.Join(root, "internal", "billing")
 	files := map[string]string{
 		"forge.yaml": "name: app\n",
+		"go.mod":     "module example.com/app\n\ngo 1.22\n",
 		"internal/billing/contract.go": `package billing
 
 import "context"

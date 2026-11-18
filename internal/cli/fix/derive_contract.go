@@ -42,13 +42,20 @@ otherwise contract.go stays with the Deps struct, constants and functions it
 holds. Package comments and directives on contract.go move to doc.go, or the
 implementation's file.
 
-Refused, with every reason and nothing written, when deriving would change
-the contract: no implementation, or several; a Service that embeds an
-interface or is generic; a contract interface not named Service; an
-implementation that is generic, an alias, or exports a method Service does
-not have; a package that already derives its contract, has no contract.go,
-or opts out with //forge:exclude-contract. Before writing, it derives the
-contract from the rewritten package and compares it with Service.`,
+The implementation is the type checker's: the one type whose method set, or
+whose pointer's, implements Service. Refused, with every reason and nothing
+written, when the package does not type-check (or build constraints leave a
+source file out of the build), or when deriving would change the contract:
+no implementation, or several; a Service that embeds an interface or is
+generic; a contract interface not named Service; an implementation that is
+generic, gets a Service method only through an embedded field, or exports a
+method Service does not have; a package that already derives its contract,
+has no contract.go, or opts out with //forge:exclude-contract. Also refused:
+a package directory, or a file it would write, that resolves outside the
+project through a symlink. Before writing, it type-checks the rewritten
+package with the contract_gen.go forge would derive, and compares that
+Service with the one it replaces, method by method. The files are written
+as one transaction: if a write fails, every file is restored.`,
 		Example: "  forge fix derive-contract internal/billing --dry-run\n  forge fix derive-contract internal/billing",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

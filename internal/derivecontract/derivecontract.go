@@ -10,17 +10,25 @@
 // single-implementation for good: a strategy interface with several
 // implementations IS the abstraction and keeps its contract.go.
 //
-// The rewrite never changes the contract. It refuses every package where
-// deriving would: no implementation or several, an interface that embeds
+// The rewrite never changes the contract. The package is type-checked first
+// (one that does not type-check is refused), and the implementation is the
+// type checker's: the one named type whose method set, or whose pointer's,
+// implements Service. It refuses every package where deriving would change
+// the contract: no implementation or several, an interface that embeds
 // another (derivation reads declared methods only), a differently-named
 // contract interface (the derived one is always Service), an implementation
-// that is generic, or that exports a method Service does not have (the
-// derived contract would grow it). And before anything is written, it
-// renders the derived contract from the rewritten package and compares it,
-// method by method, with the Service it replaces.
+// that is generic, gets a Service method only by promotion, or exports a
+// method Service does not have (the derived contract would grow it). And
+// before anything is written, it type-checks the rewritten package with the
+// contract_gen.go forge would derive, and compares that Service, method by
+// method, with the one it replaces (typed.go).
 //
-// Plan computes the rewrite and Apply writes it, so `--dry-run` and the
-// tests read exactly what a run would write.
+// It writes only inside the package, and the package only inside the
+// project, on symlink-resolved paths (safety.go).
+//
+// Plan computes the rewrite and Apply writes it as one transaction, so
+// `--dry-run` and the tests read exactly what a run would write, and a
+// failed write leaves every file as it was.
 package derivecontract
 
 import (
@@ -38,12 +46,12 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
+	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
-	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/pkgdirective"
 )
 
@@ -64,6 +72,9 @@ type Migration struct {
 	Type, TypeFile string
 	// Methods are Service's methods, in their contract.go order.
 	Methods []string
+	// PointerOnly reports that only *Type implements Service (a method has
+	// a pointer receiver), so contract_gen.go asserts `(*Type)(nil)`.
+	PointerOnly bool
 	// KeptContract reports that contract.go stays, holding what it declared
 	// besides Service (the Deps struct, constants, functions).
 	KeptContract bool
@@ -95,23 +106,86 @@ func (e *RefusedError) Error() string {
 	return fmt.Sprintf("%s cannot derive its contract: %s", e.Dir, strings.Join(e.Reasons, "; "))
 }
 
-// Apply writes m: every file first, then the removals.
+// writeFile and removeFile are Apply's two mutations, variables so a test
+// can fail one partway through.
+var (
+	writeFile  = atomicfile.WriteFile
+	removeFile = os.Remove
+)
+
+// original is one file's bytes before Apply touched it.
+type original struct {
+	path    string
+	content []byte
+	mode    os.FileMode
+	existed bool
+}
+
+// Apply writes m as one transaction: every file first, each atomically,
+// then the removals. When any step fails, every file already changed is
+// put back — rewritten files restored to their original bytes, created
+// ones deleted, removed ones recreated — before the error is returned, so a
+// failed run never leaves a half-migrated package.
 func Apply(m *Migration) error {
-	for _, w := range m.Writes {
-		mode := os.FileMode(0o644)
-		if fi, err := os.Stat(w.Path); err == nil {
-			mode = fi.Mode().Perm()
+	backups := map[string]original{}
+	for _, path := range append(writePaths(m), m.Removes...) {
+		b := original{path: path, mode: 0o644}
+		content, err := os.ReadFile(path)
+		switch {
+		case err == nil:
+			b.content, b.existed = content, true
+			if fi, err := os.Stat(path); err == nil {
+				b.mode = fi.Mode().Perm()
+			}
+		case !os.IsNotExist(err):
+			return fmt.Errorf("read %s before rewriting it: %w", path, err)
 		}
-		if err := atomicfile.WriteFile(w.Path, w.Content, mode); err != nil {
-			return err
-		}
+		backups[path] = b
 	}
-	for _, p := range m.Removes {
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return err
+
+	var done []original
+	rollback := func(cause error) error {
+		var failed []string
+		for i := len(done) - 1; i >= 0; i-- {
+			b := done[i]
+			var err error
+			if b.existed {
+				err = atomicfile.WriteFile(b.path, b.content, b.mode)
+			} else if rerr := os.Remove(b.path); rerr != nil && !os.IsNotExist(rerr) {
+				err = rerr
+			}
+			if err != nil {
+				failed = append(failed, fmt.Sprintf("%s (%v)", b.path, err))
+			}
 		}
+		if len(failed) > 0 {
+			return fmt.Errorf("%w; restoring the package also failed for %s — `git diff` shows what is left", cause, strings.Join(failed, ", "))
+		}
+		return fmt.Errorf("%w; every file was restored, nothing changed", cause)
+	}
+	for _, w := range m.Writes {
+		b := backups[w.Path]
+		if err := writeFile(w.Path, w.Content, b.mode); err != nil {
+			return rollback(fmt.Errorf("write %s: %w", w.Path, err))
+		}
+		done = append(done, b)
+	}
+	for _, path := range m.Removes {
+		b := backups[path]
+		if err := removeFile(path); err != nil && !os.IsNotExist(err) {
+			return rollback(fmt.Errorf("remove %s: %w", path, err))
+		}
+		done = append(done, b)
 	}
 	return nil
+}
+
+func writePaths(m *Migration) []string {
+	out := make([]string, 0, len(m.Writes))
+	for _, w := range m.Writes {
+		out = append(out, w.Path)
+	}
+	return out
 }
 
 // pkgSrc is the package's non-test, non-generated files, parsed once.
@@ -130,17 +204,17 @@ type pkgSrc struct {
 }
 
 type srcFile struct {
-	name  string
-	path  string
-	src   []byte
-	file  *ast.File
-	quals map[string]string
-	dot   bool
+	name string
+	path string
+	src  []byte
+	file *ast.File
 }
 
-type ifaceMethod struct {
+// serviceMethod is one method of contract.go's Service as written: its
+// docs move, and its text is quoted in messages. Its type is the type
+// checker's (typed.go).
+type serviceMethod struct {
 	name    string
-	sig     string // normalized
 	display string // as written, for messages
 	doc     *ast.CommentGroup
 	comment *ast.CommentGroup
@@ -151,7 +225,7 @@ type serviceDecl struct {
 	gd      *ast.GenDecl
 	ts      *ast.TypeSpec
 	doc     *ast.CommentGroup
-	methods []ifaceMethod
+	methods []serviceMethod
 }
 
 type typeDecl struct {
@@ -202,37 +276,69 @@ func applyEdits(src []byte, es []edit) []byte {
 //
 //nolint:funlen // One linear story: refuse, find, rewrite, verify.
 func Plan(root, dir string) (*Migration, error) {
-	abs := dir
-	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(root, dir)
+	given := dir
+	if !filepath.IsAbs(given) {
+		given = filepath.Join(root, dir)
 	}
-	abs = filepath.Clean(abs)
-	rel := abs
-	if r, err := filepath.Rel(root, abs); err == nil {
-		rel = filepath.ToSlash(r)
+	given = filepath.Clean(given)
+	display := given
+	if r, err := filepath.Rel(root, given); err == nil {
+		display = filepath.ToSlash(r)
+	}
+	rroot, err := resolve(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the project root %s: %w", root, err)
+	}
+	abs, err := resolve(given)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a package directory", display)
 	}
 	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
-		return nil, fmt.Errorf("%s is not a package directory", rel)
+		return nil, fmt.Errorf("%s is not a package directory", display)
+	}
+	if !within(rroot, abs) {
+		return nil, &RefusedError{Dir: display, Reasons: []string{fmt.Sprintf("it resolves to %s, outside the project %s; the migration rewrites files only inside the project", abs, rroot)}}
+	}
+	rel := display
+	if r, err := filepath.Rel(rroot, abs); err == nil {
+		rel = filepath.ToSlash(r)
 	}
 	refuse := func(reasons ...string) error { return &RefusedError{Dir: rel, Reasons: reasons} }
 
 	if reasons := preflight(abs); len(reasons) > 0 {
 		return nil, refuse(reasons...)
 	}
-	p, err := parsePackage(root, abs)
+	// The compiler's view of the package, before any of it is trusted: a
+	// package that does not type-check cannot be proven to keep its
+	// contract.
+	tp, errs, err := loadPackage(rroot, abs, nil)
 	if err != nil {
 		return nil, err
+	}
+	if len(errs) > 0 {
+		return nil, refuse(typeErrorReason("the package", errs))
+	}
+	p, err := parsePackage(rroot, abs, tp)
+	if err != nil {
+		return nil, err
+	}
+	if out := excludedSources(p, tp); len(out) > 0 {
+		return nil, refuse(fmt.Sprintf("build constraints leave %s out of this build, and the derived contract reads every source file, so the migration cannot check what it would change in the builds that include them", strings.Join(out, ", ")))
 	}
 	svc, reasons := findService(p)
 	if len(reasons) > 0 {
 		return nil, refuse(reasons...)
 	}
-	impl, reasons := findImplementation(p, svc)
+	_, origIface, reasons := typedService(tp)
+	if len(reasons) > 0 {
+		return nil, refuse(reasons...)
+	}
+	impl, pointerOnly, reasons := findImplementation(p, tp, svc)
 	if len(reasons) > 0 {
 		return nil, refuse(reasons...)
 	}
 
-	m := &Migration{Dir: rel, Type: impl.name, TypeFile: impl.file.name}
+	m := &Migration{Dir: rel, Type: impl.name, TypeFile: impl.file.name, PointerOnly: pointerOnly}
 	for _, im := range svc.methods {
 		m.Methods = append(m.Methods, im.name)
 	}
@@ -281,19 +387,29 @@ func Plan(root, dir string) (*Migration, error) {
 		outputs[name] = out
 	}
 
-	// 6. Verify before writing anything: derive the contract from the
-	// rewritten package and compare it with Service.
-	if reasons, err := verify(p, svc, outputs); err != nil {
-		return nil, err
-	} else if len(reasons) > 0 {
-		return nil, refuse(reasons...)
-	}
-
 	names := make([]string, 0, len(outputs))
 	for name := range outputs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
+	// 6. Every file the migration writes or removes — and contract_gen.go,
+	// which the run writes next — resolves inside the package.
+	touched := []string{filepath.Join(abs, contractsrc.DerivedFileName)}
+	for _, name := range names {
+		touched = append(touched, filepath.Join(abs, name))
+	}
+	if out := escapes(abs, touched); len(out) > 0 {
+		return nil, refuse(out...)
+	}
+
+	// 7. Verify before writing anything: type-check the rewritten package
+	// with its derived contract, and compare that with Service.
+	if reasons, err := verify(p, tp, origIface, outputs); err != nil {
+		return nil, err
+	} else if len(reasons) > 0 {
+		return nil, refuse(reasons...)
+	}
 	for _, name := range names {
 		path := filepath.Join(abs, name)
 		if outputs[name] == nil {
@@ -340,10 +456,13 @@ func preflight(dir string) []string {
 	return reasons
 }
 
-func parsePackage(root, dir string) (*pkgSrc, error) {
-	p := &pkgSrc{root: root, dir: dir, fset: token.NewFileSet(), byName: map[string]*srcFile{}}
-	var need []string
-	seen := map[string]bool{}
+// parsePackage parses the package's source files for the rewrite; tp, its
+// type-checked load, names every package it imports.
+func parsePackage(root, dir string, tp *packages.Package) (*pkgSrc, error) {
+	p := &pkgSrc{root: root, dir: dir, fset: token.NewFileSet(), byName: map[string]*srcFile{}, names: map[string]string{}}
+	for _, imp := range tp.Types.Imports() {
+		p.names[imp.Path()] = imp.Name()
+	}
 	for _, name := range contractsrc.SourceFiles(dir) {
 		path := filepath.Join(dir, name)
 		src, err := os.ReadFile(path)
@@ -362,19 +481,10 @@ func parsePackage(root, dir string) (*pkgSrc, error) {
 		p.byName[name] = f
 		for _, imp := range file.Imports {
 			ip, err := strconv.Unquote(imp.Path.Value)
-			if err != nil || imp.Name != nil || isStdlib(ip) {
-				continue
-			}
-			p.nonStd = true
-			if !seen[ip] {
-				seen[ip] = true
-				need = append(need, ip)
+			if err == nil && imp.Name == nil && !isStdlib(ip) {
+				p.nonStd = true
 			}
 		}
-	}
-	p.names = loadNames(dir, need)
-	for _, f := range p.files {
-		f.quals, f.dot = p.qualifiers(f.file)
 	}
 	return p, nil
 }
@@ -421,9 +531,8 @@ func findService(p *pkgSrc) (*serviceDecl, []string) {
 			continue
 		}
 		for _, n := range field.Names {
-			svc.methods = append(svc.methods, ifaceMethod{
+			svc.methods = append(svc.methods, serviceMethod{
 				name:    n.Name,
-				sig:     normSig(ft, cf.quals),
 				display: strings.TrimPrefix(render(ft), "func"),
 				doc:     field.Doc,
 				comment: field.Comment,
@@ -436,103 +545,42 @@ func findService(p *pkgSrc) (*serviceDecl, []string) {
 	return svc, reasons
 }
 
-// findImplementation returns the one type that DECLARES every method of
-// Service with the same signature, refusing every shape whose derived
-// contract would not be Service.
-func findImplementation(p *pkgSrc, svc *serviceDecl) (*typeDecl, []string) {
-	var types []*typeDecl
-	byName := map[string]*typeDecl{}
-	for _, f := range p.files {
-		for _, decl := range f.file.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				if _, iface := ts.Type.(*ast.InterfaceType); iface {
-					continue
-				}
-				t := &typeDecl{name: ts.Name.Name, file: f, gd: gd, ts: ts, methods: map[string]methodDecl{}}
-				types = append(types, t)
-				byName[t.name] = t
-			}
-		}
-	}
-	for _, f := range p.files {
-		for _, decl := range f.file.Decls {
-			fd, ok := decl.(*ast.FuncDecl)
-			if !ok || fd.Recv == nil || len(fd.Recv.List) != 1 {
-				continue
-			}
-			if t := byName[receiverTypeName(fd.Recv.List[0].Type)]; t != nil {
-				t.methods[fd.Name.Name] = methodDecl{fd: fd, file: f}
-			}
-		}
-	}
+// typeSpec is a type declaration with the GenDecl holding it.
+type typeSpec struct {
+	gd *ast.GenDecl
+	ts *ast.TypeSpec
+}
 
-	var impls []*typeDecl
-	var near []string
-	for _, t := range types {
-		missing := 0
-		var differ []string
-		for _, im := range svc.methods {
-			md, ok := t.methods[im.name]
+// typeSpecs are file's non-interface type declarations.
+func typeSpecs(f *srcFile) []typeSpec {
+	var out []typeSpec
+	for _, decl := range f.file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
 			if !ok {
-				missing++
 				continue
 			}
-			if normSig(md.fd.Type, md.file.quals) != im.sig {
-				differ = append(differ, fmt.Sprintf("%s.%s is %s%s, Service has %s%s", t.name, im.name, im.name, strings.TrimPrefix(render(md.fd.Type), "func"), im.name, im.display))
+			if _, iface := ts.Type.(*ast.InterfaceType); !iface {
+				out = append(out, typeSpec{gd: gd, ts: ts})
 			}
 		}
-		switch {
-		case missing == 0 && len(differ) == 0:
-			impls = append(impls, t)
-		case missing == 0:
-			near = append(near, differ...)
-		}
 	}
+	return out
+}
 
-	switch {
-	case len(impls) == 0:
-		reasons := []string{"no type in the package declares every method of Service with Service's signature (methods promoted from an embedded field do not count: the derived contract lists the type's declared methods only)"}
-		return nil, append(reasons, near...)
-	case len(impls) > 1:
-		var where []string
-		for _, t := range impls {
-			where = append(where, fmt.Sprintf("%s (%s:%d)", t.name, t.file.name, p.fset.Position(t.ts.Pos()).Line))
-		}
-		return nil, []string{fmt.Sprintf("%d types implement Service — %s — and a derived contract has one source; with several implementations the interface IS the abstraction, so keep it hand-written", len(impls), strings.Join(where, ", "))}
-	}
-
-	t := impls[0]
-	var reasons []string
-	line := p.fset.Position(t.ts.Pos()).Line
-	if t.ts.Assign.IsValid() {
-		reasons = append(reasons, fmt.Sprintf("its implementation %s (%s:%d) is an alias; mark the defined type instead", t.name, t.file.name, line))
-	}
-	if t.ts.TypeParams != nil && len(t.ts.TypeParams.List) > 0 {
-		reasons = append(reasons, fmt.Sprintf("its implementation %s (%s:%d) is generic, and a generic type cannot implement the non-generic Service by itself", t.name, t.file.name, line))
-	}
-	inService := map[string]bool{}
-	for _, im := range svc.methods {
-		inService[im.name] = true
-	}
-	var extra []string
-	for name, md := range t.methods {
-		if ast.IsExported(name) && !inService[name] {
-			extra = append(extra, fmt.Sprintf("%s (%s:%d)", name, md.file.name, p.fset.Position(md.fd.Pos()).Line))
+// methodDecls are file's method declarations.
+func methodDecls(f *srcFile) []*ast.FuncDecl {
+	var out []*ast.FuncDecl
+	for _, decl := range f.file.Decls {
+		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Recv != nil && len(fd.Recv.List) == 1 {
+			out = append(out, fd)
 		}
 	}
-	if len(extra) > 0 {
-		sort.Strings(extra)
-		reasons = append(reasons, fmt.Sprintf("%s exports methods Service does not have — %s — and the derived contract would grow them; unexport them, or move them off %s, first", t.name, strings.Join(extra, ", "), t.name))
-	}
-	return t, reasons
+	return out
 }
 
 // receiverTypeName is the base type name of a method receiver: `s *service`,
@@ -622,7 +670,7 @@ func missingDirectives(from []string, have *ast.CommentGroup) []string {
 // moveMethodDoc puts an interface method's doc on its implementation:
 // all of it when the method has no doc, else only its forge directives. It
 // reports whether anything moved.
-func moveMethodDoc(p *pkgSrc, ed edits, im ifaceMethod, md methodDecl) bool {
+func moveMethodDoc(p *pkgSrc, ed edits, im serviceMethod, md methodDecl) bool {
 	doc := commentLines(im.doc)
 	if len(doc) == 0 {
 		doc = commentLines(im.comment)
@@ -1027,80 +1075,4 @@ func hasSideEffectImport(f *ast.File) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// verify renders the derived contract from the rewritten package, in a
-// scratch copy, and compares it with Service. A difference — or a refusal
-// from the deriver itself — is returned as reasons; nothing has been
-// written.
-func verify(p *pkgSrc, svc *serviceDecl, outputs map[string][]byte) ([]string, error) {
-	tmp, err := os.MkdirTemp("", "forge-derive-contract-*")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.RemoveAll(tmp) }()
-	files := map[string][]byte{}
-	for _, f := range p.files {
-		files[f.name] = f.src
-	}
-	for name, content := range outputs {
-		if content == nil {
-			delete(files, name)
-			continue
-		}
-		files[name] = content
-	}
-	for name, content := range files {
-		if err := atomicfile.WriteFile(filepath.Join(tmp, name), content, 0o644); err != nil {
-			return nil, err
-		}
-	}
-	var r *contract.Resolver
-	if p.nonStd {
-		r = contract.NewResolver(filepath.Join(p.dir, contractsrc.FileName))
-	}
-	rendered, err := contract.RenderDerivedContract(tmp, r)
-	if err != nil {
-		return []string{"the derived contract cannot be generated from the rewritten package: " + strings.ReplaceAll(err.Error(), tmp, p.dir)}, nil
-	}
-	gf, err := parser.ParseFile(token.NewFileSet(), contractsrc.DerivedFileName, rendered, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, fmt.Errorf("parse the derived contract: %w", err)
-	}
-	quals, _ := p.qualifiers(gf)
-	got := map[string]string{}
-	for _, decl := range gf.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok != token.TYPE {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			ts := spec.(*ast.TypeSpec)
-			it, ok := ts.Type.(*ast.InterfaceType)
-			if !ok || ts.Name.Name != contractsrc.InterfaceName {
-				continue
-			}
-			for _, field := range it.Methods.List {
-				if ft, ok := field.Type.(*ast.FuncType); ok && len(field.Names) == 1 {
-					got[field.Names[0].Name] = normSig(ft, quals)
-				}
-			}
-		}
-	}
-	var reasons []string
-	for _, im := range svc.methods {
-		sig, ok := got[im.name]
-		switch {
-		case !ok:
-			reasons = append(reasons, fmt.Sprintf("the derived contract would lose Service.%s", im.name))
-		case sig != im.sig:
-			reasons = append(reasons, fmt.Sprintf("the derived contract would change Service.%s from %s to %s", im.name, im.sig, sig))
-		}
-		delete(got, im.name)
-	}
-	for name := range got {
-		reasons = append(reasons, fmt.Sprintf("the derived contract would gain %s", name))
-	}
-	sort.Strings(reasons)
-	return reasons, nil
 }

@@ -79,17 +79,68 @@ type fixtureMarker struct {
 	SeedFingerprintFiles  int               `json:"seed_fingerprint_files"`
 	SeedConfigFingerprint string            `json:"seed_config_fingerprint"`
 	Fixtures              map[string]string `json:"fixtures"`
+	// The per-fixture record (forge#2287), written when the dataset is
+	// known. Migrations and Vocab are the seed inputs one by one (sha256 of
+	// each body, CRLF normalized, as the guard hashes them), and
+	// FixtureInputs the schema names each entity fixture's rows are built
+	// from. With them the guard tells a pulled migration that touches no
+	// fixture from one that does, instead of failing on any change to the
+	// whole digest.
+	Migrations    map[string]string   `json:"migrations,omitempty"`
+	Vocab         string              `json:"vocab,omitempty"`
+	FixtureInputs map[string][]string `json:"fixture_inputs,omitempty"`
+}
+
+// recordSeedInputs fills m's per-input digests from the migrations directory
+// the guard reads, with the guard's rule: each *.up.sql by base name, and
+// db/seeds/vocab.yaml beside it.
+func recordSeedInputs(m *fixtureMarker, root string) error {
+	migDir := filepath.Join(root, filepath.FromSlash(config.MigrationsDirIn(root)))
+	entries, err := os.ReadDir(migDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	m.Migrations = map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".up.sql") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(migDir, e.Name()))
+		if err != nil {
+			return err
+		}
+		m.Migrations[e.Name()] = seedInputDigest(body)
+	}
+	if body, err := os.ReadFile(filepath.Join(migDir, "..", "seeds", "vocab.yaml")); err == nil {
+		m.Vocab = seedInputDigest(body)
+	}
+	return nil
+}
+
+// seedInputDigest is one seed input's digest as the guard computes it.
+func seedInputDigest(body []byte) string {
+	sum := sha256.Sum256(bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 // writeFixtureMarker records files/cfg and the sha256 of every *_gen.* file
 // this run wrote into mocksRel (by base name), so it must run after
 // everything this run writes there.
-func writeFixtureMarker(root, feRel, mocksRel string, files, cfg seedplan.Fingerprint) error {
+func writeFixtureMarker(root, feRel, mocksRel string, files, cfg seedplan.Fingerprint, inputs map[string][]string) error {
 	m := fixtureMarker{
 		SeedFingerprint:       files.Hex,
 		SeedFingerprintFiles:  files.Files,
 		SeedConfigFingerprint: cfg.Hex,
 		Fixtures:              map[string]string{},
+	}
+	if len(inputs) > 0 {
+		if err := recordSeedInputs(&m, root); err != nil {
+			return err
+		}
+		m.FixtureInputs = inputs
 	}
 	entries, err := os.ReadDir(filepath.Join(root, mocksRel))
 	if err != nil {
@@ -191,7 +242,12 @@ var fixtureFreshnessFiles = [2]string{"fixture-manifest_gen.ts", "fixture-freshn
 // every clean tree. That is not hypothetical: this shipped that way once, and
 // `npm test` on a freshly generated project reported STALE MOCK FIXTURES
 // against fixtures that had just been written.
-func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg seedplan.Fingerprint, cs *FileChecksums) error {
+//
+// inputs maps each entity fixture to the schema names its rows are built from
+// (MockFixtureInputs); nil when there is no dataset. The marker records them,
+// so a migration that names none of a fixture's inputs does not fail the
+// guard (forge#2287).
+func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg seedplan.Fingerprint, inputs map[string][]string, cs *FileChecksums) error {
 	mocksRel := filepath.Join(feRel, "src", "mocks")
 
 	marker := filepath.Join(root, filepath.FromSlash(FixtureMarkerPath(feRel)))
@@ -231,7 +287,7 @@ func EmitFixtureFreshnessSurface(root, feRel string, fixtures int, files, cfg se
 			return fmt.Errorf("write %s: %w", f.out, err)
 		}
 	}
-	if err := writeFixtureMarker(root, feRel, mocksRel, files, cfg); err != nil {
+	if err := writeFixtureMarker(root, feRel, mocksRel, files, cfg, inputs); err != nil {
 		return fmt.Errorf("write %s: %w", FixtureMarkerPath(feRel), err)
 	}
 	return nil

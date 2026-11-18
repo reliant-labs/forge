@@ -255,7 +255,7 @@ regressed — run the document's `suggested[]` commands and fix forward; **2** i
 could not be proved good — report "not proven good", never "passed"; **8** not
 enough data yet, or the control plane's query quota was spent
 (`reason_code: quota_exhausted`) — check again later, after `retry_at` when the
-document has one. Load `observability/query` for the document.
+document has one. Load `observability/check` for the document.
 
 Make the judgement meaningful: set `service.version` in your telemetry to the
 same value you pass as `--version` (the tag or the git SHA). Without it, the

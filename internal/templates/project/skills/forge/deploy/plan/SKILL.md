@@ -144,8 +144,10 @@ the same answer as `DeployService.CompareReleases`.
 `.git` stripped; a local-path remote is not sent), forge.yaml's directory in
 the repo (`""` at the root), the commit, and `RELIANT_PROJECT_ID` when a
 Reliant chat ran forge. The commit is the release's own on a cut or record
-(none when the release names none, never the checkout's HEAD), and HEAD on a
-deploy that ships the checkout (no release named, no `--from`). It is
+(none when the release names none, never the checkout's HEAD), HEAD on a
+deploy that ships the checkout (no release named, no `--from`), and the named
+release's recorded commit on a deploy of a named release (none on a `--from`
+deploy, whose release is resolved after the attempt opens). It is
 best-effort: a missing remote sends the rest, and it never fails a cut or a
 deploy.
 

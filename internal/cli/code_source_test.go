@@ -167,22 +167,41 @@ func TestCutWithoutASourceSendsNone(t *testing.T) {
 }
 
 // A deploy that ships the checkout sends its HEAD; one that ships a named
-// release (or another env's) sends the repository but no commit.
+// release sends the commit that release's cut recorded, never the checkout's
+// HEAD; one whose release is not known when the attempt opens (--from), or
+// cannot be read, sends the repository but no commit.
 func TestDeployAttemptOpenSendsTheCodeSource(t *testing.T) {
 	t.Parallel()
-	for _, ships := range []bool{true, false} {
-		c := &attemptCaller{}
+	cases := map[string]struct {
+		ships   bool
+		version string
+		commit  string
+	}{
+		"ships the checkout":            {ships: true, commit: sourceCommitA},
+		"named release":                 {version: "v1", commit: sourceCommitB},
+		"named release with no commit":  {version: "v0"},
+		"named release never cut":       {version: "v9"},
+		"release resolved later (from)": {},
+	}
+	for name, tc := range cases {
+		c := &attemptCaller{releases: map[string]wireRelease{
+			"v1": {Version: "v1", RecordOnly: true, GitCommit: sourceCommitB, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+			"v0": {Version: "v0", RecordOnly: true, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		}}
 		ctx, a := newTestAttempt("prod", "apply", io.Discard)
-		a.shipsCheckout = ships
+		a.shipsCheckout, a.release = tc.ships, tc.version
 		l := envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(codeSource{
 			Remote: "github.com/acme/shop", Commit: sourceCommitA, ReliantProjectID: "proj-1",
 		})}, Hosted: true}
 		attachDeployAttempt(ctx, "prod", l)
 		want := map[string]any{"remote": "github.com/acme/shop", "reliantProjectId": "proj-1"}
-		if ships {
-			want["commit"] = sourceCommitA
+		if tc.commit != "" {
+			want["commit"] = tc.commit
 		}
-		assertCodeSource(t, fmt.Sprintf("open (ships checkout: %v)", ships), c.last(procOpenDeployAttempt), want)
+		assertCodeSource(t, fmt.Sprintf("open (%s)", name), c.last(procOpenDeployAttempt), want)
+		if got := c.count(procGetRelease); (got > 0) != (tc.version != "") {
+			t.Errorf("%s: GetRelease called %d times", name, got)
+		}
 		a.finish(ctx, nil)
 	}
 }

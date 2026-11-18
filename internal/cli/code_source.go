@@ -106,13 +106,20 @@ func (s codeSource) forRelease(r release.Release) codeSource {
 // forAttempt is the source a deploy attempt sends. The checkout's HEAD only
 // when the deploy ships the checkout — no release named, no --from env —
 // because then the release it cuts is built from that HEAD. A deploy of a
-// named release, or of what another env runs, ships bytes some other commit
-// built: its commit is the release's, recorded at that release's cut, so the
-// attempt sends none rather than the HEAD of a checkout it did not build.
-func (s codeSource) forAttempt(shipsCheckout bool) codeSource {
-	if !shipsCheckout {
-		s.Commit = ""
+// named release ships bytes some other commit built: shipped is that release
+// as its ledger recorded it, and the attempt sends its commit (forRelease),
+// never the HEAD of a checkout that did not build it. shipped is nil when
+// the release is unknown when the attempt opens — a --from deploy resolves
+// it later, and the attempt's releaseVersion names it once it does — or
+// could not be read; then the attempt sends no commit.
+func (s codeSource) forAttempt(shipsCheckout bool, shipped *release.Release) codeSource {
+	if shipsCheckout {
+		return s
 	}
+	if shipped != nil {
+		return s.forRelease(*shipped)
+	}
+	s.Commit = ""
 	return s
 }
 

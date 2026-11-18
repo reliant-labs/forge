@@ -68,8 +68,16 @@ const schema = z.object({
   {{- end}}
 {{- if not .CreateFields}}}){{else}}
 }){{end}};
-
+{{if .FormDialect.LegacyResolver}}
 type FormValues = z.infer<typeof schema>;
+{{- else}}
+{{- /* The form holds what the inputs hold (z.input: mostly text, and
+       `unknown` where the schema coerces) and submits what the schema
+       turns it into (z.output). zodResolver states both, so the form is
+       typed by both. */}}
+type FormInput = z.input<typeof schema>;
+type FormValues = z.output<typeof schema>;
+{{- end}}
 
 export default function Create{{.EntityName}}Page() {
   const router = useRouter();
@@ -90,7 +98,7 @@ export default function Create{{.EntityName}}Page() {
   {{- /* register/errors are only consumed by the per-field inputs below —
          destructuring them for a zero-field form ships eslint
          no-unused-vars warnings on the pristine scaffold. */}}
-  const { {{if .HasCreateFK}}control, {{end}}{{if .HasCreateRegistered}}register, {{end}}handleSubmit{{if .CreateFields}}, formState: { errors }{{end}} } = useForm<FormValues>({
+  const { {{if .HasCreateFK}}control, {{end}}{{if .HasCreateRegistered}}register, {{end}}handleSubmit{{if .CreateFields}}, formState: { errors }{{end}} } = useForm<{{if .FormDialect.LegacyResolver}}FormValues{{else}}FormInput, unknown, FormValues{{end}}>({
     resolver: zodResolver(schema),
   });
 

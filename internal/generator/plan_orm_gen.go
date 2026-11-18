@@ -283,6 +283,9 @@ func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 	fmt.Fprintf(&b, "//\tfunc Active%s(ctx context.Context, db orm.Context) ([]*%s, error) {\n", naming.Pluralize(msgName), msgName)
 	fmt.Fprintf(&b, "//\t\treturn List%s(ctx, db, orm.WhereEq(\"%s\", true))\n", msgName, firstNonPKColumn(ent, pkGoType))
 	b.WriteString("//\t}\n")
+	if !ent.ReadOnly && !ent.AppendOnly {
+		writeRepoExtSetUpdate(&b, ent, msgName, pkGoType)
+	}
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 
 	extraType := entityExtraTypeName(msgName)
@@ -302,6 +305,41 @@ func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 		return formatted
 	}
 	return []byte(b.String())
+}
+
+// writeRepoExtSetUpdate adds the seam's set-based write example: one UPDATE
+// for every matching row. The generated writes are single-row
+// (Update<Entity>Masked), so without it the natural thing to write is List
+// then a per-row update loop — N round trips inside one transaction, which
+// timed out at 150,000 rows (forge#2266). updated_at is stamped by hand
+// because a builder update bypasses the generated write path.
+func writeRepoExtSetUpdate(b *strings.Builder, ent config.PlanEntity, msgName, pkGoType string) {
+	col := firstNonPKColumn(ent, pkGoType)
+	stamped := false
+	for _, f := range resolveORMFields(ent) {
+		if f.columnName == "updated_at" {
+			stamped = true
+		}
+	}
+	b.WriteString("//\n")
+	b.WriteString("// A write over many rows is ONE set-based statement, never List then an\n")
+	fmt.Fprintf(b, "// Update%sMasked per row (N round trips: it times out at scale). It\n", msgName)
+	b.WriteString("// goes through db.Bun() like any raw query; there is no orm helper for it\n")
+	b.WriteString("// (no orm.Ident — name columns in the SQL, values as `?` arguments):\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(b, "//\tfunc Move%s(ctx context.Context, db orm.Context, from, to any) (int64, error) {\n", naming.Pluralize(msgName))
+	fmt.Fprintf(b, "//\t\tres, err := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
+	fmt.Fprintf(b, "//\t\t\tSet(\"%s = ?\", to).\n", col)
+	if stamped {
+		b.WriteString("//\t\t\tSet(\"updated_at = now()\"). // a builder write is not the generated path: stamp it\n")
+	}
+	fmt.Fprintf(b, "//\t\t\tWhere(\"%s = ?\", from).\n", col)
+	b.WriteString("//\t\t\tExec(ctx)\n")
+	b.WriteString("//\t\tif err != nil {\n")
+	b.WriteString("//\t\t\treturn 0, err\n")
+	b.WriteString("//\t\t}\n")
+	b.WriteString("//\t\treturn res.RowsAffected()\n")
+	b.WriteString("//\t}\n")
 }
 
 // entityExtraTypeName is the name of the embedded computed-field carrier

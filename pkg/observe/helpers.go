@@ -103,6 +103,10 @@ func TraceVoidCall(ctx context.Context, tracer trace.Tracer, operationName strin
 // sets Error from the wire code AFTER this call (otelconnect does), because
 // an OK status is final.
 //
+// The server span of an rpc is settled differently (RequestSpanInterceptor,
+// TracingInterceptor): there a user-class error is not a failure either, and
+// the status is OK rather than Error.
+//
 // nil-safe on both span and err (a nil err is the no-op success path).
 func RecordSpanError(span trace.Span, err error) {
 	if span == nil || err == nil {

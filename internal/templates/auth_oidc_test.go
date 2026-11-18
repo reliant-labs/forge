@@ -73,10 +73,18 @@ func renderCompose(t *testing.T) composeFile {
 // are exercised below.
 func renderComposeFor(t *testing.T, hasFrontend bool) composeFile {
 	t.Helper()
+	return renderComposeWith(t, hasFrontend, false)
+}
+
+// renderComposeWith is renderComposeFor with NoIdentity: a project that has a
+// frontend but declares no users (`forge project new --auth-mode none`).
+func renderComposeWith(t *testing.T, hasFrontend, noIdentity bool) composeFile {
+	t.Helper()
 	out, err := ProjectTemplates().Render("docker-compose.yml.tmpl", struct {
 		ProjectName string
 		HasFrontend bool
-	}{ProjectName: "shopdemo", HasFrontend: hasFrontend})
+		NoIdentity  bool
+	}{ProjectName: "shopdemo", HasFrontend: hasFrontend, NoIdentity: noIdentity})
 	if err != nil {
 		t.Fatalf("render docker-compose.yml.tmpl: %v", err)
 	}
@@ -138,6 +146,13 @@ func TestDevCompose_IdentityProviderScaffoldsOnlyForABrowser(t *testing.T) {
 		t.Error("a project with NO frontend is still handed an `idp` service — it would pay for a second web server it never calls")
 	}
 
+	// A frontend nobody signs in to (--auth-mode none) has no users for an
+	// IdP to hold, and the app must not wait on one.
+	noUsers := renderComposeWith(t, true, true)
+	if _, ok := noUsers.Services["idp"]; ok {
+		t.Error("a project that declares no users (--auth-mode none) is still handed an `idp` service")
+	}
+
 	// The IdP must be part of the DEFAULT service set for a project that has
 	// one: it is declared infrastructure now, named directly by
 	// deploy/kcl/dev/main.k, so `forge env up` brings it up with no profile to
@@ -148,7 +163,7 @@ func TestDevCompose_IdentityProviderScaffoldsOnlyForABrowser(t *testing.T) {
 
 	// A gating mistake that took the ordinary dev loop with it would show up
 	// here, in BOTH renders.
-	for label, cf := range map[string]composeFile{"with frontend": withFE, "no frontend": noFE} {
+	for label, cf := range map[string]composeFile{"with frontend": withFE, "no frontend": noFE, "no users": noUsers} {
 		def := activeServices(cf)
 		for _, required := range []string{"postgres", "app"} {
 			if !def[required] {

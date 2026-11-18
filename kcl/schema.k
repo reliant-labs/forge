@@ -4371,9 +4371,9 @@ schema BrowserTelemetry:
         }
 
     `console_capture`, `replay`, `replay_sample_rate`, `page_views`,
-    `identify_user` and `analytics.mode` reach the browser through the
-    runtime config document (config.js), so one build promotes across
-    environments and each environment sets its own. `replay` is the
+    `identify_user`, `rpc_forensics` and `analytics.mode` reach the browser
+    through the runtime config document (config.js), so one build promotes
+    across environments and each environment sets its own. `replay` is the
     per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
@@ -4389,6 +4389,14 @@ schema BrowserTelemetry:
     # browser event, so browser and backend events join on one user. False
     # renders IDENTIFY_USER = "false" and the browser never asks.
     identify_user: bool = True
+    # Attach a redacted `forge.forensics` event to the browser span of a
+    # failed RPC: the request's shape, never its content (numbers, bools,
+    # enums and id-named strings as values, unless the name also names a
+    # secret, like `session_id`; every other string, bytes, list and map as
+    # a length; `debug_redact` fields never), once per procedure
+    # and error code per page load. False renders RPC_FORENSICS = "false";
+    # the RPC spans themselves are recorded either way.
+    rpc_forensics: bool = True
     # Session replay for THIS frontend in THIS environment: OFF by default.
     # True renders OTEL_REPLAY = "true" into the frontend's runtime config
     # (config.js, so a promoted build needs no rebuild) and opts the env's
@@ -6680,7 +6688,10 @@ schema ReleaseHealth:
     as `new_issue_min_events`; 1 counts every regression), alert_firing (an
     alert opened after the promotion still fires; the platform's NewIssue and
     IssueRegressed alerts are judged as their issue, by the two thresholds
-    above, unless the env made them critical),
+    above, unless the env made them critical; an alert that also fired at
+    least `alert_baseline_min_firings` times in the `baseline_window` before
+    the promotion was flapping before the release, and warns instead of
+    failing unless it is critical; 0 counts every alert),
     workload_restarts, and, for a frontend that sends browser telemetry,
     browser_errors (JavaScript errors per page view rose by more than
     `max_error_rate_increase`), browser_failed_requests (the share of its
@@ -6702,6 +6713,7 @@ schema ReleaseHealth:
     regressed_issue_min_events?: int
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
+    alert_baseline_min_firings: int = 1
     fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
     require_baseline: str = "any"
 
@@ -6719,6 +6731,8 @@ schema ReleaseHealth:
             "ReleaseHealth.error_rate_min_errors ${error_rate_min_errors} must be at least 1 (1 lets any rise past max_error_rate_increase fail)"
         _release_health_seconds(window) <= _release_health_seconds(baseline_window) <= 604800, \
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
+        alert_baseline_min_firings >= 0, \
+            "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"

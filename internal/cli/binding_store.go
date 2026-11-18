@@ -28,6 +28,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -471,7 +472,7 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	l.Units = units
 	l.Mixed = forgeAppliesLocally(entities, units)
 	l.HostedTiers = hostedTiersOf(entities)
-	return attachHostedMirror(l, projectDir), nil
+	return attachCodeSource(attachHostedMirror(l, projectDir), projectDir, os.Getenv), nil
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion

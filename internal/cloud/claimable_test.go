@@ -100,6 +100,51 @@ func TestClaimableCredentialNeverResolvesAsALogin(t *testing.T) {
 	}
 }
 
+// A claimable deploy's clock starts at the first attempt, so the stored entry
+// remembers whether any attempt published, and why the newest one failed.
+func TestRecordClaimableAttempt_RemembersFailureThenPublication(t *testing.T) {
+	t.Setenv("FORGE_HOME", t.TempDir())
+	ep := endpointFor(t, "prod", "https://cp.example.com", "")
+	now := time.Date(2026, 11, 17, 21, 7, 0, 0, time.UTC)
+	if _, err := StoreClaimable(ep, "acme", "prod", ClaimableDeploy{
+		AccessToken: "rlat_anonymous0123456789", ClaimURL: "https://app.reliant.dev/claim#rcl_x",
+		ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(10 * 24 * time.Hour),
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("build env prod for deploy: hosted static site web: push: 401\n  fix: something long")
+	if err := RecordClaimableAttempt(ep, "acme", "prod", now.Add(time.Minute), failed); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadClaimable(ep, "acme", "prod", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := got.Claimable
+	if cl.Published() || !cl.LastPublishedAt.IsZero() {
+		t.Fatalf("a failed attempt reads as published: %+v", cl)
+	}
+	if cl.LastAttemptError != "build env prod for deploy: hosted static site web: push: 401" {
+		t.Fatalf("LastAttemptError = %q, want the error's first line", cl.LastAttemptError)
+	}
+	if !cl.LastAttemptAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("LastAttemptAt = %v", cl.LastAttemptAt)
+	}
+
+	if err := RecordClaimableAttempt(ep, "acme", "prod", now.Add(time.Hour), nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = LoadClaimable(ep, "acme", "prod", now)
+	cl = got.Claimable
+	if !cl.Published() || cl.LastAttemptError != "" || !cl.LastPublishedAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("a published attempt was not recorded: %+v", cl)
+	}
+	// The claim facts themselves are untouched.
+	if cl.ClaimURL != "https://app.reliant.dev/claim#rcl_x" || !cl.ExpiresAt.Equal(now.Add(72*time.Hour)) {
+		t.Fatalf("recording an attempt changed the claim: %+v", cl)
+	}
+}
+
 func TestUseClaimableCredential_IsScopedToTheEndpointAndRestores(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
 	t.Setenv(DefaultTokenEnv, "")

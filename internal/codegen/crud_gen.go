@@ -777,64 +777,37 @@ func crudShimHeader(data CRUDTemplateData) string {
 
 	paragraphs := []string{
 		"yours: scaffolded once, never touched again — forge will not overwrite this file",
-		"",
-		"Each method is a thin delegation. " + crudLibImport + " does the lifecycle mechanics — " +
-			strings.Join(labels, ", ") + " — and the per-entity wiring is generated in " +
-			"handlers_crud_ops_gen.go (Tier-1, regenerated every run). Because these bodies " +
-			"never name an entity field, proto/schema changes flow through the regenerated ops " +
-			"file without touching this one.",
-		"",
-		"WHAT THE DELEGATION DOES NOT DO IS READ THE CALLER. pkg/crud has no notion of one: it " +
-			"never touches the context's claims, so every delegation below treats every caller " +
-			"identically. That is not the same as being open — the auth interceptor runs " +
-			"FAIL-CLOSED and turned away anyone without a valid token before this file was " +
-			"reached, unless this RPC's proto declares auth_required: false, which publishes it " +
-			"deliberately (see pkg/" + crudAuthSeamPkg + "/procedures_gen.go for the set).",
-		"",
-		"WHO MAY DO WHAT is yours. The interceptor proved the caller HAS an identity; it decided " +
-			"nothing about whether this caller may perform this operation. Import \"" + middlewarePkg +
-			"\" and open each method that needs the principal with:",
-		"",
-		"\tclaims, err := " + crudAuthSeam + "(ctx)",
-		"\tif err != nil {",
-		"\t\treturn nil, err // connect.CodeUnauthenticated",
-		"\t}",
-		"",
-		"WHICH ROWS THEY MAY SEE is yours too. Scope rows to the caller (\"a customer sees only " +
-			"their own orders\") by wrapping the generated op's Filters right here — a visible " +
-			"WHERE clause on those claims. Role checks are ordinary handler code in the same " +
-			"place. See `forge skill load auth`.",
+		"Each method delegates to " + crudLibImport + " (" + strings.Join(labels, ", ") + "); the " +
+			"per-entity wiring is regenerated in handlers_crud_ops_gen.go.",
+		"pkg/crud never reads the caller. The interceptor already turned away anyone without a valid " +
+			"token (unless the rpc declares auth_required: false; pkg/" + crudAuthSeamPkg + "/procedures_gen.go), " +
+			"but WHO MAY DO WHAT and WHICH ROWS THEY MAY SEE are yours: import \"" + middlewarePkg +
+			"\", resolve the caller with " + crudAuthSeam + "(ctx), and wrap the op's Filters in a WHERE on " +
+			"those claims. See `forge skill load auth`.",
 	}
 
-	// A file whose methods DO read the caller must not open with three
-	// paragraphs saying they do not. The scoped scaffold exists precisely
+	// A file whose methods DO read the caller must not open with a
+	// paragraph saying they do not. The scoped scaffold exists precisely
 	// so the header's instruction is already carried out below, and a
 	// header that contradicts the code teaches the reader to stop
 	// believing the header — which is how the sixteen-delegation incident
 	// happened in the first place.
 	if anyScoped {
 		paragraphs = append(paragraphs,
-			"",
-			"SOME METHODS BELOW ARE ALREADY SCOPED, so the three paragraphs above describe the "+
-				"OTHERS. An entity here declares a `forge:owner` column, and forge scaffolded "+
-				"the scoping for its authenticated RPCs: claims resolved, op seam wrapped, "+
-				"column named. What forge could not write is the POLICY — how a caller's "+
-				"claims map onto that column's values — so each scoped method leaves that one "+
-				"expression under a FORGE_SCAFFOLD marker, and `forge lint` fails while the "+
-				"marker stands.")
+			"SOME METHODS BELOW ARE ALREADY SCOPED (an entity declares a `forge:owner` column): "+
+				"claims resolved, op seam wrapped. The POLICY — how claims map onto that column — "+
+				"is left under a FORGE_SCAFFOLD marker, and `forge lint` fails while it stands.")
 	}
 
 	paragraphs = append(paragraphs, crudShimAuthLegend(data.CRUDMethods)...)
 	paragraphs = append(paragraphs,
-		"",
-		"To customize an RPC, replace its delegation with a real implementation right here. CRUD "+
-			"RPCs added later are appended to this file by `forge generate`; your existing "+
-			"content is never modified.",
+		"Customize an RPC by replacing its delegation here; CRUD RPCs added later are appended "+
+			"by `forge generate`, and your content is never modified.",
 	)
 
 	var b strings.Builder
 	for _, p := range paragraphs {
-		for _, line := range wrapCommentText(p, 72) {
+		for _, line := range wrapCommentText(p, 96) {
 			switch {
 			case line == "":
 				b.WriteString("//\n")
@@ -877,24 +850,23 @@ func crudShimAuthLegend(methods []CRUDMethodTemplateData) []string {
 		return nil
 	}
 	out := []string{
-		"",
 		"EACH METHOD'S `Auth:` LINE says which case it is, read from its rpc's auth_required and " +
 			"its table's forge:owner column:",
 	}
 	if unscoped {
-		out = append(out, "",
+		out = append(out,
 			"AUTHENTICATED, UNSCOPED — only a valid token reaches it, and nothing in its body "+
-				"reads who that is yet: the two paragraphs above are the to-do.")
+				"reads who that is yet: the paragraph above is the to-do.")
 	}
 	if public {
-		out = append(out, "",
+		out = append(out,
 			"PUBLIC — auth_required: false lets a credential-less caller through. If that is "+
 				"wrong, the fix is the annotation on the rpc, not a "+crudAuthSeam+"(ctx) call "+
 				"here, which would reject callers the proto (and `forge project graph`) advertise "+
 				"as welcome.")
 	}
 	if scoped {
-		out = append(out, "",
+		out = append(out,
 			"SCOPED — the table declares a forge:owner column, so the body already resolves the "+
 				"caller and scopes the rows it touches; only its FORGE_SCAFFOLD owner mapping is "+
 				"left to you.")
@@ -1448,7 +1420,8 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 				if mf.Name == "descending" && mf.ProtoType == "bool" {
 					hasDescending = true
 				}
-				if classifySkipField(mf.Name) {
+				// A `// forge:request-option` knob is not a filter.
+				if classifySkipField(mf.Name) || mf.RequestOption {
 					continue
 				}
 				if mf.Name == "order_by" {
@@ -2544,7 +2517,7 @@ func buildCustomFilters(svc ServiceDef, cm CRUDMethod) []FilterFieldData {
 	}
 	var out []FilterFieldData
 	for _, mf := range msgFields {
-		if classifySkipField(mf.Name) || mf.Name == "order_by" {
+		if classifySkipField(mf.Name) || mf.Name == "order_by" || mf.RequestOption {
 			continue
 		}
 		// A declared (forge.v1.filter) facet is the generated List op's

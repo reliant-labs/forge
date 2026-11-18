@@ -235,6 +235,17 @@ a pipeline that upgrades without adding --yes exits 5, and even a handler
 that still reads 5 as "the wait timed out" fails the job rather than passing
 it. Pre-1.0, so this is a clean renumber with no alias.
 
+THE LAST LINE SAYS HOW IT ENDED. A deploy that can write ends its text output
+with one RESULT line: the exit code as a word (ok, failed, queued, pending,
+undetermined, unconfirmed), the env, the URL, the release, a claimable deploy's
+claim link, a failure's stage and reason, and the next command:
+
+  RESULT: ok env=prod url=https://shop.example release=v1.4.0 next: forge obs check prod --wait
+  RESULT: failed stage=build env=prod reason="frontend web: build: exit status 1" next: …
+
+A successful hosted deploy prints, just above it, what the release has with no
+setup (from ` + "`forge project benefits`" + `) and where its dashboards are.
+
 --json carries the same outcome: ` + "`applied`" + `, ` + "`confirmed`" + ` (whether the gate let
 the write happen), and a ` + "`refusal`" + ` object naming what was expected and what is
 actually there.
@@ -355,7 +366,12 @@ func newDeployCmd() *cobra.Command {
 				return err
 			}
 			apply.promote = promote
-			return dispatchDeployCmd(cmd.Context(), args[0], apply)
+			// The deploy's last line says how it ended (deploy_outcome.go).
+			ctx, outcome := withDeployOutcome(cmd.Context(), args[0])
+			err = dispatchDeployCmd(ctx, args[0], apply)
+			// os.Stdout as it is now, not at init: a caller (a test, the MCP
+			// server) may have redirected it for this run.
+			return finishDeployOutcome(ctx, outcome, apply, err, os.Stdout)
 		},
 	}
 
@@ -572,6 +588,9 @@ type deployCmdFlags struct {
 	// claim, set only by the claimable path, resolves the `claim` object of the
 	// --json document at the moment the document is written.
 	claim func() *deployClaimJSON
+	// promoted, set only by the claimable path, is called once the
+	// promotion is recorded, whatever the rollout then does.
+	promoted func()
 	// offlineLedger deploys the cached current release with the hosted
 	// ledger unreachable (offline_ledger.go).
 	offlineLedger bool

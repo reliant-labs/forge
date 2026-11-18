@@ -2,76 +2,16 @@
 
 {{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
 {{- if eq .Platform "react-native"}}
-//
-// The app's auth state.
-//
-// ── This tree ships a MOCK, on purpose ────────────────────────────────
-//
-// The browser frontends sign in NATIVELY: they POST credentials to the
-// app's own API, the server runs the whole OIDC flow against the identity
-// provider, and the answer comes back as an HttpOnly session cookie. React
-// Native has neither half of what makes that work — no automatic cookie
-// jar on fetch, and no same-origin — so this tree wires the mock session
-// provider instead and leaves the real one to you. See the note at the
-// import below for where to plug yours in.
-//
-// ── The context value is the same on every platform ───────────────────
-//
-// Deliberately: a component written against `useAuth()` moves between the
-// mobile and browser trees unchanged. What it exposes is an IDENTITY — who
-// is signed in, for rendering — and never a token. Use it to decide what to
-// SHOW. Never to decide what is ALLOWED: the server validates the real
-// credential on every request, and a caller who edits anything here changes
-// the UI and nothing else.
+// The app's auth state. This tree ships a MOCK session on purpose (React Native has no cookie jar or
+// same-origin for native sign-in): plug your provider in at the import below. useAuth() exposes an
+// IDENTITY, the same on every platform: it decides what to SHOW, never what is ALLOWED.
 {{- else}}
-//
-// The app's auth state, read from THIS APP'S API.
-//
-// ── What changed, and why it is simpler than it used to be ────────────
-//
-// Sign-in is native: the browser POSTs credentials to this app's server,
-// the server runs the whole OIDC flow against the identity provider, and
-// the answer comes back as an HttpOnly session cookie. See
-// src/lib/auth/native-login.ts and internal/app/login_broker.go.
-//
-// So there is no OIDC provider object in the browser to hold state for, no
-// token to keep in memory, no refresh timer, and no silent-restore dance.
-// There is one question — "who is signed in?" — and one way to answer it:
-// ask the server.
-//
-// ── The token is deliberately unreachable ─────────────────────────────
-//
-// The session cookie is HttpOnly, so nothing here can read it. That is the
-// property the design exists for: a token no script can reach is a token
-// an XSS cannot steal. The cookie is attached automatically to same-origin
-// requests, so no code has to set an Authorization header.
-//
-// What this context exposes is an IDENTITY — who is signed in, for
-// rendering. Use it to decide what to SHOW. Never to decide what is
-// ALLOWED: the server validates the real token on every request, and a
-// caller who edits anything here changes the UI and nothing else.
-//
-// ── Mock mode is the one exception ────────────────────────────────────
-//
-// With MOCK_API set ("true" or "hybrid") the identity is the FIXTURE user
-// from ./session-provider, and GET /auth/session is never sent. Pure mock
-// has no server to ask: the request failed, the context read signed-out,
-// and the route guard bounced every page to a sign-in form that posts to a
-// server that is not there.
-//
-// Hybrid renders the same fixture user, and that is a statement about the
-// UI ONLY. Nothing here becomes a credential — the fixture token is handed
-// out in pure mock alone, where only the mock transport sees it. A
-// forwarded hybrid RPC carries whatever real session cookie the browser
-// already holds and nothing more, so an identity-gated RPC that no
-// scenario stubs still answers 401 until you sign in to the real server at
-// /auth/sign-in (that form still posts to it).
+// The app's auth state, read from this app's API (GET /auth/session; the cookie is HttpOnly, so no
+// token is reachable here). The Identity decides what to SHOW, never what is ALLOWED. MOCK_API set:
+// the identity is the fixture user and no request is sent; in hybrid it is UI-only, never a
+// credential. Depth: `forge skill load auth/frontend`.
 {{- end}}
-//
-// ── This file exports one component ───────────────────────────────────
-//
-// The context object and useAuth() live in ./use-auth, so React Fast Refresh
-// can hot-swap this provider when you edit it. Import the hook from there.
+// useAuth() lives in ./use-auth (so Fast Refresh can hot-swap this provider): import it from there.
 
 {{if ne .Platform "react-native"}}import { identifyUser } from "@reliantlabs/forge-web-runtime";
 {{end}}import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";

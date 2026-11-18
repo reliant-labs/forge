@@ -138,6 +138,19 @@ per-section digests for each object (`objects`). `release.CompareCommits`,
 releases with no repository or manifests at hand; a control plane serves
 the same answer as `DeployService.CompareReleases`.
 
+**A control plane learns where an app's code lives.** Every cut, every
+`forge release record` and every deploy attempt on a hosted ledger also sends
+`code_source`: the origin remote as `host/owner/repo` (credentials, scheme and
+`.git` stripped; a local-path remote is not sent), forge.yaml's directory in
+the repo (`""` at the root), the commit, and `RELIANT_PROJECT_ID` when a
+Reliant chat ran forge. The commit is the release's own on a cut or record
+(none when the release names none, never the checkout's HEAD), HEAD on a
+deploy that ships the checkout (no release named, no `--from`), and the named
+release's recorded commit on a deploy of a named release (none on a `--from`
+deploy, whose release is resolved after the attempt opens). It is
+best-effort: a missing remote sends the rest, and it never fails a cut or a
+deploy.
+
 ## Owned-object prune (direct apply)
 
 `kubectl apply` adds and updates; nothing reconciles the set. A release that

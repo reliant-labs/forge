@@ -347,7 +347,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 				Line:     stmt.Line,
 				Rule:     RuleUnsafeAddNotNullColumn,
 				Severity: severity,
-				Message:  "ADD COLUMN ... NOT NULL without a DEFAULT fails on populated tables; add nullable column, backfill, then SET NOT NULL",
+				Message:  "ADD COLUMN ... NOT NULL without a DEFAULT fails on populated tables; give it a constant DEFAULT (metadata-only, and the previous release's inserts keep working)",
 			})
 		}
 
@@ -543,15 +543,26 @@ func AllowDestructiveFiles(dir string) []string {
 	return out
 }
 
-// UnsafeNotNullRemediation is the fix text for the two NOT NULL rules. It
-// names the generated-column spelling FIRST because that is the durable fix —
-// the column stops being something the application can get wrong — and the
-// pragma second, as the acknowledgement for cases the linter cannot see (an
-// empty table, or a column made generated in an earlier migration).
+// UnsafeAddNotNullRemediation is the fix text for unsafe-add-not-null-column.
+// It names a constant DEFAULT FIRST because that is the add that is safe for
+// BOTH releases of a rollout: on postgres 11+ a non-volatile default is
+// metadata-only (no table rewrite), and the previous release, whose INSERTs do
+// not name the new column, gets the default instead of a NOT NULL violation.
+// The generated-column spelling comes next, for a derived value. The
+// nullable-then-backfill path comes third because SET NOT NULL breaks that
+// previous release's inserts the moment it lands, so it belongs in a later
+// (contract) migration. The pragma comes last, as the acknowledgement for
+// cases the linter cannot see (an empty table).
 //
 // Colocated with allowUnsafeNotNullPragmaRe so the syntax we tell users cannot
 // drift from the syntax the linter matches.
-const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL in the same migration; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
+const UnsafeAddNotNullRemediation = `give the column a constant DEFAULT (ADD COLUMN ... NOT NULL DEFAULT <constant>) — on postgres 11+ that is metadata-only, and the previous release's INSERTs, which do not name the column, get the default; for a derived column make the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or add the column nullable, backfill it with an UPDATE, then SET NOT NULL — but SET NOT NULL breaks a previous release that inserts without the column, so put it in a later (contract) migration once no running release does; or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
+
+// UnsafeNotNullRemediation is the fix text for set-not-null-without-backfill
+// (and, before UnsafeAddNotNullRemediation existed, for the add rule too). The
+// backfill leads because a SET NOT NULL on an existing column has no DEFAULT
+// shortcut: every existing row needs a value first.
+const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL — and if the previous release inserts rows without this column, SET NOT NULL breaks its inserts, so give the column a constant DEFAULT first or put SET NOT NULL in a later (contract) migration once no running release does; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
 
 // allowUnsafeNotNullPragmaRe matches the in-file opt-out for
 // unsafe-add-not-null-column and set-not-null-without-backfill, in the same
@@ -621,7 +632,9 @@ func Allowances(content string) []Allowance {
 // behaviour and the right default for the rule that has no other hatch.
 func RemediationFor(rule string) string {
 	switch rule {
-	case "unsafe-add-not-null-column", "set-not-null-without-backfill":
+	case "unsafe-add-not-null-column":
+		return UnsafeAddNotNullRemediation
+	case "set-not-null-without-backfill":
 		return UnsafeNotNullRemediation
 	case "volatile-default":
 		return VolatileDefaultRemediation

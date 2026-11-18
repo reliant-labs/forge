@@ -1,7 +1,7 @@
 {
   "name": "@reliantlabs/forge-web-runtime",
   "version": "0.13.17",
-  "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces; replay off by default). The web twin of forge/pkg.",
+  "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces) and a session-replay recorder that encodes off the main thread (replay off by default). The web twin of forge/pkg.",
   "license": "Apache-2.0",
   "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",
   "repository": {
@@ -16,12 +16,6 @@
   "//publishConfig note": "A SCOPED package defaults to restricted. Restricted breaks `npm install` for anyone outside the org — including every machine that scaffolds a project with a released forge, which resolves this package from the registry by semver range. Declaring access here means a publish cannot accidentally ship private by omitting --access public.",
   "publishConfig": {
     "access": "public"
-  },
-  "// overrides note": "The recorder still pins vulnerable fflate 0.7.4 (GHSA-px8p-9vwx-vf98); use the patched 0.7 line only in that subtree. npm applies overrides only at the install root, not from published dependencies, so the Next.js and Vite scaffold manifests carry the same override. Remove when HyperDX updates the recorder's pin.",
-  "overrides": {
-    "@hyperdx/otel-web-session-recorder": {
-      "fflate": "^0.7.5"
-    }
   },
   "type": "module",
   "sideEffects": false,
@@ -84,6 +78,17 @@
     },
     "./package.json": "./package.json"
   },
+  "//imports note": "#hyperdx-otel-web is how sdk-client.ts loads @hyperdx/otel-web. Browser bundlers match `browser`, listed first so it wins even where a bundler also sets `node` (an SSR build, a misconfigured target), and get the SDK's own ESM build, still as a lazy chunk of its own. Node cannot load that build: its imports carry no file extensions ('./version', '@hyperdx/instrumentation-exception/build/src/browser'), and Node's ESM loader refuses them (ERR_UNSUPPORTED_DIR_IMPORT). The SDK's CommonJS build is no substitute either. Under Node it resolves every OpenTelemetry dependency to its Node build, so the OTLP exporter posts over node:http instead of fetch, and the console instrumentation throws on each console call (it calls `.default` on CommonJS modules). So under `node` without `browser`, the map resolves to dist/hyperdx-otel-web.node.js: the same SDK, built for the browser platform by scripts/build.mjs, with @opentelemetry/api left external and no Node builtin or require() in it. That is what @hyperdx/browser's pre-built bundle gave Node before. A test runner that runs this package natively (vitest externalizes a \"type\": \"module\" package) then starts the SDK a browser would. src/sdk-client-node.test.ts proves it records and exports a span.",
+  "imports": {
+    "#hyperdx-otel-web": {
+      "browser": "@hyperdx/otel-web",
+      "node": {
+        "types": "./dist/hyperdx-otel-web.node.d.ts",
+        "default": "./dist/hyperdx-otel-web.node.js"
+      },
+      "default": "@hyperdx/otel-web"
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit && tsc -p tsconfig.react18.json --noEmit",
     "build": "node scripts/build.mjs",
@@ -93,11 +98,15 @@
     "test": "vitest run",
     "test:browser": "node --test scripts/browser-telemetry-smoke.mjs"
   },
-  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @hyperdx/browser is exact-pinned and imported only (and lazily) by the './telemetry' subpath; it carries the whole OpenTelemetry web SDK and the rrweb recorder, so a frontend that never imports './telemetry' (React Native) installs none of it. @tanstack/react-query is imported only by './service-hooks'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
+  "// dependencies note": "@hyperdx/otel-web (errors, traces, web vitals, the RUM session) and rrweb (session replay) are DEPENDENCIES, exact-pinned, imported only by the './telemetry' subpath and lazily, so each is its own chunk and rrweb loads only when replay runs. They are not peers on purpose: an app that installed an earlier runtime declares @hyperdx/browser, not these, and an optional peer it does not declare would fail to resolve on its next install. As dependencies they come with the runtime under npm and pnpm's strict layout alike, and a consumer that never imports './telemetry' (React Native, Node) never bundles them. The runtime drives @hyperdx/otel-web with its own port of @hyperdx/browser's wrapper (src/sdk-client.ts) and records replay itself (src/replay-recorder.ts); @hyperdx/browser is no longer used.",
+  "dependencies": {
+    "@hyperdx/otel-web": "0.20.0",
+    "rrweb": "2.1.7"
+  },
+  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @tanstack/react-query is imported only by './service-hooks'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
-    "@hyperdx/browser": "0.26.0",
     "@opentelemetry/api": "^1.9.0",
     "@tanstack/react-query": "^5.62.0",
     "react": "^18.3.0 || ^19.0.0"
@@ -107,9 +116,6 @@
       "optional": true
     },
     "@connectrpc/connect": {
-      "optional": true
-    },
-    "@hyperdx/browser": {
       "optional": true
     },
     "@tanstack/react-query": {
@@ -123,13 +129,14 @@
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
     "@connectrpc/connect-web": "^2.3.0",
-    "@hyperdx/browser": "0.26.0",
     "@opentelemetry/api": "^1.9.0",
     "@tanstack/react-query": "^5.62.0",
     "@types/node": "^22.14.0",
     "@types/react": "^19.1.0",
     "@types/react-18": "npm:@types/react@~18.3.0",
     "@types/react-dom": "^19.3.0",
+    "esbuild": "0.28.2",
+    "jsdom": "^26.1.0",
     "playwright": "1.58.0",
     "react": "^19.1.0",
     "react-dom": "^19.3.0",

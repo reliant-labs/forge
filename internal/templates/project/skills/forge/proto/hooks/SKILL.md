@@ -20,6 +20,15 @@ so an optimistic rollback needs no cast. A query hook's `select` sets its
 `forge generate` prints its line and the new body, and
 `forge lint --conventions` fails until it is fixed.
 
+**A mutation hook's `onSuccess` adds to its refresh and never replaces it.**
+On success the hook first invalidates its scope (the entity for a CRUD write,
+`<svc>Keys.all` otherwise), then calls your `onSuccess`. So a toast or a
+redirect cannot leave a list stale. To change the refresh itself, pass
+`invalidate`. A function replaces it: `useCreateTask({ invalidate: (qc) => { void
+qc.invalidateQueries({ queryKey: taskServiceKeys.listTasks.all }); } })`.
+`invalidate: false` skips it. Use that when `onSuccess` writes the response into
+the cache with `setQueryData`, or the refetch overwrites what you wrote.
+
 **Scope a custom read with `// forge:query-scope <Entity>`.** A CRUD read is
 keyed under its entity, so that entity's CRUD mutations refresh it; a custom
 read sits at service scope, which only `<svc>Keys.all` reaches. Above a read

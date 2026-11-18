@@ -141,6 +141,16 @@ func (r Runner) protected(ctx context.Context, reg Registry) (map[string]map[str
 	for _, cluster := range reg.Contexts {
 		clusterRefs, err := r.clusterReferences(ctx, cluster)
 		if err != nil {
+			// A stopped cluster cannot answer, and its images are still
+			// needed when it starts again, so nothing may be deleted —
+			// which is a skip, not a failure: on a laptop a stopped cluster
+			// is ordinary, and reporting it as a failed pass every day sent
+			// people hunting for a fault that was not there. A cluster that
+			// is RUNNING and does not answer is a real failure.
+			if stopped, _ := r.clusterNotRunning(ctx, cluster); stopped {
+				return nil, &SkippedError{Reason: fmt.Sprintf(
+					"cluster %s, which pulls from it, is not running, so the images it needs cannot be listed and nothing was deleted; cleanup resumes on the first pass after it starts", cluster)}
+			}
 			return nil, fmt.Errorf("refusing registry cleanup: protected set for %s unavailable: %w", cluster, err)
 		}
 		refs = append(refs, clusterRefs...)
@@ -151,6 +161,29 @@ func (r Runner) protected(ctx context.Context, reg Registry) (map[string]map[str
 	}
 	refs = append(refs, containerRefs...)
 	return protectedRefs(refs, reg.Aliases), nil
+}
+
+// clusterNotRunning reports whether the k3d cluster behind a kubectl context
+// has no running server container: stopped (`k3d cluster stop`, Docker
+// Desktop restarted without it), or deleted from Docker while its kubeconfig
+// context was left behind. ok is false when it cannot tell — not a k3d
+// context, or Docker did not answer — and the caller then treats the cluster
+// as failing, never as skippable.
+func (r Runner) clusterNotRunning(ctx context.Context, kubeContext string) (stopped bool, ok bool) {
+	name, isK3d := strings.CutPrefix(kubeContext, "k3d-")
+	if !isK3d || name == "" {
+		return false, false
+	}
+	b, err := r.docker(ctx, "ps", "-a", "--filter", "label=k3d.cluster="+name, "--filter", "label=k3d.role=server", "--format", "{{.State}}")
+	if err != nil {
+		return false, false
+	}
+	for _, state := range strings.Fields(string(b)) {
+		if state == "running" {
+			return false, true
+		}
+	}
+	return true, true
 }
 
 func contains(xs []string, x string) bool {
@@ -785,6 +818,9 @@ func (r Runner) RegistryGC(ctx context.Context, reg Registry, apply bool) (err e
 	}
 	plan, err := r.registryPlan(ctx, reg, reg.Container, base)
 	if err != nil {
+		if skip := (*SkippedError)(nil); errors.As(err, &skip) {
+			r.print("registry %s: skipped, %s\n", reg.Container, skip.Reason)
+		}
 		return err
 	}
 	needsDelete, err := r.registryNeedsDelete(ctx, reg.Container, info)

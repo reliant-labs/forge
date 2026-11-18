@@ -1015,6 +1015,11 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
 		return err
 	}
+	// Push access for the in-process pushes, with the credential docker was
+	// just logged in with — a refusal here costs seconds, not a build.
+	if err := preflightRegistryPushAccess(ctx, os.Stdout, entities, opts); err != nil {
+		return err
+	}
 	if opts.composition != nil {
 		return nil
 	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD

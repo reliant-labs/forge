@@ -133,6 +133,16 @@ type ShapeReleaseHealth struct {
 	// means DefaultHealthBaselineWindow, recorded as absent like
 	// ErrorRateMinErrors and withheld from a reader by the same feature.
 	BaselineWindowSeconds int `json:"baseline_window_seconds,omitempty"`
+	// AlertBaselineMinFirings is how many times an alert must have fired in
+	// the baseline window before the promotion for the same alert, opening
+	// after it, to be read as the env's chronic noise rather than the
+	// release's doing: it is then a warn finding, never a failing one
+	// (pkg/releasehealth alert_baseline.go). 0 counts every alert opened
+	// after the promotion, the rule before the field. Nil means
+	// DefaultAlertBaselineMinFirings, and is how the default is recorded, so
+	// a shape that keeps it encodes as it did before the field (a reader
+	// that predates it is sent none: BundleFeatureReleaseHealthAlertBaseline).
+	AlertBaselineMinFirings *int `json:"alert_baseline_min_firings,omitempty"`
 }
 
 // The defaults of the fields a shape records as 0.
@@ -142,7 +152,19 @@ const (
 	// MaxHealthBaselineWindow bounds BaselineWindowSeconds: the longest
 	// range one overview read covers (obsquery.MaxRangeOverview).
 	MaxHealthBaselineWindow = 7 * 24 * time.Hour
+	// DefaultAlertBaselineMinFirings: an alert that fired even once in the
+	// baseline window was already firing before the release.
+	DefaultAlertBaselineMinFirings = 1
 )
+
+// AlertBaselineFirings is AlertBaselineMinFirings with the default filled
+// in; 0 counts every alert opened after the promotion.
+func (h ShapeReleaseHealth) AlertBaselineFirings() int {
+	if h.AlertBaselineMinFirings == nil {
+		return DefaultAlertBaselineMinFirings
+	}
+	return *h.AlertBaselineMinFirings
+}
 
 // ErrorMinErrors is ErrorRateMinErrors with the default filled in.
 func (h ShapeReleaseHealth) ErrorMinErrors() int {
@@ -228,6 +250,9 @@ func (h ShapeReleaseHealth) canonical() ShapeReleaseHealth {
 	if time.Duration(out.BaselineWindowSeconds)*time.Second == DefaultHealthBaselineWindow {
 		out.BaselineWindowSeconds = 0
 	}
+	if out.AlertBaselineMinFirings != nil && *out.AlertBaselineMinFirings == DefaultAlertBaselineMinFirings {
+		out.AlertBaselineMinFirings = nil
+	}
 	return out
 }
 
@@ -252,6 +277,9 @@ func (h ShapeReleaseHealth) validate() error {
 	}
 	if h.ErrorRateMinErrors < 0 {
 		return fmt.Errorf("%w: shape release_health error_rate_min_errors must be at least 1 (or absent: %d)", ErrInvalid, DefaultErrorRateMinErrors)
+	}
+	if h.AlertBaselineMinFirings != nil && *h.AlertBaselineMinFirings < 0 {
+		return fmt.Errorf("%w: shape release_health alert_baseline_min_firings must be at least 0 (0 counts every alert; absent: %d)", ErrInvalid, DefaultAlertBaselineMinFirings)
 	}
 	if h.BaselineWindowSeconds != 0 {
 		if b := h.BaselineWindow(); b < h.Window() || b > MaxHealthBaselineWindow {

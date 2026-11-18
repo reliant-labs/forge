@@ -47,6 +47,10 @@
 //   - Alerts count when they opened in the after window [P, after.To); a
 //     critical one (label severity=critical) fails the release whatever
 //     fail_on says. One that opened after the window is not the release's.
+//     One that also fired alert_baseline_min_firings times in the
+//     baseline_window before P was flapping before the release: a warn
+//     finding, listed in baseline_alerts, unless critical
+//     (alert_baseline.go).
 //   - Verdict: FAIL when any finding's policy is fail; else INCONCLUSIVE when
 //     the after window has not finished, no service can be compared (each is
 //     below min_requests in the after window or in the before window), or a
@@ -115,9 +119,13 @@ const (
 	ThresholdErrorRateMinErrors = "error_rate_min_errors"
 	// ThresholdBaselineWindow is the stretch before the promotion an
 	// endpoint with a thin before window is compared against (error_rate.go).
-	ThresholdBaselineWindow  = "baseline_window"
-	ThresholdFailOn          = "fail_on"
-	ThresholdRequireBaseline = "require_baseline"
+	ThresholdBaselineWindow = "baseline_window"
+	// ThresholdAlertBaselineMinFirings is how often an alert must have fired
+	// in the baseline window for its opening after the promotion not to fail
+	// the release; 0 counts every alert (alert_baseline.go).
+	ThresholdAlertBaselineMinFirings = "alert_baseline_min_firings"
+	ThresholdFailOn                  = "fail_on"
+	ThresholdRequireBaseline         = "require_baseline"
 )
 
 // ErrInvalid marks a request the rule refuses (an unknown threshold, a value
@@ -183,7 +191,11 @@ type Thresholds struct {
 	// whose before window is thin (error_rate.go).
 	ErrorRateMinErrors int
 	BaselineWindow     time.Duration
-	FailOn             []string
+	// AlertBaselineMinFirings is the firings in BaselineWindow before the
+	// promotion that make an alert opened after it the env's noise, not the
+	// release's: 0 counts every alert (alert_baseline.go).
+	AlertBaselineMinFirings int
+	FailOn                  []string
 	// RequireBaseline is release.BaselineAny, BaselineEvery or BaselineNone
 	// (baseline.go); empty reads as BaselineAny.
 	RequireBaseline string
@@ -213,7 +225,7 @@ type Options struct {
 
 // OverrideNames are the thresholds a request may override by name.
 var OverrideNames = []string{ThresholdMaxErrorRateIncrease, ThresholdMaxP95Ratio, ThresholdMinRequests, ThresholdNewIssueMinEvents, ThresholdRegressedIssueMinEvents, ThresholdRequireBaseline,
-	ThresholdErrorRateMinErrors, ThresholdBaselineWindow}
+	ThresholdErrorRateMinErrors, ThresholdBaselineWindow, ThresholdAlertBaselineMinFirings}
 
 // ParseOverrides reads --threshold name=value pairs.
 func ParseOverrides(pairs []string) (map[string]string, error) {
@@ -259,10 +271,14 @@ func Resolve(o Options) (Thresholds, error) {
 		BaselineWindow:       base.BaselineWindow(),
 		FailOn:               normalizeCodes(base.FailOn),
 		RequireBaseline:      base.Baseline(),
+		// alert_baseline_min_firings: 0 is a value (count every alert), so
+		// the policy's own accessor fills the default.
+		AlertBaselineMinFirings: base.AlertBaselineFirings(),
 		Sources: map[string]string{
 			ThresholdWindow: src, ThresholdMinRequests: src, ThresholdMaxErrorRateIncrease: src,
 			ThresholdMaxP95Ratio: src, ThresholdNewIssueMinEvents: src, ThresholdFailOn: src,
 			ThresholdRequireBaseline: src, ThresholdErrorRateMinErrors: src, ThresholdBaselineWindow: src,
+			ThresholdAlertBaselineMinFirings: src,
 		},
 	}
 	// regressed_issue_min_events follows new_issue_min_events (after any
@@ -289,6 +305,8 @@ func Resolve(o Options) (Thresholds, error) {
 			regressedSet = true
 		case ThresholdErrorRateMinErrors:
 			t.ErrorRateMinErrors, err = strconv.Atoi(v)
+		case ThresholdAlertBaselineMinFirings:
+			t.AlertBaselineMinFirings, err = strconv.Atoi(v)
 		case ThresholdBaselineWindow:
 			if t.BaselineWindow, err = time.ParseDuration(v); err != nil {
 				return Thresholds{}, invalid("threshold baseline_window=%q is not a duration (24h)", v)
@@ -332,6 +350,8 @@ func (t Thresholds) validate() error {
 		return invalid("regressed_issue_min_events must be at least 1")
 	case t.ErrorRateMinErrors < 1:
 		return invalid("error_rate_min_errors must be at least 1")
+	case t.AlertBaselineMinFirings < 0:
+		return invalid("alert_baseline_min_firings must be at least 0 (0 counts every alert opened after the promotion)")
 	case t.BaselineWindow < t.Window || t.BaselineWindow > release.MaxHealthBaselineWindow:
 		return invalid("baseline_window %s is outside the window (%s) to %s", t.BaselineWindow, t.Window, release.MaxHealthBaselineWindow)
 	case t.RequireBaseline != "" && !slices.Contains(release.BaselinePolicies, t.RequireBaseline):
@@ -383,6 +403,7 @@ func (t Thresholds) List() []Threshold {
 		{ThresholdMaxP95Ratio, strconv.FormatFloat(t.MaxP95Ratio, 'g', -1, 64), src(ThresholdMaxP95Ratio)},
 		{ThresholdNewIssueMinEvents, strconv.Itoa(t.NewIssueMinEvents), src(ThresholdNewIssueMinEvents)},
 		{ThresholdRegressedIssueMinEvents, strconv.Itoa(t.RegressedIssueMinEvents), src(ThresholdRegressedIssueMinEvents)},
+		{ThresholdAlertBaselineMinFirings, strconv.Itoa(t.AlertBaselineMinFirings), src(ThresholdAlertBaselineMinFirings)},
 		{ThresholdFailOn, strings.Join(t.FailOn, ","), src(ThresholdFailOn)},
 		{ThresholdRequireBaseline, baselineOr(t.RequireBaseline), src(ThresholdRequireBaseline)},
 	}
@@ -509,6 +530,10 @@ type Alert struct {
 	Fingerprint string            `json:"fingerprint,omitempty"`
 	FiringAt    time.Time         `json:"firing_at,omitzero"`
 	Labels      map[string]string `json:"labels,omitempty"`
+	// BaselineFirings is how many times the same alert fired in the
+	// baseline window before the promotion, set on an alert of
+	// [Report.BaselineAlerts] (alert_baseline.go); 0 elsewhere.
+	BaselineFirings int `json:"baseline_firings,omitempty"`
 }
 
 // Critical reports whether the alert is labelled severity=critical.
@@ -583,9 +608,14 @@ type Input struct {
 	RegressedIssues []Issue
 	// Alerts are the alerts firing now. Those opened after the promotion are
 	// findings; critical ones opened before it are StandingCritical.
-	Alerts     []Alert
-	Workloads  []Workload
-	Thresholds Thresholds
+	Alerts []Alert
+	// AlertHistory is the env's alert state transitions over at least the
+	// baseline window before the promotion, read by the caller: what tells
+	// an alert that was already flapping from one the release opened
+	// (alert_baseline.go). Nil when not read, which counts every alert.
+	AlertHistory []AlertEvent
+	Workloads    []Workload
+	Thresholds   Thresholds
 	// NotEvaluated names the checks the backend could not run (a local env has
 	// no alert state or workload restarts), so a PASS is not read as covering
 	// them.
@@ -636,6 +666,12 @@ type Report struct {
 	// added nothing of its own (issue_alerts.go). A critical one is never
 	// here: it is an alert_firing finding and fails the release.
 	IssueAlerts []Alert `json:"issue_alerts,omitempty"`
+	// BaselineAlerts opened after the promotion and still fire, but the same
+	// alert fired alert_baseline_min_firings times in the baseline window
+	// before it: the env's chronic noise, not the release's. Each is a warn
+	// alert_firing finding saying so, never a failing one
+	// (alert_baseline.go). A critical one is never here.
+	BaselineAlerts []Alert `json:"baseline_alerts,omitempty"`
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
@@ -771,6 +807,10 @@ func Evaluate(in Input) Report {
 		add(Finding{Code: release.HealthWorkloadRestarts, Ref: w.Workload, Value: float64(w.Restarts), Threshold: 1,
 			Message: fmt.Sprintf("%s restarted %d time(s) after the promotion%s", w.Workload, w.Restarts, why)})
 	}
+
+	// An alert that was already flapping before the promotion is the env's,
+	// not the release's (alert_baseline.go).
+	r = discountBaselineAlerts(r, in.AlertHistory, nil, t.AlertBaselineMinFirings, t.BaselineWindow)
 
 	sortFindings(r.Findings)
 	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.gauge(), r.unproven())

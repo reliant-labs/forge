@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime
-description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (error normalization, auth, brand, W3C traceparent; React Query owns retries), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
+description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (error normalization, auth, brand, a client span per RPC with redacted failure forensics, W3C traceparent; React Query owns retries), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
 ---
 
 # Frontend Runtime
@@ -30,7 +30,7 @@ Three subpaths are deliberately OUTSIDE the barrel, each for its own reason:
 |---|---|
 | `/interceptors` | DOM-free transport layer, for React Native / non-react-dom renderers. |
 | `/mock-transport` | Dev-only. The fixture dispatch engine must be tree-shakeable out of a production bundle. |
-| `/telemetry` | Imports the HyperDX browser SDK (`@hyperdx/browser`, exact-pinned, ~600 KB with rrweb and the OTel web stack, loaded lazily). It is an OPTIONAL peer: the Next.js and Vite scaffolds install it; a React-Native frontend declares `@opentelemetry/api` alone and imports the barrel. |
+| `/telemetry` | Drives the HyperDX SDK (`@hyperdx/otel-web`, ~430 KB, loaded lazily as its own chunk) and records session replay with the runtime's own rrweb recorder (a second lazy chunk, ~180 KB, loaded only when replay runs). Both are exact-pinned DEPENDENCIES of the runtime: no app declares them. A React-Native frontend imports the barrel and bundles neither. |
 
 Nothing you write imports `/mock-transport` or `/telemetry` directly: forge generates
 the thin project files (`src/lib/mock-transport_gen.ts`, `src/lib/otel_gen.ts`)
@@ -53,7 +53,7 @@ must be one the bundle reads. Load `frontend-runtime/config`.
 
 | Battery | What it is | Load |
 |---|---|---|
-| Transport interceptor stack | `buildRuntimeInterceptors` in `connect.ts`: error-normalize → auth → brand → traceparent; React Query owns retries. Typed errors: branch on `.reason`, render with `userMessage(err)`, never match on message text | `frontend-runtime/transport` |
+| Transport interceptor stack | `buildRuntimeInterceptors` in `connect.ts`: error-normalize → auth → brand → rpc span → traceparent; React Query owns retries. One client span per RPC (`<rpc.service>/<rpc.method>`, joined to the server span), with a redacted `forge.forensics` request shape on failure (`RPC_FORENSICS` turns it off per env). Typed errors: branch on `.reason`, render with `userMessage(err)`, never match on message text | `frontend-runtime/transport` |
 | App-shell providers | `RuntimeShell` in `providers.tsx`: `useSession()`, `RuntimeErrorBoundary`, `RuntimeToastHost`, `RouteGuard` (a render gate, not a security boundary) | `frontend-runtime/shell` |
 | `<Resource>` | the data-table container: loading / error / empty / data ladder, server-side filter, cursor pagination, sorting | `frontend-runtime/resource` |
 | Browser telemetry | the HyperDX SDK, initialised for you: errors, console, network, traces to ClickStack through a same-origin `/_otel` route; source maps, replay, `reportException`, `interaction()` click-to-usable spans; cookieless product analytics by default (`identified`: nothing stored on the device; `full` only with `ANALYTICS_MODE = "full"` + `grantAnalyticsConsent()`), automatic `page_viewed` events with referrer/utm/click-id props and `page_engaged` (engaged time, scroll depth) per view and signed-in user identity (`PAGE_VIEWS` / `IDENTIFY_USER` turn them off per env), `trackExposure` + an OpenFeature hook | `frontend-runtime/telemetry` |

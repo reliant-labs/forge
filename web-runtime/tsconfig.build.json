@@ -5,10 +5,13 @@
 
   "// sourceMap note": "inlineSources embeds the TypeScript in the .map, so a consumer debugging a crash inside <Resource> gets real source WITHOUT this package shipping src/. There is deliberately no declarationMap: it would need src/ on disk to be followable, and src/ is exactly what stopped being published — the .d.ts IS the contract, and is the right place for a consumer's editor to land.",
 
+  "// rootDir note": "rootDir is explicit because package.json has an \"imports\" map (#hyperdx-otel-web). Resolving it under nodenext needs the project root, and TS2210 refuses to guess it.",
+
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
     "outDir": "dist",
+    "rootDir": "src",
     "declaration": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",

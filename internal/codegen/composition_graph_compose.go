@@ -34,6 +34,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -560,6 +561,19 @@ func graphComposeEdgesLazy(src string, nodes []*graphNode) (map[string][]string,
 			}
 			return true
 		})
+	}
+	// The generated controller manager registers every declared operator.
+	// Its membership is an intrinsic dependency even when a disowned
+	// compose.go has no newOperators method to draw those edges yet.
+	for _, n := range nodes {
+		if n.Kind != nodeOperators {
+			continue
+		}
+		for _, member := range nodes {
+			if member.Role == "internal/operators" && !slices.Contains(out[n.Name], member.Name) {
+				out[n.Name] = append(out[n.Name], member.Name)
+			}
+		}
 	}
 	return out, lazy
 }

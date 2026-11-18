@@ -3,7 +3,8 @@ package cli
 // Installing the generated-file merge driver on purpose, and checking it.
 //
 // `forge merge-driver install` is how a clone gets the driver: writing
-// commands wire it only when forge.yaml says `git: {merge_driver: auto}`
+// commands wire it only when forge.yaml says `git: {merge_driver: auto}`, or
+// says nothing in a clone that already has forge's driver
 // (ensureGeneratedMergeDriver, forge#2232). Without it — and in a merge
 // queue's pool checkout whose scripts set FORGE_NO_MERGE_DRIVER so a gate
 // never rewrites git config — a checkout merges with whatever driver the
@@ -174,15 +175,15 @@ and fails if the checkout still cannot merge forge's files. Run it once per
 clone, and again after a pin bump if check says so. check reports the same
 without changing anything.
 
-Writing commands (generate, project upgrade, scaffold, ...) do not touch git
-config: they say, once per checkout and forge version, when the clone has no
-usable driver. A project whose forge.yaml says
+Writing commands (generate, project upgrade, scaffold, ...) do not wire a
+clone that has no forge driver: they say, once per checkout and forge
+version, when it has no usable one. A clone that already has forge's driver
+(an earlier forge wired one, or install did) is kept wired and repaired by
+them, as before v1.8. forge.yaml decides it outright:
 
   git:
-    merge_driver: auto
-
-has every writing command wire and repair the driver instead, as forge did
-before v1.8.`,
+    merge_driver: auto     # every writing command wires and repairs it
+    merge_driver: manual   # only install writes git config`,
 		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 	}
 	cmd.AddCommand(&cobra.Command{

@@ -51,7 +51,11 @@ package cli
 //     forge version, when the clone has no usable driver.
 //   - forge.yaml `git: {merge_driver: auto}` restores the old wiring: every
 //     writing command, and not on a --dry-run, writes the driver's command
-//     (ensureGeneratedMergeDriver) when the clone has none that works.
+//     (ensureGeneratedMergeDriver) when the clone has none that works. With
+//     `git.merge_driver` unset, a clone that already has forge's driver
+//     keeps that wiring too (keepsMergeDriverWired): it relied on writing
+//     commands keeping the driver working, and semver keeps it doing so.
+//     `manual` stops it.
 //     Read-only and slot commands never write there. One command serves
 //     every worktree, whatever each pins: the driver hands each merge to the
 //     forge the merged file's project pins (merge_driver_pin.go).
@@ -426,9 +430,10 @@ func newMergeGeneratedCmd() *cobra.Command {
 // wrote is removed here and the shared one applies.
 //
 // It wires only for a project whose forge.yaml says `git: {merge_driver:
-// auto}`. Otherwise it writes no git config and, once per checkout and forge
-// version, says when the clone's driver is missing or unusable
-// (noticeUnwiredMergeDriver; forge#2232).
+// auto}`, or says nothing in a clone that already has forge's driver
+// (keepsMergeDriverWired). Otherwise it writes no git config and, once per
+// checkout and forge version, says when the clone's driver is missing or
+// unusable (noticeUnwiredMergeDriver; forge#2232).
 //
 // FORGE_NO_MERGE_DRIVER=1 silences both. FORGE_NO_GIT_HOOKS (and
 // FORGE_NO_HOOKS) used to skip the driver as well, and that is how
@@ -445,11 +450,28 @@ func ensureGeneratedMergeDriverTo(w io.Writer, root string) {
 	if os.Getenv(mergeDriverOptOutEnv) != "" {
 		return
 	}
-	if !config.ReadGitConfig(root).AutoMergeDriver() {
+	if !keepsMergeDriverWired(root, config.ReadGitConfig(root)) {
 		noticeUnwiredMergeDriver(w, root)
 		return
 	}
 	wireGeneratedMergeDriver(w, root, false)
+}
+
+// keepsMergeDriverWired reports whether a writing command wires and repairs
+// the merge driver in root's clone: forge.yaml says `auto`, or it says
+// nothing and the clone already has forge's driver. The second is what keeps
+// semver: a clone an earlier forge wired (every writing command used to)
+// relied on writing commands keeping it working across pins, and still gets
+// that. Only a clone forge never wired, or a project that says `manual`, is
+// left alone (forge#2232).
+func keepsMergeDriverWired(root string, gc config.GitConfig) bool {
+	switch {
+	case gc.AutoMergeDriver():
+		return true
+	case gc.ManualMergeDriver():
+		return false
+	}
+	return gitTrimmed(root, "config", "--get", "merge."+generatedMergeDriver+".driver") != ""
 }
 
 // mergeDriverNoticeDir is where noticeUnwiredMergeDriver records the

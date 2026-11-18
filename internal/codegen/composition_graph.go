@@ -23,7 +23,7 @@
 // providers.go and compose.go were before the graph. Those projects keep the
 // legacy generators byte-for-byte until they migrate (`forge fix
 // composition-graph`, internal/codemod; the rest of the path is the
-// migrations/v1.0.0 skill).
+// migrations/v1.0.0/composition-graph skill).
 
 package codegen
 
@@ -44,11 +44,69 @@ import (
 // GraphComposition reports whether the project composes with the composition
 // graph: true for a new project and for one whose internal/app has no legacy
 // composition (`type Infra struct` or `func NewComponents`) in an owned file.
+//
+// A legacy project that adopts roots one at a time (CompositionMixed) is not
+// in graph mode: everything that asks this keeps the legacy behaviour, and
+// only the composition step adds the adopted roots' graph beside it.
 func GraphComposition(projectDir string) bool {
+	return !hasLegacyComposition(projectDir)
+}
+
+// CompositionMode is how a project composes its processes.
+type CompositionMode int
+
+const (
+	// CompositionGraph is the composition graph: providers, compose.go
+	// constructor methods and roots.
+	CompositionGraph CompositionMode = iota
+	// CompositionLegacy is the owned Infra / NewComponents composition.
+	CompositionLegacy
+	// CompositionMixed is a legacy project adopting the graph one root at a
+	// time (forge#2285): the legacy composition stays and is generated as
+	// before, and every `//forge:root … adopt` root is generated beside it
+	// from its own constructor file, MixedComposeFile. A root's process
+	// builds only the graph; validation refuses a root that reaches the
+	// legacy construction (validateMixedReach), so no command builds both.
+	CompositionMixed
+)
+
+// rootAdoptOption is the //forge:root option that adopts one root beside the
+// legacy composition.
+const rootAdoptOption = "adopt"
+
+// MixedComposeFile is the owned internal/app file holding the constructor
+// methods of a mixed project's adopted roots: compose.go is still the legacy
+// NewComponents. `forge fix composition-graph`, the last step of adoption,
+// asks for its methods to move into compose.go.
+const MixedComposeFile = "graph_compose.go"
+
+// ProjectComposition reports how the project composes: graph, legacy, or a
+// legacy project with adopted roots (mixed).
+func ProjectComposition(projectDir string) CompositionMode {
+	if !hasLegacyComposition(projectDir) {
+		return CompositionGraph
+	}
+	_, roots, err := discoverAppDecls(projectDir)
+	if err != nil {
+		// An unparseable root is reported by the composition step
+		// that reads it; until then the project is what it was.
+		return CompositionLegacy
+	}
+	for _, r := range roots {
+		if r.Adopt {
+			return CompositionMixed
+		}
+	}
+	return CompositionLegacy
+}
+
+// hasLegacyComposition reports whether an owned internal/app file declares
+// the legacy composition: `type Infra struct` or `func NewComponents`.
+func hasLegacyComposition(projectDir string) bool {
 	appDir := filepath.Join(projectDir, "internal", "app")
 	entries, err := os.ReadDir(appDir)
 	if err != nil {
-		return true
+		return false
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -63,20 +121,20 @@ func GraphComposition(projectDir string) bool {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
 				if d.Recv == nil && d.Name.Name == "NewComponents" {
-					return false
+					return true
 				}
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
 					if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.Name == "Infra" {
 						if _, isStruct := ts.Type.(*ast.StructType); isStruct {
-							return false
+							return true
 						}
 					}
 				}
 			}
 		}
 	}
-	return true
+	return false
 }
 
 // nodeKind is where a graph node comes from.
@@ -185,7 +243,11 @@ type graphRoot struct {
 	Short, Long string
 	// Generated is the default root forge emits when none is declared.
 	Generated bool
-	Fields    []graphRootField
+	// Adopt is the `adopt` option: in a legacy project, the root is
+	// generated beside the legacy composition (CompositionMixed). In a
+	// graph project it changes nothing.
+	Adopt  bool
+	Fields []graphRootField
 	// File/Line locate a declared root, for errors.
 	File string
 	Line int
@@ -319,10 +381,13 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 		}
 		return nil, nil, nil, rerr
 	}
+	// Beside a legacy composition, MixedComposeFile is the adopted roots'
+	// compose.go, not a file of declarations.
+	mixedCompose := hasLegacyComposition(projectDir)
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		n := e.Name()
-		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || isGraphGeneratedFile(n) {
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") || isGraphGeneratedFile(n) || (mixedCompose && n == MixedComposeFile) {
 			continue
 		}
 		names = append(names, n)
@@ -429,7 +494,15 @@ func graphRootFromStruct(fset *token.FileSet, ts *ast.TypeSpec, st *ast.StructTy
 		rootName = naming.ToKebabCase(ts.Name.Name)
 	}
 	r := graphRoot{Name: rootName, TypeName: ts.Name.Name, File: rel, Line: fset.Position(ts.Pos()).Line}
-	cmdPath, migrate, err := rootOptions(rootName, opts)
+	rest := make([]string, 0, len(opts))
+	for _, o := range opts {
+		if o == rootAdoptOption {
+			r.Adopt = true
+			continue
+		}
+		rest = append(rest, o)
+	}
+	cmdPath, migrate, err := rootOptions(rootName, rest)
 	if err != nil {
 		return graphRoot{}, fmt.Errorf("%s:%d: root %s: %w", r.File, r.Line, ts.Name.Name, err)
 	}
@@ -569,7 +642,7 @@ func rootOptions(name string, opts []string) (path []string, migrate string, err
 				return nil, "", fmt.Errorf("migrate=%s is not a migrate policy: migrate=apply (the process applies the migrations), migrate=wait (it waits until another process has), or migrate=none (it leaves the schema alone)", val)
 			}
 		default:
-			return nil, "", fmt.Errorf("unknown //forge:root option %q: the options are command=<word>[,<word>…], the command path that runs the root, and migrate=apply|wait|none, what its process does about the schema", o)
+			return nil, "", fmt.Errorf("unknown //forge:root option %q: the options are command=<word>[,<word>…], the command path that runs the root, migrate=apply|wait|none, what its process does about the schema, and adopt, which generates the root beside a legacy Infra / NewComponents composition", o)
 		}
 	}
 	for _, w := range path {

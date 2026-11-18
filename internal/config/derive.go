@@ -263,7 +263,7 @@ func sectionDefaults(c *ProjectConfig) sectionDefaultsSet {
 	t := true
 	d := sectionDefaultsSet{
 		CI: CIConfig{
-			Provider: "github",
+			Provider: CIProviderGitHub,
 			Lint: CILintConfig{
 				Golangci:        true,
 				Buf:             hasProtos,

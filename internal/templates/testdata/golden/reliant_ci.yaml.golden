@@ -1,0 +1,319 @@
+# yours: scaffolded once, never touched again — forge will not overwrite this file.
+# Written for `ci.provider: reliant` in forge.yaml. Deleting it sticks
+# (.forge/scaffolded/); `forge project rescaffold .reliant/workflows/ci.yaml`
+# re-creates it.
+#
+# demo/ci: this project's CI gate (`forge ci gate`) as a Reliant workflow.
+# GitHub sends its events to the Reliant App; this workflow runs the gate on
+# the Reliant machine you enable it on, and the engine posts the verdict as the
+# GitHub check run "demo/ci", written by the Reliant App (its `check:`
+# block below). No GitHub Actions job runs and no runner is registered.
+#
+#   a pull request is opened, pushed to, reopened or marked ready  ->  --tier pr
+#   the merge queue builds a group (gh-readonly-queue/...)         ->  --tier queue
+#   a push to the default branch                                   ->  --tier main
+#   Re-run on the check                                            ->  its branch's tier
+#
+# A draft is skipped. A pull request from a fork, or by an author with no write
+# access to the repository (and not in trusted_ids), never runs on your
+# machine: a check the ruleset requires stays pending until a maintainer pushes
+# the branch into the repository.
+#
+# Declaring triggers fires nothing. Enable the workflow on this project's
+# machine (Workflows -> Library -> ci -> Enable, or `reliant trigger activate
+# --workflow ci --machine <machine> --param repository=<owner/name>`), then
+# require "demo/ci" in the branch ruleset. `forge skill load ci/reliant` has
+# the steps, forks, and how to add checks of your own.
+name: ci
+title: demo/ci
+description: >-
+  Runs this project's CI gate (forge ci gate) on a Reliant machine for every pull
+  request, merge-queue group and push to the default branch of the repository it is
+  enabled for, and posts the verdict as the GitHub check run demo/ci. Scaffolded
+  by forge for ci.provider reliant; yours to edit.
+automation_only: true
+# The gate queues each heavy check for one of the machine's heavy slots itself;
+# this bounds how many runs hold a checkout at once.
+concurrency:
+  max_running: 2
+requires:
+  tools: [git, reliant]
+check:
+  name: demo/ci
+  # Evaluated when the run ends. The conclusion is how the run ended: success when
+  # it completes, failure when it reaches a node with outcome: failure.
+  output: "{{ nodes.?report.check.orValue({'title': 'Not run', 'summary': 'The run ended before the gate reported. Open the run (Details) for why.'}) }}"
+  timeout: 2h
+inputs:
+  repository:
+    type: github.repository
+    required: true
+    description: The repository this gate checks. Events from any other repository are dropped.
+  trusted_ids:
+    type: github.user
+    multi: true
+    default: []
+    description: >-
+      Pull request authors to gate besides the repository's owners, members and
+      collaborators, as GitHub user ids (dependabot[bot] is 49699333). Their branch must
+      still be in the repository: a fork's never runs.
+  tier:
+    type: enum
+    enum: [pr, queue, main]
+    default: pr
+    description: The gate's tier (set by the trigger).
+  sha:
+    type: string
+    default: ''
+    description: The commit to gate (set by the trigger).
+  base:
+    type: string
+    default: ''
+    description: The commit a pull request's affected tests are measured from (set by the trigger).
+  branch:
+    type: string
+    default: ''
+    description: The branch the commit is on (set by the trigger).
+  default_branch:
+    type: string
+    default: main
+    description: The repository's default branch (set by the trigger).
+triggers:
+- name: pull-request
+  description: A pull request is opened, pushed to, reopened or marked ready for review.
+  integration:
+    integration: github
+    events: [pull_request.opened, pull_request.synchronize, pull_request.reopened, pull_request.ready_for_review]
+    match: {repository: {input: repository}}
+  # Trusted heads only: not a draft, a branch of this repository (never a
+  # fork's), opened by someone with access to it or listed in trusted_ids.
+  filter: >-
+    !trigger.payload.data.pull_request.draft
+    && has(trigger.payload.data.pull_request.head.repo)
+    && trigger.payload.data.pull_request.head.repo.full_name == trigger.payload.attributes.repository
+    && (trigger.payload.data.pull_request.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR']
+        || (has(trigger.payload.data.pull_request.user.id)
+            && string(trigger.payload.data.pull_request.user.id) in trigger.activation.params.trusted_ids))
+  inputs:
+    tier: pr
+    sha: '{{ trigger.payload.data.pull_request.head.sha }}'
+    base: '{{ trigger.payload.data.pull_request.base.sha }}'
+    branch: '{{ trigger.payload.data.pull_request.head.ref }}'
+    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
+  prompt: 'Run the CI gate on pull request #{{ trigger.payload.data.pull_request.number }} of {{ trigger.payload.attributes.repository }} at {{ trigger.payload.data.pull_request.head.sha }}.'
+# A merge group holds only pull requests the queue admitted, which needed this
+# check to pass on their (trusted) heads.
+- name: merge-group
+  description: GitHub's merge queue built a group and asks the Reliant App for its checks.
+  integration:
+    integration: github
+    events: [check_suite.requested]
+    match: {repository: {input: repository}}
+  filter: >-
+    has(trigger.payload.attributes.branch)
+    && trigger.payload.attributes.branch.matches('^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]{40}$')
+    && has(trigger.payload.data.check_suite.head_sha)
+  inputs:
+    tier: queue
+    sha: '{{ trigger.payload.data.check_suite.head_sha }}'
+    branch: '{{ trigger.payload.attributes.branch }}'
+    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
+  prompt: 'Run the CI gate on the merge group {{ trigger.payload.attributes.branch }} of {{ trigger.payload.attributes.repository }}.'
+- name: push
+  description: A push to the repository's default branch.
+  integration:
+    integration: github
+    events: [push]
+    match: {repository: {input: repository}}
+  filter: >-
+    has(trigger.payload.attributes.branch)
+    && trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch
+    && !trigger.payload.data.deleted
+  inputs:
+    tier: main
+    sha: '{{ trigger.payload.data.after }}'
+    branch: '{{ trigger.payload.attributes.branch }}'
+    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
+  prompt: 'Run the CI gate on {{ trigger.payload.attributes.branch }} of {{ trigger.payload.attributes.repository }} at {{ trigger.payload.data.after }}.'
+# GitHub's Re-run on this check, or Re-run all checks. Only someone with write
+# access can click it, on a commit this workflow already gated, and GitHub
+# sends it only for a person's click; origin_filter "true" keeps the engine
+# from reading it as an echo of this workflow's own check run.
+- name: re-run
+  description: Someone clicked Re-run on the check.
+  integration:
+    integration: github
+    events: [check_run.rerequested]
+    match:
+      repository: {input: repository}
+      name: demo/ci
+  origin_filter: "true"
+  filter: has(trigger.payload.attributes.branch) && has(trigger.payload.data.check_run.head_sha)
+  inputs:
+    tier: "{{ trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch ? 'main' : trigger.payload.attributes.branch.matches('^gh-readonly-queue/') ? 'queue' : 'pr' }}"
+    sha: '{{ trigger.payload.data.check_run.head_sha }}'
+    branch: '{{ trigger.payload.attributes.branch }}'
+    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
+  prompt: 'Re-run the CI gate on {{ trigger.payload.data.check_run.head_sha }} of {{ trigger.payload.attributes.repository }}.'
+- name: re-run-all
+  description: Someone clicked Re-run all checks.
+  integration:
+    integration: github
+    events: [check_suite.rerequested]
+    match: {repository: {input: repository}}
+  origin_filter: "true"
+  filter: has(trigger.payload.attributes.branch) && has(trigger.payload.data.check_suite.head_sha)
+  inputs:
+    tier: "{{ trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch ? 'main' : trigger.payload.attributes.branch.matches('^gh-readonly-queue/') ? 'queue' : 'pr' }}"
+    sha: '{{ trigger.payload.data.check_suite.head_sha }}'
+    branch: '{{ trigger.payload.attributes.branch }}'
+    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
+  prompt: 'Re-run the CI gate on {{ trigger.payload.data.check_suite.head_sha }} of {{ trigger.payload.attributes.repository }}.'
+outputs:
+  verdict: "{{ nodes.?doc.doc.verdict.orValue('') }}"
+entry: [facts]
+nodes:
+# Everything a shell below interpolates is checked here first.
+- id: facts
+  type: compute
+  outputs:
+    valid: >-
+      {{ inputs.sha.matches('^[0-9a-f]{40}$')
+      && (inputs.base == '' || inputs.base.matches('^[0-9a-f]{40}$'))
+      && inputs.default_branch.matches('^[A-Za-z0-9][A-Za-z0-9._/-]*$')
+      && (inputs.tier != 'queue' || inputs.branch.matches('-[0-9a-f]{40}$')) }}
+    # A merge group's base is the commit its branch name ends in.
+    base: "{{ inputs.tier == 'queue' ? regex.extract(inputs.branch, '-([0-9a-f]{40})$').orValue('') : inputs.base }}"
+- id: invalid
+  type: save_message
+  outcome: failure
+  args:
+    role: assistant
+    content: 'Refused: the gate needs a 40-character commit sha, a valid base and default branch, and for a merge group a gh-readonly-queue branch.'
+# Fetches the commit (and its base) into the project's checkout on this
+# machine. It holds the machine's git credentials, so it runs git fetch only:
+# it never checks out, reads or runs the commit's files.
+- id: fetch
+  type: run
+  timeout: 15m
+  args:
+    command: |
+      set -eu
+      cd '{{ workflow.path }}'
+      ref='refs/reliant-ci/{{ workflow.chat_id }}'
+      git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+{{ inputs.sha }}:'"$ref/head"
+      if [ -n '{{ nodes.facts.base }}' ]; then
+        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+{{ nodes.facts.base }}:'"$ref/base"
+      elif [ '{{ inputs.tier }}' != main ]; then
+        git fetch --quiet --no-tags --no-write-fetch-head --refmap= origin '+refs/heads/{{ inputs.default_branch }}:'"$ref/base"
+      fi
+      git rev-parse --verify --quiet "$ref/base^{commit}" || true
+# The gate runs the commit's code, so it holds no credentials: a fresh clone
+# sharing the checkout's objects, in this command's private /tmp, with git
+# hooks off. stdout is the gate's forge.ci.gate/v1 document and nothing else.
+- id: gate
+  type: run
+  condition: nodes.fetch.exit_code == 0
+  timeout: 90m
+  args:
+    credentials: none
+    command: |
+      set -u
+      repo='{{ workflow.path }}'
+      base='{{ nodes.fetch.stdout.trim() }}'
+      work=$(mktemp -d)
+      trap 'rm -rf "$work"' EXIT
+      log="$work/setup.log"
+      fail() {
+        printf '{"schema":"forge.ci.gate/v1","ok":false,"exit_code":2,"verdict":"error","error":"%s","checks":[]}\n' "$1"
+        tail -c 4000 "$log" >&2
+        exit 0
+      }
+      top=$(git -C "$repo" rev-parse --show-toplevel 2>>"$log") || fail 'the project directory is not a git checkout'
+      sub=$(git -C "$repo" rev-parse --show-prefix 2>>"$log")
+      git clone --quiet --shared --no-checkout "$top" "$work/src" >>"$log" 2>&1 || fail 'git clone of the project checkout failed'
+      git -C "$work/src" -c core.hooksPath=/dev/null checkout --quiet --detach '{{ inputs.sha }}' >>"$log" 2>&1 || fail 'git checkout of the commit failed'
+      cd "$work/src/$sub" || fail 'the project directory is missing at this commit'
+      if [ -n "$base" ]; then
+        reliant forge ci gate --tier '{{ inputs.tier }}' --base "$base" --json 2>"$work/gate.log"
+      else
+        reliant forge ci gate --tier '{{ inputs.tier }}' --json 2>"$work/gate.log"
+      fi
+      rc=$?
+      tail -c 6000 "$work/gate.log" >&2
+      exit "$rc"
+# The gate's document, or one saying why there is none.
+- id: doc
+  type: compute
+  outputs:
+    doc: >-
+      {{ nodes.fetch.exit_code != 0
+      ? {'ok': false, 'verdict': 'error', 'error': 'git fetch of the commit failed: ' + nodes.fetch.stderr.substring(math.greatest(0, size(nodes.fetch.stderr) - 1500)), 'checks': []}
+      : json.decode(nodes.?gate.stdout.orValue('')).orValue({'ok': false, 'verdict': 'error', 'error': 'the gate printed no result (exit ' + string(nodes.?gate.exit_code.orValue(-1)) + ')', 'checks': []}) }}
+    log: "{{ nodes.?gate.stderr.orValue('') }}"
+# The check run's output: a table of every check, the notes and log tails of
+# the ones that failed, and their findings as annotations (at most 50).
+- id: report
+  type: compute
+  outputs:
+    ok: "{{ nodes.doc.doc.?ok.orValue(false) == true }}"
+    check: >-
+      {{ cel.bind(d, nodes.doc.doc,
+      cel.bind(checks, d.?checks.orValue([]),
+      cel.bind(blocking, checks.filter(c, c.?blocking.orValue(false) == true),
+      cel.bind(found, blocking.map(c, c.?findings.orValue([])
+          .filter(f, int(f.?line.orValue(0)) > 0 && string(f.?path.orValue('')) != '' && string(f.?message.orValue('')) != '')
+          .map(f, {'path': string(f.path), 'start_line': int(f.line), 'end_line': int(f.line),
+                   'annotation_level': f.?level.orValue('') == 'warning' ? 'warning' : f.?level.orValue('') == 'error' ? 'failure' : 'notice',
+                   'message': string(f.message), 'title': string(c.?name.orValue(''))})).flatten(),
+      {
+        'title': d.?ok.orValue(false) == true ? 'Passed: forge ci gate --tier ' + inputs.tier
+          : d.?verdict.orValue('error') == 'error' ? 'Could not run the gate: ' + string(d.?error.orValue('no result'))
+          : 'Failed: ' + blocking.map(c, string(c.?name.orValue('?'))).join(', '),
+        'summary': '**' + (d.?ok.orValue(false) == true ? 'Passed' : d.?verdict.orValue('error') == 'error' ? 'Could not run' : 'Failed')
+          + '**: forge ci gate --tier ' + inputs.tier + ' on ' + inputs.sha.substring(0, 12)
+          + (d.?wall_ms.hasValue() ? ' in ' + string(int(d.wall_ms) / 1000) + 's' : '') + '.\n\n'
+          + (size(checks) == 0 ? string(d.?error.orValue(''))
+            : '| Check | Lane | Status | Time |\n|---|---|---|---|\n' + checks.map(c, '| ' + string(c.?name.orValue('?')) + ' | ' + string(c.?lane.orValue(''))
+              + ' | ' + (c.?blocking.orValue(false) == true ? '**' + string(c.?status.orValue('')) + '**' : string(c.?status.orValue('')))
+              + ' | ' + string(int(c.?duration_ms.orValue(0)) / 1000) + 's |').join('\n')),
+        'text': (size(blocking) == 0 ? '' : blocking.map(c, '### ' + string(c.?name.orValue('?')) + '\n\n' + string(c.?note.orValue(''))
+            + (string(c.?tail.orValue('')) == '' ? '' : '\n\n~~~\n' + string(c.tail) + '\n~~~')).join('\n\n'))
+          + (d.?ok.orValue(false) == true || nodes.doc.log == '' ? '' : '\n\n### Gate log (tail)\n\n~~~\n' + nodes.doc.log + '\n~~~'),
+        'annotations': found.slice(0, math.least(size(found), 50))
+      })))) }}
+- id: failed
+  type: save_message
+  condition: "!nodes.report.ok"
+  outcome: failure
+  args:
+    role: assistant
+    content: "{{ nodes.report.check.title }}"
+edges:
+- from: facts
+  cases:
+  - condition: nodes.facts.valid == true
+    to: [fetch]
+  default: invalid
+- from: fetch
+  default: gate
+- from: gate
+  default: doc
+- from: doc
+  default: report
+- from: report
+  default: failed
+# Drops the refs fetch made, however the run ended.
+finally:
+  sequence:
+  - id: cleanup
+    type: run
+    condition: nodes.?fetch.exit_code.hasValue()
+    timeout: 2m
+    args:
+      credentials: none
+      command: |
+        cd '{{ workflow.path }}' || exit 0
+        for r in head base; do git update-ref -d "refs/reliant-ci/{{ workflow.chat_id }}/$r" 2>/dev/null; done
+        exit 0
+

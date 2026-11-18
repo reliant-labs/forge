@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,6 +69,88 @@ func TestNamesLegacyComposition(t *testing.T) {
 	}
 }
 
+// forge#2285 review: the legacy check follows the construction's whole call
+// closure inside internal/app — a helper, a package-level alias, a type
+// alias, another Graph method — not only the one body.
+func TestLegacyReach_FollowsIndirectConstruction(t *testing.T) {
+	const legacy = `package app
+
+type Infra struct{}
+type Components struct{}
+type Graph struct{}
+
+func OpenInfra() (*Infra, error) { return &Infra{}, nil }
+func NewComponents(*Infra) (*Components, error) { return &Components{}, nil }
+`
+	const providers = `package app
+
+type A struct{}
+type ADeps struct{}
+
+func openShared() error { _, err := OpenInfra(); return err }
+func viaHelper() error { return openShared() }
+func NewHelper(ADeps) (*A, error) { return &A{}, viaHelper() }
+
+var mk = NewComponents
+func NewAliased(ADeps) (*A, error) { _, err := mk(nil); return &A{}, err }
+
+type C = Components
+func NewTypeAlias(ADeps) (*A, error) { var c *C; _ = c; return &A{}, nil }
+
+func ping() error { return pong() }
+func pong() error { return ping() }
+func NewClean(ADeps) (*A, error) { return &A{}, ping() }
+
+func (g *Graph) buildOnInfra() error { return openShared() }
+`
+	const draft = `package app
+
+func (g *Graph) newDirect() (*A, error) { return NewHelper(ADeps{}) }
+func (g *Graph) newViaMethod() (*A, error) { return &A{}, g.buildOnInfra() }
+func (g *Graph) newViaDraft() (*A, error) { return g.newDirect() }
+func (g *Graph) newClean() (*A, error) { return NewClean(ADeps{}) }
+`
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for name, src := range map[string]string{"legacy.go": legacy, "providers.go": providers} {
+		f, err := parser.ParseFile(fset, filepath.Join("internal", "app", name), src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+	pkg, err := (&types.Config{}).Check("example.com/test/internal/app", fset, files, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df, err := parser.ParseFile(token.NewFileSet(), MixedComposeFile, draft, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newLegacyReach(fset, files, pkg, info, graphComposeMethods(df))
+	for name, want := range map[string]string{
+		"NewHelper":    "viaHelper → openShared → OpenInfra",
+		"NewAliased":   "mk → NewComponents",
+		"NewTypeAlias": "C → Components",
+		"NewClean":     "",
+	} {
+		if got := r.provider(name); got != want {
+			t.Errorf("provider %s: %q, want %q", name, got, want)
+		}
+	}
+	for name, want := range map[string]string{
+		"newDirect":    "NewHelper → viaHelper → openShared → OpenInfra",
+		"newViaMethod": "g.buildOnInfra → openShared → OpenInfra",
+		"newViaDraft":  "g.newDirect → NewHelper → viaHelper → openShared → OpenInfra",
+		"newClean":     "",
+	} {
+		if got := r.method(name); got != want {
+			t.Errorf("method %s: %q, want %q", name, got, want)
+		}
+	}
+}
+
 // An adopted root's graph holds exactly what it reaches: the rest of the
 // project is the legacy composition's.
 func TestOutOfMixedReach_LeavesOutEverythingUnreached(t *testing.T) {
@@ -104,7 +187,7 @@ func TestGenerateGraph_MixedBuildsOnlyTheAdoptedRoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("graph assembly loads Go packages and the test builds the emitted graph; runs in task test")
 	}
-	for _, mode := range []string{"clean", "reaches-legacy"} {
+	for _, mode := range []string{"clean", "reaches-legacy", "reaches-legacy-indirectly"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			write := func(name, src string) {
@@ -143,6 +226,10 @@ func (*Worker) Run(context.Context) error { return nil }
 			if mode == "reaches-legacy" {
 				clock = "package app\n\ntype Clock struct{}\ntype ClockDeps struct{}\n\nfunc NewClock(ClockDeps) (*Clock, error) { _, err := NewComponents(&Infra{}); return &Clock{}, err }\n"
 			}
+			if mode == "reaches-legacy-indirectly" {
+				// Through a helper and a package-level alias: no legacy name in NewClock itself.
+				clock = "package app\n\ntype Clock struct{}\ntype ClockDeps struct{}\n\nvar build = NewComponents\n\nfunc shared() error { _, err := build(&Infra{}); return err }\n\nfunc NewClock(ClockDeps) (*Clock, error) { return &Clock{}, shared() }\n"
+			}
 			write("internal/app/clock.go", clock)
 			write("internal/app/roots.go", `package app
 
@@ -165,7 +252,7 @@ type TickRoot struct {
 			}
 			in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/test", Checksums: &checksums.FileChecksums{}}, Workers: workers, Warnings: &strings.Builder{}, Mixed: true}
 			err = GenerateGraph(in)
-			if mode == "reaches-legacy" {
+			if mode != "clean" {
 				if err == nil || !strings.Contains(err.Error(), "root tick reaches Clock") || !strings.Contains(err.Error(), "NewComponents") {
 					t.Fatalf("a root that builds the legacy composition must be refused, got %v", err)
 				}

@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // UserInfo fills [Claims.Email] from the issuer's OIDC userinfo endpoint
@@ -80,11 +82,12 @@ const (
 // NewUserInfo returns a UserInfo for tokens issued by issuer (compared with
 // the token's `iss` claim exactly), whose endpoint is the URL endpoint
 // returns — typically the `userinfo_endpoint` of issuer's OIDC discovery
-// document. An empty issuer matches no token. client nil uses
-// http.DefaultClient; either way, redirects to an insecure URL are refused.
+// document. An empty issuer matches no token. client nil uses a client like
+// http.DefaultClient whose requests are traced (see tracedDefaultClient);
+// either way, redirects to an insecure URL are refused.
 func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, error), client *http.Client) *UserInfo {
 	if client == nil {
-		client = http.DefaultClient
+		client = tracedDefaultClient()
 	}
 	secured := *client
 	next := client.CheckRedirect
@@ -101,6 +104,31 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 		return nil
 	}
 	return &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
+}
+
+// tracedDefaultClient is http.DefaultClient with an otelhttp transport, so a
+// lookup is a client span in the request's trace and carries its
+// traceparent. It is otelhttp directly and not observe.NewHTTPClient because
+// pkg/observe imports this package. Like http.DefaultClient it has no timeout
+// of its own (each lookup is bounded by userInfoTimeout) and resolves
+// http.DefaultTransport per request.
+func tracedDefaultClient() *http.Client {
+	return &http.Client{Transport: otelhttp.NewTransport(defaultTransport{},
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			// "GET issuer.example.com", as observe.NewHTTPClient names spans.
+			if r.URL == nil || r.URL.Host == "" {
+				return r.Method
+			}
+			return r.Method + " " + r.URL.Host
+		}))}
+}
+
+// defaultTransport is http.DefaultTransport, read when a request is sent
+// rather than when the client is built.
+type defaultTransport struct{}
+
+func (defaultTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // secureEndpoint reports whether a bearer token may be sent to u: HTTPS, or

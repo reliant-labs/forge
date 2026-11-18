@@ -68,6 +68,16 @@ type ProjectGenerator struct {
 	// scaffold deploys with no account and no edits.
 	Claimable bool
 
+	// AuthNone scaffolds a project nobody signs in to (`forge project new
+	// --auth-mode none`): no deploy/kcl/identity.k, no dev identity provider
+	// or mail catcher in any env, no IdP in docker-compose.yml, and a public
+	// frontend (no route guard, no sign-in pages). The API's authentication
+	// is untouched and still fails closed: an rpc answers anonymous callers
+	// only when its proto declares auth_required: false. Nothing records the
+	// choice: every later reader derives it from identity.k being absent
+	// (see declaresIdentity and projectDeclaresIdentity).
+	AuthNone bool
+
 	// ForgePin is the forge version the project ALREADY requires, set when
 	// `forge project new --in-place` adopts a module whose go.mod pins forge.
 	// It is then the version forge.yaml's forge_version records and the
@@ -915,7 +925,7 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	if err := GenerateFrontendFilesWithOptions(g.Path, g.ModulePath, g.Name, g.FrontendName, g.ServicePort, "", FrontendGenOptions{
 		Workspaces:  g.FrontendWorkspaces,
 		Output:      g.FrontendOutput,
-		Public:      len(g.bornComponents()) == 0 && !g.Features.MigrationsEnabled() && !g.Features.ORMEnabled(),
+		Public:      !g.declaresIdentity(),
 		TypedConfig: typedConfig,
 	}); err != nil {
 		return err

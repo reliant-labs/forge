@@ -88,6 +88,7 @@ func TestIdPPort_ComposeFileInterpolatesTheDeclaration(t *testing.T) {
 	out, err := ProjectTemplates().Render("docker-compose.yml.tmpl", struct {
 		ProjectName string
 		HasFrontend bool
+		NoIdentity  bool
 	}{ProjectName: "demo", HasFrontend: true})
 	if err != nil {
 		t.Fatalf("render docker-compose.yml.tmpl: %v", err)

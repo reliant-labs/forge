@@ -33,6 +33,10 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
+## Profile-guided builds
+
+A Go binary with a committed `cmd/<bin>/default.pgo` is built with it (Go's default `-pgo=auto`), on every runtime. `forge pgo pull --env prod` writes the file from production's CPU profiles and `forge env build` prints a `pgo:` line per binary; `pgo = forge.PGO {...}` on a `GoBuild` (or `DockerBuild.pgo`, keyed by binary) sets the source env and window, and `enabled = False` passes `-pgo=off`. Load `observability/profiles`.
+
 ## Skip an unchanged ShellBuild with `inputs`
 
 A `forge.ShellBuild` runs its `cmd` on every build, because forge cannot see

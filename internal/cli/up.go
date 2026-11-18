@@ -3312,7 +3312,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	declared := hostWorkloadConfig(cfg, w, secretsLayer, env)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
-	cmd.Env = hostEnv
+	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
 
 	return cmd, w.Name, nil
@@ -3332,6 +3332,10 @@ func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 	}
 	if g := w.GoBuild(); g != nil {
 		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
+		// The env refuses workloads that disagree on a binary's PGO
+		// (ResolvePGOBinaries), so this workload's own declaration is the
+		// binary's.
+		spec.PGOOff = g.PGO != nil && g.PGO.Enabled != nil && !*g.PGO.Enabled
 	}
 	return spec
 }
@@ -4239,7 +4243,7 @@ func trackedStack(projectID, env string) []trackedProc {
 // printed "no tracked stack for env=dev" and exited 0 while the stack it meant
 // to stop kept running. A teardown that cannot fail is not a teardown.
 func runUpStop(env string) error {
-	projectDir, err := requireProjectDir("forge env down")
+	projectDir, err := requireStackProjectDir("forge env down")
 	if err != nil {
 		return err
 	}

@@ -4379,6 +4379,35 @@ benefits:
       - library: pkg/profilequery
       - skill: observability/profiles
 
+  - id: profile-guided-builds
+    category: run
+    title: Profile-guided builds from production
+    claim: >-
+      `forge pgo pull` turns the CPU profiles your env already collects into
+      each Go binary's `cmd/<bin>/default.pgo`, which you commit; every build
+      automatically uses the committed profile, so the compiler optimizes
+      (inlining, devirtualization) the call sites production runs hot, and a
+      build never depends on a live profile store.
+    availability: forge
+    use: >-
+      `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge
+      pgo status` shows each binary's file, source and age. A hosted env's
+      profiles are pulled through the control plane (sign-in required). Tune or
+      opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo`
+      in KCL.
+    why: >-
+      Go applies PGO per main package, so a binary that runs as server, worker
+      and cron gets one profile merging all of them, weighted by CPU. A missing
+      source, too little data or an older control plane leaves the committed
+      file untouched and the build unaffected.
+    evidence:
+      - command: pgo pull
+      - command: pgo status
+      - library: pkg/profilequery
+      - skill: observability/profiles
+      - path: pkg/observe/PROFILES.md
+      - external: control-plane:internal/handlers/observability/rpc_export_pgo_profile.go
+
   - id: alerts-as-code
     category: run
     title: Alerts as code, run locally

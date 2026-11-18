@@ -3130,12 +3130,87 @@ schema Build:
     # to the project. Missing/dynamic inputs cannot authorize build reuse.
     inputs_file: str = ""
 
+# A Go binary's package path, relative to the project: "./cmd/app". Already
+# in its one spelling — no `.` or `..` segment — so the key forge's build
+# compares (internal/cli normalizePGOPackage) is the key as written.
+_PGO_BINARY_RE = r"^\./[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+_pgo_binary_key = lambda k: str -> bool {
+    _segments = k.split("/")[1:]
+    regex.match(k, _PGO_BINARY_RE) and all s in _segments {s not in [".", ".."]}
+}
+
+# Seconds in a PGO.since ("168h", "72h", "90m", "1h30m"); 0 when malformed.
+# The grammar is whole h/m/s groups, which Go's time.ParseDuration reads.
+_pgo_secs = lambda d: str -> int {
+    sum([int(p[:-1]) * {"s": 1, "m": 60, "h": 3600}[p[-1:]] for p in regex.findall(d, r"[0-9]+[smh]")]) if regex.match(d, r"^([0-9]+[smh])+$") else 0
+}
+
+schema PGO:
+    """Profile-guided optimization for one Go binary: whether its builds use
+    the profile committed beside it, and where `forge pgo pull` gets the one
+    it writes there.
+
+    Go applies PGO per main package. `go build ./cmd/<bin>` reads
+    `cmd/<bin>/default.pgo` when that file exists (Go's default `-pgo=auto`),
+    in every build — the Dockerfile, a host build and air alike — so a
+    committed profile needs no flag. Builds never fetch a profile: they stay
+    reproducible and never depend on observability. `forge pgo pull` writes
+    the file from the CPU profiles of the workloads that run the binary, and
+    you commit it.
+
+    Unset, every binary is enabled with the defaults below. Declare it on the
+    build to change them:
+
+        build = forge.GoBuild {cmd = "./cmd/app", pgo = forge.PGO {from_env = "prod"}}
+        build = forge.GoBuild {cmd = "./cmd/app", pgo = forge.PGO {enabled = False}}
+
+    A DockerBuild image can hold several binaries, so its `pgo` is keyed by
+    the binary's package path; a binary it does not name gets `PGO {}`:
+
+        build = forge.DockerBuild {pgo = {"./cmd/proxy" = forge.PGO {enabled = False}}}
+
+    One binary has one profile. A modular-monolith binary that runs as the
+    server, a worker and a cron gets ONE profile merging every workload that
+    runs it, weighted by CPU — which is what the compiler should optimize.
+    So two workloads of one env that run the same binary must declare the
+    same PGO, or the env does not render.
+    """
+    # False: this env's builds pass `-pgo=off` for the binary (a `-pgo` in
+    # GoBuild.flags always wins), and `forge pgo pull` skips it.
+    enabled: bool = True
+    # The env whose profiles `forge pgo pull` merges. "" is the env that
+    # declares this build.
+    from_env: str = ""
+    # How far back `forge pgo pull` reads: a Go duration in whole h/m/s,
+    # at most 720h (30 days, how long forge keeps the profile edges).
+    since: str = "168h"
+    # The least edge weight the window must hold (a Go duration, e.g.
+    # "10s", "500ms"): sampled CPU summed over call edges, Go's PGO total,
+    # not unique CPU time (one sample counts once per distinct call edge
+    # among its leaf frames). Below it `forge pgo pull` leaves the file
+    # alone: a thin profile optimizes for noise.
+    min_weight: str = "10s"
+    # The OTEL service names whose profiles are merged. [] is every workload
+    # of `from_env` that runs this binary (a workload's service name is its
+    # workload name).
+    services: [str] = []
+
+    check:
+        _pgo_secs(since) > 0, \
+            "PGO.since '${since}' is not a duration — whole hours, minutes or seconds such as \"168h\" or \"1h30m\""
+        _pgo_secs(since) <= 720 * 3600, \
+            "PGO.since '${since}' is longer than 720h: forge keeps 30 days of profile edges, so a longer window reads nothing more"
+        regex.match(min_weight, _DURATION_RE), \
+            "PGO.min_weight '${min_weight}' is not a duration — it needs a unit, e.g. '10s' or '500ms'"
+        all s in services {s}, "PGO.services must not contain an empty name"
+
 schema GoBuild(Build):
     """Build the service with `go build`. `cmd` is the build target
     package (e.g. "./cmd/trader") — REQUIRED, so there is no hardcoded
     `./cmd` anywhere in forge's Go. goos/goarch cross-compile;
     ldflags/tags/flags are passed through to `go build` verbatim;
-    env is build-time process env (e.g. {"CGO_ENABLED": "0"})."""
+    env is build-time process env (e.g. {"CGO_ENABLED": "0"}). `pgo` is
+    the binary's profile-guided optimization (see PGO)."""
     type: str = "go"
     cmd: str
     goos: str = ""
@@ -3144,6 +3219,7 @@ schema GoBuild(Build):
     tags: [str] = []
     flags: [str] = []
     env: {str: str} = {}
+    pgo: PGO = PGO {}
 
     check:
         type == "go", "GoBuild.type must be 'go'"
@@ -3211,10 +3287,18 @@ schema DockerBuild(Build):
     # back to forge.yaml docker.build_contexts. A GitSource value resolves
     # through the same repo+ref cache and local overrides as a frontend.
     build_contexts: {str: str | GitSource} = {}
+    # Profile-guided optimization per Go binary the image builds, keyed by
+    # the binary's package path ("./cmd/app"); a binary not named gets
+    # `PGO {}` (see PGO). forge passes `--build-arg FORGE_PGO_<BIN>=off` for
+    # a disabled one, which the scaffolded Dockerfile's `go build -pgo=`
+    # reads (and a Dockerfile without that ARG ignores).
+    pgo: {str: PGO} = {}
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
         dockerfile, "DockerBuild.dockerfile is required"
+        all k in pgo {_pgo_binary_key(k)}, \
+            "DockerBuild.pgo is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
 
 schema ShellBuild(Build):
     """Build the service by running `cmd` verbatim via `sh -c`. The ONE

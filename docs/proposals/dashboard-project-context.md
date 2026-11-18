@@ -29,10 +29,18 @@ declares a named set once:
 ```
 
 The reader binds the set as the ClickHouse parameter
-`{landing_envs:Array(String)}`: the selected environments that belong to
-project `landing`, in selection order, or `[]` when the selection does not
-narrow that project. That is the same convention `{env_ids}` already follows.
-It is a typed value bound by the server and never spliced into the SQL. It
+`{landing_envs:Array(String)}`. Its value depends on the selection:
+
+- the selected environments that belong to project `landing`, in selection
+  order;
+- `[]` when nothing is selected at all;
+- `['(none)']`, which matches no row, when the viewer selected environments
+  but none of them is `landing`'s.
+
+These are the conventions `{env_ids}` already follows. So a panel of project P
+shows nothing for P while the viewer has selected only other projects'
+environments. Today's boards show all of P in that case, and section 4 weighs
+the change. It is a typed value bound by the server and never spliced into the SQL. It
 follows the precedent toggle filters set (#1746): declared on the dashboard,
 bound by the reader, named by the author, and unable to shadow a built-in. It
 claims no new global parameter name, so no existing dashboard can break.
@@ -179,8 +187,13 @@ repeat the dead letter. Section 5.4 does both.
    parameter changes meaning and no new global name is claimed.
 5. Local `forge obs` and the hosted console bind the same values for the same
    selection, from one implementation in forge.
-6. The tenancy boundary is unchanged. A project is resolved only inside the
-   verified org, and a set can only narrow what the scope already allows.
+6. The tenancy boundary is unchanged. Authorization stays where it is today,
+   in the server's org admission and the org's own ClickHouse database and
+   user, and no declaration or selection takes part in it. A project is only
+   ever looked up inside the verified org.
+7. A set follows the selection's intent. When the viewer has selected
+   environments, P's rows appear only if one of P's environments is among
+   them.
 
 **Non-goals**
 
@@ -224,10 +237,15 @@ each set as `{<id>:Array(String)}` using one rule, implemented once in
 | ------------------------------------ | ----------------------------- |
 | unrestricted (nothing selected)      | `[]`                          |
 | names one or more environments of P  | those ids, in selection order |
-| names environments, none of them P's | `[]`                          |
+| names environments, none of them P's | `['(none)']`                  |
 | platform scope                       | `[]`                          |
 
-`[]` means "this project is not narrowed", exactly as it does for `{env_ids}`.
+The values carry the same meanings they carry in `{env_ids}`:
+
+- `[]` means nothing narrows the environments.
+- `['(none)']` is `obsquery`'s existing restricted-to-none sentinel. It cannot
+  equal an environment id, because ids are UUIDs, so it matches no row.
+
 A statement uses the set the way it already uses `env_ids`:
 
 ```sql
@@ -248,6 +266,9 @@ AND (   (Client =  'landing' AND (empty({landing_envs:Array(String)}) OR has({la
   - It uses the toggle mechanism the spec already has.
   - Resolution needs only the projects of the _selected_ environments, which
     `envscope.Resolve` already returns, so the read costs no extra query.
+  - The SQL contract is the one authors already know from `{env_ids}`. The
+    `empty(...) OR has(...)` shape is right in all three states, and a panel
+    never has to test for a sentinel.
 - **Against:**
   - It is a new spec field, so readers older than the release refuse a
     dashboard that uses it, because validation is closed-world (section 5).
@@ -284,11 +305,78 @@ loses the funnel, which is the point of the board.
 
 ## 4. Recommendation: Option B, and the case against it
 
-Adopt Option B, with `[]` as the "not narrowed" value. Ship it together with
-its two readers (local and control-plane), and with the toggle binding that is
-missing today (section 1).
+Adopt Option B with the containment rule in the table above: `['(none)']`
+when the selection names environments but none of P's, and `[]` only when
+nothing is selected at all. Ship it together with its two readers (local and
+control-plane), and with the toggle binding that is missing today
+(section 1).
 
-**Devil's advocate.**
+### Selection is a filter, not authorization
+
+An environment selection, a declared set and every other bound parameter are
+dashboard **filters**. They say what a panel should show. They do not decide
+what a caller may read.
+
+- **Authorization is enforced by the server.** The org is admitted through
+  membership or an `obs:read` credential of that org (`obsread`). The
+  statement then runs in the org's own ClickHouse database as the org's own
+  user. Both happen whatever the request or the dashboard declares. The
+  control plane says so in `internal/obsread/sql.go`: the statement's
+  parameters "are not enforcement".
+- **The one credential that is confined to an environment never runs a sql
+  panel.** A token bound to one environment is refused at admission
+  (`Request.Raw`) and again in `SQLStatement`. So no caller that may run a sql
+  panel is limited to less than its org, and sets can only reach callers that
+  may read the whole org anyway.
+- **So a set, including one an inline request forges, decides presentation
+  only.** It cannot reach another org's data, because the project is resolved
+  inside the verified org and the query runs as that org's user. What it can
+  do is show more or less of the org than the viewer selected. That is why
+  its rule matters for correctness, even though it does not matter for
+  authorization.
+
+### Containment or today's behaviour
+
+Under today's rule, `[]`, a set whose project the selection does not name is
+"not narrowed". A viewer who selected only control-plane prod would see every
+landing environment's traffic, including environments they never chose.
+That is what the boards do now, and their integration test pins it. It is
+also the convention `{env_ids}` uses when nothing is selected. But it means a
+panel can show rows **wider than the selection**, and the viewer cannot tell
+from the filter bar.
+
+The containment rule, `['(none)']`, removes that. A selection is honoured as
+written: P's panels show P's rows only when P's environments are selected, or
+when nothing is selected.
+
+|                                     | `[]` (today's behaviour)                                | `['(none)']` (containment, recommended)                              |
+| ----------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- |
+| Selection = only control-plane prod | landing panels show all landing traffic                 | landing panels show nothing; mixed funnels have no landing step      |
+| Selection = nothing                 | all landing traffic                                     | all landing traffic (unchanged)                                      |
+| Selection names a landing env       | that env                                                | that env (unchanged)                                                 |
+| What the filter bar promises        | "these environments, plus any project you did not name" | "exactly these environments"                                         |
+| Cost                                | none                                                    | a product change on two shipped boards, to be accepted and described |
+
+I recommend containment. A filter that silently shows more than it says is
+the defect #2233 is about, in another form: there, a new landing environment
+showed all traffic. A viewer who wants landing next to the app either selects
+landing's environments too, or selects nothing.
+
+Two alternatives were considered and not recommended:
+
+- **A separate flag `{<id>_selected:UInt8}`.** It would let each panel choose
+  between the two behaviours, but that puts the rule back into hand-written
+  SQL, in 16 copies. The sentinel already makes the two cases distinguishable
+  without one.
+- **Binding every live environment of P.** It is self-contained, but it costs
+  a lookup on every read, and it hides deleted environments' history and rows
+  with no environment id.
+
+If a board ever needs today's behaviour back, the compatible path is an opt-in
+on the declaration, for example `"whenUnselected": "all"`. Adding it later
+breaks nothing. Shipping it now could never be taken back.
+
+### Devil's advocate
 
 - _"Option A is smaller and is what the issue literally asks for."_ It is
   smaller in forge and larger everywhere else. The issue's own second ask, a
@@ -298,15 +386,14 @@ missing today (section 1).
   SQL. If a display column ever needs each environment's project, Option A's
   parameter can be added later under the `reliant_` prefix with nothing
   broken. The two options do not exclude each other.
-- _"`[]` for 'selection names only other projects' is surprising: I selected
-  control-plane prod and the landing panel shows every landing environment."_
-  That is the board's stated rule today, and its integration test pins it. The
-  alternative, binding all of P's live environments, has two costs. It hides
-  traffic from a deleted environment and rows with no environment id. It also
-  needs a project lookup on every read. If the owner prefers "all of P",
-  section 6, question 2 keeps it a one-line change of the rule. It must be
-  decided before release, though, because changing the rule afterwards changes
-  what shipped panels show.
+- _"Containment makes the growth board worse: I selected control-plane prod
+  and the landing headline went blank."_ That is the cost, and it is real.
+  Before, the board answered a question the viewer did not ask. Now the empty
+  panel is honest, and the board's description should say "select landing's
+  environments, or none, to see the landing". The rule is one branch of
+  `ResolveProjectEnvs`, but it decides what shipped panels show, so it must
+  be settled before release (question 2). Changing it afterwards would change
+  shipped behaviour again.
 - _"Mixed panels still need `Client = 'landing'`, so the set does not know
   which rows are P's."_ Correct. The rows in `product_events` carry an
   `EnvId`, not a project. Teaching the reader which rows belong to a project
@@ -316,11 +403,13 @@ missing today (section 1).
 - _"A dashboard-level declaration has to travel with an inline panel."_ It
   does. A shipped board run by `panel_ref` already gives the server the whole
   dashboard. A console that sends a panel inline must send the board's
-  declarations too (section 5.4). Trusting them is safe because a set only
-  ever narrows within environments `envscope` has already verified: a forged
-  declaration can name a project, but it can only see what the selection
-  already allows. A panel-level declaration would travel for free, at the cost
-  of naming the project in each panel instead of once per board.
+  declarations too (section 5.4). The server does not need to trust them. A
+  forged declaration changes only which of the org's rows a panel _shows_,
+  and the caller could already read all of those rows by sending no selection.
+  Authorization stays the org admission and the org's ClickHouse user
+  ("Selection is a filter, not authorization", above). A panel-level
+  declaration would travel for free, at the cost of naming the project in each
+  panel instead of once per board.
 - _"Why not let a set name several projects?"_ No panel needs that today. A
   list is a compatible widening later (`project` → `projects`), whereas a
   list shipped now could never be narrowed again.
@@ -333,9 +422,10 @@ missing today (section 1).
 // ProjectEnvs is a named set of the selection's environments that belong to
 // one project, bound to a sql panel as the ClickHouse parameter
 // {<ID>:Array(String)}: the selected environments of Project, in selection
-// order, or [] when the selection does not narrow Project (nothing selected,
-// or only other projects' environments). [] is "not narrowed", as for
-// SQLParamEnvIDs. A typed value, never spliced into the SQL.
+// order; [] when nothing is selected; ["(none)"], which matches nothing, when
+// environments are selected but none is Project's. The same conventions as
+// SQLParamEnvIDs. A typed value, never spliced into the SQL, and a filter: it
+// authorizes nothing.
 type ProjectEnvs struct {
 	// ID is the parameter's name: ToggleIDPattern, unique among the
 	// dashboard's toggles and sets, and not a built-in parameter.
@@ -391,8 +481,8 @@ rule belongs next to the scope it reads.
 `sqlScope` binds each set with the local project's forge.yaml name as the
 environment's project. With `--env` set, the single environment `{ID: "",
 Name: env, Project: <forge.yaml name>}` is selected. A set naming this project
-is then `[""]`, consistent with `env_ids = [""]`, and any other set is `[]`.
-With no `--env`, every set is `[]`. `ReservedParamList` and the `forge obs
+is then `[""]`, consistent with `env_ids = [""]`, and any other set is
+`['(none)']`. With no `--env`, every set is `[]`. `ReservedParamList` and the `forge obs
 query` help (`internal/cli/obs_query.go`) say that declared sets, like toggles,
 are bound only for `--panel`. A bare `--sql` names no dashboard.
 
@@ -491,11 +581,17 @@ These steps follow the forge release and the control-plane pin bump.
    constants then exist only in the integration seed.
 5. **Keep the integration test's expectations as they are.**
    `TestLandingPanelsFollowTheDeclaredLandingEnvironments` must pass with
-   identical results, which proves the rewrite preserves behaviour. Its
-   harness binds `landing_envs` through the real `obsread` path, not a
-   hand-built parameter map. Add the case the literals get wrong: a selection
-   naming a landing environment that is not one of the two narrows to it.
-6. **Saved copies need no migration.** The literals live only in the embedded
+   identical results for every selection that is empty or names a landing
+   environment. That proves the rewrite preserves those cases. Its harness
+   binds `landing_envs` through the real `obsread` path, not a hand-built
+   parameter map. Add the case the literals get wrong: a selection naming a
+   landing environment that is not one of the two narrows to it.
+6. **Change the one expectation containment changes.** With
+   `env_ids = ['prod']`, only control-plane prod, the landing panels now read
+   as no landing events, like the quiet-staging case. Update the test and the
+   boards' descriptions in the same PR. The PR says so in its title and body,
+   because it changes what two shipped boards show.
+7. **Saved copies need no migration.** The literals live only in the embedded
    boards. A workspace dashboard forked from them keeps its own copy of the
    old SQL, which keeps working exactly as before. Optionally, a one-off
    read-only query lists forks whose SQL contains either id, so their owners
@@ -514,10 +610,14 @@ environment ids.
   `platform` boards. Every existing fixture still parses, and
   `json.Marshal(ParseDashboard(x))` is unchanged for every shipped generated
   dashboard (no `projectEnvs` key appears).
-- `pkg/obsquery` `ResolveProjectEnvs` table test: unrestricted; the selection
-  names only P; P plus others (order preserved, others dropped); only other
-  projects; platform; an environment whose project is `""`; and a duplicate
-  id.
+- `pkg/obsquery` `ResolveProjectEnvs` table test. Cases:
+  - unrestricted gives `[]`;
+  - the selection names only P;
+  - P plus others (order preserved, others dropped);
+  - only other projects gives `['(none)']`;
+  - platform gives `[]`;
+  - an environment whose project is `""`;
+  - a duplicate id.
 - `TestSQLPanelBindsTheScopeAsParameters` is extended. Sets are bound,
   built-ins are unchanged, and a set that shadows a built-in is refused.
   `Fingerprint` is unchanged when there are no sets.
@@ -537,10 +637,11 @@ environment ids.
   and stay correct when the org has more environments than `MaxScopeEnvs`.
 - `QueryPanel`: a `panel_ref` run uses the board's declarations and ignores
   the request's. An inline run uses the request's. An inline statement naming
-  an undeclared set is refused with the named message. A declared set can
-  never widen the scope: a request that declares project P while selecting
-  only Q's environments binds `[]`, and the statement still runs under the
-  org's ClickHouse user.
+  an undeclared set is refused with the named message. A request that
+  declares project P while selecting only Q's environments binds
+  `['(none)']`, and every statement runs under the org's own ClickHouse user
+  and database whatever the declarations say. An environment-bound
+  credential is still refused for sql panels.
 - The landing integration test described in section 7, step 5, plus the
   literal-free guard.
 
@@ -554,10 +655,21 @@ environment ids.
 
 1. **Approve Option B** (declared project environment sets) over A (built-in
    per-environment project parameters) and C (whole-panel project narrowing)?
-2. **What a set holds when the selection names none of P's environments.**
-   `[]` ("not narrowed": today's behaviour, no lookup, keeps deleted-env
-   history) or every live environment of P (self-contained, hides deleted-env
-   and env-less rows)? I recommend `[]`. It must be settled before release.
+2. **What a set holds when the selection names environments but none of
+   P's.** The options are:
+
+   - `['(none)']` (containment): P's panels show nothing until P is selected,
+     or until nothing is selected;
+   - `[]` (today's boards): P's panels show all of P, wider than the
+     selection;
+   - every live environment of P: a lookup on every read, which hides
+     deleted-env and env-less rows.
+
+   I recommend `['(none)']`. Nothing selected stays `[]`. Containment changes
+   what the growth and funnel boards show for an app-only selection (section
+   4, "Containment or today's behaviour"). It must be settled before release,
+   and a later opt-in (`"whenUnselected": "all"`) stays possible.
+
 3. **Project identity: the name, not `hosted_projects.id`.** The issue asks
    for id and name. Environments carry only the name, which is unique and
    immutable within an org, so I recommend the name only. Is there a case for

@@ -2,14 +2,21 @@ package scaffold
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/prototext"
+
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/protofmt"
+	"github.com/reliant-labs/forge/pkg/auth"
+	forgev1 "github.com/reliant-labs/forge/pkg/forgepb"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -55,6 +62,75 @@ func TestCRUDRPCOneFieldOptionLiteralIsOneLine(t *testing.T) {
 	for _, p := range buildEntityCRUDRPCPieces("Counter") {
 		if strings.Contains(p.text, "{\n      auth_required: true\n    };") {
 			t.Errorf("%s: a one-field option literal spans three lines; buf format writes {auth_required: true}:\n%s", p.name, p.text)
+		}
+	}
+}
+
+// The option literals changed shape for buf format; what they declare must
+// not. Each of the five rpcs' literal is parsed as the text-format
+// forge.v1.MethodOptions it is (what buf compiles it into), must set
+// auth_required explicitly to true — in the one-line shape (Get, List) and
+// the multi-line one (Create, Update, Delete) alike — and, projected the way
+// generate projects it, must leave every rpc out of the open-procedure set,
+// so an unauthenticated caller is refused. Dropping auth_required, emitting
+// false or mangling either shape fails here.
+func TestCRUDRPCOptionsStayAuthRequired(t *testing.T) {
+	const svcPkg, svcName = "services.counters.v1", "CountersService"
+	literal := regexp.MustCompile(`(?s)option \(forge\.v1\.method\) = \{(.*?)\};`)
+	wantIdem := map[string]bool{"CreateCounter": true, "GetCounter": false, "UpdateCounter": true, "DeleteCounter": true, "ListCounters": false}
+
+	pieces := buildEntityCRUDRPCPieces("Counter")
+	if len(pieces) != len(wantIdem) {
+		t.Fatalf("got %d CRUD rpcs, want %d", len(pieces), len(wantIdem))
+	}
+	svc := codegen.ServiceDef{Name: svcName, Package: svcPkg, GoPackage: "example.com/counters/gen/services/counters/v1", PkgName: "countersv1"}
+	for _, p := range pieces {
+		want, known := wantIdem[p.name]
+		if !known {
+			t.Fatalf("unexpected CRUD rpc %s", p.name)
+		}
+		m := literal.FindStringSubmatch(p.text)
+		if m == nil {
+			t.Fatalf("%s: no (forge.v1.method) option:\n%s", p.name, p.text)
+		}
+		var mo forgev1.MethodOptions
+		if err := prototext.Unmarshal([]byte(m[1]), &mo); err != nil {
+			t.Fatalf("%s: option literal is not a forge.v1.MethodOptions (%v):\n%s", p.name, err, p.text)
+		}
+		if mo.AuthRequired == nil || !*mo.AuthRequired {
+			t.Errorf("%s: auth_required is not explicitly true:\n%s", p.name, p.text)
+		}
+		if mo.GetIdempotencyKey() != want {
+			t.Errorf("%s: idempotency_key = %v, want %v:\n%s", p.name, mo.GetIdempotencyKey(), want, p.text)
+		}
+		// Mirrors the descriptor projection: fail-closed by default, and
+		// internal/cli applyMethodOptions lets an explicit value win.
+		method := codegen.Method{Name: p.name, AuthRequired: true}
+		if mo.AuthRequired != nil {
+			method.AuthRequired = *mo.AuthRequired
+		}
+		svc.Methods = append(svc.Methods, method)
+	}
+
+	var skip []string
+	for _, e := range codegen.BuildOpenProcedures([]codegen.ServiceDef{svc}, "example.com/counters").Open {
+		skip = append(skip, "/"+e.Service+"/"+e.Method)
+	}
+	if len(skip) != 0 {
+		t.Fatalf("CRUD rpcs projected into the open-procedure set: %v", skip)
+	}
+	v, err := auth.NewValidator(auth.Config{Provider: auth.ProviderJWT, JWT: auth.JWTConfig{SigningMethod: "HS256", Secret: "test-secret"}, SkipMethods: skip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range svc.Methods {
+		proc := "/" + svcPkg + "." + svcName + "/" + m.Name
+		if v.IsUnauthenticatedProcedure(proc, skip) {
+			t.Errorf("%s bypasses authentication", proc)
+		}
+		_, err := v.AuthenticateHeaders(context.Background(), http.Header{}, auth.InterceptorOptions{SkipMethods: skip})
+		if connect.CodeOf(err) != connect.CodeUnauthenticated {
+			t.Errorf("%s: a credential-less caller got %v, want Unauthenticated", proc, err)
 		}
 	}
 }

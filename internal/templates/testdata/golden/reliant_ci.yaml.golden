@@ -12,7 +12,13 @@
 #   a pull request is opened, pushed to, reopened or marked ready  ->  --tier pr
 #   the merge queue builds a group (gh-readonly-queue/...)         ->  --tier queue
 #   a push to the default branch                                   ->  --tier main
-#   Re-run on the check                                            ->  its branch's tier
+#
+# There is no Re-run trigger: GitHub's Re-run on the check names only a commit
+# and a branch, and nothing a workflow can read says whether that commit is a
+# trusted pull request's head, so a re-run could gate code the pull-request
+# filter never admitted. To run the gate again, push to the branch (an empty
+# commit will do) or close and reopen the pull request; both pass the filter
+# below again.
 #
 # A draft is skipped. A pull request from a fork, or by an author with no write
 # access to the repository (and not in trusted_ids), never runs on your
@@ -135,40 +141,6 @@ triggers:
     branch: '{{ trigger.payload.attributes.branch }}'
     default_branch: '{{ trigger.payload.data.repository.default_branch }}'
   prompt: 'Run the CI gate on {{ trigger.payload.attributes.branch }} of {{ trigger.payload.attributes.repository }} at {{ trigger.payload.data.after }}.'
-# GitHub's Re-run on this check, or Re-run all checks. Only someone with write
-# access can click it, on a commit this workflow already gated, and GitHub
-# sends it only for a person's click; origin_filter "true" keeps the engine
-# from reading it as an echo of this workflow's own check run.
-- name: re-run
-  description: Someone clicked Re-run on the check.
-  integration:
-    integration: github
-    events: [check_run.rerequested]
-    match:
-      repository: {input: repository}
-      name: demo/ci
-  origin_filter: "true"
-  filter: has(trigger.payload.attributes.branch) && has(trigger.payload.data.check_run.head_sha)
-  inputs:
-    tier: "{{ trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch ? 'main' : trigger.payload.attributes.branch.matches('^gh-readonly-queue/') ? 'queue' : 'pr' }}"
-    sha: '{{ trigger.payload.data.check_run.head_sha }}'
-    branch: '{{ trigger.payload.attributes.branch }}'
-    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
-  prompt: 'Re-run the CI gate on {{ trigger.payload.data.check_run.head_sha }} of {{ trigger.payload.attributes.repository }}.'
-- name: re-run-all
-  description: Someone clicked Re-run all checks.
-  integration:
-    integration: github
-    events: [check_suite.rerequested]
-    match: {repository: {input: repository}}
-  origin_filter: "true"
-  filter: has(trigger.payload.attributes.branch) && has(trigger.payload.data.check_suite.head_sha)
-  inputs:
-    tier: "{{ trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch ? 'main' : trigger.payload.attributes.branch.matches('^gh-readonly-queue/') ? 'queue' : 'pr' }}"
-    sha: '{{ trigger.payload.data.check_suite.head_sha }}'
-    branch: '{{ trigger.payload.attributes.branch }}'
-    default_branch: '{{ trigger.payload.data.repository.default_branch }}'
-  prompt: 'Re-run the CI gate on {{ trigger.payload.data.check_suite.head_sha }} of {{ trigger.payload.attributes.repository }}.'
 outputs:
   verdict: "{{ nodes.?doc.doc.verdict.orValue('') }}"
 entry: [facts]

@@ -29,7 +29,13 @@ never again (`forge project rescaffold <path>` re-creates a deleted one).
 | `pull_request` opened, synchronize, reopened, ready_for_review (drafts skipped) | `pr`, affected tests from the PR's base |
 | `check_suite.requested` on `gh-readonly-queue/...` (a merge-queue group) | `queue`, against the group's base |
 | `push` to the default branch | `main` |
-| Re-run / Re-run all checks on the check | its branch's tier |
+
+There is no Re-run trigger. GitHub's Re-run on a check names only a commit
+and a branch, and no read a workflow has says whether that commit is a
+trusted pull request's head, so a re-run could gate code the pull-request
+filter never admitted. To run the gate again, push to the branch (`git commit
+--allow-empty`) or close and reopen the pull request: both go through the
+filter again. A merge group re-runs by re-queueing.
 
 The workflow only says when and where. What the gate checks is forge's
 (`forge ci gate` plans from forge.yaml), so it improves with a forge bump,

@@ -34,9 +34,20 @@ type reliantCINode struct {
 	} `yaml:"args"`
 }
 
+type reliantCITrigger struct {
+	Name        string `yaml:"name"`
+	Integration struct {
+		Events []string `yaml:"events"`
+	} `yaml:"integration"`
+	OriginFilter string            `yaml:"origin_filter"`
+	Filter       string            `yaml:"filter"`
+	Inputs       map[string]string `yaml:"inputs"`
+}
+
 type reliantCIDoc struct {
-	Nodes []reliantCINode `yaml:"nodes"`
-	Edges []struct {
+	Triggers []reliantCITrigger `yaml:"triggers"`
+	Nodes    []reliantCINode    `yaml:"nodes"`
+	Edges    []struct {
 		From  string `yaml:"from"`
 		Cases []struct {
 			Condition string   `yaml:"condition"`
@@ -664,5 +675,69 @@ echo '{"schema":"forge.ci.gate/v1","ok":true,"verdict":"pass","checks":[]}'
 	}
 	if after := objects(); after != before {
 		t.Errorf("the gate changed the checkout's object store:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// Only a trusted head runs the gate, and each trigger's tier is the trigger's
+// own, never inferred from a branch name. There is no Re-run trigger: GitHub's
+// check_run.rerequested and check_suite.rerequested name a commit and a branch
+// but nothing a workflow can read says the commit passed the pull-request
+// filter, so a re-run could gate a branch or sha that filter never admitted.
+func TestReliantCI_OnlyTrustedEventsRunTheGate(t *testing.T) {
+	for _, workflow := range []string{"ci", "review"} {
+		out, err := CITemplates("reliant").Render(workflow+".yaml.tmpl", ReliantCIWorkflowData{Check: "demo/" + workflow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc reliantCIDoc
+		if err := yaml.Unmarshal(out, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, tr := range doc.Triggers {
+			for _, ev := range tr.Integration.Events {
+				if strings.HasSuffix(ev, ".rerequested") || strings.HasPrefix(ev, "check_run.") {
+					t.Errorf("%s.yaml trigger %s listens to %s: a re-run is not re-checked against the pull-request filter", workflow, tr.Name, ev)
+				}
+			}
+			if tr.OriginFilter != "" {
+				t.Errorf("%s.yaml trigger %s overrides origin_filter", workflow, tr.Name)
+			}
+		}
+	}
+
+	doc := renderReliantCI(t)
+	want := map[string]struct {
+		events, tier string
+		filter       []string
+	}{
+		"pull-request": {"pull_request.opened,pull_request.synchronize,pull_request.reopened,pull_request.ready_for_review", "pr", []string{
+			"!trigger.payload.data.pull_request.draft",
+			"trigger.payload.data.pull_request.head.repo.full_name == trigger.payload.attributes.repository",
+			"trigger.payload.data.pull_request.author_association in ['OWNER', 'MEMBER', 'COLLABORATOR']",
+			"in trigger.activation.params.trusted_ids",
+		}},
+		"merge-group": {"check_suite.requested", "queue", []string{"matches('^gh-readonly-queue/.+/pr-[0-9]+-[0-9a-f]{40}$')"}},
+		"push":        {"push", "main", []string{"trigger.payload.attributes.branch == trigger.payload.data.repository.default_branch", "!trigger.payload.data.deleted"}},
+	}
+	if len(doc.Triggers) != len(want) {
+		t.Errorf("ci.yaml declares %d triggers, want exactly pull-request, merge-group and push", len(doc.Triggers))
+	}
+	for _, tr := range doc.Triggers {
+		w, ok := want[tr.Name]
+		if !ok {
+			t.Errorf("ci.yaml declares an unexpected trigger %q", tr.Name)
+			continue
+		}
+		if got := strings.Join(tr.Integration.Events, ","); got != w.events {
+			t.Errorf("trigger %s listens to %s, want %s", tr.Name, got, w.events)
+		}
+		if tr.Inputs["tier"] != w.tier {
+			t.Errorf("trigger %s sets tier %q, want the literal %q", tr.Name, tr.Inputs["tier"], w.tier)
+		}
+		for _, f := range w.filter {
+			if !strings.Contains(tr.Filter, f) {
+				t.Errorf("trigger %s's filter lacks %q:\n%s", tr.Name, f, tr.Filter)
+			}
+		}
 	}
 }

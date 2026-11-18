@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -184,7 +185,13 @@ const (
 	// transitions, and a spike is measured per issue), which the control plane
 	// owns. They cover every issue the env has, browser or server.
 	PlatformNewIssue       = "new-issue"
-	PlatformIssueRegressed = "issue-regressed"
+	// PClientTimeoutMinSessions is new-issue's one param: a client-side timeout
+	// issue (the browser gave up on a request, or several of its requests hung
+	// together) pages only once this many distinct sessions have hit it. One
+	// slow tab is a latency the server already records, or a dead connection;
+	// two sessions are a pattern. The issue opens at once either way.
+	PClientTimeoutMinSessions = "client_timeout_min_sessions"
+	PlatformIssueRegressed    = "issue-regressed"
 	PlatformIssueSpike     = "issue-spike"
 	// PlatformReleaseRegressed fires when a promotion's after-window closes
 	// and the release-health verdict is FAIL: the env's release_health.fail_on
@@ -297,7 +304,9 @@ var alertDefs = []alertDef{
 		AlertDefaultInfo: AlertDefaultInfo{
 			ID: PlatformNewIssue, Alert: "NewIssue", Title: "A new issue appeared",
 			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "platform",
-			Params: []AlertParam{},
+			Params: []AlertParam{
+				{PClientTimeoutMinSessions, 2, "distinct browser sessions a client-side timeout issue (a request the browser gave up on, or a connection stall) must reach before NewIssue fires for it; the issue itself opens at once. 1 pages on first sight like any other issue"},
+			},
 		},
 		annotations: map[string]string{"summary": "New issue in {{ $labels.service }} ({{ $labels.env }}): {{ $labels.title }}. Details: {{ $labels.console_url }}"},
 		applies:     hasIssues,
@@ -519,8 +528,12 @@ func ValidateAlertTuning(tuning map[string]AlertTuning) error {
 			if !known[name] {
 				return fmt.Errorf("alerts.defaults[%q].params has %q, which %s does not take (params: %s)", id, name, d.ID, strings.Join(names, ", "))
 			}
-			if v := tuning[id].Params[name]; v <= 0 {
+			v := tuning[id].Params[name]
+			if v <= 0 {
 				return fmt.Errorf("alerts.defaults[%q].params[%q] = %v: a threshold or window must be positive", id, name, v)
+			}
+			if name == PClientTimeoutMinSessions && v != math.Trunc(v) {
+				return fmt.Errorf("alerts.defaults[%q].params[%q] = %v: a number of sessions must be a whole number", id, name, v)
 			}
 		}
 	}
@@ -654,7 +667,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 		if d.platform != nil {
 			for _, pr := range d.platform {
 				r := AlertRule{
-					ID: d.ID, Alert: pr.alert, Expr: PlatformExpr(pr.key, tuned && !t.Enabled),
+					ID: d.ID, Alert: pr.alert, Expr: PlatformExpr(pr.key, tuned && !t.Enabled) + platformParams(d.Params, params),
 					For: d.For, Interval: d.Interval,
 					Labels:      map[string]string{"severity": pr.severity},
 					Annotations: map[string]string{},
@@ -730,6 +743,31 @@ func PlatformExpr(key string, off bool) string {
 		m += " off"
 	}
 	return m + " */"
+}
+
+// PlatformParamsPrefix opens the comment a platform default's tuned params
+// travel in, after its marker: `/* reliant:params name=value … */`.
+const PlatformParamsPrefix = "/* reliant:params "
+
+// platformParams is the params comment of a platform default: only the params
+// the env tuned away from their default, sorted, so an untuned default records
+// exactly the bare marker it always has (a control plane that predates the
+// params, and its injected built-ins, see one rule). It rides as a SECOND
+// comment rather than inside the marker, whose shape older control planes
+// match exactly. The control plane holds the same defaults for a missing
+// param.
+func platformParams(defs []AlertParam, params map[string]float64) string {
+	var kv []string
+	for _, p := range defs {
+		if v, ok := params[p.Name]; ok && v != p.Default {
+			kv = append(kv, p.Name+"="+num(v))
+		}
+	}
+	if len(kv) == 0 {
+		return ""
+	}
+	sort.Strings(kv)
+	return " " + PlatformParamsPrefix + strings.Join(kv, " ") + " */"
 }
 
 // IsPlatformExpr reports whether expr is a recorded platform default.

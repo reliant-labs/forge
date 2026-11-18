@@ -43,8 +43,8 @@ const (
 	captureUint                        // value, as uint64
 	captureFloat                       // value, as float64
 	captureBool                        // value
-	captureDuration                    // time.Duration value
-	captureTime                        // time.Time value
+	captureDuration                    // time.Duration: "[type=Duration]", never the value
+	captureTime                        // time.Time: "[type=Time]", never the value
 	captureID                          // ID-shaped string: the value, bounded
 	captureLen                         // other strings, []byte: the length
 	captureCount                       // slices, arrays, maps, variadics: the element count
@@ -182,9 +182,11 @@ func (f captureField) recordStmt() string {
 	case captureBool:
 		return fmt.Sprintf("r.Bool(%q, %s)", f.Attr, conv("bool"))
 	case captureDuration:
-		return fmt.Sprintf("r.Duration(%q, %s)", f.Attr, v)
+		// An exact duration or timestamp in a request is user content (when
+		// someone booked, how long they asked for): its type only.
+		return fmt.Sprintf("r.Type(%q, %q)", f.Attr, "Duration")
 	case captureTime:
-		return fmt.Sprintf("r.Time(%q, %s)", f.Attr, v)
+		return fmt.Sprintf("r.Type(%q, %q)", f.Attr, "Time")
 	case captureID:
 		return fmt.Sprintf("r.ID(%q, %s)", f.Attr, conv("string"))
 	case captureLen:
@@ -201,7 +203,13 @@ func (f captureField) recordStmt() string {
 
 // stored reports whether the capture keeps the parameter's value: a
 // type-only record is a constant.
-func (f captureField) stored() bool { return f.Kind != captureType && f.Kind != captureNone }
+func (f captureField) stored() bool {
+	switch f.Kind {
+	case captureType, captureNone, captureDuration, captureTime:
+		return false
+	}
+	return true
+}
 
 // methodCapture is one method's capture type: its stored fields and its
 // recorder statements, in parameter order.

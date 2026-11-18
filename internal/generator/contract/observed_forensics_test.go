@@ -187,11 +187,11 @@ func (m *MockService) Ping(ctx context.Context) error             { return nil }
 		// Ping is promoted from an embedded type: tied to the one type that
 		// declares it.
 		`Ping:  observe.NewOp("orders.Ping", "example.com/shop/internal/orders.Service.Ping", "internal/orders/ping.go"),`,
-		`o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Place, forgeMiddlewareServicePlaceArgs{orderID, note, qty, wait, items}, func(ctx context.Context) (string, error) {`,
+		`o.chain.AroundOp(ctx, forgeMiddlewareServiceOps.Place, forgeMiddlewareServicePlaceArgs{orderID, note, qty, items}, func(ctx context.Context) (string, error) {`,
 		`r.ID("orderID", a.orderID)`,
 		`r.Len("note", len(a.note))`,
 		`r.Int("qty", int64(a.qty))`,
-		`r.Duration("wait", a.wait)`,
+		`r.Type("wait", "Duration")`,
 		`r.Count("items", len(a.items))`,
 		`r.Type("in", "*Input")`,
 		// Bare forge:no-capture on the implementation: nothing for Get.
@@ -203,6 +203,9 @@ func (m *MockService) Ping(ctx context.Context) error             { return nil }
 	}
 	if strings.Contains(got, `"coupon"`) {
 		t.Errorf("forge:no-capture coupon still captured:\n%s", got)
+	}
+	if strings.Contains(got, "a.wait") || strings.Contains(got, "\twait ") {
+		t.Errorf("a duration's value is stored or recorded:\n%s", got)
 	}
 	if strings.Contains(got, "\tin      *Input") || strings.Contains(got, "\tin *Input") {
 		t.Errorf("a type-only parameter is stored in the capture:\n%s", got)

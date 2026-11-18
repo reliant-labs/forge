@@ -7,7 +7,8 @@
 //
 //	parameter                                     recorded as
 //	ints, uints, floats, bools                    the value
-//	time.Duration, time.Time                      the value (string)
+//	time.Time, time.Duration                      "[type=Time]", "[type=Duration]" — never the value
+//	proto Timestamp, Duration                     "[type=Timestamp]", "[type=Duration]"
 //	string named like an ID (ForensicIDName)      the value, at most MaxForensicValue bytes
 //	any other string, []byte                      "[len=42]" — the length only
 //	slice, array, map, variadic                   "[count=3]" — the element count only
@@ -233,16 +234,6 @@ func (r *ForensicRecorder) Float(name string, v float64) { r.add(forensicKey(nam
 // Bool records a boolean parameter.
 func (r *ForensicRecorder) Bool(name string, v bool) { r.add(forensicKey(name).Bool(v)) }
 
-// Duration records a time.Duration parameter ("1.5s").
-func (r *ForensicRecorder) Duration(name string, v time.Duration) {
-	r.add(forensicKey(name).String(v.String()))
-}
-
-// Time records a time.Time parameter (RFC 3339, UTC).
-func (r *ForensicRecorder) Time(name string, v time.Time) {
-	r.add(forensicKey(name).String(v.UTC().Format(time.RFC3339Nano)))
-}
-
 // ID records an ID-shaped string parameter's value, bounded to
 // MaxForensicValue bytes.
 func (r *ForensicRecorder) ID(name, v string) { r.add(forensicKey(name).String(boundValue(v))) }
@@ -288,6 +279,10 @@ func (r *ForensicRecorder) Proto(name string, m any) {
 	if !msg.IsValid() {
 		return
 	}
+	if t, ok := timeMessage(msg.Descriptor()); ok {
+		r.Type(name, t)
+		return
+	}
 	r.walk(name, msg, 1)
 }
 
@@ -331,6 +326,10 @@ func (r *ForensicRecorder) field(name string, fd protoreflect.FieldDescriptor, v
 	case protoreflect.BytesKind:
 		r.Len(name, len(v.Bytes()))
 	case protoreflect.MessageKind, protoreflect.GroupKind:
+		if t, ok := timeMessage(fd.Message()); ok {
+			r.Type(name, t)
+			return
+		}
 		if depth >= ForensicMaxDepth {
 			r.add(forensicKey(name).String("[message]"))
 			return
@@ -339,6 +338,18 @@ func (r *ForensicRecorder) field(name string, fd protoreflect.FieldDescriptor, v
 	default:
 		r.Type(name, fd.Kind().String())
 	}
+}
+
+// timeMessage reports a google.protobuf.Timestamp or Duration, recorded by
+// type only: an exact time or duration in a request is user content.
+func timeMessage(md protoreflect.MessageDescriptor) (string, bool) {
+	switch md.FullName() {
+	case "google.protobuf.Timestamp":
+		return "Timestamp", true
+	case "google.protobuf.Duration":
+		return "Duration", true
+	}
+	return "", false
 }
 
 func fieldRedacted(fd protoreflect.FieldDescriptor) bool {

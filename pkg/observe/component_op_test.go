@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,8 +14,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
@@ -416,5 +420,87 @@ func BenchmarkComponentChainSuccess(b *testing.B) {
 				})
 			}
 		})
+	}
+}
+
+// timeArgs is what the generator emits for Book(ctx, roomID string, at
+// time.Time, stay time.Duration, when *timestamppb.Timestamp, req proto):
+// times and durations by type only.
+type timeArgs struct {
+	roomID string
+	when   *timestamppb.Timestamp
+	req    proto.Message
+}
+
+func (a timeArgs) RecordForensics(r *ForensicRecorder) {
+	r.ID("roomID", a.roomID)
+	r.Type("at", "Time")
+	r.Type("stay", "Duration")
+	r.Proto("when", a.when)
+	r.Proto("req", a.req)
+}
+
+// TestComponentOpForensicsNeverRecordsATimeValue: an exact timestamp or
+// duration in a request is user content (when someone booked, for how long),
+// so neither a Go time nor a proto Timestamp/Duration field leaves its value.
+func TestComponentOpForensicsNeverRecordsATimeValue(t *testing.T) {
+	booked := time.Date(2031, 7, 14, 9, 30, 15, 0, time.UTC)
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("booking_test.proto"),
+		Package:    proto.String("bookingtest"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{"google/protobuf/timestamp.proto", "google/protobuf/duration.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Booking"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("start_at"), Number: proto.Int32(1), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".google.protobuf.Timestamp"), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), JsonName: proto.String("startAt")},
+				{Name: proto.String("stay"), Number: proto.Int32(2), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".google.protobuf.Duration"), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), JsonName: proto.String("stay")},
+				{Name: proto.String("guests"), Number: proto.Int32(3), Type: descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), JsonName: proto.String("guests")},
+			},
+		}},
+	}
+	fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookingDesc := fd.Messages().ByName("Booking")
+	booking := dynamicpb.NewMessage(bookingDesc)
+	booking.Set(bookingDesc.Fields().ByName("start_at"), protoreflect.ValueOfMessage(timestamppb.New(booked).ProtoReflect()))
+	booking.Set(bookingDesc.Fields().ByName("stay"), protoreflect.ValueOfMessage(durationpb.New(73*time.Hour).ProtoReflect()))
+	booking.Set(bookingDesc.Fields().ByName("guests"), protoreflect.ValueOfInt32(2))
+
+	chain, rec := newRecordedChain(t)
+	args := timeArgs{roomID: "room_7", when: timestamppb.New(booked), req: booking}
+	_ = chain.RunOp(context.Background(), NewOp("booking.Book", "", ""), args, func(context.Context) error {
+		return errors.New("db down")
+	})
+	ev := forensicsEvents(rec.Ended()[0])
+	if len(ev) != 1 {
+		t.Fatalf("forensics events = %d", len(ev))
+	}
+	a := attrsOf(ev[0].Attributes)
+	for k, want := range map[string]string{
+		"forensics.arg.roomID":       "room_7",
+		"forensics.arg.at":           "[type=Time]",
+		"forensics.arg.stay":         "[type=Duration]",
+		"forensics.arg.when":         "[type=Timestamp]",
+		"forensics.arg.req.start_at": "[type=Timestamp]",
+		"forensics.arg.req.stay":     "[type=Duration]",
+	} {
+		if a[k].AsString() != want {
+			t.Errorf("%s = %q, want %q", k, a[k].AsString(), want)
+		}
+	}
+	if a["forensics.arg.req.guests"].AsInt64() != 2 {
+		t.Errorf("guests = %v", a["forensics.arg.req.guests"])
+	}
+	// The booked moment and the stay, in every spelling a leak could take.
+	secret := []string{"2031", fmt.Sprint(booked.Unix()), "73h", fmt.Sprint(int64((73 * time.Hour).Seconds())), "seconds", "nanos"}
+	for _, kv := range ev[0].Attributes {
+		for _, s := range secret {
+			if strings.Contains(string(kv.Key), s) || strings.Contains(kv.Value.Emit(), s) {
+				t.Fatalf("a time value reached forensics: %s=%s", kv.Key, kv.Value.Emit())
+			}
+		}
 	}
 }

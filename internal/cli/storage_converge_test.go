@@ -282,6 +282,10 @@ func TestK3dRegistryCreateArgs_DeleteEnabled(t *testing.T) {
 	}
 }
 
+// upTestEnvRegistries is the env-up side of storagePolicyForOpportunisticGC:
+// the env being brought up uses the registry that policy registers.
+var upTestEnvRegistries = []string{"k3d-cp-registry"}
+
 // storagePolicyForOpportunisticGC points FORGE_STORAGE_POLICY at a temp policy
 // with one registered registry, stubs the pass itself (the real one shells out
 // to docker), and returns the policy path.
@@ -329,7 +333,7 @@ func TestOpportunisticGC_SkipsWhenRecent(t *testing.T) {
 		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if out.Len() != 0 {
 		t.Fatalf("a recent pass still did work:\n%s", out.String())
 	}
@@ -350,7 +354,7 @@ func TestOpportunisticGC_RunsWhenStale(t *testing.T) {
 		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	text := out.String()
 	if !bytes.Contains(out.Bytes(), []byte("in the background")) {
 		t.Fatalf("a stale pass did not start:\n%s", text)
@@ -381,7 +385,7 @@ func TestOpportunisticGC_NoticesMissingSchedule(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if !bytes.Contains(out.Bytes(), []byte("forge storage install")) {
 		t.Fatalf("no notice naming the install command:\n%s", out.String())
 	}
@@ -389,7 +393,7 @@ func TestOpportunisticGC_NoticesMissingSchedule(t *testing.T) {
 	// Installed -> silent.
 	storageScheduleInstalledFn = func() bool { return true }
 	out.Reset()
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if out.Len() != 0 {
 		t.Fatalf("notice printed with a schedule installed:\n%s", out.String())
 	}
@@ -413,7 +417,7 @@ func TestOpportunisticGC_AdvancesStampOnFailure(t *testing.T) {
 		t.Fatalf("RecordAutoGC: %v", err)
 	}
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if attempt, _ := storage.LastAutoGC(path); attempt.OK || !strings.Contains(attempt.Error, "docker daemon is not reachable") {
 		t.Fatalf("the failing pass was not recorded as a failure: %+v", attempt)
 	}
@@ -422,7 +426,7 @@ func TestOpportunisticGC_AdvancesStampOnFailure(t *testing.T) {
 	}
 	// Immediately after, the gate is closed again.
 	out.Reset()
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if out.Len() != 0 {
 		t.Fatalf("the failing pass re-attempted on the next run:\n%s", out.String())
 	}
@@ -448,7 +452,7 @@ func TestOpportunisticGC_SilentWithoutRegistries(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if out.Len() != 0 {
 		t.Fatalf("notice printed with no registries registered:\n%s", out.String())
 	}

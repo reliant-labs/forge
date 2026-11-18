@@ -406,6 +406,9 @@ func FailureOf(err error) Failure {
 	if secs, err := strconv.Atoi(strings.TrimSpace(ce.Header.Get("Retry-After"))); err == nil && secs > 0 {
 		f.RetryAfter = time.Duration(secs) * time.Second
 	}
+	if f.RetryAfter <= 0 {
+		f.RetryAfter = retryInfoDelay(ce)
+	}
 	switch {
 	case ce.HTTPStatus == http.StatusUnauthorized, ce.HTTPStatus == http.StatusForbidden,
 		ce.Code == cloud.CodeUnauthenticated, ce.Code == cloud.CodePermissionDenied:
@@ -455,6 +458,27 @@ func exhaustedClass(ce *cloud.Error) FailureClass {
 		return ClassTooMuchData
 	}
 	return ClassQuota
+}
+
+// retryInfoDelay reads a google.rpc.RetryInfo detail's retry_delay, the wait a
+// refusal asks for when no Retry-After header reached forge (a proxy that drops
+// it). Zero when there is none.
+func retryInfoDelay(ce *cloud.Error) time.Duration {
+	raw, ok := ce.DetailJSON("google.rpc.RetryInfo")
+	if !ok {
+		return 0
+	}
+	var d struct {
+		RetryDelay string `json:"retryDelay"`
+	}
+	if json.Unmarshal(raw, &d) != nil {
+		return 0
+	}
+	delay, err := time.ParseDuration(d.RetryDelay)
+	if err != nil || delay <= 0 {
+		return 0
+	}
+	return delay
 }
 
 // quotaResetsAt reads when a spent quota refills from the refusal's detail.

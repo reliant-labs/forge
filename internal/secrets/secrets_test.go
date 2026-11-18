@@ -454,3 +454,32 @@ func TestNewProvider_Hosted_NeverResolves(t *testing.T) {
 		t.Errorf("hosted validate should be nil (forge cannot see hosted values): %v", err)
 	}
 }
+
+// An empty value is as good as absent: forge's config loader reads an env
+// var set to "" as unset, and a required field set but empty fails at boot.
+// control-plane's dev store held "" for three required HMAC keys, the
+// pre-flight passed, and `forge env up` failed 16 minutes later with
+// crashlooping pods. An optional ref stays exempt.
+func TestValidateDeclaredRefs_EmptyValueIsMissing(t *testing.T) {
+	path := writeDotenv(t, "SET=x\nEMPTY=\nOPTIONAL_EMPTY=\n")
+	p, err := NewProvider(&ProviderConfig{Type: "file", Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.All()["EMPTY"]; !ok {
+		t.Fatal("fixture: the store does not hold EMPTY as a present-but-empty key")
+	}
+	refs := []SecretRef{
+		{EnvName: "SET", SecretName: "s", SecretKey: "set"},
+		{EnvName: "EMPTY", SecretName: "s", SecretKey: "empty"},
+		{EnvName: "OPTIONAL_EMPTY", SecretName: "s", SecretKey: "opt", Optional: true},
+	}
+	missing := MissingDeclaredRefs(p, refs)
+	if len(missing) != 1 || missing[0].EnvName != "EMPTY" {
+		t.Fatalf("missing = %+v, want only EMPTY", missing)
+	}
+	err = ValidateDeclaredRefs(p, refs, path)
+	if err == nil || !strings.Contains(err.Error(), "EMPTY") || !strings.Contains(err.Error(), "absent or empty") {
+		t.Fatalf("err = %v, want EMPTY named as absent or empty", err)
+	}
+}

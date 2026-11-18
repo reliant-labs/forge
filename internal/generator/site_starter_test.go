@@ -84,8 +84,9 @@ func TestWriteSiteStarter(t *testing.T) {
 				}
 			}
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
-			if !strings.Contains(string(pkg), `"@hyperdx/browser": "`+webRuntimePeer("@hyperdx/browser")+`"`) {
-				t.Fatal("site lacks SDK peer")
+			// The runtime carries the SDK's parts itself.
+			if strings.Contains(string(pkg), `"@hyperdx/browser"`) {
+				t.Fatal("site declares @hyperdx/browser, which the runtime no longer imports")
 			}
 
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {

@@ -51,6 +51,9 @@ func generateLoginBroker(modulePath, projectDir string) error {
 	if err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir); err != nil {
 		return err
 	}
+	if w := codegen.LoginBrokerCookieMismatch(projectDir); w != "" {
+		fmt.Printf("  ⚠️  %s\n", w)
+	}
 	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
 	return nil
 }

@@ -20,7 +20,7 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 
 	var b strings.Builder
 	printClaimBlock(&b, "prod", &deployClaimJSON{
-		State: "live", URL: "https://amber-quokka.reliantpreview.dev", ClaimURL: "https://app.reliant.dev/claim#rcl_9f3KQe",
+		State: "live", Published: true, URL: "https://amber-quokka.reliantpreview.dev", ClaimURL: "https://app.reliant.dev/claim#rcl_9f3KQe",
 		ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
 		ConsoleURL: "https://forge.reliantlabs.io/forge/p/shop?env=prod",
 	})
@@ -43,12 +43,13 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 
 	// No console URL known: the rest still prints, with no link.
 	b.Reset()
-	printClaimBlock(&b, "prod", &deployClaimJSON{State: "live", ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)})
+	printClaimBlock(&b, "prod", &deployClaimJSON{State: "live", Published: true, ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)})
 	if strings.Contains(b.String(), "dashboards:") || !strings.Contains(b.String(), "ONCE CLAIMED") {
 		t.Errorf("without a console URL:\n%s", b.String())
 	}
 
 	doc := claimDocument("prod", credentials.Credential{Claimable: &credentials.Claimable{
+		URL:      "https://amber-quokka.reliantpreview.dev",
 		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
 	}}, now, false)
 	for _, want := range []string{"Once claimed it is theirs", "free plan includes one static site", Name() + " login, then " + Name() + " env deploy prod"} {
@@ -60,12 +61,13 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 	// A deploy that can no longer be claimed promises nothing about claiming.
 	for _, state := range []string{"claimed", "expired"} {
 		b.Reset()
-		printClaimBlock(&b, "prod", &deployClaimJSON{State: state, ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)})
+		printClaimBlock(&b, "prod", &deployClaimJSON{State: state, Published: true, ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(time.Hour), PurgeAfter: now.Add(2 * time.Hour)})
 		if strings.Contains(b.String(), "ONCE CLAIMED") {
 			t.Errorf("a %s deploy's block says what claiming gives:\n%s", state, b.String())
 		}
 	}
 	expired := claimDocument("prod", credentials.Credential{Claimable: &credentials.Claimable{
+		URL:      "https://amber-quokka.reliantpreview.dev",
 		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(-48 * time.Hour), PurgeAfter: now.Add(-time.Hour),
 	}}, now, false)
 	if expired.State != "expired" || strings.Contains(expired.AgentInstructions, "Once claimed") {

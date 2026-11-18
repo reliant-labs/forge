@@ -122,8 +122,12 @@ func TestNewUsersSourceExcludesTheDataStart(t *testing.T) {
 		}
 	}
 	decided := NewUsersDecidedFrom("product_events", "{to:DateTime64(9)}", "")
-	if !strings.Contains(decided, "min(first_at) + INTERVAL 7 DAY) AS DecidedFrom") {
+	if !strings.Contains(decided, "minIf(first_at, k = 'u') + INTERVAL 7 DAY) AS DecidedFrom") {
 		t.Errorf("NewUsersDecidedFrom does not add the grace to the data's start:\n%s", decided)
+	}
+	if !strings.Contains(decided, "if(max(has_signup) = 1, minIf(first_at, k = 's'),") ||
+		!strings.Contains(decided, "EventName = 'auth_signed_up' AND Timestamp >= {to:DateTime64(9)} - INTERVAL 400 DAY") {
+		t.Errorf("NewUsersDecidedFrom does not decide a sign-up environment from its earliest retained sign-up:\n%s", decided)
 	}
 	if per := newUsersPerUser("product_events", "{to:DateTime64(9)}", "", UserActivityEvidence); !strings.Contains(src, per) || !strings.Contains(decided, per) {
 		t.Error("NewUsersSource and NewUsersDecidedFrom read different rows")
@@ -141,7 +145,8 @@ func TestNewDecided(t *testing.T) {
 		{"data start inside the range", time.Date(2026, 10, 31, 14, 3, 0, 0, time.UTC), NewDecidedPart},
 		{"data start before the range", time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC), NewDecidedAll},
 		{"decided exactly at the range's start", from, NewDecidedAll},
-		{"sign-up event present", time.Time{}, NewDecidedAll},
+		{"sign-ups reported since before the range", time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC), NewDecidedAll},
+		{"sign-ups reported only since inside the range", time.Date(2026, 11, 5, 9, 55, 0, 0, time.UTC), NewDecidedPart},
 		{"no events", time.Time{}, NewDecidedAll},
 		{"decided at the range's end", to, NewDecidedNone},
 		{"data start after the range", to.Add(48 * time.Hour), NewDecidedNone},
@@ -179,9 +184,12 @@ func TestUserActivityParseReadsNewDecidedFrom(t *testing.T) {
 		{name: "data start before the range",
 			rows: [][]any{cur(3, 1, 2), rule("rule", prevDecided, 0)},
 			rule: NewUsersFirstSeen, decided: prevDecided, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
-		{name: "sign-up event present",
-			rows: [][]any{cur(3, 1, 2), rule("rule", epoch, 1), rule("rule_prev", epoch, 1)},
-			rule: NewUsersSignups, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
+		{name: "sign-ups reported only since inside the range",
+			rows: [][]any{cur(3, 1, 2), rule("rule", decided, 1), rule("rule_prev", decided, 1)},
+			rule: NewUsersSignups, decided: decided, prev: decided, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
+		{name: "sign-ups reported since before the range",
+			rows: [][]any{cur(3, 1, 2), rule("rule", prevDecided, 1), rule("rule_prev", prevDecided, 1)},
+			rule: NewUsersSignups, decided: prevDecided, prev: prevDecided, current: UserActivityCounts{Active: 3, New: 1, Returning: 2}},
 		{name: "no events", rule: NewUsersFirstSeen},
 	}
 	for _, tc := range cases {

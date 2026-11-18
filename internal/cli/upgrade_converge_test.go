@@ -234,6 +234,51 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 	}
 }
 
+// forge#2230: a pin bump names the rules whose warn-first grace it ends, with
+// how many of their findings now gate, so a red gate is never the first sign.
+func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
+	rep := newUpgradeReport(upgradeOptions{})
+	rep.To = "v1.6.0"
+	rep.StartsGating = append(rep.StartsGating,
+		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Fix: "forge fix waits"},
+		upgradeStartsGating{Rule: "forgeconv-product-event-pii", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"},
+	)
+	countStartsGating(rep.StartsGating, []lintDocFinding{
+		{Severity: "error", Rule: "testwait-fixed-sleep", File: "a_test.go", Line: 3},
+		{Severity: "error", Rule: "testwait-fixed-sleep", File: "b_test.go", Line: 9},
+		{Severity: "error", Rule: "forgeconv-other", File: "x.go", Line: 1},
+	})
+	if n := rep.StartsGating[0].Findings; n == nil || *n != 2 {
+		t.Errorf("testwait-fixed-sleep findings = %v, want 2", n)
+	}
+	if n := rep.StartsGating[1].Findings; n == nil || *n != 0 {
+		t.Errorf("a rule with no findings counts 0 once lint ran, got %v", n)
+	}
+
+	var out bytes.Buffer
+	printUpgradeSummary(&out, rep)
+	for _, want := range []string{
+		"Starts gating at v1.6.0",
+		"testwait-fixed-sleep (new in v1.5.0, gates from v1.5.1): 2 findings now gate; fix with `forge fix waits`",
+		"forgeconv-product-event-pii (new in v1.5.0, gates from v1.5.1): 0 findings now gate",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, out.String())
+		}
+	}
+
+	doc, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(doc), `"starts_gating":[{"rule":"testwait-fixed-sleep","introduced_in":"v1.5.0","gates_from":"v1.5.1","fix":"forge fix waits","findings":2}`) {
+		t.Errorf("--json lacks starts_gating: %s", doc)
+	}
+	if empty, _ := json.Marshal(newUpgradeReport(upgradeOptions{})); !strings.Contains(string(empty), `"starts_gating":[]`) {
+		t.Errorf("starts_gating must be an array even when empty: %s", empty)
+	}
+}
+
 // reliant#2327: one goimports finding arrived as seven needs_human items — the
 // issue, its source line, its caret, golangci-lint's "1 issues:" and "*
 // goimports: 1", the format lane's finding for the same file, and that lane's

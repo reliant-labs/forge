@@ -103,8 +103,30 @@ func TestE2EAddVerbsProduceABuildableTree(t *testing.T) {
 	// Twice: the webhook route emitter writes webhook_routes_gen.go into the
 	// directory it scans for webhook_*.go, so run 2 is where a phantom
 	// "routes_gen" webhook would surface.
+	//
+	// The operator is bound `_on_cluster` in staging and prod, which declare
+	// no cluster, so those envs refuse to render: generate still succeeds,
+	// says so, and keeps the observability outputs as they were instead of
+	// deriving them without those envs.
+	obsBefore := snapshotObservability(t, projectDir)
+	if len(obsBefore) == 0 {
+		t.Fatal("the project has no deploy/observability/ outputs; the keep check below would be vacuous")
+	}
+	out := runCmdKeep(t, projectDir, forgeBin, "generate")
+	for _, want := range []string{"kept the", "deploy/kcl/prod", "declares no `_cluster`"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("generate with an unrenderable env does not say %q:\n%s", want, out)
+		}
+	}
 	runCmd(t, projectDir, forgeBin, "generate")
-	runCmd(t, projectDir, forgeBin, "generate")
+	obsAfter := snapshotObservability(t, projectDir)
+	for rel, want := range obsBefore {
+		if got, ok := obsAfter[rel]; !ok {
+			t.Errorf("%s was deleted by generate while an env did not render", rel)
+		} else if got != want {
+			t.Errorf("%s changed by generate while an env did not render", rel)
+		}
+	}
 	runCmd(t, projectDir, "go", "build", "./...")
 }
 

@@ -1,6 +1,6 @@
 ---
 name: crud-overrides
-description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to, and what the Update op already does for read-only fields.
+description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to, what the Update op already does for read-only fields, and the one set-based UPDATE that replaces a List + per-row update loop.
 ---
 
 # Diverging From Generated CRUD
@@ -217,6 +217,14 @@ function forms `jsonb_exists`, `jsonb_exists_any`, `jsonb_exists_all`.
 Conversely, a `$1` left in bun-formatted SQL reaches postgres literally with
 nothing bound (`there is no parameter $1`).
 
+The raw passthrough never rewrites `?`: there it is postgres's jsonb operator
+(`payload ? $1` works as written). A raw statement that has arguments, no
+`$N`, and a `?` outside literals and comments is bun-style SQL on the wrong
+path, so `db.Exec` / `db.Query` refuse it with `orm.ErrQuestionPlaceholders`
+(and `db.QueryRow` returns it from `Scan`) instead of sending it to fail as
+`syntax error at or near ","` (SQLSTATE 42601). Number the parameters `$1..$N`,
+or move the statement to `db.Bun().NewRaw`.
+
 `forge lint` catches both in string literals and named constants:
 `forgeconv-bun-dollar-placeholder` and `forgeconv-bun-literal-question-mark`.
 A query assembled at run time is not judged — keep hand SQL in a constant.
@@ -261,6 +269,49 @@ statement with values turned into parameters runs exactly as bun rendered it.
 a partial index's predicate from a parameter: write that constant into the SQL,
 or pass `orm.Literal(v)`. `orm.InlineValues(ctx)` turns binding off for every
 statement run with that ctx.
+
+## A write over many rows is one statement, not a loop
+
+The generated writes are single-row (`Update<Entity>Masked(ctx, db, e, fields)`).
+Asked to change every row matching a condition — archive a customer's open
+orders — do **not** `List<Entities>` and call `Update<Entity>Masked` per row:
+that is N round trips inside one transaction, and at 150,000 rows it hit the
+30s rpc deadline. Write one set-based `UPDATE` in the entity's
+`internal/db/<entity>_repo_ext.go` (the seam's header carries the same example
+for your entity), and call it from the handler:
+
+```go
+// internal/db/order_repo_ext.go (yours)
+func ArchiveOpenOrders(ctx context.Context, db orm.Context, customerID string) (int64, error) {
+	res, err := db.Bun().NewUpdate().Model((*Order)(nil)).
+		Set("status = ?", "archived").
+		Set("updated_at = now()"). // a builder write bypasses the generated stamping
+		Where("customer_id = ?", customerID).
+		Where("status <> ?", "archived").
+		Exec(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+```
+
+- Columns are named in the SQL text and values passed as `?` arguments — there
+  is no `orm.Ident` or column-builder helper to look for. The column names are
+  exactly `db.<Entity>Columns`.
+- A `nil` model pointer (`(*Order)(nil)`) gives bun the table without loading
+  a row. On a soft-delete entity bun adds `deleted_at IS NULL` itself, so a
+  deleted row is not rewritten (`WhereAllWithDeleted()` opts out).
+- It joins the caller's transaction like any `_repo_ext.go` query: call it with
+  the ctx `s.deps.DB.RunTx` hands its fn.
+- Nothing generated runs per row, so nothing per row happens: no
+  `forge:read-only` / `forge:immutable` enforcement, no per-row hook. The
+  handler owns which columns a set-based write may touch.
+- `RowsAffected()` is the count to return (or to compare against an expected
+  count before committing).
+
+A loop over a handful of rows is fine; the rule is about writes whose row
+count grows with the data.
 
 ## Errors from an override must be classified
 

@@ -9,6 +9,11 @@
 // forge touching this file. Filter, reorder or replace that spread freely; a
 // route of your own is one more entry in ALL_ROUTES.
 //
+// A signed-out visitor sees only the routes they can open: useCanVisit()
+// asks the route guard (src/lib/auth/route-guard.tsx), so a page you make
+// public there appears here for them, and the rest stay hidden instead of
+// linking to a sign-in redirect. With no guard mounted, every route shows.
+//
 // Presentation lives in globals.css: this component reads the semantic theme
 // tokens (bg-surface, text-ink, border-border), so rebranding the whole app is
 // a one-file change there rather than an edit here.
@@ -19,6 +24,7 @@ import { ChevronLeft, LayoutDashboard, Table2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useCanVisit } from "@/lib/auth/route-access_gen";
 import { ENTITY_ROUTES, type NavRoute } from "@/lib/nav-routes_gen";
 import { useUiStore } from "@/stores/ui-store";
 
@@ -39,8 +45,6 @@ export const ALL_ROUTES: RouteSpec[] = [
   },
   ...ENTITY_ROUTES,
 ];
-
-const navItems = ALL_ROUTES;
 
 /** Product name and its monogram, for the sidebar brand. Yours to replace with a logo. */
 const APP_NAME = "{{.ProjectName}}";
@@ -67,6 +71,8 @@ export function Nav({ variant = "rail" }: { variant?: "rail" | "drawer" }) {
   const pathname = usePathname();
   const collapsedPref = useUiStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
+  const canVisit = useCanVisit();
+  const navItems = ALL_ROUTES.filter((route) => canVisit(route.path));
 
   // Inside the mobile drawer the nav is never collapsed and never offers the
   // collapse control: the drawer is already the "small" presentation, and a
@@ -112,7 +118,7 @@ export function Nav({ variant = "rail" }: { variant?: "rail" | "drawer" }) {
 
       {/* Navigation */}
       <div className="flex-1 overflow-y-auto px-2 py-3">
-        {!collapsed && (
+        {!collapsed && navItems.length > 0 && (
           <p className="mb-1.5 px-2 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
             Navigation
           </p>

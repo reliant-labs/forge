@@ -97,12 +97,11 @@ describe("the published surface", () => {
     //     in, and a production bundle has to be able to shake it out
     //     entirely. A barrel re-export would anchor it in every import of
     //     this package.
-    //   - telemetry imports @hyperdx/browser (lazily). The Next.js and Vite
-    //     scaffolds install it; a React-Native frontend declares
-    //     @opentelemetry/api alone. Re-exporting from the barrel would leave
-    //     it resolving a package it never installed — a build error in a
-    //     file it does not use. The barrel carries only error-reporter.ts,
-    //     the dependency-free seam the error boundary reports through.
+    //   - telemetry imports @hyperdx/otel-web and rrweb (lazily, each its
+    //     own chunk). Re-exported from the barrel, every frontend, React
+    //     Native included, would bundle the SDK for nothing. The barrel
+    //     carries only error-reporter.ts, the dependency-free seam the error
+    //     boundary reports through.
     //   - service-hooks imports @tanstack/react-query. Every frontend forge
     //     scaffolds installs it, but the barrel is also what a consumer
     //     imports for interceptors and errors alone; anchoring React Query
@@ -138,17 +137,23 @@ describe("the published surface", () => {
     }
   });
 
-  it("pins @hyperdx/browser exactly, declares it an optional peer, and keeps @opentelemetry/api required", () => {
-    // The `./telemetry` subpath's SDK is a peer, not a dependency: the
-    // consuming app owns the install so the bundle carries one copy. OPTIONAL
-    // is what lets a frontend that never imports `./telemetry` (React Native)
-    // install nothing and still get a clean, warning-free `npm install`.
-    //
-    // EXACT, not a range: the SDK is 0.x and bundles rrweb and its own OTel
-    // web stack, so a minor can change the ingest wire shape (replay chunks,
-    // span names) that the collector and HyperDX's saved sources depend on.
-    expect(pkg.peerDependencies["@hyperdx/browser"]).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(pkg.peerDependenciesMeta?.["@hyperdx/browser"]?.optional).toBe(true);
+  it("carries the SDK parts as exact dependencies, and keeps @opentelemetry/api a required peer", () => {
+    // @hyperdx/otel-web and rrweb are DEPENDENCIES, not peers: an app that
+    // installed an earlier runtime declares @hyperdx/browser, not these, and
+    // an optional peer it does not declare would fail to resolve on its next
+    // install. EXACT, not a range: both are 0.x/2.x internals the runtime
+    // drives below their public surface (tracer names, the replay wire
+    // shape HyperDX's player reads).
+    const deps = (pkg as unknown as { dependencies?: Record<string, string> })
+      .dependencies;
+    for (const name of ["@hyperdx/otel-web", "rrweb"]) {
+      expect(deps?.[name], `${name} must be a dependency`).toMatch(
+        /^\d+\.\d+\.\d+$/,
+      );
+      expect(pkg.peerDependencies[name]).toBeUndefined();
+    }
+    // The runtime no longer imports @hyperdx/browser at all.
+    expect(pkg.peerDependencies["@hyperdx/browser"]).toBeUndefined();
 
     // The retired `./otel` SDK wiring must not creep back: HyperDX registers
     // the one global tracer provider, and a second registration silently loses.
@@ -165,18 +170,79 @@ describe("the published surface", () => {
     );
   });
 
-  it("keeps the HyperDX SDK out of the barrel's dependency graph", () => {
-    // error-boundary reports through error-reporter.ts, never telemetry.ts.
-    // If a barrel module imported the SDK, React Native — which installs no
-    // @hyperdx/browser — would fail to resolve it from a file it never uses.
+  it("reaches the SDK and rrweb only from ./telemetry, and only through dynamic import()", () => {
+    // Every module that names @hyperdx/ or rrweb, and how. The barrel and
+    // every other entry must reach neither; ./telemetry reaches each through
+    // import() alone, which is what makes each its own chunk, loaded when
+    // telemetry (and, for rrweb, replay) actually runs.
+    // sdk-client.ts names the SDK through package.json's import map
+    // (#hyperdx-otel-web; see the next test), so that counts too.
+    const sdkImport =
+      /(?:from\s*|import\s*\(\s*|import\s*)["'](@hyperdx\/[^"']+|#hyperdx-otel-web|rrweb)["']/g;
+    const dynamicOnly =
+      /import\(\s*["'](@hyperdx\/[^"']+|#hyperdx-otel-web|rrweb)["']\s*\)/g;
+    const importers = new Map<string, string[]>();
     for (const name of distFiles.filter((f) => f.endsWith(".js"))) {
-      if (name === "telemetry.js") continue;
       const body = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const all = [...body.matchAll(sdkImport)].map((m) => m[1]!);
+      if (all.length === 0) continue;
+      const dynamic = [...body.matchAll(dynamicOnly)].map((m) => m[1]!);
       expect(
-        body.includes("@hyperdx/"),
-        `dist/${name} imports the HyperDX SDK; only dist/telemetry.js may`,
-      ).toBe(false);
+        dynamic,
+        `dist/${name} imports ${all.join(", ")} statically; only import() keeps it a lazy chunk`,
+      ).toEqual(all);
+      importers.set(name, all);
     }
+    expect(Object.fromEntries(importers)).toEqual({
+      "sdk-client.js": ["#hyperdx-otel-web"],
+      "replay-recorder.js": ["rrweb"],
+    });
+    // And only ./telemetry's closure reaches those two modules.
+    for (const name of distFiles.filter((f) => f.endsWith(".js"))) {
+      if (["telemetry.js", "sdk-client.js"].includes(name)) continue;
+      const body = readFileSync(join(pkgDir, "dist", name), "utf8");
+      for (const lazy of ["./sdk-client.js", "./replay-recorder.js"]) {
+        expect(
+          body.includes(lazy),
+          `dist/${name} imports ${lazy}; only ./telemetry may`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("maps #hyperdx-otel-web to the SDK for bundlers, and to its Node build under node", () => {
+    // A browser bundler matches `browser`, listed first so it wins even where
+    // `node` is also set, and must get the SDK's own ESM build, a lazy chunk
+    // of its own (sdk-conditions.test.ts resolves it with esbuild). Under Node (a test runner that
+    // loads this package natively) it gets dist/hyperdx-otel-web.node.js,
+    // which scripts/build.mjs builds, because Node cannot load the SDK's
+    // ESM build (see "//imports note" in package.json).
+    const imports = (pkg as unknown as { imports?: Record<string, unknown> })
+      .imports;
+    expect(imports).toEqual({
+      "#hyperdx-otel-web": {
+        browser: "@hyperdx/otel-web",
+        node: {
+          types: "./dist/hyperdx-otel-web.node.d.ts",
+          default: "./dist/hyperdx-otel-web.node.js",
+        },
+        default: "@hyperdx/otel-web",
+      },
+    });
+    expect(distFiles).toContain("hyperdx-otel-web.node.js");
+    expect(distFiles).toContain("hyperdx-otel-web.node.d.ts");
+    // The Node build shares the app's @opentelemetry/api, and reaches
+    // nothing else outside itself.
+    const body = readFileSync(
+      join(pkgDir, "dist", "hyperdx-otel-web.node.js"),
+      "utf8",
+    );
+    const outside = new Set(
+      [...body.matchAll(/(?:from|import)\s*["']([^"'.][^"']*)["']/g)].map(
+        (m) => m[1],
+      ),
+    );
+    expect([...outside].sort()).toEqual(["@opentelemetry/api"]);
   });
 
   it("makes every peer the ./node entry never imports OPTIONAL, so a Node-only consumer installs none of them", () => {

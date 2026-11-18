@@ -1610,6 +1610,48 @@ func TestBuildCRUDTemplateData_FilterMappingErrors(t *testing.T) {
 			t.Errorf("error should name the search filter; got: %v", err)
 		}
 	})
+
+	// forge#2264: a `// forge:request-option` field is a request knob, so
+	// the generated List op neither filters on it (a column-named knob) nor
+	// refuses it (a knob that names no column).
+	t.Run("request_option_is_not_a_filter", func(t *testing.T) {
+		svc := ServiceDef{
+			Name: "PatientsService",
+			Messages: map[string][]MessageFieldDef{
+				"ListPatientsRequest": {
+					{Name: "page_size", ProtoType: "int32"},
+					{Name: "page_token", ProtoType: "string"},
+					{Name: "favorite_color", ProtoType: "string", RequestOption: true},
+					{Name: "name", ProtoType: "string", RequestOption: true},
+					{Name: "age", ProtoType: "int32", IsOptional: true},
+				},
+			},
+		}
+		entity := EntityDef{Name: "Patient", PkField: "id", PkGoType: "int64",
+			Fields: []EntityField{
+				{Name: "id", GoName: "ID", ProtoType: "int64", GoType: "int64", Kind: FieldKindScalar},
+				{Name: "name", GoName: "Name", ProtoType: "string", GoType: "string", Kind: FieldKindScalar},
+				{Name: "age", GoName: "Age", ProtoType: "int32", GoType: "int32", Kind: FieldKindScalar},
+			},
+			Columns: []EntityColumn{
+				{Name: "id", Type: "int64", NotNull: true, IsPK: true},
+				{Name: "name", Type: "string", NotNull: true},
+				{Name: "age", Type: "int64", NotNull: true},
+			},
+			SearchColumns: []string{"name"},
+		}
+		data, err := buildCRUDTemplateData(svc, listMethod(entity), nil, "example.com/test")
+		if err != nil {
+			t.Fatalf("a request-option field must not be mapped onto a column: %v", err)
+		}
+		var filters []string
+		for _, ff := range data.CRUDMethods[0].FilterFields {
+			filters = append(filters, ff.GoName)
+		}
+		if len(filters) != 1 || filters[0] != "Age" {
+			t.Errorf("filter fields = %v, want only Age", filters)
+		}
+	})
 }
 
 func TestGenerateCRUDHandlers_WithFilters(t *testing.T) {

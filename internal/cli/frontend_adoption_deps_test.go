@@ -10,7 +10,6 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
-	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // An ADOPTED frontend's package.json is reconciled like a scaffolded one's:
@@ -19,24 +18,20 @@ import (
 // owner a tree that does not typecheck (reliant's web app bumped it by hand on
 // every forge pin). Disowning the manifest is the opt-out.
 
-// The browser SDK is declared already (it is the other range forge manages),
-// so the runtime floor is the one change under test.
+// An app scaffolded before the runtime carried the SDK still declares
+// @hyperdx/browser; forge leaves it alone, so the runtime floor is the one
+// change under test.
 var adoptedStaleManifest = `{
   "name": "web",
   "dependencies": {
-    "@hyperdx/browser": "` + browserSDKSpec() + `",
+    "@hyperdx/browser": "0.26.0",
     "` + generator.WebRuntimePackage + `": "0.1.0"
   }
 }
 `
 
-var adoptedStaleLock = `{"lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"@hyperdx/browser":"` +
-	browserSDKSpec() + `","` + generator.WebRuntimePackage + `":"0.1.0"}}}}`
-
-func browserSDKSpec() string {
-	spec, _ := webruntimepeers.PeerSpec("@hyperdx/browser")
-	return spec
-}
+var adoptedStaleLock = `{"lockfileVersion":3,"packages":{"":{"name":"web","dependencies":{"@hyperdx/browser":"0.26.0","` +
+	generator.WebRuntimePackage + `":"0.1.0"}}}}`
 
 // adoptedStaleFrontend writes an adopted Vite frontend declaring the runtime
 // below the floor, with a lockfile recording the same stale range, and a fake

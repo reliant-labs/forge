@@ -122,6 +122,12 @@ type StaticSiteFrontend struct {
 	// non-empty RuntimeConfigJS.
 	StripRuntimeConfig bool
 
+	// Release is the release this build is cut as. Non-empty stamps the
+	// site's release marker (StaticSiteReleaseMarkerPath) into the tree
+	// BuildStaticSiteTree assembles, which `forge env status` reads back
+	// from the live site.
+	Release string
+
 	// SourcemapPublisher files the source maps the build extracts (F1) so
 	// errors can be symbolicated: pushed to the platform registry when the
 	// env's observability is hosted, kept on disk otherwise. nil files nothing

@@ -1,69 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// Dev-server half of browser log forwarding (Next.js).
-//
-// The Vite scaffold does this with a `apply: "serve"` plugin; the App Router
-// has no equivalent hook, so the receiver is an ordinary route handler that
-// refuses to do anything in production.
-//
-// Why the folder is spelled `%5F_forge`: the App Router treats any folder
-// whose name starts with `_` as PRIVATE — excluded from routing — so a
-// literal `src/app/__forge/log/route.ts` compiles cleanly and then answers
-// 404 to every post, silently dropping every browser line. `%5F` is the
-// URL-encoded underscore, which is Next's documented escape for a URL
-// segment that must begin with one: this folder serves `/__forge/log`,
-// the path installDevLogging() posts to.
-//
-// It accepts the log lines that @reliantlabs/forge-web-runtime's
-// installDevLogging() posts and prints them to the dev server's stdout, where
-// `forge env up` is already tee-ing them to:
-//
-//   .forge/logs/<env>/frontend_<name>.log
-//
-// So a `console.error` in a component — and any uncaught error or unhandled
-// rejection, which produce no console call at all — lands in a file on disk
-// next to the backend service logs.
-//
-// ── The wire protocol ────────────────────────────────────────────────────
-//
-// v2 (current) posts a BATCH, because one request per console line saturated
-// the browser's six-connections-per-origin pool and measurably slowed the app's
-// own RPCs:
-//
-//   {"entries":[{"level":"info","msg":"…"},{"level":"error","msg":"…"}]}
-//
-// v1 (legacy) posts one line per request, and is accepted forever — an older
-// runtime in some other frontend, or a cached bundle, still speaks it:
-//
-//   {"level":"info","msg":"…"}
-//
-// Two details that look incidental and are not:
-//
-//   - The body is read as TEXT and parsed by hand, not via request.json().
-//     The client's unload flush uses navigator.sendBeacon, which can only send
-//     text/plain without triggering a CORS preflight it is unable to make;
-//     request.json() is fine with that today but the contract is "parse
-//     regardless of Content-Type", so the parse is explicit.
-//   - Every accepted post answers `X-Forge-Devlog: 2`. That header is how the
-//     client learns this endpoint understands batches; without it, it falls
-//     back to one request per line.
-//
-// A malformed or oversized post prints a warn line rather than being swallowed.
-// A silent drop here is indistinguishable from "my code never ran", which is
-// the single most expensive way for a log sink to fail.
-//
-// The production guard is the first statement in the handler: `next build`
-// still compiles this route, so unlike the Vite plugin it CAN exist in a
-// deployed app, and must answer 404 there. installDevLogging() also no-ops in
-// production, so nothing posts to it in the first place.
-//
-// It is also why this route does not break a static export (`output:
-// static`): it answers POST only, and `output: "export"` leaves a POST-only
-// handler out of `out/` rather than failing the build. Adding a GET export
-// here would change that — an exported GET handler must be static.
-//
-// To turn it off: delete this file and the installDevLogging() call in
-// src/app/providers.tsx. Nothing else depends on it.
+// Dev-server receiver for installDevLogging(): prints the browser's console lines and uncaught errors
+// to stdout, which `forge env up` tees to .forge/logs/<env>/frontend_<name>.log. 404 in production.
+// The folder is `%5F_forge` because Next treats `_`-prefixed folders as private (a silent 404): keep it.
+// POST only, so a static export leaves it out. Depth: `forge skill load debug`.
 
 /** Cap a single log line so a runaway loop cannot fill the disk. */
 const MAX_LINE = 8_000;

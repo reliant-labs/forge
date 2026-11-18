@@ -23,7 +23,9 @@ package cli
 //	MISSING      declared by the binding, running nowhere.
 //	UNTAGGED     the workload runs by mutable tag, so there is no digest to
 //	             compare. Nothing is proven either way.
-//	UNREACHABLE  the cluster could not be read. Says NOTHING about the env.
+//	UNREACHABLE  what runs could not be observed: the cluster, observer or
+//	             site could not be read, or a hosted static site answered
+//	             without a release marker. Says NOTHING about the env.
 //
 // Exit 2 is separate from 1 on purpose. A VPN drop or an expired credential
 // is not evidence that a release is wrong, and a gate that reports drift and
@@ -275,6 +277,13 @@ type envStatusOptions struct {
 	// the same control plane the rollout is read from — unless HostedRollout
 	// is set, when a test that states no identity gets none.
 	HostedIdentity func(ctx context.Context, env string) (identityStatusDocument, error)
+	// StaticSiteURLs reads the live URL of each hosted static site of an
+	// env, by frontend name. Nil reads the env's declared control plane
+	// (readDeclaredStaticSiteURLs).
+	StaticSiteURLs func(ctx context.Context, env string) (map[string]string, error)
+	// FetchReleaseMarker reads the release marker a live static site serves.
+	// Nil fetches it over HTTP (fetchStaticReleaseMarker).
+	FetchReleaseMarker func(ctx context.Context, siteURL string) (deploytarget.StaticSiteReleaseMarker, error)
 }
 
 // verifyExternalThenCluster reads forge.OnExternal workloads through their
@@ -400,7 +409,7 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	)
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
-		results = snapshotStatusImages(ctx, *binding.Snapshot, opts)
+		results = snapshotStatusImages(ctx, *binding.Snapshot, envName, binding.Release, opts)
 	} else if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control
 		// plane's observer is the witness (env_verify_hosted.go). The

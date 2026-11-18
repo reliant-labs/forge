@@ -244,6 +244,10 @@ var newRules = []rolloutGroup{
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
 	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.RuleIDs()},
+	// forge lint --proto-format: a .proto `buf format` would rewrite — the
+	// scaffolded pre-commit hook's own check, which lint used to pass while
+	// the hook refused the commit.
+	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

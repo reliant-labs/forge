@@ -270,36 +270,50 @@ type entityOpts struct {
 	DryRun bool
 }
 
-// ensureProtoImport adds `import "<path>";` after the last existing
-// import (or after the package line) when missing.
+// ensureProtoImport adds `import "<path>";` when missing, where `buf
+// format` puts it: in sorted order among the existing imports (before the
+// first one that sorts after it, else after the last), or — in a file with
+// none — after the package line, set off by a blank line.
 func ensureProtoImport(content, path string) string {
 	if strings.Contains(content, `import "`+path+`"`) {
 		return content
 	}
+	line := `import "` + path + `";`
 	lines := strings.Split(content, "\n")
-	insertAt := -1
+	before, last := -1, -1
 	for i, l := range lines {
 		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "import ") {
-			insertAt = i
+		if !strings.HasPrefix(t, "import ") {
+			continue
+		}
+		last = i
+		if before == -1 && strings.HasPrefix(t, `import "`) && t > line {
+			before = i
 		}
 	}
-	if insertAt == -1 {
-		for i, l := range lines {
-			if strings.HasPrefix(strings.TrimSpace(l), "package ") {
-				insertAt = i
-				break
+	insert := func(at int, add ...string) string {
+		out := make([]string, 0, len(lines)+len(add))
+		out = append(out, lines[:at]...)
+		out = append(out, add...)
+		out = append(out, lines[at:]...)
+		return strings.Join(out, "\n")
+	}
+	switch {
+	case before >= 0:
+		return insert(before, line)
+	case last >= 0:
+		return insert(last+1, line)
+	}
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "package ") {
+			add := []string{"", line}
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
+				add = append(add, "")
 			}
+			return insert(i+1, add...)
 		}
 	}
-	if insertAt == -1 {
-		return content
-	}
-	out := make([]string, 0, len(lines)+1)
-	out = append(out, lines[:insertAt+1]...)
-	out = append(out, `import "`+path+`";`)
-	out = append(out, lines[insertAt+1:]...)
-	return strings.Join(out, "\n")
+	return content
 }
 
 // insertIntoServiceBlock inserts text before the closing brace of the
@@ -357,12 +371,16 @@ func buildEntityCRUDRPCPieces(entity string) []crudProtoPiece {
 	} {
 		var b strings.Builder
 		fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {\n", op.name, op.name, op.name)
-		b.WriteString("    option (forge.v1.method) = {\n")
-		b.WriteString("      auth_required: true\n")
-		if op.opts != "" {
+		// `buf format`'s shapes: a one-field literal stays on one line, a
+		// longer one takes a line per field.
+		if op.opts == "" {
+			b.WriteString("    option (forge.v1.method) = {auth_required: true};\n")
+		} else {
+			b.WriteString("    option (forge.v1.method) = {\n")
+			b.WriteString("      auth_required: true\n")
 			fmt.Fprintf(&b, "      %s\n", op.opts)
+			b.WriteString("    };\n")
 		}
-		b.WriteString("    };\n")
 		b.WriteString("  }\n")
 		pieces = append(pieces, crudProtoPiece{name: op.name, text: b.String()})
 	}

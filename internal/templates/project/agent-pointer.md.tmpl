@@ -2,6 +2,6 @@ This project uses **Reliant Forge** (github.com/reliant-labs/forge), run as `{{.
 
 The project guide is `AGENTS.md` at the repository root; read it first. The skills live in the `{{.CLI}}` binary, so they always match the version this project pins:
 
-1. Run `{{.CLI}} skill load forge` first.
+1. Run `{{.CLI}} skill load forge` first: it opens with what this project gets with no setup (traces, per-endpoint latency and error rates, alerts, release health checks, build-once deploys), each with the command that shows it.
 2. Look up a topic with `{{.CLI}} skill search <query>`, then `{{.CLI}} skill load <name>`.
 3. Before concluding forge cannot do something, run `{{.CLI}} project capabilities`.

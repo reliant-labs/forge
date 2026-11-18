@@ -49,14 +49,12 @@ while the rest stays hosted.
 
 <!-- @benefits claims hosting-pay-as-you-go observability-allowance free-static-site -->
 
-Source: control-plane `internal/plansconfig/pricing.yaml` (pricing v2,
-2026-11-06), published at https://reliantlabs.io/pricing#hosting; quote that
-page if it differs from this skill. To estimate an app, multiply each hosted
+Source: the posted list in control-plane `internal/plansconfig/pricing.yaml`
+(pricing v2, 2026-11-06), the file https://reliantlabs.io/pricing renders. See
+the pricing page for current terms and for what is billed today; quote it if
+it differs from this skill. To estimate an app, multiply each hosted
 workload's requested vCPU and memory by 730 hours at the rates above and add
 its storage: `forge env shape <env>` prints what each one requests. Forge
 itself (the CLI, its libraries, every self-hosted path) is open source
 (Apache-2.0) and free; a Reliant cloud machine for agents is a separate plan
 that hosting does not need.
-
-Billing is the gate, not a surprise: a deploy that needs it is queued (exit 7)
-with the link to set it up, and proceeds on its own once it is (`deploy/hosting`).

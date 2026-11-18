@@ -43,7 +43,7 @@ func AnalyzeQueries(ctx context.Context, s *Session, info TargetInfo, shapes []q
 	var findings []Finding
 	for _, sh := range shapes {
 		q := Query{Fingerprint: sh.Fingerprint, SQL: sh.SQL, Operation: sh.Operation,
-			Tables: sh.Tables, Callers: sh.Callers, Access: []TableAccess{}}
+			QueryDetail: &QueryDetail{Tables: sh.Tables, Callers: sh.Callers, Access: []TableAccess{}}}
 		if q.Tables == nil {
 			q.Tables = []string{}
 		}
@@ -142,8 +142,7 @@ func noUsableIndex(q Query, a TableAccess, rc RowCount, cfg Config) (Finding, bo
 
 // queryFinding names the shape and its first caller on f.
 func queryFinding(q Query, f Finding) Finding {
-	f.Query = q.Fingerprint
-	f.Callers = q.Callers
+	f.FindingQuery = &FindingQuery{Query: q.Fingerprint, Callers: q.Callers}
 	if len(q.Callers) > 0 {
 		f.File, f.Line = q.Callers[0].Caller.File, q.Callers[0].Caller.Line
 	}

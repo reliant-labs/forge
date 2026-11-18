@@ -162,7 +162,7 @@ func TestAnalyzeQueriesClassifiesIndexUse(t *testing.T) {
 	}
 	for _, f := range findings {
 		if f.Rule != dbanalyze.RuleQueryNoUsableIndex || f.Severity != dbanalyze.SeverityWarning ||
-			f.File != "internal/db/orders_repo_ext.go" || f.Line != 42 || f.Query == "" || len(f.Callers) != 1 ||
+			f.File != "internal/db/orders_repo_ext.go" || f.Line != 42 || f.FindingQuery == nil || f.Query == "" || len(f.Callers) != 1 ||
 			f.Callers[0].Generated == nil || f.Message == "" || f.Fix == "" {
 			t.Errorf("finding %+v", f)
 		}

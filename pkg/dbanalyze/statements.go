@@ -41,6 +41,25 @@ func SplitStatements(src string) []Statement {
 // statement cannot run in an analysis session.
 func (st Statement) NonTransactional() string { return sqllex.NonTransactional(st.words) }
 
+// NonConcurrently returns a CREATE [UNIQUE] INDEX CONCURRENTLY statement
+// without CONCURRENTLY, which can run inside a transaction. False for any
+// other statement.
+//
+// Deprecated: no pass needs an index built inside a transaction any more.
+// Both passes run on a disposable database (a scratch database, or a
+// CloneDatabase copy), where AnalyzeMigrations runs CREATE INDEX CONCURRENTLY
+// itself and the query pass plans on the index it built. Kept for the v1
+// API.
+func (st Statement) NonConcurrently() (string, bool) {
+	loc := concurrentIndexRE.FindStringSubmatchIndex(st.SQL)
+	if loc == nil {
+		return "", false
+	}
+	return st.SQL[:loc[3]] + st.SQL[loc[1]:], true
+}
+
+var concurrentIndexRE = regexp.MustCompile(`(?is)^(\s*create\s+(?:unique\s+)?index\s+)concurrently\s+`)
+
 // transactionControl names a statement that opens, ends or subdivides a
 // transaction (BEGIN, COMMIT, SAVEPOINT, …), else "".
 func (st Statement) transactionControl() string {

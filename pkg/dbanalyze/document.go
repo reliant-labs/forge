@@ -179,27 +179,38 @@ const (
 // Query is one captured query shape (forge/pkg/querycapture) and what the
 // planner makes of it on the head schema. The migration pass leaves the
 // array empty.
+//
+// Query stays comparable, as it was in v1.7.0 (when it had no fields): its
+// slices live in the embedded *QueryDetail, which encoding/json flattens into
+// the query's own object. AnalyzeQueries always sets it; on a Query built by
+// hand, check q.QueryDetail != nil before reading Tables, Callers or Access.
 type Query struct {
 	Fingerprint string `json:"fingerprint"`
 	// SQL is the shape's statement: $n placeholders, inline literals kept.
-	SQL       string   `json:"sql"`
-	Operation string   `json:"operation,omitempty"`
-	Tables    []string `json:"tables"`
-	// Callers are the call sites that ran the shape; the first is the one
-	// findings name (a caller in a changed file, when one is).
-	Callers []querycapture.CallSite `json:"callers"`
+	SQL       string `json:"sql"`
+	Operation string `json:"operation,omitempty"`
+	*QueryDetail
 	// Plan is the generic plan as postgres would run it, trimmed.
 	Plan *PlanNode `json:"plan,omitempty"`
 	// PlanNoSeqScan is the generic plan with enable_seqscan off: which
 	// indexes can serve the statement at all.
 	PlanNoSeqScan *PlanNode `json:"plan_no_seqscan,omitempty"`
-	// Access is, per table the statement reads, whether an index serves it.
-	Access []TableAccess `json:"access"`
 	// Error is why the shape could not be planned (a table only a test
 	// created, a parameter whose type postgres cannot infer); the shape is
 	// listed in the summary's skipped.
 	Error    string `json:"error,omitempty"`
 	SQLState string `json:"sqlstate,omitempty"`
+}
+
+// QueryDetail is a Query's tables, callers and per-table verdicts. Its fields
+// appear in the document as the query's own (tables, callers, access).
+type QueryDetail struct {
+	Tables []string `json:"tables"`
+	// Callers are the call sites that ran the shape; the first is the one
+	// findings name (a caller in a changed file, when one is).
+	Callers []querycapture.CallSite `json:"callers"`
+	// Access is, per table the statement reads, whether an index serves it.
+	Access []TableAccess `json:"access"`
 }
 
 // TableAccess is how the no-seqscan plan reads one table.
@@ -288,8 +299,18 @@ type Finding struct {
 	// Note explains a severity the caller adjusted (a rule's warn-first
 	// rollout, a project's lint.rules).
 	Note string `json:"note,omitempty"`
-	// Query is the fingerprint of the query shape a query-pass finding is
-	// about; File and Line are then its first caller's (module-relative).
+	// FindingQuery is set on a query-pass finding and nil on a migration
+	// pass's: check f.FindingQuery != nil before reading Query or Callers.
+	// It is a pointer so that Finding stays comparable, as it was in v1.7.0;
+	// encoding/json flattens its fields into the finding's own object
+	// (query, callers).
+	*FindingQuery
+}
+
+// FindingQuery is the query shape a query-pass finding is about. The
+// finding's File and Line are then its first caller's (module-relative).
+type FindingQuery struct {
+	// Query is the shape's fingerprint.
 	Query string `json:"query,omitempty"`
 	// Callers are the shape's call sites, with their generated frames and
 	// the tests that ran them.

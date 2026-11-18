@@ -51,8 +51,7 @@ func Acquisition(in Input) dashspec.Dashboard {
 	}
 	rules := in.channelRules()
 	traffic := with(webCTE(inRange), visitsCTE, firstCTE(rules))
-	signups := with(stitchCTE(inRange), suCTE(from, to), suhCTE)
-	attributed := with(webCTE(inRange), visitsCTE, firstCTE(rules), stitchCTE(inRange), suCTE(from, to), suhCTE)
+	attributed := attributedCTEs(rules)
 	b := breakdown{in: in}
 	stacked := bars(true, nil)
 
@@ -71,69 +70,103 @@ GROUP BY week, channel ORDER BY week, channel`, stacked, 24, 8)
 
 	d.Panels = []dashspec.Panel{
 		figure("glance", "visitors", "Visitors", "Distinct visitor-days in the range. The trend is each UTC day's.",
-			traffic+`
-SELECT count() AS "Visitors" FROM first`, traffic+`
-SELECT d AS day, count() AS "Visitors" FROM first GROUP BY day ORDER BY day`, dashspec.UnitCount, colorVisitors),
+			visitorsSQL(rules), visitorsTrendSQL(rules), dashspec.UnitCount, colorVisitors),
 		figure("glance", "visits", "Visits", "Visits in the range (a visit ends after 30 minutes without an event). The trend is each UTC day's.",
 			with(webCTE(inRange), visitsCTE)+`
 SELECT count() AS "Visits" FROM visits`, with(webCTE(inRange), visitsCTE)+`
 SELECT toDate(start) AS day, count() AS "Visits" FROM visits GROUP BY day ORDER BY day`, dashspec.UnitCount, colorVisitors),
 		figure("glance", "signups", "Sign-ups", "Users whose first auth_signed_up is in the range. The trend is each UTC day's.",
-			signups+`
-SELECT count() AS "Sign-ups" FROM su_h`, signups+`
-SELECT toDate(at) AS day, count() AS "Sign-ups" FROM su_h GROUP BY day ORDER BY day`, dashspec.UnitCount, colorSignups),
+			signupsSQL, signupsTrendSQL, dashspec.UnitCount, colorSignups),
 		figure("glance", "visit-to-signup", "Visit to sign-up",
 			"Attributed sign-ups (linked to a visit on their sign-up day) over visitor-days. Cookieless, so a visitor who signs up on a later day is not linked to the earlier visit.",
-			attributed+`
-SELECT round((SELECT count() FROM su_h AS u INNER JOIN first AS f ON f.EnvId = u.EnvId AND f.h = u.h) / nullIf((SELECT count() FROM first), 0), 4) AS "Visit to sign-up"`,
-			"", dashspec.UnitPercent, colorSignups),
+			visitToSignupSQL(rules), "", dashspec.UnitPercent, colorSignups),
 
 		visitorsByChannel,
-		table("channels", "channels", "Channels",
+		ranking("channels", "channels", "Channels",
 			"Per channel: visitor-days, visits, bounce rate, sign-ups, conversion (sign-ups over visitor-days) and the share of the sign-ups that reached "+
 				activationTitle(in.Analytics)+" within "+in.Analytics.EffectiveActivationWindow()+": channel quality, not just volume.",
-			b.sql([]dim{{"channel", "Channel"}}, []string{"Visitors", "Visits", "Bounce %", "Sign-ups", "Conversion %", "Activated %"}, "", 50), 24, 9),
+			b.sql([]dim{{"channel", "Channel"}}, []string{"Visitors", "Visits", "Bounce %", "Sign-ups", "Conversion %", "Activated %"}, "", 50),
+			dashspec.Display{Color: colorVisitors}, 24, 9),
 		signupsWeekly,
 
-		table("sources", "sources", "Sources",
+		ranking("sources", "sources", "Sources",
 			"The campaign source (utm_source, or ?ref=), else the referrer host, else (direct), of each visitor-day's first visit.",
-			b.sql([]dim{{"source", "Source"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 50), 12, 9),
-		table("sources", "referrers", "Referrers",
+			b.sql([]dim{{"source", "Source"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 50), dashspec.Display{Color: colorVisitors}, 12, 9),
+		ranking("sources", "referrers", "Referrers",
 			"The referring sites and pages of the range's visits (the referrer of a visit's first page view), most visits first.",
 			with(webCTE(inRange), visitsCTE)+`
 SELECT ref AS "Referrer", ref_path AS "Path", uniqExact(`+visitor+`) AS "Visitors", count() AS "Visits"
 FROM visits WHERE ref != ''
-GROUP BY ref, ref_path ORDER BY "Visits" DESC, "Referrer", "Path" LIMIT 50`, 12, 9),
+GROUP BY ref, ref_path ORDER BY "Visits" DESC, "Referrer", "Path" LIMIT 50`, dashspec.Display{Bar: "Visits", Color: colorVisitors}, 12, 9),
 		table("sources", "campaigns", "Campaigns",
 			"Visitor-days whose first visit carried utm_* parameters, by source, medium, campaign, content and term: visitors, sign-ups, conversion and activation.",
 			b.sql([]dim{{"utm_source", "Source"}, {"utm_medium", "Medium"}, {"utm_campaign", "Campaign"}, {"utm_content", "Content"}, {"utm_term", "Term"}},
 				[]string{"Visitors", "Sign-ups", "Conversion %", "Activated %"},
 				`"Source" NOT IN ('', 'Unattributed') OR "Medium" != '' OR "Campaign" != ''`, 50), 24, 9),
-		table("sources", "landing-pages", "Landing pages",
+		ranking("sources", "landing-pages", "Landing pages",
 			"The route each visitor-day's first visit started on, by channel: visits and sign-ups.",
-			b.sql([]dim{{"landing", "Landing page"}, {"channel", "Channel"}}, []string{"Visits", "Sign-ups"}, "", 50), 24, 9),
+			b.sql([]dim{{"landing", "Landing page"}, {"channel", "Channel"}}, []string{"Visits", "Sign-ups"}, "", 50), dashspec.Display{Color: colorVisitors}, 24, 9),
 
-		table("audience", "countries", "Countries",
+		ranking("audience", "countries", "Countries",
 			"Visitor-days by ISO country code (from the visitor's address at the ingest edge, which keeps no address), with sign-ups and conversion.",
-			b.sql([]dim{{"country_code", "Country"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 50), 12, 9),
-		table("audience", "devices", "Devices",
+			b.sql([]dim{{"country_code", "Country"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 50), dashspec.Display{Color: colorVisitors}, 12, 9),
+		ranking("audience", "devices", "Devices",
 			"Visitor-days by device type (desktop, mobile, tablet), with sign-ups and conversion.",
-			b.sql([]dim{{"device_type", "Device"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 10), 12, 9),
-		chart("audience", "browsers", "Browsers", "Visitor-days by browser (no version).",
+			b.sql([]dim{{"device_type", "Device"}}, []string{"Visitors", "Sign-ups", "Conversion %"}, "", 10), dashspec.Display{Share: true, Color: colorVisitors}, 12, 9),
+		ranking("audience", "browsers", "Browsers", "Visitor-days by browser (no version).",
 			traffic+`
 SELECT if(browser_name = '', 'unknown', browser_name) AS browser, count() AS "Visitors" FROM first GROUP BY browser ORDER BY "Visitors" DESC, browser LIMIT 15`,
-			bars(false, dashspec.SeriesColors{"Visitors": colorVisitors}), 12, 8),
-		chart("audience", "os", "Operating systems", "Visitor-days by operating system (no version).",
+			dashspec.Display{Share: true, Color: colorVisitors}, 12, 8),
+		ranking("audience", "os", "Operating systems", "Visitor-days by operating system (no version).",
 			traffic+`
 SELECT if(os_name = '', 'unknown', os_name) AS os, count() AS "Visitors" FROM first GROUP BY os ORDER BY "Visitors" DESC, os LIMIT 15`,
-			bars(false, dashspec.SeriesColors{"Visitors": colorVisitors}), 12, 8),
+			dashspec.Display{Share: true, Color: colorVisitors}, 12, 8),
 
-		table("quality", "retention-by-channel", "Week-4 retention by channel",
+		ranking("quality", "retention-by-channel", "Week-4 retention by channel",
 			fmt.Sprintf("The sign-ups of the %d to %d days before the end of the range (whatever range is selected, so each has lived its fourth week), by channel: "+
 				"the share active in days 28 to 35 after signing up. A channel with fewer than %d such sign-ups shows no share.", w4FromDays, w4ToDays, w4MinCohort),
-			retentionByChannelSQL(rules), 24, 8),
+			retentionByChannelSQL(rules), dashspec.Display{Bar: "Active in week 4 %", Color: colorUsers}, 24, 8),
 	}
+	d.Panels = withGood(d.Panels, map[string]dashspec.Direction{"visitors": up, "visits": up, "signups": up, "visit-to-signup": up})
 	return in.withActivity(d)
+}
+
+// visitorsSQL is the range's distinct visitor-days.
+func visitorsSQL(rules []ChannelRule) string {
+	return with(webCTE(inRange), visitsCTE, firstCTE(rules)) + `
+SELECT count() AS "Visitors" FROM first`
+}
+
+// visitorsTrendSQL is each UTC day's visitor-days (a visitor-day is drawn on
+// the day of its last event).
+func visitorsTrendSQL(rules []ChannelRule) string {
+	return with(webCTE(inRange), visitsCTE, firstCTE(rules)) + `
+SELECT d AS day, count() AS "Visitors" FROM first GROUP BY day ORDER BY day`
+}
+
+// signupsCTEs are the range's sign-ups, each with its visitor hash.
+var signupsCTEs = with(stitchCTE(inRange), suCTE(from, to), suhCTE)
+
+// signupsSQL and signupsTrendSQL are the users whose first auth_signed_up is
+// in the range, and each UTC day's.
+var (
+	signupsSQL = signupsCTEs + `
+SELECT count() AS "Sign-ups" FROM su_h`
+	signupsTrendSQL = signupsCTEs + `
+SELECT toDate(at) AS day, count() AS "Sign-ups" FROM su_h GROUP BY day ORDER BY day`
+)
+
+// attributedCTEs are the range's visitor-days and its sign-ups, each with the
+// hash that links it to a visit.
+func attributedCTEs(rules []ChannelRule) string {
+	return with(webCTE(inRange), visitsCTE, firstCTE(rules), stitchCTE(inRange), suCTE(from, to), suhCTE)
+}
+
+// visitToSignupSQL is the attributed sign-ups (linked to a visit on their
+// sign-up day) over the visitor-days.
+func visitToSignupSQL(rules []ChannelRule) string {
+	return attributedCTEs(rules) + `
+SELECT round((SELECT count() FROM su_h AS u INNER JOIN first AS f ON f.EnvId = u.EnvId AND f.h = u.h) / nullIf((SELECT count() FROM first), 0), 4) AS "Visit to sign-up"`
 }
 
 // channelRules are the project's custom channel rules.

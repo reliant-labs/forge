@@ -207,21 +207,29 @@ var defaultPolicy = newLogPolicy(slog.LevelInfo, nil)
 
 // TracingInterceptor returns a Connect interceptor that creates one
 // OpenTelemetry span per RPC. The span name is the full procedure
-// ("/service.v1.Foo/Bar"); errors are recorded via span.RecordError +
-// span.SetStatus(codes.Error, …).
+// ("/service.v1.Foo/Bar"). A failed server call's span reads as
+// RequestSpanInterceptor's does (span_status.go): the error as an exception
+// event, error_class and rpc.error_reason, and status Error for a server
+// fault but OK for a user- or canceled-class error. A client call's span is
+// marked as RecordSpanError marks it.
 //
 // A nil tracer disables tracing (interceptor is a pass-through). This
 // keeps DefaultMiddlewares safe to wire in test harnesses that don't
 // configure OTel.
 func TracingInterceptor(tracer trace.Tracer) connect.Interceptor {
+	return newTracingInterceptor(tracer, serverSpanPolicy{})
+}
+
+func newTracingInterceptor(tracer trace.Tracer, policy serverSpanPolicy) connect.Interceptor {
 	if tracer == nil {
 		return &noopInterceptor{}
 	}
-	return &tracingInterceptor{tracer: tracer}
+	return &tracingInterceptor{tracer: tracer, policy: policy}
 }
 
 type tracingInterceptor struct {
 	tracer trace.Tracer
+	policy serverSpanPolicy
 }
 
 func (i *tracingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -231,7 +239,11 @@ func (i *tracingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 		var resp connect.AnyResponse
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { resp, err = next(ctx, req) })
-		RecordSpanError(span, err)
+		if req.Spec().IsClient {
+			RecordSpanError(span, err)
+		} else {
+			i.policy.settle(span, err)
+		}
 		return resp, err
 	})
 }
@@ -246,7 +258,7 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 		defer span.End()
 		var err error
 		withSpanProfileLabels(ctx, func(ctx context.Context) { err = next(ctx, conn) })
-		RecordSpanError(span, err)
+		i.policy.settle(span, err)
 		return err
 	})
 }

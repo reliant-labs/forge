@@ -149,6 +149,21 @@ type Claimable struct {
 	// deleted (and when the token stops being accepted).
 	ExpiresAt  time.Time `json:"expires_at"`
 	PurgeAfter time.Time `json:"purge_after"`
+	// LastPublishedAt is when a deploy from this machine last published (its
+	// release was promoted). Zero until one has: the deploy's clock starts
+	// when it is created, at the first attempt, so a deploy whose every
+	// attempt failed has a claim link and an expiry but nothing behind them.
+	LastPublishedAt time.Time `json:"last_published_at,omitzero"`
+	// LastAttemptAt is when the newest deploy from this machine ended, and
+	// LastAttemptError the first line of its error, empty when it published.
+	LastAttemptAt    time.Time `json:"last_attempt_at,omitzero"`
+	LastAttemptError string    `json:"last_attempt_error,omitempty"`
+}
+
+// Published reports whether any deploy of this claimable deploy is known to
+// have published: one from this machine succeeded, or a live address was seen.
+func (c Claimable) Published() bool {
+	return !c.LastPublishedAt.IsZero() || c.URL != ""
 }
 
 // Expired reports whether the issuer-reported expiry has passed.

@@ -484,6 +484,17 @@ func generateSteps() []GenStep {
 		// it, or a project whose deploy/ was scaffolded before the first
 		// component existed). Drift is reported by `forge lint`, not repaired.
 		{Name: "workloads.k (scaffold once)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason + ": there is no workload to declare", Run: stepWorkloadsKCL, Tag: "deploy"},
+		// CRD manifests, projected from the operator's Go types. Gated on
+		// features.deploy alone (not on operators being configured): the
+		// emitter is a function of what is on disk, and a project with no
+		// api/ directory — most of them — does nothing here.
+		//
+		// BEFORE every step that renders an env's KCL (observability, the
+		// frontend config, CI workflows, the k3d ports fragment): a module
+		// that calls a newly declared type's crd_gen.k helper cannot render
+		// until the helper exists, so emitting it later made the first run
+		// fail its renders and only the second converge.
+		{Name: "CRD KCL manifests (api/ Go types)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason, Run: stepCRDKCL, Tag: "deploy"},
 		// Gated on envs EXISTING, not on features.deploy. A service scaffold
 		// always gets deploy/kcl/<env>/main.k (generator.project: "so the user
 		// has a complete starting point"), and every main.k opens with
@@ -519,11 +530,6 @@ func generateSteps() []GenStep {
 		// features.ingress is explicitly false OR features.deploy is off
 		// (no cluster, no k3d, no ingress to wire up).
 		{Name: "ingress k3d ports fragment", Gate: and(hasForgeYAML, feature(config.FeaturesConfig.DeployEnabled), feature(config.FeaturesConfig.IngressEnabled)), GateReason: "features.ingress=false or features.deploy=false", Run: stepIngressK3dPorts, Tag: "deploy"},
-		// CRD manifests, projected from the operator's Go types. Gated on
-		// features.deploy alone (not on operators being configured): the
-		// emitter is a function of what is on disk, and a project with no
-		// api/ directory — most of them — does nothing here.
-		{Name: "CRD KCL manifests (api/ Go types)", Gate: and(gateDeployEnabled, hasGoModule), GateReason: "features.deploy=false, or " + noGoModuleReason, Run: stepCRDKCL, Tag: "deploy"},
 		{Name: "entity-aware seed data", Gate: and(feature(config.FeaturesConfig.MigrationsEnabled), hasServices), GateReason: "no services (an entity is a table a service's CRUD rpcs name) or features.migrations=false", Run: stepEntitySeeds, Tag: "migrations"},
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
@@ -2620,6 +2626,7 @@ func stepCRDKCL(ctx *pipelineContext) error {
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
+	defer ctx.forgetFailedRenders()
 	return ctx.warnOrFail("CRD KCL manifest generation",
 		generateCRDKCL(ctx.AbsPath, filepath.Join(ctx.AbsPath, kclDir), ctx.Checksums))
 }
@@ -2662,6 +2669,12 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	}
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
+	// An env that did not render would drop its frontends and processes from
+	// every output (they are the union of all envs), so keep them as they
+	// are instead — a warning, not a failure (generate_observability_keep.go).
+	if failed := ctx.renderedEnvs().failed; len(failed) > 0 {
+		return keepObservabilityOutputs(os.Stderr, ctx.AbsPath, failed)
+	}
 	return ctx.warnOrFail("observability dashboards", func() error {
 		funnels, err := declaredFunnels(ctx.renderedFrontends(), ctx.renderedEnvs().analytics...)
 		if err != nil {
@@ -2768,6 +2781,7 @@ func stepWorkloadsKCL(ctx *pipelineContext) error {
 // proto defaults for each environment on disk. The env's `main.k` imports
 // config_gen + its config.k to project config into env_vars.
 func stepPerEnvDeployConfig(ctx *pipelineContext) error {
+	defer ctx.forgetFailedRenders()
 	return ctx.warnOrFail("per-env deploy config generation",
 		generatePerEnvDeployConfig(ctx.ProjectDir, ctx.Cfg, ctx.Checksums, ctx.rootsForDeployConfig))
 }

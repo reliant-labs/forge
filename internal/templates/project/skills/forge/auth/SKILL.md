@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs).
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
 
 ## The default: managed identity
 
@@ -21,6 +21,14 @@ A project with a frontend declares its users once, in `deploy/kcl/identity.k` (`
 - **Dev:** `forge env up` converges the identity on the host IdP and writes the broker token and ids to the env's secret store; `.forge/identity/<name>.json` holds the non-secret outputs. `auth/dev-loop` has the detail and the failures.
 - **Hosted:** the control plane delivers the same values; `deploy/managed-identity` has the fields, what each runtime receives, and what is refused.
 - **Bring your own issuer** (Auth0, Okta, Keycloak, a Zitadel you run) stays supported and is the escape hatch: declare no `identity` in that env and set `jwt_issuer` / `oidc_client_id` in its `config.k` (see "Swapping the IdP").
+
+## No sign-in system (`--auth-mode none`)
+
+`forge project new <name> --frontend web --auth-mode none` scaffolds an app nobody signs in to: no `deploy/kcl/identity.k`, no `identity` on any env, no dev IdP or mail catcher, no IdP in `docker-compose.yml`, and a public frontend (no route guard mounted, no sign-in screens; `auth/frontend`). The login broker is still scaffolded but never mounted: with no identity, its config is empty. `--auth-mode native` (the default) is today's managed identity. Nothing records the choice: identity.k being absent IS the answer, and `forge generate` keeps it.
+
+**The API still fails closed.** `SetupAuth`, the interceptor and `AnonymousOK: false` are unchanged, so `auth_required` keeps its meaning: an rpc without `auth_required: false` answers **401 to every caller**, since no issuer exists to mint the token it requires. The born CRUD rpcs say `auth_required: true`. Publishing an rpc is one edit in its proto, never a default: change it to `false` and the generated allow-list (`procedures_gen.go`) picks it up. `forge lint --strict` lists rpcs with no declared posture.
+
+**Adding sign-in later** has no single command. Write `deploy/kcl/identity.k` (copy the `ManagedIdentity` from a scratch `forge project new x --frontend web`), import it and set `identity` in each env's `main.k` (dev: on the `idp` HostInfra, with `mail` beside it), run `forge generate` (the compose IdP comes back), and gate the frontend (`auth/frontend`).
 
 ## Choosing the validator (owned code, not config)
 

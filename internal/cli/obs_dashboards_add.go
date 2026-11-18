@@ -184,6 +184,13 @@ func validatePanel(name string, raw []byte, idOverridden bool) (obsdash.Panel, e
 			if idOverridden && p.Path == "panels[0].id" {
 				continue
 			}
+			// A section is declared by the dashboard the panel joins, not by
+			// the panel: judged alone, every sectioned panel is "undeclared".
+			// The merged dashboard is parsed before it is written, which
+			// checks the section against the target's own `sections`.
+			if p.Path == "panels[0].section" && strings.HasPrefix(p.Message, "undeclared section") {
+				continue
+			}
 			lines = append(lines, formatPanelProblem(name, p))
 		}
 		if len(lines) > 0 {

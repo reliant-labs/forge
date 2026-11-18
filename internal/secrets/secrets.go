@@ -476,7 +476,7 @@ func ValidateDeclaredRefs(p Provider, refs []SecretRef, storePath string) error 
 }
 
 // MissingDeclaredRefs lists the declared, non-optional refs a
-// value-resolving provider cannot supply, one per env-var name, sorted by
+// value-resolving provider cannot supply (absent, or present but empty), one per env-var name, sorted by
 // name. Nil when there are none, or when the provider cannot see values
 // (external/none), so a read-only caller can REPORT what is missing where
 // ValidateDeclaredRefs refuses.
@@ -503,7 +503,11 @@ func MissingDeclaredRefs(p Provider, refs []SecretRef) []SecretRef {
 		if r.EnvName == "" || seen[r.EnvName] || r.Optional {
 			continue
 		}
-		if _, ok := values[r.EnvName]; !ok {
+		// An empty value is missing too: forge's config loader treats an
+		// env var set to "" as unset, and a required field set but empty
+		// fails at boot. Passing it here let `forge env up` build and
+		// deploy for a quarter of an hour before the pods crashlooped.
+		if v, ok := values[r.EnvName]; !ok || v == "" {
 			seen[r.EnvName] = true
 			missing = append(missing, r)
 		}
@@ -527,7 +531,7 @@ func MissingRefsError(p Provider, missing []SecretRef, storePath string) error {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "secret provider %q (%s) is missing %d declared value(s):\n", p.Kind(), storePath, len(missing))
+	fmt.Fprintf(&b, "secret provider %q (%s) is missing %d declared value(s) (absent or empty):\n", p.Kind(), storePath, len(missing))
 	for _, r := range missing {
 		fmt.Fprintf(&b, "    %-*s   (Secret %s/%s)\n", width, r.EnvName, r.SecretName, r.key())
 	}

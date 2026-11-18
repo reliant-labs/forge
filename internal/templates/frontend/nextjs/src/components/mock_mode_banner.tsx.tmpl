@@ -1,31 +1,11 @@
 "use client";
 
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// MockModeBanner renders a loud, always-visible reminder when the app is
-// running against mock data instead of the real backend. Mock mode is
-// opt-in (the forge.Frontend `config.mock` KCL knob); the banner exists so a
-// working-looking UI can never silently masquerade as a working stack.
-//
-// It is loud through the SEMANTIC warning tokens (`bg-warning` /
-// `text-on-warning` from globals.css), not a raw palette color — the same
-// rule every other surface in this app follows, so rebranding moves the
-// banner too.
+// MockModeBanner: a loud reminder whenever the app serves mock data (forge.Frontend `config.mock`), so
+// a working-looking UI never passes for a working stack. Semantic warning tokens only.
 {{- if .HasMockAPI}}
-//
-// ── Why this is a client component ────────────────────────────────────
-//
-// The mode is read through the typed config module — the same source
-// src/lib/connect.ts selects its transport from, so the banner cannot
-// disagree with the transport about whether this is mock data. That module
-// reads window.__FORGE_CONFIG__ (config.js), which exists only in the
-// browser. Rendered in the server layout, the read happened at BUILD time,
-// found no config, and compiled the banner out of every static export while
-// the transport went on serving fixtures. So the banner reads the config
-// after hydration: the prerendered HTML carries no banner (the server
-// snapshot), and the browser renders it from the config.js it actually
-// loaded. Reading NEXT_PUBLIC_MOCK_API instead would inline the mode at build
-// time, which is what makes a bundle unpromotable between environments.
+// A client component on purpose: it reads the mode from config.js after hydration, as the transport
+// does; NEXT_PUBLIC_MOCK_API would bake the mode into the build and make the bundle unpromotable.
 
 import { useSyncExternalStore } from "react";
 

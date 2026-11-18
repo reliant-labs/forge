@@ -429,6 +429,29 @@ func isDevRuntimeConfig(rel string) bool {
 // checkIgnore returns, for each of paths git ignores, the matching rule as
 // "<source>:<line>:<pattern>".
 func checkIgnore(dir string, paths []string) (map[string]string, error) {
+	matches, err := checkIgnoreMatches(dir, paths)
+	if err != nil {
+		return nil, err
+	}
+	got := make(map[string]string, len(matches))
+	for path, m := range matches {
+		got[path] = m.String()
+	}
+	return got, nil
+}
+
+// ignoreMatch is the .gitignore rule that excludes a path.
+type ignoreMatch struct {
+	source, line, pattern string
+}
+
+func (m ignoreMatch) String() string {
+	return fmt.Sprintf("%s:%s:%s", m.source, m.line, m.pattern)
+}
+
+// checkIgnoreMatches returns, for each of paths git ignores, the rule that
+// ignores it.
+func checkIgnoreMatches(dir string, paths []string) (map[string]ignoreMatch, error) {
 	cmd := exec.Command("git", "-C", dir, "check-ignore", "-v", "--stdin", "-z")
 	cmd.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
 	out, err := cmd.Output()
@@ -440,13 +463,13 @@ func checkIgnore(dir string, paths []string) (map[string]string, error) {
 	}
 	// -z -v output: <source> NUL <linenum> NUL <pattern> NUL <pathname> NUL
 	fields := strings.Split(string(out), "\x00")
-	got := map[string]string{}
+	got := map[string]ignoreMatch{}
 	for i := 0; i+3 < len(fields); i += 4 {
 		source, line, pattern, path := fields[i], fields[i+1], fields[i+2], fields[i+3]
 		if strings.HasPrefix(pattern, "!") {
 			continue // matched a negation: NOT ignored
 		}
-		got[path] = fmt.Sprintf("%s:%s:%s", source, line, pattern)
+		got[path] = ignoreMatch{source: source, line: line, pattern: pattern}
 	}
 	return got, nil
 }

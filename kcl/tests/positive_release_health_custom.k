@@ -20,6 +20,7 @@ output = forge.render(forge.Bundle {
         regressed_issue_min_events = 1
         error_rate_min_errors = 1
         baseline_window = "48h"
+        alert_baseline_min_firings = 0
     }
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
 })
@@ -30,6 +31,7 @@ assert_thresholds = output.release_health.min_requests == 200 and output.release
 assert_baseline = output.release_health.require_baseline == "every"
 assert_regressed = output.release_health.regressed_issue_min_events == 1
 assert_error_rate = output.release_health.error_rate_min_errors == 1 and output.release_health.baseline_window_seconds == 172800
+assert_alert_baseline = output.release_health.alert_baseline_min_firings == 0
 
 # The default baseline policy is left out, so a render that keeps it records
 # the shape it always did.
@@ -59,3 +61,19 @@ _same_error_rate = forge.render(forge.Bundle {
     workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
 })
 assert_same_error_rate_absent = "error_rate_min_errors" not in _same_error_rate.release_health and "baseline_window_seconds" not in _same_error_rate.release_health
+
+# alert_baseline_min_firings is left out at its default (1), set explicitly or
+# not, and carried at any other value.
+assert_default_alert_baseline_absent = "alert_baseline_min_firings" not in _default_baseline.release_health
+_alert_baseline = forge.render(forge.Bundle {
+    project = "demo"
+    release_health = forge.ReleaseHealth {alert_baseline_min_firings = 1}
+    workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
+})
+assert_same_alert_baseline_absent = "alert_baseline_min_firings" not in _alert_baseline.release_health
+_alert_baseline_three = forge.render(forge.Bundle {
+    project = "demo"
+    release_health = forge.ReleaseHealth {alert_baseline_min_firings = 3}
+    workloads = [fw.Workload {name = "api", image = "ghcr.io/acme/api", runtime = forge.OnCluster {target = _k3d}}]
+})
+assert_alert_baseline_three = _alert_baseline_three.release_health.alert_baseline_min_firings == 3

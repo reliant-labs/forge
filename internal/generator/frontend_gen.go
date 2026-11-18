@@ -123,15 +123,17 @@ type FrontendGenOptions struct {
 	// previous env-var form unchanged.
 	TypedConfig FrontendTypedConfig
 	// Public scaffolds a frontend with NO sign-in gate: no route guard
-	// wrapping the app, and no /auth/sign-in route. It is what
-	// `auth_mode: none` renders, and what `forge scaffold frontend` picks
-	// by default for a project whose dev environment declares no identity
-	// provider — there, a guarded frontend can only ever redirect every
-	// page to a sign-in form nothing can satisfy.
+	// wrapping the app, and no sign-in screens or the forms behind them
+	// (isSignInScreen). It is what `--auth-mode none` renders (`forge
+	// project new` and `forge scaffold frontend`), and what `forge scaffold
+	// frontend` picks by default for a project whose dev environment
+	// declares no identity provider — there, a guarded frontend can only
+	// ever redirect every page to a sign-in form nothing can satisfy.
 	//
-	// The auth modules themselves (src/lib/auth/*) are still emitted: they
-	// compile, answer "signed out" without an issuer, and are what a later
-	// switch to `auth_mode: native` re-attaches to.
+	// The session modules (src/lib/auth/context, use-auth, native-login, …)
+	// and the unmounted route-guard.tsx are still emitted: they compile,
+	// answer "signed out" without an issuer, and are what gating the
+	// frontend later re-attaches to.
 	Public bool
 }
 
@@ -170,10 +172,44 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 	return out
 }
 
-// isSignInScreen reports whether a frontend template-tree path is one of the
-// Next.js /auth route files — the sign-in screens a public frontend omits.
+// isSignInScreen reports whether a frontend template-tree path is part of
+// the sign-in flow a public frontend omits: the Next.js /auth route files,
+// and the forms, hooks and tests only those screens (or the Vite tree's
+// inline sign-in routes, gated on .Public there) use.
+//
+// The session plumbing stays: src/lib/auth/{context,use-auth,native-login,
+// session-provider,return-to}, which the shell and the session menu read and
+// which answer "signed out" with no login broker behind them, and the unused
+// route-guard.tsx, the seam gating the frontend later re-attaches to.
 func isSignInScreen(rel string) bool {
-	return strings.HasPrefix(filepath.ToSlash(rel), "src/app/auth/")
+	rel = strings.TrimSuffix(filepath.ToSlash(rel), ".tmpl")
+	if strings.HasPrefix(rel, "src/app/auth/") {
+		return true
+	}
+	_, ok := signInOnlyFiles[rel]
+	return ok
+}
+
+// signInOnlyFiles are the files outside src/app/auth/ that nothing but the
+// sign-in screens imports. TestFrontendScaffoldImportsResolve's public cases
+// pin that the rest of a public tree never imports one, and
+// TestPublicFrontendOmitsSignInFlow that each is a real file of the native
+// tree and absent from the public one.
+var signInOnlyFiles = map[string]struct{}{
+	"src/components/accept-invite-form.tsx":    {},
+	"src/components/auth-ui.tsx":               {},
+	"src/components/forgot-password-form.tsx":  {},
+	"src/components/magic-link-form.tsx":       {},
+	"src/components/passkeys-panel.tsx":        {},
+	"src/components/password-requirements.tsx": {},
+	"src/components/reset-password-form.tsx":   {},
+	"src/components/sign-in-methods.tsx":       {},
+	"src/components/social-callback.tsx":       {},
+	"src/components/verify-email-form.tsx":     {},
+	"src/lib/auth/password.test.tsx":           {},
+	"src/lib/auth/sign-in-methods.test.tsx":    {},
+	"src/lib/auth/use-auth-options.ts":         {},
+	"src/lib/auth/use-password-policy.ts":      {},
 }
 
 // GenerateFrontendFiles generates the frontend directory and files.
@@ -264,8 +300,9 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 
 	for _, file := range frontendFiles {
 		// A public frontend has nothing to sign in to, so the sign-in
-		// screens are not emitted at all (the Vite tree carries its sign-in
-		// route inline in routes.tsx, gated on .Public there).
+		// screens and the forms behind them are not emitted at all (the Vite
+		// tree carries its sign-in routes inline in routes.tsx, gated on
+		// .Public there).
 		if opts.Public && isSignInScreen(file.Rel) {
 			continue
 		}

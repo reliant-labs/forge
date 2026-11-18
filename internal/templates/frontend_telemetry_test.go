@@ -172,8 +172,9 @@ func TestTelemetryDevProxyContract(t *testing.T) {
 	})
 }
 
-// TestTelemetryDependencies: the scaffolds install the exact-pinned SDK and
-// not the eight @opentelemetry/* packages the retired ./otel wiring needed.
+// TestTelemetryDependencies: the scaffolds declare no SDK (the runtime carries
+// @hyperdx/otel-web and rrweb as its own dependencies) and not the eight
+// @opentelemetry/* packages the retired ./otel wiring needed.
 func TestTelemetryDependencies(t *testing.T) {
 	for _, tmpl := range []string{
 		"nextjs/package.json.tmpl",
@@ -181,8 +182,8 @@ func TestTelemetryDependencies(t *testing.T) {
 	} {
 		s := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
 
-		if !regexp.MustCompile(`"@hyperdx/browser": "\d+\.\d+\.\d+"`).MatchString(s) {
-			t.Errorf("%s: @hyperdx/browser must be pinned to an exact version:\n%s", tmpl, s)
+		if strings.Contains(s, "@hyperdx/") {
+			t.Errorf("%s: the scaffold must not declare the HyperDX SDK; the runtime carries it:\n%s", tmpl, s)
 		}
 		if !strings.Contains(s, `"@opentelemetry/api"`) {
 			t.Errorf("%s: @opentelemetry/api is the runtime's required peer", tmpl)
@@ -353,7 +354,13 @@ func TestTelemetryPageViewsAndIdentity(t *testing.T) {
 				t.Errorf("a typed frontend's mock mode must come from loadConfig():\n%s", s)
 			}
 
-			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER"} {
+			// Forensics on failed RPCs stay on unless the runtime config
+			// explicitly says RPC_FORENSICS = "false".
+			if !strings.Contains(s, `rpcForensics: text(cfg.RPC_FORENSICS) !== "false",`) {
+				t.Errorf("rpc forensics must be on unless RPC_FORENSICS is \"false\":\n%s", s)
+			}
+
+			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER", "RPC_FORENSICS"} {
 				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(s) {
 					t.Errorf("%s is read from a build variable; it must come from config.js", buildVar)
 				}

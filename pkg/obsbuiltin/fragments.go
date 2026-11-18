@@ -56,6 +56,26 @@ func newDecided(end string) string {
 	return obsquery.NewUsersDecidedFrom("product_events", end, envScope)
 }
 
+// signupsFrom is, over the environments in scope that report sign-ups, the
+// latest of their earliest retained sign-ups (newDecided's DecidedFrom for
+// the window that ends at end): the moment from which every one of them
+// counts its sign-ups as new users. The epoch when none reports sign-ups.
+func signupsFrom(end string) string {
+	return "(SELECT max(DecidedFrom) FROM (" + newDecided(end) + ") WHERE ReportsSignups = 1)"
+}
+
+// signupsSince is a New or Returning figure's subtitle (Panel.SubtitleSQL)
+// over [lo, end): "since 14 Nov" when the environments' sign-ups are
+// reported only from a moment after lo (signupsFrom), so a user who signed up
+// before it has no sign-up and counts as returning; empty otherwise. Once
+// the range starts after that moment the subtitle goes by itself. An
+// environment that reports no sign-ups decides New by first-seen, which the
+// auth-sources note describes instead.
+func signupsSince(lo, end string) string {
+	return "SELECT if(decided > " + lo + ", concat('since ', replaceRegexpOne(formatDateTime(decided, '%d %b', 'UTC'), '^0', '')), '') AS \"Subtitle\"\n" +
+		"FROM (SELECT " + signupsFrom(end) + " AS decided)"
+}
+
 // unlessUndecided is the figure expression fig over the range [from, end), or
 // NULL when no environment ACTIVE in the range can tell a new user from a
 // returning one there: each one with UserActivityEvidence rows in the range reports

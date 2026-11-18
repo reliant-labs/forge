@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,5 +143,37 @@ func TestInstallPinnedTool_ReadersNeverSeeAPartialBinary(t *testing.T) {
 	}
 	if b, err := os.ReadFile(bin); err != nil || string(b) != full {
 		t.Fatalf("installed binary = %q, %v; want the complete file", b, err)
+	}
+}
+
+// A pin already in the tool cache is resolved the same way on every run, and
+// forge's own steps run it whatever PATH holds: the "resolved to" line is
+// routine, so it prints only under `forge generate --verbose` (issue: every
+// generate and scaffold printed one per drifted tool).
+func TestPinNotice_OnlyUnderVerbose(t *testing.T) {
+	capture := func(verbose bool) string {
+		t.Helper()
+		restore := setGenerateVerbosity(verbose)
+		defer restore()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev := os.Stderr
+		os.Stderr = w
+		pinNotice("📌 %s resolved to %s\n", "goimports", "v0.39.0")
+		os.Stderr = prev
+		w.Close()
+		out, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if got := capture(false); got != "" {
+		t.Errorf("default run printed %q; the pin line is routine", got)
+	}
+	if got := capture(true); !strings.Contains(got, "goimports resolved to v0.39.0") {
+		t.Errorf("--verbose printed %q, want the pin line", got)
 	}
 }

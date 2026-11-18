@@ -23,7 +23,8 @@ import {
 ## What is in here, and what is deliberately not
 
 **In:** mechanism. The interceptor stack (auth, brand headers, W3C
-traceparent, error normalization, idempotency-gated retry), the session
+traceparent, a client span per RPC with redacted failure forensics, error
+normalization, idempotency-gated retry), the session
 derived from JWT claims, the error boundary, the toast queue, the
 `<Resource>` tristate/pagination container, trace-context propagation,
 the HyperDX browser SDK wiring (`/telemetry` subpath), and integer money / basis-point formatting and parsing.
@@ -99,6 +100,31 @@ installs `@opentelemetry/api` and nothing else. `src/published-surface.test.ts`
 holds the rule: a peer the `/node` import closure does not reach must be
 optional.
 
+The browser telemetry SDK is not a peer. `@hyperdx/otel-web` and `rrweb` are
+exact-pinned **dependencies**, imported only by `/telemetry` and only through
+`import()`, so each is its own chunk (rrweb loads only when replay runs) and a
+consumer that never imports `/telemetry` bundles neither. They are
+dependencies rather than optional peers because apps that installed an earlier
+runtime declare `@hyperdx/browser` instead; a peer they don't declare would
+fail to resolve on their next install. Those apps need no edit, and their
+`@hyperdx/browser` entry is unused from then on.
+
+Under Node, `/telemetry` loads the SDK from `dist/hyperdx-otel-web.node.js`
+instead. That file is `@hyperdx/otel-web` bundled for the browser platform
+into one ES module, with `@opentelemetry/api` left external. The runtime
+reaches it through package.json's `#hyperdx-otel-web` import map, under the
+`node` condition, after a `browser` condition that comes first. Node is where a test runner (vitest with jsdom) runs this
+package natively, and Node cannot load the SDK's own ESM build, whose imports
+carry no file extensions. Its CommonJS build is no substitute: it loads the
+OpenTelemetry Node builds, so spans leave over `node:http` rather than
+`fetch`. Browser bundlers match `browser` first, even ones that also set
+`node`, so they never reach this file: Vite, webpack (Next.js) and esbuild
+were all checked, and `src/sdk-conditions.test.ts` holds esbuild to it. The
+file needs nothing of Node anyway: its only import is `@opentelemetry/api`,
+with no builtin and no `require()`.
+When the SDK cannot start at all, `initBrowserTelemetry` resolves `false` and
+logs `[telemetry] failed to start` with `console.warn`.
+
 Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 (forge's generated `next.config.ts` sets it). The reason changed with the
 build — it is no longer "these are `.tsx` files" but "these modules carry
@@ -134,8 +160,8 @@ URL's query string or fragment.
 to this origin's `/_otel`. It is a no-op without a DOM or an endpoint and never
 throws.
 
-The SDK chunk is large (~620 KB minified), and evaluating it is one long
-main-thread task. So by default (`start: "idle"`) it starts off the critical
+The SDK chunk is large (~430 KB minified; it was ~620 KB as `@hyperdx/browser`'s
+single file, rrweb included), and evaluating it is one long main-thread task. So by default (`start: "idle"`) it starts off the critical
 path: once the page has loaded, in the browser's first idle period or right
 after the first interaction has painted, or at once when an RPC waits for it.
 Its startup yields between stages: evaluating the chunk, the SDK's init, and
@@ -320,9 +346,44 @@ Replay records continuous input sampled (`REPLAY_SAMPLING`):
 - a field's final value (`input: "last"`; inputs are masked anyway).
 
 Snapshots also leave out scripts, comments and head metadata (rrweb's slimDOM).
-The recorder serializes, encodes and gzips on the main thread, so each event it
-doesn't record is work a phone doesn't do. `replaySampling` overrides any of
-these keys, and `replaySlimDOM: false` records the whole DOM.
+rrweb serializes each event on the main thread, so each event it doesn't record
+is work a phone doesn't do. `replaySampling` overrides any of these keys, and
+`replaySlimDOM: false` records the whole DOM.
+
+The recorder is the runtime's own (`src/replay-recorder.ts`), not the one
+HyperDX's SDK bundled. That one protobuf-encoded and gzipped every batch on the
+main thread every 5 s, stalling a phone for 50–560 ms each time, and flushed
+only on `unload`. The runtime's recorder works like this:
+
+- **Lazy rrweb.** rrweb loads in its own chunk, and only when replay runs.
+- **Batches.** Records are held and sent every 15 s (`replayFlushIntervalMs`),
+  or within a second once 48 KB are held, so what is left to send
+  uncompressed when the page is left stays small.
+- **Encoding.** Each batch is encoded as OTLP/JSON (one native
+  `JSON.stringify`) and gzipped with `CompressionStream`, both in a Worker
+  created from a Blob URL. Under a CSP that refuses `worker-src blob:`, the
+  gzip runs on the main thread in 64 KB slices that yield between them. With
+  no `CompressionStream`, the JSON goes uncompressed.
+- **Leaving the page.** When the page is hidden (`visibilitychange`) or left
+  (`pagehide`), what is held is sent at once with fetch `keepalive`, in
+  requests within the browser's 64 KB keepalive budget.
+- **`replayStart: "interaction"`.** Nothing is loaded or recorded until the
+  person's first tap, click or key, and then only after that frame has
+  painted.
+
+An app that stamped its own attributes by importing `@hyperdx/browser` and
+calling `setGlobalAttributes` on it must call `setTelemetryAttributes` from
+`/telemetry` instead. That SDK instance is no longer the one running, so
+attributes set on it go nowhere. Calls made before the SDK starts are held
+and applied when it does.
+
+HyperDX's replay player reads the result unchanged: OTLP logs on
+`/_otel/v1/logs` with scope `rum.rr-web` 4.0.0, the event JSON as the body,
+`rr-web.offset`/`event`/`chunk`/`total-chunks` attributes and the SDK's
+resource. The bundled recorder's safeguards are kept: a full snapshot when the
+RUM session changes, a 4 h cap per session, events split into chunks (of 16 K
+characters, so any one chunk can leave with the page in a keepalive request),
+and a per-node limit on attribute mutations.
 
 No URL leaves the browser with its query string or fragment, which is where
 emails, tokens, OAuth codes and search terms live. The SDK stamps the page URL
@@ -450,6 +511,63 @@ interface Interaction {
   synthesized trace id, so its RPCs still share one trace on the server. After
   `disableTelemetry()` it records nothing either. Nothing here throws.
 
+## RPC spans and failure forensics
+
+`buildRuntimeInterceptors()` records one **client span per RPC**, unary and
+streaming alike (`src/rpc-span.ts`):
+
+|            |                                                                                                                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name       | `<rpc.service>/<rpc.method>`, e.g. `pkg.v1.ChatService/GetChat`                                                                                                               |
+| kind       | `CLIENT`                                                                                                                                                                      |
+| attributes | `rpc.system = connect_rpc`, `rpc.service` (fully qualified), `rpc.method`, `forge.rpc.client = true`; on failure `rpc.connect_rpc.error_code` (the Connect code, `not_found`) |
+| status     | `ERROR` on failure. A cancelled call carries `canceled` but no error status and no forensics: it broke nothing                                                                |
+| ends       | when a unary response or error arrives; when a stream completes, fails, or the caller stops reading                                                                           |
+
+`rpc.service` + `rpc.method` are what forge servers' otelconnect spans carry,
+so they are the join between what the browser saw and what the server did.
+The stage sits directly outside `traceInterceptor`: the RPC span is the
+context the `traceparent` is written from (and, with the SDK, the parent of
+its fetch span), so the server's span is its descendant in the same trace.
+
+With no tracer provider registered (telemetry off, SSR, a React Native app
+without an OpenTelemetry SDK) the API hands out a non-recording span; the stage
+drops it and the call goes on exactly as without it. A React Native app that
+registers its own provider gets the spans through
+`@reliantlabs/forge-web-runtime/interceptors` with no DOM involved.
+
+**Forensics.** A failed call's span gets one `forge.forensics` event with
+`forensics.reason = error` and the request message's shape, classified deny by
+default by reflection (`src/rpc-forensics.ts`), keyed
+`forensics.arg.<proto field name>` (nested fields joined with `.`):
+
+| Field                                                                                                                                                                                                                                                | Recorded                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| number, bool                                                                                                                                                                                                                                         | the value (a 64-bit integer beyond 2^53 as its decimal string)                                                                  |
+| enum                                                                                                                                                                                                                                                 | the value's name                                                                                                                |
+| string named like an id (`id`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`)                                                                                                                                                                                | the value, cut to 128 characters                                                                                                |
+| an id whose name also names a secret (`session_id`, `apiKeyId`, `otpId`: contains `token`, `secret`, `passw`, `credential`, `session`, `cookie`, `apikey`, `privatekey`, `signingkey` or `otp`, case-insensitive, `_`/`-` ignored), string or number | `"[len=N]"`, never the value                                                                                                    |
+| any other string, bytes                                                                                                                                                                                                                              | `"[len=N]"`                                                                                                                     |
+| repeated, map                                                                                                                                                                                                                                        | `"[count=N]"`                                                                                                                   |
+| `Timestamp`, `Duration`, `google.type` `Date`, `DateTime`, `TimeOfDay`, `Interval`, `Month`, `DayOfWeek`                                                                                                                                             | `"[type=<Name>]"`, e.g. `"[type=Timestamp]"`: never the value or its subfields (a time is content: a birthdate, an appointment) |
+| other message                                                                                                                                                                                                                                        | its set fields, three levels deep (`"[message]"` below)                                                                         |
+| `[debug_redact = true]`                                                                                                                                                                                                                              | never, not even its presence                                                                                                    |
+
+Unset fields are left out; at most 32 fields are recorded
+(`forensics.truncated = true` says a record was cut). A record is attached at
+most once per procedure and error code per page load, and at most 256
+signatures per page load. For a stream, the request is the first message the
+caller sent.
+
+Turning it off: `initBrowserTelemetry({ rpcForensics: false })` (forge's
+generated `otel_gen.ts` passes it when the runtime config says
+`RPC_FORENSICS = "false"`, which KCL renders from
+`telemetry = forge.BrowserTelemetry {rpc_forensics = False}`), or
+`buildRuntimeInterceptors({ rpcForensics: false })` for one chain.
+`buildRuntimeInterceptors({ rpcSpans: false })` leaves the span stage out.
+After `disableTelemetry()` the stage records nothing. A hand-built chain uses
+`rpcSpanInterceptor()` directly outside `traceInterceptor()`.
+
 ## Node and Electron-main telemetry (`/node`)
 
 `initNodeTelemetry` is the browser entry's twin for a Node process — an
@@ -567,13 +685,16 @@ const relay = await startOtelRelay({ upstream: "http://127.0.0.1:4318" });
 ```ts
 import {
   buildRuntimeInterceptors, // the Connect transport stack
+  rpcSpanInterceptor, // the per-RPC client span stage, for hand-built chains
   ConnectClientError, // what the stack throws
   setTraceSampled, // traceInterceptor's knob
 } from "@reliantlabs/forge-web-runtime/interceptors";
 ```
 
-The `./interceptors` subpath is the transport layer on its own: `src/errors.ts`
-and `src/trace.ts` are the only modules it reaches. It imports **no React and
+The `./interceptors` subpath is the transport layer on its own: the
+interceptors, typed errors, trace propagation and the RPC span stage
+(`src/rpc-span.ts`, `src/rpc-forensics.ts`), and the dependency-free
+registries they report to. It imports **no React and
 no `@types/react`**, so a consumer never typechecks components it does not
 render.
 

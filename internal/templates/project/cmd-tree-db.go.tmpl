@@ -1,51 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// MIGRATION POLICY — and, deliberately, nothing else.
-//
-// The subcommands below are a shape every project shares, but every LINE
-// inside them is an operational decision that differs per deployment:
-//
-//   - `up` refuses to run against a dirty schema. That is the safe default,
-//     not a law. A staging environment that would rather auto-recover can
-//     call m.Force(version) and retry right here — migratekit exposes Force
-//     for exactly that, so the policy change stays a source edit in this
-//     file instead of a fork of the library.
-//   - "nothing was pending" exits 0. A pipeline that wants to fail when a
-//     release ships no migration inverts that by testing res.Changed.
-//   - `force` is the way out of that refusal, and it lives HERE, in the
-//     binary, because the image is the one thing every environment that
-//     reads the refusal has. A production image carries no forge and no
-//     checkout, and a hosted database is reachable only from inside the
-//     platform, so a recovery that needed either would be advice the
-//     operator cannot take. Run it as a one-off from the same image.
-//
-// There is NO `down`, deliberately. Forge rolls forward only: a down script
-// claims to undo a release and cannot — by the time anyone would run it the
-// release has written rows in the new shape and other code has acted on them,
-// and the script was written before any of that. A bad migration is repaired
-// by a NEW forward migration written against the state the database is
-// actually in. Write migrations expand-then-contract (add, backfill, switch
-// readers, drop in a later release) so the previous release keeps working
-// against the new schema; that is what makes a bad deploy survivable.
-//
-// The invariant half — opening a migrator over the embedded SQL, rewriting
-// the DATABASE_URL to the scheme the driver registered under, closing both
-// handles, and turning golang-migrate's sentinel errors into plain facts —
-// is in github.com/reliant-labs/forge/pkg/migratekit. It is not a decision
-// anyone re-derives, so improvements to it arrive through a dependency bump
-// rather than a re-scaffold.
-//
-// WHY THE MIGRATIONS ARE EMBEDDED. `db migrate` applies the SQL compiled
-// INTO this binary, never files read off disk. That is what lets the
-// production image migrate itself: the runtime stage copies the binary and
-// nothing else, so there is no db/migrations directory in the container and a
-// filesystem-sourced migrator could only ever fail there. The embedded set
-// comes from db/migrations/*.sql via db.Source() in db/source_gen.go
-// (forge-owned — it is the one part of this command that forge re-derives,
-// because whether db/embed_gen.go exists at all depends on whether you have
-// written any SQL yet). go:embed re-reads at compile time, so `go run
-// ./cmd/...` picks up a .sql you just wrote; `forge generate` is needed only
-// the FIRST time, to emit db/embed_gen.go.
+// Migration POLICY, yours to change: `up` refuses a dirty schema (`force` is the way out, run from
+// this image), and there is deliberately no `down` — forge rolls forward with a new migration.
+// It applies the SQL embedded in this binary (db/source_gen.go), so the image migrates itself;
+// the mechanics live in forge/pkg/migratekit. Depth: `forge skill load db/deploy-migrations`.
 package cmd
 
 import (

@@ -73,6 +73,13 @@ const (
 	// BrowseView). The console runs it through the data browser's own read;
 	// HyperDX cannot.
 	KindBrowse PanelKind = "browse"
+	// KindAttention is "Needs attention": the figures of the dashboard that
+	// moved by at least a threshold against the comparison, the ones that
+	// moved the wrong way first (see Attention). It runs no query of its own:
+	// the reader reads the watched panels' own statements over the range and
+	// the comparison window, which their cards already read. A reader with no
+	// comparison selected asks for one.
+	KindAttention PanelKind = "attention"
 
 	// The delivery kinds are drawn from the release ledger (releases,
 	// promotions, rollbacks) and the release-health verdict, which live in
@@ -101,7 +108,7 @@ const (
 // HyperDX renderer has nothing to emit for it.
 func IsConsoleKind(k PanelKind) bool {
 	switch k {
-	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse:
+	case KindIssues, KindSessions, KindFunnel, KindPostgres, KindText, KindBrowse, KindAttention:
 		return true
 	}
 	return IsDeliveryKind(k)
@@ -155,14 +162,68 @@ const (
 	// A NULL is an empty cell, not a zero, so a retention week that has not
 	// happened yet reads as missing rather than as churn.
 	StyleHeatmap DisplayStyle = "heatmap"
+	// StyleBarList draws a ranking as a list of labelled bars, largest first:
+	// a sql panel's rows (no time column) or a bar panel's groups. The first
+	// text column is each row's label and any further text column a muted
+	// second line; the bar is Display.Bar's value column (the first numeric
+	// one by default), followed by every other value column, each in its
+	// Display.Units unit. A column whose name ends in "%" holds 0 to 100.
+	// Display.Share follows the bar's value with its share of the rows'
+	// total. A sql panel's TrendSQL may return a time series grouped by the
+	// label (day, label, value), drawn as a sparkline on each row. The reader
+	// shows the first rows and offers the rest, so nothing a table showed is
+	// lost; a reader that predates the style draws the kind's default.
+	StyleBarList DisplayStyle = "barlist"
+	// StyleKPI draws a sql panel's one row of figures, or a number panel's
+	// series, as one card: the first figure large, with its change against
+	// the comparison and its sparkline (a sql panel's TrendSQL) across the
+	// card, and the other figures as a small row under it, each in its
+	// Display.Units unit (the panel's Unit by default).
+	StyleKPI DisplayStyle = "kpi"
 )
 
 // displayStyles lists the styles each kind takes, its default first.
 var displayStyles = map[PanelKind][]DisplayStyle{
 	KindLine:   {StyleLine, StyleArea, StyleBars},
-	KindBar:    {StyleBar, StylePie, StyleDonut},
-	KindNumber: {StyleStat, StyleGauge},
-	KindSQL:    {StyleLine, StyleArea, StyleBars, StyleFunnel, StyleHeatmap},
+	KindBar:    {StyleBar, StylePie, StyleDonut, StyleBarList},
+	KindNumber: {StyleStat, StyleGauge, StyleKPI},
+	KindSQL:    {StyleLine, StyleArea, StyleBars, StyleFunnel, StyleHeatmap, StyleBarList, StyleKPI},
+}
+
+// Direction is which way a figure is better (Display.Good).
+type Direction string
+
+// The directions.
+const (
+	// GoodUp: a rise is an improvement (visitors, sign-ups, retention).
+	GoodUp Direction = "up"
+	// GoodDown: a fall is an improvement (bounce rate, time to activation).
+	GoodDown Direction = "down"
+)
+
+// FunnelLayout is how a funnel's steps are laid out (Display.Layout).
+type FunnelLayout string
+
+// The funnel layouts. The empty layout is the bars every reader draws.
+const (
+	// LayoutSteps draws the steps across the card as columns on a log
+	// scale, with the conversion between each pair and the weakest step
+	// called out: the layout for a funnel whose first step counts visitors
+	// and whose later steps count people, orders of magnitude apart.
+	LayoutSteps FunnelLayout = "steps"
+)
+
+// ColumnUnits gives value columns their own unit by name (Display.Units).
+type ColumnUnits map[string]Unit
+
+// Unit returns the unit u gives the column name, if it names one. A nil u
+// names none.
+func (u *ColumnUnits) Unit(name string) (Unit, bool) {
+	if u == nil {
+		return "", false
+	}
+	unit, ok := (*u)[name]
+	return unit, ok
 }
 
 // ChartColor is a named colour of the renderer's data-visualisation palette.
@@ -249,6 +310,28 @@ type Display struct {
 	// exactly (accounts, users). A number panel or a sql panel drawn as
 	// figures; a renderer that never abbreviates ignores it.
 	Exact bool `json:"exact,omitempty"`
+	// Good is which way the figure is better. A reader draws a change in the
+	// good direction as an improvement and one in the other as a worsening
+	// (the Reliant console colours them green and red), and a KindAttention
+	// panel watches the figure. Empty is neutral: a change is only a change.
+	// A number panel, or a sql panel drawn as figures.
+	Good Direction `json:"good,omitempty"`
+	// Bar is the value column a StyleBarList panel draws as its bar: a sql
+	// panel's column or a bar panel's series label. Empty is the first
+	// numeric column.
+	Bar string `json:"bar,omitempty"`
+	// Share follows each bar of a StyleBarList panel with its share of the
+	// rows' total.
+	Share bool `json:"share,omitempty"`
+	// Units gives the value columns of a StyleBarList or StyleKPI panel each
+	// their own unit, by column name, where they differ ("Visitors" a count,
+	// "Conversion %" a percent); a column it does not name takes the panel's
+	// Unit. At most MaxColors. A pointer, as Colors is, so Display stays
+	// comparable.
+	Units *ColumnUnits `json:"units,omitempty"`
+	// Layout lays out a funnel's steps: a funnel panel's, or a sql panel's
+	// drawn as StyleFunnel (see FunnelLayout). Empty is bars.
+	Layout FunnelLayout `json:"layout,omitempty"`
 }
 
 // SeriesColors maps a series name to its palette colour (Display.Colors).
@@ -444,6 +527,16 @@ type Panel struct {
 	// one drawn as a funnel or a heatmap. Renderers that draw no sparkline
 	// ignore it.
 	TrendSQL string `json:"trendSql,omitempty"`
+	// SubtitleSQL is a sql panel's subtitle: a read-only SELECT, under the
+	// same guard and parameters as SQL, whose first row's first column is a
+	// short text a renderer draws under the panel's title, as part of its
+	// label ("New users", "since 14 Nov"). It qualifies what the panel shows
+	// for the window read, when that depends on the data: new users counted
+	// only since the environment began reporting sign-ups. An empty string,
+	// a NULL or no row draws no subtitle, so a panel whose qualification no
+	// longer applies loses it by itself. It never changes the figures. Only a
+	// sql panel takes it. Renderers that draw no subtitle ignore it.
+	SubtitleSQL string `json:"subtitleSql,omitempty"`
 	// MinStep is the narrowest bucket a KindSQL panel's statement produces,
 	// in the same form as DefaultRange ("1d"): set it when the statement
 	// groups by a fixed bucket (toDate, toStartOfWeek) rather than by the
@@ -486,7 +579,51 @@ type Panel struct {
 	// default for the kind.
 	Width  int `json:"width,omitempty"`
 	Height int `json:"height,omitempty"`
+	// Drill is where the panel's detail lives: a link in its header to
+	// another dashboard of the project (see PanelDrill). Any kind takes it;
+	// only the console follows it.
+	Drill *PanelDrill `json:"drill,omitempty"`
+	// Attention is what a KindAttention panel watches; only that kind takes
+	// it.
+	Attention *Attention `json:"attention,omitempty"`
 }
+
+// PanelDrill links a panel to the dashboard that has its detail ("Users →").
+// The reader keeps the range, the comparison and the environments when it
+// follows it. It differs from Link, which opens the data browser per row.
+type PanelDrill struct {
+	// Dashboard is the id of a dashboard of the same project.
+	Dashboard string `json:"dashboard"`
+	// Label is the link's text; empty is that dashboard's title.
+	Label string `json:"label,omitempty"`
+	// Panel is the id of a panel on that dashboard to scroll to.
+	Panel string `json:"panel,omitempty"`
+}
+
+// Attention is what a KindAttention panel watches: figures that declare
+// Display.Good. The reader lists each one whose relative change against the
+// comparison is at least Threshold, those that moved the wrong way first,
+// with the figures themselves. It is a declared comparison, not a
+// statistical test.
+type Attention struct {
+	// Watch are ids of panels on the same dashboard, each a figure with
+	// Display.Good. Empty is every such panel of the dashboard.
+	Watch []string `json:"watch,omitempty"`
+	// Figures are figures only this panel reads: sql panels, each with
+	// Display.Good, drawn nowhere else. At most MaxAttentionFigures.
+	Figures []Panel `json:"figures,omitempty"`
+	// Threshold is the relative change that counts, a fraction in (0, 1].
+	// Zero is DefaultAttentionThreshold.
+	Threshold float64 `json:"threshold,omitempty"`
+}
+
+// Attention bounds and defaults.
+const (
+	// MaxAttentionFigures bounds Attention.Figures.
+	MaxAttentionFigures = 8
+	// DefaultAttentionThreshold is a 5% change.
+	DefaultAttentionThreshold = 0.05
+)
 
 // Filter is a dashboard-level control. The default kind is a dropdown over a
 // field that narrows every panel; FilterToggle is an on/off switch a sql panel

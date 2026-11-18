@@ -1490,10 +1490,44 @@ func resolveInjectField(df DepsField, c BuildComponent, producerVar map[string]s
 	// Optional collaborator with no provider: typed nil, silent (the user
 	// opted into "may be nil"). Required: typed nil + loud MissingProvider.
 	if df.Optional {
-		return "nil", "optional — no provider", nil
+		return "nil", optionalNilComment, nil
 	}
-	return "nil", "TODO: no provider for " + df.Type,
+	return "nil", legacyMissingProviderPrefix + df.Type,
 		&MissingProvider{Component: c.FieldName, Field: df.Name, Type: df.Type}
+}
+
+// The comments the legacy compose.go reconcile wrote beside a Deps value it
+// had nothing better for: a required collaborator with no provider, and a
+// scalar no config field maps (scalarConfigHint).
+const (
+	legacyMissingProviderPrefix = "TODO: no provider for "
+	legacyConfigHintSuffix      = " is configuration — declare a config block (see forge architecture skill)"
+)
+
+// LegacyComposePlaceholder reports whether a legacy NewComponents Deps value,
+// with the trailing comment beside it, is a placeholder forge wrote rather
+// than a value the author chose: the typed nil of a collaborator with no
+// provider (optional or not), or the zero value of an unmapped scalar. Like
+// the graph's own placeholders (optionalPlaceholder), it records that there
+// was nothing to resolve to at the time, so a conversion must resolve the
+// key again instead of carrying the absence forward — over a provider that
+// exists now, a carried nil silently switches that collaborator off
+// (forge#2276: an upload handler's auth gate).
+func LegacyComposePlaceholder(value, comment string) bool {
+	comment = strings.TrimSpace(comment)
+	value = strings.TrimSpace(value)
+	switch {
+	case optionalPlaceholder(value, comment):
+		return true
+	case strings.HasPrefix(comment, legacyMissingProviderPrefix):
+		return value == "nil"
+	case strings.HasPrefix(comment, "TODO: ") && strings.HasSuffix(comment, legacyConfigHintSuffix):
+		switch value {
+		case `""`, "0", "false", "nil":
+			return true
+		}
+	}
+	return false
 }
 
 // parseConfigFields returns the exported fields of the generated Config
@@ -1547,7 +1581,7 @@ func scalarTypesCompatible(want, have string) bool {
 // case: a scalar Deps field is configuration and belongs in a config
 // block, not the Infra provider set.
 func scalarConfigHint(df DepsField, c BuildComponent) string {
-	return fmt.Sprintf("TODO: %s is configuration — declare a config block (see forge architecture skill)", df.Name)
+	return "TODO: " + df.Name + legacyConfigHintSuffix
 }
 
 // missingProviderError builds the loud generate-time error naming every

@@ -90,16 +90,33 @@ func TestWritingCommandsStillSetUpTheClone(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")
 	}
+	prevNotice := mergeDriverNoticeDir
+	t.Cleanup(func() { mergeDriverNoticeDir = prevNotice })
+	notices := t.TempDir()
+	mergeDriverNoticeDir = func() (string, error) { return notices, nil }
+
+	// By default the merge driver is `forge merge-driver install`'s alone
+	// (forge#2232): a writing command activates the hooks and routes no
+	// generated file to the driver.
 	repo := cloneSetupRepo(t)
 	clearProjectDir(t)
 	_, _ = runForge(t, "-C", repo, "project", "disown", "no-such-file_gen.go", "--reason", "test")
-
 	after := cloneGitSetup(t, repo)
-	if !strings.Contains(after[filepath.Join(".git", "info", "attributes")], mergeAttributesBegin) {
-		t.Errorf("a writing command did not route generated files to the merge driver:\n%s", after[filepath.Join(".git", "info", "attributes")])
+	if strings.Contains(after[filepath.Join(".git", "info", "attributes")], mergeAttributesBegin) {
+		t.Errorf("a writing command wired the merge driver without git.merge_driver: auto:\n%s", after[filepath.Join(".git", "info", "attributes")])
 	}
 	if got := gitOut(t, repo, "config", "--local", "--default", "", "core.hooksPath"); got != ".githooks" {
 		t.Errorf("a writing command did not activate forge's hooks: core.hooksPath = %q", got)
+	}
+
+	// git.merge_driver: auto keeps the old wiring.
+	repo = cloneSetupRepo(t)
+	writeTestFile(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\ngit:\n  merge_driver: auto\n")
+	clearProjectDir(t)
+	_, _ = runForge(t, "-C", repo, "project", "disown", "no-such-file_gen.go", "--reason", "test")
+	after = cloneGitSetup(t, repo)
+	if !strings.Contains(after[filepath.Join(".git", "info", "attributes")], mergeAttributesBegin) {
+		t.Errorf("a writing command did not route generated files to the merge driver under git.merge_driver: auto:\n%s", after[filepath.Join(".git", "info", "attributes")])
 	}
 }
 

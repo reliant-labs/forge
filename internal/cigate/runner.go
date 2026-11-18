@@ -63,6 +63,10 @@ const (
 	Skip Status = "SKIPPED"
 	// NA is a check this project has nothing for. It is not a skip.
 	NA Status = "N/A"
+	// Deferred is a check the selected tier leaves to another tier (the
+	// integration lane on a push to main). It ran nowhere in this gate and
+	// does not fail it: the tier that runs it answers for it.
+	Deferred Status = "DEFERRED"
 )
 
 // Lane is a group of checks a CI job runs together.
@@ -105,6 +109,9 @@ type Check struct {
 	// NotApplicable, when set, reports the row as N/A with this reason and
 	// runs nothing.
 	NotApplicable string
+	// Deferred, when set, reports the row as DEFERRED with this reason and
+	// runs nothing: the selected tier leaves the check to another tier.
+	Deferred string
 	// Done returns a non-empty note when the check's work is already done
 	// (dependencies installed); the row is PASS and nothing runs.
 	Done func() string
@@ -152,7 +159,10 @@ type Result struct {
 	Lane     Lane
 	Status   Status
 	Duration time.Duration
-	Note     string
+	// Queued is how long the check, its dependencies done, waited for a host
+	// heavy slot or the gate's job cap before it started.
+	Queued time.Duration
+	Note   string
 	// Allowed marks a SKIPPED row the caller asked for (CI_SKIP), which does
 	// not fail the gate.
 	Allowed bool
@@ -190,7 +200,7 @@ func (r Report) Failed() bool {
 
 // Tally is the rows of a report counted by outcome. Skipped counts only the
 // SKIPPED rows that fail the gate; Allowed counts the ones CI_SKIP named.
-type Tally struct{ Passed, Cached, Failed, Skipped, Allowed, NA int }
+type Tally struct{ Passed, Cached, Failed, Skipped, Allowed, NA, Deferred int }
 
 // Counts tallies the rows by outcome.
 func (r Report) Counts() Tally {
@@ -210,6 +220,8 @@ func (r Report) Counts() Tally {
 			t.Skipped++
 		case res.Status == NA:
 			t.NA++
+		case res.Status == Deferred:
+			t.Deferred++
 		}
 	}
 	return t
@@ -233,6 +245,9 @@ func (r Report) verdict() string {
 	}
 	if t.NA > 0 {
 		parts = append(parts, fmt.Sprintf("%d n/a", t.NA))
+	}
+	if t.Deferred > 0 {
+		parts = append(parts, fmt.Sprintf("%d deferred", t.Deferred))
 	}
 	if r.Wall > 0 {
 		parts = append(parts, "in "+r.Wall.Round(time.Second).String())
@@ -274,7 +289,7 @@ func (r Report) RenderText(w io.Writer) {
 
 // RenderMarkdown is the same table for $GITHUB_STEP_SUMMARY.
 func (r Report) RenderMarkdown(w io.Writer) {
-	icon := map[Status]string{Pass: "✅", Fail: "❌", Skip: "⏭️", NA: "➖"}
+	icon := map[Status]string{Pass: "✅", Fail: "❌", Skip: "⏭️", NA: "➖", Deferred: "⏸️"}
 	fmt.Fprintf(w, "### CI gate — %s\n\n| Check | Result | Time | Note |\n|---|---|---|---|\n", r.Lane)
 	for _, res := range r.Results {
 		fmt.Fprintf(w, "| `%s` | %s %s | %s | %s |\n",
@@ -318,7 +333,7 @@ func (res Result) note() string {
 }
 
 func formatDuration(res Result) string {
-	if res.Status == Skip || res.Status == NA || res.Duration == 0 {
+	if res.Status == Skip || res.Status == NA || res.Status == Deferred || res.Duration == 0 {
 		return "-"
 	}
 	return res.Duration.Round(100 * time.Millisecond).String()
@@ -697,6 +712,8 @@ func (s *scheduler) run() {
 	for i, c := range s.checks {
 		res := Result{Name: c.Name, Lane: c.Lane}
 		switch {
+		case c.Deferred != "":
+			res.Status, res.Note = Deferred, c.Deferred
 		case c.NotApplicable != "":
 			res.Status, res.Note = NA, c.NotApplicable
 		case skip[c.Name]:
@@ -809,6 +826,7 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 	// cap — never both. Holding a job token while waiting for a slot could
 	// deadlock: a light check's own child (`forge generate` run by an extra)
 	// waits for a slot, while the slot's holder waits for that token.
+	ready := s.now()
 	var slotEnv []string
 	if c.Heavy && s.heavy.enabled() {
 		slot, err := s.heavy.take(s.pos[i], "ci gate: "+c.Name)
@@ -826,7 +844,9 @@ func (s *scheduler) runCheck(i int) (Result, bool) {
 		defer func() { <-s.jobs }()
 	}
 
+	queued := s.now().Sub(ready)
 	res, ran := s.execute(c, slotEnv)
+	res.Queued = queued
 	// Only a PASS the command itself earned is worth remembering: a Done
 	// short-circuit says nothing about this tree.
 	if ran && res.Status == Pass && s.opt.Verdicts != nil && !c.NoCache {

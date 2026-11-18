@@ -201,6 +201,12 @@ type MessageFieldDef struct {
 	// none: a List request field then filters by exact match on the column
 	// of its own name.
 	Filter *ListFilterDef `json:",omitempty"`
+	// RequestOption is the field's `// forge:request-option` marker
+	// (ProtoMarkerRequestOption): on a List request the field is a request
+	// knob, so the generated List op does not filter on it and the list page
+	// renders no control for it. `json:",omitempty"` keeps old descriptors
+	// parseable.
+	RequestOption bool `json:",omitempty"`
 }
 
 // ListFilterDef is a List request field's declared filter facet
@@ -330,6 +336,16 @@ type SchemaFieldDef struct {
 	// `json:",omitempty"` keeps old descriptors parseable (additive
 	// contract).
 	Guards []string `json:"guards,omitempty"`
+	// RequestOption marks a field carrying `// forge:request-option`
+	// (ProtoMarkerRequestOption): on a List request it is a request knob,
+	// not a filter. Read off BOTH extractors. `json:",omitempty"` keeps old
+	// descriptors parseable (additive contract).
+	RequestOption bool `json:"request_option,omitempty"`
+	// FilterFacet reports a `(forge.v1.filter)` option on the field: a
+	// declared filter on the column it names. Read by the raw proto scan
+	// only (the descriptor path carries the facet itself, on
+	// MessageFieldDef.Filter).
+	FilterFacet bool `json:"filter_facet,omitempty"`
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.

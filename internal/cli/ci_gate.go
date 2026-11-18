@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/templates"
@@ -66,6 +68,15 @@ func newCIGateCmd() *cobra.Command {
 			"On a branch, unit-tests runs only the Go packages the branch's changes reach (affected\n" +
 			"mode), and falls back to the whole suite when anything but Go source changed, on the\n" +
 			"default branch, or with CI_FULL=1 / --full. The mode and why are printed.\n\n" +
+			"Tiers (--tier, or --event to pick one from a GitHub event name) run the gate as the\n" +
+			"scaffolded ci.yml runs it for that event. A requested built-in lane the tier does not\n" +
+			"run is listed DEFERRED, which does not fail the gate:\n" +
+			gateTierHelp() + "\n" +
+			"--json prints one " + cigate.DocumentSchema + " document on stdout (the progress lines and\n" +
+			"the table go to stderr): the verdict, exit_code, and per check its status (pass, fail,\n" +
+			"skip, waived, deferred, na), duration_ms, queued_ms, cached, and for a failed check\n" +
+			"the findings {path, line, column, level, message} read from its log (go test, go\n" +
+			"vet / golangci-lint / buf `file:line:` lines, tsc). The exit status is unchanged.\n\n" +
 			"Environment: CI_SKIP, CI_ONLY (checks or groups to run, with what they depend on),\n" +
 			"CI_FULL, CI_BASE, CI_NO_CACHE, CI_REPORT (also write the Markdown table to a file),\n" +
 			"CI_LOG_DIR, FORGE_CI_CACHE_DIR.",
@@ -74,7 +85,9 @@ func newCIGateCmd() *cobra.Command {
 			"  forge ci gate --list                # every check, its lane, group and scheduling\n" +
 			"  CI_ONLY=kcl forge ci gate checks    # one group (and whatever it depends on)\n" +
 			"  CI_SKIP=vuln-go forge ci gate       # offline: allow one skip, still listed\n" +
-			"  CI_FULL=1 forge ci gate test        # the whole unit suite on a branch",
+			"  CI_FULL=1 forge ci gate test        # the whole unit suite on a branch\n" +
+			"  forge ci gate --tier queue --base <group base sha> --json   # a merge group, for a check run\n" +
+			"  forge ci gate test --event push --json                       # the test lane as a push to main runs it",
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -91,66 +104,195 @@ func newCIGateCmd() *cobra.Command {
 	f.BoolVar(&flags.full, "full", false, "Run the whole unit suite on a branch instead of the affected packages (also CI_FULL=1)")
 	f.StringVar(&flags.report, "report", "", "Also write the Markdown summary to this file (also CI_REPORT)")
 	f.StringVar(&flags.base, "base", "", "Ref a branch's changes are measured from for affected unit tests (default origin/<default branch>; a stacked branch names its parent; also CI_BASE)")
+	f.StringVar(&flags.tier, "tier", "", "Run the gate as one CI event's tier: pr, queue (alias merge), main or full (see Tiers above)")
+	f.StringVar(&flags.event, "event", "", "Pick the tier from a GitHub event name: pull_request, merge_group, push, schedule, workflow_dispatch (an action suffix such as pull_request.synchronize is ignored)")
+	f.BoolVar(&flags.json, "json", false, "Print a "+cigate.DocumentSchema+" document on stdout; progress and the table go to stderr")
+	cmd.MarkFlagsMutuallyExclusive("tier", "event")
+	cmd.MarkFlagsMutuallyExclusive("list", "json")
 	return cmd
 }
 
-type gateFlags struct {
-	list, groups, noCache, full bool
-	skip, only                  []string
-	jobs                        int
-	report, base                string
+// gateTierHelp is the Tiers block of --help, from the tier table itself.
+func gateTierHelp() string {
+	var b strings.Builder
+	for _, t := range cigate.Tiers() {
+		fmt.Fprintf(&b, "  %-6s %-34s %s\n", t.Name, strings.Join(t.Events, ", "), t.About)
+	}
+	return b.String()
 }
 
+type gateFlags struct {
+	list, groups, noCache, full, json bool
+	skip, only                        []string
+	jobs                              int
+	report, base, tier, event         string
+}
+
+// gateRun is what one gate invocation produced, for the --json document.
+type gateRun struct {
+	rep cigate.Report
+	// ran is true once checks were run (the report is the verdict).
+	ran          bool
+	tier         string
+	root, module string
+	dirs         map[string]string
+}
+
+// runCIGate runs the gate. Under --json the human output goes to stderr and the
+// document to stdout — also when the gate could not run, so a check run always
+// has a document to read. The exit status is the same either way.
 func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
-	out, stderr := cmd.OutOrStdout(), cmd.ErrOrStderr()
-	root, err := projectRoot()
-	if err != nil {
+	if !flags.json {
+		_, err := runGate(cmd, args, flags, cmd.OutOrStdout())
 		return err
 	}
-	store, err := loadProjectStore()
-	if err != nil {
-		return err
+	run, err := runGate(cmd, args, flags, cmd.ErrOrStderr())
+	if !run.ran {
+		run.rep.Lane = gateLaneArg(args)
 	}
-	cfg := store.Config()
-	forge, err := forgeExecCommand()
-	if err != nil {
-		return fmt.Errorf("resolve forge binary: %w", err)
+	doc := cigate.NewDocument(run.rep, cigate.DocumentInput{
+		Tier: run.tier, Err: err, Ran: run.ran, Root: run.root, Module: run.module, Dirs: run.dirs,
+	})
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	if encErr := enc.Encode(doc); encErr != nil && err == nil {
+		return encErr
 	}
-	ciData := generator.CIWorkflowDataFor(root, cfg, generator.CIInputs{Frontends: ciFrontends(root, cfg)})
-	all, err := cigate.Plan(cigate.PlanInput{Root: root, CI: ciData, Cfg: cfg, Forge: forge})
-	if err != nil {
-		return cliutil.UserErr("forge ci gate", err.Error(), "forge.yaml (ci.gate)", "fix the extra check and re-run")
+	return err
+}
+
+func gateLaneArg(args []string) string {
+	if len(args) == 1 {
+		return args[0]
 	}
+	return "all"
+}
+
+// gateTier resolves --tier / --event; ok is false when neither was given.
+func gateTier(flags gateFlags) (tier cigate.Tier, ok bool, err error) {
+	switch {
+	case flags.tier != "":
+		tier, err = cigate.ParseTier(flags.tier)
+	case flags.event != "":
+		tier, err = cigate.TierForEvent(flags.event)
+	default:
+		return cigate.Tier{}, false, nil
+	}
+	if err != nil {
+		return cigate.Tier{}, false, cliutil.UserErr("forge ci gate", err.Error(), "", "`forge ci gate --help` lists the tiers and the events each answers")
+	}
+	return tier, true, nil
+}
+
+// gatePlan is the checks one invocation selected, before any runs.
+type gatePlan struct {
+	all, selected []cigate.Check
+	label         string
+	skips         []string
+}
+
+// planGate resolves the lanes, the tier, CI_ONLY and CI_SKIP into the checks
+// to run, refusing a name that matches nothing.
+func planGate(all []cigate.Check, args []string, flags gateFlags, tier cigate.Tier, tiered bool) (gatePlan, error) {
 	lanes, label, err := gateLanes(args, cigate.Lanes(all))
 	if err != nil {
-		return err
+		return gatePlan{}, err
 	}
 	selected := cigate.Select(all, lanes)
+	if tiered {
+		selected = tier.Defer(selected)
+	}
 
 	only := append(cigate.ParseSkips(os.Getenv(cigate.OnlyEnv)), flags.only...)
 	if bad := cigate.UnknownOnly(only, selected); len(bad) > 0 {
-		return cliutil.UserErr("forge ci gate",
+		return gatePlan{}, cliutil.UserErr("forge ci gate",
 			fmt.Sprintf("%s names no check or group of lane %q: %s — a typo would otherwise run nothing and look clean", cigate.OnlyEnv, label, strings.Join(bad, ", ")),
 			"", "checks and groups: `forge ci gate "+label+" --list`")
 	}
 	selected = cigate.Only(selected, only)
 
-	if flags.list {
-		writeGateList(out, selected)
-		return nil
-	}
-
 	skips := append(cigate.ParseSkips(os.Getenv(cigate.SkipEnv)), flags.skip...)
-	if bad := cigate.UnknownSkips(skips, all); len(bad) > 0 {
+	if bad := cigate.UnknownSkips(skips, all); len(bad) > 0 && !flags.list {
 		names := make([]string, 0, len(all))
 		for _, c := range all {
 			names = append(names, c.Name)
 		}
-		return cliutil.UserErr("forge ci gate",
+		return gatePlan{}, cliutil.UserErr("forge ci gate",
 			fmt.Sprintf("%s names no check: %s — a misspelled skip would silently skip nothing", cigate.SkipEnv, strings.Join(bad, ", ")),
 			"", "valid names: "+strings.Join(names, ", "))
 	}
+	return gatePlan{all: all, selected: selected, label: label, skips: skips}, nil
+}
 
+// runGate plans and runs the gate, writing progress and the table to out.
+func runGate(cmd *cobra.Command, args []string, flags gateFlags, out io.Writer) (gateRun, error) {
+	var run gateRun
+	tier, tiered, err := gateTier(flags)
+	if err != nil {
+		return run, err
+	}
+	run.tier = tier.Name
+	root, err := projectRoot()
+	if err != nil {
+		return run, err
+	}
+	run.root, run.module = root, goModulePath(root)
+	store, err := loadProjectStore()
+	if err != nil {
+		return run, err
+	}
+	cfg := store.Config()
+	forge, err := forgeExecCommand()
+	if err != nil {
+		return run, fmt.Errorf("resolve forge binary: %w", err)
+	}
+	ciData := generator.CIWorkflowDataFor(root, cfg, generator.CIInputs{Frontends: ciFrontends(root, cfg)})
+	all, err := cigate.Plan(cigate.PlanInput{Root: root, CI: ciData, Cfg: cfg, Forge: forge})
+	if err != nil {
+		return run, cliutil.UserErr("forge ci gate", err.Error(), "forge.yaml (ci.gate)", "fix the extra check and re-run")
+	}
+	plan, err := planGate(all, args, flags, tier, tiered)
+	if err != nil {
+		return run, err
+	}
+	if flags.list {
+		writeGateList(out, plan.selected)
+		return run, nil
+	}
+	run.dirs = map[string]string{}
+	for _, c := range plan.selected {
+		run.dirs[c.Name] = c.Dir
+	}
+	if tiered {
+		fmt.Fprintf(out, "tier: %s — %s\n", tier.Name, tier.About)
+	}
+	rep := executeGate(cmd, out, gateExec{
+		root: root, cfg: cfg, frontends: frontendDirs(ciData), plan: plan, flags: flags, tier: tier, tiered: tiered,
+	})
+	run.rep, run.ran = rep, true
+	if rep.Failed() {
+		return run, gateFailure{}
+	}
+	return run, nil
+}
+
+// gateExec is what executeGate runs.
+type gateExec struct {
+	root      string
+	cfg       *config.ProjectConfig
+	frontends []string
+	plan      gatePlan
+	flags     gateFlags
+	tier      cigate.Tier
+	tiered    bool
+}
+
+// executeGate runs the planned checks: verdict cache, affected mode, host
+// slots and duration history around cigate.Run, then the table, the cache
+// flush, CI_REPORT and the job summary.
+func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
+	stderr := cmd.ErrOrStderr()
+	root, cfg, flags := in.root, in.cfg, in.flags
 	// CI runs with go's default -mod=readonly; a caller's GOFLAGS=-mod=mod
 	// would let the gate's `go build` rewrite go.mod and go.sum and report a
 	// verdict CI would not give. ci.gate.env applies to every check. Every
@@ -162,35 +304,27 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	cache := openGateCache(ctx, out, root, in.frontends, env, flags.noCache)
 	var verdicts cigate.Verdicts
-	var cache *cigate.VerdictCache
-	switch {
-	case flags.noCache || truthy(os.Getenv(cigate.NoCacheEnv)):
-		fmt.Fprintln(out, "verdict cache: off ("+map[bool]string{true: "--no-cache", false: cigate.NoCacheEnv + "=1"}[flags.noCache]+")")
-	default:
-		var why string
-		cache, why = cigate.OpenVerdictCache(ctx, cigate.CacheInput{
-			Root: root, Dir: os.Getenv(cigate.CacheDirEnv), Forge: gateJudgeIdentity(), Frontends: frontendDirs(ciData), Env: env,
-		})
-		if cache != nil {
-			verdicts = cache
-			fmt.Fprintf(out, "verdict cache: on — a check that passed on this tree (%s) before is not run again; %s=1 runs everything\n", cache.Commit(), cigate.NoCacheEnv)
-		} else {
-			fmt.Fprintln(out, "verdict cache: off — "+why)
-		}
+	if cache != nil {
+		verdicts = cache
 	}
 
 	base := flags.base
 	if base == "" {
 		base = os.Getenv(cigate.BaseEnv)
 	}
-	selected = applyAffectedMode(ctx, out, selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: skips, cache: cache, full: flags.full,
+	tierForce := ""
+	if in.tiered && in.tier.FullSuite {
+		tierForce = "--tier " + in.tier.Name
+	}
+	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
 
 	opt := cigate.Options{
 		Out:      out,
-		Skip:     skips,
+		Skip:     in.plan.skips,
 		Root:     root,
 		Groups:   flags.groups || os.Getenv("GITHUB_ACTIONS") == "true",
 		Resolver: cigate.NewResolver(root, stderr),
@@ -198,7 +332,7 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 		Path:     cigate.GatePath(root, cfg),
 		Jobs:     flags.jobs,
 		Verdicts: verdicts,
-		LogDir:   gateLogDir(root, label),
+		LogDir:   gateLogDir(root, in.plan.label),
 	}
 	opt.Slot = gateSlots(out, stderr)
 	// How long each check took last time, so the longest path starts first.
@@ -207,14 +341,13 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 		fmt.Fprintf(out, "scheduling: longest path first, from %d check duration(s) recorded by earlier runs\n", len(opt.Expected))
 	}
 
-	rep := cigate.Run(ctx, label, selected, opt)
+	rep := cigate.Run(ctx, in.plan.label, selected, opt)
 	rep.Head, rep.Dirty = gitHead(root)
 	rep.RenderText(out)
 	history.Observe(rep)
 	if err := history.Save(); err != nil {
 		fmt.Fprintf(stderr, "warning: could not record check durations: %v\n", err)
 	}
-
 	if cache != nil {
 		if n, why := cache.Flush(context.WithoutCancel(ctx)); why != "" {
 			fmt.Fprintln(out, "verdict cache: nothing stored — "+why)
@@ -222,7 +355,30 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 			fmt.Fprintf(out, "verdict cache: stored %d new PASS verdict(s) for %s\n", n, cache.Commit())
 		}
 	}
-	report := flags.report
+	publishGateReport(stderr, rep, flags.report)
+	return rep
+}
+
+// openGateCache opens the verdict cache, printing whether it is on and why.
+func openGateCache(ctx context.Context, out io.Writer, root string, frontends, env []string, noCache bool) *cigate.VerdictCache {
+	if noCache || truthy(os.Getenv(cigate.NoCacheEnv)) {
+		fmt.Fprintln(out, "verdict cache: off ("+map[bool]string{true: "--no-cache", false: cigate.NoCacheEnv + "=1"}[noCache]+")")
+		return nil
+	}
+	cache, why := cigate.OpenVerdictCache(ctx, cigate.CacheInput{
+		Root: root, Dir: os.Getenv(cigate.CacheDirEnv), Forge: gateJudgeIdentity(), Frontends: frontends, Env: env,
+	})
+	if cache == nil {
+		fmt.Fprintln(out, "verdict cache: off — "+why)
+		return nil
+	}
+	fmt.Fprintf(out, "verdict cache: on — a check that passed on this tree (%s) before is not run again; %s=1 runs everything\n", cache.Commit(), cigate.NoCacheEnv)
+	return cache
+}
+
+// publishGateReport writes the Markdown table to --report / CI_REPORT and
+// appends it to $GITHUB_STEP_SUMMARY.
+func publishGateReport(stderr io.Writer, rep cigate.Report, report string) {
 	if report == "" {
 		report = os.Getenv("CI_REPORT")
 	}
@@ -236,10 +392,6 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 			fmt.Fprintf(stderr, "warning: could not write the job summary: %v\n", err)
 		}
 	}
-	if rep.Failed() {
-		return gateFailure{}
-	}
-	return nil
 }
 
 // applyAffectedMode narrows the unit-tests row to the packages a branch
@@ -251,6 +403,8 @@ type affectedArgs struct {
 	ignore, env, skips []string
 	cache              *cigate.VerdictCache
 	full               bool
+	// tierForce, when set, is the tier that runs the whole suite (--tier main).
+	tierForce string
 }
 
 func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check, in affectedArgs) []cigate.Check {
@@ -280,6 +434,8 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = "--full"
 	case truthy(os.Getenv(cigate.FullEnv)):
 		force = cigate.FullEnv + "=1"
+	case in.tierForce != "":
+		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force, Ignore: in.ignore})
 	fmt.Fprintln(out, a.Line())
@@ -350,6 +506,9 @@ func writeGateList(w io.Writer, checks []cigate.Check) {
 		}
 		if c.NotApplicable != "" {
 			notes = append(notes, "n/a: "+c.NotApplicable)
+		}
+		if c.Deferred != "" {
+			notes = append(notes, "deferred: "+c.Deferred)
 		}
 		fmt.Fprintf(w, "%-12s %-12s %-28s %s\n", c.Lane, c.Group, c.Name, strings.Join(notes, "; "))
 	}

@@ -408,6 +408,89 @@ type SeedProjection struct {
 	// order: every row of a table a foreign key references, the first
 	// mockRecordCount of any other. See fixtureRowClosure.
 	fixtureRows map[string][]int
+	// inputs is, per table, the schema names its fixture rows are built
+	// from. See fixtureInputNames.
+	inputs map[string][]string
+}
+
+// FixtureInputs returns the schema names a table's fixture rows are built
+// from — the names a migration has to mention to change them — and false
+// when there is no dataset (a nil projection, or a table it does not plan).
+func (p *SeedProjection) FixtureInputs(table string) ([]string, bool) {
+	if p == nil || p.inputs == nil {
+		return nil, false
+	}
+	names, ok := p.inputs[table]
+	return names, ok
+}
+
+// fixtureInputNames lists, per table, every name in the schema its fixture
+// rows depend on, lowercase and unqualified:
+//
+//   - the table itself (its columns, CHECK pools and keys);
+//   - every table it references, transitively (a foreign-key value is a row
+//     of the referenced table's key, and a diamond resolves through shared
+//     ancestors);
+//   - every table that references it (being referenced makes its fixture
+//     carry every row, not the first few: fixtureRowClosure);
+//   - every column type the type mapping does not know (a native enum or a
+//     domain), whose labels and rules are declared apart from the table.
+//
+// The mock-fixture freshness guard reads it (forge#2287): a migration that
+// names none of a fixture's inputs cannot change that fixture's rows, so
+// pulling one is not a stale fixture.
+func fixtureInputNames(tables []schemadef.Table) map[string][]string {
+	parents := map[string][]string{}
+	children := map[string][]string{}
+	for _, t := range tables {
+		for _, fk := range t.ForeignKeys {
+			parents[t.Name] = append(parents[t.Name], fk.RefTable)
+			children[fk.RefTable] = append(children[fk.RefTable], t.Name)
+		}
+	}
+	out := make(map[string][]string, len(tables))
+	for _, t := range tables {
+		set := map[string]bool{}
+		add := func(name string) {
+			name = strings.ToLower(strings.Trim(strings.TrimSpace(name), `"`))
+			if i := strings.LastIndex(name, "."); i >= 0 {
+				name = name[i+1:]
+			}
+			name = strings.Trim(strings.TrimSuffix(name, "[]"), `"`)
+			if name != "" {
+				set[name] = true
+			}
+		}
+		add(t.Name)
+		for _, c := range children[t.Name] {
+			add(c)
+		}
+		// Ancestors, transitively.
+		seen := map[string]bool{t.Name: true}
+		queue := append([]string(nil), parents[t.Name]...)
+		for len(queue) > 0 {
+			p := queue[0]
+			queue = queue[1:]
+			if seen[p] {
+				continue
+			}
+			seen[p] = true
+			add(p)
+			queue = append(queue, parents[p]...)
+		}
+		for _, c := range t.Columns {
+			if !c.TypeKnown {
+				add(c.DeclType)
+			}
+		}
+		names := make([]string, 0, len(set))
+		for n := range set {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		out[t.Name] = names
+	}
+	return out
 }
 
 // BuildSeedProjection resolves the project's seed plan from its migrations.
@@ -456,7 +539,11 @@ func newSeedProjection(tables []schemadef.Table, cfg seedplan.Config, vocab *see
 	}
 	plan.SetBounds(seedplan.BoundsFromTables(tables))
 	plan.ApplyVocab(vocab)
-	return &SeedProjection{cfg: cfg, plan: plan, fixtureRows: fixtureRowClosure(tables, cfg, mockRecordCount)}
+	return &SeedProjection{
+		cfg: cfg, plan: plan,
+		fixtureRows: fixtureRowClosure(tables, cfg, mockRecordCount),
+		inputs:      fixtureInputNames(tables),
+	}
 }
 
 // Value returns the value the seeded database holds at (table, column, row),

@@ -17,6 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -134,6 +135,9 @@ func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
 		return runPackageNew(cmd, args)
 	}
 	return withGenerateLock(root, func() error {
+		// An adapter's --base-url edits the config proto: it ends as `buf
+		// format` writes it (internal/protofmt).
+		defer protofmt.Begin(root, os.Stderr)()
 		if err := runPackageNew(cmd, args); err != nil {
 			return err
 		}

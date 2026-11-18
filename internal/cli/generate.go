@@ -26,6 +26,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -554,6 +555,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// shadow schema every step that reads the applied schema shares — is
 	// opened here and closed on the way out. See beginGenerateRun.
 	defer beginGenerateRun(flags)()
+
+	// A command that wrote protos before running this pipeline (scaffold,
+	// project new) has them formatted by buf first, so every step — and the
+	// fingerprint below — reads the settled bytes (internal/protofmt). A
+	// no-op when no such command is running.
+	_, _ = protofmt.Settle(context.Background(), ctx.AbsPath)
 
 	// Fingerprint the tree BEFORE any step can write. Three claims are
 	// checked against it rather than asserted from the journal alone: a

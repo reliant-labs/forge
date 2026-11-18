@@ -2123,6 +2123,11 @@ benefits:
         bug_class: >-
           A `(forge.v1.*)` annotation naming a field this binary does not define
           compiles under buf and is read by nothing
+      - id: forge-proto-format
+        lane: --proto-format
+        bug_class: >-
+          A `.proto` that `buf format` would rewrite, which the scaffolded
+          pre-commit hook refuses at commit time after `forge lint` passed
       - id: forge-vendored-proto-drift
         lane: --vendored-protos
         bug_class: >-

@@ -34,6 +34,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 // oneWordArgRE is GoMarkerOneWord's grammar — the tail of the composition
@@ -97,6 +99,7 @@ var goMarkers = []GoMarker{
 	{Name: "forge:lint-disable-file", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-file <rule>: <reason>"},
 	{Name: "forge:lint-disable-next-line", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-next-line <rule>: <reason>"},
 	{Name: "forge:lint-enable", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-enable <rule>"},
+	{Name: contract.NoCaptureMarker, Grammar: GoMarkerWordArgs, Form: "// forge:no-capture <param> [<param>…]"},
 	{Name: directiveNoObserve, Grammar: GoMarkerBare, Form: "// forge:no-observe"},
 	{Name: "forge:no-orm", Grammar: GoMarkerWordArgs, Form: "//forge:no-orm: <why>"},
 	{Name: directiveNotAComponent, Grammar: GoMarkerReasoned, Form: "//forge:not-a-component: <reason>"},

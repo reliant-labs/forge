@@ -517,6 +517,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
 		},
 		{
+			Name:      "forge:no-capture",
+			AppliesTo: "contract",
+			Effect:    "Keeps parameters out of the forge.forensics event a component span records when a call fails or runs slow. Forensics is redacted at generation time already (IDs, numbers and bools by value; other strings and collections by length; everything else by type); this drops the named parameters entirely, or every parameter when bare. forge.yaml `observability: {forensics: false}` turns capture off project-wide.",
+			Placement: "above one interface method, or on its implementation's doc comment",
+			Example:   "type Service interface {\n\t// forge:no-capture customerID\n\tLookup(ctx context.Context, customerID string) error\n}",
+		},
+		{
 			Name:      "forge:service",
 			AppliesTo: "contract",
 			Effect:    "Declares this interface to be the package's contract when it is not named `Service`. `forge:contract` is an accepted synonym. Names are deliberately free — `Service` is a poor name for a mailer or a store — but the signature is not: the constructor must take Deps and return the contract, or there is nothing to wire.",

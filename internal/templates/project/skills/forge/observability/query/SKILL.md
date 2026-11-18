@@ -103,7 +103,9 @@ release_health = forge.ReleaseHealth {
     new_issue_min_events = 3
     regressed_issue_min_events = 3      # unset: follows new_issue_min_events; 1 counts every regression
     alert_baseline_min_firings = 1
-    fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]   # latency, workload_restarts warn
+    fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed",
+               "browser_errors", "browser_failed_requests", "browser_page_load"]   # the default; latency, workload_restarts warn
+    warn_on = ["browser_page_load"]     # demote named findings to warnings without restating fail_on
     require_baseline = "any"            # or "every", "none" (observability/release-health)
 }
 ```
@@ -121,7 +123,7 @@ release_health = forge.ReleaseHealth {
 
 An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
 
-**Signals: spans, then ingress, plus the browser** (`observability/release-health`): a service with no server spans is judged on the platform ingress's figures; a frontend also on its browser telemetry (`browser_*` findings, warn by default). Each service says which (`signal`).
+**Signals: spans, then ingress, plus the browser** (`observability/release-health`): a service with no server spans is judged on the platform ingress's figures; a frontend also on its browser telemetry (`browser_*` findings, fail by default; `warn_on` demotes one). Each service says which (`signal`).
 
 **`no_request_telemetry`: no request data at all.** No server span, ingress figure or browser telemetry in either window: a service that exports no traces has no request data however much traffic it serves. forge instruments what it builds; an app built from its own Dockerfile or command, or a third-party image, exports traces only if it is instrumented, and the reason names those services (`uninstrumented_services`). Add an OpenTelemetry SDK that exports OTLP to `$OTEL_EXPORTER_OTLP_ENDPOINT` (hosting sets it and `OTEL_SERVICE_NAME` on every workload), then check again. Until then the verdict stays INCONCLUSIVE — not proven good — and what forge sees without telemetry still counts: a restart, a firing alert or a new issue is a finding, and `forge obs workloads <env>` and `forge obs logs <env>` show the app's health and output.
 

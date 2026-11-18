@@ -3635,7 +3635,8 @@ benefits:
       The thresholds are `window`, `min_requests`, `max_error_rate_increase`,
       `error_rate_min_errors`, `baseline_window`, `max_p95_ratio`,
       `new_issue_min_events` and `regressed_issue_min_events` (unset, the same
-      as `new_issue_min_events`), the failing set is `fail_on`, and the
+      as `new_issue_min_events`), the failing set is `fail_on` (`warn_on`
+      demotes named findings from it without restating it), and the
       check's document says where each effective value came from. Error rate
       is judged per endpoint, each against its own baseline, and needs
       `error_rate_min_errors` errors after the promotion. The NewIssue and IssueRegressed alerts are judged as their

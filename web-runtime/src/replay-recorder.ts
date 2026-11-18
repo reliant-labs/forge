@@ -421,10 +421,17 @@ export class ReplayTransport {
     const resource = this.options.resource();
     // Requests of at most KEEPALIVE_MAX_BYTES, while the keepalive budget
     // lasts; whatever does not fit goes without keepalive (best effort: it
-    // arrives when the page is only hidden, not when it is gone).
+    // arrives when the page is only hidden, not when it is gone). A group is
+    // sized by the request it encodes to, exactly: the empty request's UTF-8
+    // bytes, plus each record's own encoded bytes (its body JSON-escaped, as
+    // UTF-8) and a comma between them, since logRecords is one JSON array.
+    // A body's length in characters is not that: escaping and multi-byte
+    // text can double it. Only a record too big for a request of its own
+    // (a chunk of a large snapshot) is ever over the cap.
+    const empty = utf8Length(encodeReplayRequest(resource, REPLAY_SCOPE, []));
     let budget = KEEPALIVE_MAX_BYTES;
     let group: ReplayRecord[] = [];
-    let groupBytes = 0;
+    let groupBytes = empty;
     const post = () => {
       if (group.length === 0) {
         return;
@@ -437,15 +444,17 @@ export class ReplayTransport {
       }
       this.post({ body: json, gzip: false, bytes }, keepalive);
       group = [];
-      groupBytes = 0;
+      groupBytes = empty;
     };
     for (const record of records) {
-      const size = record.body.length + 160;
-      if (groupBytes > 0 && groupBytes + size > KEEPALIVE_MAX_BYTES) {
+      const size =
+        utf8Length(encodeReplayRequest(resource, REPLAY_SCOPE, [record])) -
+        empty;
+      if (group.length > 0 && groupBytes + 1 + size > KEEPALIVE_MAX_BYTES) {
         post();
       }
+      groupBytes += (group.length > 0 ? 1 : 0) + size;
       group.push(record);
-      groupBytes += size;
     }
     post();
   }

@@ -386,6 +386,34 @@ describe("ReplayTransport", () => {
     for (const i of [1, 2, 3, 4, 5]) expect(all).toContain(`${big}${i}`);
   });
 
+  it("when the page is leaving, sizes each request by its encoded UTF-8 bytes, so escaped or multi-byte text never pushes a group over the keepalive cap", () => {
+    const { sent, fn } = fakeFetch();
+    const t = new ReplayTransport({ url: URL_, resource, fetch: fn });
+    // 16 Ki characters each, 32 KiB each once encoded: a quote is escaped to
+    // two bytes, an é is two bytes of UTF-8. Counted in characters the two
+    // fit one request; encoded, together they are over the cap.
+    const quoted = '"'.repeat(16 * 1024);
+    const accented = "é".repeat(16 * 1024);
+    t.send([record(quoted, 1, 1), record(accented, 1, 2)], "leaving");
+    const utf8 = (s: string) => new TextEncoder().encode(s).length;
+    expect(sent).toHaveLength(2);
+    for (const { init } of sent) {
+      expect(utf8(init.body as string)).toBeLessThanOrEqual(
+        KEEPALIVE_MAX_BYTES,
+      );
+    }
+    // The first fits the whole budget, so it outlives the page.
+    expect(sent[0]!.init.keepalive).toBe(true);
+    const bodies = sent.flatMap((s) =>
+      (
+        JSON.parse(textOf(s.init)) as OtlpRequest
+      ).resourceLogs[0]!.scopeLogs[0]!.logRecords.map(
+        (r) => r.body.stringValue,
+      ),
+    );
+    expect(bodies).toEqual([quoted, accented]);
+  });
+
   it("when hidden, gzips in the background and still sends with keepalive", async () => {
     const { sent, fn } = fakeFetch();
     const t = new ReplayTransport({

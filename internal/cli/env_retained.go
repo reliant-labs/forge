@@ -141,17 +141,33 @@ func runEnvRetainedList(ctx context.Context, t appTarget, all bool, out io.Write
 	return nil
 }
 
-// findRetainedDatabase resolves ref: an id anywhere in the organization, or a
-// database name among this app's retained databases (which must be unique).
-func findRetainedDatabase(dbs []retainedDatabaseWire, ref, project string) (retainedDatabaseWire, error) {
+// findRetainedDatabase resolves ref — a retained database's id, or its
+// database name when exactly one in scope has it. The scope is this app's
+// retained databases (project), or with all the organization's.
+//
+// An id is matched in the SAME scope as a name. The list rpc is org-wide, so
+// an id-first match across it would let `purge <id>` run from app A destroy
+// app B's database; one outside the app is refused and its owner named.
+func findRetainedDatabase(dbs []retainedDatabaseWire, ref, project string, all bool) (retainedDatabaseWire, error) {
+	inScope := func(d retainedDatabaseWire) bool { return all || d.Project == project }
+	scope := fmt.Sprintf("app %q", project)
+	if all {
+		scope = "your organization"
+	}
 	for _, d := range dbs {
-		if d.ID == ref {
-			return d, nil
+		if d.ID != ref {
+			continue
 		}
+		if !inScope(d) {
+			return retainedDatabaseWire{}, fmt.Errorf("retained database %s belongs to app %q, not this app (%q); nothing was purged\n"+
+				"fix: purge it from that app's checkout, or name your organization's scope: `forge env retained purge %s --all`",
+				ref, d.Project, project, ref)
+		}
+		return d, nil
 	}
 	var named []retainedDatabaseWire
 	for _, d := range dbs {
-		if d.DatabaseName == ref && (project == "" || d.Project == project) {
+		if d.DatabaseName == ref && inScope(d) {
 			named = append(named, d)
 		}
 	}
@@ -159,23 +175,28 @@ func findRetainedDatabase(dbs []retainedDatabaseWire, ref, project string) (reta
 	case 1:
 		return named[0], nil
 	case 0:
-		return retainedDatabaseWire{}, fmt.Errorf("no retained database has id %q, nor is one of app %q named %q; nothing was purged\n"+
-			"fix: `forge env retained list` lists them (`--all` for your organization's); purge one by its id", ref, project, ref)
+		return retainedDatabaseWire{}, fmt.Errorf("no retained database of %s has id or name %q; nothing was purged\n"+
+			"fix: `forge env retained list` lists them (`--all` for your organization's); purge one by its id", scope, ref)
 	}
 	ids := make([]string, 0, len(named))
 	for _, d := range named {
-		ids = append(ids, fmt.Sprintf("%s (env %s)", d.ID, dashIfEmpty(d.EnvironmentName)))
+		ids = append(ids, fmt.Sprintf("%s (app %s, env %s)", d.ID, dashIfEmpty(d.Project), dashIfEmpty(d.EnvironmentName)))
 	}
-	return retainedDatabaseWire{}, fmt.Errorf("%d retained databases of app %q are named %q: %s; nothing was purged\n"+
-		"fix: purge one by its id", len(named), project, ref, strings.Join(ids, ", "))
+	return retainedDatabaseWire{}, fmt.Errorf("%d retained databases of %s are named %q: %s; nothing was purged\n"+
+		"fix: purge one by its id", len(named), scope, ref, strings.Join(ids, ", "))
 }
 
-func runEnvRetainedPurge(ctx context.Context, t appTarget, ref string, yes bool, in io.Reader, out io.Writer) error {
+func runEnvRetainedPurge(ctx context.Context, t appTarget, ref string, all, yes bool, in io.Reader, out io.Writer) error {
+	if !all {
+		if err := requireAppName(t); err != nil {
+			return fmt.Errorf("%w\n  or purge from your organization's retained databases: `forge env retained purge %s --all`", err, ref)
+		}
+	}
 	dbs, err := listRetainedDatabases(ctx, t)
 	if err != nil {
 		return err
 	}
-	d, err := findRetainedDatabase(dbs, ref, t.Project)
+	d, err := findRetainedDatabase(dbs, ref, t.Project, all)
 	if err != nil {
 		return err
 	}
@@ -183,7 +204,7 @@ func runEnvRetainedPurge(ctx context.Context, t appTarget, ref string, yes bool,
 	if name == "" {
 		name = d.ID
 	}
-	fmt.Fprintf(out, "This will permanently delete retained database %q:\n", name)
+	fmt.Fprintf(out, "This will permanently delete retained database %q of app %q:\n", name, dashIfEmpty(d.Project))
 	fmt.Fprintf(out, "  id:             %s\n", d.ID)
 	fmt.Fprintf(out, "  project:        %s\n", dashIfEmpty(d.Project))
 	env := dashIfEmpty(d.EnvironmentName)
@@ -226,7 +247,8 @@ and remove them, on the control plane this project is bound to
 
   forge env retained list              this app's retained databases
   forge env retained list --all        your organization's
-  forge env retained purge <id>        destroy one (IRREVERSIBLE; type its name to confirm)
+  forge env retained purge <id>        destroy one of this app's (IRREVERSIBLE; type its name to confirm)
+  forge env retained purge <id> --all  destroy one of your organization's
 
 A control plane that purges them by itself shows the date in a PURGE AFTER
 column.`,
@@ -257,7 +279,7 @@ func newEnvRetainedListCmd() *cobra.Command {
 }
 
 func newEnvRetainedPurgeCmd() *cobra.Command {
-	var yes bool
+	var yes, all bool
 	var token, endpoint string
 	cmd := &cobra.Command{
 		Use:   "purge <id | database name>",
@@ -269,8 +291,11 @@ storage stops billing. IRREVERSIBLE.
   forge env retained purge <id> --yes    no prompt (required with no TTY or CI=1)
 
 The argument is the id ` + "`forge env retained list`" + ` prints, or the database's
-name when exactly one of this app's retained databases has it. Purging needs an
-org owner or admin.`,
+name when exactly one of this app's retained databases has it. Either is
+resolved among THIS app's retained databases: one of another app is refused,
+and named. --all resolves among your organization's (` + "`forge env retained list --all`" + `),
+and the confirmation names the app that owns it. Purging needs an org owner or
+admin.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref := strings.TrimSpace(args[0])
@@ -285,9 +310,10 @@ org owner or admin.`,
 			if err != nil {
 				return err
 			}
-			return runEnvRetainedPurge(cmd.Context(), t, ref, yes, lifecycleStdin, cmd.OutOrStdout())
+			return runEnvRetainedPurge(cmd.Context(), t, ref, all, yes, lifecycleStdin, cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "Resolve the id or name among your organization's retained databases, not only this app's")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm without the typed-name prompt (required when non-interactive)")
 	addAppTargetFlags(cmd, &token, &endpoint)
 	return cmd

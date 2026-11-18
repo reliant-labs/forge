@@ -54,11 +54,13 @@ billing as storage, never reattached by a later deploy.
 
 ```
 forge env retained list [--all]          # this app's (--all: the organization's), with size and dates
-forge env retained purge <id> [--yes]    # destroy one: type its name to confirm. IRREVERSIBLE
+forge env retained purge <id> [--all] [--yes]  # destroy one: type its name to confirm. IRREVERSIBLE
 ```
 
 `purge` takes the id `list` prints, or a database name when exactly one of
-this app's retained databases has it. A control plane that purges retained
+this app's retained databases has it. Either resolves among THIS app's: another
+app's is refused and named; `--all` resolves among the organization's, and the
+confirmation names the owning app. A control plane that purges retained
 databases by itself shows the date in a `PURGE AFTER` column; an older one
 does not, and its databases stay until purged. Purging needs an org owner or
 admin.
@@ -89,8 +91,9 @@ forge app delete --status | --cancel     # show it / cancel it until the purge s
   (unbound), so `forge env deploy <env> <release>` recreates an env. Each env's
   secrets are not given back to a recreated env: set them again. It deletes
   nothing while a custom domain is bound to one of the envs (`forge domain
-  unbind` it first) or while an env this project declares also runs parts on a
-  cluster you operate.
+  unbind` it first), when the bound domains cannot be read (the domain service
+  failing, or a control plane without one), or while an env this project
+  declares also runs parts on a cluster you operate.
 - `delete` stops every env at once and refuses new deploys, promotions and
   envs (reason `app_deletion_scheduled`). After the grace window the control
   plane purges every env and its data, retained databases, release history and

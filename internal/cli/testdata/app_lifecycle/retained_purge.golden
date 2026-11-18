@@ -1,5 +1,5 @@
 --- stdout
-This will permanently delete retained database "orders":
+This will permanently delete retained database "orders" of app "shop":
   id:             rdb_2
   project:        shop
   environment:    preview (deleted; id env_prev)

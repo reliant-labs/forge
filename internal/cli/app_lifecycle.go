@@ -229,15 +229,15 @@ func declaredEnvTeardownCheck(ctx context.Context, env string) error {
 }
 
 // boundDomainsByEnv maps each env id to the custom domains bound to it,
-// sorted. A control plane with no domain service has none.
+// sorted. Any failure is returned, Unimplemented included: teardown loops
+// over irreversible deletes, so "could not read the domains" must never read
+// as "no domain is bound" — the control plane would refuse a bound env's
+// delete halfway through the loop.
 func boundDomainsByEnv(ctx context.Context, c cloudCaller) (map[string][]string, error) {
 	var resp struct {
 		Domains []domainWire `json:"domains"`
 	}
 	if err := c.Call(ctx, procListDomains, map[string]any{}, &resp); err != nil {
-		if hostedErrorHasCode(err, cloud.CodeUnimplemented) {
-			return map[string][]string{}, nil
-		}
 		return nil, err
 	}
 	out := map[string][]string{}
@@ -295,6 +295,11 @@ func runAppTeardown(ctx context.Context, t appTarget, opts appTeardownOptions, i
 		}
 	}
 	domains, err := boundDomainsByEnv(ctx, t.Client)
+	if rpcUnserved(err) {
+		return fmt.Errorf("%s does not serve DomainService/ListDomains, so forge cannot check that no custom domain is bound to app %q's envs "+
+			"and the teardown preview is incomplete; nothing was deleted\n"+
+			"fix: delete each env with `forge env delete <env>`, which shows its own preview, or tear down from the Reliant web app", t.Endpoint, t.Project)
+	}
 	if err != nil {
 		return fmt.Errorf("could not list the custom domains bound to app %q's envs, so the teardown preview is incomplete; nothing was deleted: %w\n"+
 			"fix: re-run once the control plane's domain service answers (`forge domain list` checks it)", t.Project, err)
@@ -647,7 +652,9 @@ Before asking for confirmation it shows every env with its id, deployment count
 and bound custom domains, and deletes nothing when any domain is still bound
 (the control plane refuses to delete an env while one is: ` + "`forge domain unbind`" + `
 it first) or when an env this project declares also runs parts on a cluster you
-operate. Tearing down an app needs an org owner or admin.`,
+operate. It also deletes nothing when the bound domains cannot be read — the
+domain service failing, or a control plane without one. Tearing down an app
+needs an org owner or admin.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Before anything is resolved or sent: a non-interactive run

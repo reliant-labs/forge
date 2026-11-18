@@ -72,7 +72,7 @@ func TestEnvRetainedPurge_AmbiguousNameRefuses(t *testing.T) {
  {"id":"rdb_3","environmentName":"older","project":"shop","databaseName":"main"}]}`
 	f := &fakeAppCaller{replies: map[string]string{"ListRetainedDatabases": twoMains}}
 	_, err := runAppCLI(t, f, false, "", "env", "retained", "purge", "main", "--yes")
-	if err == nil || !strings.Contains(err.Error(), "rdb_1 (env old), rdb_3 (env older)") {
+	if err == nil || !strings.Contains(err.Error(), "rdb_1 (app shop, env old), rdb_3 (app shop, env older)") {
 		t.Fatalf("err = %v", err)
 	}
 	if n := len(f.called("DeleteRetainedDatabase")); n != 0 {
@@ -105,5 +105,41 @@ func TestEnvRetainedPurge_Unimplemented(t *testing.T) {
 	_, err := runAppCLI(t, f, false, "", "env", "retained", "purge", "rdb_2", "--yes")
 	if err == nil || !strings.Contains(err.Error(), "does not serve DeployService/DeleteRetainedDatabase") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The list rpc is org-wide: an id of ANOTHER app's retained database is
+// refused from this app, naming its owner, and nothing is deleted.
+func TestEnvRetainedPurge_AnotherAppsIDIsRefused(t *testing.T) {
+	f := &fakeAppCaller{replies: map[string]string{"ListRetainedDatabases": retainedOld}}
+	out, err := runAppCLI(t, f, false, "", "env", "retained", "purge", "rdb_9", "--yes")
+	appGolden(t, "retained_purge_other_app.golden", out, err)
+	if err == nil || !strings.Contains(err.Error(), `belongs to app "other"`) || !strings.Contains(err.Error(), "--all") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(f.called("DeleteRetainedDatabase")); n != 0 {
+		t.Fatal("purged another app's retained database")
+	}
+}
+
+// --all resolves org-wide, and the confirmation names the owning app.
+func TestEnvRetainedPurge_AllReachesAnotherAppAndNamesIt(t *testing.T) {
+	f := &fakeAppCaller{replies: map[string]string{"ListRetainedDatabases": retainedOld}}
+	out, err := runAppCLI(t, f, true, "main\n", "env", "retained", "purge", "rdb_9", "--all")
+	appGolden(t, "retained_purge_all.golden", out, err)
+	if calls := f.called("DeleteRetainedDatabase"); len(calls) != 1 || calls[0].req["id"] != "rdb_9" {
+		t.Fatalf("DeleteRetainedDatabase calls = %+v", calls)
+	}
+}
+
+// A name under --all is ambiguous across apps, and each match names its app.
+func TestEnvRetainedPurge_AllNameAcrossAppsIsAmbiguous(t *testing.T) {
+	f := &fakeAppCaller{replies: map[string]string{"ListRetainedDatabases": retainedOld}}
+	_, err := runAppCLI(t, f, false, "", "env", "retained", "purge", "main", "--all", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "rdb_9 (app other, env prod)") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := len(f.called("DeleteRetainedDatabase")); n != 0 {
+		t.Fatal("purged an ambiguous name")
 	}
 }

@@ -239,16 +239,34 @@ func TestAppTeardown_BoundDomainDeletesNothing(t *testing.T) {
 	}
 }
 
-func TestAppTeardown_NoDomainServiceIsNoDomains(t *testing.T) {
-	f := &fakeAppCaller{
-		replies: map[string]string{"ListEnvironments": shopEnvs, "ListDeployments": twoDeployments},
-		errs:    map[string]error{"ListDomains": &cloud.Error{Code: cloud.CodeUnimplemented}},
-	}
-	if _, err := runAppCLI(t, f, false, "", "app", "teardown", "--yes"); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(f.called("DeleteEnvironment")); n != 2 {
-		t.Errorf("DeleteEnvironment calls = %d, want 2", n)
+// A domain list that cannot be read — no domain service at all, a bare 404,
+// or the service failing — leaves the preview incomplete: a bound env would be
+// refused halfway through the deletes, so nothing is deleted.
+func TestAppTeardown_UnreadableDomainsDeleteNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name, golden string
+		err          error
+	}{
+		{"unimplemented", "teardown_domains_unimplemented.golden", &cloud.Error{Code: cloud.CodeUnimplemented, HTTPStatus: 501}},
+		{"bare 404", "teardown_domains_unimplemented.golden", &cloud.Error{HTTPStatus: 404}},
+		{"unavailable", "", &cloud.Error{Code: cloud.CodeUnavailable, HTTPStatus: 503, Message: "domain service down"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeAppCaller{
+				replies: map[string]string{"ListEnvironments": shopEnvs, "ListDeployments": twoDeployments},
+				errs:    map[string]error{"ListDomains": tc.err},
+			}
+			out, err := runAppCLI(t, f, false, "", "app", "teardown", "--yes")
+			if err == nil || !strings.Contains(err.Error(), "preview is incomplete; nothing was deleted") {
+				t.Fatalf("err = %v", err)
+			}
+			if tc.golden != "" {
+				appGolden(t, tc.golden, out, err)
+			}
+			if n := len(f.called("DeleteEnvironment")); n != 0 {
+				t.Fatalf("DeleteEnvironment called %d times with the domains unread", n)
+			}
+		})
 	}
 }
 

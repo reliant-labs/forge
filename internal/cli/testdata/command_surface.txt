@@ -200,7 +200,7 @@ forge env releases show	cmd	allow-version-skew:bool fields:string json:bool limi
 forge env render	cmd	allow-version-skew:bool cluster:string count:bool fail-on-write:bool kind:stringSlice list:bool name:string namespace:string no-charts:bool no-digest:bool no-write-check:bool option/D:stringArray project-dir/C:string tag:string target:stringArray
 forge env retained	group	allow-version-skew:bool project-dir/C:string
 forge env retained list	cmd	all:bool allow-version-skew:bool endpoint:string project-dir/C:string token:string
-forge env retained purge	cmd	allow-version-skew:bool endpoint:string project-dir/C:string token:string yes:bool
+forge env retained purge	cmd	all:bool allow-version-skew:bool endpoint:string project-dir/C:string token:string yes:bool
 forge env secret	group	allow-version-skew:bool project-dir/C:string
 forge env secret access	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string
 forge env secret allow	cmd	allow-version-skew:bool env:string project-dir/C:string project:string workflow:string

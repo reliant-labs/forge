@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -21,6 +22,21 @@ func readFileT(t *testing.T, root, rel string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// skipUnlessModeDeniesReads skips a test that builds an unreadable file with
+// chmod 000. Root reads such a file anyway, and on Windows permission bits
+// only toggle the read-only attribute, so the file stays readable. The guarded
+// behaviour is platform-neutral: observe and the capture treat any read error
+// (a Windows ACL denial or sharing violation included) as unreadable.
+func skipUnlessModeDeniesReads(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not make a file unreadable on Windows; the unreadable case cannot be built with chmod")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file; the unreadable case cannot be built")
+	}
 }
 
 // The observed failure: forge rewrote a hand-owned file early in the run,
@@ -171,9 +187,7 @@ func TestRestore_WithoutSettlePointsRewindsEverything(t *testing.T) {
 // left as is and reported unverified — never overwritten, and never deleted
 // as though it were absent.
 func TestRestore_LeavesAnUnreadablePathAsIs(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-000 file; the unreadable case cannot be built")
-	}
+	skipUnlessModeDeniesReads(t)
 	root := t.TempDir()
 	seedFile(t, root, "a.go", "package a // pre-run\n")
 	BeginRollbackJournal(root)
@@ -210,9 +224,7 @@ func TestRestore_LeavesAnUnreadablePathAsIs(t *testing.T) {
 // A pre-run file the capture cannot read is never treated as absent (the
 // rewind would delete it): it is unverifiable, and left as is.
 func TestRestore_UnreadableBeforeTheRunIsNotTreatedAsAbsent(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode-000 file; the unreadable case cannot be built")
-	}
+	skipUnlessModeDeniesReads(t)
 	root := t.TempDir()
 	seedFile(t, root, "secret.go", "package a // pre-run\n")
 	full := filepath.Join(root, "secret.go")
@@ -259,6 +271,9 @@ func TestRestore_SparesAFileReplacedByASymlinkOrADirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.Symlink(target, filepath.Join(root, rel)); err != nil {
+			if runtime.GOOS == "windows" {
+				t.Skipf("creating a symlink needs Developer Mode or SeCreateSymbolicLinkPrivilege on Windows: %v", err)
+			}
 			t.Fatal(err)
 		}
 	}

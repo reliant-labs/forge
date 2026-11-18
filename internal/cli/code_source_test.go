@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -78,9 +79,8 @@ func TestCodeSourceWireOmitsWhatIsUnknown(t *testing.T) {
 	}
 }
 
-// A cut sends the release's commit, not whatever the checkout is at now; the
-// checkout's HEAD only when the release names none.
-func TestCodeSourceForReleasePrefersTheReleasesCommit(t *testing.T) {
+// A cut sends the release's commit, never whatever the checkout is at now.
+func TestCodeSourceForReleaseSendsOnlyTheReleasesCommit(t *testing.T) {
 	t.Parallel()
 	checkout := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA}
 
@@ -92,8 +92,22 @@ func TestCodeSourceForReleasePrefersTheReleasesCommit(t *testing.T) {
 	if got.Commit != sourceCommitB {
 		t.Errorf("provenance commit should win: %+v", got)
 	}
-	if got = checkout.forRelease(release.Release{}); got.Commit != sourceCommitA {
-		t.Errorf("no release commit falls back to HEAD: %+v", got)
+	// A captured HEAD and a release whose commit is unknown: the source's
+	// commit is unknown too, never the checkout's HEAD (false provenance
+	// for a `release record` from a checkout at another commit).
+	for name, r := range map[string]release.Release{
+		"no commit":                 {},
+		"invalid commit":            {Git: release.Git{Commit: "not-a-sha"}},
+		"short commit":              {Git: release.Git{Commit: "abc1234"}},
+		"invalid provenance commit": {Provenance: &release.Provenance{Commit: "zz"}},
+	} {
+		got := checkout.forRelease(r)
+		if got.Commit != "" {
+			t.Errorf("%s: commit = %q, want empty (never the checkout's HEAD)", name, got.Commit)
+		}
+		if got.Remote != "github.com/acme/shop" || got.Subpath != "apps/web" {
+			t.Errorf("%s: lost the repository: %+v", name, got)
+		}
 	}
 	// No checkout behind the ledger: the provenance's remote, still screened.
 	got = codeSource{}.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}})
@@ -131,7 +145,9 @@ func TestCutSendsTheCodeSource(t *testing.T) {
 	if doc, _ := snap.cut["snapshotRelease"].(map[string]any); doc["codeSource"] != nil {
 		t.Errorf("the source leaked into the strictly decoded document")
 	}
-	want["commit"] = sourceCommitA // the catalog release names no commit of its own
+	// The catalog release names no commit of its own, so none is sent —
+	// not the checkout's HEAD.
+	delete(want, "commit")
 	assertCodeSource(t, "snapshot cut", snap.cut, want)
 }
 
@@ -150,18 +166,43 @@ func TestCutWithoutASourceSendsNone(t *testing.T) {
 	}
 }
 
+// A deploy that ships the checkout sends its HEAD; one that ships a named
+// release (or another env's) sends the repository but no commit.
 func TestDeployAttemptOpenSendsTheCodeSource(t *testing.T) {
 	t.Parallel()
-	c := &attemptCaller{}
-	ctx, a := newTestAttempt("prod", "apply", io.Discard)
-	l := envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(codeSource{
-		Remote: "github.com/acme/shop", Commit: sourceCommitA, ReliantProjectID: "proj-1",
-	})}, Hosted: true}
-	attachDeployAttempt(ctx, "prod", l)
-	defer a.finish(ctx, nil)
-	assertCodeSource(t, "open", c.last(procOpenDeployAttempt), map[string]any{
-		"remote": "github.com/acme/shop", "commit": sourceCommitA, "reliantProjectId": "proj-1",
-	})
+	for _, ships := range []bool{true, false} {
+		c := &attemptCaller{}
+		ctx, a := newTestAttempt("prod", "apply", io.Discard)
+		a.shipsCheckout = ships
+		l := envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(codeSource{
+			Remote: "github.com/acme/shop", Commit: sourceCommitA, ReliantProjectID: "proj-1",
+		})}, Hosted: true}
+		attachDeployAttempt(ctx, "prod", l)
+		want := map[string]any{"remote": "github.com/acme/shop", "reliantProjectId": "proj-1"}
+		if ships {
+			want["commit"] = sourceCommitA
+		}
+		assertCodeSource(t, fmt.Sprintf("open (ships checkout: %v)", ships), c.last(procOpenDeployAttempt), want)
+		a.finish(ctx, nil)
+	}
+}
+
+func TestDeployAttemptShipsCheckoutOnlyWithoutANamedRelease(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		f    deployCmdFlags
+		want bool
+	}{
+		"no release":     {deployCmdFlags{}, true},
+		"named release":  {deployCmdFlags{promote: promoteCmdFlags{version: "v1"}}, false},
+		"from other env": {deployCmdFlags{promote: promoteCmdFlags{fromEnv: "staging"}}, false},
+		"from promotion": {deployCmdFlags{promote: promoteCmdFlags{fromPromotionID: "prom-1"}}, false},
+	}
+	for name, tc := range cases {
+		if got := deployShipsCheckout(tc.f); got != tc.want {
+			t.Errorf("%s: shipsCheckout = %v, want %v", name, got, tc.want)
+		}
+	}
 }
 
 func TestAttachCodeSourceOnlyToAHostedLedger(t *testing.T) {

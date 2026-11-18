@@ -143,8 +143,11 @@ the same answer as `DeployService.CompareReleases`.
 `code_source`: the origin remote as `host/owner/repo` (credentials, scheme and
 `.git` stripped; a local-path remote is not sent), forge.yaml's directory in
 the repo (`""` at the root), the commit, and `RELIANT_PROJECT_ID` when a
-Reliant chat ran forge. It is best-effort: a dirty tree sends its HEAD, a
-missing remote sends the rest, and it never fails a cut or a deploy.
+Reliant chat ran forge. The commit is the release's own on a cut or record
+(none when the release names none, never the checkout's HEAD), and HEAD on a
+deploy that ships the checkout (no release named, no `--from`). It is
+best-effort: a missing remote sends the rest, and it never fails a cut or a
+deploy.
 
 ## Owned-object prune (direct apply)
 

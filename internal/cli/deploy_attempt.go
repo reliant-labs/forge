@@ -86,6 +86,10 @@ type deployAttempt struct {
 	env, mode, source, actor string
 	runID, runURL            string
 	warn                     io.Writer
+	// shipsCheckout: the invocation deploys this checkout (no release
+	// named, no --from env), so the checkout's HEAD is the commit it ships
+	// (code_source.go, forAttempt).
+	shipsCheckout bool
 
 	mu        sync.Mutex
 	client    cloudCaller
@@ -134,6 +138,8 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 		release: f.promote.version,
 		warn:    os.Stderr,
 		nudge:   make(chan struct{}, 1),
+
+		shipsCheckout: deployShipsCheckout(f),
 	}
 	if run, err := f.promote.run.resolveRun(); err == nil {
 		a.runID, a.runURL = run.ID, run.URL
@@ -141,6 +147,15 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 	a.source = deploySource(os.Getenv(deploySourceEnv), a.runID)
 	a.capture(f.jsonOut)
 	return context.WithValue(ctx, deployAttemptCtxKey{}, a), a
+}
+
+// deployShipsCheckout reports whether the invocation deploys this checkout:
+// no release named and no --from / --from-promotion, so the release it ships is cut from
+// the checkout's HEAD. A named release, or what another env runs, was built
+// from whatever commit its own cut recorded.
+func deployShipsCheckout(f deployCmdFlags) bool {
+	from := f.promote.fromSource()
+	return f.promote.version == "" && from.Env == "" && from.PromotionID == ""
 }
 
 // deploySource names where the invocation came from: what the launcher
@@ -198,7 +213,7 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 	a.mu.Unlock()
 	// The checkout this deploy runs from (code_source.go). Read outside the
 	// lock: the first read runs git.
-	if src := store.source.get(ctx).wire(); src != nil {
+	if src := store.source.get(ctx).forAttempt(a.shipsCheckout).wire(); src != nil {
 		req["codeSource"] = src
 	}
 

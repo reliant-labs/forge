@@ -14,7 +14,7 @@ package cli
 //	message DeployCodeSource {
 //	  string remote = 1;             // "host/owner/repo"; "" when there is no shareable remote
 //	  string subpath = 2;            // forge.yaml's directory in the repo, slash-separated; "" at the root
-//	  string commit = 3;             // full object id; "" when unknown
+//	  string commit = 3;             // full object id; "" when unknown (see forRelease, forAttempt)
 //	  string reliant_project_id = 4; // RELIANT_PROJECT_ID, when a Reliant chat ran forge
 //	}
 //
@@ -79,20 +79,39 @@ func putNonEmptyAny(m map[string]any, key, value string) {
 	}
 }
 
-// forRelease is the source a cut of r sends: the release's own commit when it
-// names one (`release record --commit` from CI, or what was built), else the
-// checkout's HEAD; and the checkout's remote, else the one r's provenance
-// recorded.
+// forRelease is the source a cut of r sends: the release's own commit
+// (provenance, else `release record --commit` / CI's), and the checkout's
+// remote, else the one r's provenance recorded.
+//
+// NEVER THE CHECKOUT'S HEAD. A release names the commit it was built or
+// recorded from; a release that names none, or names an invalid one, has an
+// unknown commit, and sending the HEAD of whatever checkout ran the cut
+// would record false provenance — `release record` in CI runs from a
+// checkout that need not be at the recorded commit.
 func (s codeSource) forRelease(r release.Release) codeSource {
 	commit := r.Git.Commit
 	if r.Provenance != nil && r.Provenance.Commit != "" {
 		commit = r.Provenance.Commit
 	}
+	s.Commit = ""
 	if commit = strings.ToLower(strings.TrimSpace(commit)); release.ValidObjectID(commit) {
 		s.Commit = commit
 	}
 	if s.Remote == "" && r.Provenance != nil {
 		s.Remote = shareableRemote(r.Provenance.Repo)
+	}
+	return s
+}
+
+// forAttempt is the source a deploy attempt sends. The checkout's HEAD only
+// when the deploy ships the checkout — no release named, no --from env —
+// because then the release it cuts is built from that HEAD. A deploy of a
+// named release, or of what another env runs, ships bytes some other commit
+// built: its commit is the release's, recorded at that release's cut, so the
+// attempt sends none rather than the HEAD of a checkout it did not build.
+func (s codeSource) forAttempt(shipsCheckout bool) codeSource {
+	if !shipsCheckout {
+		s.Commit = ""
 	}
 	return s
 }

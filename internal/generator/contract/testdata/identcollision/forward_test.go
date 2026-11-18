@@ -1,3 +1,10 @@
+// The tag keeps this file out of a plain `go test` of the fixture directory:
+// it needs mock_gen.go and middleware_gen.go, which exist only in the sandbox
+// TestGenerate_ParamsNamedLikeBodyIdentifiers generates them into, and that
+// test builds it with -tags identcollision.
+
+//go:build identcollision
+
 package identcollision
 
 import (

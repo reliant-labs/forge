@@ -436,26 +436,7 @@ func scanImplementation(dir string, iface InterfaceDef) implScan {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
 			case *ast.GenDecl:
-				for _, s := range d.Specs {
-					ts, ok := s.(*ast.TypeSpec)
-					if !ok || ts.Name.Name != iface.Name {
-						continue
-					}
-					it, ok := ts.Type.(*ast.InterfaceType)
-					if !ok {
-						continue
-					}
-					for _, fld := range it.Methods.List {
-						for _, n := range fld.Names {
-							if _, seen := out.files[n.Name]; !seen {
-								out.files[n.Name] = path
-							}
-							nc := out.noCapture[n.Name]
-							nc.merge(parseNoCapture(fld.Doc, fld.Comment))
-							out.noCapture[n.Name] = nc
-						}
-					}
-				}
+				out.addInterfaceDecl(d, iface.Name, path)
 			case *ast.FuncDecl:
 				if generated {
 					continue
@@ -479,28 +460,7 @@ func scanImplementation(dir string, iface InterfaceDef) implScan {
 		}
 	}
 
-	impl := ""
-	var full []string
-	for typ, methods := range byType {
-		if len(methods) == len(want) && len(want) > 0 {
-			full = append(full, typ)
-		}
-	}
-	sort.Strings(full)
-	switch {
-	case len(full) == 1:
-		impl = full[0]
-	case len(full) > 1:
-		var picked []string
-		for _, typ := range full {
-			if returned[typ] {
-				picked = append(picked, typ)
-			}
-		}
-		if len(picked) == 1 {
-			impl = picked[0]
-		}
-	}
+	impl := pickImplementation(byType, len(want), returned)
 	for _, m := range iface.Methods {
 		decl, ok := byType[impl][m.Name]
 		if !ok && len(byMethod[m.Name]) == 1 {
@@ -515,6 +475,59 @@ func scanImplementation(dir string, iface InterfaceDef) implScan {
 		out.noCapture[m.Name] = nc
 	}
 	return out
+}
+
+// addInterfaceDecl records, from a type declaration of the interface named
+// name in path, each method's file (the first seen) and its forge:no-capture
+// exclusions.
+func (out implScan) addInterfaceDecl(d *ast.GenDecl, name, path string) {
+	for _, s := range d.Specs {
+		ts, ok := s.(*ast.TypeSpec)
+		if !ok || ts.Name.Name != name {
+			continue
+		}
+		it, ok := ts.Type.(*ast.InterfaceType)
+		if !ok {
+			continue
+		}
+		for _, fld := range it.Methods.List {
+			for _, n := range fld.Names {
+				if _, seen := out.files[n.Name]; !seen {
+					out.files[n.Name] = path
+				}
+				nc := out.noCapture[n.Name]
+				nc.merge(parseNoCapture(fld.Doc, fld.Comment))
+				out.noCapture[n.Name] = nc
+			}
+		}
+	}
+}
+
+// pickImplementation is the one type declaring all want methods, or, when
+// several do, the one a constructor returns; "" when neither is unique.
+func pickImplementation(byType map[string]map[string]methodDecl, want int, returned map[string]bool) string {
+	var full []string
+	for typ, methods := range byType {
+		if len(methods) == want && want > 0 {
+			full = append(full, typ)
+		}
+	}
+	sort.Strings(full)
+	switch {
+	case len(full) == 1:
+		return full[0]
+	case len(full) > 1:
+		var picked []string
+		for _, typ := range full {
+			if returned[typ] {
+				picked = append(picked, typ)
+			}
+		}
+		if len(picked) == 1 {
+			return picked[0]
+		}
+	}
+	return ""
 }
 
 // receiverType is the base type name of a method receiver: T for (s T),

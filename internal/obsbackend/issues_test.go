@@ -355,6 +355,45 @@ func TestCloudTriageSendsExpectedVersionAndMapsResolveIn(t *testing.T) {
 	if _, has := f.reqs[procUpdateIssueStatus]["resolveIn"]; has {
 		t.Error("only a resolve carries resolve_in")
 	}
+	// The read before the write asks for the stored state alone: a full
+	// GetIssue reads ClickHouse and spends the org's hourly query quota,
+	// which bulk triage exhausted (control-plane#2767).
+	if r := f.reqs[procGetIssue]; r["stateOnly"] != true {
+		t.Errorf("pre-write read %v is not state_only", r)
+	} else if _, has := r["timeRange"]; has {
+		t.Errorf("a state-only read names a telemetry window: %v", r)
+	}
+}
+
+// A stale version is the control plane's to refuse: the version read is sent
+// as expected_version, and Aborted is exit 1 with re-read advice.
+func TestCloudTriageSendsTheStateReadsVersionAndARefusedStaleOneIsExit1(t *testing.T) {
+	stale := strings.Replace(wireIssueJSON, `"version":4`, `"version":3`, 1)
+	f := &fakeCaller{
+		replies: map[string]string{procGetIssue: `{"issue":` + stale + `}`},
+		errs:    map[string]error{procUpdateIssueStatus: &cloud.Error{Code: "aborted"}},
+	}
+	_, err := cloudWith(f).UpdateIssueStatus(context.Background(), UpdateIssueStatusRequest{ID: "ISS-7f3a", Status: IssueIgnored})
+	if exitOf(err) != ExitWrong || !strings.Contains(err.Error(), "re-read and retry") {
+		t.Errorf("err = %v (exit %d)", err, exitOf(err))
+	}
+	if got := f.reqs[procUpdateIssueStatus]["expectedVersion"]; got != float64(3) {
+		t.Errorf("expectedVersion = %v, want the version the state read returned (3)", got)
+	}
+}
+
+// An older control plane ignores state_only and answers the full read; its
+// version serves the same.
+func TestCloudTriageWorksAgainstAControlPlaneWithoutStateOnly(t *testing.T) {
+	full := `{"issue":` + wireIssueJSON + `,"latestEvent":{"timestamp":"2026-10-22T11:00:00Z","traceId":"tr1","message":"boom"}}`
+	updated := strings.Replace(wireIssueJSON, "ISSUE_STATUS_REGRESSED", "ISSUE_STATUS_RESOLVED", 1)
+	f := &fakeCaller{replies: map[string]string{procGetIssue: full, procUpdateIssueStatus: `{"issue":` + updated + `}`}}
+	if _, err := cloudWith(f).UpdateIssueStatus(context.Background(), UpdateIssueStatusRequest{ID: "ISS-7f3a", Status: IssueResolved}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs[procUpdateIssueStatus]["expectedVersion"]; got != float64(4) {
+		t.Errorf("expectedVersion = %v, want 4", got)
+	}
 }
 
 func jsonOf(v any) string { b, _ := json.Marshal(v); return string(b) }

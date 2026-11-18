@@ -41,7 +41,7 @@ import (
 const AttrErrorReason = "rpc.error_reason"
 
 // ServerSpanOption tunes how a failed call reads on its server span
-// (RequestSpanInterceptor; Deps.ServerSpan in Chain).
+// (RequestSpanInterceptorWith; Deps.ServerSpan in Chain).
 type ServerSpanOption func(*serverSpanPolicy)
 
 // WithUserErrorsAsSpanErrors marks the server span of a call that ended with a

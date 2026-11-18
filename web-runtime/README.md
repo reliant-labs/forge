@@ -99,6 +99,15 @@ installs `@opentelemetry/api` and nothing else. `src/published-surface.test.ts`
 holds the rule: a peer the `/node` import closure does not reach must be
 optional.
 
+The browser telemetry SDK is not a peer. `@hyperdx/otel-web` and `rrweb` are
+exact-pinned **dependencies**, imported only by `/telemetry` and only through
+`import()`, so each is its own chunk (rrweb loads only when replay runs) and a
+consumer that never imports `/telemetry` bundles neither. They are
+dependencies rather than optional peers because apps that installed an earlier
+runtime declare `@hyperdx/browser` instead; a peer they don't declare would
+fail to resolve on their next install. Those apps need no edit, and their
+`@hyperdx/browser` entry is unused from then on.
+
 Next.js consumers keep `transpilePackages: ["@reliantlabs/forge-web-runtime"]`
 (forge's generated `next.config.ts` sets it). The reason changed with the
 build — it is no longer "these are `.tsx` files" but "these modules carry
@@ -134,8 +143,8 @@ URL's query string or fragment.
 to this origin's `/_otel`. It is a no-op without a DOM or an endpoint and never
 throws.
 
-The SDK chunk is large (~620 KB minified), and evaluating it is one long
-main-thread task. So by default (`start: "idle"`) it starts off the critical
+The SDK chunk is large (~430 KB minified; it was ~620 KB as `@hyperdx/browser`'s
+single file, rrweb included), and evaluating it is one long main-thread task. So by default (`start: "idle"`) it starts off the critical
 path: once the page has loaded, in the browser's first idle period or right
 after the first interaction has painted, or at once when an RPC waits for it.
 Its startup yields between stages: evaluating the chunk, the SDK's init, and
@@ -320,9 +329,44 @@ Replay records continuous input sampled (`REPLAY_SAMPLING`):
 - a field's final value (`input: "last"`; inputs are masked anyway).
 
 Snapshots also leave out scripts, comments and head metadata (rrweb's slimDOM).
-The recorder serializes, encodes and gzips on the main thread, so each event it
-doesn't record is work a phone doesn't do. `replaySampling` overrides any of
-these keys, and `replaySlimDOM: false` records the whole DOM.
+rrweb serializes each event on the main thread, so each event it doesn't record
+is work a phone doesn't do. `replaySampling` overrides any of these keys, and
+`replaySlimDOM: false` records the whole DOM.
+
+The recorder is the runtime's own (`src/replay-recorder.ts`), not the one
+HyperDX's SDK bundled. That one protobuf-encoded and gzipped every batch on the
+main thread every 5 s, stalling a phone for 50–560 ms each time, and flushed
+only on `unload`. The runtime's recorder works like this:
+
+- **Lazy rrweb.** rrweb loads in its own chunk, and only when replay runs.
+- **Batches.** Records are held and sent every 15 s (`replayFlushIntervalMs`),
+  or within a second once 48 KB are held, so what is left to send
+  uncompressed when the page is left stays small.
+- **Encoding.** Each batch is encoded as OTLP/JSON (one native
+  `JSON.stringify`) and gzipped with `CompressionStream`, both in a Worker
+  created from a Blob URL. Under a CSP that refuses `worker-src blob:`, the
+  gzip runs on the main thread in 64 KB slices that yield between them. With
+  no `CompressionStream`, the JSON goes uncompressed.
+- **Leaving the page.** When the page is hidden (`visibilitychange`) or left
+  (`pagehide`), what is held is sent at once with fetch `keepalive`, in
+  requests within the browser's 64 KB keepalive budget.
+- **`replayStart: "interaction"`.** Nothing is loaded or recorded until the
+  person's first tap, click or key, and then only after that frame has
+  painted.
+
+An app that stamped its own attributes by importing `@hyperdx/browser` and
+calling `setGlobalAttributes` on it must call `setTelemetryAttributes` from
+`/telemetry` instead. That SDK instance is no longer the one running, so
+attributes set on it go nowhere. Calls made before the SDK starts are held
+and applied when it does.
+
+HyperDX's replay player reads the result unchanged: OTLP logs on
+`/_otel/v1/logs` with scope `rum.rr-web` 4.0.0, the event JSON as the body,
+`rr-web.offset`/`event`/`chunk`/`total-chunks` attributes and the SDK's
+resource. The bundled recorder's safeguards are kept: a full snapshot when the
+RUM session changes, a 4 h cap per session, events split into chunks (of 16 K
+characters, so any one chunk can leave with the page in a keepalive request),
+and a per-node limit on attribute mutations.
 
 No URL leaves the browser with its query string or fragment, which is where
 emails, tokens, OAuth codes and search terms live. The SDK stamps the page URL

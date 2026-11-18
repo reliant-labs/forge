@@ -40,12 +40,17 @@ judged against a deployed project. They depend on:
 2. **The console draws them.** Deploy a project with a frontend
    (`reliant forge env deploy <env>`) and open its Product group:
 
-   - Users, Product and Acquisition are listed, and the old _Product usage_
-     is not (a star on it moved to _Product_);
+   - the Product overview leads the hub's tabs, then Users, Product and
+     Acquisition, and the old _Product usage_ is not listed (a star on it
+     moved to _Product_);
+   - the Product overview's blocks link to their tabs, its changes are green
+     when they improve and red when they worsen, and Needs attention lists
+     the figures that moved 5% or more;
+   - the rankings (pages, channels, sources, countries, ...) draw as bar lists;
    - each section heading has its description, and the headline figures open
      beside their change against the previous period;
    - the retention heatmap leaves weeks that have not happened yet empty;
-   - _Visit → sign-up → activation_ draws as a funnel;
+   - _Visit → sign-up → activation_ draws as a funnel in steps;
    - the Overview's Traffic and Users sections follow its Health panels.
 
 3. **The numbers agree with the Users card.** Over 7 days ending now, the

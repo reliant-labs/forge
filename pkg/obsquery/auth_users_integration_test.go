@@ -233,7 +233,8 @@ func TestUserActivityLeavesStateEventsAndDeclaredRulesOut(t *testing.T) {
 
 // TestUserActivityNewUsersFirstSeenGrace: where New falls back to first-seen,
 // the users of the data's first FirstSeenGraceDays are not new, and the read
-// says from when New is decided. The range is the 30 days ending 11-13.
+// says from when New is decided; where sign-ups decide it, it is decided from
+// the earliest sign-up retained. The range is the 30 days ending 11-13.
 func TestUserActivityNewUsersFirstSeenGrace(t *testing.T) {
 	c := startClickHouse(t)
 	const db = "t_users_grace"
@@ -255,6 +256,14 @@ func TestUserActivityNewUsersFirstSeenGrace(t *testing.T) {
 		{at: "2026-10-30T09:00:00Z", env: "signups", user: "g2", event: "task_created"},
 		{at: "2026-09-01T09:00:00Z", env: "signups", user: "g3", event: "auth_signed_up"},
 		{at: "2026-11-01T09:00:00Z", env: "signups", user: "g3", event: "task_created"},
+		// latesignups: sign-ups reported only from 11-05, inside the range.
+		// l1 was active before the range; l2 joined inside it but before
+		// sign-ups were reported, so has no sign-up and counts returning.
+		{at: "2026-10-01T09:00:00Z", env: "latesignups", user: "l1", event: "task_created"},
+		{at: "2026-11-10T09:00:00Z", env: "latesignups", user: "l1", event: "task_created"},
+		{at: "2026-10-20T09:00:00Z", env: "latesignups", user: "l2", event: "task_created"},
+		{at: "2026-11-05T09:00:00Z", env: "latesignups", user: "l3", event: "auth_signed_up"},
+		{at: "2026-11-06T09:00:00Z", env: "latesignups", user: "l3", event: "task_created"},
 		// brandnew: data begins too late for any of the range to be decided.
 		{at: "2026-11-10T09:00:00Z", env: "brandnew", user: "b1", event: "task_created"},
 		{at: "2026-11-11T09:00:00Z", env: "brandnew", user: "b2", event: "task_created"},
@@ -275,7 +284,10 @@ func TestUserActivityNewUsersFirstSeenGrace(t *testing.T) {
 			time.Date(2026, 10, 31, 14, 3, 0, 0, time.UTC), obsquery.NewDecidedPart},
 		{"data start before the range", "mature", obsquery.NewUsersFirstSeen, counts(3, 1, 2),
 			time.Date(2026, 9, 8, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedAll},
-		{"sign-up event present", "signups", obsquery.NewUsersSignups, counts(3, 1, 2), time.Time{}, obsquery.NewDecidedAll},
+		{"sign-ups reported since before the range", "signups", obsquery.NewUsersSignups, counts(3, 1, 2),
+			time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedAll},
+		{"sign-ups reported only since inside the range", "latesignups", obsquery.NewUsersSignups, counts(3, 1, 2),
+			time.Date(2026, 11, 5, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedPart},
 		{"no part of the range decided", "brandnew", obsquery.NewUsersFirstSeen, counts(2, 0, 2),
 			time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC), obsquery.NewDecidedNone},
 		{"no events", "empty", obsquery.NewUsersFirstSeen, counts(0, 0, 0), time.Time{}, obsquery.NewDecidedAll},

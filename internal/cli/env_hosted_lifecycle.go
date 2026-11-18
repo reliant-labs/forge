@@ -735,8 +735,9 @@ its managed databases' data (Postgres clusters and volumes). IRREVERSIBLE.
 
 --keep-data RETAINS each managed database: it keeps running and billing as
 storage, is listed by the control plane as a retained database, and stays
-until purged (DeleteRetainedDatabase). A later deploy of the same name creates
-a NEW environment and does NOT reattach it.
+until purged (` + "`forge env retained list`" + `, ` + "`forge env retained purge <id>`" + `). A
+later deploy of the same name creates a NEW environment and does NOT reattach
+it. ` + "`forge app teardown`" + ` deletes every env of the app at once.
 
 KEPT EITHER WAY: the project's release images in the registry. They belong to
 the project, not the environment, and other environments promote them.

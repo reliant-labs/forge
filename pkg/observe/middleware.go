@@ -304,7 +304,7 @@ type Deps struct {
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {
-		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor(), RequestSpanInterceptor(deps.ServerSpan...))
+		chain = append(chain, deps.Trace, profileLabelsInterceptor(), TraceResponseInterceptor(), RequestSpanInterceptorWith(deps.ServerSpan...))
 	}
 	meter := deps.Meter
 	if meter == nil {

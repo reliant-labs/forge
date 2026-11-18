@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,9 @@ import (
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content/memory"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -530,5 +533,38 @@ func TestPushedTagMatchesReleaseHelper(t *testing.T) {
 		if _, err := pub.PublishSourcemaps(context.Background(), SourcemapBuild{Frontend: "web", BuildID: id, Dir: res.SourcemapsDir}); err != nil || got != want {
 			t.Errorf("id %q pushed as %q, helper says %q (%v)", id, got, want, err)
 		}
+	}
+}
+
+type refusingPublisher struct{ err error }
+
+func (p refusingPublisher) PublishSourcemaps(context.Context, SourcemapBuild) (SourcemapsRecord, error) {
+	return SourcemapsRecord{}, p.err
+}
+
+// Turning maps off is offered only when the failure was the maps' own. A
+// refused credential is refused for the site's push too, so offering it sent
+// an author round a loop that only moved the 401.
+func TestFileStageSourcemapsOffersMapsOffOnlyForAMapsFailure(t *testing.T) {
+	res := StageResult{BuildID: "b1", SourcemapsDir: "d", Sourcemaps: 1}
+	const offer = "To ship without maps"
+
+	denied := &hostedimage.PushError{Repository: "registry.example.com/o/p/web-sourcemaps", Err: &errcode.ErrorResponse{
+		Method: "POST", URL: &url.URL{Scheme: "https", Host: "registry.example.com"}, StatusCode: 401,
+	}}
+	err := FileStageSourcemaps(context.Background(), refusingPublisher{denied}, "build", "p", "web", res)
+	if err == nil || strings.Contains(err.Error(), offer) {
+		t.Fatalf("a refused credential offered turning maps off:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "would not get past this") {
+		t.Errorf("a refused credential did not say turning maps off cannot help:\n%v", err)
+	}
+	if got := hostedimage.FailedRepository(err); got != denied.Repository {
+		t.Errorf("FailedRepository = %q, want %q: the refused repository must survive the wrapping", got, denied.Repository)
+	}
+
+	err = FileStageSourcemaps(context.Background(), refusingPublisher{errors.New("pack: disk full")}, "build", "p", "web", res)
+	if err == nil || !strings.Contains(err.Error(), offer) {
+		t.Fatalf("a maps-only failure lost the way out:\n%v", err)
 	}
 }

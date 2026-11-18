@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
-	"gopkg.in/yaml.v3"
 )
 
 // Full CLI tests execute rendered Taskfiles, including the full-tier changed

@@ -19,8 +19,9 @@ import (
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/retry"
+
+	"github.com/reliant-labs/forge/internal/dockercred"
 )
 
 // maxJournalBytes bounds what Fetch reads: a journal is a few KiB of state.
@@ -48,11 +49,11 @@ func Open(repository string) (*remote.Repository, error) {
 		return nil, fmt.Errorf("cut journal repository %q: %w", repository, err)
 	}
 	repo.PlainHTTP = plainHTTPRegistry(repo.Reference.Registry)
-	store, err := credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	credential, err := dockercred.Credential()
 	if err != nil {
 		return nil, fmt.Errorf("read docker credentials: %w", err)
 	}
-	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credential}
 	return repo, nil
 }
 

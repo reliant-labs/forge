@@ -69,7 +69,12 @@ WHAT ONE ENV'S REPORT CARRIES:
   * VERIFY — the digests the env is actually RUNNING against the ones the
     binding froze, per declared image, in five states: match / drift /
     missing / untagged / unreachable. A hosted env is read through its
-    control plane's observer, because forge cannot read a hosted cluster;
+    control plane's observer, because forge cannot read a hosted cluster. A
+    hosted static site is read from the site itself: env build stamps the
+    release into /.well-known/forge-release.json, and status fetches it from
+    the live URL (MATCH when it names the bound release, DRIFT when it names
+    another, UNREACHABLE when the site serves none, as a release built before
+    forge stamped one does);
   * the ROLLOUT PHASE per workload, as the control plane computes it;
   * IDENTITY — a hosted env that declares forge.ManagedIdentity gets one line,
     "identity: ready / provisioning / failed: <reason>", as its control plane
@@ -138,8 +143,9 @@ EXIT CODES — a pipeline branches on these directly:
   1  we looked and it is WRONG — an image drifted or is missing; with --wait,
      a workload is DEGRADED
   2  we could not DETERMINE — a cluster or control plane was unreachable, a
-     credential was refused, the thing is unobservable, or this checkout's
-     promotion ledger is stale
+     credential was refused, the thing is unobservable (a hosted static site
+     that serves no release marker included), or this checkout's promotion
+     ledger is stale
   6  --wait only: SUPERSEDED — a newer promotion replaced the one waited on
   7  QUEUED — the bound release is accepted and recorded, and the control plane
      holds it on a person (billing). The output names what it waits on and the

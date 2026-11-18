@@ -91,12 +91,17 @@ func SessionIDFromBaggage(header http.Header) string {
 // failed call's server span gets error_class, rpc.error_reason and an exception
 // event, and its status follows the class: OK for user and canceled — final, so
 // otelconnect's later Error for the same code is ignored — and Error for a
-// server fault. WithUserErrorsAsSpanErrors marks user errors Error instead.
+// server fault. RequestSpanInterceptorWith takes options that change this
+// (WithUserErrorsAsSpanErrors marks user errors Error instead).
 //
 // An ending the handler declared with svcerr.ExpectedClose — the server ended
 // the call on purpose — is OK too, with rpc.close_reason and an rpc.close event
 // in place of the exception.
-func RequestSpanInterceptor(opts ...ServerSpanOption) connect.Interceptor {
+func RequestSpanInterceptor() connect.Interceptor { return RequestSpanInterceptorWith() }
+
+// RequestSpanInterceptorWith is RequestSpanInterceptor with ServerSpanOptions
+// tuning how a failed call reads on its server span.
+func RequestSpanInterceptorWith(opts ...ServerSpanOption) connect.Interceptor {
 	return requestSpan{policy: newServerSpanPolicy(opts)}
 }
 

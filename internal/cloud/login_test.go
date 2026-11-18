@@ -109,3 +109,25 @@ func TestLoginScopes_PinsTheRequestedSet(t *testing.T) {
 		t.Errorf("LoginScopes = %q, want %q", got, want)
 	}
 }
+
+// After a browser login the page goes on to the web app's Apps list, where a
+// first-time account is walked through setup. It does so only for a web app
+// forge knows; another control plane's login keeps the plain page.
+func TestLoginSuccessHTML_ContinuesToTheWebApp(t *testing.T) {
+	page := LoginSuccessHTML("https://forge.reliantlabs.io")
+	for _, want := range []string{
+		`http-equiv="refresh" content="2;url=https://forge.reliantlabs.io/apps"`,
+		`href="https://forge.reliantlabs.io/apps"`,
+		"Your terminal is signed in",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("success page lacks %q:\n%s", want, page)
+		}
+	}
+	if got := LoginSuccessHTML(""); got != "" {
+		t.Errorf("an unknown web app must keep pkg/oauth2's default page, got %q", got)
+	}
+	if got := LoginSuccessHTML(`https://x"><script>`); strings.Contains(got, "<script>") {
+		t.Errorf("the web app URL is not escaped:\n%s", got)
+	}
+}

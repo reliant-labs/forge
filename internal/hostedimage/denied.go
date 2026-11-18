@@ -57,3 +57,41 @@ func DeniedHint(reference string) string {
 		"deploy:write (a push needs both the organization's subtree and write access).\n"+
 		"  fix: re-run `forge registry login <env>`, and check the token's scopes with `forge cloud status <env>` or in the web app (Settings → API tokens)", reference)
 }
+
+// PushError is a push to Repository that failed. Its text is the cause's,
+// unchanged; it exists so that a message composed further out — where several
+// pushes share one error path — can name the repository that actually
+// refused instead of the one the caller was about to push.
+type PushError struct {
+	Repository string
+	Err        error
+}
+
+func (e *PushError) Error() string { return e.Err.Error() }
+
+func (e *PushError) Unwrap() error { return e.Err }
+
+// FailedRepository is the repository of the PushError in err's chain, or ""
+// when err carries none.
+func FailedRepository(err error) string {
+	var pe *PushError
+	if errors.As(err, &pe) {
+		return pe.Repository
+	}
+	return ""
+}
+
+// ClaimableDeniedHint is DeniedHint for an anonymous (--claimable) deploy.
+//
+// None of DeniedHint's remedies exist there: the author has no login, no API
+// token and no scopes to inspect. The deploy's credential is minted for the
+// deploy and pushed by forge alone, and the platform revokes it when the
+// deploy is claimed, taken down or expires — so those are what to check.
+func ClaimableDeniedHint(reference string) string {
+	return fmt.Sprintf("The registry refused the push to %s.\n"+
+		"  This is an anonymous (--claimable) deploy: forge pushed with the deploy's own credential, for this run only, "+
+		"so no login or API token of yours is involved. That credential stops working once the deploy is claimed, "+
+		"taken down or expires; `forge env status <env> --claimable` says which.\n"+
+		"  fix: if it was claimed, sign in as the account that claimed it (`forge login`) and deploy without --claimable. "+
+		"If it is still live, the refusal is a forge defect: report it with `forge report-bug`", reference)
+}

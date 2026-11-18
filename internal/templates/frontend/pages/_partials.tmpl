@@ -141,6 +141,9 @@ definition serves both trees.
 {{- else}}
           <Input
             type="{{if eq .Type "date"}}datetime-local{{else}}{{.Type}}{{end}}"
+{{- if and (eq .Type "number") (or (eq .ProtoType "double") (eq .ProtoType "float"))}}
+            step="any"
+{{- end}}
             id="{{.Name}}"
             {...register("{{.Name}}")}
             {{- template "fieldA11y" .}}

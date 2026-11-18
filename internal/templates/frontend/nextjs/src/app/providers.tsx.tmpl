@@ -67,10 +67,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <AuthContextProvider>
 {{- if .Public}}
           {/*
-            PUBLIC FRONTEND (auth_mode: none): no route guard. Every page
-            renders for every visitor. To gate it later, set
-            `auth_mode: native` in forge.yaml and wrap this in the
-            RouteGuard from @/lib/auth/route-guard — see
+            PUBLIC FRONTEND (--auth-mode none): no route guard. Every page
+            renders for every visitor. To gate it later, declare users and
+            wrap this in the RouteGuard from @/lib/auth/route-guard — see
             `forge skill load auth/frontend`.
           */}
           <RuntimeLayer>{children}</RuntimeLayer>

@@ -1,33 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// Test utilities for forge frontend tests. Written once on scaffold;
-// owned by the user thereafter. Safe to edit, extend, and re-export from.
-//
-// Two primitives live here:
-//
-//   - mockTransport(handlers): a Connect-compatible Transport whose unary
-//     responses are keyed on "<ServiceTypeName>/<MethodName>" or the
-//     "<ServiceName>.<MethodName>" shorthand. Per-handler entries may be:
-//       { response: <any> }            — return a typed message (an init
-//                                        shape is fine: it is create()d into
-//                                        the full response, as a real
-//                                        transport would parse it)
-//       { error: <Error | string> }    — reject with a ConnectError
-//       (input) => <any | Promise<any>> — compute the response from the
-//                                        request, which arrives as the FULL
-//                                        message (create()d), never the
-//                                        caller's partial init
-//     Unmatched RPCs reject with Code.Unimplemented so missing fixtures
-//     surface as a clear error.
-//
-//   - renderWithTransport(ui, { transport }): wraps the UI in
-//     QueryClientProvider with a fresh QueryClient (retries: 0, no stale
-//     time) and swaps the active transport via setTransport() so any
-//     generated hook in the tree dispatches against the mock. Use this
-//     in page tests; the production providers do too much (telemetry,
-//     auth bridge, event bus) for a hermetic unit test.
-//
-// See the `frontend-testing` skill for recipes and anti-patterns.
+// Test utilities. mockTransport(handlers): a Connect Transport keyed on "<Service>/<Method>" (or
+// "<Service>.<Method>"); a handler is {response}, {error} or (input) => response, and an unmatched
+// RPC rejects with Code.Unimplemented. renderWithTransport(ui, {transport}) mounts a fresh
+// QueryClient over that transport. Depth: `forge skill load frontend-testing`.
 
 import { create, type DescMessage } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";

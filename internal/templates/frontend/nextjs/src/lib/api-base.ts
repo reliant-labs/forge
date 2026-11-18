@@ -1,48 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// WHERE THE BROWSER SENDS API TRAFFIC. src/lib/connect.ts (every RPC) and
-// src/lib/auth/native-login.ts (sign-in, session, sign-out) both ask this
-// module, so the two can never point at different places.
-//
-//   under `next dev` → this page's OWN origin, `<origin><basePath>/_api`.
-//                      next.config.ts rewrites `/_api/*` to the API server.
-//   in any build     → the API URL the caller passes in: the runtime config
-//                      (config.js), exactly as before. A static export has no
-//                      server, so there is no rewrite to send anything to.
-//
-// On Reliant hosting that runtime config says `/_api`: the platform serves the
-// env's API on every host of the site (custom domains too) at `/_api/*`, the
-// same path as the dev loop below, so sign-in's session cookie is first-party
-// to the site. The value is origin-relative and used as is; it is never
-// resolved against a host here. A literal API_URL in the env's KCL is not
-// rewritten, if the browser should call the API's own host instead.
-//
-// ── Why the dev loop goes through this origin ─────────────────────────
-//
-// `forge env up` runs the API on one port and this dev server on another.
-// The API's own URL (http://localhost:<api port>) only works for a browser on
-// the machine running the stack. Open the dev server any other way — a
-// Reliant workspace preview URL (https://<port>-<id>.workspaces.reliantapi.com),
-// a tunnel to the frontend port, a LAN or container IP — and "localhost" is
-// the VIEWER's machine: every RPC and the sign-in POST fail, and Private
-// Network Access blocks a public page calling a loopback address anyway.
-// Through this origin the browser only ever needs the host it already loaded
-// the page from. Same-origin requests also involve no CORS, and the session
-// cookie is first-party to whatever host the page is on.
-//
-// ── Turning it off ────────────────────────────────────────────────────
-//
-// Start the dev server with FORGE_DEV_API_PROXY=off and the browser calls the
-// configured API URL directly (cross-origin, so CORS and
-// `credentials: "include"` apply), as it did before. The proxy is also off
-// when the dev server has no upstream to forward to: NEXT_PUBLIC_API_URL
-// unset, which `forge env up` never leaves it.
-//
-// next.config.ts makes that decision once, when the dev server starts, and
-// inlines the answer here as process.env.FORGE_DEV_API_PROXY (its `env`
-// block): the proxied path, or "" when there is none. Reading its answer
-// rather than re-deriving it keeps the rewrite and the transport from ever
-// disagreeing.
+// Where the browser sends API traffic, for RPCs (connect.ts) and sign-in (native-login.ts) alike.
+// Dev server: this page's own origin at `/_api` (next.config.ts rewrites it), so a preview URL, tunnel or LAN IP
+// works with no CORS and a first-party cookie. A build: the runtime config's API URL (`/_api` on
+// Reliant hosting). FORGE_DEV_API_PROXY=off calls the API directly. Depth: `frontend/serving`.
 
 import { BASE_PATH } from "./basepath_gen";
 

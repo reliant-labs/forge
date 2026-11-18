@@ -332,6 +332,49 @@ func writeMigFile(t *testing.T, dir, name string) {
 	}
 }
 
+// The refusal's fix names the branch the default ref resolves to, and a push
+// only when that ref is a remote's.
+func TestUnmergedMigrationsRemedy(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		ref, wantSwitch, wantPush string
+	}{
+		{"main", "git switch main && git add db/migrations && git commit", ""},
+		{"origin/main", "git switch main && git add db/migrations && git commit", "git push origin main"},
+		{"refs/remotes/origin/trunk", "git switch trunk && git add db/migrations && git commit", "git push origin trunk"},
+	} {
+		got := unmergedMigrationsRemedy(tc.ref, "db/migrations")
+		if !strings.Contains(got, tc.wantSwitch) {
+			t.Errorf("%s: remedy lacks %q:\n%s", tc.ref, tc.wantSwitch, got)
+		}
+		if tc.wantPush == "" && strings.Contains(got, "git push") {
+			t.Errorf("%s: a local default branch needs no push:\n%s", tc.ref, got)
+		}
+		if tc.wantPush != "" && !strings.Contains(got, tc.wantPush) {
+			t.Errorf("%s: remedy lacks %q:\n%s", tc.ref, tc.wantPush, got)
+		}
+		if !strings.Contains(got, "--"+allowUnmergedMigrationsFlag) {
+			t.Errorf("%s: remedy no longer names the hotfix waiver:\n%s", tc.ref, got)
+		}
+	}
+}
+
+// The guard applies to exactly the envs whose ledger is a control plane, as
+// ledgerForEntities decides it from the render.
+func TestEnvKeepsHostedLedger(t *testing.T) {
+	hosted := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.example.test"}}
+	if !envKeepsHostedLedger(hosted) {
+		t.Error("an env declaring a control plane keeps its ledger there")
+	}
+	if envKeepsHostedLedger(&KCLEntities{}) || envKeepsHostedLedger(nil) {
+		t.Error("an env with no control plane keeps its ledger on this machine")
+	}
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	if envKeepsHostedLedger(hosted) {
+		t.Errorf("%s=%s sends the ledger to this machine", ledgerSelectionEnv, ledgerSelectMachine)
+	}
+}
+
 // (A): a release for a shared env carrying the project's migration that main
 // does not have is refused; once it is on main, it passes.
 func TestCheckUnmergedMigrations(t *testing.T) {
@@ -355,6 +398,9 @@ func TestCheckUnmergedMigrations(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "20260101000000_a") {
 		t.Errorf("refusal names a migration main already has:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "git switch main && git add db/migrations && git commit") {
+		t.Errorf("refusal does not name the commit that fixes it:\n%v", err)
 	}
 	var out bytes.Buffer
 	if err := checkUnmergedMigrations(&out, "[build]", dir, "v2", true); err != nil || !strings.Contains(out.String(), "WARNING") {

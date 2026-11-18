@@ -353,14 +353,35 @@ func (c Cloud) ListIssueEvents(ctx context.Context, req ListIssueEventsRequest) 
 
 // ── UpdateIssueStatus ───────────────────────────────────────────────────
 
-// triageWindow is the window of the read that precedes a write; only the
-// issue's row version and environment are used from it.
-const triageWindow = time.Hour
+// issueState is the read that precedes a triage write: GetIssue with
+// state_only, which the control plane serves from its database alone, so it
+// spends none of the org's hourly observability query quota. A full GetIssue
+// also reads the issue's events from ClickHouse, and bulk triage spent the
+// quota on those reads and then failed with 429 obs_query_quota
+// (control-plane#2767). Only the issue's row version and environment are used.
+// A control plane that predates state_only ignores it and answers the full
+// read, which carries the same version.
+func (c Cloud) issueState(ctx context.Context, id string) (Issue, error) {
+	in := struct {
+		IssueID   string `json:"issueId"`
+		StateOnly bool   `json:"stateOnly"`
+	}{id, true}
+	var out struct {
+		Issue wireIssue `json:"issue"`
+	}
+	if err := c.callIssuesEnvWide(ctx, procGetIssue, in, &out); err != nil {
+		return Issue{}, err
+	}
+	i := out.Issue.issue()
+	i.EnvID = out.Issue.EnvID
+	return i, c.checkEnv(i)
+}
 
-// UpdateIssueStatus implements IssueReader. It reads the issue first, to learn
-// its environment and row version, and sends the version back as
-// expected_version: a write over a state the caller never saw is refused
-// (Aborted), and the caller is told to re-read.
+// UpdateIssueStatus implements IssueReader. It reads the issue's state first
+// (issueState: no telemetry, no query quota), to learn its environment and row
+// version, and sends the version back as expected_version: a write over a
+// state the caller never saw is refused (Aborted), and the caller is told to
+// re-read.
 func (c Cloud) UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusRequest) (UpdateIssueStatusResult, error) {
 	switch req.Status {
 	case IssueResolved, IssueIgnored, IssueUnresolved:
@@ -387,18 +408,13 @@ func (c Cloud) UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusReque
 			return UpdateIssueStatusResult{}, Wrong("unknown resolve-in %q", req.ResolveIn)
 		}
 	}
-	now := time.Now().UTC()
-	// The current status is the issue's, not an instance's: read it whole.
-	whole := c
-	whole.Instances = Instances{}
-	cur, err := whole.getIssue(ctx, req.ID, Narrow{Range: Range{From: now.Add(-triageWindow), To: now}})
+	// The current status is the issue's, not an instance's: issueState sends
+	// no instance narrowing.
+	cur, err := c.issueState(ctx, req.ID)
 	if err != nil {
 		return UpdateIssueStatusResult{}, err
 	}
-	if err := c.checkEnv(cur.Issue); err != nil {
-		return UpdateIssueStatusResult{}, err
-	}
-	envID := cur.Issue.EnvID
+	envID := cur.EnvID
 	if envID == "" {
 		envID = c.EnvID
 	}
@@ -409,7 +425,7 @@ func (c Cloud) UpdateIssueStatus(ctx context.Context, req UpdateIssueStatusReque
 		ResolveIn       *resolveIn `json:"resolveIn,omitempty"`
 		IgnoredUntil    *time.Time `json:"ignoredUntil,omitempty"`
 		ExpectedVersion int32      `json:"expectedVersion,omitempty"`
-	}{IssueID: req.ID, EnvID: envID, ResolveIn: rin, ExpectedVersion: cur.Issue.Version,
+	}{IssueID: req.ID, EnvID: envID, ResolveIn: rin, ExpectedVersion: cur.Version,
 		Status: "ISSUE_STATUS_CHANGE_" + upper(req.Status)}
 	if req.Status == IssueIgnored && !req.IgnoredUntil.IsZero() {
 		t := req.IgnoredUntil.UTC()

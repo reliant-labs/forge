@@ -54,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/procguard"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 
@@ -3750,6 +3751,12 @@ type procRegistry struct {
 	// readStopTable reads the process table for the shutdown sweep; nil is
 	// the OS table. A test injects a failing or modelled one.
 	readStopTable func() (*stopTable, error)
+	// selfLineage is the command's own lineage, which the sweep never
+	// selects; nil is procguard.Self. A test with a modelled table injects
+	// an empty one, so a modelled pid that happens to be a real ancestor of
+	// the test process (Windows pids are small multiples of 4) is not
+	// skipped.
+	selfLineage func() procguard.Lineage
 }
 
 // stopped reports whether shutdown has run, so a second teardown path (a

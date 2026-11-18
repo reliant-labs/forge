@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -798,6 +799,11 @@ type hostedStore struct {
 	// sent with every cut and deploy attempt. Nil when the ledger was opened
 	// with no checkout behind it, which sends none.
 	source *codeSourceProbe
+	// codeSourceWarned is the two-repositories warning this store last
+	// printed (code_source_warning.go), under mu; warn is where it goes, nil
+	// for os.Stderr.
+	codeSourceWarned string
+	warn             io.Writer
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1167,6 +1173,9 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 	}
 	var resp struct {
 		Created bool `json:"created"`
+		// The app's sources, with the two-repositories warning when there
+		// is one (code_source_warning.go). Absent from an older server.
+		CodeSources *wireAppCodeSources `json:"codeSources"`
 	}
 	if err := s.client.Call(ctx, procCutRelease, req, &resp); err != nil {
 		// THE CONNECT CODE, not the message text. A re-cut of a version
@@ -1183,6 +1192,7 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		}
 		return false, err
 	}
+	s.noteCodeSourceWarning(deployAttemptFrom(ctx), resp.CodeSources.warning())
 	return resp.Created, nil
 }
 

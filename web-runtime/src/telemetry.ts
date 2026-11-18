@@ -490,8 +490,9 @@ export interface BrowserTelemetryConfig {
   /**
    * Attach a redacted `forge.forensics` event to the span of a failed RPC:
    * the request's shape, never its content (rpc-forensics.ts: numbers,
-   * bools, enums and id-named strings as values; every other string, bytes,
-   * list and map as a length; `debug_redact` fields never), once per
+   * bools, enums and id-named strings as values, unless the name also names
+   * a secret, like `session_id`; every other string, bytes, list and map as
+   * a length; `debug_redact` fields never), once per
    * procedure and error code per page load. Default true; forge's generated
    * src/lib/otel_gen.ts passes false when the runtime config says
    * `RPC_FORENSICS = "false"`. The RPC spans themselves (rpc-span.ts) are

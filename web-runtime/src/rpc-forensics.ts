@@ -15,6 +15,11 @@
 //   enum                              the value's name, else its number
 //   string named like an id           the value, cut to MAX_VALUE_CHARS
 //     (`id`, `ids`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`, `*IDs`)
+//   ...whose name also names a secret "[len=N]": `session_id`, `apiKeyId`,
+//     (token, secret, passw,          `otp_id` are credentials, not handles.
+//     credential, session, cookie,    Matched case-insensitively with `_` and
+//     apikey, privatekey, signingkey, `-` removed (forge's server-side rule).
+//     otp)                            A number so named records its digit count.
 //   any other string                  "[len=N]": its length only
 //   bytes                             "[len=N]"
 //   repeated, map                     "[count=N]": its length only
@@ -72,6 +77,33 @@ const CAMEL_ID_RE = /[a-z0-9](Id|ID|Ids|IDs)$/;
 /** Whether a field's name says it holds an identifier. */
 export function isIdShaped(name: string): boolean {
   return SNAKE_ID_RE.test(name) || CAMEL_ID_RE.test(name);
+}
+
+// Words that make an id-shaped name a credential: a session id or an API key
+// id authenticates whoever holds it. Matched against the name lowercased with
+// `_` and `-` removed, so `api_key_id`, `apiKeyId` and `API-KEY-ID` all hit.
+const SECRET_WORDS = [
+  "token",
+  "secret",
+  "passw",
+  "credential",
+  "session",
+  "cookie",
+  "apikey",
+  "privatekey",
+  "signingkey",
+  "otp",
+];
+
+/** Whether a field's name says its value is a secret, whatever its shape. */
+export function isSecretNamed(name: string): boolean {
+  const folded = name.toLowerCase().replace(/[_-]/g, "");
+  return SECRET_WORDS.some((w) => folded.includes(w));
+}
+
+/** Whether a field's value is recorded as it is: an id that is no secret. */
+function recordsIdValue(name: string): boolean {
+  return isIdShaped(name) && !isSecretNamed(name);
 }
 
 /**
@@ -179,7 +211,7 @@ function classifyLeaf(
   switch (field.scalar) {
     case ScalarType.STRING: {
       const s = String(value);
-      return isIdShaped(field.name)
+      return recordsIdValue(field.name)
         ? s.slice(0, MAX_VALUE_CHARS)
         : `[len=${s.length}]`;
     }
@@ -188,7 +220,10 @@ function classifyLeaf(
     case ScalarType.BOOL:
       return Boolean(value);
     default:
-      return number(value);
+      // A numeric session or OTP id is as much a credential as a string one.
+      return isIdShaped(field.name) && isSecretNamed(field.name)
+        ? `[len=${String(value).length}]`
+        : number(value);
   }
 }
 

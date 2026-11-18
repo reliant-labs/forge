@@ -64,7 +64,10 @@ registers its own OpenTelemetry provider gets the spans from `/interceptors`.
 A failed call's span carries one **`forge.forensics`** event:
 `forensics.reason = error` and `forensics.arg.<field>` for the request
 message, classified deny by default — numbers, bools, enums and id-named
-strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values; every other string and
+strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values, except an id whose name
+also names a secret (`session_id`, `apiKeyId`, `otpId`: `token`, `secret`,
+`passw`, `credential`, `session`, `cookie`, `apikey`, `privatekey`,
+`signingkey`, `otp`), which is `"[len=N]"` only; every other string and
 bytes as `"[len=N]"`; repeated and map fields as `"[count=N]"`; times
 (`Timestamp`, `Duration`, the `google.type` dates) as `"[type=<Name>]"`, never
 their value; nested messages walked three levels; `[debug_redact = true]`

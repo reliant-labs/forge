@@ -4391,8 +4391,9 @@ schema BrowserTelemetry:
     identify_user: bool = True
     # Attach a redacted `forge.forensics` event to the browser span of a
     # failed RPC: the request's shape, never its content (numbers, bools,
-    # enums and id-named strings as values; every other string, bytes, list
-    # and map as a length; `debug_redact` fields never), once per procedure
+    # enums and id-named strings as values, unless the name also names a
+    # secret, like `session_id`; every other string, bytes, list and map as
+    # a length; `debug_redact` fields never), once per procedure
     # and error code per page load. False renders RPC_FORENSICS = "false";
     # the RPC spans themselves are recorded either way.
     rpc_forensics: bool = True

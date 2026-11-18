@@ -21,6 +21,7 @@ import {
   claimForensics,
   classifyRequest,
   isIdShaped,
+  isSecretNamed,
   MAX_ARGS,
   MAX_SIGNATURES,
   MAX_VALUE_CHARS,
@@ -339,6 +340,35 @@ function temporalTestRequest(): DescMessage {
   return desc;
 }
 
+/** A message of the named string fields, then `extra` fields of other types. */
+function stringMessage(
+  names: string[],
+  extra: Array<{ name: string; type: Type }> = [],
+): DescMessage {
+  const fields = [
+    ...names.map((name) => ({ name, type: Type.STRING })),
+    ...extra,
+  ].map((f, i) => ({
+    name: f.name,
+    number: i + 1,
+    type: f.type,
+    label: opt,
+    jsonName: `f${i}`,
+  }));
+  const registry = createFileRegistry(
+    create(FileDescriptorProtoSchema, {
+      name: "forensics_secret_ids.proto",
+      package: "forensics.v1",
+      syntax: "proto3",
+      messageType: [{ name: "Ids", field: fields }],
+    }),
+    () => undefined,
+  );
+  const desc = registry.getMessage("forensics.v1.Ids");
+  if (!desc) throw new Error("ids message did not register");
+  return desc;
+}
+
 /** A message of `n` int32 fields, f0..f<n-1>. */
 function wideMessage(n: number): DescMessage {
   const registry = createFileRegistry(
@@ -460,6 +490,46 @@ describe("classifyRequest", () => {
     }
   });
 
+  it("records an id whose name names a secret only by its length", () => {
+    const names = [
+      "session_id",
+      "apiKeyId",
+      "otpId",
+      "api_key_id",
+      "API-KEY-ID",
+      "access_token_id",
+      "client_secret_ids",
+      "passwordResetId",
+      "credential_id",
+      "cookieID",
+      "private_key_id",
+      "signingKeyIds",
+    ];
+    const wide = stringMessage(
+      [...names, "chat_id"],
+      [{ name: "otp_counter_id", type: Type.INT64 }],
+    );
+    const init: Record<string, unknown> = { chatId: "chat_ok" };
+    names.forEach((n, i) => {
+      init[wide.fields[i]!.localName] = `SECRET-VALUE-${i}-xyz`;
+    });
+    init[wide.fields[names.length + 1]!.localName] = 987_654_321n;
+    const out = classifyRequest(wide, create(wide, init as never));
+
+    names.forEach((n, i) => {
+      expect(out[`forensics.arg.${n}`], n).toBe(
+        `[len=${`SECRET-VALUE-${i}-xyz`.length}]`,
+      );
+    });
+    expect(out["forensics.arg.otp_counter_id"]).toBe("[len=9]");
+    // A plain id still records its value.
+    expect(out["forensics.arg.chat_id"]).toBe("chat_ok");
+    const recorded = JSON.stringify(out);
+    for (const secret of ["SECRET-VALUE", "xyz", "987654321"]) {
+      expect(recorded, secret).not.toContain(secret);
+    }
+  });
+
   it("never records a debug_redact field, not even its presence", () => {
     const out = classifyRequest(
       desc,
@@ -509,6 +579,30 @@ describe("classifyRequest", () => {
     expect(classifyRequest(desc, { $typeName: "nope", chatId: 5 })).toBeTypeOf(
       "object",
     );
+  });
+});
+
+describe("isSecretNamed", () => {
+  it("finds a secret word however the name is spelled", () => {
+    for (const name of [
+      "session_id",
+      "apiKeyId",
+      "otpId",
+      "API-KEY-ID",
+      "x_Signing_Key_ids",
+      "PassWordHash",
+    ]) {
+      expect(isSecretNamed(name), name).toBe(true);
+    }
+    for (const name of [
+      "chat_id",
+      "owner_id",
+      "api_id",
+      "key_id",
+      "public_id",
+    ]) {
+      expect(isSecretNamed(name), name).toBe(false);
+    }
   });
 });
 

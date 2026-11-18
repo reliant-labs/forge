@@ -4371,9 +4371,9 @@ schema BrowserTelemetry:
         }
 
     `console_capture`, `replay`, `replay_sample_rate`, `page_views`,
-    `identify_user` and `analytics.mode` reach the browser through the
-    runtime config document (config.js), so one build promotes across
-    environments and each environment sets its own. `replay` is the
+    `identify_user`, `rpc_forensics` and `analytics.mode` reach the browser
+    through the runtime config document (config.js), so one build promotes
+    across environments and each environment sets its own. `replay` is the
     per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
@@ -4389,6 +4389,13 @@ schema BrowserTelemetry:
     # browser event, so browser and backend events join on one user. False
     # renders IDENTIFY_USER = "false" and the browser never asks.
     identify_user: bool = True
+    # Attach a redacted `forge.forensics` event to the browser span of a
+    # failed RPC: the request's shape, never its content (numbers, bools,
+    # enums and id-named strings as values; every other string, bytes, list
+    # and map as a length; `debug_redact` fields never), once per procedure
+    # and error code per page load. False renders RPC_FORENSICS = "false";
+    # the RPC spans themselves are recorded either way.
+    rpc_forensics: bool = True
     # Session replay for THIS frontend in THIS environment: OFF by default.
     # True renders OTEL_REPLAY = "true" into the frontend's runtime config
     # (config.js, so a promoted build needs no rebuild) and opts the env's

@@ -194,7 +194,7 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 	}
 
 	rows, err := c.Query(ctx, "SELECT Id, "+obsquery.ServerFingerprintSQL+", "+obsquery.ServerTitleSQL+", "+
-		obsquery.ServerCulpritSQL+", "+obsquery.MessageNormSQL("Body")+", "+obsquery.ServerCauseSQL+" FROM logs ORDER BY Id")
+		obsquery.ServerIssueCulpritSQL+", "+obsquery.MessageNormSQL("Body")+", "+obsquery.ServerCauseSQL+" FROM logs ORDER BY Id")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestServerFingerprintCorpusMatchesSQL(t *testing.T) {
 		for _, cmp := range []struct{ what, sql, gold string }{
 			{"fingerprint", fp, obsquery.ServerFingerprint(r)},
 			{"title", title, obsquery.ServerTitle(r)},
-			{"culprit", culprit, obsquery.ServerCulprit(r)},
+			{"culprit", culprit, obsquery.ServerIssueCulprit(r)},
 			{"norm(Body)", norm, obsquery.NormalizeMessage(r.Body)},
 			{"cause", cause, obsquery.ServerCause(r)},
 		} {

@@ -30,7 +30,7 @@ Three subpaths are deliberately OUTSIDE the barrel, each for its own reason:
 |---|---|
 | `/interceptors` | DOM-free transport layer, for React Native / non-react-dom renderers. |
 | `/mock-transport` | Dev-only. The fixture dispatch engine must be tree-shakeable out of a production bundle. |
-| `/telemetry` | Imports the HyperDX browser SDK (`@hyperdx/browser`, exact-pinned, ~600 KB with rrweb and the OTel web stack, loaded lazily). It is an OPTIONAL peer: the Next.js and Vite scaffolds install it; a React-Native frontend declares `@opentelemetry/api` alone and imports the barrel. |
+| `/telemetry` | Drives the HyperDX SDK (`@hyperdx/otel-web`, ~430 KB, loaded lazily as its own chunk) and records session replay with the runtime's own rrweb recorder (a second lazy chunk, ~180 KB, loaded only when replay runs). Both are exact-pinned DEPENDENCIES of the runtime: no app declares them. A React-Native frontend imports the barrel and bundles neither. |
 
 Nothing you write imports `/mock-transport` or `/telemetry` directly: forge generates
 the thin project files (`src/lib/mock-transport_gen.ts`, `src/lib/otel_gen.ts`)

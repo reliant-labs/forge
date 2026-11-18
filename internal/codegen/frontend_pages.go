@@ -550,7 +550,7 @@ type formFieldDef struct {
 // a bare "message"), so the form projection treats both sources
 // identically.
 func schemaFieldToFormFieldDef(d SchemaFieldDef) formFieldDef {
-	fd := MessageFieldDef{Name: d.Name, IsOptional: d.Optional}
+	fd := MessageFieldDef{Name: d.Name, IsOptional: d.Optional, RequestOption: d.RequestOption}
 	var enumFQ string
 	switch d.Kind {
 	case "message":
@@ -858,7 +858,7 @@ func attachListMeta(page *PageTemplateData, svc ServiceDef, entityName, listReq,
 					hasDescending = true
 					continue
 				}
-				if classifySkipField(f.Name) {
+				if classifySkipField(f.Name) || f.RequestOption {
 					continue
 				}
 				base := strings.TrimPrefix(f.ProtoType, "[]")

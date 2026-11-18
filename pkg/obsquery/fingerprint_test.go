@@ -328,12 +328,12 @@ func TestServerTitleAndCulprit(t *testing.T) {
 	if got := ServerTitle(r); got != "*pgconn.PgError: boom <n>" {
 		t.Errorf("title %q", got)
 	}
-	if got := ServerCulprit(r); got != "internal/x/x.go in pkg.F" {
+	if got := ServerIssueCulprit(r); got != "internal/x/x.go in pkg.F" {
 		t.Errorf("culprit %q", got)
 	}
 	bare := ServerErrorRecord{ScopeName: "scope", Body: "x"}
-	if ServerTitle(bare) != "x" || ServerCulprit(bare) != "scope" {
-		t.Errorf("bare record: %q / %q", ServerTitle(bare), ServerCulprit(bare))
+	if ServerTitle(bare) != "x" || ServerIssueCulprit(bare) != "scope" {
+		t.Errorf("bare record: %q / %q", ServerTitle(bare), ServerIssueCulprit(bare))
 	}
 }
 
@@ -345,7 +345,7 @@ func TestServerCulpritOfARecordForgeLoggedIsTheProcedure(t *testing.T) {
 	const procedure = "/customers.v1.CustomerService/ArchiveCustomer"
 	deadline := rec("api", interceptor, "rpc failed", LogKeyExceptionType, "context.deadlineExceededError",
 		LogKeyProcedure, procedure, LogKeyCodeFile, "/go/pkg/mod/github.com/reliant-labs/forge@v1.6.0/pkg/observe/interceptors.go")
-	if got := ServerCulprit(deadline); got != procedure {
+	if got := ServerIssueCulprit(deadline); got != procedure {
 		t.Errorf("culprit = %q, want the procedure %q", got, procedure)
 	}
 	if !deadline.LoggedByForge() {
@@ -354,12 +354,12 @@ func TestServerCulpritOfARecordForgeLoggedIsTheProcedure(t *testing.T) {
 
 	// Without a procedure there is nothing better to show.
 	noProc := rec("api", interceptor, "rpc failed")
-	if got := ServerCulprit(noProc); got != "internal/x/x.go in "+interceptor {
+	if got := ServerIssueCulprit(noProc); got != "internal/x/x.go in "+interceptor {
 		t.Errorf("culprit without a procedure = %q", got)
 	}
 	// An application frame keeps its location, procedure or not.
 	app := rec("api", "github.com/acme/app/internal/handlers/customers.(*Service).ArchiveCustomer", "rpc failed", LogKeyProcedure, procedure)
-	if got := ServerCulprit(app); got != "internal/x/x.go in github.com/acme/app/internal/handlers/customers.(*Service).ArchiveCustomer" {
+	if got := ServerIssueCulprit(app); got != "internal/x/x.go in github.com/acme/app/internal/handlers/customers.(*Service).ArchiveCustomer" {
 		t.Errorf("application culprit = %q", got)
 	}
 
@@ -369,8 +369,8 @@ func TestServerCulpritOfARecordForgeLoggedIsTheProcedure(t *testing.T) {
 	if ServerFingerprint(deadline) != ServerFingerprint(moved) {
 		t.Error("the fingerprint must not read the culprit")
 	}
-	if !strings.Contains(ServerCulpritSQL, "startsWith(") || !strings.Contains(ServerCulpritSQL, ForgeLibraryFunctionPrefix) {
-		t.Errorf("ServerCulpritSQL does not spell the forge-library rule: %s", ServerCulpritSQL)
+	if !strings.Contains(ServerIssueCulpritSQL, "startsWith(") || !strings.Contains(ServerIssueCulpritSQL, ForgeLibraryFunctionPrefix) {
+		t.Errorf("ServerIssueCulpritSQL does not spell the forge-library rule: %s", ServerIssueCulpritSQL)
 	}
 	if strings.Contains(ServerFingerprintSQL, ForgeLibraryFunctionPrefix) {
 		t.Error("ServerFingerprintSQL must not read the forge-library rule")

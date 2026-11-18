@@ -46,8 +46,9 @@ func Users(in Input) dashspec.Dashboard {
 		DefaultCompare: dashspec.ComparePeriod,
 	}
 	newRule := fmt.Sprintf("Users whose first auth_signed_up is in the range; where no sign-up was reported in the %d days before its end, "+
-		"the users first seen in the range, except those within %d days of the earliest event retained (the data begins there; they count as returning). "+
-		"No figure when no part of the range is decided. The Authentication section says which rule applies, and from when.",
+		"the users first seen in the range, except those within %d days of the earliest event retained (they count as returning). "+
+		"\"Since\" a day: sign-ups are reported only from then, so an earlier one counts as returning. "+
+		"No figure when no part of the range is decided. Authentication says which rule applies, and from when.",
 		obsquery.NewUsersWindowDays, obsquery.FirstSeenGraceDays)
 
 	dauWauMau := chart("glance", "dau-wau-mau", "Daily, weekly and monthly active users",
@@ -55,7 +56,7 @@ func Users(in Input) dashspec.Dashboard {
 		rollingUsers(30, `uniqExactIf(`+user+`, offset = 0) AS "Daily active",
        uniqExactIf(`+user+`, offset < 7) AS "Weekly active",
        uniqExact(`+user+`) AS "Monthly active"`),
-		&dashspec.Display{Style: dashspec.StyleLine, Colors: &dashspec.SeriesColors{"Daily active": colorUsers, "Weekly active": colorWeekly, "Monthly active": colorMonthly}}, 18, 8)
+		&dashspec.Display{Style: dashspec.StyleLine, TopN: 3, Colors: &dashspec.SeriesColors{"Daily active": colorUsers, "Weekly active": colorWeekly, "Monthly active": colorMonthly}}, 18, 8)
 	dauWauMau.MinStep = "1d"
 	lifecycle := chart("engagement", "lifecycle-weekly", "Lifecycle per week",
 		"Each ISO week's active users in exactly one class: new (their sign-up week), retained (also active the week before), "+
@@ -63,6 +64,7 @@ func Users(in Input) dashspec.Dashboard {
 			"The current week counts no churn until it is over.",
 		lifecycleSQL, bars(true, dashspec.SeriesColors{"New": colorNew, "Retained": colorUsers, "Resurrected": colorWeekly, "Churned": colorDanger}), 24, 9)
 	lifecycle.MinStep = "7d"
+	lifecycle.Display.TopN = 4
 	cohorts := chart("engagement", "retention-cohorts", "Weekly retention by sign-up cohort",
 		fmt.Sprintf("One row per weekly cohort of new users (by the Monday, UTC, of their sign-up, or first event when sign-ups are not reported), "+
 			"the %d weeks before the end of the range, with its size. Each cell is the share of the cohort active in week N after it (W0 is the sign-up week, "+
@@ -88,9 +90,9 @@ func Users(in Input) dashspec.Dashboard {
 			accountsSQL, accountsTrendSQL, dashspec.UnitCount, colorNeutral)),
 		exact(figure("glance", "active", "Active users", "Distinct users with any signed-in product event in the range (a sign-in, the daily session heartbeat, a CRUD write, an app event). The trend is each UTC day's.",
 			activeSQL, activeTrendSQL, dashspec.UnitCount, colorUsers)),
-		exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)),
-		exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it. No figure when the range "+
-			"decides no new users (New's description says when).", returningSQL, "", dashspec.UnitCount, colorWeekly)),
+		sinceSignups(exact(figure("glance", "new", "New users", newRule+" The trend is each UTC day's.", newSQL, newTrendSQL, dashspec.UnitCount, colorNew)), from),
+		sinceSignups(exact(figure("glance", "returning", "Returning users", "Active users in the range who are not new in it. No figure when the range "+
+			"decides no new users, and \"since\" a day when New is counted only from it (New's description says when).", returningSQL, "", dashspec.UnitCount, colorWeekly)), from),
 		dauWauMau,
 		figure("glance", "stickiness", "Stickiness (DAU / MAU)",
 			"The average daily active users over the average 30-day active users across the range's days: how habitual the product is. DAU over MAU, not Statsig's rolling stickiness.",
@@ -108,17 +110,21 @@ func Users(in Input) dashspec.Dashboard {
 		signupsByMethod,
 		signinsByMethod,
 		verified,
-		table("auth", "signups-by-provider", "Sign-ups by provider",
-			"The range's sign-ups by auth provider, and the social provider of a social sign-up (forge/google).", signupsByProviderSQL, 6, 8),
+		ranking("auth", "signups-by-provider", "Sign-ups by provider",
+			"The range's sign-ups by auth provider, and the social provider of a social sign-up (forge/google).", signupsByProviderSQL,
+			dashspec.Display{Color: colorSignups}, 6, 8),
 		table("auth", "auth-sources", "Where auth events come from",
 			"The clients that reported auth events in the range (backend, web, …). A last row says when the environment reports no sign-ups, so new users are the ones first seen, "+
-				"and from when, when that is inside the range: before then a user first seen may be returning.",
+				"and from when, when that is inside the range: before then a user first seen may be returning. It also says when sign-ups are reported only from inside the range: "+
+				"a user who signed up before then counts as returning.",
 			authSourcesSQL, 12, 8),
 
 		table("people", "most-active-users", "Most active users",
 			"Signed-in users by product events in the range, with the days they were active and when they were last seen. `forge obs sessions <env> --user <id>` lists a user's sessions.",
 			mostActiveUsersSQL, 24, 9),
 	}
+	d.Panels = withGood(d.Panels, map[string]dashspec.Direction{
+		"accounts": up, "active": up, "new": up, "returning": up, "stickiness": up, "verified-share": up})
 	return in.withActivity(d)
 }
 
@@ -198,18 +204,24 @@ FROM (
 GROUP BY days ORDER BY days`, active, lastDays(l28Days, to), envScope)
 )
 
+// weeklyUsersCTEs are each active user's ISO weeks from the week before the
+// range's first (u: EnvId, UserId, wks) and each new user's sign-up week (s:
+// EnvId, UserId, sw), from the shared new-user source. The lifecycle and the
+// Overview's new-and-returning weeks read the same two, so they agree.
+var weeklyUsersCTEs = `u AS (
+  SELECT EnvId, UserId, groupUniqArray(toMonday(Timestamp)) AS wks
+  FROM product_events
+  WHERE ` + active + ` AND ` + envScope + ` AND Timestamp >= toMonday(` + from + `) - INTERVAL 7 DAY AND Timestamp < ` + to + `
+  GROUP BY EnvId, UserId),
+s AS (SELECT EnvId, UserId, toMonday(NewAt) AS sw FROM (` + newUsers(to) + `))`
+
 // lifecycleSQL classes each ISO week's active users: new (their NewAt week),
 // retained (active the week before), resurrected (otherwise); and counts the
 // users active a week who were not the week after (churned in that later
 // week), negative so the bars hang below zero. A week is drawn when it starts
 // in the range; the current week's churn waits for the week to end.
 var lifecycleSQL = `WITH
-u AS (
-  SELECT EnvId, UserId, groupUniqArray(toMonday(Timestamp)) AS wks
-  FROM product_events
-  WHERE ` + active + ` AND ` + envScope + ` AND Timestamp >= toMonday(` + from + `) - INTERVAL 7 DAY AND Timestamp < ` + to + `
-  GROUP BY EnvId, UserId),
-s AS (SELECT EnvId, UserId, toMonday(NewAt) AS sw FROM (` + newUsers(to) + `))
+` + weeklyUsersCTEs + `
 SELECT week, countIf(state = 'new') AS "New", countIf(state = 'retained') AS "Retained",
        countIf(state = 'resurrected') AS "Resurrected", -countIf(state = 'churned') AS "Churned"
 FROM (
@@ -226,22 +238,27 @@ GROUP BY week ORDER BY week`
 // retentionCohortsSQL is one row per weekly cohort of new users, named by its
 // week and size, with the share of it active in each week W0..W11 after (a
 // fraction; the panel's unit is percent), NULL while that week is to come.
-func retentionCohortsSQL() string {
-	var weeks strings.Builder
-	for w := 0; w < cohortWeeks; w++ {
+func retentionCohortsSQL() string { return retentionGridSQL(cohortWeeks, cohortWeeks) }
+
+// retentionGridSQL is retentionCohortsSQL's grid for the last cohorts weekly
+// cohorts before the end of the range, and their first weeks weeks (W0 ..).
+// A cohort's row is the same whichever grid it is in.
+func retentionGridSQL(cohorts, weeks int) string {
+	var cols strings.Builder
+	for w := 0; w < weeks; w++ {
 		// A week is shown once it has begun inside the range: its Monday is
 		// before the range's (exclusive) end. toMonday(end) would also show
 		// the week starting AT end when the range ends on a Monday midnight.
-		fmt.Fprintf(&weeks, ",\n       if(toDateTime(cohort + INTERVAL %d WEEK) < %s, round(countIf(has(weeks, cohort + INTERVAL %d WEEK)) / count(), 4), NULL) AS \"W%d\"", w, to, w, w)
+		fmt.Fprintf(&cols, ",\n       if(toDateTime(cohort + INTERVAL %d WEEK) < %s, round(countIf(has(weeks, cohort + INTERVAL %d WEEK)) / count(), 4), NULL) AS \"W%d\"", w, to, w, w)
 	}
-	return `SELECT concat(toString(cohort), ' · ', toString(count()), if(count() = 1, ' user', ' users')) AS "Cohort (week of)"` + weeks.String() + `
+	return `SELECT concat(toString(cohort), ' · ', toString(count()), if(count() = 1, ' user', ' users')) AS "Cohort (week of)"` + cols.String() + `
 FROM (
     SELECT c.cohort AS cohort, a.weeks AS weeks
     FROM (SELECT EnvId, UserId, toMonday(NewAt) AS cohort FROM (` + newUsers(to) + `)
-          WHERE NewAt >= toMonday(` + to + `) - INTERVAL ` + fmt.Sprint(cohortWeeks-1) + ` WEEK) AS c
+          WHERE NewAt >= toMonday(` + to + `) - INTERVAL ` + fmt.Sprint(cohorts-1) + ` WEEK) AS c
     INNER JOIN (SELECT EnvId, UserId, groupUniqArray(toMonday(Timestamp)) AS weeks
                 FROM product_events
-                WHERE ` + active + ` AND ` + envScope + ` AND Timestamp >= toMonday(` + to + `) - INTERVAL ` + fmt.Sprint(cohortWeeks-1) + ` WEEK AND Timestamp < ` + to + `
+                WHERE ` + active + ` AND ` + envScope + ` AND Timestamp >= toMonday(` + to + `) - INTERVAL ` + fmt.Sprint(cohorts-1) + ` WEEK AND Timestamp < ` + to + `
                 GROUP BY EnvId, UserId) AS a
       ON a.EnvId = c.EnvId AND a.UserId = c.UserId)
 GROUP BY cohort ORDER BY cohort`
@@ -300,7 +317,12 @@ FROM (
                'sign-ups not reported: new users are the users first seen'), 0, 0, 0, 0
   FROM (SELECT count() AS n, (SELECT max(DecidedFrom) FROM (` + newDecided(to) + `)) AS decided
         FROM product_events WHERE EventName = 'auth_signed_up' AND ` + envScope + ` AND ` + lastDays(obsquery.NewUsersWindowDays, to) + `)
-  WHERE n = 0)
+  WHERE n = 0
+  UNION ALL
+  SELECT 1, concat('sign-ups reported from ', formatDateTime(decided, '%Y-%m-%d %H:%i', 'UTC'),
+                   ' UTC, the earliest auth_signed_up retained: new users are the users who signed up since then; a user who signed up before then has no sign-up and counts as returning'), 0, 0, 0, 0
+  FROM (SELECT ` + signupsFrom(to) + ` AS decided)
+  WHERE decided > ` + from + `)
 ORDER BY o, client`
 
 	mostActiveUsersSQL = `SELECT UserId AS "User", count() AS "Events",

@@ -330,14 +330,14 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 // before forge#2235 may name forge's own interceptor as its culprit
 // ("…/pkg/observe/interceptors.go in …(*loggingInterceptor).log"), which says
 // nothing about what failed. When its newest event is a record forge logged
-// for an rpc, the rpc's procedure is shown instead, as obsquery.ServerCulprit
+// for an rpc, the rpc's procedure is shown instead, as obsquery.ServerIssueCulprit
 // now spells it. Display only: the issue and its grouping are unchanged.
 func displayCulprit(culprit string, latest *obsbackend.IssueEvent) string {
 	if latest == nil || !obsquery.ForgeLibraryCulprit(culprit) {
 		return culprit
 	}
 	if r := (obsquery.ServerErrorRecord{Attributes: latest.Attributes}); r.Attributes[obsquery.LogKeyCodeFunction] != "" && r.LoggedByForge() {
-		return obsquery.ServerCulprit(r)
+		return obsquery.ServerIssueCulprit(r)
 	}
 	return culprit
 }

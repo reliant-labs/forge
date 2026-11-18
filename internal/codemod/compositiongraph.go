@@ -466,6 +466,21 @@ type cgNode struct {
 	keys         []string
 	values       map[string]string // translated
 	conventional bool
+	nils         []string // keys whose value is a bare nil the author wrote
+}
+
+// trailingComment is the text of the line comment after kv on its line
+// (`Key: nil, // optional — no provider` → "optional — no provider").
+func trailingComment(f *cgFile, kv *ast.KeyValueExpr) string {
+	line := f.fset.Position(kv.End()).Line
+	for _, cg := range f.ast.Comments {
+		for _, c := range cg.List {
+			if c.Slash >= kv.End() && f.fset.Position(c.Slash).Line == line && strings.HasPrefix(c.Text, "//") {
+				return strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+			}
+		}
+	}
+	return ""
 }
 
 // planCompose translates NewComponents into graph constructor methods.
@@ -529,6 +544,14 @@ func (p *cgPlan) planCompose() {
 	if err != nil {
 		p.block(f, token.NoPos, "the translated compose.go does not format (%v) — convert it by hand", err)
 		return
+	}
+	// A nil the author wrote is kept — "absent on purpose" is theirs to
+	// say — but the graph never revisits a value, so if a provider of that
+	// type now exists, this nil is what keeps it switched off. Say so.
+	for _, n := range nodes {
+		for _, k := range n.nils {
+			p.notes = append(p.notes, fmt.Sprintf("%s: new%s keeps `%s: nil` from NewComponents (a nil you wrote, not forge's \"no provider\" placeholder) and the graph never touches a value: if the graph has a provider for %s.Deps.%s now (an authenticator, an auditor, …), this nil keeps it switched off — delete the key and `forge generate` wires it", f.rel, n.field, k, n.alias, k))
+		}
 	}
 	p.gone[f.rel] = true
 	p.writes[f.rel] = src
@@ -727,13 +750,26 @@ func (p *cgPlan) ctorNode(f *cgFile, e ast.Expr, infra, comp string, producer ma
 		if key == nil {
 			continue
 		}
+		src := exprString(f, kv.Value)
+		// A placeholder forge wrote (`nil, // optional — no provider`) is not
+		// a value: drop the key, and the graph's reconcile resolves it again
+		// on the next generate — to the provider when one exists, else to
+		// its own placeholder. Carrying the nil over would keep an
+		// existing provider switched off, an auth gate included (#2276).
+		// It leaves the node conventional: a re-scaffolded compose.go
+		// resolves every key afresh too.
+		if codegen.LegacyComposePlaceholder(src, trailingComment(f, kv)) {
+			continue
+		}
 		v, ok := p.translate(f, kv.Value, infra, comp, producer)
 		if !ok {
 			continue
 		}
 		n.keys = append(n.keys, key.Name)
 		n.values[key.Name] = v
-		src := exprString(f, kv.Value)
+		if src == "nil" {
+			n.nils = append(n.nils, key.Name)
+		}
 		if !(key.Name == "Logger" && src == infra+".Log") && !(key.Name == "Config" && src == infra+".Cfg") {
 			n.conventional = false
 		}

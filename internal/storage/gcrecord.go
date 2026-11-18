@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,11 @@ type GCResult struct {
 	// safely could — but a budget that is not being held, so it is reported
 	// on every pass until the fill slows.
 	OverBudget []string `json:"over_budget,omitempty"`
+	// Skipped names each layer that deliberately did nothing this pass, with
+	// why ("registry k3d-x-registry: cluster k3d-y is not running, …"). A
+	// skip deletes nothing, so it is not a failure; it is recorded so doctor
+	// can still say retention is waiting on something.
+	Skipped []string `json:"skipped,omitempty"`
 	// GoCaches is what each Go-format cache trim in the pass measured and
 	// did (Runner.OnGoCacheTrim). Set by the caller that ran the pass.
 	GoCaches []GoCacheTrim `json:"go_caches,omitempty"`
@@ -63,6 +69,16 @@ type CutOffError struct{ Err error }
 
 func (e *CutOffError) Error() string { return "cut off: " + e.Err.Error() }
 func (e *CutOffError) Unwrap() error { return e.Err }
+
+// SkippedError marks a layer that chose to delete nothing this pass because
+// a precondition is absent for an ordinary reason — a cluster that protects
+// a registry is stopped, so its image references cannot be listed. Deleting
+// nothing is already the safe outcome; NewGCResult records it as a skip, not
+// a failure, so a laptop whose other project's cluster is stopped is not told
+// every day that its cleanup "failed".
+type SkippedError struct{ Reason string }
+
+func (e *SkippedError) Error() string { return "skipped: " + e.Reason }
 
 // onlyContextErrors reports whether every leaf of err is a deadline or
 // cancellation, i.e. the layer ended because it ran out of time and for no
@@ -129,7 +145,10 @@ func NewGCResult(at time.Time, err error) GCResult {
 		var ub *BudgetUnreachableError
 		var bo *BackedOffError
 		var co *CutOffError
+		var sk *SkippedError
 		switch {
+		case errors.As(layer.Err, &sk):
+			r.Skipped = append(r.Skipped, layer.Layer+": "+sk.Reason)
 		case errors.As(layer.Err, &ub):
 			r.OverBudget = append(r.OverBudget, ub.Error())
 		case errors.As(layer.Err, &bo):
@@ -161,6 +180,10 @@ func NewGCResult(at time.Time, err error) GCResult {
 			r.OverBudget = append(r.OverBudget, ub.Error())
 			return
 		}
+		if sk := (*SkippedError)(nil); errors.As(e, &sk) {
+			r.Skipped = append(r.Skipped, sk.Reason)
+			return
+		}
 		if bo := (*BackedOffError)(nil); errors.As(e, &bo) {
 			if !backed["pass"] {
 				backed["pass"] = true
@@ -183,6 +206,7 @@ func NewGCResult(at time.Time, err error) GCResult {
 	sort.Strings(r.FailedLayers)
 	sort.Strings(r.CutOffLayers)
 	sort.Strings(r.BackedOffLayers)
+	sort.Strings(r.Skipped)
 	r.OK = !failed
 	if failed {
 		r.Error = strings.TrimSpace(err.Error())
@@ -195,6 +219,9 @@ func NewGCResult(at time.Time, err error) GCResult {
 // Summary is one line naming what failed, for `env up` and `doctor`.
 func (r GCResult) Summary() string {
 	s := r.outcome()
+	if len(r.Skipped) > 0 {
+		s += "; skipped " + strings.Join(r.Skipped, "; ")
+	}
 	if len(r.OverBudget) > 0 {
 		s += fmt.Sprintf("; %d cache(s) over a budget no trim can reach — filling faster than entries age past the safety floor", len(r.OverBudget))
 	}
@@ -286,6 +313,67 @@ func FullGCProblem(p Policy, last GCResult, ok bool, now time.Time) string {
 		return fmt.Sprintf("the last full storage GC (%s ago) %s", ageText(now.Sub(last.At)), last.Summary())
 	case now.Sub(last.At) > FullGCStaleAfter:
 		return fmt.Sprintf("the last full storage GC was %s ago; the daily pass is not running", ageText(now.Sub(last.At)))
+	}
+	return ""
+}
+
+// RegistryGCProblem is FullGCProblem for ONE registry: why retention of that
+// container is not known to be working, or "" if it is or if the container is
+// not registered at all (nothing would reclaim it, so there is nothing to
+// report). `forge env up` asks it about the registries its env uses, and only
+// those: the policy and the full-pass record are machine-wide, and a warning
+// about another project's registry, printed by a project that never touches
+// it, reads as a fault in the project just brought up.
+//
+// A failure in some other layer of the pass (logs, a builder, a different
+// registry) is not this registry's problem; doctor reports the whole pass.
+func RegistryGCProblem(p Policy, container string, last GCResult, ok bool, now time.Time) string {
+	if !p.hasRegistry(container) {
+		return ""
+	}
+	layer := "registry " + container
+	switch {
+	case !ok:
+		return fmt.Sprintf("no cleanup of registry %s has completed yet", container)
+	case !last.OK && (len(last.FailedLayers) == 0 || slices.Contains(last.FailedLayers, layer)):
+		s := fmt.Sprintf("the last cleanup of registry %s (%s ago) failed", container, ageText(now.Sub(last.At)))
+		if why := last.LayerError(layer); why != "" {
+			s += ": " + why
+		}
+		return s
+	case now.Sub(last.At) > FullGCStaleAfter:
+		return fmt.Sprintf("the last cleanup of registry %s was %s ago; the daily pass is not running", container, ageText(now.Sub(last.At)))
+	}
+	return ""
+}
+
+func (p Policy) hasRegistry(container string) bool {
+	for _, r := range p.Registries {
+		if r.Container == container {
+			return true
+		}
+	}
+	return false
+}
+
+// layerErrorMax bounds the reason LayerError returns: it is quoted on one
+// line of `env up` output, and kubectl or docker stderr can run to pages.
+const layerErrorMax = 200
+
+// LayerError is the first line of the recorded error for one failed layer
+// ("registry k3d-x-registry"), without the layer prefix, or "" when the record
+// does not carry one. Errors are recorded joined, one "<layer>: <error>" per
+// line, so the layer's own line is the one that starts with its name.
+func (r GCResult) LayerError(layer string) string {
+	prefix := layer + ": "
+	for _, line := range strings.Split(r.Error, "\n") {
+		if rest, found := strings.CutPrefix(strings.TrimSpace(line), prefix); found {
+			rest = strings.TrimSpace(rest)
+			if runes := []rune(rest); len(runes) > layerErrorMax {
+				rest = string(runes[:layerErrorMax]) + "…"
+			}
+			return rest
+		}
 	}
 	return ""
 }

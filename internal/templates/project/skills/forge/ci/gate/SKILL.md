@@ -1,6 +1,6 @@
 ---
 name: ci/gate
-description: The local CI gate — `task ci` / `task ci:checks` / `forge ci gate`. What each lane runs, the four rules (every failure reported, a skip is not a pass and needs CI_SKIP, pinned tools, the job summary), how checks run concurrently (after, mutates_tree, heavy host slots, --jobs), the verdict cache (`PASS (cached <sha>)`), affected-package unit tests on a branch (CI_FULL), CI_ONLY / CI_REPORT / CI_LOG_DIR, and the full ci.gate.extra_checks schema. Use when a CI job is red and you want it locally, when `task ci` reports SKIPPED, before adding a job or check to CI, or when moving a hand-written gate script onto forge.
+description: The local CI gate — `task ci` / `task ci:checks` / `forge ci gate`. What each lane runs, the four rules (every failure reported, a skip is not a pass and needs CI_SKIP, pinned tools, the job summary), how checks run concurrently (after, mutates_tree, heavy host slots, --jobs), the verdict cache (`PASS (cached <sha>)`), affected-package unit tests on a branch (CI_FULL), CI_ONLY / CI_REPORT / CI_LOG_DIR, tiers per CI event (--tier pr|queue|main|full, --event) and the forge.ci.gate/v1 --json document a check run reads (per-check status, timings, findings), and the full ci.gate.extra_checks schema. Use when a CI job is red and you want it locally, when `task ci` reports SKIPPED, before adding a job or check to CI, or when moving a hand-written gate script onto forge.
 ---
 
 # The local gate
@@ -180,9 +180,81 @@ runs the whole suite: affected mode is the gate's, for a branch.
 | `CI_SKIP=a,b` / `--skip` | run but list as SKIPPED (allowed). An unknown name in either is an error |
 | `CI_REPORT=path` / `--report` | also write the Markdown table to a file (for a PR body) |
 | `forge ci gate --list` | every check with its lane, group, `heavy`, `mutates-tree`, `after` |
+| `--tier` / `--event` | run as one CI event's tier (below) |
+| `--json` | a `forge.ci.gate/v1` document on stdout (below) |
 
 The summary ends with `head: <sha>` (`+ uncommitted changes` when dirty), so a
 pasted table names the commit it judged.
+
+## Tiers: the gate as one CI event runs it
+
+A CI system other than the scaffolded `ci.yml` (a Reliant workflow on GitHub
+events, posting check runs) drives the gate with `--tier`, or with `--event`,
+which picks the tier from a GitHub event name (`github.event_name`, or a Reliant
+trigger's `pull_request.synchronize`: the action is ignored). The tiers mirror
+what `ci.yml` runs per event:
+
+| Tier              | Event                           | Lanes                     | Unit tests                                    |
+| ----------------- | ------------------------------- | ------------------------- | --------------------------------------------- |
+| `pr`              | `pull_request`                  | checks, test, integration | affected mode on a branch                     |
+| `queue` (`merge`) | `merge_group`                   | checks, test, integration | affected mode; pass `--base <group base sha>` |
+| `main`            | `push`                          | checks, test              | whole suite; integration is `DEFERRED`        |
+| `full`            | `schedule`, `workflow_dispatch` | checks, test, integration | whole suite: the release or nightly gate      |
+
+A requested built-in lane the tier does not run is listed `DEFERRED` with the
+tiers that do run it, and does not fail the gate. A lane of your own (`docker`)
+runs whenever you name it. The lane argument still narrows: one check run per
+lane is `forge ci gate test --tier pr --json`. Without `--tier`, nothing changes.
+
+## `--json`: the result for a check run
+
+`forge ci gate --json` prints one `forge.ci.gate/v1` document on stdout; the
+progress lines and the table go to stderr, and the exit status is unchanged. It
+is printed even when the gate could not run (`verdict: error`, no checks), so a
+check run always has a document to read. Field names and status values are
+stable; new fields may be added.
+
+```json
+{
+  "schema": "forge.ci.gate/v1",
+  "ok": false,
+  "exit_code": 1,
+  "error": "the CI gate failed (see the summary above)",
+  "verdict": "fail",
+  "lane": "all",
+  "tier": "pr",
+  "head": "1a2b3c4",
+  "dirty": false,
+  "wall_ms": 95000,
+  "counts": { "pass": 2, "cached": 1, "fail": 2, "skip": 1, "waived": 1, "deferred": 1, "na": 1 },
+  "checks": [
+    {
+      "name": "golangci-lint", "lane": "checks", "status": "fail", "blocking": true,
+      "duration_ms": 41200, "queued_ms": 3000, "cached": false,
+      "note": "exit status 1; log: tmp/ci/all/golangci-lint.log", "log": "tmp/ci/all/golangci-lint.log",
+      "tail": "…",
+      "findings": [
+        { "path": "internal/orders/orders.go", "line": 23, "column": 9, "level": "error",
+          "message": "Error return value of `rows.Close` is not checked (errcheck)" }
+      ]
+    }
+  ]
+}
+```
+
+- `status`: `pass` (ran, or `cached` with `cached_at`), `fail`, `skip` (could
+  not run: a skip is not a pass), `waived` (`CI_SKIP`), `deferred` (the tier
+  leaves it to another), `na` (nothing to look at). `blocking` is true for
+  `fail` and `skip`: the rows that make the gate red.
+- `queued_ms` is how long the check, its dependencies done, waited for a heavy
+  slot or the job cap; `duration_ms` is how long it ran.
+- `findings` (always a list) are read from a failed check's whole log: go test
+  failures, plain or `-json` (the test's log line, placed in its package; a test
+  with no log line is a finding on the package directory with `line: 0`),
+  `file:line[:col]: message` lines (go build, go vet, golangci-lint, buf) whose
+  file exists in the project, and tsc's `file(line,col): error …`. Paths are
+  project-relative; the list is sorted and de-duplicated, at most 200 per check
+  (`findings_omitted` counts the rest).
 
 ## Why the workflow has few jobs
 

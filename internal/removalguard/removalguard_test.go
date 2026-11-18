@@ -1715,6 +1715,9 @@ var removals = []removal{
 					"web-runtime/src/node-otlp.ts",
 					"web-runtime/src/node-otlp.test.ts",
 					"web-runtime/src/telemetry.test.ts",
+					// The replay recorder sends its session-replay logs as OTLP/JSON too.
+					"web-runtime/src/replay-recorder.ts",
+					"web-runtime/src/replay-recorder.test.ts",
 					"web-runtime/scripts/browser-telemetry-smoke.mjs",
 					"pkg/deploy/observability_line_resource_test.go",
 					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.

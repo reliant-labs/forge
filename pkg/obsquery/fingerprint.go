@@ -276,13 +276,18 @@ const ForgeLibraryFunctionPrefix = "github.com/reliant-labs/forge/pkg/"
 const sqlLoggedByForge = `(startsWith(` + sqlFunction + `, '` + ForgeLibraryFunctionPrefix + `') AND LogAttributes['procedure'] != '')`
 
 // ServerCulpritSQL is where an issue was logged: "file in function", or the
-// function alone (ScopeName for a record with no source location). A record
-// forge's own libraries logged for an rpc shows the rpc's procedure instead:
+// function alone (ScopeName for a record with no source location).
+//
+// Deprecated: use ServerIssueCulpritSQL, which names the rpc rather than
+// forge's interceptor for a record forge logged (forge#2235).
+const ServerCulpritSQL = `if(LogAttributes['code.file.path'] != '', concat(LogAttributes['code.file.path'], ' in ', ` + sqlFunction + `), ` + sqlFunction + `)`
+
+// ServerIssueCulpritSQL is an issue's culprit: ServerCulpritSQL, except that a
+// record forge's own libraries logged for an rpc shows the rpc's procedure:
 // the interceptor is where every such record is logged, the procedure is what
 // failed. Display only: the fingerprints still read the function, so no
 // issue regroups.
-const ServerCulpritSQL = `if(` + sqlLoggedByForge + `, LogAttributes['procedure'], ` +
-	`if(LogAttributes['code.file.path'] != '', concat(LogAttributes['code.file.path'], ' in ', ` + sqlFunction + `), ` + sqlFunction + `))`
+const ServerIssueCulpritSQL = `if(` + sqlLoggedByForge + `, LogAttributes['procedure'], ` + ServerCulpritSQL + `)`
 
 // ServerErrorRecord is the part of an otel_logs row sfp1 reads.
 type ServerErrorRecord struct {
@@ -366,11 +371,18 @@ func ForgeLibraryCulprit(culprit string) bool {
 	return strings.HasPrefix(function, ForgeLibraryFunctionPrefix)
 }
 
-// ServerCulprit is the Go reference for ServerCulpritSQL.
-func ServerCulprit(r ServerErrorRecord) string {
+// ServerIssueCulprit is the Go reference for ServerIssueCulpritSQL.
+func ServerIssueCulprit(r ServerErrorRecord) string {
 	if r.LoggedByForge() {
 		return r.Attributes[LogKeyProcedure]
 	}
+	return ServerCulprit(r)
+}
+
+// ServerCulprit is the Go reference for ServerCulpritSQL.
+//
+// Deprecated: use ServerIssueCulprit.
+func ServerCulprit(r ServerErrorRecord) string {
 	if file := r.Attributes[LogKeyCodeFile]; file != "" {
 		return file + " in " + r.function()
 	}

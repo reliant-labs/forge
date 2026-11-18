@@ -28,7 +28,7 @@ What's enabled is driven by `forge.yaml`:
 
 ```yaml
 ci:
-  provider: github # only "github" today
+  provider: github # or reliant: Reliant workflows posting checks — `ci/reliant`
   # No go_version key: every setup-go step pins `go-version-file: go.mod`,
   # so CI's Go version follows go.mod. Set it there.
   lint: # zero-value = "all enabled"
@@ -97,12 +97,12 @@ and no registry secret. forge authenticates it with the same
 `forge env build --push` / `forge env deploy` log themselves in before their
 first push. So the scaffolded workflows differ by env, not by project:
 
-| Workflow                               | Login step                                                                                                              | Credential                  |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `release.yml` (hosted by construction) | none                                                                                                                    | `FORGE_CONTROL_PLANE_TOKEN` |
+| Workflow | Login step | Credential |
+|---|---|---|
+| `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
 | `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, cluster build env  | `forge registry login <env> --username … --password-stdin`                                                              | `GITHUB_TOKEN` or your own  |
-| `deploy.yml` (non-hosted envs only)    | same as above                                                                                                           | `GITHUB_TOKEN` or your own  |
+| `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
+| `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
 
 Two things follow, and both are worth knowing before editing a workflow:
 
@@ -167,12 +167,12 @@ CI is a thin wrapper around a gate you run on your own machine. The workflow
 prepares an environment and calls ONE task per job, so the same command gives the
 same verdict locally:
 
-| Command                 | What it runs                                                                                            | CI job                       |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `task ci`               | `ci:checks`, then `test`, then `test:integration`, one summary table                                    | none: run this instead of CI |
-| `task ci:checks`        | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks`                     |
-| `task test`             | unit tests + every frontend's                                                                           | `test`                       |
-| `task test:integration` | the `integration`-tagged suite                                                                          | `integration-test`           |
+| Command | What it runs | CI job |
+|---|---|---|
+| `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
+| `task ci:checks` | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
+| `task test` | unit tests + every frontend's | `test` |
+| `task test:integration` | the `integration`-tagged suite | `integration-test` |
 
 Every check runs even after one fails; a check that could not run is `SKIPPED`
 and fails the gate unless named in `CI_SKIP`; tools run at the versions CI pins.
@@ -216,6 +216,12 @@ exposes, the right answer is almost always one of:
 3. Add a parallel Tier-2 workflow file. Keep the file name distinct
    from any Tier-1 name so forge never tries to regenerate it.
 
+## CI on Reliant instead of Actions
+
+`ci.provider: reliant` writes `.reliant/workflows/ci.yaml` (and an opt-in
+review) instead: GitHub events run the gate on a Reliant machine, posting a
+check run as the Reliant App. **Load `ci/reliant`**.
+
 ## Extending CI
 
 Adding a check (`ci.gate.extra_checks`), a job that needs its own runner, or a
@@ -228,14 +234,14 @@ new job; see `ci/gate` for why.
 `forge ci gate` runs these as rows of the gate (you rarely call them directly),
 and each is runnable on its own:
 
-| Command                        | What it does                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `forge ci verify-generated`    | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing                                                     |
-| `forge ci validate-kcl`        | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
-| `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image                                                                 |
-| `forge ci vuln-scan --go`      | Runs govulncheck against `./...`                                                                                                                                                                                                                                                                                                   |
-| `forge ci vuln-scan --npm`     | Runs `npm audit` in each frontend                                                                                                                                                                                                                                                                                                  |
-| `forge ci migration-safety`    | Runs `forge lint --migration-safety` against `db/migrations/`                                                                                                                                                                                                                                                                      |
+| Command | What it does |
+|---|---|
+| `forge ci verify-generated` | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing |
+| `forge ci validate-kcl` | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
+| `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
+| `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
+| `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
+| `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.
 
@@ -255,11 +261,11 @@ leaves its package failing is put back and reported. golangci-lint's own
 fixes (staticcheck, gocritic, …) are never applied — they are code changes,
 so they stay findings for you to make.
 
-| Flags                  | Result                                       |
-| ---------------------- | -------------------------------------------- |
-| none                   | report-only, non-zero if anything is pending |
-| `--check` / `--no-fix` | the same, said explicitly                    |
-| `--fix`                | fixes in place (verified), then gates        |
+| Flags | Result |
+|---|---|
+| none | report-only, non-zero if anything is pending |
+| `--check` / `--no-fix` | the same, said explicitly |
+| `--fix` | fixes in place (verified), then gates |
 
 A pending fix is a failing `format` lane in the verdict and in `--gate-json`
 evidence, so a pipeline needs no flag to get the strict behaviour. To fix

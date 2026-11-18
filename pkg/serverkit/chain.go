@@ -227,6 +227,12 @@ type ChainDeps struct {
 	// (observe.WithSuccessSampling). nil logs every one.
 	LogOptions []observe.LogOption
 
+	// ServerSpan tunes how a failed call reads on its server span
+	// (observe.Deps.ServerSpan). nil marks a server fault Error and a
+	// user- or canceled-class error OK; observe.WithUserErrorsAsSpanErrors
+	// marks user errors Error too.
+	ServerSpan []observe.ServerSpanOption
+
 	// Extras are the project's own interceptors, run after RateLimit and
 	// before Activity, the stream drain and protovalidate.
 	Extras []connect.Interceptor
@@ -346,6 +352,7 @@ func NewChain(deps ChainDeps) (*Chain, error) {
 		Audit:        audit,
 		RateLimit:    deps.RateLimit,
 		LogOptions:   deps.LogOptions,
+		ServerSpan:   deps.ServerSpan,
 		Extras:       extras,
 	})
 	interceptors = append(append([]connect.Interceptor(nil), deps.Outer...), interceptors...)

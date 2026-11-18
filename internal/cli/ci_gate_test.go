@@ -2,12 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cigate"
+	"github.com/reliant-labs/forge/internal/exitcode"
 )
 
 func TestGateLanes(t *testing.T) {
@@ -74,6 +76,74 @@ func TestTruthy(t *testing.T) {
 	for v, want := range map[string]bool{"1": true, "true": true, "YES": true, "0": false, "": false, "no": false} {
 		if truthy(v) != want {
 			t.Errorf("truthy(%q) = %v", v, !want)
+		}
+	}
+}
+
+// --json always prints a document, even when the gate cannot run: a check run
+// reads the verdict from it rather than from a log. The process status is the
+// document's exit_code.
+func TestCIGateJSONReportsAGateThatCouldNotRun(t *testing.T) {
+	root := newTestRootCmd(t)
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"ci", "gate", "test", "--tier", "nightly", "--json"})
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("an unknown tier must fail")
+	}
+	var doc cigate.Document
+	if jerr := json.Unmarshal(stdout.Bytes(), &doc); jerr != nil {
+		t.Fatalf("stdout is not one document: %v\n%s", jerr, stdout.String())
+	}
+	if doc.Schema != cigate.DocumentSchema || doc.Verdict != cigate.VerdictError || doc.OK ||
+		doc.ExitCode != exitcode.Of(err) || doc.Lane != "test" || len(doc.Checks) != 0 {
+		t.Errorf("document %+v for %v", doc, err)
+	}
+	if !strings.Contains(doc.Error, `unknown tier "nightly"`) {
+		t.Errorf("error %q must say why", doc.Error)
+	}
+}
+
+func TestCIGateTierFlagsAreExclusive(t *testing.T) {
+	for _, args := range [][]string{
+		{"ci", "gate", "--tier", "pr", "--event", "push"},
+		{"ci", "gate", "--list", "--json"},
+	} {
+		root := newTestRootCmd(t)
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&out)
+		root.SetArgs(args)
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "none of the others can be") {
+			t.Errorf("%v: want a mutually-exclusive error, got %v", args, err)
+		}
+	}
+}
+
+func TestGateTier(t *testing.T) {
+	for _, c := range []struct {
+		flags gateFlags
+		want  string
+	}{
+		{gateFlags{}, ""},
+		{gateFlags{tier: "merge"}, cigate.TierQueue},
+		{gateFlags{event: "pull_request.synchronize"}, cigate.TierPR},
+		{gateFlags{event: "push"}, cigate.TierMain},
+	} {
+		tier, ok, err := gateTier(c.flags)
+		if err != nil || tier.Name != c.want || ok != (c.want != "") {
+			t.Errorf("gateTier(%+v) = %q, %v, %v; want %q", c.flags, tier.Name, ok, err, c.want)
+		}
+	}
+	if _, _, err := gateTier(gateFlags{event: "issue_comment"}); err == nil {
+		t.Error("an event with no tier must be refused")
+	}
+	help := gateTierHelp()
+	for _, tier := range cigate.Tiers() {
+		if !strings.Contains(help, tier.Name+" ") || !strings.Contains(help, tier.About) {
+			t.Errorf("--help misses tier %s:\n%s", tier.Name, help)
 		}
 	}
 }

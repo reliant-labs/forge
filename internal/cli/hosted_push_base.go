@@ -54,6 +54,15 @@ func deniedPushHint(err error, output, reference string) string {
 	if !hostedimage.IsDenied(err, output) {
 		return ""
 	}
+	// The push that FAILED, when the error says: a site's maps are pushed
+	// before the site, through the same error path, and naming the site's
+	// repository for a refused map push sent the author to the wrong place.
+	if failed := hostedimage.FailedRepository(err); failed != "" {
+		reference = failed
+	}
+	if cloud.ClaimableActive() {
+		return "\n\n" + hostedimage.ClaimableDeniedHint(reference)
+	}
 	return "\n\n" + hostedimage.DeniedHint(reference)
 }
 

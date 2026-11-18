@@ -170,6 +170,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	p.planLegacyGenerated()
 	p.planE2E()
 	p.planKCL()
+	p.planMixed()
 	p.scanReferences()
 
 	rep := Report{Verify: []string{"forge generate", "go build ./...", "forge lint --graph"}}
@@ -1044,6 +1045,17 @@ func (p *cgPlan) planAPIKeyValidator() {
 	end := f.fset.Position(star.X.End()).Offset
 	p.writes[f.rel] = append(append(append([]byte(nil), src[:off]...), "DB"...), src[end:]...)
 	p.skipRef[refKey(f.rel, f.fset.Position(star.X.Pos()).Line)] = true
+}
+
+// planMixed: the constructor methods of roots adopted beside the legacy
+// composition (codegen.MixedComposeFile) become compose.go's when the project
+// converts, and two files declaring one method do not compile. The codemod
+// does not merge owned code for you.
+func (p *cgPlan) planMixed() {
+	rel := "internal/app/" + codegen.MixedComposeFile
+	if f, ok := p.files[rel]; ok {
+		p.block(f, token.NoPos, "%s holds the constructor methods of the roots adopted beside the legacy composition; once converted they belong in compose.go, which is rewritten as the graph's: move each `func (g *Graph) new<X>()` there after converting, or delete %s now and let `forge generate` inject them again (an owned value expression you wrote is then yours to re-apply)", rel, codegen.MixedComposeFile)
+	}
 }
 
 // current is a file's bytes as this plan leaves them so far.

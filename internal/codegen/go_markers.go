@@ -106,7 +106,7 @@ var goMarkers = []GoMarker{
 	{Name: "forge:placeholder", Grammar: GoMarkerReasonRequired, Form: "// forge:placeholder: <pkg>.<Type>"},
 	{Name: directiveExternalComponent2, Grammar: GoMarkerBare, Form: "// forge:provided"},
 	{Name: ResolvesCallerDirective, Grammar: GoMarkerWordArgs, Form: "//forge:resolves-caller"},
-	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none"},
+	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none adopt"},
 	{Name: "forge:root-only", Grammar: GoMarkerOwnGrammar, Form: "//forge:root-only <root>[,<root>...]"},
 	{Name: directiveServiceMarker, Grammar: GoMarkerBare, Form: "// forge:service"},
 	{Name: "forge:standby", Grammar: GoMarkerOwnGrammar, Form: "//forge:standby"},

@@ -121,7 +121,47 @@ root, run by `runRoot` in `serve.go`. Each root's config is its reach
 audience, and the least-knowledge rules judge every component's Deps.
 
 A project still on the legacy composition generates exactly as before, and
-none of that applies to it. Nothing migrates it implicitly: run the codemod.
+none of that applies to it. Nothing migrates it implicitly: run the codemod —
+or, when converting everything at once is too big a step, adopt one root at a
+time first (below).
+
+### Adopting one root at a time
+
+Mark a root struct `adopt` and only that root comes onto the graph; the legacy
+composition stays, and is generated exactly as before:
+
+```go
+// internal/app/roots.go (yours)
+
+// PublicAPI serves the public rpcs from the graph.
+//
+//forge:root public command=public-api adopt
+type PublicAPI struct {
+	Listener *PublicListener
+}
+```
+
+`forge generate` then writes, beside the legacy files:
+
+- `internal/app/graph_compose.go` (yours, reconciled like compose.go): one
+  constructor method per node the adopted roots reach, and nothing else;
+- `internal/app/graph_gen.go` and `routes_gen.go`: the graph of exactly that
+  reach — no default `Server` root, since the legacy server is still the server;
+- `cmd/<bin>/cmd/roots_gen.go`: one command per adopted root, once the command
+  tree declares `runRoot` (generate says what to add) and `root.go` adds
+  `rootCommands(deps)`.
+
+Give the nodes providers of their own (`func New<X>(<X>Deps) (T, error)` in
+an internal/app file). An adopted root may not reach anything that builds the
+legacy composition: a provider or constructor that names `Infra`, `OpenInfra`,
+`NewComponents` or `Components` fails generate, naming the root and the node,
+so no process ever builds both. A `//forge:root` without `adopt` stays inert
+beside the legacy composition, as before.
+
+Not yet projected for adopted roots: `deploy/kcl`'s `ROOTS` and
+`pkg/config/roots_gen.go`, so a workload keeps the legacy env until the project
+is in graph mode. When every process is a root, run the codemod: it asks for
+graph_compose.go's methods to move into compose.go, which it rewrites.
 
 ### Step 1 — the codemod
 

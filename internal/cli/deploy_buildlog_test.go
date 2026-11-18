@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,5 +32,58 @@ func TestBeginDeployBuildLog(t *testing.T) {
 	}
 	if !strings.HasSuffix(s.Path(), filepath.Join(".forge", "logs", "prod", "deploy.log")) {
 		t.Errorf("log path = %s, want .forge/logs/prod/deploy.log", s.Path())
+	}
+}
+
+// Under --json stdout carries one JSON document: a writing deploy's step
+// lines, success or failure, go to stderr and never to stdout, even with
+// os.Stdout not redirected.
+func TestBeginDeployBuildLogJSONKeepsStdoutForTheDocument(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	stdout, err := os.Create(filepath.Join(dir, "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := os.Create(filepath.Join(dir, "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	realStdout, realStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdout, stderr
+	t.Cleanup(func() { os.Stdout, os.Stderr = realStdout, realStderr })
+
+	s := beginDeployBuildLog("prod", deployCmdFlags{jsonOut: true})
+	if s == nil {
+		t.Fatal("a writing --json deploy started no quiet session")
+	}
+	for i, stepErr := range []error{nil, errors.New("exit status 1")} {
+		w, _, end := buildlog.Step(fmt.Sprintf("step %d", i))
+		_, _ = fmt.Fprintln(w, "some build output")
+		end(stepErr)
+	}
+	if err := s.End(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONDocument(stdout, map[string]string{"mode": "apply"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(stdout.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("stdout is not one JSON document: %v\n%s", err, got)
+	}
+	progress, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Build steps", "✓ step 0", "✗ step 1 failed"} {
+		if !strings.Contains(string(progress), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, progress)
+		}
 	}
 }

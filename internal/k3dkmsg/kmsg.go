@@ -39,9 +39,9 @@ const (
 	StateOther
 )
 
-// Host is everything AddArgs reads from or does to the machine, so a test
+// host is everything AddArgs reads from or does to the machine, so a test
 // supplies all of it.
-type Host struct {
+type host struct {
 	GOOS       string
 	Euid       int
 	DockerHost string
@@ -57,20 +57,20 @@ type Host struct {
 // device file first when it is needed. It returns args unchanged on a host
 // whose /dev/kmsg exists, and on one where the question does not arise.
 func AddArgs(args []string) ([]string, error) {
-	h, err := OSHost()
+	h, err := osHost()
 	if err != nil {
 		return nil, err
 	}
-	return h.AddArgs(args)
+	return h.addArgs(args)
 }
 
-// OSHost is the real machine.
-func OSHost() (Host, error) {
+// osHost is the real machine.
+func osHost() (host, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return Host{}, fmt.Errorf("k3dkmsg: no cache directory for the %s device file: %w", HostPath, err)
+		return host{}, fmt.Errorf("k3dkmsg: no cache directory for the %s device file: %w", HostPath, err)
 	}
-	return Host{
+	return host{
 		GOOS:       runtime.GOOS,
 		Euid:       os.Geteuid(),
 		DockerHost: os.Getenv("DOCKER_HOST"),
@@ -89,8 +89,8 @@ func runCombined(name string, args ...string) error {
 	return nil
 }
 
-// AddArgs is the package-level AddArgs for an explicit Host.
-func (h Host) AddArgs(args []string) ([]string, error) {
+// addArgs is AddArgs for an explicit host.
+func (h host) addArgs(args []string) ([]string, error) {
 	if !h.needed() {
 		return args, nil
 	}
@@ -111,7 +111,7 @@ func (h Host) AddArgs(args []string) ([]string, error) {
 // Linux docker daemon on a machine without /dev/kmsg. macOS and Windows run
 // docker in a VM whose /dev/kmsg the host never sees, and a remote daemon's
 // /dev is not this machine's.
-func (h Host) needed() bool {
+func (h host) needed() bool {
 	if h.GOOS != "linux" {
 		return false
 	}
@@ -123,7 +123,7 @@ func (h Host) needed() bool {
 }
 
 // ensure makes file a kmsg device, reusing one that already is.
-func (h Host) ensure(file string) error {
+func (h host) ensure(file string) error {
 	st, err := h.Stat(file)
 	if err != nil {
 		return fmt.Errorf("%w", err)
@@ -149,7 +149,7 @@ func (h Host) ensure(file string) error {
 	return nil
 }
 
-func (h Host) failure(file string, cause error, prefix string) error {
+func (h host) failure(file string, cause error, prefix string) error {
 	return fmt.Errorf("this host has no %s, and k3s's kubelet refuses to start without it, so a k3d cluster cannot boot "+
 		"(it looks like a networking failure: the API server on :6443 refuses connections).\n"+
 		"forge could not create the replacement device file: %v\n"+

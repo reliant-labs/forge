@@ -59,7 +59,8 @@
 // per test process (internal/cli, startNpmOverlayE2E), and CI's shell smoke
 // runs `go run ./internal/npmoverlay/cmd/npm-overlay`.
 //
-//forge:exclude-contract: test plumbing: one concrete *Overlay over a loopback HTTP server and the npm binary; tests drive it against a fake upstream, so there is nothing to substitute
+//forge:lint-disable-next-line forge-exclude-contract-outbound-io: the proxy to Options.Upstream (the public registry by default) is the overlay's whole job, and its only clients are npm/pnpm subprocesses reaching Overlay.URL, never a Go caller through an interface; the upstream is already injected as a URL, which the tests point at a fake registry, so an adapter Service would be one implementation with no substitution point
+//forge:exclude-contract: test plumbing, no part of the forge binary: one concrete *Overlay serving a loopback registry that proxies the configured upstream and packs with the npm binary; only the e2e suite and CI's npm-overlay command start one
 package npmoverlay
 
 import (

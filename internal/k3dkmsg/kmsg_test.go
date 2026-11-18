@@ -29,9 +29,9 @@ func (r *recorder) run(name string, args ...string) error {
 	return nil
 }
 
-func linuxHost(r *recorder, hostKmsg State) Host {
+func linuxHost(r *recorder, hostKmsg State) host {
 	r.state = map[string]State{HostPath: hostKmsg}
-	return Host{
+	return host{
 		GOOS:  "linux",
 		Euid:  1000,
 		Dir:   "/cache/forge/k3d",
@@ -44,7 +44,7 @@ func linuxHost(r *recorder, hostKmsg State) Host {
 func TestAddArgs_HostHasKmsgChangesNothing(t *testing.T) {
 	r := &recorder{}
 	in := []string{"cluster", "create", "x", "--servers", "1"}
-	out, err := linuxHost(r, StateKmsg).AddArgs(slices.Clone(in))
+	out, err := linuxHost(r, StateKmsg).addArgs(slices.Clone(in))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestAddArgs_HostHasKmsgChangesNothing(t *testing.T) {
 func TestAddArgs_MissingKmsgMountsDeviceIntoServersAndAgents(t *testing.T) {
 	r := &recorder{}
 	h := linuxHost(r, StateMissing)
-	out, err := h.AddArgs([]string{"cluster", "create", "x"})
+	out, err := h.addArgs([]string{"cluster", "create", "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestAddArgs_RootCreatesWithoutSudo(t *testing.T) {
 	r := &recorder{}
 	h := linuxHost(r, StateMissing)
 	h.Euid = 0
-	if _, err := h.AddArgs(nil); err != nil {
+	if _, err := h.addArgs(nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"mknod", "/cache/forge/k3d/kmsg", "c", "1", "11"}
@@ -93,7 +93,7 @@ func TestAddArgs_ReusesAnExistingDeviceFile(t *testing.T) {
 	r := &recorder{}
 	h := linuxHost(r, StateMissing)
 	r.state["/cache/forge/k3d/kmsg"] = StateKmsg
-	out, err := h.AddArgs(nil)
+	out, err := h.addArgs(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestAddArgs_ReusesAnExistingDeviceFile(t *testing.T) {
 
 func TestAddArgs_FailureNamesTheExactCommand(t *testing.T) {
 	r := &recorder{err: errors.New("sudo: a password is required")}
-	_, err := linuxHost(r, StateMissing).AddArgs(nil)
+	_, err := linuxHost(r, StateMissing).addArgs(nil)
 	if err == nil {
 		t.Fatal("want an error when mknod cannot run")
 	}
@@ -121,7 +121,7 @@ func TestAddArgs_NonDeviceFileInTheWayIsReplaced(t *testing.T) {
 	r.state["/cache/forge/k3d/kmsg"] = StateOther
 	var removed []string
 	h.Remove = func(p string) error { removed = append(removed, p); delete(r.state, p); return nil }
-	if _, err := h.AddArgs(nil); err != nil {
+	if _, err := h.addArgs(nil); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(removed, []string{"/cache/forge/k3d/kmsg"}) || len(r.ran) != 1 {
@@ -130,17 +130,17 @@ func TestAddArgs_NonDeviceFileInTheWayIsReplaced(t *testing.T) {
 }
 
 func TestAddArgs_NotApplicableHostsChangeNothing(t *testing.T) {
-	for name, mod := range map[string]func(*Host){
-		"macOS (docker runs in a VM that has its own /dev/kmsg)": func(h *Host) { h.GOOS = "darwin" },
-		"windows":                  func(h *Host) { h.GOOS = "windows" },
-		"remote tcp docker daemon": func(h *Host) { h.DockerHost = "tcp://10.0.0.5:2375" },
-		"remote ssh docker daemon": func(h *Host) { h.DockerHost = "ssh://builder" },
+	for name, mod := range map[string]func(*host){
+		"macOS (docker runs in a VM that has its own /dev/kmsg)": func(h *host) { h.GOOS = "darwin" },
+		"windows":                  func(h *host) { h.GOOS = "windows" },
+		"remote tcp docker daemon": func(h *host) { h.DockerHost = "tcp://10.0.0.5:2375" },
+		"remote ssh docker daemon": func(h *host) { h.DockerHost = "ssh://builder" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := &recorder{}
 			h := linuxHost(r, StateMissing)
 			mod(&h)
-			out, err := h.AddArgs([]string{"a"})
+			out, err := h.addArgs([]string{"a"})
 			if err != nil || !slices.Equal(out, []string{"a"}) || len(r.ran) != 0 {
 				t.Fatalf("argv %v err %v ran %v", out, err, r.ran)
 			}
@@ -150,7 +150,7 @@ func TestAddArgs_NotApplicableHostsChangeNothing(t *testing.T) {
 		r := &recorder{}
 		h := linuxHost(r, StateMissing)
 		h.DockerHost = "unix:///var/run/docker.sock"
-		if out, err := h.AddArgs(nil); err != nil || len(out) != 4 {
+		if out, err := h.addArgs(nil); err != nil || len(out) != 4 {
 			t.Fatalf("argv %v err %v", out, err)
 		}
 	})

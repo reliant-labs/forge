@@ -2,6 +2,8 @@
 // current against its lockfile. It is the single install step behind
 // `forge env up`, `forge build` and `forge lint`, so a fresh checkout (every
 // release worktree) never reaches a toolchain with missing dependencies.
+//
+//forge:exclude-contract: package-level operations over a frontend directory (lockfile reads, and exec of the project's own npm/pnpm/yarn); its only exported method is the Lock record's Path accessor, and callers call the functions directly, so there is no component to substitute
 package frontenddeps
 
 import (

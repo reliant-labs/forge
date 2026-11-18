@@ -14,6 +14,8 @@
 // A step that runs outside a session streams exactly as it always has: the
 // session is the opt-in, and only the commands that start one (`forge env
 // deploy` without --verbose) change.
+//
+//forge:exclude-contract: process-wide output routing for build subprocesses (Begin/Step/Active), deliberately ambient so every exec site joins it without threading a dependency; the *Session methods are the session's own lifecycle (Failed/End/Path) over a local log file, and tests point it at a temp file, so there is nothing to substitute
 package buildlog
 
 import (

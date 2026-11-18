@@ -35,12 +35,6 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Handler is required, but the Mux ergonomics let a composition root
 	// leave it nil and rely on Server.Mux as the handler (the common case:
 	// no REST swap, no outer wrapper). Fall back to Mux before failing.
-	// The health rpc on the Mux the services were mounted on, built with the
-	// same handler options (health.go). A Handler that does not route to the
-	// Mux (a REST swap) does not serve it.
-	if srv.Mux != nil {
-		mountHealth(srv.Mux, srv.MountedNames(), srv.handlerOptions()...)
-	}
 	if srv.Handler == nil {
 		if srv.Mux != nil {
 			srv.Handler = srv.Mux
@@ -134,7 +128,14 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// every registered dependency reachable. It is what a rolling deploy
 	// believes, so it runs the checks live on each request rather than
 	// reporting a value latched at boot. See readiness.go.
-	front := cfg.Probes.routes(drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
+	ready := drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger)
+	front := cfg.Probes.routes(ready)
+	// The health rpc on the Mux the services were mounted on, built with the
+	// same handler options and answering from the same readiness (health.go).
+	// A Handler that does not route to the Mux (a REST swap) does not serve it.
+	if srv.Mux != nil {
+		mountHealth(srv.Mux, ready, srv.handlerOptions()...)
+	}
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check

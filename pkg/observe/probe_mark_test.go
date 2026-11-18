@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -42,5 +43,25 @@ func TestMarkProbeSpansMarksServerAndInnerSpans(t *testing.T) {
 	}
 	if len(rec.Ended()) != 2 {
 		t.Fatalf("recorded %d spans, want 2", len(rec.Ended()))
+	}
+}
+
+// Only the health check that carries the probe header is a probe: a monitor's
+// health check, and any other procedure with the header, are real traffic.
+func TestIsHealthProbe(t *testing.T) {
+	probe := http.Header{HeaderHealthProbe: {"env-up"}}
+	for _, tc := range []struct {
+		procedure string
+		h         http.Header
+		want      bool
+	}{
+		{HealthCheckProcedure, probe, true},
+		{HealthCheckProcedure, http.Header{}, false},
+		{"/grpc.health.v1.Health/Watch", probe, false},
+		{"/acme.v1.Shop/List", probe, false},
+	} {
+		if got := IsHealthProbe(tc.procedure, tc.h); got != tc.want {
+			t.Errorf("IsHealthProbe(%s, %v) = %v, want %v", tc.procedure, tc.h, got, tc.want)
+		}
 	}
 }

@@ -173,6 +173,9 @@ type ListenerDeps struct {
 	// REST serves a vanguard REST transcoder over the mounted services
 	// (forge.yaml api.rest) in place of the bare Connect mux.
 	REST bool
+	// Ready is the process's readiness handler, which the health rpc asks
+	// (health.go). nil is the Front route on DefaultReadinessPath, if any.
+	Ready http.Handler
 }
 
 // Listener is an HTTP listener component. Build it with NewListener.
@@ -248,7 +251,7 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 		}
 		l.services = deps.Routes.Register(mux, opts...)
 		// The health rpc, through the same chain (health.go).
-		health := mountHealth(mux, l.services, opts...)
+		health := mountHealth(mux, readinessOf(deps.Ready, deps.Front), opts...)
 		handler = mux
 		if deps.REST {
 			if rest := RESTHandler(mux, l.services, logger); rest != nil {

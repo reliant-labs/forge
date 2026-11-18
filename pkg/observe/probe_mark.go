@@ -2,7 +2,7 @@ package observe
 
 import (
 	"context"
-	"strings"
+	"net/http"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -31,13 +31,20 @@ func MarkProbeSpans(ctx context.Context) {
 	}
 }
 
-// healthServicePrefix is the gRPC health service's procedure prefix.
-const healthServicePrefix = "/grpc.health.v1.Health/"
+// HealthCheckProcedure is the gRPC health check serverkit serves.
+const HealthCheckProcedure = "/grpc.health.v1.Health/Check"
 
-// IsHealthProcedure reports whether procedure is the gRPC health service's
-// (Check, Watch). Its calls are probes: MetricsInterceptor records no
-// rpc.server.* sample for them, so metric alerts and dashboards count only
-// real traffic, and the health handler marks its spans (MarkProbeSpans).
-func IsHealthProcedure(procedure string) bool {
-	return strings.HasPrefix(procedure, healthServicePrefix)
+// HeaderHealthProbe is the request header a probe sets on a health check to
+// say it is one (`forge env up` sends "env-up"). Honoured only on
+// HealthCheckProcedure: a monitor's own health checks, which carry no such
+// header, are real traffic and keep their metrics.
+const HeaderHealthProbe = "Forge-Health-Probe"
+
+// IsHealthProbe reports whether a call to procedure with header h is a
+// declared probe: the gRPC health check carrying HeaderHealthProbe.
+// MetricsInterceptor records no rpc.server.* sample for it, and serverkit's
+// health handler marks its spans (MarkProbeSpans). Setting the header can
+// hide nothing but a health check.
+func IsHealthProbe(procedure string, h http.Header) bool {
+	return procedure == HealthCheckProcedure && h.Get(HeaderHealthProbe) != ""
 }

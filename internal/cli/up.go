@@ -901,6 +901,8 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// defer closes it for every other way out, a failure included — the
 	// failed run is the one whose timings are most worth having.
 	timings := newUpTimings(nil)
+	// When this run started: the per-RPC table's window (up_endpoints.go).
+	upStarted := time.Now()
 	timingsRun := upTimingsRun{opts: opts, version: runningForgeVersion(), runID: newUpRunID()}
 	ctx = withUpTimings(ctx, timings)
 	// A failed run's last line is its RESULT line (command_result.go).
@@ -1324,7 +1326,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	}
 	// One health rpc to each host service, now, so its span is stored by
 	// the time the per-RPC table below reads it (up_endpoints.go).
-	healthSent := sendUpHealthProbes(ctx, collectUpServices(entities, opts.env, opts.targets, frontendsOn, portInUse))
+	healthSent := sendUpHealthProbes(ctx, upStarted, collectUpServices(entities, opts.env, opts.targets, frontendsOn, portInUse))
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
 	// run (readiness gate passed), so the schema is current. Warn-never-
 	// fatal: a seed failure never breaks the dev loop.

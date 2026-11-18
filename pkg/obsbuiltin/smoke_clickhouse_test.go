@@ -25,9 +25,9 @@ func TestEveryBuiltinPanelRunsOnClickHouse(t *testing.T) {
 	end := time.Date(2026, 3, 16, 12, 0, 0, 0, time.UTC)
 	in := fullInput()
 	ds := Dashboards(in)
-	ds = append(ds, ExtendOverview(dashspec.Dashboard{ID: "overview", Title: "o"}, in))
+	ds = append(ds, ExtendOverview(dashspec.Dashboard{ID: "overview", Title: "o"}, in), ProductOverview(Input{Project: "shop", Analytics: in.Analytics}))
 	for _, d := range ds {
-		for _, p := range d.Panels {
+		for _, p := range statementPanels(d) {
 			if _, err := ch.try(p.SQL, end.Add(-30*24*time.Hour), end, "e1"); err != nil {
 				t.Errorf("%s/%s: %v", d.ID, p.ID, err)
 			}

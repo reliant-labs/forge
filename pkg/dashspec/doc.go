@@ -43,4 +43,13 @@
 // into the repository, the reader that already accepted it, never the other
 // way. Once validated, the HyperDX renderer needs no change: it skips every
 // IsConsoleKind panel and ignores the console-only fields.
+//
+// The product analytics presentation is the same exception for the same
+// reason: the built-in product dashboards (pkg/obsbuiltin) use
+// StyleBarList, StyleKPI, Display.Good, .Bar, .Share, .Units and .Layout,
+// Panel.Drill and KindAttention from the release that adds them. Each
+// changes the picture only, never a query: a console that predates a style
+// draws the kind's default (a bar list's rows as the table they were, a KPI
+// as figures), ignores the fields it does not know, and draws an attention
+// panel as "not yet".
 package dashspec

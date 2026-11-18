@@ -22,10 +22,10 @@ import (
 // — so write-once is the right lifecycle. Write-once covers deletion too:
 // a repo that manages its own CI removes these and they stay removed. To
 // re-scaffold one, `forge project rescaffold <path>`.
-func writeCIScaffold(root, relPath string, content []byte) error {
+func writeCIScaffold(root, relPath string, content []byte) (bool, error) {
 	written, err := generator.WriteScaffoldIfMissing(root, relPath, content)
 	if err != nil {
-		return fmt.Errorf("write %s: %w", relPath, err)
+		return false, fmt.Errorf("write %s: %w", relPath, err)
 	}
 	if written {
 		fmt.Printf("  ✅ Generated %s\n", relPath)
@@ -34,38 +34,54 @@ func writeCIScaffold(root, relPath string, content []byte) error {
 	} else {
 		fmt.Println(line)
 	}
-	return nil
+	return written, nil
 }
 
-// generateCIWorkflows writes the GitHub Actions workflows and dependabot
-// config as write-once scaffolds (see writeCIScaffold): the user owns them
-// after the first write and forge never stomps edits.
+// generateCIWorkflows writes the project's CI files as write-once scaffolds
+// (see writeCIScaffold): the user owns them after the first write and forge
+// never stomps edits. Under ci.provider github those are the GitHub Actions
+// workflows and dependabot config; under ci.provider reliant, the Reliant
+// workflows under .reliant/workflows/.
 //
 // Which files exist and what each renders with come from
 // generator.CIWorkflows — the SAME mapping `forge project new` uses — so
 // re-scaffolding a deleted workflow reproduces what the scaffold wrote.
 // This caller contributes one input only it can answer: the frontends,
 // discovered from the KCL topology (see generate_ci_frontends.go).
+//
+// Switching ci.provider writes the new provider's files and leaves the old
+// ones alone: they are the user's. So the first write of the Reliant
+// workflows prints what to do next (generator.ReliantCIGuidance): activate
+// them, require the check, retire the GitHub workflows.
 func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.FileChecksums, _ bool) error {
-	if cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
-		return nil // only github supported for now
+	in := generator.CIInputs{}
+	if cfg.CI.EffectiveProvider() == config.CIProviderGitHub {
+		// Only the GitHub workflows vary with the KCL topology; reading
+		// it renders every env.
+		in = ciInputs(root, cfg)
 	}
-	const provider = "github"
-
-	for _, f := range generator.CIWorkflowsFor(root, cfg, ciInputs(root, cfg)) {
+	var reliantWritten []string
+	for _, f := range generator.CIWorkflowsFor(root, cfg, in) {
 		// A same-named workflow the project wrote itself: never adopt it
 		// silently (generator.ForeignCIWorkflow).
 		if generator.ForeignCIWorkflow(root, f.Dest) {
 			fmt.Println(generator.ForeignCIWorkflowNotice(f.Dest))
 			continue
 		}
-		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
+		content, err := f.Render()
 		if err != nil {
 			return fmt.Errorf("render %s: %w", f.Dest, err)
 		}
-		if err := writeCIScaffold(root, f.Dest, content); err != nil {
+		written, err := writeCIScaffold(root, f.Dest, content)
+		if err != nil {
 			return err
 		}
+		if written && generator.CIProviderOfPath(f.Dest) == config.CIProviderReliant {
+			reliantWritten = append(reliantWritten, f.Dest)
+		}
+	}
+	if len(reliantWritten) > 0 {
+		fmt.Print(generator.ReliantCIGuidance(cfg, Name(), reliantWritten))
 	}
 	return nil
 }

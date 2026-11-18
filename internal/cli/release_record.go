@@ -227,7 +227,7 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 			ep.URL, cerr, Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL), Name())}, err
 	}
 	return recordLedger{
-		ledger:   hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, kind),
+		ledger:   attachCodeSource(hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, kind), projectDir, os.Getenv),
 		endpoint: ep.URL,
 	}, nil
 }

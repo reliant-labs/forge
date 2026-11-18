@@ -46,7 +46,8 @@
       "trendSql": "SELECT day, sum(total) AS \"Accounts\"\nFROM (\n    SELECT toDate(Timestamp) AS day, EnvId, argMax(toInt64OrZero(Props['total']), Timestamp) AS total\n    FROM product_events\n    WHERE EventName = 'auth_accounts' AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY day, EnvId)\nGROUP BY day ORDER BY day",
       "display": {
         "color": "slate",
-        "exact": true
+        "exact": true,
+        "good": "up"
       },
       "unit": "count",
       "width": 6,
@@ -62,7 +63,8 @@
       "trendSql": "SELECT toDate(Timestamp) AS day, uniqExact((EnvId, UserId)) AS \"Active users\"\nFROM product_events\nWHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp \u003e= {from:DateTime64(9)} AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\nGROUP BY day ORDER BY day",
       "display": {
         "color": "blue",
-        "exact": true
+        "exact": true,
+        "good": "up"
       },
       "unit": "count",
       "width": 6,
@@ -79,7 +81,8 @@
       "subtitleSql": "SELECT if(decided \u003e {from:DateTime64(9)}, concat('since ', replaceRegexpOne(formatDateTime(decided, '%d %b', 'UTC'), '^0', '')), '') AS \"Subtitle\"\nFROM (SELECT (SELECT max(DecidedFrom) FROM (SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, minIf(first_at, k = 'u') AS DataFrom,\n       if(max(has_signup) = 1, minIf(first_at, k = 's'), minIf(first_at, k = 'u') + INTERVAL 7 DAY) AS DecidedFrom\nFROM (\n  SELECT 'u' AS k, EnvId, first_at, has_signup FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,\n           toUInt8(countIf(EventName = 'auth_signed_up') \u003e 0) AS has_signup\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY EnvId, UserId)\n  UNION ALL\n  SELECT 's' AS k, EnvId, min(Timestamp) AS first_at, toUInt8(0) AS has_signup\n  FROM product_events\n  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND EventName = 'auth_signed_up' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 400 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n  GROUP BY EnvId)\nGROUP BY EnvId\nHAVING countIf(k = 'u') \u003e 0) WHERE ReportsSignups = 1) AS decided)",
       "display": {
         "color": "amber",
-        "exact": true
+        "exact": true,
+        "good": "up"
       },
       "unit": "count",
       "width": 6,
@@ -95,7 +98,8 @@
       "subtitleSql": "SELECT if(decided \u003e {from:DateTime64(9)}, concat('since ', replaceRegexpOne(formatDateTime(decided, '%d %b', 'UTC'), '^0', '')), '') AS \"Subtitle\"\nFROM (SELECT (SELECT max(DecidedFrom) FROM (SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, minIf(first_at, k = 'u') AS DataFrom,\n       if(max(has_signup) = 1, minIf(first_at, k = 's'), minIf(first_at, k = 'u') + INTERVAL 7 DAY) AS DecidedFrom\nFROM (\n  SELECT 'u' AS k, EnvId, first_at, has_signup FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,\n           toUInt8(countIf(EventName = 'auth_signed_up') \u003e 0) AS has_signup\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n    GROUP BY EnvId, UserId)\n  UNION ALL\n  SELECT 's' AS k, EnvId, min(Timestamp) AS first_at, toUInt8(0) AS has_signup\n  FROM product_events\n  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND EventName = 'auth_signed_up' AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 400 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n  GROUP BY EnvId)\nGROUP BY EnvId\nHAVING countIf(k = 'u') \u003e 0) WHERE ReportsSignups = 1) AS decided)",
       "display": {
         "color": "cyan",
-        "exact": true
+        "exact": true,
+        "good": "up"
       },
       "unit": "count",
       "width": 6,
@@ -111,6 +115,7 @@
       "minStep": "1d",
       "display": {
         "style": "line",
+        "topN": 3,
         "colors": {
           "Daily active": "blue",
           "Monthly active": "violet",
@@ -128,7 +133,8 @@
       "kind": "sql",
       "sql": "SELECT round(avg(dau) / nullIf(avg(mau), 0), 4) AS \"DAU / MAU\"\nFROM (\nSELECT addDays(seen, offset) AS day, uniqExactIf((EnvId, UserId), offset = 0) AS dau, uniqExact((EnvId, UserId)) AS mau\nFROM (\n    SELECT DISTINCT EnvId, UserId, toDate(Timestamp) AS seen\n    FROM product_events\n    WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp \u003e= toStartOfDay({from:DateTime64(9)}) - INTERVAL 29 DAY AND Timestamp \u003c {to:DateTime64(9)} AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId))\n)\nARRAY JOIN range(30) AS offset\nWHERE day \u003e= toDate({from:DateTime64(9)}) AND toDateTime(day) \u003c {to:DateTime64(9)}\nGROUP BY day ORDER BY day)",
       "display": {
-        "color": "violet"
+        "color": "violet",
+        "good": "up"
       },
       "unit": "percent",
       "width": 6,
@@ -145,6 +151,7 @@
       "display": {
         "style": "bars",
         "stack": true,
+        "topN": 4,
         "colors": {
           "Churned": "danger",
           "New": "amber",
@@ -240,7 +247,8 @@
       "kind": "sql",
       "sql": "WITH su AS (\n  SELECT * FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS at, toDate(min(Timestamp)) AS d,\n           argMinIf(DayVisitor, Timestamp, DayVisitor != '') AS own_h,\n           argMin(Props['method'], Timestamp) AS method, argMin(Props['provider'], Timestamp) AS provider,\n           argMin(Props['social_provider'], Timestamp) AS social, argMin(Props['verified'], Timestamp) AS verified\n    FROM product_events\n    WHERE EventName = 'auth_signed_up' AND UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId)) AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)}\n    GROUP BY EnvId, UserId)\n  WHERE at \u003e= {from:DateTime64(9)} AND at \u003c {to:DateTime64(9)})\nSELECT round(countIf(verified = 'true') / nullIf(count(), 0), 4) AS \"Verified\"\nFROM su",
       "display": {
-        "color": "fuchsia"
+        "color": "fuchsia",
+        "good": "up"
       },
       "unit": "percent",
       "width": 6,
@@ -253,6 +261,11 @@
       "description": "The range's sign-ups by auth provider, and the social provider of a social sign-up (forge/google).",
       "kind": "sql",
       "sql": "WITH su AS (\n  SELECT * FROM (\n    SELECT EnvId, UserId, min(Timestamp) AS at, toDate(min(Timestamp)) AS d,\n           argMinIf(DayVisitor, Timestamp, DayVisitor != '') AS own_h,\n           argMin(Props['method'], Timestamp) AS method, argMin(Props['provider'], Timestamp) AS provider,\n           argMin(Props['social_provider'], Timestamp) AS social, argMin(Props['verified'], Timestamp) AS verified\n    FROM product_events\n    WHERE EventName = 'auth_signed_up' AND UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND (empty({env_ids:Array(String)}) OR has({env_ids:Array(String)}, EnvId)) AND Timestamp \u003e= {to:DateTime64(9)} - INTERVAL 90 DAY AND Timestamp \u003c {to:DateTime64(9)}\n    GROUP BY EnvId, UserId)\n  WHERE at \u003e= {from:DateTime64(9)} AND at \u003c {to:DateTime64(9)})\nSELECT if(social != '', concat(if(provider = '', 'unknown', provider), '/', social), if(provider = '', 'unknown', provider)) AS \"Provider\",\n       count() AS \"Sign-ups\", round(100 * count() / sum(count()) OVER (), 1) AS \"Share %\"\nFROM su GROUP BY \"Provider\" ORDER BY \"Sign-ups\" DESC, \"Provider\"",
+      "display": {
+        "style": "barlist",
+        "color": "fuchsia"
+      },
+      "unit": "count",
       "width": 6,
       "height": 8
     },

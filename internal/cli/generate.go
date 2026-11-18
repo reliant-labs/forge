@@ -125,8 +125,9 @@ Hooks:
   and means the same. Neither is about the clone's merge driver for
   generated files: generate leaves git config alone and says once when the
   clone has no usable driver ('forge merge-driver install' wires it), unless
-  forge.yaml says git: {merge_driver: auto}, when it keeps the driver pointed
-  at the pinned forge. FORGE_NO_MERGE_DRIVER=1 silences both.
+  forge.yaml says git: {merge_driver: auto}, or says nothing in a clone that
+  already has forge's driver: then it keeps the driver pointed at the pinned
+  forge ('manual' stops that). FORGE_NO_MERGE_DRIVER=1 silences both.
 
 Skipping:
   A full run that changes nothing records the tree as a verified fixed point
@@ -1369,6 +1370,15 @@ func runGoBuildValidate(projectDir string) error {
 		return nil
 	}
 	if rep.Build != "" {
+		// A root that consumes an in-tree producer (a generated SDK) at a
+		// published version fails here after an additive producer change
+		// until the producer is published and the pin moved. That is a
+		// pending pin bump, not invalid generated code — proven, not
+		// assumed (producerPinLag).
+		if lag, local := producerPinLag(projectDir); lag != "" {
+			fmt.Fprintf(os.Stderr, "\n⚠️  %s\n", lag)
+			return validateTestFiles(projectDir, local.TestFiles)
+		}
 		fmt.Fprint(os.Stderr, rep.Build)
 		return goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
 	}

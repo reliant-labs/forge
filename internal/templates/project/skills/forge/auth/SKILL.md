@@ -22,6 +22,14 @@ A project with a frontend declares its users once, in `deploy/kcl/identity.k` (`
 - **Hosted:** the control plane delivers the same values; `deploy/managed-identity` has the fields, what each runtime receives, and what is refused.
 - **Bring your own issuer** (Auth0, Okta, Keycloak, a Zitadel you run) stays supported and is the escape hatch: declare no `identity` in that env and set `jwt_issuer` / `oidc_client_id` in its `config.k` (see "Swapping the IdP").
 
+## No sign-in system (`--auth-mode none`)
+
+`forge project new <name> --frontend web --auth-mode none` scaffolds an app nobody signs in to: no `deploy/kcl/identity.k`, no `identity` on any env, no dev IdP or mail catcher, no IdP in `docker-compose.yml`, and a public frontend (no route guard mounted, no sign-in screens; `auth/frontend`). The login broker is still scaffolded but never mounted: with no identity, its config is empty. `--auth-mode native` (the default) is today's managed identity. Nothing records the choice: identity.k being absent IS the answer, and `forge generate` keeps it.
+
+**The API still fails closed.** `SetupAuth`, the interceptor and `AnonymousOK: false` are unchanged, so `auth_required` keeps its meaning: an rpc without `auth_required: false` answers **401 to every caller**, since no issuer exists to mint the token it requires. The born CRUD rpcs say `auth_required: true`. Publishing an rpc is one edit in its proto, never a default: change it to `false` and the generated allow-list (`procedures_gen.go`) picks it up. `forge lint --strict` lists rpcs with no declared posture.
+
+**Adding sign-in later** has no single command. Write `deploy/kcl/identity.k` (copy the `ManagedIdentity` from a scratch `forge project new x --frontend web`), import it and set `identity` in each env's `main.k` (dev: on the `idp` HostInfra, with `mail` beside it), run `forge generate` (the compose IdP comes back), and gate the frontend (`auth/frontend`).
+
 ## Choosing the validator (owned code, not config)
 
 Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the `*auth.Authenticator` `cmd serve.go` mounts — a JWT validator wrapped so API keys can join it later (`auth/api-keys`). Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/<project>/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.

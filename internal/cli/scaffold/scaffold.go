@@ -1647,8 +1647,12 @@ reverse proxy that blends several apps on one host). It is rendered into
 next.config.ts (basePath + assetPrefix; forge reads it back from there) and the generated src/lib/basepath_gen.ts
 helper. The single runtime override is NEXT_PUBLIC_BASE_PATH.
 
---auth-mode names the sign-in flow this frontend uses. "native" is the
-default and the only mode forge scaffolds, and it is a first-party form:
+--auth-mode names the sign-in flow this frontend uses: "native" or
+"none". The default follows the project: native when its dev environment
+declares an identity provider, none (a public frontend with no route guard
+and no sign-in screens; the API still answers 401 to an anonymous call of
+any rpc not declared auth_required: false) when it declares none. Native is
+a first-party form:
 the browser POSTs an email and a password to your own app (POST
 /auth/login) and gets back an HttpOnly session cookie. The browser never
 contacts the identity provider — no /authorize redirect, no PKCE in the
@@ -1689,7 +1693,7 @@ Example:
 	cmd.Flags().StringVar(&kind, "kind", "", "frontend kind (web, mobile, or vite-spa)")
 	cmd.Flags().StringVar(&output, "output", "", "Next.js output shape: static (default — a static export into out/), standalone, or server. Only applies to --kind web.")
 	cmd.Flags().StringVar(&basePath, "base-path", "", `URL prefix the frontend is mounted under (e.g. "/admin"). Only applies to --kind web.`)
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend. Only `native` (the default) is scaffolded: your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow (internal/app/login_broker.go) and the browser never contacts the IdP.")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in flow for this frontend: `native` (your own form POSTs credentials to your own API and gets an HttpOnly session cookie; the server runs the OIDC flow in internal/app/login_broker.go and the browser never contacts the IdP) or `none` (a public frontend: no route guard, no sign-in screens). Default: native when deploy/kcl/dev/main.k declares an identity provider, else none.")
 	cmd.Flags().StringSliceVar(&routes, "routes", nil, "Only generate CRUD pages for these entity route slugs (e.g. --routes users,usage-events), or '--routes none' for no generated pages at all. Default (unset) generates a page set for EVERY entity. Persisted as frontends[].routes and honored by every later generate run.")
 
 	return cmd

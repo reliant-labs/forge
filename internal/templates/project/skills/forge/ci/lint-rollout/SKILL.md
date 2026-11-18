@@ -22,6 +22,21 @@ A pseudo-version pin (`v1.5.1-0.20261113062323-685069ed7517`) is read as the
 release it leads to (`v1.5.1`), so a commit pinned by pseudo-version and the
 same commit pinned by its tag get the same verdict.
 
+A pin that jumps over a rule's whole window (`v1.0.0` → `v1.7.0`, past a rule
+introduced in `v1.5.0` that gates from `v1.5.1`) does not make that rule gate
+on arrival: it warns for the whole of the new pin and gates from the next one.
+forge reads where you came from out of git history — the `forge_version`
+forge.yaml held before its newest change, or HEAD's when the bump is not
+committed yet — so nothing is written for it. Without that history (no git, a
+`--depth 1` clone, which is `actions/checkout`'s default) the pin alone
+decides, as before: give the job that runs `forge lint` `fetch-depth: 0` (or
+at least enough depth to reach the pin bump) for it to grade the same way
+your checkout does.
+
+Its note reads `is new in v1.5.0, after this project's previous forge pin
+v1.0.0, so it warns at v1.7.0 and gates from the next pin`, and `--json` adds
+`previous_pin` and `gates_after` to the grace object.
+
 `forge project upgrade` lists the rules whose grace the pin bump ends under
 "Starts gating" (`starts_gating` in `--json`), with how many of their findings
 now gate, so bump the pin with it rather than by hand.

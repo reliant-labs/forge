@@ -476,7 +476,6 @@ func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendC
 		return
 	}
 	generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
-	generator.EnsureBrowserTelemetryDependencies(projectDir, feDir, fe.Name)
 }
 
 // frontendManifestDisowned reports whether the project disowned the

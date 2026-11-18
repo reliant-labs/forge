@@ -113,6 +113,11 @@ func pushHostedStaticSite(ctx context.Context, projectDir string, entities *KCLE
 	// any travelling in the built bundle removed.
 	fe.RuntimeConfigJS = ""
 	fe.StripRuntimeConfig = true
+	// The release marker `forge env status` reads back from the live site
+	// (deploytarget.StaticSiteReleaseMarkerPath). It names the release, which
+	// every env this artifact is promoted to shares, so the artifact stays
+	// environment-agnostic.
+	fe.Release = opts.release
 	// A record left by an earlier build must not be mistaken for this one's.
 	if err := deploytarget.ClearSourcemapsState(projectDir, opts.env, f.Name); err != nil {
 		return "", "", fmt.Errorf("hosted static site %s: %w", f.Name, err)

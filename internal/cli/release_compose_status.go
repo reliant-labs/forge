@@ -61,7 +61,11 @@ func verifySnapshotBindings(s release.Snapshot, key string, running []cluster.Wo
 	sort.Slice(out, func(i, j int) bool { return out[i].Image < out[j].Image })
 	return out
 }
-func snapshotStatusImages(ctx context.Context, s release.Snapshot, opts envStatusOptions) []imageVerification {
+
+// snapshotStatusImages verifies a snapshot's bindings. sealed is the release
+// the env's promotion names: the release a site this snapshot built stamped
+// into its marker.
+func snapshotStatusImages(ctx context.Context, s release.Snapshot, env, sealed string, opts envStatusOptions) []imageVerification {
 	namespaces := map[string]string{}
 	for _, r := range s.Resources {
 		if r.Key.Namespace != "" {
@@ -79,8 +83,12 @@ func snapshotStatusImages(ctx context.Context, s release.Snapshot, opts envStatu
 			continue
 		}
 		seen[c.Key.Cluster] = true
+		if c.Key.Cluster == release.BundleHostedCluster {
+			out = append(out, verifyHostedSnapshotBindings(ctx, s, env, sealed, opts)...)
+			continue
+		}
 		ns := namespaces[c.Key.Cluster]
-		if ns == "" || ns == "*" || c.Key.Cluster == release.BundleHostedCluster {
+		if ns == "" || ns == "*" {
 			out = append(out, verifySnapshotBindings(s, c.Key.Cluster, nil, fmt.Errorf("snapshot observation requires an explicit per-consumer witness for destination %s", c.Key.Cluster))...)
 			continue
 		}

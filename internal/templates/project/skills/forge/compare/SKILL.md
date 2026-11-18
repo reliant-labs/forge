@@ -54,7 +54,8 @@ Source: the posted list in control-plane `internal/plansconfig/pricing.yaml`
 the pricing page for current terms and for what is billed today; quote it if
 it differs from this skill. To estimate an app, multiply each hosted
 workload's requested vCPU and memory by 730 hours at the rates above and add
-its storage: `forge env shape <env>` prints what each one requests. Forge
+its storage, with no included allowance to subtract: `forge env shape <env>`
+prints what each one requests. Forge
 itself (the CLI, its libraries, every self-hosted path) is open source
 (Apache-2.0) and free; a Reliant cloud machine for agents is a separate plan
 that hosting does not need.

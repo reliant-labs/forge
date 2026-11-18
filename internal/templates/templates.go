@@ -780,7 +780,7 @@ type FrontendTemplateData struct {
 	// image what it means in the repository. Empty falls back to
 	// frontends/<FrontendName>, where the scaffolder writes every frontend.
 	RepoPath string
-	// Public renders the frontend WITHOUT a sign-in gate (auth_mode: none):
+	// Public renders the frontend WITHOUT a sign-in gate (--auth-mode none):
 	// providers.tsx / routes.tsx mount no RouteGuard and the Vite tree
 	// declares no /auth/sign-in route. See generator.FrontendGenOptions.Public.
 	Public bool

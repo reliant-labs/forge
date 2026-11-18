@@ -120,7 +120,7 @@ services:
         condition: service_healthy
       clickstack:
         condition: service_started
-{{- if .HasFrontend}}
+{{- if and .HasFrontend (not .NoIdentity)}}
       # required: false is LOAD-BEARING, not politeness. It is what lets
       # `docker compose up app` start without waiting on the IdP — the app
       # does not need it to boot (its identity env is passthrough-empty
@@ -183,7 +183,7 @@ services:
     networks:
       - {{.ProjectName}}-net
 
-{{- if .HasFrontend}}
+{{- if and .HasFrontend (not .NoIdentity)}}
   # Zitadel — an OIDC identity provider, so a developer can complete a REAL
   # browser sign-in locally instead of hand-minting HS256 tokens.
   #
@@ -774,7 +774,7 @@ volumes:
   alertmanager_data:
   minio_data:
   mailpit_data:
-{{- if .HasFrontend}}
+{{- if and .HasFrontend (not .NoIdentity)}}
   idp_db_data:
 {{- end}}
 

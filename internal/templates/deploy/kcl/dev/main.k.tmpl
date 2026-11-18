@@ -33,7 +33,7 @@ import kcl_plugin.forge as plugin
 
 # What this project RUNS — declared once, shared by every env.
 import ..workloads as wl
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
 
 # The users — declared once, shared by every env; only where they run differs.
 import ..identity as idn
@@ -89,7 +89,7 @@ _port_of = lambda name: str -> int {
 _pprof_port_of = lambda name: str -> int {
     plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-pprof-" + name, 6060)
 }
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
 
 # The dev IdP's origin must stay stable BETWEEN runs. resolve_port chooses
 # a free port once, then reuses its reservation even while the IdP answers.
@@ -100,6 +100,8 @@ _idp_origin = "http://localhost:${_idp_port}"
 # The dev mail catcher's SMTP port. Its web UI is on this port + 7000 (the
 # default 1025 puts it on http://localhost:8025, which `forge env up` prints).
 _mail_port = plugin.resolve_port("{{.ProjectName}}-{{.EnvName}}-mail", 1025)
+{{- end}}
+{{- if .HasFrontend}}
 
 # The frontend's dev-server port. resolve_port: the one external consumer
 # (the issuer's registered login URI) is re-converged by `forge env up` on
@@ -249,6 +251,10 @@ _env = lambda w: fw.Workload -> {str:} {
     # The session cookie /auth/login sets only survives a cross-origin call
     # when the browser is told credentials are allowed. In dev the API and the
     # frontend are on different ports, so without this sign-in "does nothing".
+    # A frontend with no sign-in (--auth-mode none) keeps it too: its
+    # transport (src/lib/connect.ts) still fetches with credentials
+    # "include", and a browser refuses a credentialed cross-origin response
+    # that does not allow credentials — even an auth_required: false one.
     _sign_in = {CORS_ALLOW_CREDENTIALS = "true"} if w.kind == "service" else {}
     {{if .Roots}}config_gen.workloadEnvMap(appcfg.app_config, w){{else}}config_gen.appConfigEnvMap(appcfg.app_config, w.config_secrets){{end}} | w.env | _machine | _port | _sign_in
 {{- else}}
@@ -460,7 +466,7 @@ _bundle = forge.Bundle {
             port = _postgres_port
             database = "{{.ProjectName}}"
         }{{end}}
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
         # The dev identity provider — a single static binary, supervised the
         # same way. `idp-steps.yaml` is its declarative bootstrap; its state
         # lives in its OWN database on the postgres above.
@@ -491,7 +497,7 @@ _bundle = forge.Bundle {
         _on_host_frontend(_{{.FrontendIdent}}_frontend)
     ]
 {{- end}}
-{{- if .HasFrontend}}
+{{- if .DeclaresIdentity}}
     # THE USERS, declared once in deploy/kcl/identity.k and run here on the dev
     # IdP above. `forge env up` converges them with the same library the
     # control plane runs for a hosted env, and fills the API's issuer,

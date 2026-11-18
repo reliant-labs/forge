@@ -14,6 +14,8 @@
 // database every schema reader introspects (internal/shadowdb — the ORM
 // projection, seeding, the CRUD fixtures, frontend mocks), and `forge db
 // migrate up` / `status`.
+//
+//forge:exclude-contract: package-level functions that exec the project's own migration tool for a resolved Hook value; the Hook and Ledger methods are accessors and comparisons over that data, and the one database read (ReadLedger) takes its querier as an argument, so the caller already owns that seam
 package migrationhook
 
 import (

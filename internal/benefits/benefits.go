@@ -21,6 +21,8 @@
 // Whether each evidence item still EXISTS — a command in the cobra tree, a
 // lint flag, a marker, a skill, a file — needs the CLI, so that half lives in
 // internal/cli (TestBenefitsEvidenceExists, TestEveryGradableRuleIsABenefit).
+//
+//forge:exclude-contract: a data registry parsed from embedded YAML plus pure renderers over it; the *Registry methods are lookups over that data, it does no I/O, and nothing substitutes it
 package benefits
 
 import (

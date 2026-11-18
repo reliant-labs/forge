@@ -18,15 +18,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
-	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
-
-// promotionGateReader reads the gates recorded on a promotion. The cloud
-// backend implements it; a local env has no promotions.
-type promotionGateReader interface {
-	PromotionGates(ctx context.Context, promotionID string) ([]release.Gate, error)
-}
 
 // issueVersionReader reads one issue over a range, with its events by version.
 type issueVersionReader interface {
@@ -52,7 +45,7 @@ func readCheckLive(ctx context.Context, b obsbackend.Backend, r releasehealth.Re
 	if !r.Subject.LiveAt.IsZero() {
 		return checkLive{at: r.Subject.LiveAt, state: releasehealth.LiveShipped, read: true}
 	}
-	gr, ok := b.(promotionGateReader)
+	gr, ok := b.(obsbackend.PromotionGateReader)
 	if !ok || r.Subject.PromotionID == "" {
 		return checkLive{}
 	}

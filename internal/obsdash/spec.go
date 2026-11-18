@@ -23,6 +23,8 @@
 // deployment.environment.name, span.name, ...), the contract forge's runtime
 // and KCL already settle, so no panel depends on how a given backend stores
 // them.
+//
+//forge:exclude-contract: a pure derivation of dashboard and alert specs from project metadata, plus renderers over them and reads of the project's own files; its only exported methods are the Process record's ServesRPC/IsJob accessors, and nothing substitutes it
 package obsdash
 
 import (

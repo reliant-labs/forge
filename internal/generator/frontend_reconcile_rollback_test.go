@@ -46,7 +46,7 @@ func TestFrontendReconcileRollbackRestoresDirtyManifestAndPackageManagerWrites(t
 			checksums.ResetSkipWrite()
 			checksums.BeginRollbackJournal(root)
 			t.Cleanup(checksums.CommitRollback)
-			EnsureBrowserTelemetryDependencies(root, rel, "site")
+			EnsureWebRuntimeDependency(root, rel, "site")
 			if got, _ := os.ReadFile(filepath.Join(dir, "package.json")); bytes.Equal(got, manifest) {
 				t.Fatal("fixture did not exercise manifest mutation")
 			}

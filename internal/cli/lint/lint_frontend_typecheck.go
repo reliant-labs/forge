@@ -168,6 +168,15 @@ func frontendTypecheckTargets(cfg *config.ProjectConfig) []frontendTarget {
 	return out
 }
 
+// frontendTargetDirs is each target's directory, project-relative.
+func frontendTargetDirs(targets []frontendTarget) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.dir)
+	}
+	return out
+}
+
 // resolveLocalTSC returns the path to the TypeScript compiler installed
 // for feDir, searching node_modules/.bin/tsc in feDir and then in each
 // ancestor up to (and including) the project root — the layout npm and

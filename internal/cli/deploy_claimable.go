@@ -43,7 +43,30 @@ import (
 const (
 	reasonClaimableSignedIn   = "claimable_signed_in"
 	reasonClaimableIneligible = "claimable_ineligible"
+	// reasonUnmergedMigrations: the checkout carries a migration the default
+	// branch does not hold, which the release cut refuses
+	// (checkUnmergedMigrations).
+	reasonUnmergedMigrations = "unmerged_migrations"
 )
+
+// claimableReleaseLabel names the release a claimable preflight judges: it
+// has no version yet, because the deploy picks one after these checks.
+const claimableReleaseLabel = "from this checkout"
+
+// claimableMigrationRefusal is the release cut's unmerged-migration refusal
+// (unmergedMigrationGuard, the same rule and the same predicate), judged from
+// the checkout BEFORE an anonymous deploy solves a proof of work, mints an
+// account or builds anything — and by --plan-only, which used to report
+// "fits" for a checkout the deploy then refused after a full build. The
+// refusal is a claimableRefusal so a --json caller gets its envelope.
+func claimableMigrationRefusal(out io.Writer, projectDir string, e *KCLEntities, allow bool) error {
+	err := unmergedMigrationGuard(out, "[deploy]", projectDir, claimableReleaseLabel, envKeepsHostedLedger(e), allow)
+	var coded exitCodeError
+	if !errors.As(err, &coded) {
+		return err
+	}
+	return &claimableRefusal{exit: coded.code, code: cloud.CodeFailedPrecondition, reason: reasonUnmergedMigrations, msg: coded.msg}
+}
 
 // The claimable plan's caps are the control plane's, read from its public
 // GetClaimableAvailability answer (claimable_limits.go): the one value the
@@ -119,8 +142,18 @@ type claimableSession struct {
 // deployClaimJSON is the `claim` object of the --json document (§6): present on
 // a claimable deploy, absent on every ordinary one.
 type deployClaimJSON struct {
-	// State is live | suspended | claimed | expired.
+	// State is live | suspended | claimed | expired: the claim's lifecycle.
+	// "live" means the unclaimed window is open, not that anything serves:
+	// read Published for that.
 	State string `json:"state"`
+	// Published is false while no deploy of this claimable deploy has
+	// published (as far as this machine knows): the claim link and expiry
+	// exist from the first attempt, so an env whose every attempt failed has
+	// both and nothing behind them. Always present.
+	Published bool `json:"published"`
+	// LastAttempt is how the newest deploy from this machine ended, when it
+	// is known.
+	LastAttempt *claimAttemptJSON `json:"last_attempt,omitempty"`
 	// URL is the deploy's live address; empty when it has none yet.
 	URL string `json:"url,omitempty"`
 	// ClaimURL is the link a human opens to own the deploy. Sensitive: whoever
@@ -136,6 +169,32 @@ type deployClaimJSON struct {
 	// connection to, or resolve a name on, the internet until it is claimed.
 	// Absent for a static site, which makes no outbound calls.
 	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
+	// ConsoleURL is the project's page in the Reliant console: where the
+	// person who claims the deploy finds its releases, logs and dashboards.
+	// Empty when forge does not know the control plane's web app.
+	ConsoleURL string `json:"console_url,omitempty"`
+}
+
+// afterClaimNote is what the person who claims a deploy gets, for the agent to
+// pass on. Every clause is the control plane's behaviour on claim
+// (control-plane internal/claimable: the deploy's org becomes theirs, the
+// agent's claimable token is revoked, the org follows the normal plan rules)
+// and the claim page's own copy ("The free plan includes one static site").
+func afterClaimNote(env string) string {
+	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): the free plan "+
+		"includes one static site, and a backend or database needs billing on their account. "+
+		"This machine's claimable credential stops working at the claim; to redeploy as them: %s login, then %s env deploy %s",
+		Name(), Name(), env)
+}
+
+// claimAttemptJSON is the `claim.last_attempt` object.
+type claimAttemptJSON struct {
+	// At is when the deploy ended.
+	At time.Time `json:"at"`
+	// Outcome is published | failed.
+	Outcome string `json:"outcome"`
+	// Error is the first line of why it failed; empty when it published.
+	Error string `json:"error,omitempty"`
 }
 
 // noOutboundNote is the one explanation of why an unclaimed backend's calls to
@@ -246,7 +305,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
 		if f.promote.planOnly {
-			return previewClaimable(envName, entities, ep, answer, limits, f.jsonOut)
+			return previewClaimable(envName, entities, ep, answer, limits, claimableMigrations{projectDir, f.promote.allowUnmergedMigrations}, f.jsonOut)
 		}
 		fmt.Fprintf(out, "  %s\n", limits.note())
 		if err := refuseClaimableWhenSignedIn(ep, envName); err != nil {
@@ -254,6 +313,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
+		}
+		if err := claimableMigrationRefusal(out, projectDir, entities, f.promote.allowUnmergedMigrations); err != nil {
+			return err
 		}
 		project := hostedProjectName()
 		if project == "" {
@@ -286,15 +348,28 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// plan for a throwaway account, and the account is the only thing at stake.
 		inner := f
 		inner.promote.yes = true
+		// Every outcome is remembered beside the token, so `env status
+		// --claimable` can tell a published deploy from one whose every
+		// attempt failed: both have a claim link and an expiry. Publication
+		// is recorded when the promotion is written, so a rollout that then
+		// times out or degrades still reads as published.
+		inner.promoted = session.markPublished
 		inner.claim = func() *deployClaimJSON {
+			// Asked for only once the deploy succeeded: its document says so.
+			session.recordAttempt(nil)
 			session.refreshURL(ctx)
 			return session.document(compute)
 		}
-		if err := runDeployEverything(ctx, envName, inner); err != nil {
-			return claimableDeployError(envName, err)
+		deployErr := runDeployEverything(ctx, envName, inner)
+		session.recordAttempt(deployErr)
+		if deployErr != nil {
+			return claimableDeployError(envName, deployErr)
 		}
+		doc := session.document(compute)
+		doc.ConsoleURL = deployConsole(ep.URL, project).Home(envName)
+		noteDeployClaim(ctx, doc)
 		if !f.jsonOut {
-			printClaimBlock(os.Stdout, envName, session.document(compute))
+			printClaimBlock(os.Stdout, envName, doc)
 		}
 		return nil
 	}()
@@ -339,6 +414,19 @@ type claimablePreviewJSON struct {
 	Limits          claimableLimitsJSON `json:"limits"`
 	LimitsPublished bool                `json:"limits_published"`
 	LimitsNote      string              `json:"limits_note"`
+	// ReleaseRefusal is why the deploy would refuse to cut a release from
+	// this checkout, judged by the cut's own rule before anything is built:
+	// today, a migration the default branch does not hold. Empty when none.
+	// Not part of Eligible (which is the env's fit to the plan), but it
+	// fails the preview all the same: the deploy cannot succeed.
+	ReleaseRefusal string `json:"release_refusal,omitempty"`
+}
+
+// claimableMigrations is what the preview needs to judge the release cut's
+// unmerged-migration refusal: the checkout, and whether it is waived.
+type claimableMigrations struct {
+	projectDir string
+	allow      bool
 }
 
 // claimableLimitsJSON is the caps in the preview document.
@@ -373,13 +461,18 @@ func limitsJSON(l deploy.ClaimableLimits) claimableLimitsJSON {
 // the caps, the hosted plan's admission, the resource rule — and asks the
 // control plane's public availability question. It uses no identity, solves
 // no proof of work, builds nothing and creates nothing. The verdict (and the
-// exit code) is the project's eligibility; availability describes the
-// platform and is reported beside it.
-func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer claimableAnswer, limits claimableLimitsSource, jsonOut bool) error {
+// exit code) is the project's eligibility, and then the checkout's: a
+// migration the release cut would refuse fails it too. Availability
+// describes the platform and is reported beside it.
+func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer claimableAnswer, limits claimableLimitsSource, mig claimableMigrations, jsonOut bool) error {
 	doc := claimablePreviewJSON{Env: env, Endpoint: ep.URL}
 	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
 	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
+	refusal := claimableMigrationRefusal(progressWriter(jsonOut), mig.projectDir, e, mig.allow)
+	if refusal != nil {
+		doc.ReleaseRefusal = refusal.Error()
+	}
 	doc.NoOutboundInternet = needsCompute(e)
 	if _, err := cloud.ResolveCredential("", ep); err == nil {
 		doc.SignedIn = true
@@ -396,6 +489,11 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	}
 	if !doc.Eligible {
 		err := claimableIneligibleError(env, limits.limits, doc.Reasons)
+		if refusal != nil && !jsonOut {
+			// The fit is the verdict; the checkout's refusal is said too, so
+			// the second preview after fixing the caps holds no surprise.
+			fmt.Fprintf(os.Stderr, "also: %s\n", refusal.Error())
+		}
 		if jsonOut {
 			doc.stamp(err)
 			if eerr := emitJSONDocument(doc); eerr != nil {
@@ -409,8 +507,15 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 		return err
 	}
 	if jsonOut {
-		doc.stamp(nil)
-		return emitJSONDocument(doc)
+		doc.stamp(refusal)
+		if err := emitJSONDocument(doc); err != nil {
+			return err
+		}
+		var r *claimableRefusal
+		if errors.As(refusal, &r) {
+			r.emitted = true
+		}
+		return refusal
 	}
 	fmt.Printf("Anonymous deploy preview of env %s at %s (checked locally; no identity used, nothing created)\n", env, ep.URL)
 	fmt.Printf("  %s\n", limits.note())
@@ -430,8 +535,17 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 			fmt.Printf("      %-24s %s\n", claimableCauseLabel(c), strings.TrimSuffix(c.Message, "."))
 		}
 	}
+	// Push access is a question about a credential, and this preview holds
+	// none by design: the anonymous one exists only once the deploy mints it.
+	// The deploy then asks the registry before it builds (registry_push_preflight.go).
+	fmt.Printf("  ? registry push access: not checked here (no identity); the deploy checks it with its own credential before it builds\n")
 	if doc.SignedIn {
 		fmt.Printf("  note: you are signed in to %s, so --claimable is refused from this machine; drop it to deploy to your organization\n", ep.URL)
+	}
+	if refusal != nil {
+		// The message itself is printed once, by the caller, as the error.
+		fmt.Printf("  ✗ the deploy would refuse this checkout before building anything (below)\n")
+		return refusal
 	}
 	fmt.Printf("\nDeploy it: %s env deploy %s --claimable\n", Name(), env)
 	return nil
@@ -920,6 +1034,28 @@ func (s *claimableSession) refreshURL(ctx context.Context) {
 	}
 }
 
+// markPublished records that this deploy's promotion was written: from now
+// on the claimable deploy has something behind it, whatever the rollout does.
+// Durable at once, so a deploy that then fails or is killed still reads as
+// published.
+func (s *claimableSession) markPublished() {
+	s.recordAttempt(nil)
+}
+
+// recordAttempt sets how this deploy ended, in memory and beside the token:
+// published (deployErr nil), or the error, keeping an earlier publication.
+func (s *claimableSession) recordAttempt(deployErr error) {
+	at := claimableNow().UTC()
+	cl := s.cred.Claimable
+	cl.LastAttemptAt, cl.LastAttemptError = at, ""
+	if deployErr == nil {
+		cl.LastPublishedAt = at
+	} else {
+		cl.LastAttemptError = cloud.FirstErrorLine(deployErr)
+	}
+	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr)
+}
+
 // primaryURL is the address to show first: the static site's when there is one,
 // else the first workload that has one.
 func primaryURL(ws []deploytarget.HostedWorkloadStatus) string {
@@ -952,24 +1088,86 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 	case !cl.ExpiresAt.IsZero() && !now.Before(cl.ExpiresAt):
 		state = "suspended"
 	}
+	published := cl.Published()
 	instr := fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
 		"Opening it signs them up for free and makes this deploy theirs. "+
 		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
 		"To see it again: %s env status %s --claimable",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
+	if !published {
+		instr = nothingPublishedInstructions(env, cl)
+	} else if claimableState(state) {
+		instr += ". " + afterClaimNote(env)
+	}
 	if compute {
 		instr += ". " + noOutboundNote
 	}
 	return &deployClaimJSON{
-		State: state, URL: cl.URL, ClaimURL: cl.ClaimURL,
+		State: state, Published: published, LastAttempt: lastAttemptOf(cl),
+		URL: cl.URL, ClaimURL: cl.ClaimURL,
 		ExpiresAt: cl.ExpiresAt, PurgeAfter: cl.PurgeAfter,
 		AgentInstructions: instr, NoOutboundInternet: compute,
 	}
 }
 
+// nothingPublishedInstructions is agent_instructions for a claimable deploy
+// with nothing behind it. Claiming it now would hand the human an empty
+// account and revoke the token this machine deploys with, so the link is
+// held back until a deploy succeeds.
+func nothingPublishedInstructions(env string, cl *credentials.Claimable) string {
+	why := "no deploy of it has published yet"
+	if cl.LastAttemptError != "" {
+		why = "every deploy so far failed; the last one: " + cl.LastAttemptError
+	}
+	return fmt.Sprintf("Nothing is deployed: %s. Do NOT give claim_url to your user yet: claiming now signs them up "+
+		"for an empty deploy and revokes the token this machine deploys with. Fix the failure and deploy again: "+
+		"%s env deploy %s --claimable. Its clock started with the first attempt and a redeploy does not extend it: "+
+		"it goes offline at %s",
+		why, Name(), env, cl.ExpiresAt.UTC().Format(time.RFC3339))
+}
+
+// lastAttemptOf is the stored outcome of the newest deploy, or nil when this
+// machine recorded none (an entry written by an older forge).
+func lastAttemptOf(cl *credentials.Claimable) *claimAttemptJSON {
+	if cl.LastAttemptAt.IsZero() {
+		return nil
+	}
+	a := &claimAttemptJSON{At: cl.LastAttemptAt, Outcome: "published"}
+	if cl.LastAttemptError != "" {
+		a.Outcome, a.Error = "failed", cl.LastAttemptError
+	}
+	return a
+}
+
+// printNothingPublished renders a claimable deploy with nothing behind it:
+// say so, say why when it is known, and keep the claim link back.
+func printNothingPublished(w io.Writer, env string, c *deployClaimJSON) {
+	now := claimableNow()
+	fmt.Fprintf(w, "\n✗ Nothing is deployed: no deploy of %s has published yet.\n", env)
+	if a := c.LastAttempt; a != nil && a.Error != "" {
+		fmt.Fprintf(w, "  The last attempt failed %s: %s\n", a.At.UTC().Format("2006-01-02 15:04 MST"), a.Error)
+	}
+	fmt.Fprintf(w, "  fix it, then deploy again: %s env deploy %s --claimable\n", Name(), env)
+	if c.State == "suspended" {
+		fmt.Fprintf(w, "\n  Its unclaimed window closed %s; it is deleted %s.\n",
+			c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"), c.PurgeAfter.UTC().Format("2006-01-02 15:04 MST"))
+	} else {
+		fmt.Fprintf(w, "\n  Its clock started with the first attempt: it goes offline %s (in %s)\n",
+			c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"), formatLifetime(c.ExpiresAt.Sub(now)))
+		fmt.Fprintf(w, "  whether or not a deploy succeeds by then; deploying again does not extend it.\n")
+	}
+	fmt.Fprintf(w, "\n  FOR AN AGENT: do not give the claim link to your user yet. Claiming now signs\n")
+	fmt.Fprintf(w, "  them up for an empty deploy and revokes the token this machine deploys with.\n")
+	fmt.Fprintf(w, "  Once a deploy succeeds: %s env status %s --claimable\n", Name(), env)
+}
+
 // printClaimBlock renders the claim for a person or an agent reading text. The
 // wording is §6 of the design; the agent line is the point of the whole block.
 func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
+	if !c.Published {
+		printNothingPublished(w, env, c)
+		return
+	}
 	now := claimableNow()
 	if c.State == "live" || c.State == "suspended" {
 		if c.URL != "" {
@@ -992,6 +1190,27 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 		fmt.Fprintf(w, "  not a bug in the app. It ends when the deploy is claimed: the platform restarts\n")
 		fmt.Fprintf(w, "  the backend on the normal hosted network.\n")
 	}
+	if claimableState(c.State) {
+		printAfterClaim(w, env, c.ConsoleURL)
+	}
+}
+
+// claimableState reports whether a deploy in state can still be claimed: live,
+// or suspended (offline, not yet deleted). What the claimer gets is said only
+// then; a claimed or expired deploy has no claim left to make.
+func claimableState(state string) bool { return state == "live" || state == "suspended" }
+
+// printAfterClaim tells the agent what to pass on about owning the deploy:
+// where it is managed, what the free plan covers, and how to redeploy once
+// this machine's claimable credential is revoked (afterClaimNote).
+func printAfterClaim(w io.Writer, env, consoleURL string) {
+	fmt.Fprintf(w, "\n  ONCE CLAIMED it is theirs, in their own Reliant account (free to sign up).\n")
+	if consoleURL != "" {
+		fmt.Fprintf(w, "  Its releases, logs and dashboards: %s (signed in)\n", consoleURL)
+	}
+	fmt.Fprintf(w, "  The free plan includes one static site; a backend or database needs billing on their account.\n")
+	fmt.Fprintf(w, "  The claim revokes this machine's claimable credential. To redeploy as them:\n")
+	fmt.Fprintf(w, "  %s login, then %s env deploy %s\n", Name(), Name(), env)
 }
 
 // formatLifetime renders a span as hours (72h, 41h) up to three days, days
@@ -1034,8 +1253,16 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		}
 		return err
 	}
+	perr := probeClaimableToken(ctx, ep, stored.Token)
+	if perr == nil {
+		// The live address, when the platform has one: a deploy that went
+		// live after its run ended, or the proof that something is.
+		session := &claimableSession{ep: ep, project: project, env: env, cred: stored}
+		session.refreshURL(ctx)
+		stored = session.cred
+	}
 	doc := claimDocument(env, stored, now, needsCompute(entities))
-	if perr := probeClaimableToken(ctx, ep, stored.Token); isClaimedError(perr) {
+	if isClaimedError(perr) {
 		doc.State = "claimed"
 	}
 	if jsonOut {
@@ -1057,7 +1284,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 			doc.PurgeAfter.UTC().Format(time.RFC3339), Name(), env)
 		return nil
 	}
-	if doc.State == "suspended" {
+	if doc.State == "suspended" && doc.Published {
 		fmt.Printf("\nThis deploy is OFFLINE since %s and is deleted on %s unless someone claims it.\n",
 			doc.ExpiresAt.UTC().Format(time.RFC3339), doc.PurgeAfter.UTC().Format(time.RFC3339))
 		fmt.Printf("\n  Claim:  %s\n\n  FOR AN AGENT: give the claim link above to your user.\n", doc.ClaimURL)

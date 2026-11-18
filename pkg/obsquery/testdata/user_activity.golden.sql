@@ -28,25 +28,39 @@ FROM (
     GROUP BY EnvId, UserId))
 WHERE has_signup = 1 OR (reports = 0 AND first_at >= data_from + INTERVAL 7 DAY)),
 nd_cur AS (
-SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, min(first_at) AS DataFrom,
-       if(max(has_signup) = 1, toDateTime64(0, 9), min(first_at) + INTERVAL 7 DAY) AS DecidedFrom
+SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, minIf(first_at, k = 'u') AS DataFrom,
+       if(max(has_signup) = 1, minIf(first_at, k = 's'), minIf(first_at, k = 'u') + INTERVAL 7 DAY) AS DecidedFrom
 FROM (
+  SELECT 'u' AS k, EnvId, first_at, has_signup FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
     WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId)
-GROUP BY EnvId),
+  UNION ALL
+  SELECT 's' AS k, EnvId, min(Timestamp) AS first_at, toUInt8(0) AS has_signup
+  FROM t_org.product_events
+  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND EventName = 'auth_signed_up' AND Timestamp >= fromUnixTimestamp64Nano({p3:Int64}) - INTERVAL 400 DAY AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+  GROUP BY EnvId)
+GROUP BY EnvId
+HAVING countIf(k = 'u') > 0),
 nd_prev AS (
-SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, min(first_at) AS DataFrom,
-       if(max(has_signup) = 1, toDateTime64(0, 9), min(first_at) + INTERVAL 7 DAY) AS DecidedFrom
+SELECT EnvId, toUInt8(max(has_signup)) AS ReportsSignups, minIf(first_at, k = 'u') AS DataFrom,
+       if(max(has_signup) = 1, minIf(first_at, k = 's'), minIf(first_at, k = 'u') + INTERVAL 7 DAY) AS DecidedFrom
 FROM (
+  SELECT 'u' AS k, EnvId, first_at, has_signup FROM (
     SELECT EnvId, UserId, min(Timestamp) AS first_at, minIf(Timestamp, EventName = 'auth_signed_up') AS signed_up_at,
            toUInt8(countIf(EventName = 'auth_signed_up') > 0) AS has_signup
     FROM t_org.product_events
     WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 90 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
     GROUP BY EnvId, UserId)
-GROUP BY EnvId)
+  UNION ALL
+  SELECT 's' AS k, EnvId, min(Timestamp) AS first_at, toUInt8(0) AS has_signup
+  FROM t_org.product_events
+  WHERE UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts') AND Props['forge.kind'] != 'state' AND EventName = 'auth_signed_up' AND Timestamp >= fromUnixTimestamp64Nano({p4:Int64}) - INTERVAL 400 DAY AND Timestamp < fromUnixTimestamp64Nano({p4:Int64}) AND EnvId = {p1:String} AND ServiceName IN ({p2:String})
+  GROUP BY EnvId)
+GROUP BY EnvId
+HAVING countIf(k = 'u') > 0)
 SELECT 'cur' AS kind, CAST(EnvId AS String) AS env_id, '' AS day,
        countIf(a = 1) AS active_users, countIf(n = 1) AS new_users, countIf(a = 1 AND n = 0) AS returning_users,
        CAST([] AS Array(String)), toDateTime64(0, 9), toUInt32(0), toUInt8(0)

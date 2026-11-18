@@ -116,6 +116,11 @@
       "source": "default"
     },
     {
+      "name": "alert_baseline_min_firings",
+      "value": "1",
+      "source": "default"
+    },
+    {
       "name": "fail_on",
       "value": "alert_firing,error_rate,new_issue,probe_failed,regressed_issue",
       "source": "default"

@@ -1,48 +1,8 @@
-// internal/app/login_broker.go — YOURS. forge scaffolds this file once and
-// never rewrites it (there is no _gen twin and no DO-NOT-EDIT banner).
-//
-// NATIVE SIGN-IN: your app's own login form, your app's own API, and an
-// identity provider the browser never talks to.
-//
-// ── The rule this file enforces ───────────────────────────────────────
-//
-// THE BROWSER NEVER CONTACTS THE IDENTITY PROVIDER. Not /authorize, not
-// the discovery document, not the token endpoint, not a hidden iframe.
-// The browser POSTs a login name and a password to THIS server, and gets
-// back a session cookie. Everything else happens here.
-//
-//	browser  ── email + password ──▶  this server ──▶ identity provider
-//	         ◀── HttpOnly cookie ───┘                (all five OIDC steps)
-//
-// ── Why, rather than the usual browser-side PKCE flow ─────────────────
-//
-//   - THE IdP NEEDS NO PUBLIC ORIGIN. It can sit on a private network,
-//     behind a VPN, or bound to loopback. A browser flow requires every
-//     user's browser to reach it, which is what forces an operator IdP to
-//     be exposed — or to be reached through a port-forward every operator
-//     has to set up identically.
-//   - NO TOKENS IN JAVASCRIPT. The access and refresh tokens live here and
-//     travel in an HttpOnly cookie. There is nothing for an XSS to read.
-//   - NO THIRD-PARTY COOKIES. The silent-restore iframe a browser flow
-//     needs is already unreliable and is being switched off by browsers.
-//     This design has no equivalent to lose.
-//   - ONE ORIGIN. No CORS with the issuer, and no redirect-URI allowlist
-//     to keep in step with every deployment.
-//
-// ── THE ONE THING NOT TO CHANGE CARELESSLY ────────────────────────────
-//
-// The issuer treats "which credentials were checked" as the CALLER's
-// decision. A session created with a user check and NO password check is
-// valid, completes an auth request, and yields real tokens — for someone
-// who proved nothing. Such a token carries no `amr` claim at all, so a
-// downstream validator cannot even detect it.
-//
-// devidp.CreateSession refuses a credential set with no verifying factor
-// before it makes any network call, and this handler builds its request
-// from TYPED FIELDS it reads itself. Do not "simplify" either by
-// forwarding a request body straight through: that single change turns a
-// login form into an impersonation endpoint, and nothing in the response
-// would look wrong.
+// yours: scaffolded once, never touched again — forge will not overwrite this file.
+// Native sign-in: the browser POSTs credentials to THIS server, which runs the OIDC flow against
+// the identity provider and answers with an HttpOnly cookie; the browser never contacts the IdP.
+// NEVER forward a request body to devidp.CreateSession: build it from typed fields, or a login form
+// becomes an impersonation endpoint (a no-password session is valid). Depth: `auth`.
 package app
 
 import (

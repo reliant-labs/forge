@@ -180,6 +180,20 @@ func (ctx *pipelineContext) renderedEnvs() renderedEnvironments {
 	return ctx.rendered
 }
 
+// forgetFailedRenders drops the cached renders when any environment failed,
+// so the next step that asks renders again. A step that writes a module the
+// envs import (config_gen.k, a config.k, crd_gen.k) calls it: the inventory
+// renders every env early in the run, before those modules exist on a fresh
+// project, and a failure cached then would otherwise outlive its cause (a
+// fresh `forge project new` failed its observability step on it). A cache
+// with no failure is kept, so a project whose envs render pays for one render.
+func (ctx *pipelineContext) forgetFailedRenders() {
+	if ctx.renderedRead && len(ctx.rendered.failed) > 0 {
+		ctx.rendered = renderedEnvironments{}
+		ctx.renderedRead = false
+	}
+}
+
 // renderedFrontends is the frontends of renderedEnvs.
 func (ctx *pipelineContext) renderedFrontends() []renderedEnvFrontend {
 	return ctx.renderedEnvs().frontends

@@ -83,6 +83,14 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Dir = dir
+		// Over budget, SIGQUIT instead of SIGKILL: the Go runtime prints
+		// every goroutine's stack into the output before it exits, so a
+		// forge that stalls says where (a `project new` once sat in
+		// "generate code" past this budget on CI and left no trace of
+		// which step). WaitDelay still kills it, and closes the pipes a
+		// child it spawned may hold, if the dump does not end it.
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGQUIT) }
+		cmd.WaitDelay = 15 * time.Second
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}

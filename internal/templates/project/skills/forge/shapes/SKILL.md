@@ -44,6 +44,26 @@ It parses the protos, migrations and source **live on every call** (~2s on a
 that file is a derived cache, and a recon answer that is confidently wrong is
 worse than no answer.
 
+### Call graphs: `gopls`, not grep
+
+`shapes` says where a symbol is. Two questions it does not answer, and grep
+cannot: **who calls this / what does it call**, and **what implements this
+interface**. A Go call site never names its receiver's type and an
+implementation never names its interface, so a grep walk matches every
+same-named method (`Get`, `Handle`, `Execute`) and the error compounds at each
+level. Ask `gopls`:
+
+```bash
+gopls call_hierarchy path/to/file.go:LINE:COL   # callers AND callees
+gopls implementation path/to/file.go:LINE:COL   # interface -> concrete types
+```
+
+Get LINE:COL from an `rg -n` hit (COL is the 1-based offset of the
+identifier) and chain both into one command. Everything else — a definition,
+references to a distinctive name — stays with `shapes` or `rg`. Use
+`forge project libraries` for forge's own packages, `gopls` for this repo's
+code.
+
 **Never search the filesystem for forge's own source.** Name the package and
 `forge project libraries` prints its full exported API — every signature, no
 file reading:

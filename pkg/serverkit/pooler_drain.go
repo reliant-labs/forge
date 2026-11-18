@@ -158,6 +158,14 @@ func (c poolerDrainConn) Ping(ctx context.Context) error {
 	return retryIfPoolerDraining(c.Conn.Ping(ctx))
 }
 
+// Raw is the pgx connection under the wrapper, for PgxConn. It cannot be a
+// Conn() method: the embedded field is named Conn, and a field shadows the
+// method *stdlib.Conn would otherwise promote, so without Raw a *pgx.Conn
+// under this wrapper was unreachable.
+func (c poolerDrainConn) Raw() driver.Conn {
+	return c.Conn
+}
+
 // Close closes the connection. Closing a pgx connection sends Terminate and,
 // over TLS, a close_notify; when the pooler already dropped the connection (it
 // closes idle clients on its own schedule, and is rolled in the same deploy)

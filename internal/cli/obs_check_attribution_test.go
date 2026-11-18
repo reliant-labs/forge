@@ -209,3 +209,45 @@ func TestObsCheckAttribution(t *testing.T) {
 		})
 	}
 }
+
+// liveAnchoredReply is a current control plane's answer for the retried
+// promotion above (control-plane#2754): it says when the release went live,
+// and planned the after window from then, so the failed first attempt's
+// rollout is outside it (forge#2268).
+const liveAnchoredReply = `{
+ "promotion":{"id":"94bf7fc8","releaseVersion":"v1.13.0-rc.1.b2","gitCommit":"44a4cd377","promotedAt":"2026-11-10T03:47:30.163753Z","previousReleaseVersion":"v1.12.0-rc.12","liveAt":"2026-11-10T04:48:49.154721Z"},
+ "before":{"start":"2026-11-10T03:32:30.163753Z","end":"2026-11-10T03:47:30.163753Z"},
+ "after":{"start":"2026-11-10T04:48:49.154721Z","end":"2026-11-10T05:03:49.154721Z"},
+ "afterComplete":true,
+ "services":[{"service":"reliant-api-server","before":{"requests":"1500","errorRate":0.01,"p95Ms":80},"after":{"requests":"1619","errorRate":0.01,"p95Ms":80},"versionShare":1}],
+ "verdict":"RELEASE_VERDICT_PASS",
+ "thresholds":[{"name":"min_requests","value":"50","source":"default"},{"name":"window","value":"15m","source":"default"}]
+}`
+
+// A retried promotion is judged from when it went live by default: the
+// control plane's live_at is taken as it stands — the window it planned from
+// it is the live release's, so neither window_not_live nor a gate read is
+// needed (the gates are unreadable here, and nothing says so).
+func TestObsCheck_ALiveAnchoredAnswerIsJudgedAsItStands(t *testing.T) {
+	caller := &seqCaller{replies: map[string][]string{procHealth: {liveAnchoredReply}},
+		errs: map[string]error{procListGatesCheck: &cloud.Error{Code: cloud.CodeUnavailable}}}
+	h := newObsCheckHarness()
+	out, stderr, err := h.run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+	if got := exitCodeForError(err); got != 0 {
+		t.Fatalf("exit = %d, want 0 (%v)\n%s", got, err, out)
+	}
+	if !strings.Contains(out, `"live_at": "2026-11-10T04:48:49.154721Z"`) || strings.Contains(out, "window_not_live") {
+		t.Errorf("document:\n%s", out)
+	}
+	if strings.Contains(stderr, "deploy gates") {
+		t.Errorf("a control plane that sent live_at needs no gate read:\n%s", stderr)
+	}
+
+	human, _, err := newObsCheckHarness().run(t, cloudFacts(), &seqCaller{replies: map[string][]string{procHealth: {liveAnchoredReply}}, errs: map[string]error{}}, nil, "check", "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human, "the after window starts there") {
+		t.Errorf("human output does not say the window starts at live_at:\n%s", human)
+	}
+}

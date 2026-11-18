@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // writeGrantsProject lays down a project whose only schema is migrations, so
@@ -134,5 +136,48 @@ func TestDBGrants_JSONSeverityIsError(t *testing.T) {
 		if f.Severity != lintSevError || f.Rule != dbGrantsRule || f.File == "" || f.Line == 0 || f.FixHint == "" {
 			t.Errorf("finding not actionable: %+v", f)
 		}
+	}
+}
+
+// forge#2282: in a fresh worktree that has not run `forge generate`, the
+// descriptor the lane reads the proto `forge:secret` markers from is missing.
+// A scoped run (the inner loop on a slice of the tree) skips the lane and says
+// why; an unscoped run still runs it, so the whole-project gate reports
+// forge-db-grants-unverified rather than passing over it.
+func TestDBGrants_ScopeSkipsWithoutTheDescriptor(t *testing.T) {
+	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": grantsBirthSQL})
+	if err := os.MkdirAll(filepath.Join(root, "proto", "services", "notes", "v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root) // migrationsDirFor resolves against the working directory, as lint runs
+	scope, err := parseLintScope(root, []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.ProjectConfig{}
+
+	run, msg := dbGrantsShouldRun(&lintRunCtx{cwd: root, cfg: cfg, scope: scope})
+	if run {
+		t.Fatal("db-grants ran under --scope with no descriptor to read forge:secret markers from")
+	}
+	for _, want := range []string{"--scope", "gen/forge_descriptor/ is missing", "forge generate", "unscoped `forge lint`"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("skip message %q does not say %q", msg, want)
+		}
+	}
+
+	if run, msg := dbGrantsShouldRun(&lintRunCtx{cwd: root, cfg: cfg}); !run {
+		t.Errorf("unscoped, the lane must run (and report unverified), got skip %q", msg)
+	}
+
+	// No protos: nothing to read markers from, so nothing is missing.
+	bare := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": grantsBirthSQL})
+	t.Chdir(bare)
+	bareScope, err := parseLintScope(bare, []string{"db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run, msg := dbGrantsShouldRun(&lintRunCtx{cwd: bare, cfg: cfg, scope: bareScope}); !run {
+		t.Errorf("a project with no protos has no descriptor to miss, got skip %q", msg)
 	}
 }

@@ -50,7 +50,7 @@ func TestOpportunisticGC_DoesNotDelayUp(t *testing.T) {
 	var out bytes.Buffer
 	returned := make(chan struct{})
 	go func() {
-		maybeOpportunisticGC(t.Context(), &out)
+		maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 		close(returned)
 	}()
 	awaitRecv(t, "env up to return without waiting for storage maintenance", returned)
@@ -71,7 +71,7 @@ func TestOpportunisticGC_OptOut(t *testing.T) {
 	t.Setenv("FORGE_STORAGE_AUTO", "0")
 
 	var out bytes.Buffer
-	maybeOpportunisticGC(t.Context(), &out)
+	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
 	if ran || *launched {
 		t.Fatalf("FORGE_STORAGE_AUTO=0 still ran the pass (inline=%v background=%v)", ran, *launched)
 	}

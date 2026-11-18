@@ -76,7 +76,6 @@ type siteStarterData struct {
 	Connect  string
 	Protobuf string
 	OTelAPI  string
-	HyperDX  string
 }
 
 // WriteSiteStarter writes the starter app of a greenfield static site into
@@ -99,7 +98,6 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		Connect:         webRuntimePeer("@connectrpc/connect"),
 		Protobuf:        webRuntimePeer("@bufbuild/protobuf"),
 		OTelAPI:         webRuntimePeer("@opentelemetry/api"),
-		HyperDX:         webRuntimePeer("@hyperdx/browser"),
 	}
 	for _, rel := range files {
 		content, err := templates.FrontendTemplates().Render(path.Join(root, rel), data)

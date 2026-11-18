@@ -18,7 +18,10 @@ enough); **new** = distinct users with
 those first seen in the first 7 days of the env's retained data, who may be
 returning (`obsquery.NewUsersSource`; a range that holds nothing past those 7
 days shows no new or returning figure). Emit `auth_signed_up` and the guess is
-never made. **returning** = active users who are not new.
+never made; an env that starts emitting it mid-range counts its new users only
+from its earliest sign-up retained, and the built-in New and Returning figures
+say "since" that day until the range starts after it. **returning** = active
+users who are not new.
 Every count is distinct by `user.id`, so the same sign-in reported twice
 (server and browser, two replicas, a retry) counts once. `forge obs users
 <env> [--series 30] [--json]` prints them; the console's Users card and the

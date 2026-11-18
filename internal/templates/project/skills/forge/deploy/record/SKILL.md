@@ -253,8 +253,9 @@ retry of the same run records once.
 Branch on its exit code, never on its text: **0** done; **1** the release
 regressed — run the document's `suggested[]` commands and fix forward; **2** it
 could not be proved good — report "not proven good", never "passed"; **8** not
-enough data yet — check again later. Load `observability/query` for the
-document.
+enough data yet, or the control plane's query quota was spent
+(`reason_code: quota_exhausted`) — check again later, after `retry_at` when the
+document has one. Load `observability/query` for the document.
 
 Make the judgement meaningful: set `service.version` in your telemetry to the
 same value you pass as `--version` (the tag or the git SHA). Without it, the

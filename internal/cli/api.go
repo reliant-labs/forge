@@ -36,6 +36,9 @@ func newAPICmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "api",
 		Short: "Inspect and exercise Connect RPC endpoints over plain HTTP+JSON",
+		// What an agent types looking for a way to call the API as a user:
+		// `forge auth` and friends answer "Did you mean this? api".
+		SuggestFor: []string{"auth", "call", "rpc", "request"},
 		Long: `Connect handlers accept plain HTTP/1.1 POST requests with
 Content-Type: application/json — no gRPC tooling required.
 

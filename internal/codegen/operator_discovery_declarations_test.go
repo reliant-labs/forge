@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/checksums"
 )
 
 func TestGraphConstructorValidationScopesHelpersWithoutChangingOperatorCatalogue(t *testing.T) {
@@ -93,6 +95,36 @@ func TestGraphConstructorValidationScopesHelpersWithoutChangingOperatorCatalogue
 	}
 	if err := model.validateReachedConstructors(root); err != nil {
 		t.Fatalf("final validation of the wired fleet root: %v", err)
+	}
+	// A disowned compose skips reconciliation, but not the same construction
+	// scope. Use the real manager's intrinsic membership edges as assembly
+	// does, so it too is omitted when an unreachable member cannot build.
+	if _, _, err := addGraphOperatorsNode("example.com/test", model.nodes, func(n *graphNode) error {
+		model.nodes = append(model.nodes, n)
+		model.byName[n.Name] = n
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const compose = "package app\n"
+	writeAppFile(t, dir, "compose.go", compose)
+	in := GraphGenInput{GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/test", Checksums: &checksums.FileChecksums{Disowned: map[string]checksums.DisownedEntry{"internal/app/compose.go": {}}}}}
+	if err := model.wire(in, resolver, root); err != nil {
+		t.Fatalf("disowned explicit operator root: %v", err)
+	}
+	if err := model.validateReachedConstructors(root); err != nil {
+		t.Fatalf("disowned final constructor validation: %v", err)
+	}
+	if !model.disowned || model.compose != compose || model.unbuilt["Operators"].Via == "" {
+		t.Fatalf("disowned scope/aggregate = %v, %q, %+v", model.disowned, model.compose, model.unbuilt)
+	}
+	gv := graphGenViewOf("example.com/test", model.built(), model.rootViews, &graphOperatorsView{}, model.nodes)
+	if gv.Operators != nil {
+		t.Fatal("generated manager still references omitted helpers")
+	}
+	root[0].Fields[0].Type = "*Operators"
+	if err := model.checkConstructorReach(root, compose); err == nil {
+		t.Fatal("a selected generated manager must validate every member, even with no owned newOperators method")
 	}
 	root[0].Fields[0].Type = "*broken.Controller"
 	if err := model.checkConstructorReach(root, "package app\n"); err == nil {

@@ -185,7 +185,7 @@ func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, in CIInputs
 		if f.Dest != filepath.ToSlash(relPath) {
 			continue
 		}
-		content, err = templates.CITemplates("github").Render(f.Template, f.Data)
+		content, err = f.Render()
 		if err != nil {
 			return nil, false, fmt.Errorf("render %s: %w", f.Dest, err)
 		}
@@ -195,11 +195,11 @@ func CIWorkflowFileFor(projectDir string, cfg *config.ProjectConfig, in CIInputs
 }
 
 // IsCIMapperPath reports whether relPath is a file the CI mapper owns — any
-// GitHub Actions workflow template forge ships, plus dependabot.yml — whether
-// or not THIS project has it.
+// GitHub Actions workflow template forge ships, dependabot.yml, and the
+// ci.provider reliant workflows — whether or not THIS project has it.
 func IsCIMapperPath(relPath string) bool {
 	rel := filepath.ToSlash(relPath)
-	if rel == ".github/dependabot.yml" || rel == ForgeDeployActionPath {
+	if rel == ".github/dependabot.yml" || rel == ForgeDeployActionPath || isReliantCIPath(rel) {
 		return true
 	}
 	if !strings.HasPrefix(rel, ".github/workflows/") {
@@ -227,6 +227,12 @@ func IsCIMapperPath(relPath string) bool {
 // CIWorkflowAbsenceReasonFor is CIWorkflowAbsenceReason for a project whose
 // forge.yaml may switch the workflow off (`ci.workflows`).
 func CIWorkflowAbsenceReasonFor(cfg *config.ProjectConfig, relPath string) string {
+	if cfg != nil {
+		if want := CIProviderOfPath(relPath); want != "" && want != cfg.CI.EffectiveProvider() {
+			return fmt.Sprintf("it is a ci.provider: %s file, and forge.yaml says ci.provider: %s; set ci.provider: %s to have forge scaffold it",
+				want, cfg.CI.EffectiveProvider(), want)
+		}
+	}
 	if name := CIWorkflowName(relPath); cfg != nil && name != "" && !cfg.CI.WorkflowEnabled(name) {
 		return fmt.Sprintf("forge.yaml switches it off (ci.workflows: {%s: false}); delete that key to have forge scaffold it", name)
 	}

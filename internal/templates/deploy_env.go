@@ -32,6 +32,14 @@ type EnvTemplateData struct {
 	// operate.
 	IngressEnabled bool
 	HasFrontend    bool
+	// NoIdentity leaves out the env's sign-in wiring though it has a
+	// frontend: the `identity` declaration and its import, and in dev the
+	// identity provider and the mail catcher. Credentialed CORS stays: the
+	// frontend's transport sends credentials either way. Set for a project
+	// that declares no users (`forge project new --auth-mode none`, or a
+	// frontend with no backend).
+	// Negative so the zero value keeps every caller's existing render.
+	NoIdentity bool
 	// DatabaseDisabled omits database infrastructure in a database-free project.
 	DatabaseDisabled bool
 	// DatabaseName is the cloud env's ManagedDatabase name. withDefaults
@@ -89,6 +97,12 @@ type EnvTemplateData struct {
 	MemoryRequestMiB int
 	MemoryLimitMiB   int
 }
+
+// DeclaresIdentity reports whether the env wires sign-in: it has a frontend
+// and the project declares users (deploy/kcl/identity.k). The env templates
+// gate the identity import, the `identity` line and the dev IdP on it, and
+// the frontend itself on HasFrontend.
+func (d EnvTemplateData) DeclaresIdentity() bool { return d.HasFrontend && !d.NoIdentity }
 
 // withDefaults fills the capacity floor (prod-shaped, halved for an env
 // named staging) and the example workload, so a caller states only what it

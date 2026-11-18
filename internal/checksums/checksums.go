@@ -69,8 +69,11 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/mod/modfile"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -416,7 +419,7 @@ func healNoticeText(relPath string, trigger HealTrigger) string {
 // refuses to silently overwrite it. Default prints to stderr.
 var NoHealSkipFn = func(relPath string) {
 	fmt.Fprintf(os.Stderr,
-		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file) or `forge generate --force` (this file only). To keep your version permanently: `forge project disown %s`.\n",
+		"⏭️  %s matches a PRIOR forge render but not the current template — left untouched, because that is byte-indistinguishable from a deliberate edit and forge will not silently revert your work. To regenerate it from the current templates: `forge generate --heal` (advances every such file; `--force` does not, because it overwrites only the hand-edited files the drift guard names, and this file verifies as forge's). To keep your version permanently: `forge project disown %s`.\n",
 		relPath, relPath)
 }
 
@@ -1143,6 +1146,7 @@ const markerProbeBytes = 4096
 // generated trees (gen/, proto stubs) cost almost nothing.
 func ScanMarkers(root string) map[string]MarkerInfo {
 	out := map[string]MarkerInfo{}
+	ownModule := goModulePath(root)
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -1151,7 +1155,7 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 			if scanSkipDirs[info.Name()] {
 				return filepath.SkipDir
 			}
-			if path != root && isNestedCheckout(path) {
+			if path != root && (isNestedCheckout(path) || isForeignModule(path, ownModule)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -1200,6 +1204,30 @@ func ScanMarkers(root string) map[string]MarkerInfo {
 func isNestedCheckout(dir string) bool {
 	_, err := os.Lstat(filepath.Join(dir, ".git"))
 	return err == nil
+}
+
+// isForeignModule reports whether dir holds another project's Go module: a
+// go.mod declaring a module that is neither this project's nor nested under
+// it. control-plane stages a copy of ../reliant into its gitignored
+// context/reliant/ for an image build — no .git, so isNestedCheckout misses
+// it — and the stale-artifact sweep deleted 529 of reliant's own *_gen.go
+// files from it as this project's orphans. The project's own nested modules
+// (gen/, a tools module) share its module path and are still scanned.
+func isForeignModule(dir, ownModule string) bool {
+	if ownModule == "" {
+		return false
+	}
+	mod := goModulePath(dir)
+	return mod != "" && mod != ownModule && !strings.HasPrefix(mod, ownModule+"/")
+}
+
+// goModulePath is the module path dir's go.mod declares, or "".
+func goModulePath(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	return modfile.ModulePath(data)
 }
 
 // headContainsMarker reports whether the first markerProbeBytes of the

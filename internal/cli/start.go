@@ -77,6 +77,7 @@ var briefNewFlags = []struct {
 	{"frontend", "Repeatable. One Next.js frontend each."},
 	{"in-place", "Scaffold into the current directory instead of creating a subdirectory. Takes no positional name."},
 	{"name", "Name an `--in-place` project whose directory is a worktree or branch name rather than the product."},
+	{"claimable", "Deploying with **no account** (`forge env deploy prod --claimable`)? Pass it: it sizes prod to the free anonymous plan, which the default prod does not fit. Leave it off to deploy signed in: a claimable prod refuses that until its `claimable = True` line is removed."},
 }
 
 // newStartCmd builds `forge start`: the router (start_router.go), which
@@ -200,6 +201,13 @@ the end; do not load it preemptively.
 `
 
 const briefFooter = `
+## Before the first deploy
+
+Commit every migration on the default branch (` + "`git add db/migrations && git commit`" + `;
+push it if there is a remote): a hosted deploy refuses one main does not hold,
+before building. ` + "`forge env deploy prod --claimable --plan-only`" + ` checks that and
+the no-account plan's limits, creating nothing.
+
 ## Where depth lives
 
 Load only when you reach the topic. ` + "`forge skill load <name>`" + ` prints the copy

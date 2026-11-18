@@ -24,8 +24,9 @@
 //
 // Which renderer answers a path, in order:
 //
-//  1. The CI mapper (generator.CIWorkflows) for .github/workflows/* and
-//     dependabot.yml — THE decision about which workflows a project has.
+//  1. The CI mapper (generator.CIWorkflows) for .github/workflows/*,
+//     dependabot.yml and the ci.provider reliant workflows under
+//     .reliant/workflows/ — THE decision about which workflows a project has.
 //     Rendered through `forge generate`'s own CI step, so a rescaffolded
 //     workflow is what generate would have written — that step alone, not
 //     the whole pipeline, when CI files are all the batch needs generated.
@@ -147,12 +148,20 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 	if err != nil {
 		return err
 	}
-	if cfg != nil && cfg.CI.Provider != "" && cfg.CI.Provider != "github" {
+	// A CI file of the other provider: forge writes only the files of the
+	// provider forge.yaml names (generator.CIWorkflowsFor).
+	if cfg != nil {
 		for _, p := range paths {
-			if generator.IsCIMapperPath(p) {
-				return rescaffoldErr(paths, fmt.Sprintf("%s is a GitHub Actions file, and this project's ci.provider is %q", p, cfg.CI.Provider),
-					"forge scaffolds CI only for ci.provider: github")
+			want := generator.CIProviderOfPath(p)
+			if want == "" || want == cfg.CI.EffectiveProvider() {
+				continue
 			}
+			what := "a GitHub Actions file"
+			if want == config.CIProviderReliant {
+				what = "the Reliant workflow forge writes for ci.provider: reliant"
+			}
+			return rescaffoldErr(paths, fmt.Sprintf("%s is %s, and this project's ci.provider is %q", p, what, cfg.CI.EffectiveProvider()),
+				fmt.Sprintf("set ci.provider: %s in forge.yaml to have forge scaffold it", want))
 		}
 	}
 
@@ -300,6 +309,22 @@ func rescaffoldPaths(w io.Writer, root string, cfg *config.ProjectConfig, rawPat
 // again. An env that still does not render is named as the reason, never
 // reported as an env that is not hosted.
 func refuseCIPathsTheProjectLacks(root string, cfg *config.ProjectConfig, paths []string, envConfig func() error) error {
+	// The Reliant workflows depend on no env's render: ask the mapper
+	// directly, and render the envs only for a GitHub path.
+	if !slices.ContainsFunc(paths, func(p string) bool { return generator.CIProviderOfPath(p) == config.CIProviderGitHub }) {
+		for _, p := range paths {
+			if !generator.IsCIMapperPath(p) {
+				continue
+			}
+			if _, ok, err := generator.CIWorkflowFileFor(root, cfg, generator.CIInputs{}, p); err != nil {
+				return err
+			} else if !ok {
+				return rescaffoldErr(paths, fmt.Sprintf("this project has no %s: %s", p, generator.CIWorkflowAbsenceReasonFor(cfg, p)),
+					"change forge.yaml so it has one, then re-run rescaffold")
+			}
+		}
+		return nil
+	}
 	// The question is about the tree as it is now, whatever an earlier
 	// asker in this process memoized — and the answer is for this check
 	// alone. Left memoized, it was handed to the pipeline's CI step, which

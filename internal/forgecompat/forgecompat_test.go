@@ -54,6 +54,16 @@ func TestDecide(t *testing.T) {
 		// forge is" and "the published version" it conflicts with.
 		{"unreleasable binary, project resolves to this very build",
 			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918232310-3cfebb459c15", false, OK},
+		// A clean source build of that commit names itself with "+dev"
+		// (buildinfo's gitVersion). The project resolving the bare
+		// pseudo-version proves the commit is published, so it is the same
+		// forge (forge bug report on `project upgrade --to` with a +dev
+		// build: the pin moved, then generate refused the same commit).
+		{"clean source build of the commit the project resolves",
+			"", "v1.3.1-0.20261110014426-027bb4237fa0", "v1.3.1-0.20261110014426-027bb4237fa0+dev", false, OK},
+		// A dirty tree's bytes are not the commit: the refusal stands.
+		{"dirty source build of the commit the project resolves",
+			"", "v1.3.1-0.20261110014426-027bb4237fa0", "v1.3.1-0.20261110014426-027bb4237fa0+dirty", false, UnreleasableNoBridge},
 		// Same shape, DIFFERENT commit: no proof, so the refusal stands.
 		{"unreleasable binary, project resolves to a different build",
 			"", "v0.1.17-0.20260918232310-3cfebb459c15", "v0.1.17-0.20260918144654-6b3a0a0050cd", false, UnreleasableNoBridge},

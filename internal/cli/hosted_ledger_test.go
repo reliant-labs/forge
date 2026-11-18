@@ -93,6 +93,10 @@ type fakeDeployService struct {
 	// GetCapabilities and takes evidence snapshot seals (see
 	// env_build_evidence_test.go). Nil is a control plane that predates both.
 	evidence *fakeEvidenceSeals
+
+	// noObservedURL makes GetStatus report no address: a platform that has
+	// not observed the deploy serving yet.
+	noObservedURL bool
 }
 
 // hasPromotion reports whether any env holds a promotion of this id. Called
@@ -272,10 +276,13 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// The platform's Flux applied the recorded bundle: ready.
 			state := "DEPLOY_OBSERVED_STATE_READY"
+			observed := map[string]any{"state": state, "imageDigest": digest, "url": "https://" + name + "-acme.reliantapps.dev"}
+			if f.noObservedURL {
+				delete(observed, "url")
+			}
 			out = append(out, map[string]any{
-				"deployment": map[string]any{"id": d.ID, "name": name, "tier": d.Tier, "observed": map[string]any{
-					"state": state, "imageDigest": digest, "url": "https://" + name + "-acme.reliantapps.dev"}},
-				"verdict": "DEPLOY_VERDICT_CONVERGING", "verdictReason": "within the stability window", "desiredDigest": digest,
+				"deployment": map[string]any{"id": d.ID, "name": name, "tier": d.Tier, "observed": observed},
+				"verdict":    "DEPLOY_VERDICT_CONVERGING", "verdictReason": "within the stability window", "desiredDigest": digest,
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{

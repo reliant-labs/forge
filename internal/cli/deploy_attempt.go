@@ -50,6 +50,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 const (
@@ -86,21 +87,28 @@ type deployAttempt struct {
 	env, mode, source, actor string
 	runID, runURL            string
 	warn                     io.Writer
+	// shipsCheckout: the invocation deploys this checkout (no release
+	// named, no --from env), so the checkout's HEAD is the commit it ships
+	// (code_source.go, forAttempt).
+	shipsCheckout bool
 
-	mu        sync.Mutex
-	client    cloudCaller
-	id        string
-	opened    bool
-	dead      bool // stop trying: the open failed, or the server refused a write
-	phase     string
-	release   string
-	promotion string
-	pending   bytes.Buffer // output not yet sent
-	report    bytes.Buffer // stdout under --json: the deploy document
-	nudge     chan struct{}
-	stop      chan struct{}
-	beatDone  chan struct{}
-	restore   []func()
+	mu sync.Mutex
+	// codeSourceWarning is the two-repositories warning the cut or the open
+	// returned, printed once by finish (code_source_warning.go).
+	codeSourceWarning string
+	client            cloudCaller
+	id                string
+	opened            bool
+	dead              bool // stop trying: the open failed, or the server refused a write
+	phase             string
+	release           string
+	promotion         string
+	pending           bytes.Buffer // output not yet sent
+	report            bytes.Buffer // stdout under --json: the deploy document
+	nudge             chan struct{}
+	stop              chan struct{}
+	beatDone          chan struct{}
+	restore           []func()
 }
 
 // deployAttemptMode is the attempt mode for a deploy invocation, or "" when
@@ -134,6 +142,8 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 		release: f.promote.version,
 		warn:    os.Stderr,
 		nudge:   make(chan struct{}, 1),
+
+		shipsCheckout: deployShipsCheckout(f),
 	}
 	if run, err := f.promote.run.resolveRun(); err == nil {
 		a.runID, a.runURL = run.ID, run.URL
@@ -141,6 +151,15 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 	a.source = deploySource(os.Getenv(deploySourceEnv), a.runID)
 	a.capture(f.jsonOut)
 	return context.WithValue(ctx, deployAttemptCtxKey{}, a), a
+}
+
+// deployShipsCheckout reports whether the invocation deploys this checkout:
+// no release named and no --from / --from-promotion, so the release it ships is cut from
+// the checkout's HEAD. A named release, or what another env runs, was built
+// from whatever commit its own cut recorded.
+func deployShipsCheckout(f deployCmdFlags) bool {
+	from := f.promote.fromSource()
+	return f.promote.version == "" && from.Env == "" && from.PromotionID == ""
 }
 
 // deploySource names where the invocation came from: what the launcher
@@ -196,11 +215,22 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 	if a.runID != "" {
 		req["run"] = map[string]any{"id": a.runID, "url": a.runURL}
 	}
+	shipsCheckout, version := a.shipsCheckout, a.release
 	a.mu.Unlock()
+	// The checkout this deploy runs from, and the commit it ships
+	// (code_source.go). Read outside the lock: the first read runs git, and
+	// a named release is read from the ledger.
+	shipped := attemptRelease(ctx, store, shipsCheckout, version)
+	if src := store.source.get(ctx).forAttempt(shipsCheckout, shipped).wire(); src != nil {
+		req["codeSource"] = src
+	}
 
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptCallTimeout)
 	defer cancel()
-	err := a.client.Call(callCtx, procOpenDeployAttempt, req, &struct{}{})
+	var resp struct {
+		CodeSources *wireAppCodeSources `json:"codeSources"`
+	}
+	err := a.client.Call(callCtx, procOpenDeployAttempt, req, &resp)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -209,11 +239,32 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 		a.warnLocked("not recorded", err)
 		return
 	}
+	if msg := resp.CodeSources.warning(); msg != "" {
+		a.codeSourceWarning = msg
+	}
 	a.opened = true
 	a.phase = "start"
 	a.stop = make(chan struct{})
 	a.beatDone = make(chan struct{})
 	go a.heartbeat(context.WithoutCancel(ctx))
+}
+
+// attemptRelease is the named release a deploy ships, as its ledger recorded
+// it, so the attempt can send the commit that release was cut from. nil when
+// the deploy ships the checkout, names no release yet (--from resolves it
+// after the attempt opens), or the read fails or finds none: the attempt is
+// best-effort and a failed read only leaves its commit unknown.
+func attemptRelease(ctx context.Context, store *hostedStore, shipsCheckout bool, version string) *release.Release {
+	if shipsCheckout || version == "" {
+		return nil
+	}
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), attemptCallTimeout)
+	defer cancel()
+	r, err := store.Get(callCtx, version)
+	if err != nil {
+		return nil
+	}
+	return r
 }
 
 // noteDeployPhase records that the invocation entered a phase.
@@ -314,6 +365,10 @@ func (a *deployAttempt) finish(ctx context.Context, runErr error) {
 	// Output first: restoring the streams drains the pipes, so the final
 	// chunk is in pending before the close sends it.
 	a.release1()
+	// After the deploy's own output, and whatever its outcome: it is about
+	// the app, not this deploy. Printed even if the attempt never opened, as
+	// a cut's warning may be held here.
+	a.printCodeSourceWarning()
 
 	a.mu.Lock()
 	opened, dead := a.opened, a.dead

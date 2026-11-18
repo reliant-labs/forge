@@ -1055,6 +1055,12 @@ func dbGrantsShouldRun(rc *lintRunCtx) (bool, string) {
 	if rc.cfg == nil {
 		return false, "no forge.yaml — skipping db-grants lint: it judges the read-only role (forge_ro) a forge project generates; migration safety still runs"
 	}
+	if rc.scope != nil {
+		if why := dbGrantsDescriptorGap(rc.cwd); why != "" {
+			return false, "skipping db-grants lint under --scope: " + why +
+				"; run `forge generate`, then an unscoped `forge lint` before merging"
+		}
+	}
 	return true, ""
 }
 
@@ -1082,4 +1088,27 @@ func shouldRunFrontendTypecheck(rc *lintRunCtx) (bool, string) {
 		return false, "--scope reaches no frontend — skipping frontend typecheck"
 	}
 	return true, ""
+}
+
+// dbGrantsDescriptorGap says why the proto `forge:secret` markers cannot be
+// read in projectDir, or "" when they can (or there are no protos to read).
+//
+// Unscoped, a missing descriptor fails the lane (forge-db-grants-unverified):
+// a whole-project gate must not pass over a check that did not run. Under
+// --scope it skips instead, naming why (forge#2282). A scoped run is the
+// inner loop on a slice of the tree, often in a fresh worktree that has not
+// run `forge generate`, and the verdict already says a scoped pass is not a
+// merge gate.
+func dbGrantsDescriptorGap(projectDir string) string {
+	if !dirExists(filepath.Join(projectDir, protoDirDefault)) {
+		return ""
+	}
+	services, err := codegen.ParseReadOnlyGrantsServices(projectDir)
+	switch {
+	case err != nil:
+		return "the forge descriptor (" + codegen.DescriptorDir + "/) could not be read or extracted from proto/: " + err.Error()
+	case services == nil:
+		return codegen.DescriptorDir + "/ is missing, so the proto `// forge:secret` markers cannot be read"
+	}
+	return ""
 }

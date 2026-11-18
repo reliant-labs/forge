@@ -22,9 +22,12 @@ type attemptCaller struct {
 	calls   []string
 	bodies  []map[string]any
 	openErr error
+	// releases answers GetRelease by version; a version not in it is
+	// NotFound.
+	releases map[string]wireRelease
 }
 
-func (c *attemptCaller) Call(_ context.Context, procedure string, req, _ any) error {
+func (c *attemptCaller) Call(_ context.Context, procedure string, req, resp any) error {
 	raw, _ := json.Marshal(req)
 	var body map[string]any
 	_ = json.Unmarshal(raw, &body)
@@ -32,8 +35,16 @@ func (c *attemptCaller) Call(_ context.Context, procedure string, req, _ any) er
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, procedure)
 	c.bodies = append(c.bodies, body)
-	if procedure == procOpenDeployAttempt {
+	switch procedure {
+	case procOpenDeployAttempt:
 		return c.openErr
+	case procGetRelease:
+		w, ok := c.releases[body["version"].(string)]
+		if !ok {
+			return &cloud.Error{Code: cloud.CodeNotFound, Message: "no such release"}
+		}
+		out, _ := json.Marshal(map[string]any{"release": w})
+		return json.Unmarshal(out, resp)
 	}
 	return nil
 }

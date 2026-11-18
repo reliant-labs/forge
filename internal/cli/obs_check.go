@@ -208,7 +208,10 @@ Exit status:
      min_requests in its release_health (or --threshold min_requests=N) or
      widen --window. window_open (no --wait): check again, or use --wait.
      window_not_live: the release went live (its deploy gates) after the
-     after window ended; suggested[] names the --window that covers it.
+     after window ended; suggested[] names the --window that covers it. A
+     current control plane starts the after window when the release went
+     live (subject.live_at), so a retried promotion is judged on what it
+     served; only an older one, which anchors it at promoted_at, gets here.
   8  check again later; nothing final was learned. Either --wait ran out
      (--timeout) before the after window finished, or the control plane
      refused the read because the org's query quota is spent
@@ -855,8 +858,12 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		obsout.Table(w, []string{"SERVICE", "REQUESTS", "ERRORS", "P95", "ON RELEASE"}, rows, 40)
 	}
 	if doc.Subject.LiveAt.After(doc.Subject.PromotedAt) {
-		fmt.Fprintf(w, "live   %s (promoted %s; its deploy gates say when it shipped)\n",
-			doc.Subject.LiveAt.Format(time.RFC3339), doc.Subject.PromotedAt.Format(time.RFC3339))
+		anchor := "its deploy gates say when it shipped"
+		if doc.Windows != nil && doc.Windows.After.From.Equal(doc.Subject.LiveAt) {
+			anchor += "; the after window starts there"
+		}
+		fmt.Fprintf(w, "live   %s (promoted %s; %s)\n",
+			doc.Subject.LiveAt.Format(time.RFC3339), doc.Subject.PromotedAt.Format(time.RFC3339), anchor)
 	}
 	if len(doc.Findings) > 0 {
 		fmt.Fprintln(w)

@@ -345,24 +345,43 @@ func TestEnsureGeneratedMergeDriver_DefaultWritesNoGitConfig(t *testing.T) {
 		})
 	}
 
-	// A clone whose driver works hears nothing.
+	// A clone that says `manual` and whose driver works hears nothing, and
+	// nothing is written to it.
 	mergeDriverIdentity = func() string { return "pin-c" }
-	repo := t.TempDir()
-	gitT(t, repo, "init", "-q", "-b", "main")
-	writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n")
-	bin := filepath.Join(t.TempDir(), "forge")
-	writeTreeFileT(t, bin, "#!/bin/sh\n")
-	if err := os.Chmod(bin, 0o755); err != nil {
-		t.Fatal(err)
+	wiredClone := func(t *testing.T, yamlTail string) string {
+		repo := t.TempDir()
+		gitT(t, repo, "init", "-q", "-b", "main")
+		writeTreeFileT(t, filepath.Join(repo, "forge.yaml"), "name: svc\nmodule_path: example.com/svc\n"+yamlTail)
+		bin := filepath.Join(t.TempDir(), "forge")
+		writeTreeFileT(t, bin, "#!/bin/sh\n")
+		if err := os.Chmod(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitT(t, repo, "config", "merge.forge-generated.driver", driverCommandLine(bin, "forge"))
+		if _, ok := writeMergeAttributes(repo); !ok {
+			t.Fatal("precondition: routes written")
+		}
+		return repo
 	}
-	gitT(t, repo, "config", "merge.forge-generated.driver", driverCommandLine(bin, "forge"))
-	if _, ok := writeMergeAttributes(repo); !ok {
-		t.Fatal("precondition: routes written")
-	}
+	repo := wiredClone(t, "git:\n  merge_driver: manual\n")
+	configBefore, _ := os.ReadFile(filepath.Join(repo, ".git", "config"))
 	var wired strings.Builder
 	ensureGeneratedMergeDriverTo(&wired, repo)
 	if wired.Len() != 0 {
 		t.Errorf("a clone with a working driver was told to install one:\n%s", wired.String())
+	}
+	if after, _ := os.ReadFile(filepath.Join(repo, ".git", "config")); string(after) != string(configBefore) {
+		t.Errorf("git.merge_driver: manual still let a writing command change the clone's git config:\n%s", after)
+	}
+
+	// Semver: with git.merge_driver unset, a clone that already has forge's
+	// driver (every writing command of an earlier forge wired one) keeps
+	// being kept wired, as before: this forge registers itself for the
+	// hand-off, as the automatic wiring always did.
+	kept := wiredClone(t, "")
+	ensureGeneratedMergeDriverTo(io.Discard, kept)
+	if got := gitConfig(t, kept, "forge-merge-driver.pin-c.command"); got == "" {
+		t.Error("a clone forge already wired, with git.merge_driver unset, was not kept wired")
 	}
 
 	// auto wires it, as before.

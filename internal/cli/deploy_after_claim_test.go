@@ -49,7 +49,8 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 	}
 
 	doc := claimDocument("prod", credentials.Credential{Claimable: &credentials.Claimable{
-		ClaimURL: "https://app.reliant.dev/claim#x", LastPublishedAt: now, ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
+		URL:      "https://amber-quokka.reliantpreview.dev",
+		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
 	}}, now, false)
 	for _, want := range []string{"Once claimed it is theirs", "free plan includes one static site", Name() + " login, then " + Name() + " env deploy prod"} {
 		if !strings.Contains(doc.AgentInstructions, want) {
@@ -66,6 +67,7 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 		}
 	}
 	expired := claimDocument("prod", credentials.Credential{Claimable: &credentials.Claimable{
+		URL:      "https://amber-quokka.reliantpreview.dev",
 		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(-48 * time.Hour), PurgeAfter: now.Add(-time.Hour),
 	}}, now, false)
 	if expired.State != "expired" || strings.Contains(expired.AgentInstructions, "Once claimed") {

@@ -1,13 +1,14 @@
 ---
 name: observability/product-analytics
-description: The built-in product analytics dashboards every hosted forge app gets with no code — the Overview's Traffic and Users sections, and the Users, Product and Acquisition dashboards (pkg/obsbuiltin) — with every definition they count by (cookieless visitor-day, visit, bounce, channel table, source, same-day stitch, person, active/new/returning, sign-up attribution, activation), how to extend them (forge.Analytics goals, activation, channels; forge.Funnel by visitor/person), override one by a same-named file, or opt out (dashboards = False).
+description: The built-in product analytics dashboards every hosted forge app gets with no code — the Overview's Traffic and Users sections, and the Product analytics hub's Overview, Users, Product and Acquisition dashboards (pkg/obsbuiltin) — with every definition they count by (cookieless visitor-day, visit, bounce, channel table, source, same-day stitch, person, active/new/returning, sign-up attribution, activation), how to extend them (forge.Analytics goals, activation, channels; forge.Funnel by visitor/person), override one by a same-named file, or opt out (dashboards = False).
 ---
 
 # Built-in product analytics
 
 A forge app on Reliant hosting gets product analytics with nothing declared:
-the Overview's **Traffic** and **Users** sections, and three dashboards in the
-console's Product group, **Users**, **Product** and **Acquisition**. Every panel
+the Overview's **Traffic** and **Users** sections, and four dashboards in the
+console's Product group, the Product analytics hub's tabs: **Overview** (the
+product on one screen), **Users**, **Product** and **Acquisition**. Every panel
 is a `sql` panel over the hosted per-org `product_events` table, which the
 platform fills from the events forge already emits: `page_viewed` from the
 browser runtime, the standard `auth_*` events, the automatic CRUD events, the
@@ -25,12 +26,13 @@ definitions for an environment that has no bundle yet.
 |---|---|---|---|
 | Overview, Traffic section | `overview` | 24h | the project has a browser frontend |
 | Overview, Users section | `overview` | 24h | always |
+| Product overview (the hub's first tab) | `product-overview` | 30d, compared with the previous period | always; without a browser frontend it has no visitors, channels or pages |
 | Users | `users` | 30d, compared with the previous period | always |
 | Product | `product` | 7d, compared with the previous period | always; it **replaces** the old generated _Product usage_ (`usage`), so stars and copies move to it |
 | Acquisition | `acquisition` | 30d, compared with the previous period | the project has a browser frontend |
 
-A static site's environment (no process) keeps Users, Product and Acquisition
-beside its frontend dashboard.
+A static site's environment (no process) keeps the Product overview, Users,
+Product and Acquisition beside its frontend dashboard.
 
 ## The definitions
 
@@ -141,6 +143,21 @@ bounce rate, the top 5 pages and channels, JS errors per 1,000 page views
 users over the last 7 days beside the 7 before (fixed, whatever range is
 picked, as the Users card), accounts and 30 days of daily active users.
 
+**Product overview.** Every block is the statement of the tab it links to
+(`drill`), so its numbers are that tab's. _At a glance_: Visitors, Sign-ups,
+Active users (with DAU, WAU and MAU of the range's last day under it) and
+Visit → sign-up as KPI cards (Accounts, Sign-ups, Active users and Stickiness
+without a frontend); each ISO week's active users, new and returning (the
+lifecycle's New, and its Retained plus Resurrected); and **Needs attention**,
+the figures that moved 5% or more against the comparison, the wrong way first
+(the four KPIs, plus activation rate, bounce rate and stickiness). _Conversion_:
+the visit → sign-up → activation funnel in steps, and visitors by channel with
+their sign-ups and conversion. _Retention and use_: the last six weekly cohorts
+over their first six weeks, the top pages by visitor-days, and **Top
+features**: the app's own product events (page views, `auth_*` and flag events
+left out, and the events `not_activity` declares) ranked by the people who
+used them; empty until the app records one.
+
 **Users.** _At a glance_: accounts (the platform's daily `auth_accounts`
 snapshot; an environment with none shows its users seen in 90 days), active,
 new, returning, daily/weekly/monthly active users, stickiness (average DAU over
@@ -183,12 +200,12 @@ the end of the range; a channel with fewer than 20 shows none.
   rules across frontends and environments: `observability/product-events`.
 - **Override one dashboard** with a spec-form file of the same name:
   `deploy/observability/dashboards/<project>-users.json` replaces
-  `<project>-users_gen.json` in the bundle (the same for `-product`,
-  `-acquisition` and `-overview`). Start from the generated one: `forge env
+  `<project>-users_gen.json` in the bundle (the same for `-product-overview`,
+  `-product`, `-acquisition` and `-overview`). Start from the generated one: `forge env
   build` puts it in the bundle, and the panel ids above are stable. `forge obs
   dashboards check` validates it. A project dashboard declaring
   `"replaces": ["users"]` takes over the generated one's stars instead.
-- **Opt out**: `forge.Analytics {dashboards = False}` drops the three
+- **Opt out**: `forge.Analytics {dashboards = False}` drops the four
   dashboards and the Overview's Traffic and Users sections. Collection still
   follows `mode`; `mode = "off"` stops browser product events.
 

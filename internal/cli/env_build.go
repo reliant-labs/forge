@@ -199,17 +199,23 @@ Examples:
 	cmd.Flags().StringVar(&opts.bundleEnvs, "bundle-envs", "", "Write a bundle for each of these envs (comma-separated) from this one build, instead of only for the env argument. A release is env-agnostic and a bundle is not, so this is how one cut produces the manifests for every env it will ship to — each pinned to the same release and the same source. Each env is rendered; each bundle is pushed beside its images for a control-plane env, or written to this machine's ledger otherwise.")
 	registerRunFlags(cmd.Flags(), &opts.run)
 
-	// A release cut ends with its RESULT line (command_result.go).
+	endReleaseCutWithResult(cmd, &opts, &noBuild)
+
+	return cmd
+}
+
+// endReleaseCutWithResult wraps the command's RunE so a release cut ends with
+// its RESULT line (command_result.go). opts and noBuild are read after the
+// flags are parsed.
+func endReleaseCutWithResult(cmd *cobra.Command, opts *buildOptions, noBuild *bool) {
 	build := cmd.RunE
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		err := build(cmd, args)
 		if opts.release == "" || opts.plan || opts.planJSON {
 			return err
 		}
-		return finishReleaseCut(cmd.OutOrStdout(), args[0], opts.release, noBuild, err)
+		return finishReleaseCut(cmd.OutOrStdout(), args[0], opts.release, *noBuild, err)
 	}
-
-	return cmd
 }
 
 // finishReleaseCut ends `forge env build <env> --release <v>`: the RESULT line

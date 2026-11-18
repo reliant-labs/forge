@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -248,7 +249,7 @@ keeps working until the code is redeemed.`,
 				return err
 			}
 			fmt.Fprintf(out, "Password-set code issued for %s.\n", label)
-			writePasswordCode(out, resp.Code)
+			writePasswordCode(out, resp.Code, reissueCodeCommand(args[0], f.user), time.Now())
 			return nil
 		},
 	}

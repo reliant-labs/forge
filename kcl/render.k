@@ -2892,6 +2892,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 #   PAGE_VIEWS           "false" only; unset means page_viewed events
 #   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
+#   RPC_FORENSICS        "false" only; unset means a failed RPC's span carries
+#                        its redacted request shape
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
 #                        default "identified" and browser telemetry is not
 #                        off; unset means identified
@@ -2905,6 +2907,7 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
         | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
         | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {}) \
+        | ({RPC_FORENSICS = "false"} if _t and not _t.rpc_forensics else {}) \
         | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 

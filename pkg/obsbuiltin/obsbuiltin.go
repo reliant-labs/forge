@@ -1,7 +1,7 @@
 // Package obsbuiltin builds forge's built-in product analytics dashboards:
-// the Traffic and Users sections of a project's Overview, and the Users,
-// Product and Acquisition dashboards. Every panel is a sql panel over the
-// hosted per-org product_events table (and, for one figure, error_events), in
+// the Traffic and Users sections of a project's Overview, and the Product
+// analytics hub's Overview, Users, Product and Acquisition dashboards. Every
+// panel is a sql panel over the hosted per-org product_events table (and, for one figure, error_events), in
 // the pkg/dashspec vocabulary, so the Reliant console draws them with no
 // chart code of its own.
 //
@@ -40,9 +40,13 @@ import (
 
 // The ids of the built-in product dashboards.
 const (
-	UsersID       = "users"
-	ProductID     = "product"
-	AcquisitionID = "acquisition"
+	// ProductOverviewID is the Product analytics hub's first tab, the
+	// product story on one screen (not the project's "overview" dashboard,
+	// which ExtendOverview extends).
+	ProductOverviewID = "product-overview"
+	UsersID           = "users"
+	ProductID         = "product"
+	AcquisitionID     = "acquisition"
 	// SupersededUsageID is the generated "Product usage" dashboard the
 	// Product dashboard replaces (Dashboard.Replaces), so a reader moves its
 	// stars and copies.
@@ -52,7 +56,7 @@ const (
 // IsDashboard reports whether id is one of the built-in product dashboards.
 // They read product_events, which only a hosted environment has.
 func IsDashboard(id string) bool {
-	return id == UsersID || id == ProductID || id == AcquisitionID
+	return id == ProductOverviewID || id == UsersID || id == ProductID || id == AcquisitionID
 }
 
 // Input is what the builders read.
@@ -79,14 +83,15 @@ type Input struct {
 	Activity obsquery.Activity
 }
 
-// Dashboards are the built-in product dashboards for in: Users and Product
-// always, Acquisition when the project has a browser frontend. Empty when
-// the project opted out (Analytics.DashboardsEnabled).
+// Dashboards are the built-in product dashboards for in, in the hub's tab
+// order: the Overview, Users and Product always, Acquisition when the project
+// has a browser frontend. Empty when the project opted out
+// (Analytics.DashboardsEnabled).
 func Dashboards(in Input) []dashspec.Dashboard {
 	if !in.Analytics.DashboardsEnabled() {
 		return nil
 	}
-	out := []dashspec.Dashboard{Users(in), Product(in)}
+	out := []dashspec.Dashboard{ProductOverview(in), Users(in), Product(in)}
 	if in.Web {
 		out = append(out, Acquisition(in))
 	}
@@ -106,15 +111,27 @@ func (in Input) withActivity(d dashspec.Dashboard) dashspec.Dashboard {
 	if err != nil { // the table is a constant: unreachable
 		return d
 	}
-	panels := make([]dashspec.Panel, len(d.Panels))
-	for i, p := range d.Panels {
+	d.Panels = withEvidence(d.Panels, evidence)
+	return d
+}
+
+// withEvidence is panels reading evidence wherever they read
+// obsquery.UserActivityEvidence, the figures an attention panel reads alone
+// included.
+func withEvidence(panels []dashspec.Panel, evidence string) []dashspec.Panel {
+	out := make([]dashspec.Panel, len(panels))
+	for i, p := range panels {
 		p.SQL = strings.ReplaceAll(p.SQL, obsquery.UserActivityEvidence, evidence)
 		p.TrendSQL = strings.ReplaceAll(p.TrendSQL, obsquery.UserActivityEvidence, evidence)
 		p.SubtitleSQL = strings.ReplaceAll(p.SubtitleSQL, obsquery.UserActivityEvidence, evidence)
-		panels[i] = p
+		if p.Attention != nil {
+			a := *p.Attention
+			a.Figures = withEvidence(a.Figures, evidence)
+			p.Attention = &a
+		}
+		out[i] = p
 	}
-	d.Panels = panels
-	return d
+	return out
 }
 
 // envFilter is the built-in dashboards' one dropdown. They have no service
@@ -156,6 +173,51 @@ func chart(section, id, title, desc, sql string, display *dashspec.Display, w, h
 func table(section, id, title, desc, sql string, w, h int) dashspec.Panel {
 	return dashspec.Panel{Section: section, ID: id, Title: title, Description: desc, Kind: dashspec.KindSQL, SQL: sql, Width: w, Height: h}
 }
+
+// ranking is a sql panel drawn as a bar list (dashspec.StyleBarList): rows
+// ranked by their first value column unless display names another (Bar). A
+// reader that predates the style draws the rows as the table they were.
+func ranking(section, id, title, desc, sql string, display dashspec.Display, w, h int) dashspec.Panel {
+	display.Style = dashspec.StyleBarList
+	return dashspec.Panel{Section: section, ID: id, Title: title, Description: desc, Kind: dashspec.KindSQL, SQL: sql, Unit: dashspec.UnitCount,
+		Display: &display, Width: w, Height: h}
+}
+
+// steps lays a funnel out as steps on a log scale (dashspec.LayoutSteps):
+// the built-in funnels' first step counts visitors and the later ones people,
+// orders of magnitude apart, which bars scaled to the first step flatten.
+func steps(p dashspec.Panel) dashspec.Panel {
+	d := *p.Display
+	d.Layout = dashspec.LayoutSteps
+	p.Display = &d
+	return p
+}
+
+// withGood says which way each figure of panels named in good is better
+// (Display.Good), so a reader colours its change and an attention panel can
+// watch it. It is applied after a builder lays its panels out, so the
+// statements stay where they are.
+func withGood(panels []dashspec.Panel, good map[string]dashspec.Direction) []dashspec.Panel {
+	out := make([]dashspec.Panel, len(panels))
+	for i, p := range panels {
+		if dir, ok := good[p.ID]; ok {
+			var d dashspec.Display
+			if p.Display != nil {
+				d = *p.Display
+			}
+			d.Good = dir
+			p.Display = &d
+		}
+		out[i] = p
+	}
+	return out
+}
+
+// The directions, short.
+const (
+	up   = dashspec.GoodUp
+	down = dashspec.GoodDown
+)
 
 // bars draws a sql result as bars, one colour per value column (or per
 // series of a long result), stacked when stack is set.

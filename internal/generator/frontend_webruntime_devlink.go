@@ -170,7 +170,7 @@ const devNpmrcMarker = "# forge-dev-workspace-root: GITIGNORED, written by a DEV
 // 11.0.0). The scaffold's own frontends skip that line (vitest ^5) and install
 // fine, which is why only a bridged project hits it. legacy-peer-deps skips the peer-set
 // walk. It loses nothing here: every peer web-runtime declares (react,
-// @connectrpc/connect, @bufbuild/protobuf, @opentelemetry/api, @hyperdx/browser,
+// @connectrpc/connect, @bufbuild/protobuf, @opentelemetry/api,
 // @tanstack/react-query) is also a direct dependency of the frontends, which
 // is what keeps a single copy of each in the tree. The same holds for vite,
 // the peer of vitest and @vitejs/plugin-react: the frontends declare the major

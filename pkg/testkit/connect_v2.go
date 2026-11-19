@@ -68,7 +68,9 @@ func ValidateRequestsV2() connectv2.ServerInterceptor {
 // request-validation warning (validate.go), then svcerr.InterceptorV2,
 // innermost — NewConnectClient's chain. Server and client both read messages
 // of any size, as v1's do (v2's default is 4 MiB). The client's HTTP client is
-// traced, so a test's own span is the parent of the server's.
+// traced, so a test's own span is the parent of the server's. The client runs
+// svcerr.ClientInterceptorV2, so a test reads the reason a call failed with
+// as svcerr.MetaOf(err).Get(svcerr.ReasonHeader) — v1's ce.Meta().
 func NewConnectClientV2[C any](
 	t *testing.T,
 	register func(server *connectv2.Server),
@@ -92,7 +94,7 @@ func NewConnectClientV2[C any](
 	})
 	transport := connecthttp.NewTransport(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL,
 		connecthttp.WithReadMaxBytes(0))
-	return srv, newClient(connectv2.NewClient(transport))
+	return srv, newClient(connectv2.NewClient(transport, svcerr.ClientInterceptorV2()))
 }
 
 // newWarnInvalidRequestsV2 is newWarnInvalidRequests' v2 interceptor: it

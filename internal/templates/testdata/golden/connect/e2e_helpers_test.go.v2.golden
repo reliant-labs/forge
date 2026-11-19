@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/svcerr"
 
 	pb "github.com/example/demo/gen/services/orders/v1"
 	"github.com/example/demo/gen/services/orders/v1/ordersv1connect"
@@ -34,11 +35,14 @@ func freePort() int {
 // from github.com/reliant-labs/forge/pkg/tdd.
 //
 // connect-go v2 clients wrap a transport; WithReadMaxBytes(0) keeps the
-// response size unbounded, as a connect-go v1 client was.
+// response size unbounded, as a connect-go v1 client was, and
+// svcerr.ClientInterceptorV2 lets a test read the reason a call failed with
+// as svcerr.MetaOf(err).Get(svcerr.ReasonHeader).
 func newClient(t *testing.T, baseURL string) ordersv1connect.OrdersServiceClient {
 	t.Helper()
 	return ordersv1connect.NewOrdersServiceClient(connect.NewClient(
 		connecthttp.NewTransport(http.DefaultClient, baseURL, connecthttp.WithReadMaxBytes(0)),
+		svcerr.ClientInterceptorV2(),
 	))
 }
 

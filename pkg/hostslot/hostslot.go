@@ -192,9 +192,34 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 		}
 		return expressQ.ahead("")
 	}
+	// admit takes a slot for this lane. The express check before it is not
+	// enough alone: an express waiter can file its ticket after that check
+	// and before the lock, and a bulk waiter that then took the freed slot
+	// would overtake it. So a bulk waiter checks again once it holds the
+	// lock, and gives the slot back if an express ticket is live. An express
+	// waiter files its ticket before it tries any slot, so either the
+	// re-check sees that ticket, or the bulk lock came first and the slot
+	// was never free for it.
+	admit := func() (bool, []Holder, error) {
+		if lane != LaneExpress && bulkAdmitting != nil {
+			bulkAdmitting()
+		}
+		ok, h, err := s.tryAny(dir, opt)
+		if err != nil || !ok || lane == LaneExpress {
+			return ok, h, err
+		}
+		if expressQ.ahead("") > 0 {
+			s.giveBack()
+			if deferredToExpress != nil {
+				deferredToExpress()
+			}
+			return false, nil, nil
+		}
+		return true, nil, nil
+	}
 	var holders []Holder
 	if own.ahead("") == 0 && expressFirst() == 0 {
-		ok, h, err := s.tryAny(dir, opt)
+		ok, h, err := admit()
 		if err != nil {
 			return nil, err
 		}
@@ -224,7 +249,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 			}
 		}
 		if ahead < reach && first == 0 {
-			ok, h, err := s.tryAny(dir, opt)
+			ok, h, err := admit()
 			if err != nil {
 				return nil, err
 			}
@@ -249,6 +274,18 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 // deferredToExpress, when set (tests only), runs each time a bulk waiter
 // that could try for a slot defers to a live express ticket instead.
 var deferredToExpress func()
+
+// bulkAdmitting, when set (tests only), runs each time a bulk waiter has
+// found no express ticket live and is about to lock a slot.
+var bulkAdmitting func()
+
+// giveBack unlocks a slot tryAny just took, leaving s able to try again.
+func (s *Slot) giveBack() {
+	_ = s.file.Truncate(0)
+	_ = unlock(s.file)
+	_ = s.file.Close()
+	s.file, s.index, s.nonce = nil, -1, ""
+}
 
 // tryAny tries once every slot this slot's lane may lock (Capacity.laneOrder:
 // each range from a random start, so concurrent waiters do not all contend on

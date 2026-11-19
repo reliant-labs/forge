@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -205,6 +206,61 @@ func TestAcquire_ExpressWaiterBeatsAnOlderBulkWaiter(t *testing.T) {
 	} else {
 		_ = s.Release()
 	}
+}
+
+// The check-to-lock race: a bulk waiter finds no express ticket, and before
+// it locks the slot an express waiter files one and the slot frees. The bulk
+// waiter must give the slot back to the express waiter, not keep it.
+func TestAcquire_ExpressTicketFiledBetweenBulkCheckAndLockGoesFirst(t *testing.T) {
+	opt := testOpts(t, 1) // R=0: one slot, both lanes contend for it
+	held := acquire(t, opt)
+	defer func() { _ = held.Release() }()
+
+	reached, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	bulkAdmitting = func() {
+		once.Do(func() {
+			close(reached)
+			<-resume
+		})
+	}
+	t.Cleanup(func() { bulkAdmitting = nil }) // runs after the waiters' cleanups
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	bulkWaiter := make(chan acquired, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s, err := Acquire(ctx, Heavy, opt)
+		bulkWaiter <- acquired{s, err}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		select {
+		case r := <-bulkWaiter:
+			if r.slot != nil {
+				_ = r.slot.Release()
+			}
+		default:
+		}
+	})
+
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the bulk waiter never reached its slot lock")
+	}
+	// The bulk waiter has passed its express check: file an express ticket
+	// and free the slot before it locks.
+	expressWaiter := startAcquire(t, withLane(opt, LaneExpress), 1)
+	_ = held.Release()
+	close(resume)
+
+	s := receive(t, expressWaiter)
+	notYet(t, bulkWaiter, "the bulk waiter that checked before the express ticket was filed")
+	_ = s.Release()
+	_ = receive(t, bulkWaiter).Release()
 }
 
 func TestAcquire_SingleSlotReservesNoneButExpressGoesFirst(t *testing.T) {

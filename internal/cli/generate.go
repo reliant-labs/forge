@@ -777,6 +777,10 @@ func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep
 			defer stopBeat()
 			return step.Run(ctx)
 		}()
+		// What the step left on disk is forge's: a failed run later rewinds
+		// a path only while it is still in this state, and spares one
+		// another writer changed after it (forge#2267).
+		checksums.SettleJournal(ctx.AbsPath)
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}
@@ -1174,7 +1178,11 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	changed := checksums.ChangedJournalPaths(absPath)
 	journaled := checksums.JournaledPaths()
 	born := checksums.ScaffoldsCreatedThisRun()
-	restored, failed := checksums.RestoreRollbackReport(absPath)
+	res := checksums.RestoreRollbackDetailed(absPath)
+	restored, failed, spared, unverified := res.Restored, res.Failed, res.Spared, res.Unverified
+	// A spared or unverified path is not back to its pre-run state either:
+	// the residue check below must not count it as restored.
+	failed = append(append(append([]string(nil), failed...), spared...), unverified...)
 	var unborn []string
 	for _, p := range born {
 		if _, statErr := os.Stat(filepath.Join(absPath, filepath.FromSlash(p))); os.IsNotExist(statErr) {
@@ -1195,6 +1203,8 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting (no write this run was recorded). The rest of the "+
 				"tree could not be checked — run `git status` to confirm it is as you left it.")
 		}
+		writeSparedFiles(os.Stderr, spared)
+		writeUnverifiedFiles(os.Stderr, unverified)
 		reprintCompilerOutput(stepErr, "")
 		return true
 	}
@@ -1221,6 +1231,8 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 		Consistency: consistency,
 		Residue:     residue,
 		Unborn:      unborn,
+		Spared:      spared,
+		Unverified:  unverified,
 	})
 
 	preservedAt := ""

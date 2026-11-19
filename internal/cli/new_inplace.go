@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/generator"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -140,6 +142,23 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			res.kept = append(res.kept, relSlash)
 			return nil
 		case readErr == nil:
+			// --force replaces scaffold content, never the identity of the
+			// deployment it belongs to. Read the real target, not staging.
+			if relSlash == "forge.yaml" {
+				var prior struct {
+					ID string `yaml:"project_instance_id"`
+				}
+				if err := yaml.Unmarshal(existing, &prior); err != nil {
+					return fmt.Errorf("preserve project identity: %w", err)
+				}
+				if err := generator.SetProjectConfigScalar(src, "project_instance_id", prior.ID); err != nil {
+					return err
+				}
+				content, err = os.ReadFile(src)
+				if err != nil {
+					return err
+				}
+			}
 			res.overwritten = append(res.overwritten, relSlash)
 		case !os.IsNotExist(readErr):
 			if info, statErr := os.Stat(dest); statErr == nil && info.IsDir() {

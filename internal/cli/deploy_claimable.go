@@ -131,10 +131,11 @@ var claimableNow = time.Now
 // claimableSession is one anonymous deploy as this invocation sees it: where it
 // lives, its token, and its claim facts. It is what the output renders.
 type claimableSession struct {
-	ep      cloud.Endpoint
-	project string
-	env     string
-	cred    credentials.Credential
+	ep         cloud.Endpoint
+	project    string
+	instanceID string
+	env        string
+	cred       credentials.Credential
 	// reused is true when the stored deploy of an earlier run was used.
 	reused bool
 }
@@ -302,6 +303,18 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// One availability answer serves the caps every check below judges
 		// by, the preview and the preflight.
 		answer := askClaimableAvailability(ctx, ep)
+		instanceID, err := claimableProjectInstanceID()
+		if err != nil {
+			return err
+		}
+		if instanceID != "" && !answer.av.ProjectInstanceIDs {
+			if answer.err != nil {
+				return claimableUnavailableError(envName, ep, []cloud.ClaimableCause{{Code: cloud.ClaimableCauseDependencyUnavailable,
+					Component: "project_instances", Message: fmt.Sprintf("cannot verify project instance support: %v", answer.err)}})
+			}
+			return claimableUnavailableError(envName, ep, []cloud.ClaimableCause{{Code: cloud.ClaimableCauseNotSupported,
+				Component: "project_instances", Message: "this control plane does not yet support project instance identities; complete the platform identity rollout before deploying this new project, and keep project_instance_id unchanged"}})
+		}
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
 		if f.promote.planOnly {
@@ -323,11 +336,13 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		// Before any proof of work, any account and any build: can the
 		// platform take this env anonymously at all right now?
-		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow())
+		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow(), instanceID)
 		if err := requireClaimableAvailable(answer, ep, envName, entities, storedErr != nil); err != nil {
 			return err
 		}
-		session, err := obtainClaimable(ctx, out, ep, project, envName)
+		session, err := obtainClaimable(ctx, out, ep, project, envName, instanceID, func() error {
+			return requireClaimableBuildTools(ctx, entities)
+		})
 		if err != nil {
 			return err
 		}
@@ -818,20 +833,20 @@ func claimableCauseLabel(c cloud.ClaimableCause) string {
 // obtainClaimable returns this machine's anonymous deploy for (project, env):
 // the stored one when the control plane still accepts its token, otherwise a
 // fresh one from StartClaimableDeploy.
-func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, project, env string) (*claimableSession, error) {
+func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, project, env, instanceID string, beforeStart func() error) (*claimableSession, error) {
 	now := claimableNow()
-	if stored, err := cloud.LoadClaimable(ep, project, env, now); err == nil {
+	if stored, err := cloud.LoadClaimable(ep, project, env, now, instanceID); err == nil {
 		switch err := probeClaimableToken(ctx, ep, stored.Token); {
 		case err == nil:
 			fmt.Fprintf(out, "Reusing this machine's claimable deploy of %s/%s (goes offline %s)\n",
 				project, env, stored.Claimable.ExpiresAt.UTC().Format(time.RFC3339))
-			return &claimableSession{ep: ep, project: project, env: env, cred: stored, reused: true}, nil
+			return &claimableSession{ep: ep, project: project, env: env, instanceID: instanceID, cred: stored, reused: true}, nil
 		case isClaimedError(err):
 			return nil, claimableClaimedError(env)
 		case isDeadTokenError(err):
 			// Expired or unknown to the control plane: the deploy is gone, so
 			// mint a new one rather than fail on a token nobody accepts.
-			_ = cloud.ForgetClaimable(ep, project, env)
+			_ = cloud.ForgetClaimable(ep, project, env, instanceID)
 		default:
 			return nil, err
 		}
@@ -839,6 +854,11 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 		return nil, err
 	}
 
+	// Check local prerequisites only when minting, including a cached token
+	// the server no longer accepts. A valid cached release may need no build.
+	if err := beforeStart(); err != nil {
+		return nil, err
+	}
 	api := claimableAPI(ep)
 	deviceID, err := cloud.ClaimableDeviceID()
 	if err != nil {
@@ -856,7 +876,7 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 			return nil, err
 		}
 		started, err = api.Start(ctx, cloud.ClaimableStartRequest{
-			Project: project, Env: env, DeviceID: deviceID, PoWChallenge: ch.Challenge, PoWNonce: nonce,
+			Project: project, Env: env, ProjectInstanceID: instanceID, DeviceID: deviceID, PoWChallenge: ch.Challenge, PoWNonce: nonce,
 		})
 		if err == nil {
 			break
@@ -869,13 +889,13 @@ func obtainClaimable(ctx context.Context, out io.Writer, ep cloud.Endpoint, proj
 		}
 		return nil, claimableStartError(ep, env, err)
 	}
-	cred, err := cloud.StoreClaimable(ep, project, env, started, now)
+	cred, err := cloud.StoreClaimable(ep, project, env, started, now, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("the anonymous deploy was created but its token could not be saved (%w); "+
 			"claim link: %s\n  nothing was published; fix the credential store, then re-run: %s env deploy %s --claimable",
 			err, started.ClaimURL, Name(), env)
 	}
-	return &claimableSession{ep: ep, project: project, env: env, cred: cred, reused: started.Reused}, nil
+	return &claimableSession{ep: ep, project: project, env: env, instanceID: instanceID, cred: cred, reused: started.Reused}, nil
 }
 
 // probeClaimableToken asks the control plane one cheap question with the
@@ -1030,7 +1050,7 @@ func (s *claimableSession) refreshURL(ctx context.Context) {
 	}
 	if url := primaryURL(st.Workloads); url != "" {
 		s.cred.Claimable.URL = url
-		_ = cloud.RecordClaimableURL(s.ep, s.project, s.env, url)
+		_ = cloud.RecordClaimableURL(s.ep, s.project, s.env, url, s.instanceID)
 	}
 }
 
@@ -1053,7 +1073,7 @@ func (s *claimableSession) recordAttempt(deployErr error) {
 	} else {
 		cl.LastAttemptError = cloud.FirstErrorLine(deployErr)
 	}
-	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr)
+	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr, s.instanceID)
 }
 
 // primaryURL is the address to show first: the static site's when there is one,
@@ -1244,8 +1264,12 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		return err
 	}
 	project := hostedProjectName()
+	instanceID, err := claimableProjectInstanceID()
+	if err != nil {
+		return err
+	}
 	now := claimableNow()
-	stored, err := cloud.LoadClaimable(ep, project, env, now)
+	stored, err := cloud.LoadClaimable(ep, project, env, now, instanceID)
 	if err != nil {
 		if errors.Is(err, credentials.ErrNotFound) {
 			return fmt.Errorf("this machine has no claimable deploy of %s/%s at %s (none made, or it was deleted).\n"+
@@ -1257,7 +1281,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 	if perr == nil {
 		// The live address, when the platform has one: a deploy that went
 		// live after its run ended, or the proof that something is.
-		session := &claimableSession{ep: ep, project: project, env: env, cred: stored}
+		session := &claimableSession{ep: ep, project: project, env: env, instanceID: instanceID, cred: stored}
 		session.refreshURL(ctx)
 		stored = session.cred
 	}
@@ -1292,4 +1316,13 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 	}
 	printClaimBlock(os.Stdout, env, doc)
 	return nil
+}
+
+// Read the source-controlled identity; absent on legacy projects intentionally.
+func claimableProjectInstanceID() (string, error) {
+	cfg, err := loadProjectConfig()
+	if err != nil {
+		return "", err
+	}
+	return cfg.ProjectInstanceID, nil
 }

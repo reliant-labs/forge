@@ -250,6 +250,14 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		Procedure:  procedure,
 		Endpoint:   c.Endpoint.URL,
 	}
+	// Evidence IDs link a refusal to operator diagnostics without exposing
+	// private scanner rules or source content in the client response.
+	defer func() {
+		evidence := strings.TrimSpace(resp.Header.Get("x-evidence-id"))
+		if evidence != "" && len(evidence) <= 128 && !strings.ContainsAny(evidence, "\r\n") {
+			out.message += "\n  evidence: " + evidence
+		}
+	}()
 	// A body that was not a Connect envelope — a proxy's HTML page — has
 	// no message of its own, so the raw body is the only thing that says
 	// anything. Used for DISPLAY only, which is why it is bounded.
@@ -280,6 +288,14 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 	}
 
 	cred := c.credential()
+	if resp.StatusCode == http.StatusForbidden && out.Code != CodeUnauthenticated && credentialProblem(out.Reason) == "" && !missingScopeRe.MatchString(detail) {
+		out.message = fmt.Sprintf("%s is not permitted for this caller (HTTP %d%s) against %s%s\nfix: check the selected organization and ask its owner for the required access; `forge cloud org list` lists your organizations",
+			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL, detailSuffix(detail))
+		if out.Reason != "" {
+			out.message += "\n  reason: " + out.Reason
+		}
+		return out
+	}
 	switch resp.StatusCode {
 	case http.StatusServiceUnavailable:
 		if out.Reason == ReasonAccessTokenUnavailable {

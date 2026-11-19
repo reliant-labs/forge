@@ -27,7 +27,8 @@ import (
 
 // AppSpec is what an adopted app's forge files declare.
 type AppSpec struct {
-	ProjectName string
+	ProjectName       string
+	ProjectInstanceID string
 	// Workloads are what workloads.k declares and staging/prod host: the
 	// app's own images (Build set) and third-party images forge copies into
 	// the org's registry (Build nil).
@@ -140,7 +141,7 @@ const AppGitignore = siteGitignore
 // deploy/kcl/kcl.mod, deploy/kcl/workloads.k and the dev / staging / prod
 // envs, in that order. It writes nothing (`--dry-run` prints them).
 func RenderAppScaffold(spec AppSpec, harness Harness) ([]AppFile, error) {
-	cfg := config.ProjectConfig{Name: spec.ProjectName, ForgeVersion: buildinfo.Version()}
+	cfg := config.ProjectConfig{Name: spec.ProjectName, ProjectInstanceID: spec.ProjectInstanceID, ForgeVersion: buildinfo.Version()}
 	if harness != "" {
 		cfg.Harness = string(harness.Normalized())
 	}
@@ -174,6 +175,11 @@ func RenderAppScaffold(spec AppSpec, harness Harness) ([]AppFile, error) {
 // harness's agent files when one was asked for. The app's memory is the
 // any-language one (ProjectMemoryData.Container).
 func WriteAppScaffold(dir string, spec AppSpec, harness Harness) error {
+	instanceID, err := scaffoldProjectInstanceID(dir)
+	if err != nil {
+		return err
+	}
+	spec.ProjectInstanceID = instanceID
 	files, err := RenderAppScaffold(spec, harness)
 	if err != nil {
 		return err

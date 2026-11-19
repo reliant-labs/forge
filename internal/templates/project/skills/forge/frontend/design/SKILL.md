@@ -19,7 +19,7 @@ Cover, at minimum:
 - **Fidelity** — Sketch / wireframe / hi-fi / production code? Don't ship pixel-polish when the user wanted a wireframe.
 - **Content** — Is the copy real or placeholder? If placeholder, will real copy be longer/shorter? Many layouts break when real copy arrives.
 
-Skip the brief only for small tweaks ("change this color", "add this button") or when the user has clearly given you everything.
+Skip the brief for small tweaks ("change this color", "add this button"), when the user has clearly given you everything, or for a simple functional tool whose scope is already concrete (for example, one counter and one button). In that last case, use the scaffold's existing type and color tokens, implement the requested flow and its loading/error states, and continue through the requested deployment. Do not turn a functional test into a branding exercise; ask for a brief when a new visual identity is actually part of the work.
 
 ### The "decide for me" fallback
 

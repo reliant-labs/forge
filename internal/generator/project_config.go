@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
@@ -15,6 +16,10 @@ import (
 )
 
 func (g *ProjectGenerator) writeProjectConfig() error {
+	instanceID, err := scaffoldProjectInstanceID(g.Path)
+	if err != nil {
+		return err
+	}
 	// Persist `binary:` only when explicitly opted-in (shared) so existing
 	// forge.yaml files keep their cleaner shape and the field is omitted by
 	// default. EffectiveBinary on the read-side defaults this to per-service.
@@ -33,10 +38,11 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	// (config.ApplyDerivedDefaults); they remain valid in forge.yaml as
 	// overrides, just not required boilerplate.
 	cfg := config.ProjectConfig{
-		Name:         g.Name,
-		ModulePath:   g.ModulePath,
-		Binary:       binaryYAML,
-		ForgeVersion: g.recordedForgeVersion(),
+		Name:              g.Name,
+		ProjectInstanceID: instanceID,
+		ModulePath:        g.ModulePath,
+		Binary:            binaryYAML,
+		ForgeVersion:      g.recordedForgeVersion(),
 		// The harness choice has to survive `forge project new`: every later
 		// `forge generate` decides whether to deliver on-disk skills from it,
 		// and the flag is gone by then. Written for EVERY harness including
@@ -94,6 +100,25 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 	}
 
 	return nil
+}
+
+// Preserve identity when scaffolding is resumed. Legacy projects deliberately
+// keep the empty identity so upgrading cannot orphan an existing deployment.
+func scaffoldProjectInstanceID(dir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "forge.yaml"))
+	if os.IsNotExist(err) {
+		return uuid.NewString(), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var existing struct {
+		ID string `yaml:"project_instance_id"`
+	}
+	if err := yaml.Unmarshal(raw, &existing); err != nil {
+		return "", fmt.Errorf("read project instance identity: %w", err)
+	}
+	return existing.ID, nil
 }
 
 // recordedForgeVersion is the forge_version a scaffolded forge.yaml records:

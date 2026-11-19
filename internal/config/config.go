@@ -94,6 +94,10 @@ func EffectiveProjectBinary(binary string) string {
 type ProjectConfig struct {
 	Name       string `yaml:"name"`
 	ModulePath string `yaml:"module_path,omitempty"`
+	// ProjectInstanceID distinguishes independently scaffolded projects with
+	// the same name. Commit it with the project: clones and worktrees resume
+	// the same anonymous deployment. Empty preserves legacy name-based identity.
+	ProjectInstanceID string `yaml:"project_instance_id,omitempty"`
 	// Kind is the project shape (service|cli|library). It is not a forge.yaml
 	// field: the loader DERIVES it from the project's real sources — the KCL
 	// deploy tree, the pkg/app composition root, internal/handlers/, the

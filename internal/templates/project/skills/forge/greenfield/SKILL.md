@@ -13,6 +13,13 @@ over generated Connect RPC hooks. A frontend-only site follows
 
 ## Greenfield, end to end
 
+Choose the hosting path before scaffolding. With no account, add `--claimable`
+to `forge project new`: it sizes prod for anonymous hosting and defaults to
+`--auth-mode none`, so a public tool does not ship unused sign-in pages.
+Signed-in projects keep the ordinary defaults. For a public app in either
+path, explicitly use `--auth-mode none` and mark its public RPCs
+`auth_required: false`.
+
 ```bash
 forge project new my-app --mod github.com/acme/my-app \
   --service customers --service jobs --service estimates --frontend web
@@ -51,7 +58,7 @@ deployment unit, not a domain entity, so forge never invents a service from its 
 | `--kind site` | `--in-place` only: adopts the Vite or Next.js app at the directory root as a frontend-only project — writes `forge.yaml` and the `deploy/kcl` envs, no Go (`deploy/static-site`) |
 | `--name` | names an `--in-place` project whose directory is a worktree or branch name rather than the product |
 | `--path <dir>` | parent directory for the project (default `.`) |
-| `--claimable` | deploying with no account (`forge env deploy prod --claimable`): sizes prod to the free anonymous plan, which the default prod does not fit; leave it off to deploy signed in |
+| `--claimable` | deploying with no account (`forge env deploy prod --claimable`): sizes prod to the free anonymous plan and defaults to no sign-in pages; leave it off to deploy signed in |
 
 Everything else has a working default — `--kind` (`service` / `cli` / `library`,
 each with its own `features:` block), `--harness` (`none` writes no agent file at

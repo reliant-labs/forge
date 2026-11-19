@@ -333,3 +333,24 @@ func TestCall_PlainRejectionKeepsGenericLoginAdvice(t *testing.T) {
 		t.Errorf("generic advice lost:\n%s", got)
 	}
 }
+
+func TestPermissionDeniedDoesNotRecommendLogin(t *testing.T) {
+	srv := connectErrorServer(t, http.StatusForbidden, map[string]any{"code": "permission_denied", "message": "project not available to this caller"}, "")
+	err := callAgainst(t, srv)
+	if err == nil {
+		t.Fatal("expected refusal")
+	}
+	if strings.Contains(err.Error(), "forge login") || !strings.Contains(err.Error(), "forge cloud org list") {
+		t.Fatalf("wrong remedy: %v", err)
+	}
+}
+
+func TestRefusalDisplaysEvidenceReference(t *testing.T) {
+	c := NewClient(Endpoint{URL: "https://example.test"}, Credential{})
+	resp := &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header)}
+	resp.Header.Set("x-evidence-id", "36f2d376-8f88-4d98-bfdb-21e3ca561928")
+	err := c.connectError("RecordBundle", resp, []byte(`{"code":"failed_precondition","message":"content refused"}`))
+	if !strings.Contains(err.Error(), "evidence: 36f2d376-8f88-4d98-bfdb-21e3ca561928") {
+		t.Fatalf("missing evidence: %v", err)
+	}
+}

@@ -38,8 +38,14 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Frontend
-node_modules/
-.next/
-.turbo/
-out/
+# Frontends live under frontends/<name>; Docker patterns without ** only
+# match the context root. Exclude installs and outputs at every depth so a
+# local frontend build cannot inflate or invalidate the backend image context.
+**/node_modules/
+**/.next/
+**/.next-prod/
+**/.turbo/
+**/out/
+**/dist/
+**/coverage/
+**/*.tsbuildinfo

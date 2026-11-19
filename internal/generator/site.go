@@ -44,10 +44,15 @@ type SiteFrontend struct {
 // dir is normally a staging directory the caller merges into the project
 // (the in-place rule that an existing file is kept unless --force).
 func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend) error {
+	instanceID, err := scaffoldProjectInstanceID(dir)
+	if err != nil {
+		return err
+	}
 	cfg := config.ProjectConfig{
-		Name:         projectName,
-		ForgeVersion: buildinfo.Version(),
-		Harness:      string(harness.Normalized()),
+		Name:              projectName,
+		ProjectInstanceID: instanceID,
+		ForgeVersion:      buildinfo.Version(),
+		Harness:           string(harness.Normalized()),
 	}
 	data, err := yaml.Marshal(config.NormalizeForWrite(&cfg))
 	if err != nil {

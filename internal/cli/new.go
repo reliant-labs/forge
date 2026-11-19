@@ -123,7 +123,7 @@ Valid feature names: orm, codegen, migrations, ci, build, deploy,
 contracts, docs, frontend, observability, hot_reload.
 
 --auth-mode picks the sign-in system of a service project with a frontend.
-native (the default) scaffolds today's: the users in deploy/kcl/identity.k,
+native (the default unless --claimable) scaffolds today's: the users in deploy/kcl/identity.k,
 the dev identity provider and mail catcher, the sign-in pages and the route
 guard. none scaffolds an app nobody signs in to: no identity, no dev IdP, a
 public frontend with no route guard and no sign-in pages, and a login broker
@@ -131,6 +131,9 @@ that is never mounted. The API still authenticates, fail-closed: an rpc
 answers anonymous callers only when its proto declares
 ` + "`option (forge.v1.method) = { auth_required: false }`" + `; every other rpc
 answers 401, because nothing can issue the token it requires.
+With --claimable, the default is none: anonymous previews cannot collect
+passwords or one-time codes. Explicit --auth-mode native still scaffolds sign-in,
+but the deploy must be claimed before those pages can be published.
 
 Example:
   forge project new my-project --mod github.com/example/my-project
@@ -197,11 +200,14 @@ checkout stop being the same source; drop the bridge with
 			defer func() { explicitForgeRoot, linkForgeDeclined = "", false }()
 			newClaimable = claimable
 			defer func() { newClaimable = false }()
-			newAuthMode, err = resolveNewAuthMode(cmd.Flags().Changed("auth-mode"), authMode, kindFlag, frontendNames)
+			newAuthMode, err = resolveNewAuthMode(cmd.Flags().Changed("auth-mode"), authMode, kindFlag, frontendNames, claimable)
 			if err != nil {
 				return err
 			}
 			defer func() { newAuthMode = "" }()
+			if claimable && newAuthMode == authModeNative {
+				fmt.Fprintln(cmd.OutOrStdout(), "--auth-mode native includes credential-collection pages: claim the deploy before publishing them, or use --auth-mode none for an anonymous preview.")
+			}
 			if dryRun && !strings.EqualFold(strings.TrimSpace(kindFlag), projectKindApp) {
 				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app would write, and needs --kind app", "",
 					"add --kind app --in-place inside the app, or drop --dry-run")
@@ -236,7 +242,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (default with --claimable — no identity, dev IdP or sign-in pages, a public frontend). Explicit native with --claimable requires claiming before publishing credential-collection pages. Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -1507,8 +1513,8 @@ func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
 // (generator.ProjectGenerator.Claimable).
 var newClaimable bool
 
-// newAuthMode is --auth-mode for the `project new` run in progress: "" when
-// not passed, else authModeNative or authModeNone
+// newAuthMode is the resolved --auth-mode for the `project new` run in progress:
+// "" for the ordinary implicit default, else authModeNative or authModeNone
 // (generator.ProjectGenerator.AuthNone).
 var newAuthMode string
 
@@ -1520,15 +1526,18 @@ const (
 	authModeNone   = "none"
 )
 
-// resolveNewAuthMode validates --auth-mode. It returns "" when the flag was
-// not passed, so the default stays today's behaviour: a service project with
-// a frontend gets the native sign-in system, one without a frontend gets
-// none, because it has nobody to sign in.
+// resolveNewAuthMode validates --auth-mode. An anonymous service preview gets
+// no sign-in system by default: credential collection requires claiming first.
+// Ordinary projects keep the native default, and explicit choices always win.
 //
 // It is optional on purpose. A required flag would break every existing
 // `forge project new` invocation, and forge is semver major 1.
-func resolveNewAuthMode(changed bool, value, kindFlag string, frontendNames []string) (string, error) {
+func resolveNewAuthMode(changed bool, value, kindFlag string, frontendNames []string, claimable bool) (string, error) {
 	if !changed {
+		kind := strings.ToLower(strings.TrimSpace(kindFlag))
+		if claimable && (kind == "" || kind == config.ProjectKindService) && len(frontendNames) > 0 {
+			return authModeNone, nil
+		}
 		return "", nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(value))

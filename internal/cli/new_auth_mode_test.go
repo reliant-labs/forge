@@ -13,12 +13,19 @@ func TestResolveNewAuthMode(t *testing.T) {
 		value     string
 		kind      string
 		frontends []string
+		claimable bool
 		want      string
 		wantErr   string
 	}{
 		// Not passed: "" keeps today's default whatever else is set.
 		{name: "unset", want: ""},
 		{name: "unset with a frontend", frontends: []string{"web"}, want: ""},
+		{name: "anonymous frontend defaults public", claimable: true, frontends: []string{"web"}, want: authModeNone},
+		{name: "anonymous explicit service defaults public", claimable: true, kind: "service", frontends: []string{"web"}, want: authModeNone},
+		{name: "anonymous explicit native preserved", claimable: true, changed: true, value: "native", frontends: []string{"web"}, want: authModeNative},
+		{name: "anonymous explicit none preserved", claimable: true, changed: true, value: "none", frontends: []string{"web"}, want: authModeNone},
+		{name: "anonymous backend only", claimable: true, want: ""},
+		{name: "anonymous static site", claimable: true, kind: "site", frontends: []string{"web"}, want: ""},
 		{name: "none", changed: true, value: "none", frontends: []string{"web"}, want: authModeNone},
 		{name: "native", changed: true, value: "native", frontends: []string{"web"}, want: authModeNative},
 		{name: "case and space", changed: true, value: " None ", frontends: []string{"web"}, want: authModeNone},
@@ -33,7 +40,7 @@ func TestResolveNewAuthMode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := resolveNewAuthMode(tc.changed, tc.value, tc.kind, tc.frontends)
+			got, err := resolveNewAuthMode(tc.changed, tc.value, tc.kind, tc.frontends, tc.claimable)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)

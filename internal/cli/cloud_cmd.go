@@ -504,6 +504,7 @@ Authenticate with ` + "`forge login`" + `, or set the declared token env var.`,
 	}
 	cmd.AddCommand(newCloudStatusCmd())
 	cmd.AddCommand(newCloudTokenCmd())
+	cmd.AddCommand(newCloudOrgCmd())
 	cmd.AddCommand(newCloudIdentityCmd())
 	// StrictGroup, not a bare group: cobra's default would accept
 	// `forge cloud <typo>` and exit 0, which for a command that talks to

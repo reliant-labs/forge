@@ -90,7 +90,7 @@ user asks; adopting a service means removing its marker, one service per PR
 
 ## The scaffolded frontend is starter code
 
-The dashboard's entity tiles, the sidebar nav, the sign-in screen and every generated list/detail/create/edit page prove the stack is wired; they are not a design. They are yours, and rewriting them is expected. Forge withholds a visual identity on purpose — an obviously neutral scaffold is easier to replace than an invented taste. Before showing any of it to a user, load `frontend/design`: it asks the user for a brief first.
+The dashboard's entity tiles, the sidebar nav, the sign-in screen and every generated list/detail/create/edit page prove the stack is wired; they are not a design. They are yours, and rewriting them is expected. Forge withholds a visual identity on purpose — an obviously neutral scaffold is easier to replace than an invented taste. Before showing any of it to a user, load `frontend/design`: it distinguishes a simple functional tool using existing tokens from visual work that needs a brief.
 
 ## Shipping
 
@@ -173,7 +173,7 @@ Staging and prod are already bound to Reliant hosted static hosting: the platfor
 
 ## Design
 
-The starter page is a placeholder that proves the site builds and deploys — not a design, and not something to hand a user. Ready to show means a brief (what the site is for, who it is for, how it should feel — only the user can give you that), real copy, and a layout built for it. Load `frontend/design` first; it asks for the brief and will not invent an aesthetic without one. `{{.CLI}} component search <thing>` searches forge's component library before you hand-write a control.
+The starter page is a placeholder that proves the site builds and deploys — not a design, and not something to hand a user. Ready to show means a brief (what the site is for, who it is for, how it should feel — only the user can give you that), real copy, and a layout built for it. Load `frontend/design` first; a simple functional tool can use existing tokens without a separate branding brief. `{{.CLI}} component search <thing>` searches forge's component library before you hand-write a control.
 
 A PWA is a static site too: forge builds, hosts and ships it like any other. The service worker and web manifest are yours to add — forge scaffolds neither.
 {{- if .Monitoring}}

@@ -47,8 +47,9 @@ The dashboard grid, sidebar nav, sign-in screen and generated CRUD pages exist
 to prove the stack is wired — Rails scaffolding, in React. They are all yours to
 rewrite, and rewriting them is expected. Forge withholds a visual identity
 deliberately: an invented one is harder to replace than an obviously neutral
-one. Before showing any of it to a user, load `frontend/design` — it asks for a
-brief first and will not invent an aesthetic without one.
+one. Before showing any of it to a user, load `frontend/design`: use existing
+tokens for a concrete functional tool; ask for a brief when choosing a visual
+identity.
 
 A Next.js frontend builds as a **static export** (`output: static`, into
 `out/`), the only shape hosted static hosting serves. So every route is

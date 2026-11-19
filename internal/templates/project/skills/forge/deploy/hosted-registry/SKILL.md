@@ -41,9 +41,15 @@ That is also what lets the in-app Deploy button push from a cloud daemon: the
 daemon's token is deposited where forge already looks, so no part of the flow
 needs a registry password it has no way to obtain.
 
-Two of forge's push paths read the docker credential store — `docker push` for
-images and go-containerregistry for a static site — so the login above covers
-both. The env's **config bundle does not use the store at all**: it presents the
+Backend images use `docker push`; static sites, source maps and image mirrors
+use ORAS. They resolve the same Docker credential for each registry host, so
+the login above covers every artifact. An anonymous deploy uses a temporary
+Docker config and pins its platform login to that file: an existing Desktop
+or OS keychain credential cannot override it, and the anonymous credential is
+never written into the user's keychain. Credentials for other registries stay
+available when a Dockerfile needs to pull a private base image.
+
+The env's **config bundle does not use the store at all**: it presents the
 env's control-plane credential to the registry's token realm itself, in memory,
 on every push. So a bundle reaches `registry.reliantapi.com` even when no image
 went there (control-plane-style envs push images to GAR and never log in to the

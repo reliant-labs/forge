@@ -39,10 +39,12 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// resolves through, and by `forge obs init`.
 			// scaffold: read by checksums.ExcludeGlobs at every write
 			// chokepoint (scaffold.exclude).
+			// project_instance_id: read by claimableProjectInstanceID for
+			// credential isolation and the server's anonymous start key.
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
-				"forge_version", "generate", "git", "harness", "k8s",
+				"forge_version", "generate", "git", "harness", "k8s", "project_instance_id",
 				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
 			},
 		},

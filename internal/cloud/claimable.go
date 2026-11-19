@@ -47,8 +47,12 @@ const ClaimableClientIDPrefix = "forge-cli-claimable"
 // ClaimableClientIDFor is the client id the anonymous token of (project, env)
 // is stored under. It is never equal to ClientID, which is all that makes a
 // stored claimable token unable to stand in for a `forge login`.
-func ClaimableClientIDFor(project, env string) string {
-	return ClaimableClientIDPrefix + "/" + project + "/" + env
+func ClaimableClientIDFor(project, env string, instanceID ...string) string {
+	key := ClaimableClientIDPrefix + "/" + project + "/" + env
+	if len(instanceID) > 0 && instanceID[0] != "" {
+		key += "/instance/" + instanceID[0]
+	}
+	return key
 }
 
 // SourceClaimable is the Credential.Source of the anonymous token.
@@ -84,11 +88,12 @@ type ClaimableChallenge struct {
 
 // ClaimableStartRequest is StartClaimableDeploy's request.
 type ClaimableStartRequest struct {
-	Project      string `json:"project"`
-	Env          string `json:"env"`
-	DeviceID     string `json:"deviceId"`
-	PoWChallenge string `json:"powChallenge"`
-	PoWNonce     string `json:"powNonce"`
+	Project           string `json:"project"`
+	ProjectInstanceID string `json:"projectInstanceId,omitempty"`
+	Env               string `json:"env"`
+	DeviceID          string `json:"deviceId"`
+	PoWChallenge      string `json:"powChallenge"`
+	PoWNonce          string `json:"powNonce"`
 }
 
 // ClaimableDeploy is StartClaimableDeploy's response: the anonymous deploy
@@ -128,10 +133,11 @@ const (
 // admitted now (enough for a static site), can an unclaimed service and
 // database run, and every reason not.
 type ClaimableAvailability struct {
-	Available        bool             `json:"available"`
-	Causes           []ClaimableCause `json:"causes,omitempty"`
-	ComputeAvailable bool             `json:"computeAvailable"`
-	ComputeCauses    []ClaimableCause `json:"computeCauses,omitempty"`
+	Available          bool             `json:"available"`
+	ProjectInstanceIDs bool             `json:"projectInstanceIds,omitempty"`
+	Causes             []ClaimableCause `json:"causes,omitempty"`
+	ComputeAvailable   bool             `json:"computeAvailable"`
+	ComputeCauses      []ClaimableCause `json:"computeCauses,omitempty"`
 	// Limits are the claimable plan's caps, as the control plane enforces
 	// them. Nil from a control plane that predates publishing them.
 	Limits *ClaimableLimits `json:"limits,omitempty"`
@@ -367,12 +373,12 @@ func seconds(v any) time.Duration {
 // LoadClaimable returns the stored anonymous deploy of (project, env) at ep,
 // or credentials.ErrNotFound. A stored entry whose token has expired is
 // reported as not found: its deploy is gone.
-func LoadClaimable(ep Endpoint, project, env string, now time.Time) (credentials.Credential, error) {
+func LoadClaimable(ep Endpoint, project, env string, now time.Time, instanceID ...string) (credentials.Credential, error) {
 	path, err := CredentialsPath()
 	if err != nil {
 		return credentials.Credential{}, err
 	}
-	c, err := credentials.Lookup(path, ep.URL, ClaimableClientIDFor(project, env))
+	c, err := credentials.Lookup(path, ep.URL, ClaimableClientIDFor(project, env, instanceID...))
 	if err != nil {
 		return credentials.Credential{}, err
 	}
@@ -383,7 +389,7 @@ func LoadClaimable(ep Endpoint, project, env string, now time.Time) (credentials
 }
 
 // StoreClaimable records the anonymous deploy of (project, env) at ep.
-func StoreClaimable(ep Endpoint, project, env string, d ClaimableDeploy, now time.Time) (credentials.Credential, error) {
+func StoreClaimable(ep Endpoint, project, env string, d ClaimableDeploy, now time.Time, instanceID ...string) (credentials.Credential, error) {
 	path, err := CredentialsPath()
 	if err != nil {
 		return credentials.Credential{}, err
@@ -402,33 +408,33 @@ func StoreClaimable(ep Endpoint, project, env string, d ClaimableDeploy, now tim
 	if !purge.IsZero() {
 		c.ExpiresAt = &purge
 	}
-	return c, credentials.Store(path, ep.URL, ClaimableClientIDFor(project, env), c)
+	return c, credentials.Store(path, ep.URL, ClaimableClientIDFor(project, env, instanceID...), c)
 }
 
 // ForgetClaimable drops the stored anonymous deploy of (project, env).
-func ForgetClaimable(ep Endpoint, project, env string) error {
+func ForgetClaimable(ep Endpoint, project, env string, instanceID ...string) error {
 	path, err := CredentialsPath()
 	if err != nil {
 		return err
 	}
-	_, err = credentials.Remove(path, ep.URL, ClaimableClientIDFor(project, env))
+	_, err = credentials.Remove(path, ep.URL, ClaimableClientIDFor(project, env, instanceID...))
 	return err
 }
 
 // RecordClaimableURL remembers the deploy's live address beside its token, so
 // `forge env status --claimable` can print it again without a credential.
-func RecordClaimableURL(ep Endpoint, project, env, url string) error {
+func RecordClaimableURL(ep Endpoint, project, env, url string, instanceID ...string) error {
 	path, err := CredentialsPath()
 	if err != nil {
 		return err
 	}
 	return credentials.Update(path, func(f *credentials.File) error {
-		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env))
+		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env, instanceID...))
 		if err != nil || c.Claimable == nil || c.Claimable.URL == url {
 			return nil
 		}
 		c.Claimable.URL = url
-		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
+		return f.Put(ep.URL, ClaimableClientIDFor(project, env, instanceID...), c)
 	})
 }
 
@@ -436,13 +442,13 @@ func RecordClaimableURL(ep Endpoint, project, env, url string) error {
 // ended, beside its token: published (deployErr nil) or the first line of
 // why not. `forge env status --claimable` reads it to say whether anything is
 // deployed at all.
-func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, deployErr error) error {
+func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, deployErr error, instanceID ...string) error {
 	path, err := CredentialsPath()
 	if err != nil {
 		return err
 	}
 	return credentials.Update(path, func(f *credentials.File) error {
-		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env))
+		c, err := f.Get(ep.URL, ClaimableClientIDFor(project, env, instanceID...))
 		if err != nil || c.Claimable == nil {
 			return nil
 		}
@@ -453,7 +459,7 @@ func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, depl
 		} else {
 			c.Claimable.LastAttemptError = FirstErrorLine(deployErr)
 		}
-		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
+		return f.Put(ep.URL, ClaimableClientIDFor(project, env, instanceID...), c)
 	})
 }
 

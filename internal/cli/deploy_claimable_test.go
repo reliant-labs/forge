@@ -52,7 +52,8 @@ type fakeClaimableControlPlane struct {
 	// request is cancelled (or the channel closes): a deploy in flight.
 	holdChallenge chan struct{}
 	// project and env are what Start must be asked for; empty is acme/hosted.
-	project, env string
+	project, env  string
+	startRequests []cloud.ClaimableStartRequest
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +92,7 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 		}
 		var req cloud.ClaimableStartRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.startRequests = append(f.startRequests, req)
 		w.Header().Set("Content-Type", "application/json")
 		if f.throttle != nil {
 			w.Header().Set(cloud.ReasonHeader, cloud.ReasonClaimableThrottled)

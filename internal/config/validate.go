@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -941,6 +942,15 @@ func validateConfigGuard(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 // (name, module_path) that the project cannot meaningfully be missing.
 func validateProjectFields(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	var out []validationIssue
+	if cfg.ProjectInstanceID != "" {
+		id, err := uuid.Parse(cfg.ProjectInstanceID)
+		if err != nil || id == uuid.Nil || id.String() != cfg.ProjectInstanceID {
+			line, col := findNodePos(root, []string{"project_instance_id"})
+			out = append(out, validationIssue{line: line, column: col,
+				msg: "project_instance_id must be a non-zero canonical UUID",
+				fix: "restore the project_instance_id written by forge project new; changing it creates a different anonymous deployment."})
+		}
+	}
 
 	// rootPos is the fallback location for "this required field is
 	// missing entirely from the file" — we point at the top-level

@@ -57,12 +57,6 @@ func TestE2EConnectV2ScaffoldServesRPC(t *testing.T) {
 	runCmd(t, dir, forgeBin, "project", "new", "connv2", "--mod", "example.com/connv2", "--service", "orders", "--connect", "v2")
 	projectDir := filepath.Join(dir, "connv2")
 	addCorpusForgePkgReplace(t, projectDir)
-	// The replace above leaves go.mod un-tidy, and generate's codegen-tool pin
-	// reads connect-go's version with `go list -m`, which refuses an un-tidy
-	// go.mod; without a tidy the pin is skipped and a v1 protoc-gen-connect-go
-	// from PATH writes v1 stubs for this v2 project.
-	runCmd(t, projectDir, "go", "mod", "tidy")
-	runCmd(t, filepath.Join(projectDir, "gen"), "go", "mod", "tidy")
 
 	// ── Author the service: CRUD entity + every custom rpc shape ────────
 	protoPath := filepath.Join(projectDir, "proto", "services", "orders", "v1", "orders.proto")

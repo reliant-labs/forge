@@ -174,7 +174,7 @@ The server writes JSON lines to stdout, each with the process `resource` (`obser
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. The same CPU profiles drive profile-guided builds: `forge pgo pull --env prod` writes `cmd/<bin>/default.pgo`, which you commit. Depth (defaults, cost, tables, trace links, SQL, PGO): `forge skill load observability/profiles`.
 
 ## Resource identity
 

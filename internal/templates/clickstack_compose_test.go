@@ -353,6 +353,8 @@ func TestProfilesCollectorConfigAndSchema(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS default.profile_stacks", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_stacks_mv",
 		"CREATE TABLE IF NOT EXISTS default.profile_samples_1m", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_samples_1m_mv",
 		"INTERVAL 30 DAY", "SampleType != 'samples'",
+		"CREATE TABLE IF NOT EXISTS default.profile_pgo_edges", "CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_pgo_edges_mv TO default.profile_pgo_edges",
+		"'forge.profile.start_lines'", "'forge.profile.leaf_frames'",
 	} {
 		if !strings.Contains(ddl, want) {
 			t.Errorf("profiles-schema.sql lacks %q", want)

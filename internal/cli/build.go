@@ -1063,6 +1063,7 @@ func printBuildHeader(projectName string, opts buildOptions, resolvedTag, tagSou
 	}
 	push.printHeader()
 	summarizeKCLBuildPlan(entities)
+	printPGOPlan(os.Stdout, projectDirForKCL(), entities, time.Now())
 	fmt.Println()
 }
 
@@ -2104,7 +2105,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			go func() {
 				defer wg.Done()
 				r := timedBuild(ctx, func() buildResult {
-					return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+					return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, projectImagePGOOff(goTargets), guard)
 				})
 				r.goTargets = goTargets
 				mu.Lock()
@@ -2174,7 +2175,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env, configCheck: plan.configCheck}
 			r := timedBuild(ctx, func() buildResult {
-				return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, projectImagePGOOff(goTargets), guard)
 			})
 			r.goTargets = goTargets
 			results = append(results, r)
@@ -2231,6 +2232,9 @@ type goBuildTarget struct {
 	// kept, no -trimpath) whatever the run's --debug: a host workload run
 	// under the delve runner needs DWARF and source paths dlv can resolve.
 	debug bool
+	// pgoOff builds with -pgo=off: the env declares the binary's PGO
+	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
+	pgoOff bool
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2277,6 +2281,11 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if len(t.tags) > 0 {
 		args = append(args, "-tags", strings.Join(t.tags, ","))
 	}
+	// PGO disabled for this binary: without the flag, Go's default
+	// -pgo=auto reads a committed cmd/<bin>/default.pgo.
+	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
+		args = append(args, pgoOffFlag)
+	}
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2303,6 +2312,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		return nil
 	}
 	seen := map[string]int{}
+	pgoOff := pgoDisabledPackages(entities)
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
@@ -2331,9 +2341,25 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			tags:       g.Tags,
 			flags:      g.Flags,
 			env:        g.Env,
+			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
 		})
 	}
 	return out
+}
+
+// projectImagePGOOff is the set of go targets the env builds with PGO
+// disabled: the project image passes `--build-arg FORGE_PGO_<BIN>=off` for
+// each. The scaffolded Dockerfile builds each cmd/<bin> with
+// `-pgo=${FORGE_PGO_<BIN>}` (default auto); an older one has no such ARG and
+// ignores the arg.
+func projectImagePGOOff(goTargets []goBuildTarget) map[string]bool {
+	off := map[string]bool{}
+	for _, t := range goTargets {
+		if t.pgoOff {
+			off[normalizePGOPackage(t.cmd)] = true
+		}
+	}
+	return off
 }
 
 // buildGoTarget runs ONE `go build` for a KCL-resolved goBuildTarget. It
@@ -2631,7 +2657,7 @@ func projectImageBinaryNames(goTargets []goBuildTarget) []string {
 //
 // A `--release` build's tags carry the release version ONLY — no `:latest` —
 // so a cut never moves a shared tag. See imageTagSet.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags dockerImageTags, crossArch string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags dockerImageTags, crossArch string, resolvedVersion versionInfo, pgoOff map[string]bool, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -2664,6 +2690,9 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		}
 	}
 
+	if err := projectImagePGOCollision(projectDirForKCL(), pgoOff); err != nil {
+		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
 	if err := requireImageDaemon(ctx, "the project image ("+dockerfile+")"); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
@@ -2681,6 +2710,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		"--build-arg", "FORGE_COMMIT="+resolvedVersion.commit,
 		"--build-arg", "FORGE_DATE="+resolvedVersion.date,
 	)
+	// The binaries this env builds with PGO disabled (projectImagePGOOff).
+	dockerArgs = append(dockerArgs, pgoOffBuildArgs(pgoOff, nil)...)
 	if crossArch != "" {
 		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
@@ -3412,7 +3443,8 @@ func buildServiceRemote(svcName string) buildResult {
 // forge is base-image-AGNOSTIC: NO base-image discovery, mirror, pin, or
 // `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
 // the whole story. The only `--build-arg`s are the service's explicit
-// DockerBuild.build_args.
+// DockerBuild.build_args, and `FORGE_PGO_<BIN>=off` for each binary its
+// DockerBuild.pgo disables.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
 	// platform: the DockerBuild's explicit platform wins; otherwise the
@@ -3433,6 +3465,9 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 		for _, k := range sortedKeys(d.BuildArgs) {
 			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
 		}
+		// The image's binaries whose DockerBuild.pgo is disabled. A
+		// declared build_args entry of the same name wins.
+		dockerArgs = append(dockerArgs, pgoOffBuildArgs(dockerPGODisabled(d), d.BuildArgs)...)
 	}
 	// `repository` is already the declared destination (serviceDockerImage), so
 	// it is used as-is rather than resolved again through the push plan — a
@@ -3597,6 +3632,11 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 
 	if err := checkServiceDockerContext(".", svcName, d); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
+	// A binary its pgo disables must not share its FORGE_PGO_<BIN> arg
+	// with another binary this image builds.
+	if err := serviceImagePGOCollision(projectDirForKCL(), d); err != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: fmt.Errorf("service %q: %w", svcName, err)}
 	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)

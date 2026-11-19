@@ -1064,6 +1064,11 @@ type GoBuild struct {
 	Tags       []string          `json:"tags,omitempty"`
 	Flags      []string          `json:"flags,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	// PGO is the binary's profile-guided optimization (kcl/schema.k PGO).
+	// nil is the defaults: the render omits a default PGO, so an env that
+	// declares none decodes exactly as before. Read it through
+	// ResolvePGOBinaries, which applies the defaults.
+	PGO *PGOConfig `json:"pgo,omitempty"`
 }
 
 // DockerBuild mirrors the kcl/schema.k DockerBuild — the per-service
@@ -1095,6 +1100,10 @@ type DockerBuild struct {
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
 	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
+	// PGO is the profile-guided optimization of each Go binary the image
+	// builds, keyed by package path ("./cmd/app"). A binary it does not name
+	// gets the defaults (kcl/schema.k DockerBuild.pgo).
+	PGO map[string]PGOConfig `json:"pgo,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1954,6 +1963,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	// Refused here too: an OpenAPI spec KCL cannot read cheaply is checked
 	// the moment the env is loaded (validateAPIs).
 	if err := validateAPIs(projectDir, entities.APIs); err != nil {
+		return nil, err
+	}
+	// One binary, one profile: two workloads of the env that build the same
+	// Go binary with different PGO are refused here, naming both.
+	if _, err := ResolvePGOBinaries(entities); err != nil {
 		return nil, err
 	}
 	entities.ControlPlane.bindOrgLookup(env)

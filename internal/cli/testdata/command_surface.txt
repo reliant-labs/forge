@@ -325,6 +325,9 @@ forge obs users	cmd	all-instances:bool allow-version-skew:bool backend:string co
 forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge package	group	allow-version-skew:bool project-dir/C:string
 forge package new	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
+forge pgo	group	allow-version-skew:bool project-dir/C:string
+forge pgo pull	cmd	allow-version-skew:bool binary:stringArray dry-run:bool env:string from-env:string json:bool project-dir/C:string since:duration
+forge pgo status	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string
 forge project	group	allow-version-skew:bool project-dir/C:string
 forge project annotations	cmd	allow-version-skew:bool json:bool kind:string project-dir/C:string
 forge project audit	cmd	allow-version-skew:bool json:bool project-dir/C:string

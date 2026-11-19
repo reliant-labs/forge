@@ -68,10 +68,18 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 		// Custom mutations declare their activity event (or none), as
 		// forgeconv-activity-declared requires.
 		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse) {\n"+
-			"    option (forge.v1.method) = { activity: { verb: \"archive\", target: { kind: \"order\", id: \"id\" } } };\n"+
+			"    option (forge.v1.method) = {\n"+
+			"      activity: {\n"+
+			"        verb: \"archive\"\n"+
+			"        target: {\n"+
+			"          kind: \"order\"\n"+
+			"          id: \"id\"\n"+
+			"        }\n"+
+			"      }\n"+
+			"    };\n"+
 			"  }\n"+
 			"  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {\n"+
-			"    option (forge.v1.method) = { activity: { none: \"fixture: the key is not persisted\" } };\n"+
+			"    option (forge.v1.method) = {activity: {none: \"fixture: the key is not persisted\"}};\n"+
 			"  }", 1)
 	proto += `
 // forge:entity

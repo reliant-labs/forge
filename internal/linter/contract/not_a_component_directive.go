@@ -36,7 +36,6 @@ package contract
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,6 +43,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 )
 
@@ -158,8 +158,8 @@ func notAComponentMisplaced(p *packages.Package, dir string) string {
 	if !strings.HasPrefix(rel, "internal/") {
 		return "has no effect: forge composes only contract packages under internal/"
 	}
-	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
-		return "has no effect: the package has no contract.go, so it is not a component to begin with"
+	if !contractsrc.HasContract(dir) {
+		return "has no effect: the package has no contract.go or //forge:contract type, so it is not a component to begin with"
 	}
 	if codegen.HasExcludeContractDirective(dir) {
 		return "has no effect: `//forge:exclude-contract` already takes the package out of contract codegen " +

@@ -226,6 +226,7 @@ forge fix	group	allow-version-skew:bool project-dir/C:string
 forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice

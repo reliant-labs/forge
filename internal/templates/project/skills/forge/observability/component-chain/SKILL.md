@@ -31,7 +31,7 @@ Forge instruments three boundaries, so a request is observable end to end:
    `Deadline.ExpiryIsError`); a caller's shorter deadline is WARN with
    `deadline=caller` (see `observability`, "Whose deadline").
 2. **The in-process component boundary** — every internal component→component
-   method call (a `contract.go` `Service`) gets one span, one metric sample
+   method call (a contract `Service`, hand-written or derived from a `//forge:contract` struct) gets one span, one metric sample
    and one log record (every failure, every success unless sampling is on),
    plus panic-recovery. This is the layer detailed below — the in-process
    twin of the edge chain.
@@ -61,7 +61,7 @@ It is the chain's Trace slot's choice (`serverkit.ChainDeps.Trace` / `observe.De
 ### The owned seam: `observe_chain.go`
 
 You never touch the generated decorator. The chain it routes through is
-assembled in an OWNED, scaffold-once file next to `contract.go`:
+assembled in an OWNED, scaffold-once file next to the contract (`contract.go`, or the marked type):
 
 ```go
 // observe_chain.go — yours: scaffolded once, never overwritten by forge.

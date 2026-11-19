@@ -10,7 +10,7 @@ Business logic lives behind an interface defined in domain terms. The handler/tr
 
 ## The Service interface
 
-`contract.go` (or your equivalent boundary file) declares what the package does, in the language of the domain.
+The package's contract declares what it does, in the language of the domain: a hand-written `contract.go`, or — for a single implementation — the exported methods of a `//forge:contract`-marked struct, from which forge derives `Service` into `contract_gen.go`.
 
 Doc-comment every exported symbol, starting with its own name (`go doc`'s order; `revive`'s `exported` rule if you enable it).
 
@@ -43,7 +43,7 @@ Rules that pay off immediately:
 - **One input struct per method**, even with one field today — adding a second tomorrow doesn't break call sites.
 - **Domain types, never wire or storage-row types.** Plain `time.Time` / `string` IDs here; wire types (`*timestamppb.Timestamp`) at the handler boundary, storage types (`pgtype.UUID`) at the storage boundary. Translating between them is the handler's job.
 - **One canonical name** for single-implementation services (`Service`); a suffixed name (`Storer`, `Authenticator`) only where the suffix distinguishes real alternatives.
-- **Declare interfaces at the CONSUMER.** Accept interfaces, return concrete structs. Forge's `New(Deps) Service` is the deliberate exception — that interface is the real test seam. Every `Deps` field follows the rule: a *narrow* interface naming only the methods this service calls, declared in `contract.go` so it gets a mock. `forgeconv-deps-are-interfaces` fails on a concrete-typed one. Converting a field: a nil concrete pointer in an interface is a NON-nil interface, so `if deps.X == nil` silently stops firing — check the guards on any optional dep.
+- **Declare interfaces at the CONSUMER.** Accept interfaces, return concrete structs. Forge's `New(Deps) Service` is the deliberate exception — that interface is the real test seam. Every `Deps` field follows the rule: a *narrow* interface naming only the methods this service calls, declared in the contract's boundary (`contract.go`, or `deps.go` beside a marked type) so it gets a mock. `forgeconv-deps-are-interfaces` fails on a concrete-typed one. Converting a field: a nil concrete pointer in an interface is a NON-nil interface, so `if deps.X == nil` silently stops firing — check the guards on any optional dep.
 - **One `Service` per domain.** Split into `Reader` + `Writer` only when a real call site needs the narrower one — not up front.
 
 ```go
@@ -260,11 +260,12 @@ A forge service is a **pb-through handler package** at `internal/handlers/<svc>/
 
 ```
 internal/things/              # the standalone domain package — `forge scaffold package things`
-  contract.go                 #   Service interface — yours
-  things.go                   #   implementation behind the interface (yours)
+  service.go                  #   Deps, the //forge:contract `service` struct, New — yours
+  contract_gen.go             #   generated: Service, derived from service's exported methods
+  deps.go                     #   dependency interfaces (// forge:deps), once the package has deps — yours
   errors.go                   #   domain error sentinels (yours, optional)
   observe_chain.go            #   owned observe seam the decorator routes through
-  mock_gen.go                 #   generated from contract.go — your test seam
+  mock_gen.go                 #   generated from the contract — your test seam
 internal/handlers/things/     # the pb-through handler package that calls it
   service.go                  #   concrete *Service + Deps (Deps.Things is a things.Service)
   rpc_<name>.go               #   one custom RPC method per file, calling s.deps.Things
@@ -272,7 +273,7 @@ internal/handlers/things/     # the pb-through handler package that calls it
 internal/handlers/mocks/things_mock_gen.go  # generated mock of the Connect RPC surface
 ```
 
-`forge generate` reads each domain package's `contract.go`, emits its `mock_gen.go`, and wires the package into the handler **by type** in `NewComponents`. It never generates a `contract.go` — that interface is yours.
+`forge generate` derives each marked package's `Service` into `contract_gen.go` (or reads a hand-written `contract.go`, the form for multi-implementation strategy interfaces), emits its `mock_gen.go`, and wires the package into the handler **by type** in `NewComponents`. It never writes a `contract.go`; the interface is either derived from your marked type or yours.
 
 **In-process observability is on by default and generated.** Edge concerns (logging/tracing/metrics/recovery/request-id) are applied at the Connect boundary by `forge/pkg/observe` interceptors; INSIDE the process, every package whose `New` returns its `Service` interface gets a slim per-method decorator `middleware_gen.go` (regenerated from the `Service` interface, a sibling of `mock_gen.go`), and the compose site emits `pkg.NewServiceWithForgeMiddleware(pkg.New(...))`. The decorator wraps every method (spans + call/error/duration metrics, no argument capture; see `observability`) through `observe.DefaultComponentChain`, or through the package's owned `observe_chain.go` when it has one — THE place to add a custom `observe.ComponentMiddleware`, drop a layer, or change the success-log level. Opt out with `// forge:no-observe` on `func New` (whole package) or on an interface method's doc comment (one method). Handler packages (concrete `*Service`) are NOT wrapped — otelconnect owns the RPC edge.
 
@@ -315,7 +316,7 @@ Required deps live in `validateDeps()` so they fail fast at construction. An **o
 
 ## Forge-specific rules
 
-- **Never hand-edit a generated mock.** `internal/<pkg>/mock_gen.go` follows the package's `contract.go`; `internal/handlers/mocks/<svc>_mock_gen.go` follows the service proto. Edit the input and re-run `forge generate`.
+- **Never hand-edit a generated mock.** `internal/<pkg>/mock_gen.go` follows the package's contract (`contract.go`, or the marked type's exported methods); `internal/handlers/mocks/<svc>_mock_gen.go` follows the service proto. Edit the input and re-run `forge generate`.
 - **`Service` is the canonical interface name** for single-impl (no annotation). If a role name reads better (`Gateway`, `Provider`), keep it and put a `//forge:service` (or `//forge:contract`) marker directly above the interface — codegen + the contract-name lint key off the marker under any name. `// forge:constructor` does the same for a constructor forge must FIND (`Open`, `Connect`, `NewReadOnly`); the contract-name lint still wants the canonical `New(Deps) (Service, error)` in an internal package, so keep `New` as the entry point and mark the others. `Deps` stays canonical. Use `<Name>er` only for multi-impl strategies.
 - **Construct and wire in `NewComponents`** — every `Deps` field by interface, by type.
 

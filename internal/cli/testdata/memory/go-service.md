@@ -25,7 +25,7 @@ forge obs check <env> --wait --json   # after a deploy: proves the release good,
 
 ## Critical rules
 
-1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`. Edit the input (the proto, a migration, config, a package's `contract.go`) and run `forge generate`. It never overwrites your files: handlers, `internal/app/providers.go` and `compose.go` are yours (forge only adds new components and Deps keys to compose.go). Parallel runs queue on `.forge/forge.lock`; an unchanged tree says `nothing to do` in seconds.
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`. Edit the input (the proto, a migration, config, a package's `contract.go`, or the exported methods of its `//forge:contract` type, from which `contract_gen.go` is derived) and run `forge generate`. It never overwrites your files: handlers, `internal/app/providers.go` and `compose.go` are yours (forge only adds new components and Deps keys to compose.go). Parallel runs queue on `.forge/forge.lock`; an unchanged tree says `nothing to do` in seconds.
 2. **Proto is the API's canonical input; migrations are the DB source of truth.** Entities and the ORM are projected from the APPLIED `db/migrations` schema, never from proto.
 3. **The gate before you call a phase done:**
    ```
@@ -47,7 +47,9 @@ gen/services/<svc>/v1/...             ← generated stubs (never edit)
 internal/handlers/<svc>/              ← THE SERVICE, one dir: service.go (Deps, New), rpc_<name>.go
                                         (one custom rpc per file — the logic goes HERE), handlers_crud.go
                                         (CRUD shims), handlers_crud_ops_gen.go (generated)
-internal/<pkg>/                       ← optional `forge scaffold package <pkg>`: contract.go + service.go
+internal/<pkg>/                       ← optional `forge scaffold package <pkg>`: service.go (Deps, the
+                                        `//forge:contract` struct, New — yours); contract_gen.go (the derived
+                                        Service interface) and mock_gen.go are generated
 ```
 
 The `*Service` methods ARE the handlers; they reach `internal/db/` and other collaborators through `s.deps`. Load `architecture` for the full tree, and `service-layer` for the package-boundary rules.

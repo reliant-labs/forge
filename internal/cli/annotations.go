@@ -568,9 +568,9 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:contract",
 			AppliesTo: "contract",
-			Effect:    "Synonym of `forge:service`: declares this interface the package's contract when it is not named `Service`. `contract` reads better on a non-service package.",
-			Placement: "on the interface's doc comment",
-			Example:   "// forge:contract\ntype Store interface { Get(ctx context.Context, id string) (Row, error) }",
+			Effect:    "On a struct (any non-interface type): its exported methods ARE the package's contract — `forge generate` derives `type Service interface` from them into the forge-owned contract_gen.go (method docs copied, plus `var _ Service = (*T)(nil)`), and mock_gen.go and middleware_gen.go follow from it. One per package; not on an alias or a generic type, and not beside a hand-written Service. On an interface: synonym of `forge:service`, declaring it the package's contract when it is not named `Service`.",
+			Placement: "on the implementing type's doc comment (the derived form), or on the interface's doc comment",
+			Example:   "// forge:contract\ntype service struct{ deps Deps }\n\n// Send delivers one message.\nfunc (s *service) Send(ctx context.Context, to string) error",
 		},
 		{
 			Name:      "forge:provided",

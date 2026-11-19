@@ -125,9 +125,12 @@ sql-panel SELECTs (`UptimeSummarySQL`, `UptimeTimelineSQL`, `UptimeChecksSQL`,
 `UptimeIncidentsSQL`), so `forge obs query` and the console run the same text:
 
 - **availability** is the share of the range's probes that passed;
-- an **incident** opens at the first of 3 failed probes in a row and closes at
-  the next passing probe; one open at the end of the range has no end. Probes
-  from an hour before the range are read, so an incident already open when it
+- an **incident** is a run of consecutive failed probes, at least 3 long: it
+  opens at the run's first failure and closes at the next passing probe, so
+  two outages a pass apart are two incidents. One open at the end of the range
+  has no end. Each check's probes are read from its last passing probe before
+  the range (up to 30 days back), so an incident already open when the range
   starts begins where it began;
-- a check's **status** at the end of the range is `down` while an incident is
-  open, `unknown` when its newest probe is more than 15 minutes old, else `up`.
+- a check's **status** at the end of the range is `unknown` when its newest
+  probe is more than 15 minutes old, `down` while an incident is open, else
+  `up`.

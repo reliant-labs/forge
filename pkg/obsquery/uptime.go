@@ -26,13 +26,17 @@ import (
 //     failed probes and closes at the next passing probe (Sentry Uptime's
 //     defaults: one or two failures in a row are noise, not an outage). One
 //     still open at the end of the range has no end;
-//   - a check's status at the end of the range is down while an incident is
-//     open, unknown when its newest probe is older than UptimeStaleAfter (the
-//     prober could not say), and up otherwise.
+//   - a check's status at the end of the range is unknown when its newest
+//     probe is older than UptimeStaleAfter (the prober could not say), down
+//     while an incident is open, and up otherwise.
 //
-// Probes from UptimeLookback before the range are read too, so an incident
-// that began just before the range is found and starts where it began. Only
-// the range's own probes count towards availability.
+// Incidents are runs of consecutive failed probes: a passing probe ends a
+// run, so two outages a pass apart are two incidents, each starting at its own
+// first failure. Probes before the range are read too, from each check's last
+// passing probe before it (at most UptimeLookback back), so an incident
+// already open when the range starts, however long before, starts where its
+// run of failures began, and one still failing at the end of the range is
+// open there. Only the range's own probes count towards availability.
 const (
 	// UptimeIncidentFailures is how many failed probes in a row open an
 	// incident.
@@ -42,9 +46,12 @@ const (
 	// check may declare (release.MaxUptimeInterval).
 	UptimeStaleAfter = "15 MINUTE"
 	// UptimeLookback is how far before the range the incident statements
-	// read, to find an incident already open when it starts:
-	// UptimeIncidentFailures probes at the longest interval, with room.
-	UptimeLookback = "1 HOUR"
+	// look for each check's last passing probe, after which the run of
+	// failures open at the start of the range began. It reads only the up
+	// gauge, and only from that probe on through the window functions; an
+	// incident older than it (or than the metrics retention) starts at the
+	// oldest probe the store still holds.
+	UptimeLookback = "30 DAY"
 )
 
 // uptimeEnvScope is the environments in scope: the prober stamps each sample
@@ -56,48 +63,74 @@ const uptimeEnvScope = "(empty({env_ids:Array(String)}) OR has({env_ids:Array(St
 // environments can each have a check of that name.
 const uptimeCheckLabel = "if(length({env_ids:Array(String)}) = 1, check, concat(check, ' (', env, ')'))"
 
-// uptimeSamples is every sample of the three gauges for the checks in scope,
-// from UptimeLookback before the range to its end: one row per sample,
-// in_range set for the range's own.
+// uptimeSamples is every sample of the three gauges in the range for the
+// checks in scope: one row per sample.
 func uptimeSamples() string {
 	return fmt.Sprintf(`samples AS (
   SELECT ResourceAttributes['reliant.env.id'] AS env_id, ResourceAttributes['deployment.environment.name'] AS env,
-         Attributes['%[1]s'] AS check, MetricName AS metric, TimeUnix AS ts, Value AS value,
-         Attributes['%[2]s'] AS status, Attributes['%[3]s'] AS error,
-         TimeUnix >= {from:DateTime64(9)} AS in_range
+         Attributes['%[1]s'] AS check, MetricName AS metric, TimeUnix AS ts, Value AS value
   FROM otel_metrics_gauge
-  WHERE MetricName IN ('%[4]s', '%[5]s', '%[6]s')
-    AND TimeUnix >= {from:DateTime64(9)} - INTERVAL %[7]s AND TimeUnix < {to:DateTime64(9)}
-    AND %[8]s AND Attributes['%[1]s'] != '')`,
-		release.UptimeAttrCheck, release.UptimeAttrStatus, release.UptimeAttrError,
+  WHERE MetricName IN ('%[2]s', '%[3]s', '%[4]s')
+    AND TimeUnix >= {from:DateTime64(9)} AND TimeUnix < {to:DateTime64(9)}
+    AND %[5]s AND Attributes['%[1]s'] != '')`,
+		release.UptimeAttrCheck,
 		release.UptimeMetricUp, release.UptimeMetricDuration, release.UptimeMetricCertExpiry,
-		UptimeLookback, uptimeEnvScope)
+		uptimeEnvScope)
 }
 
-// uptimeIncidentCTEs are the samples and every incident they hold: probes
-// (the up samples), runs (each probe with its spell: the number of passing
-// probes up to it, so a spell is one passing probe and the failures after
-// it), spells, and incidents (env_id, env, check, started, ended, failures,
-// last_error), ended NULL while the incident is open.
+// uptimeIncidentCTEs are the probes and every incident they hold:
+//
+//   - history: each up sample of the checks in scope from UptimeLookback
+//     before the range to its end, with its error (the error type, or the
+//     HTTP status);
+//   - last_pass: each check's last passing probe before the range;
+//   - probes: history from that probe on (all of it for a check with none),
+//     in_range set for the range's own: the run of failures open at the
+//     start of the range is whole, and nothing older is read twice;
+//   - runs: each probe with passes, the number of passing probes up to and
+//     including it, so consecutive failures share a value and a pass gives
+//     the failures after it a new one;
+//   - failure_runs: the failed probes grouped by passes, one row per run of
+//     consecutive failures: its first failure, its failures, its last error;
+//   - closing: each passing probe, keyed by the run it closes (its passes is
+//     that run's plus one);
+//   - incidents: the runs of at least UptimeIncidentFailures failures that
+//     reach the range (env_id, env, check, started, ended, failures,
+//     last_error), ended NULL while the incident is open, as it is when no
+//     probe passed after it before the end of the range.
 func uptimeIncidentCTEs() string {
-	return "WITH " + uptimeSamples() + `,
-probes AS (SELECT env_id, env, check, ts, value >= 1 AS up, status, error, in_range FROM samples WHERE metric = '` + release.UptimeMetricUp + `'),
+	return fmt.Sprintf(`WITH history AS (
+  SELECT ResourceAttributes['reliant.env.id'] AS env_id, ResourceAttributes['deployment.environment.name'] AS env,
+         Attributes['%[1]s'] AS check, TimeUnix AS ts, Value >= 1 AS up,
+         if(Attributes['%[3]s'] != '', Attributes['%[3]s'], concat('HTTP ', Attributes['%[2]s'])) AS error
+  FROM otel_metrics_gauge
+  WHERE MetricName = '%[4]s'
+    AND TimeUnix >= {from:DateTime64(9)} - INTERVAL %[5]s AND TimeUnix < {to:DateTime64(9)}
+    AND %[6]s AND Attributes['%[1]s'] != ''),
+last_pass AS (
+  SELECT env_id, check, toNullable(max(ts)) AS at FROM history WHERE up AND ts < {from:DateTime64(9)} GROUP BY env_id, check),
+probes AS (
+  SELECT h.env_id AS env_id, h.env AS env, h.check AS check, h.ts AS ts, h.up AS up, h.error AS error,
+         h.ts >= {from:DateTime64(9)} AS in_range
+  FROM history AS h LEFT JOIN last_pass AS l ON l.env_id = h.env_id AND l.check = h.check
+  WHERE l.at IS NULL OR h.ts >= l.at),
 runs AS (
-  SELECT *, sum(up) OVER (PARTITION BY env_id, check ORDER BY ts ROWS UNBOUNDED PRECEDING) AS spell
+  SELECT *, sum(up) OVER (PARTITION BY env_id, check ORDER BY ts, up ROWS UNBOUNDED PRECEDING) AS passes
   FROM probes),
-spells AS (
-  SELECT env_id, any(env) AS env, check, spell, min(ts) AS spell_start,
-         countIf(NOT up) AS failures, minIf(ts, NOT up) AS down_from,
-         argMaxIf(if(error != '', error, concat('HTTP ', status)), ts, NOT up) AS last_error
-  FROM runs GROUP BY env_id, check, spell),
-closed AS (
-  SELECT *, leadInFrame(toNullable(spell_start), 1, NULL) OVER (PARTITION BY env_id, check ORDER BY spell
-                                                                 ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS ended
-  FROM spells),
+failure_runs AS (
+  SELECT env_id, any(env) AS env, check, passes AS run, min(ts) AS started, count() AS failures,
+         argMax(error, ts) AS last_error
+  FROM runs WHERE NOT up GROUP BY env_id, check, passes),
+closing AS (
+  SELECT env_id, check, toUInt64(passes - 1) AS closes, toNullable(ts) AS ended FROM runs WHERE up),
 incidents AS (
-  SELECT env_id, env, check, down_from AS started, ended, failures, last_error
-  FROM closed
-  WHERE failures >= ` + fmt.Sprint(UptimeIncidentFailures) + ` AND ifNull(ended, {to:DateTime64(9)}) > {from:DateTime64(9)})`
+  SELECT f.env_id AS env_id, f.env AS env, f.check AS check, f.started AS started, c.ended AS ended,
+         f.failures AS failures, f.last_error AS last_error
+  FROM failure_runs AS f
+  LEFT JOIN closing AS c ON c.env_id = f.env_id AND c.check = f.check AND c.closes = f.run
+  WHERE f.failures >= %[7]d AND ifNull(c.ended, {to:DateTime64(9)}) > {from:DateTime64(9)})`,
+		release.UptimeAttrCheck, release.UptimeAttrStatus, release.UptimeAttrError,
+		release.UptimeMetricUp, UptimeLookback, uptimeEnvScope, UptimeIncidentFailures)
 }
 
 // uptimeDowntime is an incident's seconds inside the range.
@@ -111,6 +144,7 @@ const uptimeDowntime = "greatest(0, dateDiff('second', greatest(started, {from:D
 // probe.
 func uptimeChecksCTEs() string {
 	return uptimeIncidentCTEs() + `,
+` + uptimeSamples() + `,
 per_check AS (
   SELECT env_id, any(env) AS env, check,
          countIf(in_range) AS probes, countIf(in_range AND NOT up) AS failed,
@@ -122,15 +156,15 @@ per_incident AS (
   FROM incidents GROUP BY env_id, check),
 per_timing AS (
   SELECT env_id, check,
-         quantileExactIf(0.5)(value * 1000, metric = '` + release.UptimeMetricDuration + `' AND in_range) AS p50,
-         quantileExactIf(0.95)(value * 1000, metric = '` + release.UptimeMetricDuration + `' AND in_range) AS p95,
-         countIf(metric = '` + release.UptimeMetricDuration + `' AND in_range) > 0 AS has_timing,
+         quantileExactIf(0.5)(value * 1000, metric = '` + release.UptimeMetricDuration + `') AS p50,
+         quantileExactIf(0.95)(value * 1000, metric = '` + release.UptimeMetricDuration + `') AS p95,
+         countIf(metric = '` + release.UptimeMetricDuration + `') > 0 AS has_timing,
          argMaxIf(value, ts, metric = '` + release.UptimeMetricCertExpiry + `') AS cert_seconds,
          countIf(metric = '` + release.UptimeMetricCertExpiry + `') > 0 AS has_cert
   FROM samples GROUP BY env_id, check),
 checks AS (
   SELECT c.env_id AS env_id, c.env AS env, c.check AS check,
-         multiIf(ifNull(i.open, 0), 'down', c.last_probe < {to:DateTime64(9)} - INTERVAL ` + UptimeStaleAfter + `, 'unknown', 'up') AS state,
+         multiIf(c.last_probe < {to:DateTime64(9)} - INTERVAL ` + UptimeStaleAfter + `, 'unknown', ifNull(i.open, 0), 'down', 'up') AS state,
          c.probes AS probes, c.failed AS failed,
          if(c.probes = 0, NULL, (c.probes - c.failed) / c.probes) AS availability,
          ifNull(i.n, 0) AS incidents, ifNull(i.downtime, 0) AS downtime,
@@ -202,6 +236,6 @@ func UptimeTimelineSQL() string {
 SELECT toStartOfInterval(ts, toIntervalSecond({step:UInt32})) AS t, ` + uptimeCheckLabel + ` AS "Check",
        round(countIf(value >= 1) / count(), 4) AS "Availability"
 FROM samples
-WHERE metric = '` + release.UptimeMetricUp + `' AND in_range
+WHERE metric = '` + release.UptimeMetricUp + `'
 GROUP BY t, env, check ORDER BY t, "Check"`
 }

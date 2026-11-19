@@ -100,3 +100,71 @@ func TestUptimeOnAnHour(t *testing.T) {
 		ch.filtered(p.SQL, start, end, nil, 900, "e1")
 	}
 }
+
+// uptimeRunsSeed holds the incidents a run of consecutive failures makes, in
+// e1, for the range 00:00 to 01:00:
+//
+//	flap: a probe a minute; fails at :10-:12 and :14-:16 (two incidents a
+//	      pass apart, not one), and at :30-:31 then :33-:35 (one incident,
+//	      from :33: the two failures before the pass are noise)
+//	long: a probe every 5 minutes from 20:00 the day before; passes until
+//	      20:55, then fails from 21:00 through 00:55: an incident three hours
+//	      older than the range, still open at its end
+//	gone: fails at 23:00, 23:05 and 23:10 the day before, then stops
+//	      reporting: open, but unknown at 01:00
+func uptimeRunsSeed() string {
+	var rows []string
+	up := func(check string, at time.Time, pass bool) {
+		v, attrs := 1, "'http.response.status_code': '200'"
+		if !pass {
+			v, attrs = 0, "'error.type': 'timeout'"
+		}
+		rows = append(rows, fmt.Sprintf("({'reliant.env.id': 'e1', 'deployment.environment.name': 'e1'}, 'uptime-prober', 'uptime.check.up', {'check': '%s', %s}, '%s', %d)",
+			check, attrs, at.Format("2006-01-02 15:04:05"), v))
+	}
+	base := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	for m := 0; m < 60; m++ {
+		up("flap", base.Add(time.Duration(m)*time.Minute), !(m >= 10 && m <= 12 || m >= 14 && m <= 16 || m == 30 || m == 31 || m >= 33 && m <= 35))
+	}
+	for at := base.Add(-4 * time.Hour); at.Before(base.Add(time.Hour)); at = at.Add(5 * time.Minute) {
+		up("long", at, at.Before(base.Add(-3*time.Hour)))
+	}
+	for _, m := range []int{-60, -55, -50} {
+		up("gone", base.Add(time.Duration(m)*time.Minute), false)
+	}
+	return "INSERT INTO forge_obsbuiltin_uptime_runs.otel_metrics_gauge (ResourceAttributes, ServiceName, MetricName, Attributes, TimeUnix, Value) VALUES\n" +
+		strings.Join(rows, ",\n") + ";\n"
+}
+
+// TestUptimeIncidentsAreRunsOfFailures pins that an incident is one run of
+// consecutive failures: a passing probe between failures splits them (two
+// outages are two incidents, each from its own first failure, and failures
+// before a pass never join the run after it), and a run that began long
+// before the range, with no passing probe since, is one open incident from
+// where it began, so the check is down at the end of the range.
+func TestUptimeIncidentsAreRunsOfFailures(t *testing.T) {
+	ch := newClickHouse(t, "forge_obsbuiltin_uptime_runs", uptimeRunsSeed())
+	start := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	for _, c := range []struct {
+		name, sql, want string
+	}{
+		{"incidents", obsquery.UptimeIncidentsSQL(), strings.Join([]string{
+			"flap\t2026-03-16 00:33:00\t2026-03-16 00:36:00\t180\t3\ttimeout",
+			"flap\t2026-03-16 00:14:00\t2026-03-16 00:17:00\t180\t3\ttimeout",
+			"flap\t2026-03-16 00:10:00\t2026-03-16 00:13:00\t180\t3\ttimeout",
+			"gone\t2026-03-15 23:00:00\t\\N\t7200\t3\ttimeout",
+			"long\t2026-03-15 21:00:00\t\\N\t14400\t48\ttimeout",
+		}, "\n")},
+		{"checks", obsquery.UptimeChecksSQL(), strings.Join([]string{
+			"long\tdown\t0\t12\t12\t1\t3600\t2026-03-15 21:00:00\t\\N\t\\N\t\\N\t2026-03-16 00:55:00",
+			"gone\tunknown\t\\N\t0\t0\t1\t3600\t2026-03-15 23:00:00\t\\N\t\\N\t\\N\t2026-03-15 23:10:00",
+			"flap\tup\t81.667\t60\t11\t3\t540\t\\N\t\\N\t\\N\t\\N\t2026-03-16 00:59:00",
+		}, "\n")},
+		{"summary", obsquery.UptimeSummarySQL(), "0.68056\t3\t1\t1\t7740"},
+	} {
+		if got := ch.run(c.sql, start, end, "e1"); got != c.want {
+			t.Errorf("%s =\n%s\nwant\n%s", c.name, got, c.want)
+		}
+	}
+}

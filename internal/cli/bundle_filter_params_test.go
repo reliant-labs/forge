@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -69,7 +70,8 @@ func TestDefaultBundleCarriesNoFilterParams(t *testing.T) {
 	}
 
 	site := &KCLEntities{Frontends: []FrontendEntity{{Name: "web", Type: "vite-spa", Runtime: FrontendRuntime{Type: FrontendRuntimeHosted}}}}
-	all, err := bundleObservabilityFiles(dir, bundleBuildInputs{StrictObservability: true, errOut: io.Discard}, site)
+	// A fixed creation time, so nothing here depends on the wall clock.
+	all, err := bundleObservabilityFiles(dir, bundleBuildInputs{StrictObservability: true, Now: time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC), errOut: io.Discard}, site)
 	if err != nil {
 		t.Fatal(err)
 	}

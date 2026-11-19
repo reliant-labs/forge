@@ -560,6 +560,8 @@ var removals = []removal{
 					"pkg/serverkit/operator_gate_test.go",
 					"pkg/appkit/operatorkit/operatorkit_test.go",
 					"internal/templates/project/middleware_test.go",
+					// Its connect-go v2 twin carries the same assertion.
+					"internal/templates/project/middleware_test_v2.go",
 				},
 			},
 		},

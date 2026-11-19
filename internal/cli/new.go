@@ -20,6 +20,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/scaffold"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/goexec"
@@ -73,6 +74,9 @@ func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag
 		authMode string
 		// dryRun prints what --kind app would write, and writes nothing.
 		dryRun bool
+		// connectFlag is --connect: the connect-go major a new service
+		// project's Go code targets (v1, the default, or v2).
+		connectFlag string
 	)
 
 	cmd := &cobra.Command{
@@ -122,6 +126,16 @@ back on (orm has no key; --disable orm only leaves db/migrations out):
 Valid feature names: orm, codegen, migrations, ci, build, deploy,
 contracts, docs, frontend, observability, hot_reload.
 
+--connect picks the connect-go major a service project's Go code targets:
+v1 (connectrpc.com/connect, the default) or v2 (connectrpc.com/connect/v2).
+It decides what go.mod and gen/go.mod require, which protoc-gen-connect-go
+tools/tools.go pins, and the shape of every handler, mount and test forge
+writes. After this the project's go.mod IS the declaration: forge generate
+reads the major from it on every run (a direct require of
+connectrpc.com/connect/v2 is v2, anything else v1), so there is nothing to
+pass later and nothing in forge.yaml. With --in-place and no --connect, the
+existing go.mod's major is kept.
+
 --auth-mode picks the sign-in system of a service project with a frontend.
 native (the default) scaffolds today's: the users in deploy/kcl/identity.k,
 the dev identity provider and mail catcher, the sign-in pages and the route
@@ -137,6 +151,7 @@ Example:
   forge project new my-project --mod github.com/example/my-project --service gateway
   forge project new my-project --mod github.com/example/my-project --frontend web
   forge project new my-project --mod github.com/example/my-project --frontend web --auth-mode none
+  forge project new my-project --mod github.com/example/my-project --service orders --connect v2
   forge project new mycli      --mod github.com/example/mycli --kind cli
   forge project new mylib      --mod github.com/example/mylib --kind library
   forge project new landing    --kind site                          # new static site (Next.js export)
@@ -206,6 +221,11 @@ checkout stop being the same source; drop the bridge with
 				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app would write, and needs --kind app", "",
 					"add --kind app --in-place inside the app, or drop --dry-run")
 			}
+			newConnectMajor, err = resolveNewConnectMajor(cmd.Flags().Changed("connect"), connectFlag, kindFlag)
+			if err != nil {
+				return err
+			}
+			defer func() { newConnectMajor = 0 }()
 			newAppDryRun = dryRun
 			newHarnessExplicit = cmd.Flags().Changed("harness")
 			defer func() { newAppDryRun, newHarnessExplicit = false, false }()
@@ -236,6 +256,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
+	cmd.Flags().StringVar(&connectFlag, "connect", "", "connect-go major of a service project: v1 (default; connectrpc.com/connect) or v2 (connectrpc.com/connect/v2). Chooses what go.mod requires; from then on forge generate reads the major from go.mod (a direct require of connectrpc.com/connect/v2 is v2). With --in-place and no --connect, the existing go.mod's major is kept")
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
@@ -918,6 +939,10 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.Adopting = c.adopting
 	gen.Claimable = newClaimable
 	gen.AuthNone = newAuthMode == authModeNone
+	if err := checkConnectMajorAgreesWithGoMod(c.targetPath, newConnectMajor); err != nil {
+		return nil, err
+	}
+	gen.ConnectMajor = newConnectMajor
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1506,6 +1531,52 @@ func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
 // newClaimable is --claimable for the `project new` run in progress
 // (generator.ProjectGenerator.Claimable).
 var newClaimable bool
+
+// newConnectMajor is --connect for the `project new` run in progress: zero
+// when not passed (the target's go.mod decides — v1 for a fresh directory),
+// else the major asked for (generator.ProjectGenerator.ConnectMajor).
+var newConnectMajor connectmajor.Major
+
+// resolveNewConnectMajor validates --connect. Not passed is zero, so the
+// default stays v1 for a new project and the adopted go.mod's major for
+// --in-place: forge major 1 never changes what an existing invocation
+// scaffolds.
+func resolveNewConnectMajor(changed bool, value, kindFlag string) (connectmajor.Major, error) {
+	if !changed {
+		return 0, nil
+	}
+	m, err := connectmajor.Parse(value)
+	if err != nil {
+		return 0, cliutil.UserErr("forge project new",
+			fmt.Sprintf("invalid --connect %q", value), "",
+			"pass --connect v1 (connectrpc.com/connect, the default) or --connect v2 (connectrpc.com/connect/v2)")
+	}
+	if kind := strings.ToLower(strings.TrimSpace(kindFlag)); kind != "" && kind != config.ProjectKindService {
+		return 0, cliutil.UserErr("forge project new",
+			fmt.Sprintf("--connect picks the connect-go major of a service project's Connect code; --kind %s has none", kind), "",
+			"drop --connect, or use --kind service")
+	}
+	return m, nil
+}
+
+// checkConnectMajorAgreesWithGoMod refuses an explicit --connect that the
+// target's existing go.mod contradicts: --in-place keeps that go.mod, and
+// forge generate reads the major from it, so the scaffold would be born on
+// one major and regenerated on the other.
+func checkConnectMajorAgreesWithGoMod(targetPath string, want connectmajor.Major) error {
+	if want == 0 {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "go.mod")); err != nil {
+		return nil
+	}
+	if have := connectmajor.DetectOrDefault(targetPath); have != want {
+		return cliutil.UserErr("forge project new",
+			fmt.Sprintf("--connect %s, but the go.mod here selects connect-go %s", want, have), "",
+			"drop --connect: an existing project's connect-go major comes from its go.mod (a direct require of "+connectmajor.ModuleV2+" is v2)")
+	}
+	return nil
+}
 
 // newAuthMode is --auth-mode for the `project new` run in progress: "" when
 // not passed, else authModeNative or authModeNone

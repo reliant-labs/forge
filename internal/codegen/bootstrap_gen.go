@@ -935,6 +935,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 
 	data := bootstrapTestingTemplateData{
 		Module:              modulePath,
+		ConnectV2:           in.connectV2(),
 		Services:            testSvcs,
 		ConnectImports:      connectImports,
 		Packages:            packages,
@@ -1047,6 +1048,7 @@ type bootstrapTestingTemplateData struct {
 	AnyServiceNeedsULID bool
 	HasMigrationsFS     bool
 	ExtraImports        []ExtraImport
+	ConnectV2           bool
 }
 
 // componentTestHelperData is the per-component view the
@@ -1120,6 +1122,11 @@ type componentTestHelperData struct {
 	FuncTodos       []UnresolvedAutoStub
 	UnfilledDeps    []UnresolvedAutoStub
 	ExtraImports    []ExtraImport
+
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // componentTestHelperFile is the file name emitted into each component dir.
@@ -1144,6 +1151,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			Name:                   svc.Name,
 			FieldName:              svc.FieldName,
 			IsService:              true,
+			ConnectV2:              data.ConnectV2,
 			ConstructorName:        svc.ConstructorName(),
 			Fallible:               svc.Fallible,
 			HasDB:                  svc.HasDB,

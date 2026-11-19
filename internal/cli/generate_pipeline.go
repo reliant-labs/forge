@@ -45,6 +45,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -127,6 +128,13 @@ type pipelineContext struct {
 	// config step, which projects their config reach into config_gen.k.
 	graphRoots    []codegen.GraphRoot
 	graphRootsSet bool
+
+	// connectMajorV is the connect-go major the project's go.mod selects
+	// (internal/connectmajor), read ONCE per generate — eagerly in
+	// newPipelineContextWithFlags, lazily (connectMajor) for a synthetic
+	// context — and threaded into every emitter of project wiring, so one
+	// run cannot render half its files for one major and half for the other.
+	connectMajorV connectmajor.Major
 
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
@@ -334,7 +342,18 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		TemplatesOnly:   flags.TemplatesOnly,
 		Strict:          flags.Strict,
 		Verbose:         flags.Verbose,
+		connectMajorV:   connectmajor.DetectOrDefault(projectDir),
 	}, nil
+}
+
+// connectMajor is the connect-go major this run generates for: the one read
+// when the context was built, else (a synthetic context) the go.mod's now,
+// remembered for the rest of the run.
+func (ctx *pipelineContext) connectMajor() connectmajor.Major {
+	if ctx.connectMajorV == 0 {
+		ctx.connectMajorV = connectmajor.DetectOrDefault(ctx.ProjectDir)
+	}
+	return ctx.connectMajorV
 }
 
 // generateSteps returns the ordered step plan. The slice is the
@@ -1598,7 +1617,7 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 // concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
 // conditions.
 func stepEnsureGenModule(ctx *pipelineContext) error {
-	if err := ensureGenGoMod(ctx.ProjectDir); err != nil {
+	if err := ensureGenGoModFor(ctx.ProjectDir, ctx.connectMajor()); err != nil {
 		return err
 	}
 	changed, err := ensureGenForgeRequire(ctx.ProjectDir)
@@ -2337,7 +2356,7 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.connectMajor(), ctx.Checksums)
 	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
@@ -2413,7 +2432,7 @@ func stepCmdGroups(ctx *pipelineContext) error {
 	// files are scaffold-once OWNED code written by `forge scaffold worker/operator`,
 	// and main.go is scaffold-once. Generate learns nothing about the
 	// worker/operator set.
-	return generateCmdGroups(rows, ctx.ProjectDir, ctx.Checksums)
+	return generateCmdGroupsFor(rows, ctx.ProjectDir, ctx.connectMajor(), ctx.Checksums)
 }
 
 // stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension
@@ -2446,7 +2465,7 @@ func stepBootstrapTesting(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	err = generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums)
+	err = generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.connectMajor(), ctx.Checksums)
 	// The entity test factories could not read the applied schema, so they
 	// wrote nothing. That is a FAILED step, never a warning: the stale-file
 	// sweep deletes what no emitter wrote this run, and a run that let it

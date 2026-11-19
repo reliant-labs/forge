@@ -713,6 +713,11 @@ type CmdServerTemplateData struct {
 	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
+
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // Serves reports whether some config the binary loads declares the serve
@@ -771,6 +776,9 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 	data.DevSessionCookie = projectMiddlewareDeclares(targetDir, projectDevSessionCookieDecl) && data.ConfigFields["Environment"]
+	// The command tree below is scaffold-once: it is BORN at the major the
+	// project's go.mod selects and is the user's from then on.
+	data.ConnectV2 = GenContext{ProjectDir: targetDir}.connectV2()
 
 	// The SCAFFOLD-ONCE half of the command tree. Each of these files is
 	// all decisions and no ceremony, so forge writes each exactly once and

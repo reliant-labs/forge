@@ -165,6 +165,11 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			UnfilledDeps    []unresolvedStub
 
 			ExtraImports []extraImport
+
+			// ConnectV2 renders the connect-go v2 harness — the major
+			// this scaffold targets, as forge generate will read it back
+			// from go.mod.
+			ConnectV2 bool
 		}{
 			Module:    g.ModulePath,
 			Package:   svc.Package,
@@ -198,6 +203,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ConfigDefaults: "Defaults",
 
 			ExtraImports: nil, // No cross-package auto-stubs at initial scaffold time
+			ConnectV2:    g.connectMajor().IsV2(),
 		}
 
 		content, err := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", data)

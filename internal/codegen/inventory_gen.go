@@ -106,6 +106,10 @@ type InventoryGenData struct {
 	// ConnectImports are the *v1connect import lines needed for the
 	// ConnectPath descriptor constants (and REST). Deduped + sorted.
 	ConnectImports []string
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // GenerateInventory emits internal/app/mounts_services.go: the typed
@@ -133,6 +137,7 @@ func GenerateInventory(in InventoryGenInput) error {
 		RESTEnabled:    restEnabled,
 		Services:       rows,
 		ConnectImports: imports,
+		ConnectV2:      in.connectV2(),
 	}
 
 	content, err := templates.ProjectTemplates().Render("mounts_services_gen.go.tmpl", data)

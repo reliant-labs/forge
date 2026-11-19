@@ -9,6 +9,11 @@ import (
 	"net/http"
 	"testing"
 {{- end}}
+{{- if and .Methods (connectV2 .)}}
+
+	connect "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+{{- end}}
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
@@ -32,6 +37,19 @@ func freePort() int {
 
 // newClient creates a Connect RPC client for the {{.ServiceName}} service.
 //
+{{- if connectV2 .}}
+// Connect error assertions in tests should use tdd.AssertConnectErrorV2
+// from github.com/reliant-labs/forge/pkg/tdd.
+//
+// connect-go v2 clients wrap a transport; WithReadMaxBytes(0) keeps the
+// response size unbounded, as a connect-go v1 client was.
+func newClient(t *testing.T, baseURL string) {{.ServicePackage}}v1connect.{{.ConnectServiceGoName}}Client {
+	t.Helper()
+	return {{.ServicePackage}}v1connect.New{{.ConnectServiceGoName}}Client(connect.NewClient(
+		connecthttp.NewTransport(http.DefaultClient, baseURL, connecthttp.WithReadMaxBytes(0)),
+	))
+}
+{{- else}}
 // Connect error assertions in tests should use tdd.AssertConnectError
 // from github.com/reliant-labs/forge/pkg/tdd; the in-package helper was
 // removed in favor of the shared library.
@@ -42,6 +60,7 @@ func newClient(t *testing.T, baseURL string) {{.ServicePackage}}v1connect.{{.Con
 		baseURL,
 	)
 }
+{{- end}}
 {{- end}}
 
 // Ensure the generated protobuf package import remains referenced.

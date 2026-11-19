@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/google/pprof/profile"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The profile_pgo_edges materialized view, run against a real ClickHouse: rows
@@ -279,7 +281,7 @@ func TestProfilePGOEdgesMatchGoPreprofile(t *testing.T) {
 	}
 	cmd := exec.Command(goBin, "tool", "preprofile", "-i", "cpu.pprof", "-o", "pre.out")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go tool preprofile: %v\n%s", err, out)
 	}

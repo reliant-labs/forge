@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/pprof/profile"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -500,7 +501,7 @@ func TestWritePGODropsWhatBreaksTheBuild(t *testing.T) {
 	build := func(profile string) (string, error) {
 		cmd := exec.Command(goBin, "build", "-pgo="+profile, "-o", "probe", ".")
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+		cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0"))
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -640,7 +641,7 @@ func TestWritePGODrivesTheGoToolchain(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(goBin, args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0")
+		cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=", "GOWORK=off", "GOTOOLCHAIN=local", "CGO_ENABLED=0"))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, out)

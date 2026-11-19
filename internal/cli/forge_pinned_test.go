@@ -165,27 +165,55 @@ func TestVersionPinned_AnEmbeddedSelfCarriesItsRoute(t *testing.T) {
 
 // Review of #2401: an embedded host whose executable reports another forge
 // than this process's build metadata (a host replaced on disk since it
-// started, a host stamped differently) is not offered as the pin — on the
-// word of buildinfo — under a version it does not run.
-func TestVersionPinned_AnEmbeddedSelfThatReportsAnotherVersionIsRefused(t *testing.T) {
+// started, a host stamped differently) is not offered as the pin on the word
+// of buildinfo. The pin is obtained as for any other forge: here, the cached
+// build.
+func TestVersionPinned_AnEmbeddedSelfThatReportsAnotherVersionFallsBackToTheCache(t *testing.T) {
 	skewedProject(t)
 	buildinfo.Set(skewTestPin, "", "377b61532c0e")
-	pinnedResolverProbing(t, func(_ string, args []string) string {
-		if slices.Equal(args, []string{"forge"}) {
-			return skewTestBinary // what the host on disk actually runs
-		}
-		return skewTestPin
-	}, false, nil)
+	h, installs := pinnedResolverProbing(t, hostReportsAnotherForge, false, nil)
+	bin := cachedPinnedForge(t)
+
+	doc, err := embeddedVersionPinned(t)
+	if err != nil {
+		t.Fatalf("reliant forge version --pinned: %v", err)
+	}
+	if doc.Source != forgedelegate.KindCache || doc.Path != bin || doc.Version != skewTestPin {
+		t.Errorf("document %+v, want the cached build %s at %s", doc, bin, skewTestPin)
+	}
+	if !slices.Equal(doc.Command, []string{bin}) {
+		t.Errorf("command %v, want [%s]: the host route is this forge's, not the pin's", doc.Command, bin)
+	}
+	if h.path != "" || len(*installs) != 0 {
+		t.Errorf("exec'd %q / built %v: the cached build was the answer", h.path, *installs)
+	}
+}
+
+// ... and when the pin cannot be had either, nothing is answered: the
+// refusal says both why this forge was not it and why the pin was not found.
+func TestVersionPinned_AnEmbeddedSelfThatReportsAnotherVersionIsRefusedWhenThePinCannotBeHad(t *testing.T) {
+	skewedProject(t)
+	buildinfo.Set(skewTestPin, "", "377b61532c0e")
+	pinnedResolverProbing(t, hostReportsAnotherForge, false, nil)
 
 	_, err := embeddedVersionPinned(t)
 	if err == nil {
 		t.Fatal("an embedded host reporting another forge was answered as the pin")
 	}
-	for _, want := range []string{"reports forge " + skewTestBinary, "not the pinned " + skewTestPin, "forge.yaml"} {
+	for _, want := range []string{"reports forge " + skewTestBinary, "not the pinned " + skewTestPin, "forge.yaml", "no such host"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not say %q:\n%v", want, err)
 		}
 	}
+}
+
+// hostReportsAnotherForge is a probe under which the host's `forge version`
+// reports skewTestBinary, and every other forge the pin.
+func hostReportsAnotherForge(_ string, args []string) string {
+	if slices.Equal(args, []string{"forge"}) {
+		return skewTestBinary // what the host on disk actually runs
+	}
+	return skewTestPin
 }
 
 // A different pin, already built: its cached path, version checked by running

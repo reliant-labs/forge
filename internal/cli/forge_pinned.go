@@ -15,7 +15,9 @@ package cli
 // own resolution (delegateTargetFor + resolveTarget: the linked checkout, the
 // project's .tools/bin/forge, the cache, or a build), and printed rather than
 // exec'd. When the running forge already is the pin, the answer is this
-// forge's own executable. cli.ResolvePinnedForgePath is the same answer for a
+// forge's own executable — once that executable, run, reports the pin; when
+// it does not (an embedded host replaced on disk since it started), the pin
+// is obtained like any other forge's. cli.ResolvePinnedForgePath is the same answer for a
 // host that embeds forge.
 //
 // The answer is about the PIN, so none of the hand-off's "run THIS forge"
@@ -113,17 +115,30 @@ func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (Pin
 
 	r := pinDelegateResolver(log)
 	t, other := delegateTargetFor(projectRoot)
+	var notSelf error
 	if !other {
-		return selfPinnedForge(ctx, r, cfgPath, pin, checkout)
+		pf, err := selfPinnedForge(ctx, r, pin, checkout)
+		if err == nil {
+			return pf, nil
+		}
+		if checkout != "" {
+			return PinnedForge{}, fmt.Errorf("%s is linked to the checkout %s, which this forge was built from, but its executable does not run as it:\n    %w", cfgPath, checkout, err)
+		}
+		// This process takes itself for the pin, but the executable it
+		// would name is not (an embedded host replaced on disk since it
+		// started, a host stamped differently). The command promises the
+		// pinned forge, so it is obtained like any other forge that is not
+		// this one: tools, cache or build, each checked below.
+		t, notSelf = delegateTarget{pin: pin, binary: buildinfo.Version()}, err
 	}
 	res, err := resolveTarget(ctx, log, projectRoot, t)
 	if err != nil {
-		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, err)
+		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, alsoNotSelf(err, notSelf))
 	}
 	// A checkout has no version to hold it to: its build is the forge.
 	version, err := probePinnedVersion(ctx, r, res.Path, nil, pinIfNoCheckout(t.pin, t.checkout))
 	if err != nil {
-		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, err)
+		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, alsoNotSelf(err, notSelf))
 	}
 	return PinnedForge{
 		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
@@ -135,9 +150,9 @@ func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (Pin
 // names is probed like any pinned forge, never vouched for by this process's
 // own build metadata: an embedded forge's Path is its HOST, reached through
 // Args, and the file at os.Executable() may have been replaced since this
-// process started (an upgraded host, a rebuilt binary). What it reports must
-// be the pin, or nothing is answered.
-func selfPinnedForge(ctx context.Context, r probeResolver, cfgPath, pin, checkout string) (PinnedForge, error) {
+// process started. It errors, with what the probe found, when that executable
+// does not report the pin; the caller then obtains the pin elsewhere.
+func selfPinnedForge(ctx context.Context, r probeResolver, pin, checkout string) (PinnedForge, error) {
 	command, err := forgeExecCommand()
 	if err != nil {
 		return PinnedForge{}, err
@@ -149,14 +164,21 @@ func selfPinnedForge(ctx context.Context, r probeResolver, cfgPath, pin, checkou
 	path, args := command[0], command[1:]
 	version, err := probePinnedVersion(ctx, r, path, args, pinIfNoCheckout(pin, checkout))
 	if err != nil {
-		return PinnedForge{}, fmt.Errorf("%s wants %s, which this forge (%s) takes itself to be, but its executable does not confirm it:\n    %s\n"+
-			"  Nothing is answered rather than a forge that may not be the pin: run the command again with the forge you mean to ask (a host replaced on disk since it started?)",
-			cfgPath, want, buildinfo.Version(), err)
+		return PinnedForge{}, err
 	}
 	return PinnedForge{
 		Path: path, Args: args, Key: selfKey(version, path), Want: want,
 		Source: PinnedSourceSelf, Version: version, Pin: pin, Checkout: checkout,
 	}, nil
+}
+
+// alsoNotSelf is err, preceded by why this forge's own executable was not the
+// answer (notSelf) when that is why the pin was looked for elsewhere.
+func alsoNotSelf(err, notSelf error) error {
+	if notSelf == nil {
+		return err
+	}
+	return fmt.Errorf("this forge takes itself for the pin, but its executable is not: %v\nand looking for the pin elsewhere failed: %w", notSelf, err)
 }
 
 // probeResolver is what probePinnedVersion needs of forgedelegate's Resolver.

@@ -190,8 +190,10 @@ forge version --pinned --json -C path/to/project   # one forge.version.pinned/v1
 
 It fetches or builds the pin exactly as the hand-off would (the linked
 checkout, `.tools/bin/forge`, the cache, a build), checks that it reports the
-pinned version (this forge's own executable included: it is run, not
-vouched for), and prints it instead of running it. `source` is `self` (this
+pinned version, and prints it instead of running it. This forge's own
+executable is checked too: it is run, not vouched for, and when it reports
+another version (a host replaced on disk since it started) it is not the
+pin, which is then fetched or built like any other. `source` is `self` (this
 forge already is the pin; `path` is its own executable), `tools`, `cache` or
 `built`; the document's `command` is the exec-ready prefix, `[path]`, or
 `[path, "forge"]` when the forge is embedded (`reliant forge`). No project, no

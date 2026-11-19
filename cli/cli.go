@@ -55,7 +55,8 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 // when the command must be handed elsewhere, it always names an executable:
 // this forge's own (os.Executable(), Source "self", and Args ["forge"] when
 // forge is embedded in it) when this forge already is the pin — and that
-// executable, run as `Path Args... version`, reports the pin; otherwise the
+// executable, run as `Path Args... version`, reports the pin (when it does
+// not, this forge is treated as not the pin); otherwise the
 // pinned forge, obtained exactly as HandOffToPinned obtains it — the linked
 // checkout's build, the project's .tools/bin/forge, the cache, or a build —
 // and checked to report the pinned version. It errors, running nothing, when

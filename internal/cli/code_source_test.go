@@ -32,6 +32,11 @@ func TestShareableRemote(t *testing.T) {
 		"ssh://git@gitlab.example.com:2222/group/sub/shop.git":   "gitlab.example.com/group/sub/shop",
 		"https://x-access-token:ghp_secret@github.com/acme/shop": "github.com/acme/shop",
 		"https://oauth2:glpat-secret@gitlab.com/acme/shop.git/":  "gitlab.com/acme/shop",
+		"ssh://git@github.com/acme/shop.git":                     "github.com/acme/shop",
+		"git://git.example.org/acme/shop":                        "git.example.org/acme/shop",
+		// The SCP form without a user: CanonicalRepo alone reads
+		// "github.com:acme" as a host and a port.
+		"github.com:acme/shop.git": "github.com/acme/shop",
 		// Nothing that names this machine, and nothing still carrying a
 		// credential or a query, is shareable.
 		"/home/sean/src/shop":                    "",
@@ -42,10 +47,59 @@ func TestShareableRemote(t *testing.T) {
 		"https://github.com/acme/shop?token=abc": "",
 		"github.com":                             "",
 		"":                                       "",
+		// Local remotes that canonicalization would make look hosted:
+		// classified as local from the ORIGINAL url, never transmitted.
+		"sibling/repo":                        "",
+		"github.com/acme/shop":                "",
+		"./sibling/repo":                      "",
+		"file://localhost/home/sean/src/shop": "",
+		"file://github.com/acme/shop":         "",
+		"FILE:///home/sean/src/shop":          "",
+		"/srv/git/github.com/acme/shop.git":   "",
+		"~/src/shop":                          "",
+		// A remote helper, an unknown scheme, a URL with no host.
+		"persistent-https::github.com/acme/shop": "",
+		"rsync://github.com/acme/shop":           "",
+		"https:///acme/shop":                     "",
+		// A host that names this machine, or resolves only through its
+		// own configuration (an ssh alias, a search domain).
+		"ssh://localhost/acme/shop":   "",
+		"git@localhost:acme/shop":     "",
+		"https://127.0.0.1/acme/shop": "",
+		"gitserver:acme/shop":         "",
+		"git@gh:acme/shop":            "",
+		"github.com:":                 "",
 	}
 	for in, want := range cases {
 		if got := shareableRemote(in); got != want {
 			t.Errorf("shareableRemote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A remote that is ALREADY canonical — a release's provenance holds one —
+// has lost the url that said whether it was a network remote, so it is
+// screened as one: a fully qualified host, never this machine.
+func TestShareableCanonical(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"github.com/acme/shop":          "github.com/acme/shop",
+		"gitlab.example.com/g/sub/shop": "gitlab.example.com/g/sub/shop",
+		"10.0.0.5/acme/shop":            "10.0.0.5/acme/shop",
+		// What a relative local remote, or a stripped file:// url,
+		// canonicalizes to.
+		"sibling/repo":           "",
+		"/home/sean/src/shop":    "",
+		"localhost/acme/shop":    "",
+		"127.0.0.1/acme/shop":    "",
+		"github.com":             "",
+		"github.com/":            "",
+		"user@github.com/a/b":    "",
+		"github.com/acme/shop?x": "",
+	}
+	for in, want := range cases {
+		if got := shareableCanonical(in); got != want {
+			t.Errorf("shareableCanonical(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -117,6 +171,65 @@ func TestCodeSourceForReleaseSendsOnlyTheReleasesCommit(t *testing.T) {
 	if got = (codeSource{}).forRelease(release.Release{Provenance: &release.Provenance{Repo: "/home/sean/shop"}}); got.Remote != "" {
 		t.Errorf("a path remote leaked: %+v", got)
 	}
+	// An old forge recorded a relative local remote canonicalized: it is
+	// not a repository, and the checkout's stands.
+	if got = checkout.forRelease(release.Release{Provenance: &release.Provenance{Repo: "sibling/repo"}}); got.Remote != "github.com/acme/shop" || got.Subpath != "apps/web" {
+		t.Errorf("a canonicalized local remote replaced the checkout's: %+v", got)
+	}
+	// A release whose provenance names another repository: one tuple, that
+	// repository's, without this checkout's directory or chat.
+	other := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+	got = other.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/fork", Commit: sourceCommitB}})
+	if want := (codeSource{Remote: "github.com/acme/fork", Commit: sourceCommitB}); got != want {
+		t.Errorf("another repository's release: %+v, want %+v", got, want)
+	}
+	got = other.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}})
+	if want := (codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"}); got != want {
+		t.Errorf("the checkout's own repository: %+v, want %+v", got, want)
+	}
+}
+
+// A deploy of an already-cut release sends that release's repository and
+// commit — never the deploying checkout's remote beside them — and the
+// checkout's directory and chat only when it is a clone of that repository.
+func TestCodeSourceForShippedIsTheReleasesTuple(t *testing.T) {
+	t.Parallel()
+	shipped := release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}}
+	cases := map[string]struct {
+		checkout codeSource
+		r        release.Release
+		want     codeSource
+	}{
+		"a clone of the release's repository at another HEAD": {
+			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
+			r:        shipped,
+			want:     codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"},
+		},
+		"a checkout of another repository": {
+			checkout: codeSource{Remote: "github.com/acme/ops", Subpath: "deploy", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
+			r:        shipped,
+			want:     codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitB},
+		},
+		"no checkout": {
+			r:    shipped,
+			want: codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitB},
+		},
+		"a release that recorded no repository": {
+			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
+			r:        release.Release{Git: release.Git{Commit: sourceCommitB}},
+			want:     codeSource{Commit: sourceCommitB},
+		},
+		"a release that recorded a local remote": {
+			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web"},
+			r:        release.Release{Provenance: &release.Provenance{Repo: "sibling/repo", Commit: sourceCommitB}},
+			want:     codeSource{Commit: sourceCommitB},
+		},
+	}
+	for name, tc := range cases {
+		if got := tc.checkout.forShipped(tc.r); got != tc.want {
+			t.Errorf("%s: %+v, want %+v", name, got, tc.want)
+		}
+	}
 }
 
 // Every cut sends the source: the legacy request and the snapshot one, where
@@ -166,43 +279,154 @@ func TestCutWithoutASourceSendsNone(t *testing.T) {
 	}
 }
 
-// A deploy that ships the checkout sends its HEAD; one that ships a named
-// release sends the commit that release's cut recorded, never the checkout's
-// HEAD; one whose release is not known when the attempt opens (--from), or
-// cannot be read, sends the repository but no commit.
+// attemptReleases are the releases the attempt tests' ledger holds: v1 cut
+// from github.com/acme/shop at commit B, v2 recorded with commit B and no
+// repository, v0 recording neither.
+func attemptReleases() map[string]wireRelease {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return map[string]wireRelease{
+		"v1": {Version: "v1", RecordOnly: true, GitCommit: sourceCommitB, CreatedAt: at,
+			Provenance: &wireProvenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}},
+		"v2": {Version: "v2", RecordOnly: true, GitCommit: sourceCommitB, CreatedAt: at},
+		"v0": {Version: "v0", RecordOnly: true, CreatedAt: at},
+	}
+}
+
+// attemptLedger is a hosted ledger over c whose checkout captured src.
+func attemptLedger(c cloudCaller, src codeSource) envLedger {
+	return envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(src)}, Hosted: true}
+}
+
+// sourcesSent is every codeSource the attempt sent with procedure.
+func (c *attemptCaller) sourcesSent(procedure string) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for i, p := range c.calls {
+		if src, ok := c.bodies[i]["codeSource"].(map[string]any); ok && p == procedure {
+			out = append(out, src)
+		}
+	}
+	return out
+}
+
+// A deploy that ships the checkout sends its source, HEAD included. One that
+// ships a named release sends THAT release's repository and commit, with the
+// checkout's directory and chat only when the checkout is a clone of the same
+// repository. One whose release is not known when the attempt opens (--from),
+// or cannot be read, sends nothing at the open.
 func TestDeployAttemptOpenSendsTheCodeSource(t *testing.T) {
 	t.Parallel()
+	clone := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+	elsewhere := codeSource{Remote: "github.com/acme/ops", Subpath: "deploy", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
 	cases := map[string]struct {
-		ships   bool
-		version string
-		commit  string
+		checkout codeSource
+		ships    bool
+		version  string
+		want     map[string]any // nil: no codeSource key
 	}{
-		"ships the checkout":            {ships: true, commit: sourceCommitA},
-		"named release":                 {version: "v1", commit: sourceCommitB},
-		"named release with no commit":  {version: "v0"},
-		"named release never cut":       {version: "v9"},
-		"release resolved later (from)": {},
+		"ships the checkout": {checkout: clone, ships: true,
+			want: map[string]any{"remote": "github.com/acme/shop", "subpath": "apps/web", "commit": sourceCommitA, "reliantProjectId": "proj-1"}},
+		"named release from a clone": {checkout: clone, version: "v1",
+			want: map[string]any{"remote": "github.com/acme/shop", "subpath": "apps/web", "commit": sourceCommitB, "reliantProjectId": "proj-1"}},
+		"named release from another repository's checkout": {checkout: elsewhere, version: "v1",
+			want: map[string]any{"remote": "github.com/acme/shop", "commit": sourceCommitB}},
+		"named release with no recorded repository": {checkout: clone, version: "v2",
+			want: map[string]any{"commit": sourceCommitB}},
+		"named release recording nothing": {checkout: clone, version: "v0"},
+		"named release never cut":         {checkout: clone, version: "v9"},
+		"release resolved later (from)":   {checkout: elsewhere},
 	}
 	for name, tc := range cases {
-		c := &attemptCaller{releases: map[string]wireRelease{
-			"v1": {Version: "v1", RecordOnly: true, GitCommit: sourceCommitB, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-			"v0": {Version: "v0", RecordOnly: true, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-		}}
+		c := &attemptCaller{releases: attemptReleases()}
 		ctx, a := newTestAttempt("prod", "apply", io.Discard)
 		a.shipsCheckout, a.release = tc.ships, tc.version
-		l := envLedger{Bindings: &hostedStore{client: c, project: "shop", source: fixedCodeSource(codeSource{
-			Remote: "github.com/acme/shop", Commit: sourceCommitA, ReliantProjectID: "proj-1",
-		})}, Hosted: true}
-		attachDeployAttempt(ctx, "prod", l)
-		want := map[string]any{"remote": "github.com/acme/shop", "reliantProjectId": "proj-1"}
-		if tc.commit != "" {
-			want["commit"] = tc.commit
+		attachDeployAttempt(ctx, "prod", attemptLedger(c, tc.checkout))
+		open := c.last(procOpenDeployAttempt)
+		if tc.want == nil {
+			if src, ok := open["codeSource"]; ok {
+				t.Errorf("open (%s): sent codeSource %v, want none", name, src)
+			}
+		} else {
+			assertCodeSource(t, fmt.Sprintf("open (%s)", name), open, tc.want)
 		}
-		assertCodeSource(t, fmt.Sprintf("open (%s)", name), c.last(procOpenDeployAttempt), want)
 		if got := c.count(procGetRelease); (got > 0) != (tc.version != "") {
 			t.Errorf("%s: GetRelease called %d times", name, got)
 		}
 		a.finish(ctx, nil)
+		// Sent once, at the open: no report repeats it, and a release that
+		// could not be read is not re-read on every heartbeat.
+		if got := c.sourcesSent(procReportDeployAttempt); len(got) != 0 {
+			t.Errorf("%s: reports re-sent the source: %v", name, got)
+		}
+		if got := c.count(procGetRelease); got > 1 {
+			t.Errorf("%s: GetRelease called %d times, want at most once", name, got)
+		}
+	}
+}
+
+// A --from deploy learns its release only after the attempt opened: the open
+// sends no source, and the report after the release is noted sends that
+// release's tuple, once — whichever checkout runs the deploy.
+func TestDeployAttemptFromSendsTheShippedSourceOnAReport(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		checkout codeSource
+		want     map[string]any
+	}{
+		"from another repository's checkout": {
+			checkout: codeSource{Remote: "github.com/acme/ops", Subpath: "deploy", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
+			want:     map[string]any{"remote": "github.com/acme/shop", "commit": sourceCommitB},
+		},
+		"from a clone at another HEAD": {
+			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
+			want:     map[string]any{"remote": "github.com/acme/shop", "subpath": "apps/web", "commit": sourceCommitB, "reliantProjectId": "proj-1"},
+		},
+	}
+	for name, tc := range cases {
+		c := &attemptCaller{releases: attemptReleases()}
+		ctx, a := newTestAttempt("prod", "apply", io.Discard)
+		attachDeployAttempt(ctx, "prod", attemptLedger(c, tc.checkout))
+		if src, ok := c.last(procOpenDeployAttempt)["codeSource"]; ok {
+			t.Fatalf("%s: the open sent %v before the release was known", name, src)
+		}
+		noteDeployPhase(ctx, "resolve")
+		noteDeployRelease(ctx, "v1")
+		noteDeployPhase(ctx, "promote")
+		// finish delivers a source no heartbeat carried yet, so this is
+		// exact whatever the heartbeat timing.
+		a.finish(ctx, nil)
+		sent := c.sourcesSent(procReportDeployAttempt)
+		if len(sent) != 1 {
+			t.Fatalf("%s: reports carried %d sources, want exactly 1: %v", name, len(sent), sent)
+		}
+		assertCodeSource(t, fmt.Sprintf("report (%s)", name), map[string]any{"codeSource": sent[0]}, tc.want)
+		if c.sourcesSent(procCloseDeployAttempt) != nil {
+			t.Errorf("%s: the close carried a source", name)
+		}
+		if got := c.count(procGetRelease); got != 1 {
+			t.Errorf("%s: GetRelease called %d times, want 1", name, got)
+		}
+	}
+}
+
+// A --from release that cannot be read is read once, and nothing is sent: a
+// checkout's repository beside an unknown release is no source.
+func TestDeployAttemptFromUnreadableReleaseSendsNothing(t *testing.T) {
+	t.Parallel()
+	c := &attemptCaller{releases: attemptReleases()}
+	ctx, a := newTestAttempt("prod", "apply", io.Discard)
+	attachDeployAttempt(ctx, "prod", attemptLedger(c, codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitA}))
+	noteDeployRelease(ctx, "v9")
+	noteDeployPhase(ctx, "promote")
+	a.finish(ctx, nil)
+	for _, p := range []string{procOpenDeployAttempt, procReportDeployAttempt, procCloseDeployAttempt} {
+		if got := c.sourcesSent(p); got != nil {
+			t.Errorf("%s sent %v", p, got)
+		}
+	}
+	if got := c.count(procGetRelease); got != 1 {
+		t.Errorf("GetRelease called %d times, want 1", got)
 	}
 }
 

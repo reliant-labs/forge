@@ -129,7 +129,7 @@ guard. none scaffolds an app nobody signs in to: no identity, no dev IdP, a
 public frontend with no route guard and no sign-in pages, and a login broker
 that is never mounted. The API still authenticates, fail-closed: an rpc
 answers anonymous callers only when its proto declares
-` + "`option (forge.v1.method) = { auth_required: false }`" + `; every other rpc
+` + "`option (forge.v1.method) = {auth_required: false}`" + `; every other rpc
 answers 401, because nothing can issue the token it requires.
 
 Example:
@@ -1285,7 +1285,7 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 				"      ↳ applies migrations, seeds demo rows, prints your URLs",
 				"",
 				"  No sign-in (--auth-mode none): every rpc the frontend calls needs",
-				"      option (forge.v1.method) = { auth_required: false };",
+				"      option (forge.v1.method) = {auth_required: false};",
 				"      ↳ without it the rpc answers 401 — the API still fails closed",
 				"",
 				"  The UI you will see is starter code, not a design — yours to rewrite.",

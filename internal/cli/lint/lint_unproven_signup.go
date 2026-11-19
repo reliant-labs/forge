@@ -39,8 +39,16 @@ import (
 const ruleUnprovenSignup = "forgeconv-unproven-signup"
 
 var (
-	kclNoMail         = regexp.MustCompile(`\bdelivery\s*[:=]\s*"none"`)
-	kclLegacySelfSign = regexp.MustCompile(`(?i)\bauth_self_signup"?\s*[:=]\s*("?true"?|"1")`)
+	kclNoMail = regexp.MustCompile(`\bdelivery\s*[:=]\s*"none"`)
+	// kclLegacySelfSign matches auth_self_signup SET to true: a config value
+	// (`auth_self_signup = True`), an env var (`"AUTH_SELF_SIGNUP" = "true"`),
+	// or a schema default (`auth_self_signup: bool = True`). The value must
+	// be the whole expression, ending the line or the entry, so the env
+	// projection forge generates into every config_gen.k —
+	// `"AUTH_SELF_SIGNUP" = "true" if c.auth_self_signup else "false"` —
+	// reads as what it is, a mapping of whatever the env declares, and not
+	// as sign-up turned on.
+	kclLegacySelfSign = regexp.MustCompile(`(?im)\bauth_self_signup"?\s*[:=]\s*(?:bool\s*=\s*)?("?true"?|"1")\s*(?:[,;}\]]|$)`)
 )
 
 // unprovenSignupFinding is one declaration of a sign-up nobody proves.

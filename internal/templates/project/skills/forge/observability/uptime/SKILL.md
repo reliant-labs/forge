@@ -115,3 +115,19 @@ the latency, the certificate's expiry and when the failure began.
 A prober that stops writing is not every check failing: `UptimeCheckFailing`
 ignores a check whose newest probe is more than 15 minutes old. The platform
 watches the prober itself with an external heartbeat.
+
+## Availability and incidents
+
+The built-in _Uptime_ dashboard (`uptime`, hosted environments only) draws the
+checks from the gauges, with four statements `pkg/obsquery` exports as
+sql-panel SELECTs (`UptimeSummarySQL`, `UptimeTimelineSQL`, `UptimeChecksSQL`,
+`UptimeIncidentsSQL`), so `forge obs query` and the console run the same text:
+
+- **availability** is the share of the range's probes that passed;
+- an **incident** opens at the first of 3 failed probes in a row and closes at
+  the next passing probe; one open at the end of the range has no end. Probes
+  from an hour before the range are read, so an incident already open when it
+  starts begins where it began;
+- a check's **status** at the end of the range is `down` while an incident is
+  open, `unknown` when its newest probe is more than 15 minutes old, else `up`.
+

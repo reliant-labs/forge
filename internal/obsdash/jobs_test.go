@@ -329,7 +329,7 @@ func TestEveryGeneratedDashboardHasAGroup(t *testing.T) {
 		"jobs": GroupJobs, "workloads": GroupPlatform, "releases": GroupReleases, "frontend": GroupProduct,
 		"product-overview": GroupProduct, "users": GroupProduct, "product": GroupProduct, "acquisition": GroupProduct,
 		"ai": GroupAI, "ai-workflows": GroupAI, "ai-models": GroupAI, "ai-users": GroupAI,
-		"ai-errors": GroupAI, "ai-tools": GroupAI,
+		"ai-errors": GroupAI, "ai-tools": GroupAI, "traffic": GroupProduct, "uptime": GroupOverview,
 	}
 	got := map[string]Group{}
 	for _, d := range Build(fleet()).Dashboards {
@@ -363,10 +363,11 @@ func TestProcessDashboardIDIsTheForgeWorkloadName(t *testing.T) {
 }
 
 // A static site's environment keeps the dashboards that need no process: its
-// frontend's, and the built-in product dashboards over its own page views.
+// frontend's, the built-in product dashboards and Traffic over its own page
+// views, and Uptime over the platform's checks of it.
 func TestWithoutProcessDashboardsKeepsTheFrontendAndProductDashboards(t *testing.T) {
 	sp := WithoutProcessDashboards(Build(Input{Project: "shop", Frontends: []string{"web"}}))
-	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend", "product-overview", "users", "product", "acquisition"}) {
+	if got := dashboardIDs(sp); !reflect.DeepEqual(got, []string{"frontend", "product-overview", "users", "product", "acquisition", "traffic", "uptime"}) {
 		t.Fatalf("dashboards = %v", got)
 	}
 }

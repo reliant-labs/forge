@@ -103,19 +103,35 @@ func lastDays(n int, end string) string {
 // interaction (an identity heartbeat, a sign-out, a flag exposure, an
 // engagement beacon).
 func webCTE(rng string) string {
-	return `web AS (
-  SELECT Timestamp AS ts, EnvId, DayVisitor AS h, UserId, EventName, Props, Country, DeviceType, Browser, OS
+	return webOf("web", "", rng)
+}
+
+// webOf is webCTE named name, its rows carrying the extra columns cols
+// (", <expr> AS <name>", or "").
+func webOf(name, cols, rng string) string {
+	return name + ` AS (
+  SELECT Timestamp AS ts, EnvId, DayVisitor AS h, UserId, EventName, Props, Country, DeviceType, Browser, OS` + cols + `
   FROM product_events
-  WHERE ` + rng + ` AND ` + envScope + ` AND Client IN ('web', 'landing') AND DayVisitor != '' AND DeviceType != 'bot'
+  WHERE ` + rng + ` AND ` + envScope + ` AND ` + browserRows + `
     AND EventName NOT IN ('auth_signed_in', 'auth_signed_out', 'flag_evaluated', 'page_engaged', '` + obsquery.EventAuthAccounts + `'))`
 }
+
+// browserRows are the edge-hashed rows of the web and landing clients, bots
+// excluded.
+const browserRows = "Client IN ('web', 'landing') AND DayVisitor != '' AND DeviceType != 'bot'"
 
 // visitsCTE sessionises web into visits: one visitor's events in time order,
 // a new visit after a gap of more than 30 minutes. Each visit carries where it
 // came from (its first page view's referrer, campaign and ad-network flag),
 // its entry and exit routes, and what the edge saw.
-const visitsCTE = `visits AS (
-  SELECT EnvId, h, vix, min(ts) AS start, max(ts) AS stop,
+var visitsCTE = visitsOf("visits", "web", "EnvId, h")
+
+// visitsOf is visitsCTE named name, over the rows of src, sessionised per
+// keys: "EnvId, h", or "EnvId, h, cur" for a read of two periods at once
+// (trafficChain), whose visits never span the two.
+func visitsOf(name, src, keys string) string {
+	return name + ` AS (
+  SELECT ` + keys + `, vix, min(ts) AS start, max(ts) AS stop,
          countIf(EventName = 'page_viewed') AS views,
          countIf(EventName != 'page_viewed') AS actions,
          argMinIf(Props['route'], ts, EventName = 'page_viewed') AS entry_route,
@@ -131,21 +147,27 @@ const visitsCTE = `visits AS (
          anyIf(Country, Country != '') AS country, anyIf(DeviceType, DeviceType != '') AS device,
          anyIf(Browser, Browser != '') AS browser, anyIf(OS, OS != '') AS os
   FROM (
-    SELECT *, sum(brk) OVER (PARTITION BY EnvId, h ORDER BY ts ROWS UNBOUNDED PRECEDING) AS vix
+    SELECT *, sum(brk) OVER (PARTITION BY ` + keys + ` ORDER BY ts ROWS UNBOUNDED PRECEDING) AS vix
     FROM (
       SELECT *, dateDiff('second',
-               lagInFrame(ts, 1, ts - INTERVAL 1 HOUR) OVER (PARTITION BY EnvId, h ORDER BY ts
+               lagInFrame(ts, 1, ts - INTERVAL 1 HOUR) OVER (PARTITION BY ` + keys + ` ORDER BY ts
                                                          ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), ts) > 1800 AS brk
-      FROM web))
-  GROUP BY EnvId, h, vix)`
+      FROM ` + src + `))
+  GROUP BY ` + keys + `, vix)`
+}
 
 // firstCTE is each visitor-day's first touch: the channel and source of its
 // first visit, its landing page, campaign and audience, its visits and
 // bounces. d is the day of its last event, the day a visitor is drawn on.
 // The names differ from visits' columns so no alias shadows one.
 func firstCTE(rules []ChannelRule) string {
-	return `first AS (
-  SELECT EnvId, h, toDate(max(stop)) AS d,
+	return firstOf("first", "visits", "EnvId, h", rules)
+}
+
+// firstOf is firstCTE named name, over the visits of src, one row per keys.
+func firstOf(name, src, keys string, rules []ChannelRule) string {
+	return name + ` AS (
+  SELECT ` + keys + `, toDate(max(stop)) AS d,
          argMin(` + channelExpr(rules, "ref", "src", "med", "click") + `, start) AS channel,
          argMin(` + sourceExpr("ref", "src") + `, start) AS source,
          argMin(entry_route, start) AS landing,
@@ -155,7 +177,7 @@ func firstCTE(rules []ChannelRule) string {
          argMin(country, start) AS country_code, argMin(device, start) AS device_type,
          argMin(browser, start) AS browser_name, argMin(os, start) AS os_name,
          count() AS n_visits, countIf(views = 1 AND actions = 0) AS bounces
-  FROM visits GROUP BY EnvId, h)`
+  FROM ` + src + ` GROUP BY ` + keys + `)`
 }
 
 // stitchCTE links a visitor-day to the one user seen on it: the hash's rows

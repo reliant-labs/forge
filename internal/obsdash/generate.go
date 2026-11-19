@@ -63,13 +63,14 @@ const (
 // Jobs the Kubernetes Job events it delivers, Releases reads the release
 // ledger and the built-in Product overview, Users, Product and Acquisition dashboards read
 // product_events (sql panels HyperDX cannot draw, over a table the local
-// ClickStack lacks), the AI hub's are sql panels too, and none of them exists
-// under `forge env up`. They are also constant text, independent of the
+// ClickStack lacks), as do the Overview's Traffic and Uptime cards (Uptime
+// reads the platform prober's gauges), the AI hub's are sql panels too, and
+// none of them exists under `forge env up`. They are also constant text, independent of the
 // project's services, so writing them would put library code in the project's
 // tree behind a do-not-edit banner. They ship in the spec and in the release
 // bundle.
 func hostedOnly(d Dashboard) bool {
-	return d.ID == WorkloadsID || d.ID == ReleasesID || d.ID == JobsID || obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID)
+	return d.ID == WorkloadsID || d.ID == ReleasesID || d.ID == JobsID || obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID) || obsbuiltin.IsCardDashboard(d.ID)
 }
 
 // OverridePath is the file that, when present, replaces the generated

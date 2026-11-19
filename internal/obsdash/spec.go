@@ -164,19 +164,35 @@ func (in Input) frontendServiceNames() []string {
 
 // builtin is what the built-in product dashboards read from in.
 func (in Input) builtin() obsbuiltin.Input {
-	return obsbuiltin.Input{Project: in.Project, Web: len(in.Frontends) > 0 || len(in.FrontendServices) > 0,
-		Analytics: in.Analytics, Funnels: in.Funnels, Counts: in.Counts, Activity: in.Activity}
+	web := len(in.Frontends) > 0 || len(in.FrontendServices) > 0
+	return obsbuiltin.Input{Project: in.Project, Web: web,
+		Analytics: in.Analytics, Funnels: in.Funnels, Counts: in.Counts, Activity: in.Activity,
+		Uptime: web || in.servesHTTP()}
+}
+
+// servesHTTP reports whether the project runs a service: one with a public
+// HTTP route gets a default uptime check on a hosted environment (whether a
+// route is public is the environment's; the Uptime dashboard of a project
+// with none is empty).
+func (in Input) servesHTTP() bool {
+	for _, p := range in.Processes {
+		if p.Kind == KindServiceProc || p.ServesRPC() {
+			return true
+		}
+	}
+	return false
 }
 
 // WithoutProcessDashboards is sp for an environment that deploys no process: a
 // static site has nothing for the overview, workloads and releases dashboards
 // to measure (the overview would filter on the no-deployed-process sentinel),
 // so only the dashboards that do not need a process remain: the frontend's,
-// and the built-in product dashboards, which read the site's own page views.
+// the built-in product dashboards and Traffic, which read the site's own page
+// views, and Uptime, which reads the platform's checks of it.
 func WithoutProcessDashboards(sp Spec) Spec {
 	kept := sp.Dashboards[:0:0]
 	for _, d := range sp.Dashboards {
-		if d.ID == "frontend" || obsbuiltin.IsDashboard(d.ID) {
+		if d.ID == "frontend" || obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsCardDashboard(d.ID) {
 			kept = append(kept, d)
 		}
 	}
@@ -338,6 +354,9 @@ func BuildParts(in Input) (ProjectPart, []ProcessPart) {
 	// the CRUD events; Acquisition when it has a frontend.
 	project.Dashboards = append(project.Dashboards, obsbuiltin.Dashboards(in.builtin())...)
 	project.Dashboards = append(project.Dashboards, obsbuiltin.AIDashboards(in.builtin())...)
+	// The cards of the console's Overview page, by stable panel id: Traffic
+	// for a frontend, Uptime for a project with uptime checks.
+	project.Dashboards = append(project.Dashboards, obsbuiltin.Cards(in.builtin())...)
 	for i := range project.Dashboards {
 		project.Dashboards[i] = withReleaseMarkers(project.Dashboards[i])
 	}
@@ -659,7 +678,7 @@ func buildFrontend(in Input) Dashboard {
 	d.Panels = []Panel{
 		{ID: "js-errors", Title: "JS errors", Kind: KindNumber, Signal: Traces, Where: js, Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
 		{ID: "sessions", Title: "Sessions", Kind: KindNumber, Signal: Traces, Where: browserSpans, Series: []Series{{Label: "sessions", Agg: AggCountDistinct, Field: "resource.attr.rum.sessionId"}}, Unit: UnitCount, Width: 6, Height: 4},
-		{ID: "page-views", Title: "Page views", Kind: KindNumber, Signal: Traces, Where: scoped(browserSpans, pageLoads), Series: []Series{{Label: "views", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
+		{ID: "page-views", Title: "Page loads", Description: "Document loads and in-app route changes the browser SDK traced (documentLoad and routeChange spans). The Traffic dashboard's Page views count the analytics event page_viewed instead.", Kind: KindNumber, Signal: Traces, Where: scoped(browserSpans, pageLoads), Series: []Series{{Label: "views", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
 		{ID: "api-failures", Title: "Failed API calls", Description: "fetch / XHR spans with an HTTP status of 400 or more.", Kind: KindNumber, Signal: Traces, Where: scoped(browserSpans, ajax, ajaxFailed), Series: []Series{{Label: "failures", Agg: AggCount}}, Unit: UnitCount, Width: 6, Height: 4},
 		{ID: "errors-over-time", Title: "JS errors over time", Kind: KindLine, Signal: Traces, Where: js, Series: []Series{{Label: "errors", Agg: AggCount}}, Unit: UnitCount, Width: 24, Height: 6},
 		{ID: "issues", Title: "Issues", Description: "Errors grouped by cause (type, message and the top in-app frames): new and regressed first, then the most frequent. A string-only console.error is not an issue.", Kind: KindIssues, Signal: Traces, Where: browserSpans, Width: 24, Height: 9},

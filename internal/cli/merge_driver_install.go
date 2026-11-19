@@ -2,12 +2,14 @@ package cli
 
 // Installing the generated-file merge driver on purpose, and checking it.
 //
-// forge wires the driver into a checkout as a side effect of every writing
-// command (ensureGeneratedMergeDriver). A checkout no writing forge has run in
-// — a fresh worktree, or a merge queue's pool checkout whose scripts set
-// FORGE_NO_MERGE_DRIVER so a gate never rewrites git config — merges with
-// whatever driver the shared config happens to name, which may be several
-// pins old. `forge merge-driver install` is the explicit step for those:
+// `forge merge-driver install` is how a clone gets the driver: writing
+// commands wire it only when forge.yaml says `git: {merge_driver: auto}`, or
+// says nothing in a clone that already has forge's driver
+// (ensureGeneratedMergeDriver, forge#2232). Without it — and in a merge
+// queue's pool checkout whose scripts set FORGE_NO_MERGE_DRIVER so a gate
+// never rewrites git config — a checkout merges with whatever driver the
+// shared config happens to name, which may be none or several pins old.
+// `forge merge-driver install` is the explicit step for those:
 // it wires THIS forge into the checkout (ignoring FORGE_NO_MERGE_DRIVER,
 // because it is asked for), then checks the result and fails if the checkout
 // still cannot merge forge's files. `forge merge-driver check` is the check
@@ -162,13 +164,26 @@ func newMergeDriverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "merge-driver",
 		Short: "Install or check the git merge driver for forge-generated files in this checkout",
-		Long: `forge wires its merge driver for generated files into a checkout whenever a
-writing forge command runs there. A checkout no such command has run in (a
-fresh worktree, a merge queue's pool checkout) can name a forge that is gone
-or several pins old. install wires this forge into the checkout explicitly
-(even under FORGE_NO_MERGE_DRIVER=1) and fails if the checkout still cannot
-merge forge's files; check reports the same without changing anything.`,
-		Hidden:      true,
+		Long: `forge merges its generated and state files through a git merge driver,
+which keeps fingerprint lines for forge generate to refresh instead of
+conflicting on them. The driver lives in the clone's git config
+(merge.forge-generated.*, and routes in info/attributes when the project
+commits none), which every worktree of the clone shares.
+
+install wires this forge into the checkout (even under FORGE_NO_MERGE_DRIVER=1)
+and fails if the checkout still cannot merge forge's files. Run it once per
+clone, and again after a pin bump if check says so. check reports the same
+without changing anything.
+
+Writing commands (generate, project upgrade, scaffold, ...) do not wire a
+clone that has no forge driver: they say, once per checkout and forge
+version, when it has no usable one. A clone that already has forge's driver
+(an earlier forge wired one, or install did) is kept wired and repaired by
+them, as before v1.8. forge.yaml decides it outright:
+
+  git:
+    merge_driver: auto     # every writing command wires and repairs it
+    merge_driver: manual   # only install writes git config`,
 		Annotations: map[string]string{skipHookActivationAnnotation: ""},
 	}
 	cmd.AddCommand(&cobra.Command{

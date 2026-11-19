@@ -14,9 +14,10 @@ import (
 	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 	"oras.land/oras-go/v2/registry/remote/errcode"
 	"oras.land/oras-go/v2/registry/remote/retry"
+
+	"github.com/reliant-labs/forge/internal/dockercred"
 )
 
 // RegistryImageChecker is the live ImageChecker. It asks the image's registry
@@ -82,21 +83,21 @@ func (c RegistryImageChecker) ImageExists(ctx context.Context, ref string) (bool
 		return false, fmt.Errorf("%w: parse %q: %v", ErrImageCheckInconclusive, ref, err)
 	}
 	repo.PlainHTTP = registryRefIsInsecure(ref)
-	store, err := c.credentialStore()
+	credential, err := c.credential()
 	if err != nil {
 		return false, fmt.Errorf("%w: read docker credentials: %v", ErrImageCheckInconclusive, err)
 	}
-	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credential}
 
 	_, err = repo.Resolve(ctx, reference)
 	return registryVerdict(host, err)
 }
 
-func (c RegistryImageChecker) credentialStore() (credentials.Store, error) {
+func (c RegistryImageChecker) credential() (auth.CredentialFunc, error) {
 	if c.DockerConfigDir != "" {
-		return credentials.NewStore(filepath.Join(c.DockerConfigDir, "config.json"), credentials.StoreOptions{})
+		return dockercred.CredentialFrom(filepath.Join(c.DockerConfigDir, "config.json"))
 	}
-	return credentials.NewStoreFromDocker(credentials.StoreOptions{})
+	return dockercred.Credential()
 }
 
 // registryHost is the host that serves a registry's API. Docker Hub's name
@@ -191,11 +192,11 @@ func (c RegistryImageArchChecker) ImageArchitectures(ctx context.Context, ref st
 		return nil, fmt.Errorf("%w: parse %q: %v", ErrImageCheckInconclusive, ref, err)
 	}
 	repo.PlainHTTP = registryRefIsInsecure(ref)
-	store, err := RegistryImageChecker(c).credentialStore()
+	credential, err := RegistryImageChecker(c).credential()
 	if err != nil {
 		return nil, fmt.Errorf("%w: read docker credentials: %v", ErrImageCheckInconclusive, err)
 	}
-	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credentials.Credential(store)}
+	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credential}
 
 	desc, rc, err := repo.FetchReference(ctx, reference)
 	if err != nil {

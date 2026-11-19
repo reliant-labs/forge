@@ -70,6 +70,7 @@ import (
 	"oras.land/oras-go/v2/content"
 
 	"github.com/reliant-labs/forge/internal/cloud"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -169,13 +170,18 @@ func pushSourcemaps(ctx context.Context, target sourcemapsTarget, tag string, b 
 
 // PushSourcemapsArtifact pushes a packed sidecar to repository under tag and
 // returns the manifest digest. Credentials come from the ambient docker
-// credential store, as for the static site.
+// credential store, as for the static site, and a failed push is a
+// *hostedimage.PushError naming repository.
 func PushSourcemapsArtifact(ctx context.Context, repository, tag string, b SourcemapBuild, layer []byte) (string, error) {
 	repo, err := newRegistryRepository("source map", repository)
 	if err != nil {
 		return "", err
 	}
-	return pushSourcemaps(ctx, repo, tag, b, layer)
+	digest, err := pushSourcemaps(ctx, repo, tag, b, layer)
+	if err != nil {
+		return "", &hostedimage.PushError{Repository: repository, Err: err}
+	}
+	return digest, nil
 }
 
 // RegistrySourcemaps files maps in the project's registry subtree.
@@ -275,6 +281,16 @@ func FileStageSourcemaps(ctx context.Context, pub SourcemapPublisher, kind, proj
 		BuildID: res.BuildID, Dir: res.SourcemapsDir, Maps: res.Sourcemaps,
 	})
 	if err != nil {
+		// A REFUSED credential is not about the maps: the site goes to the
+		// same registry under the same credential, so turning maps off only
+		// moves the refusal to the next push. The way out of the maps is
+		// offered only when the failure was the maps' own.
+		if hostedimage.IsDenied(err, "") {
+			return fmt.Errorf("%s %s: file source maps: %w.\n"+
+				"  Nothing was published: a build whose maps are not filed does not ship.\n"+
+				"  The registry refused the credential, and the site is pushed with the same one, "+
+				"so turning source maps off would not get past this", kind, frontend, err)
+		}
 		return fmt.Errorf("%s %s: file source maps: %w.\n"+
 			"  Nothing was published: a build whose maps are not filed cannot be symbolicated, so it does not ship.\n"+
 			"  To ship without maps, declare telemetry = forge.BrowserTelemetry {sourcemaps = %q} on the frontend", kind, frontend, err, SourcemapsOff)

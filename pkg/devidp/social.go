@@ -126,10 +126,14 @@ func (c *Client) RetrieveIDPIntent(ctx context.Context, intentID, token string) 
 
 // AddIDPLink links a provider identity to an existing account. Call it only
 // when BOTH the provider's address and the account's are verified, and they
-// are the same address: an unverified auto-link is an account takeover.
+// are the same address: an unverified auto-link is an account takeover. An
+// account whose address is unverified is refused (ErrUnverifiedAccount).
 func (c *Client) AddIDPLink(ctx context.Context, userID string, link IDPLink) error {
 	if strings.TrimSpace(userID) == "" || link.IdPID == "" || link.UserID == "" {
 		return fmt.Errorf("a user id and a provider identity are required")
+	}
+	if err := c.requireVerified(ctx, userID); err != nil {
+		return err
 	}
 	if _, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/links", map[string]any{"idpLink": link.body()}); err != nil {
 		return fmt.Errorf("link the social account: %w", err)

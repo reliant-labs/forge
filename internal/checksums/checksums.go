@@ -822,6 +822,7 @@ func writeUncertified(root, relPath string, content []byte, cs *FileChecksums, r
 	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
 		return WriteOutcome{}, err
 	}
+	notePostWrite(relPath, content)
 	MarkWrittenThisRun(relPath)
 	if cs != nil {
 		delete(cs.Unstampable, relPath)
@@ -934,6 +935,7 @@ func writeGeneratedFileOutcome(root, relPath string, content []byte, cs *FileChe
 	if err := atomicfile.WriteFile(fullPath, stamped, 0o644); err != nil {
 		return WriteOutcome{}, err
 	}
+	notePostWrite(relPath, stamped)
 	MarkWrittenThisRun(relPath)
 	if reAdopting && cs != nil {
 		delete(cs.Disowned, relPath)
@@ -992,6 +994,7 @@ func writeUnstampable(root, relPath string, content []byte, cs *FileChecksums, f
 	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
 		return WriteOutcome{}, err
 	}
+	notePostWrite(relPath, content)
 	if cs != nil {
 		if cs.Unstampable == nil {
 			cs.Unstampable = map[string]string{}
@@ -1042,6 +1045,7 @@ func WriteScaffoldIfMissing(root, relPath string, content []byte) (bool, error) 
 	if err := atomicfile.WriteFile(fullPath, content, 0o644); err != nil {
 		return false, err
 	}
+	notePostWrite(relPath, content)
 	RecordScaffold(root, relPath)
 	MarkWrittenThisRun(relPath)
 	return true, nil

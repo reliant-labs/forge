@@ -1865,20 +1865,22 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 
-| Rule                                 | Bug class it prevents                                                                                                                                                                                                  | Lane                |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `forgeconv-handler-connect-error`    | `connect.NewError(code, err)` publishes `err.Error()` (a driver's SQL, a DSN, an internal host) to the caller and pins a guessed code over a classified one (autofix: `forge fix connect-errors`)                      | `--conventions`     |
-| `forgeconv-unwrapped-domain-error`   | A handler returning a collaborator's error unwrapped puts a domain error on the wire as `500 unknown` and drops the reason header                                                                                      | `--conventions`     |
-| `forgeconv-no-handler-error-mapping` | A hand-rolled `toConnectError` switch re-created per service                                                                                                                                                           | `--conventions`     |
-| `forgeconv-one-service-per-file`     | A multi-service proto file                                                                                                                                                                                             | `--conventions`     |
-| `forgeconv-activity-declared`        | A mutating rpc that does not declare its activity event (or `activity: { none: "<why>" }`) leaves a hole in a user's history; judged from the compiled descriptors, so it cannot disagree with the runtime interceptor | `--conventions`     |
-| `forge-proto-markers`                | A misspelled `// forge:` marker in a `.proto` comment is inert and warns nowhere                                                                                                                                       | `--proto-markers`   |
-| `forge-proto-options`                | A `(forge.v1.*)` annotation naming a field this binary does not define compiles under buf and is read by nothing                                                                                                       | `--proto-options`   |
-| `forge-vendored-proto-drift`         | A vendored `forge.proto` that diverged from the binary's copy: annotations compile, then are ignored                                                                                                                   | `--vendored-protos` |
-| `forge-go-markers`                   | A `//forge:` comment in Go that forge does not read, an unknown name or a spelling its parser ignores                                                                                                                  | `--go-markers`      |
-| `forgeconv-open-signup`              | A login broker that mounts `POST /auth/register` unconditionally: outside development an unverified address gets a signed-in account, which opens email-bound invitations to takeover (advisory)                       | bare `forge lint`   |
-| `forgeconv-identity-methods`         | A `forge.ManagedIdentity` declaring a sign-in method or signup mode the project's own broker does not serve, so the declaration is converged and silently ignored                                                      | bare `forge lint`   |
-| `typed-config-guardrail`             | An `os.Getenv` the typed-config forbidigo guard reports (advisory unless `--strict`)                                                                                                                                   | bare `forge lint`   |
+| Rule                                 | Bug class it prevents                                                                                                                                                                                                                     | Lane                |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `forgeconv-handler-connect-error`    | `connect.NewError(code, err)` publishes `err.Error()` (a driver's SQL, a DSN, an internal host) to the caller and pins a guessed code over a classified one (autofix: `forge fix connect-errors`)                                         | `--conventions`     |
+| `forgeconv-unwrapped-domain-error`   | A handler returning a collaborator's error unwrapped puts a domain error on the wire as `500 unknown` and drops the reason header                                                                                                         | `--conventions`     |
+| `forgeconv-no-handler-error-mapping` | A hand-rolled `toConnectError` switch re-created per service                                                                                                                                                                              | `--conventions`     |
+| `forgeconv-one-service-per-file`     | A multi-service proto file                                                                                                                                                                                                                | `--conventions`     |
+| `forgeconv-activity-declared`        | A mutating rpc that does not declare its activity event (or `activity: { none: "<why>" }`) leaves a hole in a user's history; judged from the compiled descriptors, so it cannot disagree with the runtime interceptor                    | `--conventions`     |
+| `forge-proto-markers`                | A misspelled `// forge:` marker in a `.proto` comment is inert and warns nowhere                                                                                                                                                          | `--proto-markers`   |
+| `forge-proto-options`                | A `(forge.v1.*)` annotation naming a field this binary does not define compiles under buf and is read by nothing                                                                                                                          | `--proto-options`   |
+| `forge-proto-format`                 | A `.proto` that `buf format` would rewrite, which the scaffolded pre-commit hook refuses at commit time after `forge lint` passed                                                                                                         | `--proto-format`    |
+| `forge-vendored-proto-drift`         | A vendored `forge.proto` that diverged from the binary's copy: annotations compile, then are ignored                                                                                                                                      | `--vendored-protos` |
+| `forge-go-markers`                   | A `//forge:` comment in Go that forge does not read, an unknown name or a spelling its parser ignores                                                                                                                                     | `--go-markers`      |
+| `forgeconv-open-signup`              | A login broker that mounts `POST /auth/register` unconditionally: outside development an unverified address gets a signed-in account, which opens email-bound invitations to takeover (advisory)                                          | bare `forge lint`   |
+| `forgeconv-identity-methods`         | A `forge.ManagedIdentity` declaring a sign-in method or signup mode the project's own broker does not serve, so the declaration is converged and silently ignored                                                                         | bare `forge lint`   |
+| `forgeconv-unproven-signup`          | A deployed sign-up whose address nobody proves (identity mail `delivery = "none"`, or `auth_self_signup` outside development): the email is a contact field anyone can type, so whatever the app binds to it is bound to whoever typed it | bare `forge lint`   |
+| `typed-config-guardrail`             | An `os.Getenv` the typed-config forbidigo guard reports (advisory unless `--strict`)                                                                                                                                                      | bare `forge lint`   |
 
 <a id="lint-rules-tracing"></a>
 
@@ -3091,7 +3093,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `release_health = forge.ReleaseHealth { ... }` in `deploy/kcl/<env>/main.k`; `--threshold`, `--fail-on` and `--window` override one call.
 
-**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `error_rate_min_errors`, `baseline_window`, `max_p95_ratio`, `new_issue_min_events` and `regressed_issue_min_events` (unset, the same as `new_issue_min_events`), the failing set is `fail_on`, and the check's document says where each effective value came from. Error rate is judged per endpoint, each against its own baseline, and needs `error_rate_min_errors` errors after the promotion. The NewIssue and IssueRegressed alerts are judged as their issue, not counted a second time, unless they are critical. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
+**Why:** The thresholds are `window`, `min_requests`, `max_error_rate_increase`, `error_rate_min_errors`, `baseline_window`, `max_p95_ratio`, `new_issue_min_events` and `regressed_issue_min_events` (unset, the same as `new_issue_min_events`), the failing set is `fail_on` (`warn_on` demotes named findings from it without restating it), and the check's document says where each effective value came from. Error rate is judged per endpoint, each against its own baseline, and needs `error_rate_min_errors` errors after the promotion. The NewIssue and IssueRegressed alerts are judged as their issue, not counted a second time, unless they are critical. A service is compared only with `min_requests` in both windows, and `require_baseline` (`any`, `every`, `none`) says how many services need that baseline before a release can pass. `--wait --early-pass 8m` ends a wait with a PASS only once 8 minutes are observed, every judged service reached its own `min_requests` on the new version, and nothing fired.
 
 **Evidence:**
 
@@ -3367,6 +3369,41 @@ _Enforced · Reliant hosting_
 
 - `internal/freesite` in the control-plane repo
 - `internal/staticfreetier` in the control-plane repo
+
+<a id="hosting-pay-as-you-go"></a>
+
+### Posted pay-as-you-go hosting rates
+
+Reliant hosting's posted rates are $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage, on what each pod requests. No CPU, memory or storage is included, on any plan, so a workload is billed from its first vCPU-hour and GiB-hour: about $8.34 a month for an always-on service at 0.1 vCPU and 512 MiB, and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB. A $5 invoice minimum applies, and static-site egress is included to 10 GiB a month, then $0.10 per GiB.
+
+_Enforced · Reliant hosting_
+
+**Use:** `forge env shape <env>` prints what each workload requests. Current terms, and what is billed today: https://reliantlabs.io/pricing.
+
+**Why:** The rates are the pricing-v2 list (2026-11-06) in control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders. Hosting is pay-as-you-go beside the machine plans: every plan there sets `included_cpu_hours`, `included_memory_gib_hours` and `included_storage_gib_hours` to 0. The monthly figures assume 730 hours.
+
+**Evidence:**
+
+- command `forge env shape`
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
+
+<a id="observability-allowance"></a>
+
+### 10 GiB of telemetry included
+
+The posted observability allowance is 10 GiB of stored logs, traces, metrics and profiles per organization a month, with or without a plan, and the posted rate above it is $0.10 per GiB.
+
+_Enforced · Reliant hosting_
+
+**Use:** What is billed today, and what happens past the allowance: https://reliantlabs.io/pricing.
+
+**Why:** The figures are the `observability:` block of control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders.
+
+**Evidence:**
+
+- `internal/plansconfig/pricing.yaml` in the control-plane repo
+- `src/content/pricing.catalog.json` in the landing-page repo
 
 <a id="live-hostname"></a>
 
@@ -3848,7 +3885,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Built-in product analytics dashboards
 
-A hosted app gets Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
+A hosted app gets Product overview, Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
 
 _In progress · Reliant hosting_
 

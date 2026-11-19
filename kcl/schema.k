@@ -3364,11 +3364,34 @@ schema ShellBuild(Build):
         the registry still resolves the recorded tag to the recorded
         digest. The deploy then pins that same digest. Anything else —
         no record, a changed input, a workload with no `image`, a registry
-        that no longer has it or now serves another digest at that tag, a
-        release build (`--release` always runs: it needs the builder's
-        receipt) — runs the command.
+        that no longer has it or now serves another digest at that tag —
+        runs the command. A release build is compared against earlier
+        releases instead (next bullet).
+      * release reuse — `forge env build <env> --release <v>` fingerprints
+        the same inputs, with `cmd` and `env` taken from a second render
+        that binds `image_tag` to a sentinel: the release tag is left out
+        exactly where the KCL composed it in, and a literal that merely
+        equals it still counts. The cwd is keyed relative to the project; a
+        `cmd` that composes the checkout's absolute path (`file.workdir()`)
+        reuses only across cuts from the same path. When that equals the
+        `inputs_digest` the same image recorded in the release the env runs
+        now, or in the project's newest release, AND the registry still
+        serves that release's digest, forge reuses it: it points the new
+        release's tag at that digest (`docker buildx imagetools create`,
+        no layers move), records it with `carried_from: <release>`, and
+        does not run the command — so nothing pinned to the digest rolls.
+        It prints the inputs that matched and the digest it reused, or why
+        it ran: no inputs declared, no earlier release, a release recorded
+        without an inputs digest (one an older forge cut), inputs changed,
+        or the digest gone from the registry. Because the tag is left out, a
+        command that bakes the tag into the image (a version stamp) is
+        carried with the earlier stamp: such a build should declare no
+        inputs. A snapshot-composition release (`--base-promotion`) carries
+        an unchanged workload by leaving it unselected instead; a selected
+        one always runs.
       * forcing — `--rebuild` on `forge build`, `forge env build` and
-        `forge env up` runs every ShellBuild regardless.
+        `forge env up` runs every ShellBuild regardless, release reuse
+        included.
 
     Keep the command's OUTPUTS out of its inputs (exclude them with `!`):
     a build that writes into what it reads changes its own fingerprint and
@@ -3408,7 +3431,9 @@ schema ShellBuild(Build):
     # Files the command reads, as globs relative to the resolved cwd. When
     # set, forge skips the command while they — and the command, env,
     # platform, tag and built_images — are unchanged since its last
-    # successful run and the registry still serves the image it pushed.
+    # successful run and the registry still serves the image it pushed. A
+    # --release build reuses the previous release's image instead when the
+    # same inputs (minus the release tag the KCL composed in) are unchanged.
     # Empty: the command runs on every build. See the docstring.
     inputs: [str] = []
 
@@ -4371,9 +4396,9 @@ schema BrowserTelemetry:
         }
 
     `console_capture`, `replay`, `replay_sample_rate`, `page_views`,
-    `identify_user` and `analytics.mode` reach the browser through the
-    runtime config document (config.js), so one build promotes across
-    environments and each environment sets its own. `replay` is the
+    `identify_user`, `rpc_forensics` and `analytics.mode` reach the browser
+    through the runtime config document (config.js), so one build promotes
+    across environments and each environment sets its own. `replay` is the
     per-frontend switch for session replay (masked, off by default).
     """
     # Ship `console.*` output as spans. False for an app whose console is
@@ -4389,6 +4414,14 @@ schema BrowserTelemetry:
     # browser event, so browser and backend events join on one user. False
     # renders IDENTIFY_USER = "false" and the browser never asks.
     identify_user: bool = True
+    # Attach a redacted `forge.forensics` event to the browser span of a
+    # failed RPC: the request's shape, never its content (numbers, bools,
+    # enums and id-named strings as values, unless the name also names a
+    # secret, like `session_id`; every other string, bytes, list and map as
+    # a length; `debug_redact` fields never), once per procedure
+    # and error code per page load. False renders RPC_FORENSICS = "false";
+    # the RPC spans themselves are recorded either way.
+    rpc_forensics: bool = True
     # Session replay for THIS frontend in THIS environment: OFF by default.
     # True renders OTEL_REPLAY = "true" into the frontend's runtime config
     # (config.js, so a promoted build needs no rebuild) and opts the env's
@@ -6652,7 +6685,16 @@ schema ReleaseHealth:
             fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "latency"]
         }
 
-    A finding in `fail_on` fails the release (exit 1); any other warns. Below
+    A finding in `fail_on` fails the release (exit 1); any other warns.
+    `warn_on` demotes findings to warnings without restating `fail_on`: a
+    finding in it warns whatever `fail_on` says, so
+
+        release_health = forge.ReleaseHealth {
+            warn_on = ["browser_page_load"]
+        }
+
+    keeps every default failing finding but that one. An explicit `fail_on`
+    list means what it always did; `warn_on` only takes codes out of it. Below
     `min_requests` after-window requests a service is not judged, and a
     release with no judged service is inconclusive (exit 2), never a pass.
 
@@ -6680,13 +6722,17 @@ schema ReleaseHealth:
     as `new_issue_min_events`; 1 counts every regression), alert_firing (an
     alert opened after the promotion still fires; the platform's NewIssue and
     IssueRegressed alerts are judged as their issue, by the two thresholds
-    above, unless the env made them critical),
+    above, unless the env made them critical; an alert that also fired at
+    least `alert_baseline_min_firings` times in the `baseline_window` before
+    the promotion was flapping before the release, and warns instead of
+    failing unless it is critical; 0 counts every alert),
     workload_restarts, and, for a frontend that sends browser telemetry,
     browser_errors (JavaScript errors per page view rose by more than
     `max_error_rate_increase`), browser_failed_requests (the share of its
     fetch/XHR requests that failed rose by as much) and browser_page_load (p95
-    page load grew by more than `max_p95_ratio`). The browser findings warn
-    unless listed in `fail_on`. For an env with release probes (forge.Probe),
+    page load grew by more than `max_p95_ratio`). The browser findings fail
+    by default (they need `min_requests` page views in both windows first);
+    `warn_on` demotes any of them. For an env with release probes (forge.Probe),
     probe_failed (a probe failed after the promotion; fails by default) and
     probe_latency (a probe's p95 grew by more than `max_p95_ratio`; warns by
     default, as latency does).
@@ -6702,7 +6748,9 @@ schema ReleaseHealth:
     regressed_issue_min_events?: int
     error_rate_min_errors: int = 10
     baseline_window: str = "24h"
-    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed"]
+    alert_baseline_min_firings: int = 1
+    fail_on: [str] = ["new_issue", "regressed_issue", "error_rate", "alert_firing", "probe_failed", "browser_errors", "browser_failed_requests", "browser_page_load"]
+    warn_on: [str] = []
     require_baseline: str = "any"
 
     check:
@@ -6719,9 +6767,14 @@ schema ReleaseHealth:
             "ReleaseHealth.error_rate_min_errors ${error_rate_min_errors} must be at least 1 (1 lets any rise past max_error_rate_increase fail)"
         _release_health_seconds(window) <= _release_health_seconds(baseline_window) <= 604800, \
             "ReleaseHealth.baseline_window \"${baseline_window}\": use a number and s, m or h (\"24h\"), from the window (${window}) to 168h"
+        alert_baseline_min_firings >= 0, \
+            "ReleaseHealth.alert_baseline_min_firings ${alert_baseline_min_firings} must be at least 0 (0 counts every alert opened after the promotion)"
         all c in fail_on { c in _RELEASE_HEALTH_FINDINGS }, \
             "ReleaseHealth.fail_on names ${[c for c in fail_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
         isunique(fail_on), "ReleaseHealth.fail_on names a finding twice"
+        all c in warn_on { c in _RELEASE_HEALTH_FINDINGS }, \
+            "ReleaseHealth.warn_on names ${[c for c in warn_on if c not in _RELEASE_HEALTH_FINDINGS]}: the findings are ${_RELEASE_HEALTH_FINDINGS}"
+        isunique(warn_on), "ReleaseHealth.warn_on names a finding twice"
         require_baseline in ["any", "every", "none"], \
             "ReleaseHealth.require_baseline \"${require_baseline}\": use \"any\" (the default), \"every\" or \"none\""
 

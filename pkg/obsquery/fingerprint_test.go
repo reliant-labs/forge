@@ -328,12 +328,66 @@ func TestServerTitleAndCulprit(t *testing.T) {
 	if got := ServerTitle(r); got != "*pgconn.PgError: boom <n>" {
 		t.Errorf("title %q", got)
 	}
-	if got := ServerCulprit(r); got != "internal/x/x.go in pkg.F" {
+	if got := ServerIssueCulprit(r); got != "internal/x/x.go in pkg.F" {
 		t.Errorf("culprit %q", got)
 	}
 	bare := ServerErrorRecord{ScopeName: "scope", Body: "x"}
-	if ServerTitle(bare) != "x" || ServerCulprit(bare) != "scope" {
-		t.Errorf("bare record: %q / %q", ServerTitle(bare), ServerCulprit(bare))
+	if ServerTitle(bare) != "x" || ServerIssueCulprit(bare) != "scope" {
+		t.Errorf("bare record: %q / %q", ServerTitle(bare), ServerIssueCulprit(bare))
+	}
+}
+
+// forge#2235: a record forge's own interceptor logged for an rpc (a deadline
+// carries no handler stack) shows the rpc as its culprit, not the interceptor.
+// The fingerprint still reads the function: display only, nothing regroups.
+func TestServerCulpritOfARecordForgeLoggedIsTheProcedure(t *testing.T) {
+	const interceptor = "github.com/reliant-labs/forge/pkg/observe.(*loggingInterceptor).log"
+	const procedure = "/customers.v1.CustomerService/ArchiveCustomer"
+	deadline := rec("api", interceptor, "rpc failed", LogKeyExceptionType, "context.deadlineExceededError",
+		LogKeyProcedure, procedure, LogKeyCodeFile, "/go/pkg/mod/github.com/reliant-labs/forge@v1.6.0/pkg/observe/interceptors.go")
+	if got := ServerIssueCulprit(deadline); got != procedure {
+		t.Errorf("culprit = %q, want the procedure %q", got, procedure)
+	}
+	if !deadline.LoggedByForge() {
+		t.Error("LoggedByForge() = false for forge's logging interceptor")
+	}
+
+	// Without a procedure there is nothing better to show.
+	noProc := rec("api", interceptor, "rpc failed")
+	if got := ServerIssueCulprit(noProc); got != "internal/x/x.go in "+interceptor {
+		t.Errorf("culprit without a procedure = %q", got)
+	}
+	// An application frame keeps its location, procedure or not.
+	app := rec("api", "github.com/acme/app/internal/handlers/customers.(*Service).ArchiveCustomer", "rpc failed", LogKeyProcedure, procedure)
+	if got := ServerIssueCulprit(app); got != "internal/x/x.go in github.com/acme/app/internal/handlers/customers.(*Service).ArchiveCustomer" {
+		t.Errorf("application culprit = %q", got)
+	}
+
+	// The fingerprint is unchanged: the same record with another file path
+	// (the culprit's only other input) groups exactly as before.
+	moved := rec("api", interceptor, "rpc failed", LogKeyExceptionType, "context.deadlineExceededError", LogKeyProcedure, procedure)
+	if ServerFingerprint(deadline) != ServerFingerprint(moved) {
+		t.Error("the fingerprint must not read the culprit")
+	}
+	if !strings.Contains(ServerIssueCulpritSQL, "startsWith(") || !strings.Contains(ServerIssueCulpritSQL, ForgeLibraryFunctionPrefix) {
+		t.Errorf("ServerIssueCulpritSQL does not spell the forge-library rule: %s", ServerIssueCulpritSQL)
+	}
+	if strings.Contains(ServerFingerprintSQL, ForgeLibraryFunctionPrefix) {
+		t.Error("ServerFingerprintSQL must not read the forge-library rule")
+	}
+}
+
+func TestForgeLibraryCulprit(t *testing.T) {
+	for culprit, want := range map[string]bool{
+		"/go/pkg/mod/github.com/reliant-labs/forge@v1.6.0/pkg/observe/interceptors.go in github.com/reliant-labs/forge/pkg/observe.(*loggingInterceptor).log": true,
+		"github.com/reliant-labs/forge/pkg/observe":                       true,
+		"internal/x/x.go in github.com/acme/app/internal/x.F":             false,
+		"/customers.v1.CustomerService/ArchiveCustomer":                   false,
+		"github.com/reliant-labs/forge/internal/x.go in github.com/x/y.F": false,
+	} {
+		if got := ForgeLibraryCulprit(culprit); got != want {
+			t.Errorf("ForgeLibraryCulprit(%q) = %v, want %v", culprit, got, want)
+		}
 	}
 }
 

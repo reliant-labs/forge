@@ -438,6 +438,7 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		fd.Owner = fieldHasOwnerMarker(f)
 		fd.Generated = fieldGeneratedExpr(f)
 		fd.Guards = fieldGuardTargets(f)
+		fd.RequestOption = fieldHasRequestOptionMarker(f)
 		fields = append(fields, fd)
 	}
 	sd.Schemas[fq] = fields
@@ -501,6 +502,14 @@ func fieldHasReadOnlyMarker(f *protogen.Field) bool {
 func fieldHasOwnerMarker(f *protogen.Field) bool {
 	return codegen.OwnerMarkerCommentRE.MatchString(string(f.Comments.Leading)) ||
 		codegen.OwnerMarkerCommentRE.MatchString(string(f.Comments.Trailing))
+}
+
+// fieldHasRequestOptionMarker reports whether a field carries
+// `// forge:request-option` as its LEADING or TRAILING comment: on a List
+// request, a request knob rather than a filter (codegen.ProtoMarkerRequestOption).
+func fieldHasRequestOptionMarker(f *protogen.Field) bool {
+	return codegen.CommentMarksRequestOption(string(f.Comments.Leading)) ||
+		codegen.CommentMarksRequestOption(string(f.Comments.Trailing))
 }
 
 // fieldGeneratedExpr returns the SQL expression a `// forge:generated <expr>`
@@ -800,6 +809,7 @@ func extractMessageFields(messages map[string][]codegen.MessageFieldDef, msg *pr
 			fd.MessageType = string(f.Desc.Message().FullName())
 		}
 		fd.Filter = listFilterOf(f)
+		fd.RequestOption = fieldHasRequestOptionMarker(f)
 		fields = append(fields, fd)
 	}
 	messages[name] = fields

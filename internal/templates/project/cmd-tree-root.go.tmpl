@@ -1,48 +1,8 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-//
-// THE COMMAND TREE — its shape, and every command on it.
-//
-// This is the file to edit when you want a different CLI. Add a persistent
-// flag, reorder the tree, give the root command a Long description, wrap
-// RunE — it is ordinary cobra code and forge will not revert it.
-//
-// The command logic lives under cmd/{{.Name}}/cmd as a real cobra package,
-// dir-nested by category (the devspace idiom). This file owns the SHARED
-// surface every command consumes:
-//
-//   - Deps        — the dependency set threaded through the tree. Add a field
-//     here (a metrics sink, an audit writer) and every command can take it.
-//   - Factory     — the constructor shape of a command contributed by a
-//     conditional file (func(Deps) *cobra.Command; see registerCommand).
-//
-// EVERY FILE IN THIS PACKAGE IS YOURS but one: roots_gen.go, the projection
-// of internal/app's roots onto the tree (below). ServiceName is a constant
-// below (the project name, fixed at scaffold), and the one derived migration
-// fact — whether this
-// project has an embedded migration set yet — lives in the db package it is a
-// fact about, as db.Source(). That function compiles whether or not you have
-// written a migration, so writing your first one rewrites nothing here.
-//
-// What a process RUNS is a ROOT of the composition graph (internal/app):
-// every //forge:root struct — or, with none declared, the generated default,
-// `server` — gets one command, generated into roots_gen.go and added below by
-// rootCommands(deps). There is no command per service, worker or operator:
-// splitting a process is a new root, and its command follows.
-//
-// The one exception is registeredCommands below, for a command whose FILE is
-// conditional (db.go, scaffolded only with migrations). Explicit naming cannot
-// express "call this only if that file exists", so that single case registers
-// itself. See registerCommand for why the alternative is worse.
-//
-// The command tree:
-//
-//   - cmd/{{.Name}}/main.go          — composition root: cmd.Execute().
-//   - cmd/{{.Name}}/cmd/root.go      — this file (root + Deps + Factory + ServiceName).
-//   - cmd/{{.Name}}/cmd/roots_gen.go — one command per root (generated).
-//   - cmd/{{.Name}}/cmd/serve.go     — runRoot: the process policy every root runs under.
-//   - cmd/{{.Name}}/cmd/version.go   — `{{.Name}} version`.
-//   - cmd/{{.Name}}/cmd/db.go        — `{{.Name}} db migrate ...` (if migrations).
-//   - cmd/{{.Name}}/cmd/commands.go  — userCommands(deps): YOUR extension point.
+// The command tree: root command, Deps (threaded to every command) and Factory. Plain cobra, yours
+// to reshape; your own commands go in commands.go. Every file here is yours except roots_gen.go:
+// each //forge:root in internal/app gets one command (default `server`), not one per service.
+// Depth: `forge skill load binaries`.
 package cmd
 
 import (

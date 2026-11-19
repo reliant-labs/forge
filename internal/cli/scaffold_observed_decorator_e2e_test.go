@@ -63,7 +63,10 @@ func TestE2EObservedDecoratorGeneratedAndWired(t *testing.T) {
 		"func NewServiceWithForgeMiddleware(inner Service) Service {",
 		"chain: newObserveChain()",
 		"type forgeMiddlewareService struct {",
-		`o.chain.Run(ctx, "checkout.HealthCheck", func(ctx context.Context) error {`,
+		`observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.HealthCheck, observe.NoArgs{}, func(ctx context.Context) error {`,
+		// The span's code location: the implementing method's file.
+		`HealthCheck: observe.NewOp("checkout.HealthCheck", `,
+		`/internal/checkout.Service.HealthCheck", "internal/checkout/adapter.go"),`,
 		"return o.inner.HealthCheck(ctx)",
 	} {
 		if !strings.Contains(dec, want) {
@@ -111,7 +114,8 @@ func TestE2EObservedDecoratorGeneratedAndWired(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	grown := readFileE2E(t, decoratorPath)
-	if !strings.Contains(grown, `o.chain.Around(ctx, "checkout.Lookup", func(ctx context.Context) (string, error) {`) {
+	if !strings.Contains(grown, `observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Lookup, forgeMiddlewareServiceLookupArgs{id}, func(ctx context.Context) (string, error) {`) ||
+		!strings.Contains(grown, `r.ID("id", a.id)`) {
 		t.Fatalf("regenerated decorator did not gain the Lookup wrapper automatically:\n%s", grown)
 	}
 

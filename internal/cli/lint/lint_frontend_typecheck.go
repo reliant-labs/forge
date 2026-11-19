@@ -186,9 +186,9 @@ func frontendTypecheckScopeFile(scope *lintScope, dir string) string {
 			return ""
 		}
 	}
-	rel = filepath.ToSlash(filepath.Clean(rel))
+	rel = scopeRel(rel)
 	for _, p := range scope.paths {
-		if rel == "." || strings.HasPrefix(p, rel+"/") {
+		if rel == "." || strings.HasPrefix(scopeRel(p), rel+"/") {
 			return p
 		}
 	}

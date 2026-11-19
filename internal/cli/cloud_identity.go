@@ -7,6 +7,7 @@ import (
 	"net/mail"
 	"strings"
 	"text/tabwriter"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -216,18 +217,35 @@ type identityPasswordCodeWire struct {
 }
 
 // writePasswordCode prints a returned code: the env's reset link when the
-// identity declares one to build it from, else the bare code.
-func writePasswordCode(w io.Writer, c *identityPasswordCodeWire) {
+// identity declares one to build it from, else the bare code. Its lifetime
+// is the identity provider's (an hour by default) and no flag extends it, so
+// it is said up front, with the command that issues a fresh code: a link an
+// operator hands over by chat is routinely opened after it lapsed
+// (forge#2265, "Code is expired (CODE-QvUQ4P)"). reissue is that command.
+func writePasswordCode(w io.Writer, c *identityPasswordCodeWire, reissue string, now time.Time) {
 	expires := "within the hour"
 	if c.ExpiresAt != "" {
 		expires = "at " + c.ExpiresAt
+		if at, err := time.Parse(time.RFC3339, c.ExpiresAt); err == nil && at.After(now) {
+			expires += fmt.Sprintf(" (in %s)", at.Sub(now).Round(time.Minute))
+		}
 	}
-	fmt.Fprintf(w, "Password-set code — a credential: give it only to this person, over a channel you control. Single use; it expires %s.\n", expires)
+	fmt.Fprintf(w, "Password-set code — a credential: give it only to this person, over a channel you control. Single use.\n")
+	fmt.Fprintf(w, "⚠️  It expires %s, and its lifetime cannot be extended: deliver it now.\n", expires)
 	if c.ResetURL != "" {
 		fmt.Fprintf(w, "  %s\n", c.ResetURL)
-		return
+	} else {
+		fmt.Fprintf(w, "  code: %s\n  (the identity declares no login URI or domain, so there is no reset link to fill in)\n", c.Code)
 	}
-	fmt.Fprintf(w, "  code: %s\n  (the identity declares no login URI or domain, so there is no reset link to fill in)\n", c.Code)
+	if reissue != "" {
+		fmt.Fprintf(w, "If it lapses before it is used, issue a fresh one (the old one stops mattering):\n  %s\n", reissue)
+	}
+}
+
+// reissueCodeCommand is the command that issues a fresh password-set code to
+// user (an email or a user id) in env.
+func reissueCodeCommand(env, user string) string {
+	return Name() + " cloud identity reset " + env + " --user " + user + " --return-code"
 }
 
 func newCloudIdentityStatusCmd() *cobra.Command {
@@ -493,7 +511,7 @@ that is not ready. A refusal is an error, never a fallback to a seeded password.
 			fmt.Fprintf(out, "Invited %s (user %s, created=%t).\n", email, doc.UserID, doc.Created)
 			switch {
 			case doc.Code != nil:
-				writePasswordCode(out, doc.Code)
+				writePasswordCode(out, doc.Code, reissueCodeCommand(args[0], email), time.Now())
 			case returnCode:
 				fmt.Fprintln(out, "The account already has a credential, so no code was issued (`forge cloud identity reset --return-code` issues one).")
 			}

@@ -34,6 +34,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 // oneWordArgRE is GoMarkerOneWord's grammar — the tail of the composition
@@ -97,6 +99,7 @@ var goMarkers = []GoMarker{
 	{Name: "forge:lint-disable-file", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-file <rule>: <reason>"},
 	{Name: "forge:lint-disable-next-line", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-next-line <rule>: <reason>"},
 	{Name: "forge:lint-enable", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-enable <rule>"},
+	{Name: contract.NoCaptureMarker, Grammar: GoMarkerWordArgs, Form: "// forge:no-capture <param> [<param>…]"},
 	{Name: directiveNoObserve, Grammar: GoMarkerBare, Form: "// forge:no-observe"},
 	{Name: "forge:no-orm", Grammar: GoMarkerWordArgs, Form: "//forge:no-orm: <why>"},
 	{Name: directiveNotAComponent, Grammar: GoMarkerReasoned, Form: "//forge:not-a-component: <reason>"},
@@ -106,7 +109,7 @@ var goMarkers = []GoMarker{
 	{Name: "forge:placeholder", Grammar: GoMarkerReasonRequired, Form: "// forge:placeholder: <pkg>.<Type>"},
 	{Name: directiveExternalComponent2, Grammar: GoMarkerBare, Form: "// forge:provided"},
 	{Name: ResolvesCallerDirective, Grammar: GoMarkerWordArgs, Form: "//forge:resolves-caller"},
-	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none"},
+	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none adopt"},
 	{Name: "forge:root-only", Grammar: GoMarkerOwnGrammar, Form: "//forge:root-only <root>[,<root>...]"},
 	{Name: directiveServiceMarker, Grammar: GoMarkerBare, Form: "// forge:service"},
 	{Name: "forge:standby", Grammar: GoMarkerOwnGrammar, Form: "//forge:standby"},

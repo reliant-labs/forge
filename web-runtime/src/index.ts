@@ -26,7 +26,9 @@ export {
   headerInterceptor,
   interactionContextInterceptor,
   retryInterceptor,
+  rpcSpanInterceptor,
   traceInterceptor,
+  type RpcSpanOptions,
   type RuntimeInterceptorConfig,
 } from "./interceptors.js";
 

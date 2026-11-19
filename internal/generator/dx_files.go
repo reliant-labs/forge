@@ -1298,42 +1298,11 @@ the SQL against the schema.
 // seedVocabTemplate is the scaffolded db/seeds/vocab.yaml. It lives at package
 // scope because it is a long document, not logic: inline it made
 // generateSeeds read as one long literal with four file writes buried in it.
-const seedVocabTemplate = `# db/seeds/vocab.yaml — domain vocabulary for ` + "`forge db seed`" + ` (yours; forge
-# never regenerates it).
-#
-# EDITING THIS FILE? RUN ` + "`forge generate`" + ` AFTERWARDS.
-#
-# It feeds two consumers, and only one of them reads it live. ` + "`forge db seed`" + `
-# reads it on every run, so a change shows up in the next seeded database. The
-# frontend's mock fixtures (src/mocks/*_gen.ts) CACHE it as TypeScript literals,
-# because a browser has no database to derive them from — so those go stale the
-# moment you edit this file and stay stale until a regenerate. The fixture
-# freshness guard fails ` + "`task test`" + ` when that happens rather than letting mock
-# mode serve rows for a vocabulary you have since changed.
-#
-# THIS FILE IS THE ONLY PLACE YOUR DOMAIN'S WORDS COME FROM.
-#
-# forge derives everything your schema DECLARES — a column's type, its enum or
-# CHECK vocabulary, a regex CHECK, char_length / varchar caps, numeric ranges,
-# NOT NULL, UNIQUE, and every foreign key. It does not derive what a column
-# MEANS, because that is nowhere in the schema: nothing in
-# ` + "`price_cents BIGINT`" + ` says money, and nothing in ` + "`name TEXT`" + ` says whether
-# it holds a person or a company. forge will not guess it from the column's
-# name either — a guess is right for the vocabulary it was written against and
-# silently wrong everywhere else.
-#
-# So an undescribed column seeds an obviously-invented value:
-# ` + "`sample_<column>_<row>`" + `, type-correct and inside every constraint. A
-# database full of ` + "`sample_*`" + ` is not a bug; it is forge reporting that
-# this file is still empty. Fill it in once — right after authoring
-# migrations, while the domain is fresh — and seeded rows read like your
-# product.
-#
-# Every value you supply is validated against the applied schema: an invalid
-# one is skipped with a warning, a fully-invalid column falls back to
-# synthesis, and primary-key / foreign-key columns are never overridable (the
-# seeder owns referential integrity — to pin a specific row, write it yourself
-# in db/seeds/custom/). Draws stay deterministic.
+const seedVocabTemplate = `# db/seeds/vocab.yaml — yours: what your columns MEAN, for ` + "`forge db seed`" + ` and the mock
+# fixtures. The schema gives types and constraints, never meaning, so an undescribed column seeds
+# ` + "`sample_<column>_<row>`" + `. Values are validated against the schema; PK/FK columns are never
+# overridable. After editing, run ` + "`forge generate`" + ` (mock fixtures cache this file).
+# Depth: ` + "`forge skill load db/seeding`" + `.
 #
 # Schema (uncomment and adapt):
 #

@@ -203,7 +203,11 @@ func TestFieldConstraints_ZodChain(t *testing.T) {
 		// "String must contain at least 1 character(s)".
 		{"required only", FieldConstraints{Required: true}, "text", `.min(1, "Required")`},
 		{"min_len 1", FieldConstraints{MinLen: u64(1)}, "text", `.min(1, "Required")`},
-		{"email", FieldConstraints{Email: true}, "text", `.email("Enter a valid email address")`},
+		// zod 4: the format is a schema of its own, piped into after the
+		// length checks so an empty required field still says "Required".
+		{"email", FieldConstraints{Email: true}, "text", `.pipe(z.email("Enter a valid email address"))`},
+		{"email with length and pattern", FieldConstraints{MinLen: u64(1), MaxLen: u64(64), Email: true, Pattern: "^a"}, "text",
+			`.min(1, "Required").max(64, "Must be at most 64 characters").pipe(z.email("Enter a valid email address").regex(new RegExp("^a"), "Not in the expected format"))`},
 		{"pattern", FieldConstraints{Pattern: `^SKU-\d+$`}, "text", `.regex(new RegExp("^SKU-\\d+$"), "Not in the expected format")`},
 		{"numeric ignores string rules", FieldConstraints{MinLen: u64(3)}, "number", ""},
 		{"empty", FieldConstraints{}, "text", ""},
@@ -214,6 +218,17 @@ func TestFieldConstraints_ZodChain(t *testing.T) {
 				t.Errorf("ZodChain = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestFieldConstraints_ZodChain_Zod3 pins the chain a frontend that still
+// declares zod 3 gets: zod 3 has no z.email(), so the format stays the
+// string method, in the same place in the chain.
+func TestFieldConstraints_ZodChain_Zod3(t *testing.T) {
+	c := FieldConstraints{MinLen: u64(1), Email: true, Pattern: "^a"}
+	want := `.min(1, "Required").email("Enter a valid email address").regex(new RegExp("^a"), "Not in the expected format")`
+	if got := c.zodChain("text", true); got != want {
+		t.Errorf("zod 3 chain = %q, want %q", got, want)
 	}
 }
 

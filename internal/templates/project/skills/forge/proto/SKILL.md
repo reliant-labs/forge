@@ -307,6 +307,14 @@ ordering controls (`page_size`, `page_token`, `order_by`, `descending`,
 than a filter — an org or account scope the handler insists on — says so with
 `[(buf.validate.field).required = true]` instead of `optional`.
 
+The rule judges only what the generated filter reads: when the rpc's response
+lists a message (`repeated Task tasks`), a field is judged only if it shares a
+name with one of that message's fields or declares a `(forge.v1.filter)`
+facet. So an opt-in flag that names no column (`bool include_costs = 8;`,
+zero = the old behaviour) needs nothing. A knob that does share a column's
+name says so with `// forge:request-option`: the generated op, the list page
+and the lint all treat it as a knob, not a filter.
+
 `search` / `query` / `q` are the fuzzy-search filters: they span the
 table's non-PK text columns via `orm.WhereILikeAny`. Any other filter
 field must name a real column of the entity's table — `forge generate`

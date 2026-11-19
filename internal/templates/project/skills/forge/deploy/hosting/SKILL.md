@@ -1,12 +1,14 @@
 ---
 name: deploy/hosting
-description: The scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, why the API is one workload (`_api`, the binary's `server`) so the browser reaches every service at one origin, rebinding to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
+description: Reliant hosting for Reliant Forge projects: the scaffolded staging/prod envs are hosted on Reliant — what `_hosted` / `_hosted_frontend` wire, why the API is one workload (`_api`, the binary's `server`) so the browser reaches every service at one origin, rebinding to a cluster you operate or a frontend to your own bucket, kinds hosting refuses (cron, operator), and how an existing cluster-bound project adopts hosting.
 ---
 
 # Hosted by default
 
 `forge project new` scaffolds `staging` and `prod` hosted on the forge control
 plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
+
+<!-- @benefits glance app -->
 
 | In the env | What it is |
 |---|---|
@@ -95,8 +97,15 @@ deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
 them up for free and makes the deploy theirs, with nothing to copy. Treat the
 link like a password (whoever claims first owns the deploy) and never post it
 publicly. `forge env status <env> --claimable` prints it again; `--json` carries
-it as `claim` (`state`, `url`, `claim_url`, `expires_at`, `purge_after`,
-`agent_instructions`).
+it as `claim` (`state`, `published`, `last_attempt`, `url`, `claim_url`,
+`expires_at`, `purge_after`, `agent_instructions`).
+
+The claim and its 72h clock start with the **first attempt**, not the first
+success, and a redeploy does not extend them. So `state: "live"` means only that
+the unclaimed window is open. **`published: false` means nothing is deployed**:
+every attempt failed (`last_attempt.error` says why). Do not give the claim
+link to your user then. Claiming signs them up for an empty deploy and revokes
+the token you deploy with. Fix the failure and deploy again.
 
 | Rule | Detail |
 |---|---|

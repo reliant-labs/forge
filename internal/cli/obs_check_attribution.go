@@ -3,10 +3,12 @@ package cli
 // `forge obs check`'s attribution of a judged release (pkg/releasehealth
 // attribution.go): when the release actually went live, from the promotion's
 // deploy gates, and which version each issue's after-window events carry. A
-// control plane's answer is judged over the windows it planned, anchored at the
-// promotion's first promoted_at; these reads are what keep a window that
-// measured the release before it, or an issue of another version, from failing
-// this one (forge#b7e1113e).
+// control plane's answer is judged over the windows it planned. A current one
+// starts the after window when the release went live and says when (live_at,
+// control-plane#2754); an older one anchored it at the promotion's first
+// promoted_at, and for it these reads are what keep a window that measured the
+// release before it, or an issue of another version, from failing this one
+// (forge#b7e1113e, forge#2268).
 
 import (
 	"context"
@@ -16,15 +18,8 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
-	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
-
-// promotionGateReader reads the gates recorded on a promotion. The cloud
-// backend implements it; a local env has no promotions.
-type promotionGateReader interface {
-	PromotionGates(ctx context.Context, promotionID string) ([]release.Gate, error)
-}
 
 // issueVersionReader reads one issue over a range, with its events by version.
 type issueVersionReader interface {
@@ -41,9 +36,16 @@ type checkLive struct {
 	err  error
 }
 
-// readCheckLive reads the judged promotion's gates, when the backend can.
+// readCheckLive is when the judged promotion's release went live. A control
+// plane that answers with live_at planned its after window from it
+// (control-plane#2754) and said so, so its answer is used as it stands; one
+// that does not (it predates live_at) is answered from the promotion's gates,
+// when the backend can read them.
 func readCheckLive(ctx context.Context, b obsbackend.Backend, r releasehealth.Report) checkLive {
-	gr, ok := b.(promotionGateReader)
+	if !r.Subject.LiveAt.IsZero() {
+		return checkLive{at: r.Subject.LiveAt, state: releasehealth.LiveShipped, read: true}
+	}
+	gr, ok := b.(obsbackend.PromotionGateReader)
 	if !ok || r.Subject.PromotionID == "" {
 		return checkLive{}
 	}
@@ -64,7 +66,7 @@ const maxAttributedIssues = 10
 // point (a finding nothing disproves stays), and says so on stderr.
 func attributeCheck(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, live checkLive) releasehealth.Report {
 	if live.err != nil {
-		fmt.Fprintf(d.Stderr, "could not read the deploy gates of promotion %s, so the after window is judged from its promoted_at: %v\n", r.Subject.PromotionID, live.err)
+		fmt.Fprintf(d.Stderr, "could not read the deploy gates of promotion %s, so the after window is judged as the control plane planned it, from its promoted_at: %v\n", r.Subject.PromotionID, live.err)
 	}
 	// Only a control plane's answer names a promoted release version to
 	// attribute an issue's events to.

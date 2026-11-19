@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -234,6 +235,17 @@ a pipeline that upgrades without adding --yes exits 5, and even a handler
 that still reads 5 as "the wait timed out" fails the job rather than passing
 it. Pre-1.0, so this is a clean renumber with no alias.
 
+THE LAST LINE SAYS HOW IT ENDED. A deploy that can write ends its text output
+with one RESULT line: the exit code as a word (ok, failed, queued, pending,
+undetermined, unconfirmed), the env, the URL, the release, a claimable deploy's
+claim link, a failure's stage and reason, and the next command:
+
+  RESULT: ok env=prod url=https://shop.example release=v1.4.0 next: forge obs check prod --wait
+  RESULT: failed stage=build env=prod reason="frontend web: build: exit status 1" next: …
+
+A successful hosted deploy prints, just above it, what the release has with no
+setup (from ` + "`forge project benefits`" + `) and where its dashboards are.
+
 --json carries the same outcome: ` + "`applied`" + `, ` + "`confirmed`" + ` (whether the gate let
 the write happen), and a ` + "`refusal`" + ` object naming what was expected and what is
 actually there.
@@ -354,7 +366,12 @@ func newDeployCmd() *cobra.Command {
 				return err
 			}
 			apply.promote = promote
-			return dispatchDeployCmd(cmd.Context(), args[0], apply)
+			// The deploy's last line says how it ended (deploy_outcome.go).
+			ctx, outcome := withDeployOutcome(cmd.Context(), args[0])
+			err = dispatchDeployCmd(ctx, args[0], apply)
+			// os.Stdout as it is now, not at init: a caller (a test, the MCP
+			// server) may have redirected it for this run.
+			return finishDeployOutcome(ctx, outcome, apply, err, os.Stdout)
 		},
 	}
 
@@ -384,6 +401,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
 	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to hosted static hosting, a bucket or Firebase Hosting, skipping every backend workload (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	flags.BoolVar(&f.verbose, "verbose", false, "Stream every build step's output (docker builds, dependency installs, framework builds) as it runs. By default each step prints one line with its duration, the full output goes to .forge/logs/<env>/deploy.log, and a failing step prints its last lines and that path")
 	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 	flags.BoolVar(&f.offlineLedger, "offline-ledger", false, "Break-glass for a control plane that is down: deploy the env's cached CURRENT release by its recorded digests (nothing is built, the ledger is not contacted) and queue the promotion record, replayed idempotently on the next successful ledger contact. Refuses a hosted tier and a hub-converged env, and a move to any other release. Prints the cache's age; the cache is refreshed by every successful ledger read or write")
 	flags.StringVar(&f.offlineTo, "to", "", "With --offline-ledger: deploy this CACHED release instead of the current one — a release version, a cached promotion id, or `previous` (the release before the current one). The rollback for a bad release that took the control plane down. Refused if the release is not in this machine's offline copy (`forge env status <env>` lists what is)")
@@ -548,6 +566,9 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 // exclusions, the rollout-policy assembly) live in a function that can be read
 // and tested on its own.
 type deployCmdFlags struct {
+	// verbose streams every build step's output instead of one line per
+	// step (buildlog).
+	verbose       bool
 	organization  string
 	tag           string
 	dryRun        bool
@@ -567,6 +588,9 @@ type deployCmdFlags struct {
 	// claim, set only by the claimable path, resolves the `claim` object of the
 	// --json document at the moment the document is written.
 	claim func() *deployClaimJSON
+	// promoted, set only by the claimable path, is called once the
+	// promotion is recorded, whatever the rollout then does.
+	promoted func()
 	// offlineLedger deploys the cached current release with the hosted
 	// ledger unreachable (offline_ledger.go).
 	offlineLedger bool
@@ -611,6 +635,10 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	// a phase or a subprocess prints on the way to it.
 	if f.jsonOut {
 		defer reserveStdoutForJSON()()
+	}
+	// One line per build step, the full output in a file (buildlog).
+	if session := beginDeployBuildLog(envName, f); session != nil {
+		defer func() { _ = session.End() }()
 	}
 	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
@@ -4429,9 +4457,11 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 		return err
 	}
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
+	var endStep func(error)
+	buildCmd.Stdout, buildCmd.Stderr, endStep = buildlog.Step("docker build " + cfg.Name)
+	err := buildCmd.Run()
+	endStep(err)
+	if err != nil {
 		return fmt.Errorf("docker build for %s failed: %w", cfg.Name, err)
 	}
 

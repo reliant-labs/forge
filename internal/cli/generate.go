@@ -26,6 +26,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -122,8 +123,12 @@ Hooks:
   them, and says so.
   FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
   core.hooksPath=.githooks in your clone. FORGE_NO_HOOKS=1 is its older name
-  and means the same. Neither stops forge pointing the clone's merge driver
-  for generated files at the pinned forge; FORGE_NO_MERGE_DRIVER=1 does.
+  and means the same. Neither is about the clone's merge driver for
+  generated files: generate leaves git config alone and says once when the
+  clone has no usable driver ('forge merge-driver install' wires it), unless
+  forge.yaml says git: {merge_driver: auto}, or says nothing in a clone that
+  already has forge's driver: then it keeps the driver pointed at the pinned
+  forge ('manual' stops that). FORGE_NO_MERGE_DRIVER=1 silences both.
 
 Skipping:
   A full run that changes nothing records the tree as a verified fixed point
@@ -551,6 +556,12 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// opened here and closed on the way out. See beginGenerateRun.
 	defer beginGenerateRun(flags)()
 
+	// A command that wrote protos before running this pipeline (scaffold,
+	// project new) has them formatted by buf first, so every step — and the
+	// fingerprint below — reads the settled bytes (internal/protofmt). A
+	// no-op when no such command is running.
+	_, _ = protofmt.Settle(context.Background(), ctx.AbsPath)
+
 	// Fingerprint the tree BEFORE any step can write. Three claims are
 	// checked against it rather than asserted from the journal alone: a
 	// failed run's "your tree is back to its pre-run state", a successful
@@ -766,6 +777,10 @@ func runPipelineSteps(ctx *pipelineContext, flags pipelineFlags, steps []GenStep
 			defer stopBeat()
 			return step.Run(ctx)
 		}()
+		// What the step left on disk is forge's: a failed run later rewinds
+		// a path only while it is still in this state, and spares one
+		// another writer changed after it (forge#2267).
+		checksums.SettleJournal(ctx.AbsPath)
 		if timer != nil {
 			timer.record(step.Name, time.Since(stepStart))
 		}
@@ -1163,7 +1178,11 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 	changed := checksums.ChangedJournalPaths(absPath)
 	journaled := checksums.JournaledPaths()
 	born := checksums.ScaffoldsCreatedThisRun()
-	restored, failed := checksums.RestoreRollbackReport(absPath)
+	res := checksums.RestoreRollbackDetailed(absPath)
+	restored, failed, spared, unverified := res.Restored, res.Failed, res.Spared, res.Unverified
+	// A spared or unverified path is not back to its pre-run state either:
+	// the residue check below must not count it as restored.
+	failed = append(append(append([]string(nil), failed...), spared...), unverified...)
 	var unborn []string
 	for _, p := range born {
 		if _, statErr := os.Stat(filepath.Join(absPath, filepath.FromSlash(p))); os.IsNotExist(statErr) {
@@ -1184,6 +1203,8 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 			fmt.Fprintln(os.Stderr, "↩️  generate failed; nothing needed reverting (no write this run was recorded). The rest of the "+
 				"tree could not be checked — run `git status` to confirm it is as you left it.")
 		}
+		writeSparedFiles(os.Stderr, spared)
+		writeUnverifiedFiles(os.Stderr, unverified)
 		reprintCompilerOutput(stepErr, "")
 		return true
 	}
@@ -1210,6 +1231,8 @@ func rollbackGeneratedTreeVerified(absPath string, stepErr error, onlyReadOnlyRa
 		Consistency: consistency,
 		Residue:     residue,
 		Unborn:      unborn,
+		Spared:      spared,
+		Unverified:  unverified,
 	})
 
 	preservedAt := ""
@@ -1366,6 +1389,15 @@ func runGoBuildValidate(projectDir string) error {
 		return nil
 	}
 	if rep.Build != "" {
+		// A root that consumes an in-tree producer (a generated SDK) at a
+		// published version fails here after an additive producer change
+		// until the producer is published and the pin moved. That is a
+		// pending pin bump, not invalid generated code — proven, not
+		// assumed (producerPinLag).
+		if lag, local := producerPinLag(projectDir); lag != "" {
+			fmt.Fprintf(os.Stderr, "\n⚠️  %s\n", lag)
+			return validateTestFiles(projectDir, local.TestFiles)
+		}
 		fmt.Fprint(os.Stderr, rep.Build)
 		return goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
 	}

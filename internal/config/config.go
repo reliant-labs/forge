@@ -218,6 +218,10 @@ type ProjectConfig struct {
 	// codemods and playbooks: today, how to re-vendor a contract copied from
 	// another repository. See [UpgradeConfig]; read by upgrade_converge.go.
 	Upgrade UpgradeConfig `yaml:"upgrade,omitempty"`
+	// Git says what forge may change in the clone's own git setup on its
+	// own: today, whether writing commands wire the generated-file merge
+	// driver. See [GitConfig]; read by internal/cli/merge_generated.go.
+	Git GitConfig `yaml:"git,omitempty"`
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).
@@ -990,6 +994,11 @@ func effectiveSeverity(value, fallback string) string {
 // generator never read (the template's `range .ExtraJobs` was fed from a
 // struct nothing populated), so declared jobs silently vanished.
 type CIConfig struct {
+	// Provider is where the project's CI runs: "github" (the default) writes
+	// GitHub Actions workflows under .github/workflows/, "reliant" writes
+	// Reliant workflows under .reliant/workflows/ that run on GitHub events
+	// and post GitHub check runs as the Reliant App. Any other value writes
+	// no CI files. See EffectiveProvider.
 	Provider    string       `yaml:"provider"`
 	Lint        CILintConfig `yaml:"lint,omitempty"`
 	Test        CITestConfig `yaml:"test,omitempty"`
@@ -2110,6 +2119,21 @@ type ObservabilityConfig struct {
 	// keeps success logging quiet under a production Info handler. An
 	// unknown value falls back to the default.
 	LogLevel string `yaml:"log_level,omitempty"`
+	// Forensics controls whether a generated component decorator captures a
+	// failed or slow call's arguments into the span's forge.forensics event
+	// (redacted at generation time: IDs, numbers and bools by value, other
+	// strings and collections by length, everything else by type; see
+	// forge/pkg/observe component_forensics.go). Unset or true captures;
+	// false generates no capture code at all — spans still carry their code
+	// location and forge.slow. observe.WithForensics(false) is the runtime
+	// switch for one chain.
+	Forensics *bool `yaml:"forensics,omitempty"`
+}
+
+// ForensicsEnabled reports whether generated decorators capture forensics
+// (default: on).
+func (o ObservabilityConfig) ForensicsEnabled() bool {
+	return o.Forensics == nil || *o.Forensics
 }
 
 // SlogLevelExpr resolves LogLevel to the Go expression for the matching

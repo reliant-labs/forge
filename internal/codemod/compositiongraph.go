@@ -48,7 +48,7 @@ import (
 // reported with its file:line and the edit that clears it, and nothing is
 // written: a conversion that compiles but quietly changes what a process
 // serves (collapsing two deployment groups into one `server`, say) is worse
-// than none. migrations/v1.0.0 is the manual path, with control-plane's
+// than none. migrations/v1.0.0/composition-graph is the manual path, with control-plane's
 // ServeSpec knobs as the worked example.
 
 func init() {
@@ -77,7 +77,7 @@ which is what ` + "`<bin> server`" + ` ran. Anything the codemod cannot map with
 deciding for you — an Infra field of your own, a ServeSpec knob, a command
 that calls Serve, code that names Infra or Components — is listed with its
 file:line and the edit that clears it, and then NOTHING is written. Clear
-them (the migrations/v1.0.0 skill walks through each) and run it again.
+them (the migrations/v1.0.0/composition-graph skill walks through each) and run it again.
 
 It replaces files you own, so it runs only on a committed tree
 (--allow-dirty overrides); review with git diff, undo with git checkout.`,
@@ -170,13 +170,14 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	p.planLegacyGenerated()
 	p.planE2E()
 	p.planKCL()
+	p.planMixed()
 	p.scanReferences()
 
 	rep := Report{Verify: []string{"forge generate", "go build ./...", "forge lint --graph"}}
 	if len(p.blocked) > 0 {
 		sort.Strings(p.blocked)
 		rep.Blocked = p.blocked
-		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0` walks through them), then run `forge fix composition-graph` again — nothing was written"}
+		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0/composition-graph` walks through them), then run `forge fix composition-graph` again — nothing was written"}
 		rep.Verify = nil
 		return rep, nil
 	}
@@ -200,7 +201,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	if len(p.retired) > 0 {
 		rep.Next = append(rep.Next, fmt.Sprintf("retired subcommands (one root runs them all now): `%s %s`", p.bin, strings.Join(p.retired, "`, `"+p.bin+" ")))
 	}
-	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v1.0.0 — this changes the rendered env)")
+	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v1.0.0/composition-graph — this changes the rendered env)")
 	rep.Next = append(rep.Next, p.notes...)
 	if !write {
 		return rep, nil
@@ -466,6 +467,21 @@ type cgNode struct {
 	keys         []string
 	values       map[string]string // translated
 	conventional bool
+	nils         []string // keys whose value is a bare nil the author wrote
+}
+
+// trailingComment is the text of the line comment after kv on its line
+// (`Key: nil, // optional — no provider` → "optional — no provider").
+func trailingComment(f *cgFile, kv *ast.KeyValueExpr) string {
+	line := f.fset.Position(kv.End()).Line
+	for _, cg := range f.ast.Comments {
+		for _, c := range cg.List {
+			if c.Slash >= kv.End() && f.fset.Position(c.Slash).Line == line && strings.HasPrefix(c.Text, "//") {
+				return strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+			}
+		}
+	}
+	return ""
 }
 
 // planCompose translates NewComponents into graph constructor methods.
@@ -529,6 +545,14 @@ func (p *cgPlan) planCompose() {
 	if err != nil {
 		p.block(f, token.NoPos, "the translated compose.go does not format (%v) — convert it by hand", err)
 		return
+	}
+	// A nil the author wrote is kept — "absent on purpose" is theirs to
+	// say — but the graph never revisits a value, so if a provider of that
+	// type now exists, this nil is what keeps it switched off. Say so.
+	for _, n := range nodes {
+		for _, k := range n.nils {
+			p.notes = append(p.notes, fmt.Sprintf("%s: new%s keeps `%s: nil` from NewComponents (a nil you wrote, not forge's \"no provider\" placeholder) and the graph never touches a value: if the graph has a provider for %s.Deps.%s now (an authenticator, an auditor, …), this nil keeps it switched off — delete the key and `forge generate` wires it", f.rel, n.field, k, n.alias, k))
+		}
 	}
 	p.gone[f.rel] = true
 	p.writes[f.rel] = src
@@ -727,13 +751,26 @@ func (p *cgPlan) ctorNode(f *cgFile, e ast.Expr, infra, comp string, producer ma
 		if key == nil {
 			continue
 		}
+		src := exprString(f, kv.Value)
+		// A placeholder forge wrote (`nil, // optional — no provider`) is not
+		// a value: drop the key, and the graph's reconcile resolves it again
+		// on the next generate — to the provider when one exists, else to
+		// its own placeholder. Carrying the nil over would keep an
+		// existing provider switched off, an auth gate included (#2276).
+		// It leaves the node conventional: a re-scaffolded compose.go
+		// resolves every key afresh too.
+		if codegen.LegacyComposePlaceholder(src, trailingComment(f, kv)) {
+			continue
+		}
 		v, ok := p.translate(f, kv.Value, infra, comp, producer)
 		if !ok {
 			continue
 		}
 		n.keys = append(n.keys, key.Name)
 		n.values[key.Name] = v
-		src := exprString(f, kv.Value)
+		if src == "nil" {
+			n.nils = append(n.nils, key.Name)
+		}
 		if !(key.Name == "Logger" && src == infra+".Log") && !(key.Name == "Config" && src == infra+".Cfg") {
 			n.conventional = false
 		}
@@ -1008,6 +1045,17 @@ func (p *cgPlan) planAPIKeyValidator() {
 	end := f.fset.Position(star.X.End()).Offset
 	p.writes[f.rel] = append(append(append([]byte(nil), src[:off]...), "DB"...), src[end:]...)
 	p.skipRef[refKey(f.rel, f.fset.Position(star.X.Pos()).Line)] = true
+}
+
+// planMixed: the constructor methods of roots adopted beside the legacy
+// composition (codegen.MixedComposeFile) become compose.go's when the project
+// converts, and two files declaring one method do not compile. The codemod
+// does not merge owned code for you.
+func (p *cgPlan) planMixed() {
+	rel := "internal/app/" + codegen.MixedComposeFile
+	if f, ok := p.files[rel]; ok {
+		p.block(f, token.NoPos, "%s holds the constructor methods of the roots adopted beside the legacy composition; once converted they belong in compose.go, which is rewritten as the graph's: move each `func (g *Graph) new<X>()` there after converting, or delete %s now and let `forge generate` inject them again (an owned value expression you wrote is then yours to re-apply)", rel, codegen.MixedComposeFile)
+	}
 }
 
 // current is a file's bytes as this plan leaves them so far.

@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,11 +48,6 @@ type LoginBrokerTemplateData struct {
 	// trusted_proxy_hops, how many proxies' X-Forwarded-For entries the
 	// broker's rate limits may trust.
 	TrustedProxyHopsField bool
-	// DatabaseURLField reports whether that config declares database_url:
-	// the database every replica shares, on which the broker serialises an
-	// account's address proofs (devidp.NewPostgresProofLocker, forge#2121).
-	// Without it the broker keeps the in-process lock.
-	DatabaseURLField bool
 }
 
 // Go names of the optional broker fields.
@@ -60,7 +56,6 @@ const (
 	loginPolicyConfigField = "IdpLoginPolicy"
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
-	databaseURLConfigField = "DatabaseUrl"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -69,6 +64,29 @@ var (
 	middlewareSessionCookieDecl       = regexp.MustCompile(`(?m)^const SessionCookieName\b`)
 	middlewareSecureSessionCookieDecl = regexp.MustCompile(`(?m)^const SecureSessionCookieName\b`)
 )
+
+// LoginBrokerCookieMismatch is the warning for an owned login broker that
+// sets the session cookie by its PLAIN name while the project's middleware
+// reads only the __Host- name outside development (forge#2276): sign-in
+// answers 200 and then every rpc is 401 in every deployed env, with nothing
+// saying why. It is what an upgrade from before the __Host- cookie leaves
+// behind when pkg/middleware is adopted and the owned broker is not. "" when
+// there is no broker, the middleware has no __Host- name, or the broker uses
+// it.
+func LoginBrokerCookieMismatch(projectDir string) string {
+	mw, err := os.ReadFile(filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
+	if err != nil || !middlewareSecureSessionCookieDecl.Match(mw) {
+		return ""
+	}
+	broker, err := os.ReadFile(filepath.Join(projectDir, "internal", "app", "login_broker.go"))
+	if err != nil || !bytes.Contains(broker, []byte("SessionCookieName")) || bytes.Contains(broker, []byte("SecureSessionCookieName")) {
+		return ""
+	}
+	return "internal/app/login_broker.go sets the session cookie by its plain name (SessionCookieName), but pkg/middleware reads only " +
+		"SecureSessionCookieName (the __Host- name) outside development: deployed sign-in succeeds and every rpc after it is 401. " +
+		"Set `SecureSessionCookieName` wherever the broker sets, reads or clears the session cookie on a secure origin " +
+		"(`forge skill load migrations/v1.1.0/identity-v2`, step 11), or delete login_broker.go to have forge scaffold the current one"
+}
 
 // GenerateLoginBroker scaffolds internal/app/login_broker.go ONCE — the
 // OWNED server half of the API-only sign-in flow, which lets an app render
@@ -127,7 +145,6 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		LoginPolicyField:                      declares(loginPolicyConfigField),
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
-		DatabaseURLField:                      declares(databaseURLConfigField),
 	})
 	if err != nil {
 		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

@@ -65,6 +65,12 @@
 // @reliantlabs/forge-web-runtime) after its consent manager says yes. GPC /
 // DNT cap a browser at aggregate with no user id.
 //
+// Every RPC is a client span named `<rpc.service>/<rpc.method>`, in the same
+// trace as the server's span (the runtime's interceptor stack). A failed RPC's
+// span carries one redacted `forge.forensics` event: the request's shape,
+// never its content (debug_redact fields never). `rpc_forensics = False`
+// arrives as RPC_FORENSICS = "false" and leaves the event out.
+//
 // The SDK insists on an apiKey. It is sent a public placeholder (see
 // PLACEHOLDER_API_KEY in the runtime); a collector that enforces ingestion
 // auth must have the proxy in front of it strip that header or replace it
@@ -283,6 +289,9 @@ export function initTelemetry(): void {
     // runtime config says PAGE_VIEWS = "false".
     pageViews:
       text(cfg.PAGE_VIEWS) === "false" ? false : { basePath: BASE_PATH },
+    // A failed RPC's span carries its redacted request shape, unless the
+    // runtime config says RPC_FORENSICS = "false".
+    rpcForensics: text(cfg.RPC_FORENSICS) !== "false",
 {{- if .IdentifySession}}
     // The signed-in user's opaque id on every event, unless the runtime
     // config says IDENTIFY_USER = "false".

@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
@@ -1014,6 +1015,11 @@ func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOp
 	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
 		return err
 	}
+	// Push access for the in-process pushes, with the credential docker was
+	// just logged in with — a refusal here costs seconds, not a build.
+	if err := preflightRegistryPushAccess(ctx, os.Stdout, entities, opts); err != nil {
+		return err
+	}
 	if opts.composition != nil {
 		return nil
 	} // actual exported inputs are receipt-attested, not inferred from cwd HEAD
@@ -1245,6 +1251,7 @@ func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts
 		return nil, fmt.Errorf("re-render env %q with the build's resolved tag/arch (%s): %w",
 			opts.env, strings.Join(extra, " "), err)
 	}
+	renderReleaseTemplates(ctx, opts, extra, ents)
 	return ents, nil
 }
 
@@ -2393,10 +2400,11 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	// Constrained-budget caps last so they bound the compiler even over an
 	// inherited GOMEMLIMIT/GOMAXPROCS. Skipped when empty (unconstrained).
 	cmd.Env = applyGoMemoryCaps(cmd.Env, memCaps)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("go build " + t.outputName)
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     t.outputName,
 		kind:     "service",
@@ -2525,10 +2533,11 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	if memCaps.nodeOptions != "" {
 		cmd.Env = withMergedNodeOptions(cmd.Env, memCaps.nodeOptions)
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(fe.Name + ": " + runner + " run build")
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     fe.Name,
 		kind:     "frontend",
@@ -2696,10 +2705,12 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + cfg.Name)
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{
 			name:     cfg.Name + " (docker)",
 			kind:     "docker",
@@ -2903,10 +2914,12 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 		return buildResult{name: name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + name)
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{
 			name:     name + " (docker)",
 			kind:     "docker",
@@ -3258,10 +3271,11 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		env = append(env, k+"="+val)
 	}
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     svcName + ":" + v.Name,
 		kind:     "variant",
@@ -3605,9 +3619,11 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + svcName)
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	for _, t := range pushTags {

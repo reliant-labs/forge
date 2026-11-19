@@ -96,6 +96,13 @@ const (
 	// plane that predates it is sent the policy without them, and judges by
 	// its own defaults.
 	BundleFeatureReleaseHealthErrorRate = "shape-release-health-error-rate"
+	// BundleFeatureReleaseHealthAlertBaseline is
+	// ShapeReleaseHealth.AlertBaselineMinFirings: how often an alert must have
+	// fired before the promotion to be read as the env's noise rather than
+	// the release's (forge.ReleaseHealth.alert_baseline_min_firings). A
+	// control plane that predates it is sent the policy without it, and
+	// judges by its own rule.
+	BundleFeatureReleaseHealthAlertBaseline = "shape-release-health-alert-baseline"
 	// BundleFeatureUptimeChecks is Shape.UptimeChecks: the outside-in checks
 	// the control plane's prober runs. A control plane that predates it
 	// probes nothing for the env.
@@ -182,7 +189,9 @@ const (
 	// finding codes (HealthProbeFailed, HealthProbeLatency) in
 	// ShapeReleaseHealth.FailOn. A control plane that predates it probes
 	// nothing for the env, and its validation refuses a finding code it does
-	// not know, so it is sent neither.
+	// not know, so it is sent neither. It is also sent no browser finding
+	// code in FailOn: those predate this feature by hours but have none of
+	// their own, and such a reader judges no browser telemetry.
 	BundleFeatureReleaseProbes = "shape-release-probes"
 )
 
@@ -200,7 +209,7 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -306,6 +315,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		if !r.Supports(BundleFeatureReleaseHealthErrorRate) && (h.ErrorRateMinErrors != 0 || h.BaselineWindowSeconds != 0) {
 			h.ErrorRateMinErrors, h.BaselineWindowSeconds, limited = 0, 0, true
 		}
+		if !r.Supports(BundleFeatureReleaseHealthAlertBaseline) && h.AlertBaselineMinFirings != nil {
+			h.AlertBaselineMinFirings, limited = nil, true
+		}
 		switch {
 		case !limited:
 		case h.IsDefault():
@@ -323,9 +335,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureReleaseProbes) {
 		// A probed env that keeps the default policy records none, and the
 		// default now fails on probe_failed. A reader of release health is
-		// sent that policy stated, without the probe codes, so what it judges
-		// by is the producer's policy rather than its own default. An env
-		// without probes is sent as before.
+		// sent that policy stated, without the probe (or browser) codes, so
+		// what it judges by is the producer's policy rather than its own
+		// default. An env without probes is sent as before.
 		if s.ReleaseHealth == nil && len(s.ReleaseProbes) > 0 && r.Supports(BundleFeatureReleaseHealth) {
 			def := DefaultReleaseHealth()
 			s.ReleaseHealth = &def

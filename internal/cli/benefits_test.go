@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,41 +44,50 @@ func TestBenefitsEvidenceExists(t *testing.T) {
 		markers[m.Name] = true
 	}
 
-	for _, b := range reg.Benefits {
-		for _, e := range b.Evidence {
+	checkEvidence := func(owner string, evidence []benefits.Evidence) {
+		for _, e := range evidence {
 			kind, v := e.Kind()
 			switch kind {
 			case benefits.KindCommand:
 				if msg := resolveCommandEvidence(root, v); msg != "" {
-					t.Errorf("benefit %q: command %q: %s", b.ID, v, msg)
+					t.Errorf("%s: command %q: %s", owner, v, msg)
 				}
 			case benefits.KindAnalyzer:
 				if lintCmd.Flags().Lookup(strings.TrimPrefix(v, "--")) == nil {
-					t.Errorf("benefit %q: analyzer %q is not a `forge lint` flag", b.ID, v)
+					t.Errorf("%s: analyzer %q is not a `forge lint` flag", owner, v)
 				}
 			case benefits.KindMarker:
 				if !markers[v] {
-					t.Errorf("benefit %q: marker %q is not in markerSpecs() (`forge project capabilities` lists them)", b.ID, v)
+					t.Errorf("%s: marker %q is not in markerSpecs() (`forge project capabilities` lists them)", owner, v)
 				}
 			case benefits.KindSkill:
 				if _, err := loadForgeShippedSkill(v); err != nil {
-					t.Errorf("benefit %q: skill %q does not load from this binary: %v", b.ID, v, err)
+					t.Errorf("%s: skill %q does not load from this binary: %v", owner, v, err)
 				}
 			case benefits.KindLibrary:
 				fi, err := os.Stat(filepath.Join(benefitsRepoRoot, v))
 				if err != nil || !fi.IsDir() {
-					t.Errorf("benefit %q: library %q is not a package directory in this repo", b.ID, v)
+					t.Errorf("%s: library %q is not a package directory in this repo", owner, v)
 				}
 			case benefits.KindPath:
 				if _, err := os.Stat(filepath.Join(benefitsRepoRoot, v)); err != nil {
-					t.Errorf("benefit %q: path %q does not exist in this repo", b.ID, v)
+					t.Errorf("%s: path %q does not exist in this repo", owner, v)
 				}
 			case benefits.KindExternal:
 				// Another repo; benefits.Validate already checked <repo>:<path>.
 			default:
-				t.Errorf("benefit %q: evidence item with no kind passed Validate", b.ID)
+				t.Errorf("%s: evidence item with no kind passed Validate", owner)
 			}
 		}
+	}
+	// A limit is held to the same evidence as a benefit: the comparison an
+	// agent quotes is only as honest as its losses are checked.
+	for _, l := range reg.Limits {
+		checkEvidence(fmt.Sprintf("limit %q", l.ID), l.Evidence)
+	}
+
+	for _, b := range reg.Benefits {
+		checkEvidence(fmt.Sprintf("benefit %q", b.ID), b.Evidence)
 		// A rule's lane is the flag that runs it alone; "" is a rule only
 		// a bare `forge lint` runs; "forge <command>" a rule another
 		// command reports.

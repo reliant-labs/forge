@@ -27,7 +27,7 @@ CREATE TABLE accounts (
 
 The email CHECK is the one pattern seeded by its meaning rather than its
 shape: the shape alone gives `1@1.1`, which satisfies the CHECK and fails the
-form's `.email()` validator, so a seeded row could not be saved from its own
+form's email validator, so a seeded row could not be saved from its own
 edit page. `example.com` is reserved for exactly this.
 
 Anything genuinely unsatisfiable is resolved at **plan** time, before a single

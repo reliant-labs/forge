@@ -354,6 +354,65 @@ func (g *Graph) newAlpha() (*alpha.Service, error) {
 	}
 }
 
+// forge#2276, the graph's half: `forge fix composition-graph` drops a
+// legacy placeholder key (LegacyComposePlaceholder) instead of carrying its
+// nil, and this is why that is enough and necessary. A key compose.go lacks
+// is resolved to the provider that exists, so the gate it feeds is on; a
+// bare nil is a value, which the graph never touches, so carrying it over
+// would have left the provider switched off.
+func TestReconcileGraphCompose_ADroppedPlaceholderKeyTakesTheProvider(t *testing.T) {
+	nodes, r := graphFixture()
+	nodes[0].Deps[1].Type = "*Store"
+	nodes[0].Deps[1].Optional = true
+	converted := func(store string) string {
+		return graphComposeHeader + `
+import "example.com/p/internal/handlers/alpha"
+
+func (g *Graph) newAlpha() (*alpha.Service, error) {
+	return alpha.New(alpha.Deps{
+		Logger: g.Log,` + store + `
+	})
+}
+`
+	}
+	out, problems, err := reconcileGraphCompose(converted(""), nodes, r)
+	if err != nil || len(problems) > 0 {
+		t.Fatalf("err=%v problems=%+v", err, problems)
+	}
+	if !strings.Contains(squash(out), "Store: g.Store(),") {
+		t.Errorf("the dropped key must be wired to its provider:\n%s", out)
+	}
+
+	kept, _, err := reconcileGraphCompose(converted("\n\t\tStore: nil,"), nodes, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(squash(kept), "Store: nil,") {
+		t.Errorf("a bare nil is the author's value and is kept (so the codemod must not write one):\n%s", kept)
+	}
+}
+
+func TestLegacyComposePlaceholder(t *testing.T) {
+	for _, c := range []struct {
+		value, comment string
+		want           bool
+	}{
+		{"nil", "optional — no provider", true},
+		{"auth.Provider{}", "optional — no provider: the zero value", true},
+		{"nil", "TODO: no provider for *audit.Sink", true},
+		{`""`, "TODO: Region is configuration — declare a config block (see forge architecture skill)", true},
+		{"0", "TODO: Port is configuration — declare a config block (see forge architecture skill)", true},
+		{"nil", "", false}, // the author's nil
+		{"nil", "deliberately off in this binary", false}, // the author's, with a reason
+		{"g.Auth()", "optional — no provider", false},     // a value, whatever the comment
+		{`"eu"`, "TODO: Region is configuration — declare a config block (see forge architecture skill)", false},
+	} {
+		if got := LegacyComposePlaceholder(c.value, c.comment); got != c.want {
+			t.Errorf("LegacyComposePlaceholder(%q, %q) = %v, want %v", c.value, c.comment, got, c.want)
+		}
+	}
+}
+
 func TestReconcileGraphCompose_MissingProviderNamesTheFuncToWrite(t *testing.T) {
 	nodes, r := graphFixture()
 	nodes[0].Deps[1].Type = "*Cache"

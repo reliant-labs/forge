@@ -317,6 +317,7 @@ func (v *validator) dashboard(d map[string]any) {
 		}
 	}
 	v.sectionTargets(d, ps, ids)
+	v.attentionTargets(ps)
 }
 
 func (v *validator) filters(fs []any) {
@@ -417,7 +418,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link", "drill", "attention")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -430,9 +431,19 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	v.str(path, o, "title", true)
 	v.str(path, o, "description", false)
 	kind := v.oneOf(path, o, "kind", true, string(KindNumber), string(KindLine), string(KindTable), string(KindSearch), string(KindBar), string(KindHeatmap), string(KindSQL), string(KindIssues), string(KindSessions), string(KindFunnel), string(KindPostgres), string(KindText), string(KindBrowse),
-		string(KindReleaseHealth), string(KindPromotions), string(KindDelivery))
+		string(KindReleaseHealth), string(KindPromotions), string(KindDelivery), string(KindAttention))
 	if raw, has := o["link"]; has && kind != "" {
 		v.link(path, o, PanelKind(kind), raw)
+	}
+	if _, has := o["drill"]; has {
+		v.drill(path, o)
+	}
+	if kind == string(KindAttention) {
+		v.attentionPanel(path, o, ids)
+		return
+	}
+	if _, has := o["attention"]; has {
+		v.add(childPath(path, "attention"), "only an attention panel takes \"attention\"")
 	}
 	if kind == string(KindText) {
 		v.textPanel(path, o)
@@ -683,16 +694,20 @@ func (v *validator) textPanel(path string, o map[string]any) {
 // would silently ignore is refused, as everywhere else in the spec.
 func (v *validator) display(path string, o map[string]any, kind PanelKind, raw any) {
 	dp := childPath(path, "display")
+	if kind == KindFunnel {
+		v.funnelDisplay(dp, raw)
+		return
+	}
 	styles := displayStyles[kind]
 	if len(styles) == 0 {
-		v.add(dp, "a %s panel is drawn one way and takes no \"display\" (it applies to line, bar, number and sql panels)", kind)
+		v.add(dp, "a %s panel is drawn one way and takes no \"display\" (it applies to line, bar, number and sql panels, and a funnel's layout)", kind)
 		return
 	}
 	d, ok := v.object(dp, raw)
 	if !ok {
 		return
 	}
-	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors", "exact")
+	v.known(dp, d, "style", "stack", "horizontal", "min", "max", "topN", "color", "colors", "exact", "good", "bar", "share", "units", "layout")
 	names := make([]string, len(styles))
 	for i, s := range styles {
 		names[i] = string(s)
@@ -718,7 +733,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		case style == "":
 		case kind == KindBar && style != StyleBar:
 			v.add(childPath(dp, "stack"), "a %s has no bars to stack; stack applies to style %q", style, StyleBar)
-		case style == StyleHeatmap || style == StyleFunnel:
+		case style == StyleHeatmap || style == StyleFunnel || style == StyleBarList || style == StyleKPI:
 			v.add(childPath(dp, "stack"), "a %s has nothing to stack", style)
 		case (kind == KindLine || kind == KindSQL) && style != StyleArea && style != StyleBars:
 			v.add(childPath(dp, "stack"), "stacked lines hide each series' own value; stack a style %q or %q panel", StyleArea, StyleBars)
@@ -763,7 +778,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		case n < 1 || n > MaxTopN || n != float64(int(n)):
 			v.add(childPath(dp, "topN"), "must be a whole number of series from 1 to %d", MaxTopN)
 		case style == "":
-		case style == StyleFunnel || style == StyleHeatmap || kind == KindNumber || (kind == KindBar && style == StyleBar):
+		case style == StyleFunnel || style == StyleHeatmap || style == StyleBarList || style == StyleKPI || kind == KindNumber || (kind == KindBar && style == StyleBar):
 			v.add(childPath(dp, "topN"), "topN folds a line panel's series, or a pie's slices, into \"Other\"; a %s %s has none to fold (a bar panel keeps its top groups with \"limit\")", style, kind)
 		}
 	}
@@ -773,6 +788,7 @@ func (v *validator) display(path string, o map[string]any, kind PanelKind, raw a
 		}
 	}
 	v.colors(dp, d, style)
+	v.figureDisplay(dp, o, d, kind, style)
 }
 
 // colors validates Display.Color and Display.Colors: palette keys, never raw

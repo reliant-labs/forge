@@ -136,7 +136,8 @@ func Combine(spans, ingress []ServiceHealth, browser map[string]BrowserHealth) [
 // min_requests page views (a thinner before window is no baseline;
 // baseline.go). The JavaScript error rate (per page view) and the
 // failed-request rate are held to max_error_rate_increase, the p95 page load
-// to max_p95_ratio. They warn unless fail_on names them.
+// to max_p95_ratio. Their policy is fail_on's: the default fails on all
+// three, and forge.ReleaseHealth.warn_on takes one out of it.
 func browserFindings(s ServiceHealth, t Thresholds) []Finding {
 	b := s.Browser
 	if !t.gauge().browserComparable(s) {

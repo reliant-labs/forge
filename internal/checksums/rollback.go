@@ -111,7 +111,11 @@ type rollbackEntry struct {
 type forgeLeft struct {
 	known  bool
 	absent bool
-	sum    [sha256.Size]byte
+	// dirAbsent: the path was absent and so was its parent directory —
+	// forge's own removal pruned it. Only then may a restore recreate a
+	// missing parent; one removed after forge's step is another writer's.
+	dirAbsent bool
+	sum       [sha256.Size]byte
 }
 
 // pathKind is what a path is on disk, observed WITHOUT following a symlink.
@@ -415,7 +419,8 @@ func SettleJournal(root string) {
 func currentState(full string) forgeLeft {
 	switch kind, data := observe(full); kind {
 	case kindAbsent:
-		return forgeLeft{known: true, absent: true}
+		_, err := os.Lstat(filepath.Dir(full))
+		return forgeLeft{known: true, absent: true, dirAbsent: os.IsNotExist(err)}
 	case kindRegular:
 		return forgeLeft{known: true, sum: sha256.Sum256(data)}
 	}
@@ -795,6 +800,7 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	SettleJournal(root)
 	var res RestoreResult
 	restored, failed := make([]string, 0, len(rollbackJournal)), []string(nil)
+	var prune []string
 	replaced := replacedTrees(root)
 	for relPath, entry := range rollbackJournal {
 		full := filepath.Join(root, relPath)
@@ -813,8 +819,9 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 		// readable record of what forge left — is left as is and reported.
 		// So is one reached through a parent another writer made a symlink.
 		kind, data := observe(full)
+		parentsIntact, parentMissing := parentChain(root, relPath)
 		switch {
-		case !throughRealDirs(root, relPath):
+		case !parentsIntact:
 			res.Spared = append(res.Spared, relPath)
 			continue
 		case kind == kindUnreadable || entry.unverifiable:
@@ -831,19 +838,14 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 			continue
 		}
 		if entry.existed {
-			mode := entry.mode
-			if mode == 0 {
-				mode = 0o644
-			}
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			switch rewritePreRun(root, relPath, entry, parentMissing) {
+			case rewriteDone:
+				restored = append(restored, relPath)
+			case rewriteSpared:
+				res.Spared = append(res.Spared, relPath)
+			default:
 				failed = append(failed, relPath)
-				continue
 			}
-			if err := atomicfile.WriteFile(full, entry.content, mode); err != nil {
-				failed = append(failed, relPath)
-				continue
-			}
-			restored = append(restored, relPath)
 			continue
 		}
 		// Did not exist pre-run: delete forge's new output.
@@ -851,8 +853,14 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 			failed = append(failed, relPath)
 			continue
 		}
-		pruneEmptyParents(root, filepath.Dir(full))
+		prune = append(prune, filepath.Dir(full))
 		restored = append(restored, relPath)
+	}
+	// Pruned only after every rewrite, so a directory emptied here is never
+	// mistaken, by a later path's parent check, for one another writer
+	// removed.
+	for _, dir := range prune {
+		pruneEmptyParents(root, dir)
 	}
 	// A scaffold-once file created THIS run was un-created above, so its
 	// birth record must go with it: a surviving record would make the failed
@@ -904,6 +912,42 @@ func RestoreRollbackDetailed(root string) RestoreResult {
 	return res
 }
 
+// rewriteOutcome is what rewritePreRun did with a path.
+type rewriteOutcome int
+
+const (
+	rewriteDone rewriteOutcome = iota
+	rewriteSpared
+	rewriteFailed
+)
+
+// rewritePreRun puts a path that existed before the run back to its pre-run
+// bytes. A missing parent is recreated only when forge's own step removed it
+// (entry.left.dirAbsent): one removed after that is another writer's, and
+// recreating it would resurrect what they deleted (forge#2329 review). The
+// parents are checked again after they are made, so a parent that became a
+// symlink or a file since the caller's check is never written through.
+func rewritePreRun(root, relPath string, entry rollbackEntry, parentMissing bool) rewriteOutcome {
+	if parentMissing && !entry.left.dirAbsent {
+		return rewriteSpared
+	}
+	full := filepath.Join(root, relPath)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return rewriteFailed
+	}
+	if !throughRealDirs(root, relPath) {
+		return rewriteSpared
+	}
+	mode := entry.mode
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := atomicfile.WriteFile(full, entry.content, mode); err != nil {
+		return rewriteFailed
+	}
+	return rewriteDone
+}
+
 // atPreRunState reports whether a path observed as (kind, data) is already
 // in the state a restore of entry would put it in — there is nothing to
 // spare then, whoever wrote it.
@@ -946,18 +990,32 @@ func externalSettled(root, relPath string, entry rollbackEntry) bool {
 	return kind == kindRegular && bytes.Equal(data, entry.content)
 }
 
-// throughRealDirs reports whether no parent of rel under root is a symlink:
-// a path reached through one is somewhere else than the one captured.
+// throughRealDirs reports whether every parent of rel under root that exists
+// is a real directory: a path reached through a symlink is somewhere else
+// than the one captured, and a parent that is a file, or that Lstat cannot
+// read, cannot be shown to be the one captured either. A missing parent is
+// allowed here; parentMissing tells a restore about it.
 func throughRealDirs(root, rel string) bool {
+	intact, _ := parentChain(root, rel)
+	return intact
+}
+
+// parentChain walks the parents of rel under root without following a
+// symlink: intact when every one that exists is a real directory, missing
+// when one of them does not exist.
+func parentChain(root, rel string) (intact, missing bool) {
 	dir := filepath.Dir(filepath.FromSlash(rel))
 	for dir != "." && dir != string(filepath.Separator) && dir != "" {
 		info, err := os.Lstat(filepath.Join(root, dir))
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return false
+		switch {
+		case os.IsNotExist(err):
+			missing = true
+		case err != nil || !info.IsDir():
+			return false, missing
 		}
 		dir = filepath.Dir(dir)
 	}
-	return true
+	return true, missing
 }
 
 // treeIntact reports whether a captured tree may be walked: absent, or still

@@ -396,3 +396,98 @@ func TestRestore_AnAbsentExternalPathMadeASymlinkIsSpared(t *testing.T) {
 		t.Errorf("the symlink's target was touched: %q", got)
 	}
 }
+
+// Review on forge#2329 (B1): a path whose parent another writer removed after
+// forge's step is spared, never recreated with its parent; one whose parent
+// is now a file is spared too.
+func TestRestore_NeverRecreatesAParentAnotherWriterRemoved(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "pkg/gone/old.go", "package gone // pre-run\n")
+	seedFile(t, root, "pkg/gone/keep.go", "package gone\n")
+	seedFile(t, root, "pkg/file/old.go", "package file // pre-run\n")
+	seedFile(t, root, "pkg/file/keep.go", "package file\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+
+	// Forge's step removes each old.go; its directory stays (keep.go).
+	for _, rel := range []string{"pkg/gone/old.go", "pkg/file/old.go"} {
+		recordPreWrite(root, rel)
+		if err := os.Remove(filepath.Join(root, rel)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	SettleJournal(root)
+
+	// Another writer then deletes one directory and puts a file where the
+	// other was.
+	if err := os.RemoveAll(filepath.Join(root, "pkg/gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "pkg/file")); err != nil {
+		t.Fatal(err)
+	}
+	seedFile(t, root, "pkg/file", "not a directory\n")
+
+	res := RestoreRollbackDetailed(root)
+	if want := []string{"pkg/file/old.go", "pkg/gone/old.go"}; !reflect.DeepEqual(res.Spared, want) {
+		t.Errorf("spared = %v, want %v", res.Spared, want)
+	}
+	if len(res.Restored) != 0 || len(res.Failed) != 0 {
+		t.Errorf("restored = %v, failed = %v; want nothing rewritten", res.Restored, res.Failed)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "pkg/gone")); !os.IsNotExist(err) {
+		t.Errorf("the removed parent was recreated (err = %v)", err)
+	}
+	if got := readFileT(t, root, "pkg/file"); got != "not a directory\n" {
+		t.Errorf("the file in the parent's place was touched: %q", got)
+	}
+}
+
+// A parent forge's own step removed (it pruned the directory with the file)
+// is recreated: the rewind puts back what forge took away.
+func TestRestore_RecreatesAParentForgeRemoved(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "pkg/only/old.go", "package only // pre-run\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+
+	recordPreWrite(root, "pkg/only/old.go")
+	if err := os.RemoveAll(filepath.Join(root, "pkg/only")); err != nil {
+		t.Fatal(err)
+	}
+	SettleJournal(root)
+
+	res := RestoreRollbackDetailed(root)
+	if len(res.Spared) != 0 || !reflect.DeepEqual(res.Restored, []string{"pkg/only/old.go"}) {
+		t.Errorf("restored = %v, spared = %v; want old.go restored", res.Restored, res.Spared)
+	}
+	if got := readFileT(t, root, "pkg/only/old.go"); got != "package only // pre-run\n" {
+		t.Errorf("old.go = %q", got)
+	}
+}
+
+// The rewind's own pruning never makes a later path look as though another
+// writer removed its parent: forge deleted old.go and created new.go beside
+// it, so rewinding new.go empties the directory old.go goes back into.
+func TestRestore_ItsOwnPruneDoesNotSpareASibling(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "pkg/swap/old.go", "package swap // pre-run\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+
+	recordPreWrite(root, "pkg/swap/old.go")
+	if err := os.Remove(filepath.Join(root, "pkg/swap/old.go")); err != nil {
+		t.Fatal(err)
+	}
+	recordPreWrite(root, "pkg/swap/new.go")
+	seedFile(t, root, "pkg/swap/new.go", "package swap // forge\n")
+	SettleJournal(root)
+
+	res := RestoreRollbackDetailed(root)
+	if len(res.Spared) != 0 || !reflect.DeepEqual(res.Restored, []string{"pkg/swap/new.go", "pkg/swap/old.go"}) {
+		t.Errorf("restored = %v, spared = %v; want both rewound", res.Restored, res.Spared)
+	}
+	if got := readFileT(t, root, "pkg/swap/old.go"); got != "package swap // pre-run\n" {
+		t.Errorf("old.go = %q", got)
+	}
+}

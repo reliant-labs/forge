@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -73,6 +74,46 @@ type ServiceTemplateData struct {
 	// (ProjectHasTypedConfig): service.go imports <module>/pkg/config and
 	// declares Deps.Config only then.
 	HasConfig bool
+	// ConnectV2 is whether the project builds against connect-go v2
+	// (connectmajor.Detect on its go.mod). It selects the v2 shapes in
+	// every service template: bare-message handler signatures, the
+	// per-rpc generated stream types, RegisterV2 on a *connect.Server, and
+	// the tdd/testkit V2 helpers in the scaffolded tests. False renders the
+	// v1 shapes byte-for-byte as before.
+	ConnectV2 bool
+}
+
+// HasStreamingMethods reports whether any method streams in either
+// direction. A connect-go v2 handler file imports the generated
+// <pkg>connect package only for a streaming method's per-rpc stream type.
+func (d ServiceTemplateData) HasStreamingMethods() bool {
+	for _, m := range d.Methods {
+		if m.ClientStreaming || m.ServerStreaming {
+			return true
+		}
+	}
+	return false
+}
+
+// NamesPbMessages reports whether a connect-go v2 handler file for these
+// methods names a pb message type. A bidirectional v2 handler names none —
+// both directions ride its per-rpc stream type — so a file holding only
+// bidi stubs must not import pb (an unused import does not compile). The v1
+// signatures name the messages for every shape.
+func (d ServiceTemplateData) NamesPbMessages() bool {
+	for _, m := range d.Methods {
+		if !(m.ClientStreaming && m.ServerStreaming) {
+			return true
+		}
+	}
+	return false
+}
+
+// projectConnectV2 reports whether the project at projectDir builds
+// against connect-go v2. No project ("" — test-only callers) is v1, the
+// historical shape, as is any go.mod connectmajor cannot read.
+func projectConnectV2(projectDir string) bool {
+	return projectDir != "" && connectmajor.DetectOrDefault(projectDir).IsV2()
 }
 
 // protoImportPath derives the relative proto import path for a service
@@ -160,6 +201,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
 		// With no project to look at, keep the historical shape.
 		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
+		ConnectV2: projectConnectV2(pd),
 	}
 }
 
@@ -173,7 +215,7 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 	}
 
 	// Prepare template data
-	data := prepareServiceData(svc)
+	data := prepareServiceData(svc, projectConnectV2(projectDir))
 
 	// Parse and execute template
 	tmpl, err := template.New("mock").Parse(mockTemplate)
@@ -358,16 +400,22 @@ func mockImportAlias(goPkg string, seq int) string {
 	return base
 }
 
-// prepareServiceData prepares template data for service generation
-func prepareServiceData(svc ServiceDef) map[string]any {
+// prepareServiceData prepares template data for service generation.
+// connectV2 selects the connect-go v2 mock (bare-message signatures, the
+// per-rpc generated stream types, RegisterV2 on a *connect.Server).
+func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 	var methods []map[string]any
 	res := newMockTypeResolver(svc)
 
 	for _, method := range svc.Methods {
+		sig, ret := buildMethodSignature(method, res), buildReturnType(method, res)
+		if connectV2 {
+			sig, ret = buildMethodSignatureV2(svc, method, res), buildReturnTypeV2(method, res)
+		}
 		methods = append(methods, map[string]any{
 			"Name":       method.GoName(),
-			"Signature":  buildMethodSignature(method, res),
-			"ReturnType": buildReturnType(method, res),
+			"Signature":  sig,
+			"ReturnType": ret,
 			"ReturnStub": buildReturnStub(method),
 			"CallArgs":   buildCallArgs(method),
 		})
@@ -378,9 +426,16 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 	// one type cannot carry both, so the template renames the helper when
 	// they would collide. Without this the generated mock does not compile,
 	// and the error names a method the author never wrote.
+	//
+	// A v2 mock's helper is RegisterV2 (mountkit.RegistrarV2), so only an
+	// RPC of that name collides with it.
+	mountName := "Register"
+	if connectV2 {
+		mountName = "RegisterV2"
+	}
 	hasRegisterRPC := false
 	for _, m := range svc.Methods {
-		if m.GoName() == "Register" {
+		if m.GoName() == mountName {
 			hasRegisterRPC = true
 			break
 		}
@@ -401,6 +456,7 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 		"NeedsEmptypb":     res.needsEmp,
 		"NeedsPb":          res.needsPb,
 		"ForeignImports":   res.imports,
+		"ConnectV2":        connectV2,
 	}
 }
 
@@ -442,6 +498,35 @@ func buildReturnType(m Method, r *mockTypeResolver) string {
 		return "error"
 	default:
 		return fmt.Sprintf("(*connect.Response[%s], error)", outputGoType(m, r))
+	}
+}
+
+// buildMethodSignatureV2 is buildMethodSignature for a connect-go v2
+// handler: bare messages, and a stream is the per-rpc value type
+// protoc-gen-connect-go v2 declares in the service's <pkg>connect package —
+// <Service><Method>ServerStream on the handler side of every streaming
+// shape (the client-stream and bidi handlers read from it too).
+func buildMethodSignatureV2(svc ServiceDef, m Method, r *mockTypeResolver) string {
+	stream := svc.PkgName + "connect." + svc.GoName() + m.GoName() + "ServerStream"
+	switch {
+	case m.ClientStreaming:
+		// Client and bidirectional streaming: the stream carries the input.
+		return "ctx context.Context, stream " + stream
+	case m.ServerStreaming:
+		return fmt.Sprintf("ctx context.Context, req *%s, stream %s", inputGoType(m, r), stream)
+	default:
+		return fmt.Sprintf("ctx context.Context, req *%s", inputGoType(m, r))
+	}
+}
+
+// buildReturnTypeV2 is buildReturnType for a connect-go v2 handler: the
+// response message is returned bare.
+func buildReturnTypeV2(m Method, r *mockTypeResolver) string {
+	switch {
+	case m.ServerStreaming:
+		return "error"
+	default:
+		return fmt.Sprintf("(*%s, error)", outputGoType(m, r))
 	}
 }
 

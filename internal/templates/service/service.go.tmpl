@@ -5,7 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 
+{{- if connectV2 .}}
+
+	connect "connectrpc.com/connect/v2"
+{{- else}}
+
 	"connectrpc.com/connect"
+{{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoImportPath}}/v1"
 	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoImportPath}}/v1/{{.ProtoConnectPackage}}"
@@ -64,11 +70,20 @@ func (s *Service) Name() string {
 	return "{{.ServiceName}}"
 }
 
+{{if connectV2 . -}}
+// RegisterV2 registers the service's Connect handlers on server
+// (mountkit.RegistrarV2). The mount owns the server — its interceptor
+// chain and the HTTP mux it is served on — so this only names the rpcs.
+func (s *Service) RegisterV2(server *connect.Server) {
+	{{.ProtoConnectPackage}}.Register{{.HandlerName}}Handler(server, s)
+}
+{{- else -}}
 // Register registers the service handlers with the HTTP mux.
 func (s *Service) Register(mux *http.ServeMux, opts ...connect.HandlerOption) {
 	path, handler := {{.ProtoConnectPackage}}.New{{.HandlerName}}Handler(s, opts...)
 	mux.Handle(path, handler)
 }
+{{- end}}
 
 // RegisterHTTP registers plain HTTP handlers (callbacks, REST endpoints)
 // outside Connect RPC. The stack provides recovery/logging/audit; auth is

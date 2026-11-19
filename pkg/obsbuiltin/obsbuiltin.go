@@ -118,6 +118,11 @@ func IsCardDashboard(id string) bool {
 // their panels into the Overview's sections and lists them as dashboards of
 // their own. Empty when the project opted out (Analytics.DashboardsEnabled)
 // of the analytics, except Uptime, which is not analytics.
+//
+// They are servable only by a control plane whose obsquery binds filter
+// params, so forge generate writes none of them, and a release bundle carries
+// them only to a control plane that advertises
+// release.CapabilityServesDashboardFilterParams.
 func Cards(in Input) []dashspec.Dashboard {
 	var out []dashspec.Dashboard
 	if in.Web && in.Analytics.DashboardsEnabled() {

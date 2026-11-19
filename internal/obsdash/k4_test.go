@@ -178,7 +178,7 @@ func TestBuildAddsTheProjectDashboards(t *testing.T) {
 		ids = append(ids, d.ID)
 	}
 	if got, want := strings.Join(ids, ","), "overview,process-shop-api,process-shop-worker,workloads,releases,jobs,frontend,product-overview,users,product,acquisition,"+
-		"ai,ai-workflows,ai-models,ai-users,ai-errors,ai-tools,traffic,uptime"; got != want {
+		"ai,ai-workflows,ai-models,ai-users,ai-errors,ai-tools"; got != want {
 		t.Fatalf("dashboards = %s, want %s", got, want)
 	}
 }

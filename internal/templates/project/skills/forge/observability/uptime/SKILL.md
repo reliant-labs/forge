@@ -118,8 +118,9 @@ watches the prober itself with an external heartbeat.
 
 ## Availability and incidents
 
-The built-in _Uptime_ dashboard (`uptime`, hosted environments only) draws the
-checks from the gauges, with four statements `pkg/obsquery` exports as
+The built-in _Uptime_ dashboard (`uptime`, hosted environments only; a bundle
+carries it once its control plane advertises `serves-dashboard-filter-params`)
+draws the checks from the gauges, with four statements `pkg/obsquery` exports as
 sql-panel SELECTs (`UptimeSummarySQL`, `UptimeTimelineSQL`, `UptimeChecksSQL`,
 `UptimeIncidentsSQL`), so `forge obs query` and the console run the same text:
 

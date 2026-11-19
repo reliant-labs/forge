@@ -132,8 +132,11 @@ binds the viewer's values (`dashspec.Dashboard.FilterParamValues` into
 UTF-8, no control characters) and the empty string to every `f_` param the
 statement reads that it was given none for, so a caller that knows nothing of
 filter params still runs the panel, unfiltered. The values are typed
-parameters, never spliced into the SQL. As with toggles, a control plane older
-than the forge that added filter params cannot bind them.
+parameters, never spliced into the SQL. A control plane older than the forge
+that added filter params cannot bind them, so forge withholds every dashboard
+that reads one from a bundle unless the control plane it is recorded on
+advertises `serves-dashboard-filter-params` (DeployService/GetCapabilities);
+a bundle for no control plane carries none either.
 
 ## Releases and delivery: `release_health`, `promotions`, `delivery`
 

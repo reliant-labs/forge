@@ -237,6 +237,13 @@ the declaration.
 A subcommand of the PRIMARY binary needs no build of its own: `args =
 ["<subcommand>"]` with the project's GoBuild selects it on every runtime.
 
+### Binaries you ship rather than run
+
+A CLI download or an agent built per OS/arch is a `forge.BuildOnly` workload
+with `build_variants` (per-variant `goos`/`goarch`, `ldflags`, `env`,
+`output_name`), recorded with its sha256 in the release. Load
+`binaries/shipping`.
+
 ## Common patterns
 
 A binary's body is `Runner.Run(ctx)` — the placeholder blocks on `<-ctx.Done()`; you replace it with one of these shapes. `Run` owns its own listen/shutdown or loop, propagating cancellation from the ctx the cobra adapter wires SIGINT/SIGTERM into.

@@ -3267,10 +3267,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 // on the subprocess env.
 func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
-	outName := v.OutputName
-	if outName == "" {
-		outName = svcName + "-" + v.Name
-	}
+	outName := variantOutputName(svcName, v)
 	variantOS := v.GOOS
 	if variantOS == "" {
 		variantOS = runtime.GOOS
@@ -3291,17 +3288,7 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	env := goexec.Env("CGO_ENABLED=0")
-	if v.GOOS != "" {
-		env = append(env, "GOOS="+v.GOOS)
-	}
-	if v.GOARCH != "" {
-		env = append(env, "GOARCH="+v.GOARCH)
-	}
-	for k, val := range v.EnvAtBuild {
-		env = append(env, k+"="+val)
-	}
-	cmd.Env = env
+	cmd.Env = variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v)
 	var endStep func(error)
 	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 
@@ -3313,6 +3300,30 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// variantBuildEnv layers a variant's GOOS/GOARCH and its declared env
+// (KCL BuildVariant.env) onto base. Later entries win (os/exec keeps the last
+// value of a duplicated key), so a declared CGO_ENABLED=1 overrides forge's
+// CGO_ENABLED=0 default. Declared keys are appended sorted, so the command's
+// environment is the same on every run.
+func variantBuildEnv(base []string, v BuildVariant) []string {
+	env := append([]string(nil), base...)
+	if v.GOOS != "" {
+		env = append(env, "GOOS="+v.GOOS)
+	}
+	if v.GOARCH != "" {
+		env = append(env, "GOARCH="+v.GOARCH)
+	}
+	keys := make([]string, 0, len(v.EnvAtBuild))
+	for k := range v.EnvAtBuild {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+v.EnvAtBuild[k])
+	}
+	return env
 }
 
 // buildKCLDockerShell dispatches the per-service DockerBuild type — the

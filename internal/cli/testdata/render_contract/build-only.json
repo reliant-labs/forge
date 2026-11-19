@@ -50,6 +50,7 @@
         "runtime": {
           "build_variants": [
             {
+              "env_at_build": null,
               "goarch": "amd64",
               "goos": "linux",
               "ldflags": [
@@ -57,6 +58,18 @@
                 "-w"
               ],
               "name": "acme-cli-linux",
+              "output_name": null,
+              "tags": []
+            },
+            {
+              "env_at_build": {
+                "CGO_ENABLED": "1"
+              },
+              "goarch": "arm64",
+              "goos": "darwin",
+              "ldflags": [],
+              "name": "darwin-arm64",
+              "output_name": "acme-cli-darwin-arm64",
               "tags": []
             }
           ],

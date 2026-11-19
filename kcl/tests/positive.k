@@ -54,6 +54,11 @@ _daemon = fw.Workload {
         build_variants = [
             forge.BuildVariant {name = "dev"}
             forge.BuildVariant {name = "prod", ldflags = ["-X main.Env=prod"]}
+            forge.BuildVariant {
+                name = "darwin-arm64", goos = "darwin", goarch = "arm64"
+                env = {"CGO_ENABLED" = "1"}
+                output_name = "daemon-darwin-arm64"
+            }
         ]
     }
 }
@@ -142,8 +147,13 @@ assert_cluster_expose = _w["workspace-proxy"].spec.ports[0].expose == True
 
 # ── Build-only runtime block ────────────────────────────────────────
 _b = _w["reliant-daemon"].runtime
-assert_build_only_variants = [v.name for v in _b.build_variants] == ["dev", "prod"]
+assert_build_only_variants = [v.name for v in _b.build_variants] == ["dev", "prod", "darwin-arm64"]
 assert_build_only_ldflags = _b.build_variants[1].ldflags == ["-X main.Env=prod"]
+# A variant's env and output_name render under the keys the Go decoder reads
+# (BuildVariant.EnvAtBuild / OutputName); unset, neither key is emitted.
+assert_build_only_variant_env = _b.build_variants[2].env_at_build == {"CGO_ENABLED": "1"}
+assert_build_only_variant_output_name = _b.build_variants[2].output_name == "daemon-darwin-arm64"
+assert_build_only_variant_defaults_unset = _b.build_variants[0].env_at_build == None and _b.build_variants[0].output_name == None
 
 # ── Build is typed and explicit on every forge-built workload ──────
 assert_build_typed = _w["admin-server"].build.type == "go" and _w["admin-server"].build.cmd == "./cmd/myapp"

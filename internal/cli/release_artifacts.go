@@ -9,10 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -382,11 +384,15 @@ func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) m
 
 	for _, svc := range entities.WorkloadsOn(RuntimeBuildOnly) {
 		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
-			name := v.OutputName
-			if name == "" {
-				name = svc.Name + "-" + v.Name
+			name := variantOutputName(svc.Name, v)
+			// The file on disk carries the platform's executable suffix
+			// (buildVariant writes hostlaunch.ExeName), while the ledger key
+			// stays the declared name.
+			goos := v.GOOS
+			if goos == "" {
+				goos = runtime.GOOS
 			}
-			sum, ok := sha256File(filepath.Join(outputDir, name))
+			sum, ok := sha256File(filepath.Join(outputDir, hostlaunch.ExeName(goos, name)))
 			if !ok {
 				// The variant declared a binary this build did not produce
 				// (a --target run that skipped it, or a failed variant). A

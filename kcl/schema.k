@@ -199,15 +199,41 @@ schema RuntimeClass:
 
 schema BuildVariant:
     """One Go build variant. Used by Service.deploy = BuildOnly for
-    multi-variant builds (e.g. `dev`, `prod` ldflag matrix)."""
+    multi-variant builds (e.g. `dev`, `prod` ldflag matrix, or one binary
+    per goos/goarch).
+
+    Each variant is its own `go build` of the workload's GoBuild `cmd`, into
+    `<output dir>/<output_name>`:
+
+        runtime = forge.BuildOnly {build_variants = [
+            forge.BuildVariant {name = "linux-amd64", goos = "linux", goarch = "amd64"}
+            forge.BuildVariant {
+                name = "darwin-arm64", goos = "darwin", goarch = "arm64"
+                output_name = "acme-darwin-arm64"
+                env = {"CGO_ENABLED" = "1"}
+            }
+        ]}
+    """
     name: str
     ldflags: [str] = []
     tags: [str] = []
     goos: str = ""
     goarch: str = ""
+    # Build-time process env for this variant's `go build`, merged over
+    # forge's own (declared keys win). Variants build with CGO_ENABLED=0
+    # unless this sets it, e.g. {"CGO_ENABLED" = "1"} for a binary that
+    # links C.
+    env: {str: str} = {}
+    # The binary's basename. "" is `<workload>-<variant name>`. On a
+    # windows variant `.exe` is appended. It is also the binary's key in the
+    # release ledger, so two variants of one env must not share it.
+    output_name: str = ""
 
     check:
         name, "BuildVariant.name is required"
+        all k in env {k}, "BuildVariant.env must not contain an empty name (variant '${name}')"
+        "/" not in output_name and "\\" not in output_name, \
+            "BuildVariant.output_name '${output_name}' must be a file name, not a path (variant '${name}')"
 
 schema ConfigMap:
     """A Kubernetes ConfigMap — non-sensitive key/value pairs.

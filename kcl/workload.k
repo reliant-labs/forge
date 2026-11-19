@@ -345,6 +345,10 @@ schema BuildOnly:
     type: "build-only" = "build-only"
     build_variants: [BuildVariant] = []
 
+    check:
+        len([v.output_name for v in build_variants if v.output_name]) == len({v.output_name: None for v in build_variants if v.output_name}), \
+            "BuildOnly.build_variants: two variants share an output_name — each would overwrite the other's binary"
+
 # The env-var names forge sets for an OnExternal hook. A hook's own `env`
 # may not redefine one: forge's value would win anyway, so a redefinition
 # could only ever be a silently ignored line.

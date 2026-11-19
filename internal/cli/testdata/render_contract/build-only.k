@@ -17,6 +17,11 @@ output = forge.render(forge.Bundle {
             build = forge.GoBuild {cmd = "./cmd/acme-cli", output_name = "acme-cli"}
             runtime = forge.BuildOnly {build_variants = [
                 forge.BuildVariant {name = "acme-cli-linux", ldflags = ["-s", "-w"], goos = "linux", goarch = "amd64"}
+                forge.BuildVariant {
+                    name = "darwin-arm64", goos = "darwin", goarch = "arm64"
+                    env = {"CGO_ENABLED" = "1"}
+                    output_name = "acme-cli-darwin-arm64"
+                }
             ]}
         }
         fw.Workload {

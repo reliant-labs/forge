@@ -2368,7 +2368,14 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.connectMajor(), ctx.Checksums)
+	roots, err := generateHybridComposition(hybridCompositionInput{
+		GenContext:      codegen.GenContext{ProjectDir: ctx.ProjectDir, ModulePath: modulePath, Checksums: ctx.Checksums, ConnectMajor: ctx.connectMajor()},
+		Services:        rows,
+		Packages:        packages,
+		DatabaseDriver:  dbDriver,
+		ORMEnabled:      ormEnabled,
+		WebhookServices: webhookServices,
+	})
 	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}

@@ -440,6 +440,12 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 	if p.o.HeldSignInCode != nil && p.o.HeldSignInCode(email) {
 		return nil
 	}
+	// A code minted while the generator's expiry is not the declared one
+	// would live longer, or shorter, than the ExpiresAt reported with it.
+	// Withhold it; the next pass that converges the generator issues it.
+	if p.codeLifetimeErr != nil {
+		return fmt.Errorf("withheld a sign-in code: the password reset code generator is not at the declared lifetime: %w", p.codeLifetimeErr)
+	}
 	var out struct {
 		VerificationCode string `json:"verificationCode"`
 	}
@@ -453,7 +459,7 @@ func (p *run) ensureSignInPath(ctx context.Context, email, uid string) error {
 		return errors.New("the instance accepted the password-reset request but returned no code")
 	}
 	p.rep.change(Issued, "sign-in code", email, "")
-	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode, ExpiresAt: p.o.Now().Add(SignInCodeLifetime)})
+	p.rep.SignInCodes = append(p.rep.SignInCodes, SignInCode{Email: email, Code: out.VerificationCode, ExpiresAt: p.o.Now().Add(p.spec.codeLifetime())})
 	return nil
 }
 

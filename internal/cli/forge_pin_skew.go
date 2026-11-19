@@ -14,8 +14,9 @@ package cli
 // its 12-hex commit. Two pseudo-versions of one commit are the same forge;
 // two commits are not, whatever their timestamps say.
 //
-// Every project command warns. The commands that BUILD, RELEASE or DEPLOY
-// refuse, because what they produce is a function of the binary (a bundle
+// Every project command warns, except the few whose behaviour no forge
+// version changes (pinIndependentCommands). The commands that BUILD, RELEASE
+// or DEPLOY refuse, because what they produce is a function of the binary (a bundle
 // records the forge that rendered it), and an artifact made by an unpinned
 // forge is one the project cannot reproduce. So do the commands that
 // REWRITE the project's files from the binary's templates (generate,
@@ -97,6 +98,35 @@ func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
 		}
 	}
 	return nil, false
+}
+
+// pinIndependentCommands are command groups that run as whichever forge is at
+// hand and say nothing about the project's pin: what they do is the same under
+// every forge, so the skew warning is noise. Each is also in handOffExempt
+// (never handed to the pinned forge) and never pin-gated
+// (TestPinIndependentCommandsRunHere holds both).
+//
+//   - slot: machine-level coordination. Every forge shares one slot directory
+//     (FORGE_SLOTS_DIR, else <user cache dir>/forge/slots/<class>), takes a
+//     slot by flock on slot-<i>.lock, and queues by locked ticket files, so a
+//     slot taken by one forge is held against every other. Nothing it does
+//     reads forge.yaml. reliant's `task test` runs through `slot run`, and
+//     printed the warning on every run (forge bug report afa50061).
+//
+// `storage` is deliberately absent: it runs THIS forge's cache-trimming rules
+// (handOffExempt says why), and those differ between forges, so which forge
+// trimmed the cache is worth saying.
+var pinIndependentCommands = []string{"slot"}
+
+// pinIndependent reports whether rel (relative to forge's root) is, or is
+// under, a pinIndependentCommands group.
+func pinIndependent(rel string) bool {
+	for _, group := range pinIndependentCommands {
+		if rel == group || strings.HasPrefix(rel, group+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // readOnlyRun reports whether cmd was invoked with one of the gate's
@@ -319,9 +349,12 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 			return err
 		}
 	}
-	if projectRoot == "" || versionPinnedRun(cmd, rel) {
-		// `version --pinned` reports the skew as its answer; the warning
-		// would only restate it, and probe the forge it is about to find.
+	if projectRoot == "" || pinIndependent(rel) || versionPinnedRun(cmd, rel) {
+		// `version --pinned` is not pin-independent — it is ABOUT the pin —
+		// but it reports the skew as its answer: the warning would only
+		// restate it, and probe the forge it is about to find. It is a flag
+		// of `version`, not a group, so pinIndependentCommands (whole
+		// groups) cannot name it; plain `version` keeps its warning.
 		return nil
 	}
 	readOnlyFlags, gated := pinGateFor(rel)

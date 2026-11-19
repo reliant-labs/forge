@@ -295,6 +295,9 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if withheld {
 		noteServiceCatalogWithheld(in.errWriter(), env)
 	}
+	// So are the dashboards only a control plane that binds filter params
+	// serves (the Overview page's cards): withheld unless this one says so.
+	observability, _ = withholdUnservedDashboards(observability, reader)
 
 	placements, err := bundlePlacementDeclarations(doc.entities)
 	if err != nil {

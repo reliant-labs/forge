@@ -156,7 +156,9 @@ func TestEveryDashboardFiltersOnServiceAndEnvironment(t *testing.T) {
 		// project's frontend and backend, so a service filter would split
 		// one visit or one user in two: they filter on the environment only.
 		// The AI hub's likewise: a run spans the services that start and run it.
-		if obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID) {
+		// The Overview's cards too: Traffic is the product dashboards', and
+		// Uptime's checks are the platform prober's, not a service's.
+		if obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID) || obsbuiltin.IsCardDashboard(d.ID) {
 			if got[FieldService] || !got[FieldEnv] {
 				t.Errorf("%s: filters %v, want only deployment.environment.name", d.ID, d.Filters)
 			}

@@ -47,6 +47,10 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 	if len(in.Processes) == 0 {
 		sp = obsdash.WithoutProcessDashboards(sp)
 	}
+	// The Overview page's cards ride the bundle only, and only to a control
+	// plane that serves them (withholdUnservedDashboards); `forge generate`
+	// writes nothing for them.
+	sp.Dashboards = append(sp.Dashboards, obsdash.CardDashboards(in)...)
 	return &sp, nil
 }
 

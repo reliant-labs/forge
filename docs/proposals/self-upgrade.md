@@ -1,7 +1,8 @@
 # Proposal: self-upgrading long-lived binaries (`forge/pkg/selfupdate`)
 
-**Status:** proposal, not implemented. Written for owner review; nothing here
-has landed in forge, reliant or control-plane.
+**Status:** approved by the owner 2026-11-19. F1 (`forge/pkg/selfupdate` core)
+is implemented; where its API differs from the sketch in §3, §10 says how and
+why. F2, F3 and the reliant phases have not landed.
 **Date:** 2026-11-19
 **Scope:** forge (new package `pkg/selfupdate`, opt-in hook in `pkg/serverkit`),
 reliant (first consumer, release pipeline), control-plane (signal source only).
@@ -513,3 +514,69 @@ proceeded on, listed so it can be overturned.
    signed by the same attestation (proceeding on this)._
 4. **Package name.** _Recommended default: `forge/pkg/selfupdate` (proceeding on
    this)._
+
+## 10. F1 implementation notes
+
+What `pkg/selfupdate` ended up as, where it differs from the §3 sketch. The
+design is unchanged; these are the API details building it settled.
+
+- **`Boot(BootOptions{Binary, StateDir})`, not `Boot()`.** Boot runs before the
+  app builds its `Config`, so it needs to be told where `state.json` lives.
+  `ConfirmWithin` is written into `state.json` at the swap, so the location is
+  all it needs.
+- **`(*Updater).ExecPending()`, not a package function.** The armed swap is
+  in-process state that `Request` hands to `ExecPending`; a package-level
+  global would be shared mutable state.
+- **`Detect(DetectOptions{Path, Managed})`.** The managed predicate (Reliant's
+  `host.Managed()`) is the app's, so it is passed in; `Config.Managed` feeds it.
+- **The build stamp is `-X github.com/reliant-labs/forge/pkg/selfupdate.managedBy=<owner>`**
+  (unexported). forge's `exportedvars` contract rule rejects a mutable exported
+  variable, and the linker flag works on an unexported one: the flag is the
+  contract, and no Go code can change it.
+- **`InsecureAllowUnsigned`, not `AllowUnsigned`.** Named loudly; `New` refuses
+  a `Config` with neither a `Verifier` nor it (`ErrNoVerifier`), refuses both
+  together, and logs the opt-out at every start. The sha256 check against
+  `checksums.txt` still runs without a verifier.
+- **`Config` grew what the sketch left implicit:** `Channel` (passed to
+  `Source.Latest`), `ArchiveName`/`BinaryName`/`ChecksumsName` (reliant's
+  goreleaser names its archives `reliant-<os>-<arch>`, not forge's
+  `<binary>_<os>_<arch>.tar.gz`, the default), `DrainTimeout` (default 5 min,
+  §9.2), `ProbeTimeout`, `HTTPClient` (https only, redirects included),
+  `MaxDownloadBytes`, `Managed` and `Logger`.
+- **Sources: `GitHubSource` and `SourceFunc` only.** `ManifestSource` waits for
+  R0, which defines `daemon-channels.json` (§6.3), and F2, which verifies its
+  signature: shipping a manifest schema first would freeze R0's format inside
+  forge's semver. `LedgerSource(release.Ref)` is dropped: `pkg/release` has no
+  `Ref`, and its ledger records deploy releases, not CLI archives.
+- **Ordering.** The GitHub releases API carries no commit time, so a release is
+  newer by semver first and by commit time only when the versions are equal or
+  not semver. A build with neither (`dev`) is never upgraded. The `Policy` is
+  asked only about a release that is newer and has not failed here.
+- **The boot-loop guard counts dead boots, not starts.** Several instances can
+  share one binary, so "attempts at 2" would revert a healthy binary when two
+  instances restart inside one confirm window. `state.json` records the pid of
+  each unconfirmed start; the next start reverts when two of them are no longer
+  alive. A confirmation by any instance counts, and a watchdog that fires after
+  another instance confirmed does not revert.
+- **Rollback images are copies under new names, never overwritten.** Each
+  swap copies the running binary to `StateDir/previous/<binary>.<version>.<ns>`
+  (a copy, not the §3 hard link: a link shares the install's inode, so a `cp`
+  over the install would rewrite the backup too). Older images are pruned only
+  after the new swap is recorded in `state.json`, an unconfirmed earlier
+  swap's image is kept (`retained`) until a later swap confirms, and a
+  confirmation leaves only its own rollback image.
+- **`GitHubSource` sends its `Token` only to the API's origin.** `APIBaseURL`
+  must be https with no userinfo, query or fragment; `Repo` must be exactly
+  `owner/name`; the token is stripped from any redirect that leaves the API
+  origin, and asset downloads never carry it.
+- **`ExitForSupervisor` exits 75** (`EX_TEMPFAIL`, `ExitCodeRestart`).
+- **A `Drainer` error declines the upgrade** with nothing swapped: that is how
+  an app aborts a routine upgrade whose work did not drain (§9.2).
+- **exec of a just-written binary retries `ETXTBSY`** (golang/go#22315: a child
+  forked elsewhere in the process can briefly hold the file open).
+- **Windows** stages and probes; `Request` and `ExecPending` return
+  `ErrUnsupported` until F2.
+- **Environment.** `pkg/` forbids reading the environment
+  (`pkg/.golangci.yml`); `FORGE_MANAGED_BY` (a supervisor-to-binary contract)
+  and the `os.Environ()` handed to exec are exempted in one file,
+  `selfupdate/env.go`.

@@ -238,8 +238,9 @@ path from an empty directory to authored protos, in one call.`,
 			}
 
 			// Is this the forge the project pins? Warned for every
-			// project command; refused for the ones that build, release
-			// or deploy. See forge_pin_skew.go.
+			// project command but the pin-independent ones (slot);
+			// refused for the ones that build, release or deploy. See
+			// forge_pin_skew.go.
 			allow, _ := cmd.Flags().GetBool(allowVersionSkewFlag)
 			if err := checkForgePinSkew(cmd, rootCmd, cmd.ErrOrStderr(), allow); err != nil {
 				return err

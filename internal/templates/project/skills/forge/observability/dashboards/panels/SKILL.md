@@ -107,6 +107,37 @@ and nothing else: no `signal`, `series`, `sql`, `where`, `groupBy` or `unit`.
 `browse` and `link` are refused by a control plane pinned to an older forge, so
 add them once the control plane runs the forge that ships them.
 
+## Filter params: `filterParams` and `select`
+
+A **filter param** is a value the viewer narrows the `sql` panels by from the
+data, most often by clicking a row of a breakdown: the page, the channel, the
+country. Declare it in the dashboard's `filterParams` (not `filters`: it is set
+from a row and drawn as a removable chip, not a toolbar control), and read it as
+a String parameter named by its id, which matches `^f_[a-z0-9_]{1,30}$`:
+
+```json
+"filterParams": [{ "id": "f_route", "label": "Page", "description": "Visitors who viewed the page." }],
+"panels": [{ "id": "pages", "title": "Pages", "kind": "sql",
+  "sql": "SELECT Props['route'] AS \"Page\", count() AS \"Views\" FROM product_events WHERE ({f_route:String} = '' OR Props['route'] = {f_route:String}) AND ... GROUP BY \"Page\"",
+  "select": { "param": "f_route", "column": "Page" } }]
+```
+
+Unset is the empty string, so `({f_x:String} = '' OR <column> = {f_x:String})`
+is the shape. A panel whose statement does not read a param ignores it; a
+statement that reads one the dashboard does not declare, or reads it as
+anything but `String`, fails validation. `select` makes a click on a row set
+the param to the row's value in `column` (the console follows it). A reader
+binds the viewer's values (`dashspec.Dashboard.FilterParamValues` into
+`obsquery.Scope.FilterParams`; each value is checked: at most 512 bytes of
+UTF-8, no control characters) and the empty string to every `f_` param the
+statement reads that it was given none for, so a caller that knows nothing of
+filter params still runs the panel, unfiltered. The values are typed
+parameters, never spliced into the SQL. A control plane older than the forge
+that added filter params cannot bind them, so forge withholds every dashboard
+that reads one from a bundle unless the control plane it is recorded on
+advertises `serves-dashboard-filter-params` (DeployService/GetCapabilities);
+a bundle for no control plane carries none either.
+
 ## Releases and delivery: `release_health`, `promotions`, `delivery`
 
 Three kinds draw what the team ships rather than what its services emit. The

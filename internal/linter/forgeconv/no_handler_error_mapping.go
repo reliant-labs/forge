@@ -123,9 +123,11 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 	sort.Strings(goFiles)
 
 	// A connect-go v2 project's handlers name no connect type in their
-	// signatures; forgeconv-unwrapped-domain-error reads their v2 shape only
-	// when go.mod selects v2 (internal/connectmajor).
-	projectV2 := connectmajor.DetectOrDefault(rootDir).IsV2()
+	// signatures; forgeconv-unwrapped-domain-error and
+	// forgeconv-crud-owner-resolver read their v2 shape only when go.mod
+	// selects v2 (internal/connectmajor) or the file imports v2.
+	major := connectmajor.DetectOrDefault(rootDir)
+	projectV2 := major.IsV2()
 
 	var result Result
 	for _, p := range goFiles {
@@ -151,7 +153,7 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed, projectV2)...)
 		result.Findings = append(result.Findings, lintHandlerConnectErrorFile(rel, fset, parsed)...)
-		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed, func() map[string]string {
+		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed, major, func() map[string]string {
 			return crudOpKeyColumns(filepath.Join(filepath.Dir(p), "handlers_crud_ops_gen.go"))
 		})...)
 	}

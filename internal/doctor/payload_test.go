@@ -458,6 +458,8 @@ func TestConnectHandlerEvidence(t *testing.T) {
 		name string
 		src  string
 		want string // "" → no evidence at all
+		// projectV2 is the project's go.mod selecting connect-go v2.
+		projectV2 bool
 	}{
 		{
 			name: "aliased runtime import still resolves",
@@ -528,10 +530,25 @@ func TestConnectHandlerEvidence(t *testing.T) {
 			want: "cv2.NewServer",
 		},
 		{
-			name: "generated v2 handler registration counts",
+			name: "generated v2 handler registration counts in a v2 project",
 			src: "package cmd\n\nimport \"github.com/acme/app/gen/acme/v1/acmev1connect\"\n\n" +
 				"func f() { acmev1connect.RegisterAcmeServiceHandler(server, svc) }\n",
+			want:      "RegisterAcmeServiceHandler",
+			projectV2: true,
+		},
+		{
+			name: "generated v2 handler registration counts in a file importing v2",
+			src: "package cmd\n\nimport (\n\t\"connectrpc.com/connect/v2\"\n\t\"github.com/acme/app/gen/acme/v1/acmev1connect\"\n)\n\n" +
+				"func f(server *connect.Server) { acmev1connect.RegisterAcmeServiceHandler(server, svc) }\n",
 			want: "RegisterAcmeServiceHandler",
+		},
+		{
+			// v1 code: a Register…Handler on a package whose path ends in
+			// `connect` is not connect-go's mount, and was never evidence.
+			name: "a Register…Handler call in a v1 project is not a mount",
+			src: "package cmd\n\nimport \"github.com/acme/app/internal/natsconnect\"\n\n" +
+				"func f() { natsconnect.RegisterPoolHandler(pool, h) }\n",
+			want: "",
 		},
 		{
 			name: "v2 connecthttp.Mount counts",
@@ -575,7 +592,7 @@ func TestConnectHandlerEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := connectHandlerEvidence(file, fset, "cmd/app/cmd/serve.go")
+			got := connectHandlerEvidence(file, fset, "cmd/app/cmd/serve.go", tt.projectV2)
 			joined := strings.Join(got, "\n")
 			if tt.want == "" {
 				if len(got) != 0 {

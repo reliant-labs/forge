@@ -145,6 +145,9 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 		mounting []string
 		files    int
 	)
+	// The project's connect-go major: a generated Register…Handler call is
+	// connect-go v2's mount, and proves one only in v2 code.
+	projectV2 := connectmajor.DetectOrDefault(env.ProjectDir).IsV2()
 
 	walkErr := filepath.WalkDir(cmdDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -172,7 +175,7 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 		rel, _ := filepath.Rel(env.ProjectDir, path)
 		assigned := assignedFields(file)
 		normalized := normalizedReceivers(file)
-		mounting = append(mounting, connectHandlerEvidence(file, fset, rel)...)
+		mounting = append(mounting, connectHandlerEvidence(file, fset, rel, projectV2)...)
 		chainUses, chainProblems := chainCapUses(file, fset, rel)
 		uses = append(uses, chainUses...)
 		problems = append(problems, chainProblems...)
@@ -526,17 +529,25 @@ func determineConnectMounting(projectDir string, cmdEvidence []string) mountingV
 // connecthttp.Mount puts the server on a mux. So under v2 the proof is a
 // reference to connect.Server / connect.NewServer (server-only — the
 // client half is connect.Client), a connecthttp.Mount call, or a generated
-// Register…Handler call.
+// Register…Handler call. The first two are bound to v2's own imports; the
+// last names nothing of v2, so it counts only on v2 evidence — projectV2
+// (the project's go.mod selects v2) or the file importing v2. In v1 code a
+// Register…Handler on a package whose path happens to end in `connect` is
+// not a mount, as it never was.
 //
 // Import resolution is what makes this immune to the two failures of the
 // grep it replaces: a comment produces no AST node at all, and a local
 // variable that merely happens to be named `connect` is not bound to any
 // import so it never matches.
-func connectHandlerEvidence(file *ast.File, fset *token.FileSet, rel string) []string {
+func connectHandlerEvidence(file *ast.File, fset *token.FileSet, rel string, projectV2 bool) []string {
 	runtime, generated := connectImportNames(file)
 	httpv2 := connectV2HTTPNames(file)
 	if len(runtime) == 0 && len(generated) == 0 && len(httpv2) == 0 {
 		return nil
+	}
+	v2 := projectV2 || len(httpv2) > 0
+	for _, m := range runtime {
+		v2 = v2 || m == connectmajor.V2
 	}
 
 	var out []string
@@ -568,7 +579,7 @@ func connectHandlerEvidence(file *ast.File, fset *token.FileSet, rel string) []s
 			add(sel.Pos(), fmt.Sprintf("calls %s.Mount (connect-go v2's handler mount)", pkg.Name))
 		case generated[pkg.Name] && isConnectHandlerConstructor(sel.Sel.Name):
 			add(sel.Pos(), fmt.Sprintf("calls %s.%s (a generated Connect handler constructor)", pkg.Name, sel.Sel.Name))
-		case generated[pkg.Name] && isConnectV2HandlerRegistration(sel.Sel.Name):
+		case v2 && generated[pkg.Name] && isConnectV2HandlerRegistration(sel.Sel.Name):
 			add(sel.Pos(), fmt.Sprintf("calls %s.%s (a generated connect-go v2 handler registration)", pkg.Name, sel.Sel.Name))
 		}
 		return true

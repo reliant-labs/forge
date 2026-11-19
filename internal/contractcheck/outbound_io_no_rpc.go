@@ -56,6 +56,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
@@ -100,9 +101,13 @@ func lintOutboundIONoRPC(rootDir string) (forgeconv.Result, error) {
 	}
 	sort.Strings(pkgDirs)
 
+	// connect-go v2's registration shape is read only in v2 code: the
+	// project's go.mod selects v2, or the file imports it.
+	projectV2 := connectmajor.DetectOrDefault(rootDir).IsV2()
+
 	var result forgeconv.Result
 	for _, dir := range pkgDirs {
-		findings, lintErr := lintOutboundIOPkg(dir, rootDir)
+		findings, lintErr := lintOutboundIOPkg(dir, rootDir, projectV2)
 		if lintErr != nil {
 			return forgeconv.Result{}, lintErr
 		}
@@ -125,7 +130,7 @@ func lintOutboundIONoRPC(rootDir string) (forgeconv.Result, error) {
 // If the package carries the `forge:outbound-io` marker AND any file
 // invokes a Connect RPC handler shape, emit one warning per offending
 // file (so the user can chase down each call site independently).
-func lintOutboundIOPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
+func lintOutboundIOPkg(pkgDir, rootDir string, projectV2 bool) ([]forgeconv.Finding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
@@ -158,7 +163,7 @@ func lintOutboundIOPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
 		if hasOutboundIOMarker(file) {
 			isOutboundIO = true
 		}
-		rpcHits = append(rpcHits, findConnectHandlerCalls(fset, file, fp)...)
+		rpcHits = append(rpcHits, findConnectHandlerCalls(fset, file, fp, projectV2)...)
 	}
 
 	if !isOutboundIO || len(rpcHits) == 0 {
@@ -250,12 +255,18 @@ func containsForgeMarker(text, name string) bool {
 //     protoc-gen-connect-go generated — an import whose last element ends
 //     in `connect` (`billingv1connect`). v2 registers a service on a
 //     *connect.Server (`RegisterXHandler(server, impl)`) and has no
-//     handler constructor at all.
+//     handler constructor at all. The shape names nothing of v2, so it is
+//     read only in v2 code: projectV2 (go.mod selects v2) or a file that
+//     imports connectrpc.com/connect/v2. In v1 code a Register…Handler on
+//     a package that merely ends in `connect` is no handler, as before.
 //
 // Returns one rpcHit per match.
-func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string) []rpcHit {
+func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string, projectV2 bool) []rpcHit {
 	connectAliases := connectImportAliases(f)
-	generatedAliases := generatedConnectAliases(f)
+	var generatedAliases map[string]bool
+	if projectV2 || importsConnectV2(f) {
+		generatedAliases = generatedConnectAliases(f)
+	}
 	if len(connectAliases) == 0 && len(generatedAliases) == 0 {
 		return nil
 	}
@@ -288,6 +299,21 @@ func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string) []rp
 		return true
 	})
 	return hits
+}
+
+// importsConnectV2 reports whether f imports connect-go v2's runtime or
+// one of its subpackages (connecthttp, …).
+func importsConnectV2(f *ast.File) bool {
+	for _, imp := range f.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		p := strings.Trim(imp.Path.Value, `"`)
+		if p == connectmajor.ModuleV2 || strings.HasPrefix(p, connectmajor.ModuleV2+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // generatedConnectAliases returns the file-local names of the packages

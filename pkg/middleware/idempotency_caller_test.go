@@ -60,12 +60,12 @@ var principalsV1 = connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) con
 // callerScopedMajors serves a counting handler behind each major's
 // caller-scoped idempotency interceptor and returns, per major, a function
 // calling it as a principal and the handler's run count.
-func callerScopedMajors(opts IdempotencyOptions) map[string]func(t *testing.T) (call func(principal string), runs *atomic.Int32) {
+func callerScopedMajors(opts IdempotencyOptions, callerOpts ...IdempotencyCallerOption) map[string]func(t *testing.T) (call func(principal string), runs *atomic.Int32) {
 	return map[string]func(t *testing.T) (func(string), *atomic.Int32){
 		"v2": func(t *testing.T) (func(string), *atomic.Int32) {
 			runs := new(atomic.Int32)
 			h := func(context.Context) (string, error) { runs.Add(1); return "ok", nil }
-			c := serveV2(t, h, principalsV2, IdempotencyInterceptorV2(opts, rlClaimsFromContext))
+			c := serveV2(t, h, principalsV2, IdempotencyInterceptorV2(opts, rlClaimsFromContext, callerOpts...))
 			return func(p string) {
 				if r := callV2(t, c, false, map[string]string{IdempotencyKeyHeader: "shared-key", "X-Test-Principal": p}); r.err != nil {
 					t.Fatalf("call as %s: %v", p, r.err)
@@ -75,7 +75,7 @@ func callerScopedMajors(opts IdempotencyOptions) map[string]func(t *testing.T) (
 		"v1": func(t *testing.T) (func(string), *atomic.Int32) {
 			runs := new(atomic.Int32)
 			h := func(context.Context) (string, error) { runs.Add(1); return "ok", nil }
-			call := serveV1(t, h, principalsV1, IdempotencyInterceptorWithCaller(opts, rlClaimsFromContext))
+			call := serveV1(t, h, principalsV1, IdempotencyInterceptorWithCaller(opts, rlClaimsFromContext, callerOpts...))
 			return func(p string) {
 				if err := call(map[string]string{IdempotencyKeyHeader: "shared-key", "X-Test-Principal": p}); err != nil {
 					t.Fatalf("call as %s: %v", p, err)
@@ -138,17 +138,17 @@ func TestIdempotencyCallerScoped_UnencodableRawBypasses(t *testing.T) {
 	}
 }
 
-// A custom Partition replaces the default: here one partition per org, so
+// A custom partition replaces the default: here one partition per org, so
 // two users of one org share answers; a partition the func declines
 // bypasses the cache.
 func TestIdempotencyCallerScoped_CustomPartition(t *testing.T) {
-	opts := IdempotencyOptions{CacheSize: 10, Partition: func(_ context.Context, c *auth.Claims) (string, bool) {
+	partition := WithIdempotencyPartition(func(_ context.Context, c *auth.Claims) (string, bool) {
 		if c.UserID == "bob" {
 			return "", false
 		}
 		return c.OrgID, true
-	}}
-	for major, serve := range callerScopedMajors(opts) {
+	})
+	for major, serve := range callerScopedMajors(IdempotencyOptions{CacheSize: 10}, partition) {
 		t.Run(major, func(t *testing.T) {
 			call, runs := serve(t)
 			call("billing-manage")
@@ -170,9 +170,7 @@ func TestIdempotencyCallerScoped_CustomPartition(t *testing.T) {
 func TestIdempotencyInterceptor_StaysUnscoped(t *testing.T) {
 	var runs atomic.Int32
 	h := func(context.Context) (string, error) { runs.Add(1); return "ok", nil }
-	call := serveV1(t, h, principalsV1, IdempotencyInterceptor(IdempotencyOptions{CacheSize: 10, Partition: func(context.Context, *auth.Claims) (string, bool) {
-		return "", false // ignored by the plain interceptor
-	}}))
+	call := serveV1(t, h, principalsV1, IdempotencyInterceptor(IdempotencyOptions{CacheSize: 10}))
 	for _, p := range []string{"billing-manage", "bob", ""} {
 		if err := call(map[string]string{IdempotencyKeyHeader: "shared-key", "X-Test-Principal": p}); err != nil {
 			t.Fatal(err)

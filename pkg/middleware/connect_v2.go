@@ -84,13 +84,13 @@ func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, si
 // never be handed another's answer by reusing their Idempotency-Key, and
 // neither can the same person holding a token with fewer permissions, while
 // a refreshed token of the same authority still replays.
-// [IdempotencyOptions.Partition] replaces that digest with the
-// application's own.
+// [WithIdempotencyPartition] replaces that digest with the application's
+// own.
 //
 // A call whose partition cannot be established is neither cached nor
 // replayed: the handler runs as if no key were sent. That is a call with no
 // identity — claimsFrom reports none, nil claims, an empty UserID — or Raw
-// that json cannot encode, or a Partition func that returns ok=false or "".
+// that json cannot encode, or a partition func that returns ok=false or "".
 // There is no shared fallback key. Put the interceptor after authentication
 // in the chain, so the claims are there.
 //
@@ -101,14 +101,14 @@ func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, si
 // request's, such as its request id, and is never replayed over). A replay
 // re-applies that metadata and sends the recorded message, or returns the
 // recorded error.
-func IdempotencyInterceptorV2(opts IdempotencyOptions, claimsFrom ClaimsLookup) connectv2.ServerInterceptor {
+func IdempotencyInterceptorV2(opts IdempotencyOptions, claimsFrom ClaimsLookup, callerOpts ...IdempotencyCallerOption) connectv2.ServerInterceptor {
 	if opts.CacheSize <= 0 || claimsFrom == nil {
 		return nil
 	}
 	if opts.TTL <= 0 {
 		opts.TTL = time.Hour
 	}
-	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL, scope: newCallerScope(opts, claimsFrom)}
+	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL, scope: newCallerScope(claimsFrom, callerOpts)}
 	return i.wrap
 }
 

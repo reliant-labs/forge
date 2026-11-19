@@ -25,15 +25,15 @@ import (
 // through.
 //
 // The partition is the same as the v2 interceptor's (see
-// [IdempotencyOptions.Partition] for replacing it), and so are the bypass
+// [WithIdempotencyPartition] for replacing it), and so are the bypass
 // rules: a call whose partition cannot be established — claimsFrom reports
 // no principal, nil claims, an empty UserID, claims.Raw that has no
-// canonical encoding, or a Partition func that declines — is neither cached
+// canonical encoding, or a partition func that declines — is neither cached
 // nor replayed, and the handler runs as if no key were sent. Put the
 // interceptor after authentication in the chain, so the claims are there.
 //
 // Returns nil when opts.CacheSize <= 0 or claimsFrom is nil.
-func IdempotencyInterceptorWithCaller(opts IdempotencyOptions, claimsFrom ClaimsLookup) connect.Interceptor {
+func IdempotencyInterceptorWithCaller(opts IdempotencyOptions, claimsFrom ClaimsLookup, callerOpts ...IdempotencyCallerOption) connect.Interceptor {
 	if opts.CacheSize <= 0 || claimsFrom == nil {
 		return nil
 	}
@@ -43,8 +43,29 @@ func IdempotencyInterceptorWithCaller(opts IdempotencyOptions, claimsFrom Claims
 	return &idempotencyInterceptor{
 		cache: newLRUCache[*cachedRPCResponse](opts.CacheSize),
 		ttl:   opts.TTL,
-		scope: newCallerScope(opts, claimsFrom),
+		scope: newCallerScope(claimsFrom, callerOpts),
 	}
+}
+
+// IdempotencyCallerOption configures the caller-scoped idempotency
+// interceptors, [IdempotencyInterceptorWithCaller] and
+// [IdempotencyInterceptorV2].
+type IdempotencyCallerOption func(*callerScope)
+
+// WithIdempotencyPartition names the cache partition a caller's answers
+// are stored in and replayed from, in place of the default — a digest of
+// every authority the caller's claims carry (the fixed fields, the
+// credential, and Raw minus iat/exp/nbf/jti). The interceptor consults fn
+// only after it has found a principal with a non-empty UserID; the
+// procedure and Idempotency-Key are still part of the key.
+//
+// Two calls share cached answers exactly when fn returns the same string
+// for both, so it must distinguish every authority the handler checks: a
+// replay skips the handler, and with it the handler's permission check.
+// Returning ok=false, or "", bypasses the cache for that call: the handler
+// runs, and nothing is stored or replayed. A nil fn keeps the default.
+func WithIdempotencyPartition(fn func(ctx context.Context, claims *auth.Claims) (partition string, ok bool)) IdempotencyCallerOption {
+	return func(s *callerScope) { s.partition = fn }
 }
 
 // callerScope derives the caller-scoped idempotency cache key that
@@ -55,8 +76,14 @@ type callerScope struct {
 	partition  func(ctx context.Context, claims *auth.Claims) (string, bool)
 }
 
-func newCallerScope(opts IdempotencyOptions, claimsFrom ClaimsLookup) *callerScope {
-	return &callerScope{claimsFrom: claimsFrom, partition: opts.Partition}
+func newCallerScope(claimsFrom ClaimsLookup, opts []IdempotencyCallerOption) *callerScope {
+	s := &callerScope{claimsFrom: claimsFrom}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
 }
 
 // Domain tags keep a custom partition string from ever equalling the
@@ -73,7 +100,7 @@ const (
 //
 // The partition is, by default, [claimsPartition] of the caller's claims:
 // a digest of every authority the principal carries. When
-// [IdempotencyOptions.Partition] is set its string replaces that digest
+// [WithIdempotencyPartition] set a func its string replaces that digest
 // (and ok=false or "" bypasses). Either way the claims lookup must report a
 // principal with a non-empty UserID first. The key hashes (domain tag,
 // partition, procedure, client key), each length-prefixed, so no choice of

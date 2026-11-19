@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-
-	"github.com/reliant-labs/forge/pkg/auth"
 )
 
 // IdempotencyKeyHeader is the canonical header carrying the
@@ -18,35 +16,16 @@ import (
 // if absent the request proceeds without deduplication.
 const IdempotencyKeyHeader = "Idempotency-Key"
 
-// IdempotencyOptions configures the RPC idempotency interceptors.
+// IdempotencyOptions configures the RPC idempotency interceptor.
 //
 //   - CacheSize: maximum number of cached responses (default 1000)
 //   - TTL:       how long a cached response is valid (default 1h)
-//   - Partition: replaces the caller-scoped interceptors' default
-//     partition (see the field)
 //
-// CacheSize <= 0 disables the interceptor — the constructors return nil
-// and callers should skip appending it to the chain.
+// CacheSize <= 0 disables the interceptor — IdempotencyInterceptor
+// returns nil and callers should skip appending it to the chain.
 type IdempotencyOptions struct {
 	CacheSize int
 	TTL       time.Duration
-
-	// Partition, when set, names the cache partition a caller's answers
-	// are stored in and replayed from, in place of the default — a digest
-	// of every authority the caller's claims carry (the fixed fields, the
-	// credential, and Raw minus iat/exp/nbf/jti). It is consulted by
-	// [IdempotencyInterceptorWithCaller] and [IdempotencyInterceptorV2]
-	// only, after they have found a principal with a non-empty UserID; the
-	// procedure and Idempotency-Key are still part of the key.
-	//
-	// Two calls share cached answers exactly when Partition returns the
-	// same string for both, so it must distinguish every authority the
-	// handler checks: a replay skips the handler, and with it the handler's
-	// permission check. Returning ok=false, or "", bypasses the cache for
-	// that call: the handler runs, and nothing is stored or replayed.
-	//
-	// The plain [IdempotencyInterceptor] ignores it.
-	Partition func(ctx context.Context, claims *auth.Claims) (partition string, ok bool)
 }
 
 type cachedRPCResponse struct {
@@ -76,7 +55,6 @@ type idempotencyInterceptor struct {
 // without the handler — or its permission checks — running. Where callers
 // are authenticated, use [IdempotencyInterceptorWithCaller], which
 // partitions the cache by the caller and every authority they presented.
-// opts.Partition is ignored here.
 //
 // When opts.CacheSize <= 0 the interceptor is disabled and nil is returned.
 //

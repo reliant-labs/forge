@@ -82,8 +82,8 @@ const (
 // NewUserInfo returns a UserInfo for tokens issued by issuer (compared with
 // the token's `iss` claim exactly), whose endpoint is the URL endpoint
 // returns — typically the `userinfo_endpoint` of issuer's OIDC discovery
-// document. An empty issuer matches no token. client nil uses a client like
-// http.DefaultClient whose requests are traced (see tracedDefaultClient);
+// document. An empty issuer matches no token. client nil uses a copy of
+// http.DefaultClient whose transport is traced (see tracedDefaultClient);
 // either way, redirects to an insecure URL are refused.
 func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, error), client *http.Client) *UserInfo {
 	if client == nil {
@@ -106,21 +106,29 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 	return &UserInfo{issuer: issuer, endpoint: endpoint, client: &secured, now: time.Now, cache: map[string]userInfoEntry{}}
 }
 
-// tracedDefaultClient is http.DefaultClient with an otelhttp transport, so a
-// lookup is a client span in the request's trace and carries its
-// traceparent. It is otelhttp directly and not observe.NewHTTPClient because
-// pkg/observe imports this package. Like http.DefaultClient it has no timeout
-// of its own (each lookup is bounded by userInfoTimeout) and resolves
-// http.DefaultTransport per request.
+// tracedDefaultClient is a copy of http.DefaultClient — its Jar, Timeout and
+// CheckRedirect included, as NewUserInfo has always copied it — whose
+// effective transport is wrapped in otelhttp, so a lookup is a client span in
+// the request's trace and carries its traceparent. An application that set
+// http.DefaultClient.Transport keeps that transport underneath; one that left
+// it nil gets http.DefaultTransport, resolved per request as a nil Transport
+// is. It is otelhttp directly and not observe.NewHTTPClient because
+// pkg/observe imports this package.
 func tracedDefaultClient() *http.Client {
-	return &http.Client{Transport: otelhttp.NewTransport(defaultTransport{},
+	c := *http.DefaultClient
+	var base http.RoundTripper = defaultTransport{}
+	if c.Transport != nil {
+		base = c.Transport
+	}
+	c.Transport = otelhttp.NewTransport(base,
 		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 			// "GET issuer.example.com", as observe.NewHTTPClient names spans.
 			if r.URL == nil || r.URL.Host == "" {
 				return r.Method
 			}
 			return r.Method + " " + r.URL.Host
-		}))}
+		}))
+	return &c
 }
 
 // defaultTransport is http.DefaultTransport, read when a request is sent

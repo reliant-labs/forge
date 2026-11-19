@@ -11,7 +11,8 @@ import (
 
 // A service may declare an RPC named like its mount helper — Register in
 // connect-go v1, RegisterV2 in v2. One type cannot carry both, so the helper
-// is renamed (Mount / MountV2), and every generated caller has to follow.
+// is renamed — v1 to Mount, v2 to the first of MountV2, Mount2V2, … no RPC
+// uses — and every generated caller has to follow.
 func TestMountMethodFor(t *testing.T) {
 	plain := ServiceDef{Methods: []Method{{Name: "Ping"}}}
 	register := ServiceDef{Methods: []Method{{Name: "Register"}, {Name: "Ping"}}}
@@ -28,6 +29,10 @@ func TestMountMethodFor(t *testing.T) {
 		{"v2 plain", plain, true, "RegisterV2"},
 		{"v2 Register rpc does not collide", register, true, "RegisterV2"},
 		{"v2 RegisterV2 rpc", registerV2, true, "MountV2"},
+		{"v2 MountV2 rpc alone does not collide", ServiceDef{Methods: []Method{{Name: "MountV2"}}}, true, "RegisterV2"},
+		{"v2 RegisterV2 and MountV2 rpcs", ServiceDef{Methods: []Method{{Name: "RegisterV2"}, {Name: "MountV2"}}}, true, "Mount2V2"},
+		{"v2 RegisterV2, MountV2 and Mount2V2 rpcs", ServiceDef{Methods: []Method{{Name: "RegisterV2"}, {Name: "MountV2"}, {Name: "Mount2V2"}}}, true, "Mount3V2"},
+		{"v2 gaps are filled first", ServiceDef{Methods: []Method{{Name: "RegisterV2"}, {Name: "Mount2V2"}}}, true, "MountV2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mountMethodFor(tc.svc, tc.v2); got != tc.want {
@@ -167,6 +172,87 @@ func TestGenerateMissingHandlerStubs_ConnectV2RegisterV2RPCAddedLater(t *testing
 	}
 }
 
+// reconcileMountHelper moves the helper to the resolved name under any
+// candidate name it currently has, and stands down rather than rename onto a
+// name another *Service method already declares.
+func TestReconcileMountHelper_ConnectV2(t *testing.T) {
+	rpc := func(names ...string) ServiceDef {
+		svc := v2ItemsService()
+		svc.Methods = nil
+		for _, n := range names {
+			svc.Methods = append(svc.Methods, Method{Name: n, InputType: n + "Request", OutputType: n + "Response"})
+		}
+		return svc
+	}
+	method := func(name string) string {
+		return "func (s *Service) " + name + "(ctx context.Context, req *pb." + name + "Request) (*pb." + name + "Response, error) {\n\treturn nil, nil\n}\n"
+	}
+	for _, tc := range []struct {
+		name   string
+		svc    ServiceDef
+		helper string            // the helper's name in service.go before the pass
+		files  map[string]string // other declarations in the package
+		want   string            // the helper's name after
+	}{
+		{
+			name: "MountV2 rpc added beside RegisterV2: MountV2 helper moves on",
+			svc:  rpc("RegisterV2", "MountV2", "Ping"), helper: "MountV2",
+			files: map[string]string{"rpc_register_v2.go": method("RegisterV2")},
+			want:  "Mount2V2",
+		},
+		{
+			name: "colliding rpcs removed: back to RegisterV2",
+			svc:  rpc("Ping"), helper: "Mount2V2",
+			want: "RegisterV2",
+		},
+		{
+			name: "one of two colliding rpcs removed: back to the earliest free candidate",
+			svc:  rpc("RegisterV2", "Ping"), helper: "Mount2V2",
+			files: map[string]string{"rpc_register_v2.go": method("RegisterV2")},
+			want:  "MountV2",
+		},
+		{
+			name: "target used by another *Service method: stand down",
+			svc:  rpc("RegisterV2", "Ping"), helper: "RegisterV2",
+			files: map[string]string{"extra.go": "func (s *Service) MountV2() string { return \"mine\" }\n"},
+			want:  "RegisterV2",
+		},
+		{
+			name: "target still implemented after its rpc left the proto: stand down",
+			svc:  rpc("MountV2", "Ping"), helper: "Mount2V2",
+			files: map[string]string{"rpc_register_v2.go": method("RegisterV2")},
+			want:  "Mount2V2",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project := t.TempDir()
+			writeConnectV2GoMod(t, project)
+			dir := filepath.Join(project, "internal", "handlers", "items")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			write := func(name, body string) {
+				t.Helper()
+				src := "package items\n\nimport (\n\t\"context\"\n\n\tconnect \"connectrpc.com/connect/v2\"\n\tpb \"example.com/v2app/gen/services/items/v1\"\n)\n\nvar _ = context.Background\nvar _ *connect.Server\nvar _ = pb.File_services_items_v1_items_proto\n\n" + body
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("service.go", "type Service struct{}\n\n// "+tc.helper+" registers the service's Connect handlers on server.\nfunc (s *Service) "+tc.helper+"(server *connect.Server) {}\n")
+			for name, body := range tc.files {
+				write(name, body)
+			}
+			if err := reconcileMountHelper(tc.svc, project, dir, nil); err != nil {
+				t.Fatalf("reconcileMountHelper: %v", err)
+			}
+			got := readFile(t, filepath.Join(dir, "service.go"))
+			if !strings.Contains(got, "// "+tc.want+" registers") || !strings.Contains(got, "func (s *Service) "+tc.want+"(server *connect.Server)") {
+				t.Errorf("want the helper (and its doc comment) named %s:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
 // connect-go v1 is untouched: the stub pass never renames an owned
 // service.go's Register helper.
 func TestGenerateMissingHandlerStubs_ConnectV1HelperNotRenamed(t *testing.T) {
@@ -190,34 +276,76 @@ func TestGenerateMissingHandlerStubs_ConnectV1HelperNotRenamed(t *testing.T) {
 	}
 }
 
-// The proof: against real connect-go v2 stubs, a service declaring a
-// RegisterV2 RPC builds — fresh, and when the RPC arrives after the service
-// was scaffolded — with the service and its mock both satisfying the
-// generated Handler and both mounting through MountV2 on a mountkit.MuxV2.
+// mountV2Service adds an RPC named MountV2 to registerV2Service, so both of
+// the first two helper candidates are taken.
+func mountV2Service() ServiceDef {
+	svc := registerV2Service()
+	svc.Methods = append(svc.Methods, Method{Name: "MountV2", InputType: "MountV2Request", OutputType: "MountV2Response", AuthRequired: true})
+	return svc
+}
+
+const mountV2Proto = `syntax = "proto3";
+package items.v1;
+option go_package = "example.com/v2app/gen/services/items/v1;itemsv1";
+message RegisterV2Request {}
+message RegisterV2Response {}
+message MountV2Request {}
+message MountV2Response {}
+message PingRequest {}
+message PingResponse {}
+service ItemsService {
+  rpc RegisterV2(RegisterV2Request) returns (RegisterV2Response);
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc MountV2(MountV2Request) returns (MountV2Response);
+}
+`
+
+// The proof: against real connect-go v2 stubs, a service declaring RPCs
+// named like the mount helper builds — fresh, and when the RPCs arrive one
+// pass at a time after the service was scaffolded — with the service and its
+// mock both satisfying the generated Handler and both mounting through the
+// resolved helper on a mountkit.MuxV2.
 func TestServiceConnectV2RegisterV2RPCCompiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs buf and compiles a module against real connect-go v2 stubs; runs in task test")
 	}
-	mod := connectv2test.NewModule(t, v2ItemsModule, map[string]string{"services/items/v1/items.proto": registerV2Proto})
+	for _, tc := range []struct {
+		name   string
+		proto  string
+		svc    ServiceDef
+		helper string
+	}{
+		{"RegisterV2 rpc", registerV2Proto, registerV2Service(), "MountV2"},
+		{"RegisterV2 and MountV2 rpcs", mountV2Proto, mountV2Service(), "Mount2V2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mountMethodFor(tc.svc, true); got != tc.helper {
+				t.Fatalf("mountMethodFor = %q, want %q", got, tc.helper)
+			}
+			mod := connectv2test.NewModule(t, v2ItemsModule, map[string]string{"services/items/v1/items.proto": tc.proto})
 
-	// Fresh: the RPC exists when the service is scaffolded.
-	if err := GenerateServiceStub(registerV2Service(), filepath.Join(mod.Dir, "internal", "handlers", "items")); err != nil {
-		t.Fatalf("GenerateServiceStub: %v", err)
-	}
-	// Later: scaffolded with Ping only, then the stub pass sees RegisterV2.
-	laterDir := filepath.Join(mod.Dir, "internal", "handlers", "later")
-	pingOnly := registerV2Service()
-	pingOnly.Methods = pingOnly.Methods[1:]
-	if err := GenerateServiceStub(pingOnly, laterDir); err != nil {
-		t.Fatalf("GenerateServiceStub (later): %v", err)
-	}
-	if _, err := GenerateMissingHandlerStubs(registerV2Service(), mod.Dir, laterDir, nil, nil); err != nil {
-		t.Fatalf("GenerateMissingHandlerStubs: %v", err)
-	}
-	if _, err := GenerateMock(registerV2Service(), mod.Dir, filepath.Join(mod.Dir, "internal", "handlers", "mocks"), nil); err != nil {
-		t.Fatalf("GenerateMock: %v", err)
-	}
-	mod.Write(t, "internal/check/check.go", `// Package check pins the rendered types to what the generated mounts call.
+			// Fresh: the RPCs exist when the service is scaffolded.
+			if err := GenerateServiceStub(tc.svc, filepath.Join(mod.Dir, "internal", "handlers", "items")); err != nil {
+				t.Fatalf("GenerateServiceStub: %v", err)
+			}
+			// Later: scaffolded with Ping only, then each stub pass sees one
+			// more of the service's RPCs, as a proto grows.
+			laterDir := filepath.Join(mod.Dir, "internal", "handlers", "later")
+			grown := tc.svc
+			grown.Methods = []Method{tc.svc.Methods[1]} // Ping
+			if err := GenerateServiceStub(grown, laterDir); err != nil {
+				t.Fatalf("GenerateServiceStub (later): %v", err)
+			}
+			for _, m := range append([]Method{tc.svc.Methods[0]}, tc.svc.Methods[2:]...) {
+				grown.Methods = append(grown.Methods, m)
+				if _, err := GenerateMissingHandlerStubs(grown, mod.Dir, laterDir, nil, nil); err != nil {
+					t.Fatalf("GenerateMissingHandlerStubs (+%s): %v", m.Name, err)
+				}
+			}
+			if _, err := GenerateMock(tc.svc, mod.Dir, filepath.Join(mod.Dir, "internal", "handlers", "mocks"), nil); err != nil {
+				t.Fatalf("GenerateMock: %v", err)
+			}
+			mod.Write(t, "internal/check/check.go", `// Package check pins the rendered types to what the generated mounts call.
 package check
 
 import (
@@ -235,14 +363,16 @@ var (
 	_ itemsv1connect.ItemsServiceHandler = (*mocks.ItemsServiceMock)(nil)
 )
 
-// Mount is what mounts_services_gen.go and routes_gen.go emit for a service
-// whose helper is MountV2.
+// Mount is what mounts_services_gen.go and routes_gen.go emit for the
+// service's resolved helper.
 func Mount(m *mountkit.MuxV2, a *items.Service, b *later.Service, c *mocks.ItemsServiceMock) {
-	m.Register(a.MountV2)
-	m.Register(b.MountV2)
-	m.Register(c.MountV2)
+	m.Register(a.`+tc.helper+`)
+	m.Register(b.`+tc.helper+`)
+	m.Register(c.`+tc.helper+`)
 }
 `)
-	mod.Go(t, "build", "./internal/...")
-	mod.Go(t, "vet", "./internal/check")
+			mod.Go(t, "build", "./internal/...")
+			mod.Go(t, "vet", "./internal/check")
+		})
+	}
 }

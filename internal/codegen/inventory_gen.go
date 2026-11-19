@@ -51,7 +51,8 @@ type InventoryServiceData struct {
 	// "Register" normally, "Mount" when the service declares an RPC of its
 	// own called Register. One type cannot carry both a Register(mux,
 	// opts...) helper and a Register(ctx, req) RPC, and the RPC wins.
-	// connect-go v2: "RegisterV2", or "MountV2" beside a RegisterV2 RPC.
+	// connect-go v2: the first of RegisterV2, MountV2, Mount2V2, … no RPC
+	// uses (mountMethodFor).
 	MountMethod string
 	// Package is the Go package clause.
 	Package string

@@ -83,8 +83,8 @@ type ServiceTemplateData struct {
 	// v1 shapes byte-for-byte as before.
 	ConnectV2 bool
 	// MountMethod is the name service.go gives its mount helper
-	// (mountMethodFor): RegisterV2 for a v2 service, MountV2 when the service
-	// declares an RPC called RegisterV2. The v1 template still always writes
+	// (mountMethodFor): RegisterV2 for a v2 service, else the first of
+	// MountV2, Mount2V2, … no RPC uses. The v1 template still always writes
 	// Register.
 	MountMethod string
 }
@@ -465,12 +465,10 @@ func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 	// sign-up endpoint. The mock's mount helper is called Register too, and
 	// one type cannot carry both, so the template renames the helper when
 	// they would collide. Without this the generated mock does not compile,
-	// and the error names a method the author never wrote.
-	//
-	// A v2 mock's helper is RegisterV2 (mountkit.RegistrarV2), so only an
-	// RPC of that name collides with it. mountMethodFor decides, as it does
-	// for the real service, so the mock and the service agree on the name.
-	hasRegisterRPC := mountMethodFor(svc, connectV2) != defaultMountMethod(connectV2)
+	// and the error names a method the author never wrote. mountMethodFor
+	// decides, as it does for the real service, so the mock and the service
+	// agree on the name.
+	mountMethod := mountMethodFor(svc, connectV2)
 
 	return map[string]any{
 		// The mock embeds and constructs connect-go's handler types, so it
@@ -483,7 +481,7 @@ func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 		"ModulePath":       svc.ModulePath,
 		"Methods":          methods,
 		"HasMethods":       len(svc.Methods) > 0,
-		"HasRegisterRPC":   hasRegisterRPC,
+		"MountMethod":      mountMethod,
 		"NeedsEmptypb":     res.needsEmp,
 		"NeedsPb":          res.needsPb,
 		"ForeignImports":   res.imports,

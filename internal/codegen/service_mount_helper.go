@@ -21,27 +21,26 @@ import (
 // RegisterV2 added to the proto later collides with it: the stub scan
 // (ScanExistingMethods) would count the helper as that RPC's implementation
 // and emit no stub, *Service would not satisfy the generated handler
-// interface, and nothing calling MountV2 would compile. So when the names
-// disagree, the helper's declaration — and its doc comment's leading word —
-// is renamed in place, and nothing else in the owned file is touched (the
-// same surgical edit reconcileConnectIdentity makes). It renames back when
-// the RPC is removed.
+// interface, and nothing calling MountV2 would compile. Likewise for a MountV2
+// RPC once the helper is MountV2, and so on down the candidates
+// (mountMethodCandidateV2). So when the helper's name is not the resolved one,
+// its declaration — and its doc comment's leading word — is renamed in place,
+// and nothing else in the owned file is touched (the same surgical edit
+// reconcileConnectIdentity makes). As RPCs are removed it moves back toward
+// the earliest free candidate.
 //
-// Only the helper's exact shape is renamed — a *Service method with one
-// *<pkg>.Server parameter and no results — so an RPC method of either name
-// is never mistaken for it. It stands down when the target name is already
-// declared on *Service anywhere in the package, when service.go is disowned
-// or missing, and for connect-go v1, whose Register/Mount helper forge has
-// never renamed in an owned file.
+// The helper is recognised by its exact shape — a *Service method with one
+// *<pkg>.Server parameter and no results — under any candidate name, so an
+// RPC method is never mistaken for it. It stands down when the resolved name
+// is already declared on *Service anywhere in the package (an RPC
+// implementation, or any other method), when service.go is disowned or
+// missing, and for connect-go v1, whose Register/Mount helper forge has never
+// renamed in an owned file.
 func reconcileMountHelper(svc ServiceDef, root, dir string, cs *checksums.FileChecksums) error {
 	if !connectV2For(svc, root) {
 		return nil
 	}
 	want := mountMethodFor(svc, true)
-	from := defaultMountMethod(true)
-	if want == from {
-		from = "MountV2"
-	}
 	path := filepath.Join(dir, "service.go")
 	if root != "" {
 		if cs == nil {
@@ -68,14 +67,15 @@ func reconcileMountHelper(svc ServiceDef, root, dir string, cs *checksums.FileCh
 	}
 	var helper *ast.FuncDecl
 	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == from && isV2MountHelper(fn) {
+		if fn, ok := decl.(*ast.FuncDecl); ok && isMountMethodCandidateV2(fn.Name.Name) && isV2MountHelper(fn) {
 			helper = fn
 			break
 		}
 	}
-	if helper == nil {
+	if helper == nil || helper.Name.Name == want {
 		return nil
 	}
+	from := helper.Name.Name
 	existing, err := ScanExistingMethods(dir, true)
 	if err != nil {
 		return err

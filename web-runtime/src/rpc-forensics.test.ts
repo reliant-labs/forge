@@ -742,6 +742,8 @@ describe("a secret-named plain number", () => {
         { name: "otpNum", type: Type.UINT32 },
         { name: "max_session_id", type: Type.INT64 },
         { name: "num_otp_id", type: Type.UINT64 },
+        { name: "max_SESSIONID", type: Type.INT64 },
+        { name: "maxTOKENId", type: Type.UINT32 },
       ],
       [
         {
@@ -775,6 +777,8 @@ describe("a secret-named plain number", () => {
           774_411,
           90_817_263n,
           55_443_322n,
+          61_728_394n,
+          4_815_162,
         ]),
       ),
     );
@@ -802,6 +806,9 @@ describe("a secret-named plain number", () => {
       // An id-shaped secret name is never a quantity, whatever leads it.
       "forensics.arg.max_session_id": "[len=8]",
       "forensics.arg.num_otp_id": "[len=8]",
+      // So is one id-shaped only as the server always matched it.
+      "forensics.arg.max_SESSIONID": "[len=8]",
+      "forensics.arg.maxTOKENId": "[len=7]",
     });
     const recorded = JSON.stringify(out);
     for (const secret of [
@@ -816,6 +823,8 @@ describe("a secret-named plain number", () => {
       "774411",
       "90817263",
       "55443322",
+      "61728394",
+      "4815162",
     ]) {
       expect(recorded, secret).not.toContain(secret);
     }

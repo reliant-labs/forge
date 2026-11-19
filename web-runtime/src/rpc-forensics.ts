@@ -102,6 +102,14 @@ export function isIdShaped(name: string): boolean {
   return SNAKE_ID_RE.test(name) || CAMEL_ID_RE.test(name);
 }
 
+// The id shape forge's server matched before isIdShaped narrowed it
+// (legacyIDShapedName in pkg/observe/forensic_names.go): `id`, `ids`, `ID`,
+// `IDs`, `Id`, `Ids`, or any name ending `_id`, `_ids`, `ID`, `IDs`, `Id` or
+// `Ids` (`max_SESSIONID`, `maxTOKENId`). A secret name of this shape is
+// never a quantity, so no credential the server hid before starts recording
+// its value.
+const LEGACY_ID_RE = /^(id|ids|ID|IDs|Id|Ids)$|.(_ids?|IDs?|Ids?)$/;
+
 // Fragments that make a name a secret wherever they appear: a session id or
 // an API key id authenticates whoever holds it. Matched against the name
 // lowercased with `_` and `-` removed, so `api_key_id`, `apiKeyId` and
@@ -188,7 +196,7 @@ export function isSecretNumberNamed(name: string): boolean {
   if (!isSecretNamed(name)) {
     return false;
   }
-  if (isIdShaped(name)) {
+  if (isIdShaped(name) || LEGACY_ID_RE.test(name)) {
     return true;
   }
   const words = nameWords(name);

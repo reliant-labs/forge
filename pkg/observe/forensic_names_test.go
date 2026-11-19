@@ -211,6 +211,8 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 				field("otpNum", 15, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
 				field("max_session_id", 16, descriptorpb.FieldDescriptorProto_TYPE_INT64),
 				field("num_otp_id", 17, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
+				field("max_SESSIONID", 18, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				field("maxTOKENId", 19, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
 			},
 		}},
 	}
@@ -238,6 +240,8 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 	set("otpNum", protoreflect.ValueOfUint32(774411))
 	set("max_session_id", protoreflect.ValueOfInt64(90817263))
 	set("num_otp_id", protoreflect.ValueOfUint64(55443322))
+	set("max_SESSIONID", protoreflect.ValueOfInt64(61728394))
+	set("maxTOKENId", protoreflect.ValueOfUint32(4815162))
 
 	chain, rec := newRecordedChain(t)
 	args := pinArgs{pin: 8402, cvv: 513, tan: 30.25, attempt: 3, mfaEnabled: true, maxTokens: 2048, req: msg}
@@ -270,6 +274,9 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 		// An ID-shaped secret name is never a quantity, whatever leads it.
 		"forensics.arg.req.max_session_id": "[len=8]",
 		"forensics.arg.req.num_otp_id":     "[len=8]",
+		// So is one ID-shaped only as ForensicIDName always matched.
+		"forensics.arg.req.max_SESSIONID": "[len=8]",
+		"forensics.arg.req.maxTOKENId":    "[len=7]",
 	} {
 		if a[k].AsString() != want {
 			t.Errorf("%s = %q, want %q", k, a[k].AsString(), want)

@@ -76,14 +76,19 @@ const forensicLeadingQuantityWord = "num"
 // `otp_counter_id` and `max_session_id` record their digit count, and
 // `max_tokens`, `token_limit`, `session_count` and `num_sessions` their
 // value. An ID-shaped secret name is never a quantity: whatever word leads
-// it, a session or OTP ID is the credential itself. The quantity exemption
+// it, a session or OTP ID is the credential itself. ID-shaped here also
+// means the shape ForensicIDName has always matched (`max_SESSIONID`), so no
+// name that was hidden before starts recording its value. The quantity exemption
 // is for numbers only: a string or bytes value under any secret name records
 // its length.
 func ForensicSecretNumberName(name string) bool {
 	if !ForensicSecretName(name) {
 		return false
 	}
-	if idShapedName(name) {
+	// legacyIDShapedName too: `max_SESSIONID` and `maxTOKENId` were
+	// ID-shaped secrets before idShapedName narrowed the shape, and a
+	// credential that was hidden must stay hidden.
+	if idShapedName(name) || legacyIDShapedName(name) {
 		return true
 	}
 	words := forensicNameWords(name)

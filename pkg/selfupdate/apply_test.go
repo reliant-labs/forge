@@ -13,6 +13,10 @@ import (
 	"time"
 )
 
+// fixedNow is the clock tests hand an Updater, so no assertion depends on
+// when the test runs.
+var fixedNow = time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+
 type fakeDrainer struct {
 	err      error
 	deadline time.Time
@@ -71,7 +75,7 @@ func TestRequestDrainsThenShutsDown(t *testing.T) {
 		shut := false
 		d := &fakeDrainer{}
 		u, s, _, _, _ := stagedUpdater(t, func(c *Config) { c.Drainer, c.Shutdown = d, func() { shut = true } })
-		deadline := time.Now().Add(time.Minute)
+		deadline := fixedNow.Add(time.Minute)
 		if err := u.Request(ctx, s, Decision{Action: Apply, Deadline: deadline}); err != nil {
 			t.Fatal(err)
 		}
@@ -83,11 +87,12 @@ func TestRequestDrainsThenShutsDown(t *testing.T) {
 	t.Run("default drain deadline", func(t *testing.T) {
 		d := &fakeDrainer{}
 		u, s, _, _, _ := stagedUpdater(t, func(c *Config) { c.Drainer, c.Shutdown = d, func() {} })
+		u.now = func() time.Time { return fixedNow }
 		if err := u.Request(ctx, s, Decision{Action: Apply}); err != nil {
 			t.Fatal(err)
 		}
-		if left := time.Until(d.deadline); left < 4*time.Minute || left > DefaultDrainTimeout {
-			t.Fatalf("default deadline %v away, want ~%v", left, DefaultDrainTimeout)
+		if want := fixedNow.Add(DefaultDrainTimeout); !d.deadline.Equal(want) {
+			t.Fatalf("default deadline %v, want %v", d.deadline, want)
 		}
 	})
 

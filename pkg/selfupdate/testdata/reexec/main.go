@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/selfupdate"
@@ -74,7 +76,13 @@ func main() {
 		case "crash":
 			os.Exit(3)
 		case "hang":
-			time.Sleep(30 * time.Second)
+			// Never confirm. The watchdog's exec of the previous binary
+			// replaces this process, which is the event the test waits
+			// for; nothing here is timed. A signal (the test's context
+			// expiring) is the only other way out.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			<-ctx.Done()
 			fail("hang", fmt.Errorf("the watchdog never reverted"))
 		}
 	}

@@ -32,7 +32,7 @@ func (u *Updater) Request(ctx context.Context, s Staged, d Decision) error {
 	}
 	deadline := d.Deadline
 	if deadline.IsZero() {
-		deadline = time.Now().Add(u.cfg.DrainTimeout)
+		deadline = u.now().Add(u.cfg.DrainTimeout)
 	}
 	if u.cfg.Drainer != nil {
 		report, err := u.cfg.Drainer.Drain(ctx, deadline)
@@ -68,7 +68,9 @@ func checkStaged(s Staged) error {
 }
 
 // ExecPending performs the swap [Updater.Request] armed, after the app's
-// teardown: it saves the running binary to StateDir/previous/, renames the
+// teardown: it saves the running binary under StateDir/previous/ (a new
+// file each time; older ones are pruned only once this swap is recorded,
+// and never while an unconfirmed swap still needs one), renames the
 // staged one over it, records the swap and execs it with the same argv and
 // environment ([ExitForSupervisor]: exits with [ExitCodeRestart] instead).
 // It returns nil at once when no swap is armed, and otherwise returns only on
@@ -91,7 +93,8 @@ func (u *Updater) ExecPending() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	prev := filepath.Join(u.cfg.StateDir, "previous", filepath.Base(in.Path))
+	backups := filepath.Join(u.cfg.StateDir, "previous")
+	var prev string
 	err = withLock(ctx, u.cfg.StateDir, func() error {
 		if err := checkStaged(*s); err != nil {
 			return err
@@ -100,17 +103,27 @@ func (u *Updater) ExecPending() error {
 		if err != nil {
 			return err
 		}
-		if err := preserve(in.Path, prev); err != nil {
+		now := u.now().UTC()
+		// A new, uniquely named backup: every earlier rollback image stays
+		// on disk until this swap is committed below.
+		prev, err = u.backupFn(in.Path, backups, u.cfg.Current.Version, now)
+		if err != nil {
 			return fmt.Errorf("selfupdate: save the running binary: %w", err)
 		}
 		if err := replaceWithCopy(s.Path, in.Path); err != nil {
 			return fmt.Errorf("selfupdate: swap: %w", err)
 		}
-		now := time.Now().UTC()
+		// An earlier swap that was never confirmed still needs its rollback
+		// image: the binary being replaced now is itself unproven.
+		var retained []string
+		if old := st.Swap; old != nil && old.Phase == phaseSwapped {
+			retained = append(append(retained, old.Previous), old.Retained...)
+		}
 		st.Swap = &swapRecord{
 			Phase:           phaseSwapped,
 			Path:            in.Path,
 			Previous:        prev,
+			Retained:        retained,
 			FromVersion:     u.cfg.Current.Version,
 			ToVersion:       s.Release.label(),
 			ToSHA256:        s.SHA256,
@@ -126,6 +139,12 @@ func (u *Updater) ExecPending() error {
 			// Without the record no Boot could revert it: put the old one back.
 			return errors.Join(err, replaceWithCopy(prev, in.Path))
 		}
+		// Committed: only now may backups nothing refers to go.
+		keep := map[string]bool{prev: true}
+		for _, r := range retained {
+			keep[r] = true
+		}
+		pruneBackups(backups, keep)
 		return nil
 	})
 	if err != nil {
@@ -151,7 +170,7 @@ func (u *Updater) ExecPending() error {
 		if err := replaceWithCopy(prev, in.Path); err != nil {
 			return err
 		}
-		now := time.Now().UTC()
+		now := u.now().UTC()
 		reason := "exec failed: " + execErr.Error()
 		if st.Swap != nil {
 			st.Swap.Phase, st.Swap.Reason, st.Swap.UpdatedAt = phaseReverted, reason, now

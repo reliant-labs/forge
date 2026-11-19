@@ -131,10 +131,13 @@ type Updater struct {
 	mu      sync.Mutex
 	pending *Staged
 
-	// Seams for tests: the binary being replaced, and how to exec or exit.
-	exePath string
-	execFn  func(path string, argv, env []string) error
-	exitFn  func(code int)
+	// Seams for tests: the binary being replaced, the clock, how to back it
+	// up, and how to exec or exit.
+	exePath  string
+	now      func() time.Time
+	backupFn func(src, dir, label string, now time.Time) (string, error)
+	execFn   func(path string, argv, env []string) error
+	exitFn   func(code int)
 }
 
 // DefaultStateDir is ~/.<binary>/upgrade.
@@ -217,7 +220,7 @@ func New(cfg Config) (*Updater, error) {
 		cfg.Logger.Warn("selfupdate: INSECURE: release signatures are not verified (Config.InsecureAllowUnsigned); a tampered release would be installed",
 			"binary", cfg.Binary)
 	}
-	return &Updater{cfg: cfg, log: cfg.Logger, execFn: execBinary, exitFn: os.Exit}, nil
+	return &Updater{cfg: cfg, log: cfg.Logger, now: time.Now, backupFn: backupBinary, execFn: execBinary, exitFn: os.Exit}, nil
 }
 
 // Check asks the Source for the channel's release and decides what to do.

@@ -558,6 +558,17 @@ design is unchanged; these are the API details building it settled.
   each unconfirmed start; the next start reverts when two of them are no longer
   alive. A confirmation by any instance counts, and a watchdog that fires after
   another instance confirmed does not revert.
+- **Rollback images are copies under new names, never overwritten.** Each
+  swap copies the running binary to `StateDir/previous/<binary>.<version>.<ns>`
+  (a copy, not the §3 hard link: a link shares the install's inode, so a `cp`
+  over the install would rewrite the backup too). Older images are pruned only
+  after the new swap is recorded in `state.json`, an unconfirmed earlier
+  swap's image is kept (`retained`) until a later swap confirms, and a
+  confirmation leaves only its own rollback image.
+- **`GitHubSource` sends its `Token` only to the API's origin.** `APIBaseURL`
+  must be https with no userinfo, query or fragment; `Repo` must be exactly
+  `owner/name`; the token is stripped from any redirect that leaves the API
+  origin, and asset downloads never carry it.
 - **`ExitForSupervisor` exits 75** (`EX_TEMPFAIL`, `ExitCodeRestart`).
 - **A `Drainer` error declines the upgrade** with nothing swapped: that is how
   an app aborts a routine upgrade whose work did not drain (§9.2).

@@ -189,10 +189,12 @@ func (p *Pending) Confirm() error {
 		if rec == nil || rec.Phase != phaseSwapped || rec.ToSHA256 != p.sha {
 			return nil // another instance confirmed or reverted it
 		}
-		rec.Phase, rec.Boots, rec.UpdatedAt = phaseConfirmed, nil, time.Now().UTC()
+		rec.Phase, rec.Boots, rec.Retained, rec.UpdatedAt = phaseConfirmed, nil, nil, time.Now().UTC()
 		if err := saveState(p.dir, st); err != nil {
 			return err
 		}
+		// Proven good: only its own rollback image is worth keeping.
+		pruneBackups(filepath.Join(p.dir, "previous"), map[string]bool{rec.Previous: true})
 		if safeName(rec.ToVersion) {
 			_ = os.RemoveAll(filepath.Join(p.dir, "staged", rec.ToVersion))
 		}

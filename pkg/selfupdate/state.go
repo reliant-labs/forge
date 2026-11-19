@@ -40,8 +40,11 @@ type stateFile struct {
 type swapRecord struct {
 	Phase string `json:"phase"`
 	// Path is the install that was replaced; Previous the saved old binary.
-	Path        string    `json:"path"`
-	Previous    string    `json:"previous"`
+	Path     string `json:"path"`
+	Previous string `json:"previous"`
+	// Retained are rollback images of earlier swaps that were never
+	// confirmed, kept until this one is.
+	Retained    []string  `json:"retained,omitempty"`
 	FromVersion string    `json:"from_version"`
 	ToVersion   string    `json:"to_version"`
 	ToSHA256    string    `json:"to_sha256"`

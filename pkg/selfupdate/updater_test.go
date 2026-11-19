@@ -118,7 +118,7 @@ func TestCheck(t *testing.T) {
 		pol := &countingPolicy{d: Decision{Action: Apply}}
 		u := mk(t, "1.2.0", Release{Version: "v1.3.0"}, pol)
 		st := stateFile{}
-		st.markFailed("1.3.0", "did not confirm", time.Now())
+		st.markFailed("1.3.0", "did not confirm", time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC))
 		if err := saveState(u.cfg.StateDir, st); err != nil {
 			t.Fatal(err)
 		}

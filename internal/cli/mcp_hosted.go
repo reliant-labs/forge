@@ -142,7 +142,7 @@ var hostedToolInfos = []AccountToolInfo{
 	{Name: "release_record", Title: "Record a deploy", Mutating: true, NeedsTarget: true,
 		Description: "Record that the team's own pipeline deployed a version to an environment: a record-only release and its promotion, the deploy marker obs_changes lists and obs_check judges. Idempotent for the same version and content. `forge release record --env --version --commit [--workload --image]…`."},
 	{Name: "benefits", Title: "What forge does",
-		Description: "What forge does for an existing repo in any language, as JSON: each benefit with its first step (adopt) and the agent time to first value (estimate), to quote to your user. all=true lists every shipped benefit. Then skill_load name=adopt."},
+		Description: "What Reliant Forge does for an existing repo in any language, as JSON: each benefit's claim, its first step (adopt) and the agent time to first value (estimate), checked against the forge binary, to quote to your user. all=true lists every shipped benefit. Limits and hosting prices: skill_load name=compare. Then skill_load name=adopt."},
 	{Name: "skill_list", Title: "Skill catalog", Description: mcpDescSkillList},
 	{Name: "skill_search", Title: "Find a skill", Description: mcpDescSkillSearch},
 	{Name: "skill_load", Title: "Load a skill", Description: mcpDescSkillLoad},
@@ -1006,6 +1006,9 @@ func hostedSkillLoad(in skillLoadArgs) *mcp.CallToolResult {
 			continue
 		}
 		body, err := s.body()
+		if err == nil {
+			body, err = expandBenefitDirectives(body)
+		}
 		if err != nil {
 			return hostedRefused(err)
 		}

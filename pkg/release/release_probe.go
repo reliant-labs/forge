@@ -263,8 +263,21 @@ func canonicalReleaseProbes(in []ShapeReleaseProbe) []ShapeReleaseProbe {
 // from FailOn, for a reader that predates them: its validation refuses a
 // code it does not know, and it never reports one. A copy when anything is
 // removed: h is not modified.
+//
+// The browser finding codes go too. They joined forge (#2061) earlier than
+// the probe codes and with no feature of their own, so a reader that does
+// not name BundleFeatureReleaseProbes may predate them and refuse them; and
+// none of those readers judges browser telemetry, so it never reports one
+// either. Since the default fails on them, every non-default policy carries
+// them.
 func withoutProbeFindings(h *ShapeReleaseHealth) *ShapeReleaseHealth {
-	probe := func(c string) bool { return c == HealthProbeFailed || c == HealthProbeLatency }
+	probe := func(c string) bool {
+		switch c {
+		case HealthProbeFailed, HealthProbeLatency, HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad:
+			return true
+		}
+		return false
+	}
 	if h == nil || !slices.ContainsFunc(h.FailOn, probe) {
 		return h
 	}

@@ -220,7 +220,11 @@ func (h ShapeReleaseHealth) RegressedMinEvents() int {
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
 // restarts warn: both are noisy on a fresh rollout. A release-probe failure
-// fails: an env has probe findings only when it is probed.
+// fails: an env has probe findings only when it is probed. The browser
+// findings fail (owner, 2026-11-18): for a frontend alone they are the only
+// regression a release can show, and they need min_requests page views in
+// both windows before they fire. forge.ReleaseHealth.warn_on demotes any of
+// them without restating the list.
 //
 // It must agree with the defaults of forge.ReleaseHealth in kcl/schema.k;
 // TestReleaseHealthDefaultsAgreeWithKCL and TestDefaultFailOnMatchesKCL fail
@@ -232,7 +236,8 @@ func DefaultReleaseHealth() ShapeReleaseHealth {
 		MaxErrorRateIncrease: 0.01,
 		MaxP95Ratio:          1.5,
 		NewIssueMinEvents:    3,
-		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
+		FailOn: []string{HealthAlertFiring, HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad,
+			HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
 	}
 }
 

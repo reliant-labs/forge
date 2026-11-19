@@ -181,6 +181,12 @@ type Options struct {
 	// builds ONE with NewResolver over all of them, so the whole run costs
 	// two go/packages loads. nil resolves this contract alone.
 	Resolver *Resolver
+
+	// NoForensics makes the observability decorator capture no arguments:
+	// every method passes observe.NoArgs{}, so a failed or slow call's span
+	// records no forge.forensics arguments. Sourced from forge.yaml's
+	// `observability.forensics: false`; the zero value generates capture.
+	NoForensics bool
 }
 
 // Generate parses contractPath and writes mock_gen.go next to it.

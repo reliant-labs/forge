@@ -456,26 +456,10 @@ func blastRadiusMapping(ctx context.Context, dir, base, head string) (opindex.Ma
 			return opindex.Mapping{}, "", nil, err
 		}
 	} else {
-		for _, ref := range []string{"origin/main", "main"} {
-			if _, err := brRevParse(ctx, dir, ref); err == nil {
-				baseRef = ref
-				break
-			}
+		var err error
+		if baseRef, baseRev, err = brDefaultBase(ctx, dir, head); err != nil {
+			return opindex.Mapping{}, "", nil, err
 		}
-		if baseRef == "" {
-			if ctx.Err() != nil {
-				return opindex.Mapping{}, "", nil, ctx.Err()
-			}
-			return opindex.Mapping{}, "", nil, obsbackend.Wrong("no --base, and neither origin/main nor main exists in %s; pass --base <rev>", dir)
-		}
-		mb, err := opindex.MergeBase(ctx, dir, baseRef, head)
-		if err != nil {
-			if ctx.Err() != nil {
-				return opindex.Mapping{}, "", nil, ctx.Err()
-			}
-			return opindex.Mapping{}, "", nil, obsbackend.Wrong("%s and the head share no history; pass --base <rev>", baseRef).Cause(err)
-		}
-		baseRev = mb
 	}
 
 	ix, err := opindex.Build(dir)
@@ -490,6 +474,32 @@ func blastRadiusMapping(ctx context.Context, dir, base, head string) (opindex.Ma
 		return opindex.Mapping{}, "", nil, obsbackend.Undetermined("cannot read the diff %s..%s", baseRef, emptyAs(head, "the working tree")).Cause(err)
 	}
 	return m, baseRef, ix.Warnings(), nil
+}
+
+// brDefaultBase picks the base when --base is absent: the merge base of the
+// head with origin/main, else main. It returns the ref it chose and that
+// merge base.
+func brDefaultBase(ctx context.Context, dir, head string) (ref, rev string, err error) {
+	for _, r := range []string{"origin/main", "main"} {
+		if _, err := brRevParse(ctx, dir, r); err == nil {
+			ref = r
+			break
+		}
+	}
+	if ref == "" {
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		return "", "", obsbackend.Wrong("no --base, and neither origin/main nor main exists in %s; pass --base <rev>", dir)
+	}
+	mb, err := opindex.MergeBase(ctx, dir, ref, head)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		return "", "", obsbackend.Wrong("%s and the head share no history; pass --base <rev>", ref).Cause(err)
+	}
+	return ref, mb, nil
 }
 
 // brRevParse resolves rev to the commit it names.

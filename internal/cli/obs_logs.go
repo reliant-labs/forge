@@ -223,18 +223,13 @@ const (
 	traceLogPad      = time.Minute
 )
 
-// traceExtentReader reads when a trace ran. Both backends implement it.
-type traceExtentReader interface {
-	TraceExtent(ctx context.Context, req obsbackend.TraceRequest) (obsbackend.TraceExtent, error)
-}
-
 // traceLogRange is the range `obs logs --trace` reads when none was named: the
 // trace's own, from its spans, so the logs of yesterday's trace are found
 // without guessing --since. With no span of it found (sampled out, never
 // exported, or past the span lookback) it is the widest range the logs allow,
 // searched by the id. A backend that cannot say when a trace ran keeps def.
 func traceLogRange(ctx context.Context, d obsDeps, b obsbackend.Backend, def obsbackend.Range, traceID string) (obsbackend.Range, string, error) {
-	r, ok := b.(traceExtentReader)
+	r, ok := b.(obsbackend.TraceExtentReader)
 	if !ok {
 		return def, "", nil
 	}

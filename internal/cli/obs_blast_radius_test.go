@@ -192,7 +192,7 @@ func TestBlastRadiusTrafficOrdersByCallsAcrossServices(t *testing.T) {
 
 // brRun runs `forge obs blast-radius` through the real root command against
 // a synthetic mapping (no git) and the given backend.
-func brRun(t *testing.T, ctx context.Context, m func(context.Context, string, string, string) (opindex.Mapping, string, []string, error), deps obsDeps, args ...string) (string, string, error) {
+func brRun(ctx context.Context, t *testing.T, m func(context.Context, string, string, string) (opindex.Mapping, string, []string, error), deps obsDeps, args ...string) (string, string, error) {
 	t.Helper()
 	oldMap := blastRadiusMapFn
 	t.Cleanup(func() { blastRadiusMapFn = oldMap })
@@ -241,7 +241,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 
 	t.Run("no env is the static mapping, queried nowhere", func(t *testing.T) {
 		sr := &scriptedRunner{}
-		out, errb, err := brRun(t, ctx, brStatic, brLocal(sr), "--json")
+		out, errb, err := brRun(ctx, t, brStatic, brLocal(sr), "--json")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +257,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 
 	t.Run("ok attaches traffic and orders by calls", func(t *testing.T) {
 		sr := &scriptedRunner{answers: brOpsAnswers()}
-		out, _, err := brRun(t, ctx, brStatic, brLocal(sr), "dev", "--json")
+		out, _, err := brRun(ctx, t, brStatic, brLocal(sr), "dev", "--json")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -303,7 +303,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 		}}, brReasonBackendUnavailable},
 	} {
 		t.Run(c.name+" degrades to the mapping", func(t *testing.T) {
-			out, errb, err := brRun(t, ctx, brStatic, c.deps, "dev", "--json")
+			out, errb, err := brRun(ctx, t, brStatic, c.deps, "dev", "--json")
 			if err != nil {
 				t.Fatalf("telemetry failure is not the verb's: %v", err)
 			}
@@ -326,7 +326,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 		empty := func(context.Context, string, string, string) (opindex.Mapping, string, []string, error) {
 			return opindex.Mapping{Base: "b"}, "main", nil, nil
 		}
-		out, _, err := brRun(t, ctx, empty, brLocal(sr), "dev")
+		out, _, err := brRun(ctx, t, empty, brLocal(sr), "dev")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -337,7 +337,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 
 	t.Run("explain compiles and runs nothing", func(t *testing.T) {
 		sr := &scriptedRunner{}
-		out, _, err := brRun(t, ctx, brStatic, brLocal(sr), "dev", "--json", "--explain")
+		out, _, err := brRun(ctx, t, brStatic, brLocal(sr), "dev", "--json", "--explain")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -355,7 +355,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 	})
 
 	t.Run("fields project the document", func(t *testing.T) {
-		out, _, err := brRun(t, ctx, brStatic, brLocal(&scriptedRunner{}), "--json", "--fields", "ops.name,summary.ops")
+		out, _, err := brRun(ctx, t, brStatic, brLocal(&scriptedRunner{}), "--json", "--fields", "ops.name,summary.ops")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -371,7 +371,7 @@ func TestObsBlastRadiusTelemetry(t *testing.T) {
 	t.Run("cancellation fails", func(t *testing.T) {
 		cctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		_, _, err := brRun(t, cctx, brStatic, brLocal(cancellingRunner{cancel}), "dev", "--json")
+		_, _, err := brRun(cctx, t, brStatic, brLocal(cancellingRunner{cancel}), "dev", "--json")
 		if err == nil {
 			t.Fatal("a cancelled read is not degraded to success")
 		}
@@ -414,7 +414,7 @@ func TestObsBlastRadiusExitParityWithoutGit(t *testing.T) {
 		{"--since is not positive", brStatic, obsDeps{}, []string{"dev", "--since", "0s"}, 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			out, _, err := brRun(t, context.Background(), c.m, c.deps, append(c.args, "--json")...)
+			out, _, err := brRun(context.Background(), t, c.m, c.deps, append(c.args, "--json")...)
 			process := exitcode.Of(err)
 			doc := decode(t, out)
 			if doc["exit_code"] != float64(process) || doc["ok"] != (process == 0) {

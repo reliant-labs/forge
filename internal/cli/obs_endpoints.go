@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 const schemaObsEndpoints = "forge.obs.endpoints/v1"
@@ -20,7 +21,7 @@ var obsEndpointsSchema = obsout.Schema{
 		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
 		"query_mode", "sort",
 		"endpoints", "endpoints.service", "endpoints.name", "endpoints.requests", "endpoints.errors", "endpoints.error_ratio",
-		"endpoints.rate_per_second", "endpoints.p50_ms", "endpoints.p95_ms", "endpoints.p99_ms",
+		"endpoints.rate_per_second", "endpoints.p50_ms", "endpoints.p95_ms", "endpoints.p99_ms", "endpoints.health",
 		"endpoints.client_p95_ms", "endpoints.client_calls", "client_note",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -41,6 +42,12 @@ type obsEndpointDoc struct {
 	// web runtime's forge.rpc.client spans); absent when no frontend called it.
 	ClientP95Ms float64 `json:"client_p95_ms,omitempty"`
 	ClientCalls float64 `json:"client_calls,omitempty"`
+	// Health is true for the gRPC health check (grpc.health.v1.Health/Check).
+	// The calls `forge env up` sends are declared probes, which release health
+	// and the dashboards leave out; this table lists them so a stack's
+	// telemetry shows before it has served anyone. A monitor's own health
+	// checks are real traffic and land in the same row.
+	Health bool `json:"health,omitempty"`
 }
 
 type obsEndpointsDoc struct {
@@ -79,7 +86,10 @@ the endpoint by rpc.service/rpc.method. "-" when no frontend called it.
   ` + Name() + ` obs endpoints dev --sort p95 --top 5
   ` + Name() + ` obs endpoints dev --sort errors --service api --since 6h
 
-The table is the busiest 200 endpoints; --sort re-ranks within them.
+The table is the busiest 200 endpoints; --sort re-ranks within them. The gRPC
+health check is listed and marked ("health": true): forge env up calls it once
+a stack is up, so the table has a row before the app has served anyone.
+Release health (forge obs check) and the dashboards leave env up's calls out.
 
 ` + obsEndpointsSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -128,11 +138,11 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 			Service: e.Service, Name: e.Name, Requests: e.Requests, Errors: e.Errors, ErrorRatio: e.ErrorRatio,
 			RatePerSecond: e.RatePerSecond, P50Ms: e.P50Ms, P95Ms: e.P95Ms, P99Ms: e.P99Ms,
 			ClientP95Ms: e.ClientP95Ms, ClientCalls: e.ClientCalls,
+			Health: isHealthEndpoint(e.Name),
 		})
 	}
 	doc.Page = obsout.Page{Truncated: res.Omitted > 0, Omitted: res.Omitted}
-	if len(res.Endpoints) > 0 {
-		top := res.Endpoints[0]
+	if top, ok := busiestRealEndpoint(res.Endpoints); ok {
 		doc.Suggested = obsout.Suggest(
 			obsout.Command("forge", "obs", "traces", env, "--service", top.Service, "--route", top.Name, "--slow"),
 			obsout.Command("forge", "obs", "traces", env, "--service", top.Service, "--route", top.Name, "--errors"),
@@ -149,7 +159,11 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 	}
 	rows := make([][]string, len(res.Endpoints))
 	for i, e := range res.Endpoints {
-		rows[i] = []string{e.Service, e.Name, fmt.Sprintf("%.0f", e.Requests), strconv.FormatFloat(e.ErrorRatio*100, 'f', 1, 64) + "%",
+		name := e.Name
+		if isHealthEndpoint(e.Name) {
+			name += " (health check)"
+		}
+		rows[i] = []string{e.Service, name, fmt.Sprintf("%.0f", e.Requests), strconv.FormatFloat(e.ErrorRatio*100, 'f', 1, 64) + "%",
 			strconv.FormatFloat(e.RatePerSecond, 'f', 2, 64) + "/s", ms(e.P50Ms), ms(e.P95Ms), ms(e.P99Ms), "-"}
 		if e.ClientCalls > 0 {
 			rows[i][8] = ms(e.ClientP95Ms)
@@ -160,4 +174,19 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 		fmt.Fprintf(d.Stdout, "\n(%d more; --top to show them)\n", res.Omitted)
 	}
 	return nil
+}
+
+// isHealthEndpoint reports whether an endpoint (a server span name,
+// "<package>.<Service>/<Method>") is the gRPC health check.
+func isHealthEndpoint(name string) bool { return "/"+name == observe.HealthCheckProcedure }
+
+// busiestRealEndpoint is the busiest endpoint that is not the health check:
+// the one worth suggesting traces for.
+func busiestRealEndpoint(eps []obsbackend.Endpoint) (obsbackend.Endpoint, bool) {
+	for _, e := range eps {
+		if !isHealthEndpoint(e.Name) {
+			return e, true
+		}
+	}
+	return obsbackend.Endpoint{}, false
 }

@@ -130,15 +130,15 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 	octet := 16 + int(time.Now().UnixNano()%200)
 	subnet := fmt.Sprintf("10.%d.%d.0/24", octet, int(time.Now().UnixNano()/7%250))
 	envoyIP := strings.TrimSuffix(subnet, "0/24") + "10"
-	if out, err := exec.Command("docker", "network", "create", "--subnet", subnet, network).CombinedOutput(); err != nil {
-		t.Skipf("cannot create a docker network on %s: %v\n%s", subnet, err, out)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
+	if err := testdocker.Network(t, smokeDockerOwner, network, "--subnet", subnet); err != nil {
+		t.Skipf("cannot create a docker network on %s: %v", subnet, err)
 	}
 	var containers []string
 	t.Cleanup(func() {
 		for _, c := range containers {
 			_ = exec.Command("docker", "rm", "-fv", c).Run()
 		}
-		_ = exec.Command("docker", "network", "rm", network).Run()
 	})
 
 	spec := publicSpec()
@@ -185,7 +185,7 @@ func TestPublicSmoke_EnvoyAndOpenBao(t *testing.T) {
 
 	run := func(name string, args ...string) {
 		t.Helper()
-		out, err := exec.Command("docker", append([]string{"run", "-d", "--name", name}, args...)...).CombinedOutput()
+		out, err := exec.Command("docker", append(append([]string{"run", "-d", "--name", name}, testdocker.Labels(smokeDockerOwner)...), args...)...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("docker run %s: %v\n%s", name, err, out)
 		}

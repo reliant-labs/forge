@@ -69,8 +69,16 @@ const schema = z.object({
   {{- end}}
 {{- if not .UpdateFields}}}){{else}}
 }){{end}};
-
+{{if .FormDialect.LegacyResolver}}
 type FormValues = z.infer<typeof schema>;
+{{- else}}
+{{- /* The form holds what the inputs hold (z.input: mostly text, and
+       `unknown` where the schema coerces) and submits what the schema
+       turns it into (z.output). zodResolver states both, so the form is
+       typed by both. */}}
+type FormInput = z.input<typeof schema>;
+type FormValues = z.output<typeof schema>;
+{{- end}}
 
 export default function Edit{{.EntityName}}Page() {
   const params = useParams({ strict: false }) as { id: string };
@@ -89,7 +97,7 @@ export default function Edit{{.EntityName}}Page() {
     meta: { silenceErrorToast: true },
   });
 
-  const { {{if .HasUpdateFK}}control, {{end}}{{if .HasUpdateRegistered}}register, {{end}}handleSubmit, formState: { errors, isDirty } } = useForm<FormValues>({
+  const { {{if .HasUpdateFK}}control, {{end}}{{if .HasUpdateRegistered}}register, {{end}}handleSubmit, formState: { errors, isDirty } } = useForm<{{if .FormDialect.LegacyResolver}}FormValues{{else}}FormInput, unknown, FormValues{{end}}>({
     resolver: zodResolver(schema),
     values: item
       ? {

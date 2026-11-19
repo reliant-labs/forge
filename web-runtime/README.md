@@ -541,17 +541,37 @@ registers its own provider gets the spans through
 default by reflection (`src/rpc-forensics.ts`), keyed
 `forensics.arg.<proto field name>` (nested fields joined with `.`):
 
-| Field                                                                                                                                                                                                                                                | Recorded                                                                                                                        |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| number, bool                                                                                                                                                                                                                                         | the value (a 64-bit integer beyond 2^53 as its decimal string)                                                                  |
-| enum                                                                                                                                                                                                                                                 | the value's name                                                                                                                |
-| string named like an id (`id`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`)                                                                                                                                                                                | the value, cut to 128 characters                                                                                                |
-| an id whose name also names a secret (`session_id`, `apiKeyId`, `otpId`: contains `token`, `secret`, `passw`, `credential`, `session`, `cookie`, `apikey`, `privatekey`, `signingkey` or `otp`, case-insensitive, `_`/`-` ignored), string or number | `"[len=N]"`, never the value                                                                                                    |
-| any other string, bytes                                                                                                                                                                                                                              | `"[len=N]"`                                                                                                                     |
-| repeated, map                                                                                                                                                                                                                                        | `"[count=N]"`                                                                                                                   |
-| `Timestamp`, `Duration`, `google.type` `Date`, `DateTime`, `TimeOfDay`, `Interval`, `Month`, `DayOfWeek`                                                                                                                                             | `"[type=<Name>]"`, e.g. `"[type=Timestamp]"`: never the value or its subfields (a time is content: a birthdate, an appointment) |
-| other message                                                                                                                                                                                                                                        | its set fields, three levels deep (`"[message]"` below)                                                                         |
-| `[debug_redact = true]`                                                                                                                                                                                                                              | never, not even its presence                                                                                                    |
+| Field                                                                                                                        | Recorded                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| number, bool                                                                                                                 | the value (a 64-bit integer beyond 2^53 as its decimal string)                                                                  |
+| enum                                                                                                                         | the value's name                                                                                                                |
+| string named like an id (`id`, `uuid`, `*_id`, `*_ids`, `*_uuid`, `*Id`, `*ID`, `*Ids`, `*Uuid`, `*UUID`)                    | the value, cut to 128 characters                                                                                                |
+| a string or number with a secret name, id-shaped or not (`pin`, `cvv`, `security_code`, `session_id`, `apiKeyId`: see below) | `"[len=N]"` (a number's digit count), never the value                                                                           |
+| any other string, bytes                                                                                                      | `"[len=N]"`                                                                                                                     |
+| repeated, map                                                                                                                | `"[count=N]"`                                                                                                                   |
+| `Timestamp`, `Duration`, `google.type` `Date`, `DateTime`, `TimeOfDay`, `Interval`, `Month`, `DayOfWeek`                     | `"[type=<Name>]"`, e.g. `"[type=Timestamp]"`: never the value or its subfields (a time is content: a birthdate, an appointment) |
+| other message                                                                                                                | its set fields, three levels deep (`"[message]"` below)                                                                         |
+| `[debug_redact = true]`                                                                                                      | never, not even its presence                                                                                                    |
+
+A name is secret (`isSecretNamed`) when, lowercased with `_` and `-` removed,
+it contains `token`, `secret`, `passw`, `credential`, `session`, `cookie`,
+`apikey`, `privatekey`, `signingkey` or `otp`; or when one of its words (split
+on `_`, `-`, camelCase and letter/digit boundaries), or two adjacent words
+joined, is `pin`, `otp`, `cvv`, `cvc`, `ssn`, `tan`, `passcode`,
+`securitycode`, `mfa` or `totp`, plural or not. So `userPIN`, `cvv2` and
+`security_code` are secret, and `spinner`, `pinned`, `shipping` and `tank` are
+not. A number whose first or last word is `max`, `min`, `limit`, `count`,
+`total`, `size`, `len` or `length`, or whose first word is `num`, is a
+quantity, not a secret, and keeps its value (`isSecretNumberNamed`:
+`max_tokens`, `token_limit`, `session_count`, `num_sessions`). A trailing
+`num` reads as "number", so `pin_num`, `ssn_num` and `otpNum` still record
+their digit count, as does `otp_counter_id` (last word `id`). An id-shaped
+secret name is never a quantity, whatever leads it: `max_session_id` and
+`num_otp_id` record their digit count. A string named
+like a quantity still records its length. A secret-named bool or enum keeps its value (`mfa_enabled`,
+`session_state`): one of a few values the schema lists cannot carry a typed
+secret. forge's server-side forensics applies the same rules, id shapes
+included, tested against the same table.
 
 Unset fields are left out; at most 32 fields are recorded
 (`forensics.truncated = true` says a record was cut). A record is attached at

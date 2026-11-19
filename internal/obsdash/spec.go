@@ -23,6 +23,8 @@
 // deployment.environment.name, span.name, ...), the contract forge's runtime
 // and KCL already settle, so no panel depends on how a given backend stores
 // them.
+//
+//forge:exclude-contract: a pure derivation of dashboard and alert specs from project metadata, plus renderers over them and reads of the project's own files; its only exported methods are the Process record's ServesRPC/IsJob accessors, and nothing substitutes it
 package obsdash
 
 import (
@@ -370,7 +372,14 @@ var (
 	rpcServer = []Predicate{
 		{Field: "span.kind", Op: OpEq, Value: "server"},
 		{Field: "span.name", Op: OpMatch, Value: `^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$`},
+		notProbe,
 	}
+
+	// notProbe keeps probes out of a request panel: the spans a workload
+	// marked forge.probe=true (the health rpc, a platform release probe), as
+	// obsquery.SpanNotProbeSQL does for release health. A span with no such
+	// attribute reads '' and stays in.
+	notProbe = Predicate{Field: "span.attr.forge.probe", Op: OpNeq, Value: "true"}
 )
 
 func scoped(base []Predicate, extra ...Predicate) []Predicate {

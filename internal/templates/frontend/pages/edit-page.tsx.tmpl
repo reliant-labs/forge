@@ -75,8 +75,16 @@ const schema = z.object({
   {{- end}}
 {{- if not .UpdateFields}}}){{else}}
 }){{end}};
-
+{{if .FormDialect.LegacyResolver}}
 type FormValues = z.infer<typeof schema>;
+{{- else}}
+{{- /* The form holds what the inputs hold (z.input: mostly text, and
+       `unknown` where the schema coerces) and submits what the schema
+       turns it into (z.output). zodResolver states both, so the form is
+       typed by both. */}}
+type FormInput = z.input<typeof schema>;
+type FormValues = z.output<typeof schema>;
+{{- end}}
 
 // The id rides in the query string, not a `[id]` path segment, so this page
 // is ONE static route that `output: "export"` can build — the id exists only
@@ -126,7 +134,7 @@ function Edit{{.EntityName}}Form({ id }: { id: string }) {
   {{- /* register/errors are only consumed by the per-field inputs below —
          destructuring them for a zero-field form ships eslint
          no-unused-vars warnings on the pristine scaffold. */}}
-  const { {{if .HasUpdateFK}}control, {{end}}{{if .HasUpdateRegistered}}register, {{end}}handleSubmit, formState: { {{if .UpdateFields}}errors, {{end}}isDirty } } = useForm<FormValues>({
+  const { {{if .HasUpdateFK}}control, {{end}}{{if .HasUpdateRegistered}}register, {{end}}handleSubmit, formState: { {{if .UpdateFields}}errors, {{end}}isDirty } } = useForm<{{if .FormDialect.LegacyResolver}}FormValues{{else}}FormInput, unknown, FormValues{{end}}>({
     resolver: zodResolver(schema),
     values: item
       ? {

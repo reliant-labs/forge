@@ -196,8 +196,11 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 		return env, nil
 	}
 
+	// What a --release build compares declared inputs against: read from
+	// the ledger once, by the first unit that needs it.
+	reuseBase := newReleaseReuseBase(ctx, projectDir, opts)
 	dispatch := func(svc WorkloadEntity) {
-		res := buildExternalUnit(ctx, svc, opts, tag, projectDir, aliases, builtImageEnv)
+		res := buildExternalUnit(ctx, svc, opts, tag, projectDir, aliases, builtImageEnv, reuseBase)
 		mu.Lock()
 		built[svc.Name] = res
 		mu.Unlock()
@@ -239,8 +242,9 @@ func buildExternalServices(ctx context.Context, services []WorkloadEntity, opts 
 
 // buildExternalUnit runs one ShellBuild unit and records its state. env is
 // consulted first for the images the unit is built FROM; it blocks until those
-// builds finish.
-func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOptions, tag, projectDir string, aliases map[string][]WorkloadEntity, builtImageEnv func(WorkloadEntity) (map[string]string, error)) (result buildResult) {
+// builds finish. reuseBase is what a --release build compares the unit's
+// declared inputs against (nil when it cannot carry an earlier image).
+func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOptions, tag, projectDir string, aliases map[string][]WorkloadEntity, builtImageEnv func(WorkloadEntity) (map[string]string, error), reuseBase *releaseReuseBase) (result buildResult) {
 	// Per-service tag — see externalBuildTag for the precedence and for
 	// why a release build overrides it with the release version.
 	svcTag := externalBuildTag(svc, tag, opts)
@@ -291,9 +295,14 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	}
 	// Declared inputs unchanged and the pushed image still in the registry:
 	// the last successful build stands in for this one.
-	inputs := checkShellBuildInputs(ctx, svc, spec, cwd, opts, projectDir)
+	inputs := checkShellBuildInputs(ctx, svc, spec, cwd, opts, projectDir, reuseBase)
 	if inputs.reuse != nil {
 		return reuseExternalBuild(svc, opts, projectDir, aliases, inputs)
+	}
+	// A --release build whose declared inputs equal an earlier release's,
+	// whose image the registry still serves: that image is this release's.
+	if inputs.carry != nil {
+		return carryReleaseImage(ctx, svc, opts, projectDir, cwd, svcTag, aliases, inputs)
 	}
 	if inputs.reason != "" {
 		fmt.Printf("[build] %s: running — %s\n", svc.Name, inputs.reason)
@@ -381,6 +390,10 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	}
 	if inputs.fp != nil {
 		state.InputsFingerprint = inputs.fp.Digest
+	}
+	// What the next release compares against (inputs_digest in the release).
+	if inputs.releaseFP != nil {
+		state.ReleaseInputsDigest = inputs.releaseFP.Digest
 	}
 	recordExternalBuildState(svc, opts, projectDir, aliases, state)
 	return buildResult{

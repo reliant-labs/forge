@@ -183,6 +183,20 @@ type Artifact struct {
 	// provenance like Platforms, and NOT part of the identity: the digest
 	// names the bytes, this says where they were built.
 	BuiltFrom *BuildSource `json:"built_from,omitempty"`
+	// InputsDigest is the content address of what a ShellBuild that declares
+	// `inputs` was built from: the declared files' content plus the step's
+	// own declaration (command, cwd, env, built_images, platform, destination
+	// repository), with the release tag left out where the declaration
+	// composed it in, so the next release can compare it. A later release whose
+	// inputs digest is equal reuses this artifact's image instead of running
+	// the command again. Informational like BuiltFrom, and NOT part of the
+	// identity. Empty for an artifact whose build declares no inputs, and on
+	// a release recorded before it existed — either of which means rebuild.
+	InputsDigest string `json:"inputs_digest,omitempty"`
+	// CarriedFrom is the release whose image this artifact reuses because
+	// its declared inputs were unchanged (see InputsDigest); empty when this
+	// release's build produced the image. Informational, NOT identity.
+	CarriedFrom string `json:"carried_from,omitempty"`
 }
 
 // BuildSource is the checkout an artifact was built in: its repository, HEAD
@@ -280,6 +294,12 @@ func (a Artifact) Validate(name string) error {
 			return bad("built_from commit %q is not a full git object id", a.BuiltFrom.Commit)
 		}
 	}
+	if (a.InputsDigest != "" || a.CarriedFrom != "") && a.Kind != KindOCI {
+		return bad("only an image records the inputs it was built from (inputs_digest, carried_from)")
+	}
+	if a.InputsDigest != "" && !ValidDigest(a.InputsDigest) {
+		return bad("inputs_digest %q is not a canonical sha256 digest", a.InputsDigest)
+	}
 	return nil
 }
 
@@ -294,10 +314,11 @@ func (a Artifact) SharedDigest() (string, bool) {
 	return d, ok && d != ""
 }
 
-// sameIdentity compares the fields that name the bytes. Platforms and
-// BuiltFrom are informational and deliberately excluded: re-stating a release
-// with a different platform list, or the same digests built in another
-// checkout, has not claimed different bytes.
+// sameIdentity compares the fields that name the bytes. Platforms, BuiltFrom,
+// InputsDigest and CarriedFrom are informational and deliberately excluded:
+// re-stating a release with a different platform list, or the same digests
+// built in another checkout or carried from an earlier release, has not
+// claimed different bytes.
 func (a Artifact) sameIdentity(b Artifact) bool {
 	if a.Kind != b.Kind || a.Mode != b.Mode || a.Version != b.Version ||
 		a.Integrity != b.Integrity || a.URI != b.URI {

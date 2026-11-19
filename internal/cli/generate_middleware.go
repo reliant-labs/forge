@@ -189,6 +189,9 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	}
 	contractOpts := contract.Options{
 		ExtraInterfaceTypes: extraIfaceTypes,
+		// forge.yaml observability.forensics: false — decorators capture no
+		// arguments.
+		NoForensics: cfg != nil && !cfg.Observability.ForensicsEnabled(),
 		// Route the mock_gen.go write through the manifest chokepoint —
 		// see the cs param doc above for the stale-sweep rationale.
 		ProjectRoot: projectDir,

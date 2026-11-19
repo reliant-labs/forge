@@ -82,6 +82,8 @@ type Report struct {
 	GeneratedAt   time.Time                     `json:"generated_at"`
 	Categories    map[string]audittype.Category `json:"categories"`
 	OverallStatus audittype.Status              `json:"overall_status"`
+	// Summary rolls the categories up into counts (audit_summary.go).
+	Summary ReportSummary `json:"summary"`
 }
 
 // auditCategoryOrder pins the print-order so human output stays stable
@@ -233,6 +235,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	report.Categories["deps"] = auditDeps(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
+	report.Summary = summarize(report.Categories)
 	return report, nil
 }
 

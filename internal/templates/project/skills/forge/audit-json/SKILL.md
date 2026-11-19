@@ -37,7 +37,18 @@ added additively — existing keys never change shape.
     "unscoped_auth": { "status": "warn", "summary": "...", "details": { ... } },
     "deps":    { "status": "ok",   "summary": "...", "details": { ... } }
   },
-  "overall_status": "warn"
+  "overall_status": "warn",
+  "summary": {
+    "categories": 19,
+    "by_status": { "ok": 16, "warn": 3, "error": 0 },
+    "findings": 369,
+    "warn": ["migration_safety", "unscoped_auth", "version"],
+    "error": [],
+    "per_category": {
+      "unscoped_auth": { "status": "warn", "findings": 368 },
+      "version":       { "status": "warn" }
+    }
+  }
 }
 ```
 
@@ -51,6 +62,7 @@ Top-level keys are stable:
 | `generated_at` | RFC3339 timestamp (UTC) | When the audit ran |
 | `categories` | object | Per-category roll-ups, keyed by category name |
 | `overall_status` | string | `ok` / `warn` / `error` — worst category status wins |
+| `summary` | object | Counts rolled up from `categories`: see below |
 
 Each category is the same shape:
 
@@ -61,6 +73,26 @@ Each category is the same shape:
   "details": { ... category-specific keys ... }   // optional
 }
 ```
+
+### `summary`
+
+`jq .summary` answers "how bad" without knowing any category's detail keys.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `categories` | int | How many categories this run emitted |
+| `by_status` | object | Categories per status. `ok`, `warn` and `error` are always present, zero included |
+| `findings` | int | Sum of `per_category[].findings` over the categories that count findings |
+| `warn` / `error` | string[] | The categories at that status, sorted. Empty, never null |
+| `per_category` | object | Category name to `{status, findings?}` |
+
+`findings` counts what a category reports as wrong, not its inventory: for
+`unscoped_auth` it is the unscoped and raw-SQL rpcs, not `acknowledged_rpcs`.
+It is absent for a category that reports a state rather than findings
+(`version`, `shape`, `features`, `ingress`, `environments`, `resources`,
+`external_builds`, `prerequisites`, `deps`), and for one whose collector failed
+before it could count. So a missing `findings` means "not a count", never zero.
+`file_sizes` counts its advisory findings while its status stays `ok`.
 
 ### Category keys
 
@@ -153,6 +185,14 @@ disagrees with the migrations that own the schema).
 ## Common queries
 
 ```bash
+# How bad: categories per status, total findings, and which categories warn or fail.
+forge project audit --json | jq '.summary | {by_status, findings, warn, error}'
+
+# Findings per category, worst first.
+forge project audit --json | jq -r '.summary.per_category | to_entries
+  | map(select(.value.findings > 0)) | sort_by(-.value.findings)[]
+  | "\(.value.findings)\t\(.value.status)\t\(.key)"'
+
 # Fail CI on any error-severity category.
 forge project audit --json | jq -e '.overall_status == "error" | not' \
   || (echo "forge project audit found errors"; exit 1)

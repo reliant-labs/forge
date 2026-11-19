@@ -106,12 +106,16 @@ const (
 // TraceTrustFunc classifies the caller of one inbound request. It sees the
 // request's peer and headers only; see the file header for what it must
 // verify before returning anything but TrustNone.
+//
+// connect-go v2 projects use TraceTrustClassifier.
 type TraceTrustFunc func(ctx context.Context, peer connect.Peer, header http.Header) TraceTrust
 
 // TrustPredicate reports whether the caller of one inbound request is an
 // authenticated internal service whose trace context may be adopted whole. It
 // sees the request's peer and headers only; see the file header for what it
 // must verify.
+//
+// connect-go v2 projects use TraceTrustPredicate.
 type TrustPredicate func(ctx context.Context, peer connect.Peer, header http.Header) bool
 
 // TrustRemoteFrom returns the server tracing interceptor (otelconnect) that
@@ -121,6 +125,8 @@ type TrustPredicate func(ctx context.Context, peer connect.Peer, header http.Hea
 // applied to both underlying interceptors (do not pass
 // otelconnect.WithTrustRemote yourself). A nil trusted trusts no one, which is
 // otelconnect's default. TrustRemoteBy is the three-level form.
+//
+// connect-go v2 projects use TrustRemoteFromV2.
 func TrustRemoteFrom(trusted TrustPredicate, opts ...otelconnect.Option) (connect.Interceptor, error) {
 	if trusted == nil {
 		return TrustRemoteBy(nil, opts...)
@@ -144,6 +150,8 @@ func TrustRemoteFrom(trusted TrustPredicate, opts ...otelconnect.Option) (connec
 // A TrustIDs request is sampled by the server's own head-sampling policy
 // (OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG, as the SDK reads them),
 // whatever the caller's sampled flag says.
+//
+// connect-go v2 projects use TrustRemoteByV2.
 func TrustRemoteBy(classify TraceTrustFunc, opts ...otelconnect.Option) (connect.Interceptor, error) {
 	linked, err := otelconnect.NewInterceptor(opts...)
 	if err != nil {
@@ -156,13 +164,19 @@ func TrustRemoteBy(classify TraceTrustFunc, opts ...otelconnect.Option) (connect
 	if err != nil {
 		return nil, fmt.Errorf("otelconnect interceptor: %w", err)
 	}
-	ratio := rootSampleRatio()
 	return &trustRemoteInterceptor{
 		classify: classify,
 		adopted:  adopted,
 		linked:   linked,
-		sample:   func() bool { return ratio >= 1 || (ratio > 0 && rand.Float64() < ratio) }, //nolint:gosec // a sampling coin, not a secret: it only has to be one the caller cannot call.
+		sample:   newHeadSampler(),
 	}, nil
+}
+
+// newHeadSampler is the server's head-sampling coin for a trace it adopts the
+// ids of but not the sampled flag (TrustIDs): rootSampleRatio, read once.
+func newHeadSampler() func() bool {
+	ratio := rootSampleRatio()
+	return func() bool { return ratio >= 1 || (ratio > 0 && rand.Float64() < ratio) } //nolint:gosec // a sampling coin, not a secret: it only has to be one the caller cannot call.
 }
 
 type trustRemoteInterceptor struct {
@@ -183,11 +197,17 @@ type trustRemoteInterceptor struct {
 // remote parent goes into the context here, and otelconnect never reads the
 // caller's tracestate or baggage at all.
 func (i *trustRemoteInterceptor) route(ctx context.Context, peer connect.Peer, header http.Header) (context.Context, bool) {
-	switch i.classify(ctx, peer, header) {
+	return routeRemoteParent(ctx, i.classify(ctx, peer, header), header, i.sample)
+}
+
+// routeRemoteParent is route for a request already classified trust, shared
+// by both connect majors.
+func routeRemoteParent(ctx context.Context, trust TraceTrust, header HeaderReader, sample func() bool) (context.Context, bool) {
+	switch trust {
 	case TrustAll:
 		return ctx, true
 	case TrustIDs:
-		if parent := i.idsOnly(header); parent.IsValid() {
+		if parent := idsOnly(header, sample); parent.IsValid() {
 			return trace.ContextWithRemoteSpanContext(ctx, parent), true
 		}
 	case TrustNone:
@@ -199,18 +219,26 @@ func (i *trustRemoteInterceptor) route(ctx context.Context, peer connect.Peer, h
 // trace id and parent span id, with the server's own sampling decision in place
 // of the caller's flags and no tracestate. Invalid when the caller sent no
 // valid traceparent.
-func (i *trustRemoteInterceptor) idsOnly(header http.Header) trace.SpanContext {
-	remote := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), propagation.HeaderCarrier(header)))
+func idsOnly(header HeaderReader, sample func() bool) trace.SpanContext {
+	remote := trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), headerCarrier{header}))
 	if !remote.IsValid() {
 		return trace.SpanContext{}
 	}
 	return trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    remote.TraceID(),
 		SpanID:     remote.SpanID(),
-		TraceFlags: trace.TraceFlags(0).WithSampled(i.sample()),
+		TraceFlags: trace.TraceFlags(0).WithSampled(sample()),
 		Remote:     true,
 	})
 }
+
+// headerCarrier reads a request header of either connect major as a
+// propagation.TextMapCarrier. Extraction only reads; Set is never called.
+type headerCarrier struct{ h HeaderReader }
+
+func (c headerCarrier) Get(key string) string { return c.h.Get(key) }
+func (headerCarrier) Set(string, string)      {}
+func (headerCarrier) Keys() []string          { return nil }
 
 func (i *trustRemoteInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	adopted, linked := i.adopted.WrapUnary(next), i.linked.WrapUnary(next)

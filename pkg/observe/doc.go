@@ -55,6 +55,17 @@
 //	    auth.Interceptor(...),
 //	}
 //
+// # connect-go v2
+//
+// A project on connect-go v2 (connectrpc.com/connect/v2) uses the V2 form of
+// every Connect-typed symbol here — ChainV2 / DepsV2, DefaultMiddlewaresV2,
+// LoggingInterceptorV2 and the other XInterceptorV2s, Deadline.InterceptorV2,
+// TrustRemoteByV2, NewClientStackV2 — and passes the chain to
+// connectv2.NewServer. Behaviour is the v1 form's: the same log records,
+// spans, metrics and headers (interceptors_v2.go). The trust classifiers take
+// connect-free inputs (TraceTrustClassifier, HeaderReader), since v2 has no
+// Peer type.
+//
 // # The environment contract
 //
 // The interface between a forge app and whatever collector exists is the

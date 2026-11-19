@@ -46,5 +46,10 @@ const HeaderHealthProbe = "Forge-Health-Probe"
 // health handler marks its spans (MarkProbeSpans). Setting the header can
 // hide nothing but a health check.
 func IsHealthProbe(procedure string, h http.Header) bool {
+	return isHealthProbe(procedure, h)
+}
+
+// isHealthProbe is IsHealthProbe over either connect major's request header.
+func isHealthProbe(procedure string, h interface{ Get(string) string }) bool {
 	return procedure == HealthCheckProcedure && h.Get(HeaderHealthProbe) != ""
 }

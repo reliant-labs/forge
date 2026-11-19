@@ -289,6 +289,9 @@ lands.
   of `react-native` cost the disk space of one copy.
 - forge doesn't generate a `package-lock.json` or `yarn.lock`; only
   `pnpm-lock.yaml` is supported in workspace mode.
+- A JS package outside the workspace that keeps its own `package-lock.json`
+  or `yarn.lock` is reported by `forge project audit` (`lockfiles`, a
+  warning): make it a workspace member, or convert its lock to pnpm.
 
 ## See also
 

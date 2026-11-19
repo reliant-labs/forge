@@ -91,6 +91,7 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | `orphan_stubs` | `orphan_services[]` (`{service, dir, stub_methods[]}` — every handler method still carries `// forge:gen unwired-stub`, so the service serves 501s), `hint`. Fix by implementing the handlers or `forge project delete service <name>`. |
 | `unhandled_rpcs` | `unhandled_rpcs[]` (`{service, rpc, dir}`), `unresolved_services[]` (only when some `Service` struct embeds a type whose promoted methods the scan cannot see), `hint` — rpcs of MANAGED services whose handler package declares no `*Service` method. The embedded `Unimplemented<Svc>Handler` makes each one compile and serve `CodeUnimplemented` with no stub saying so, invisible to `orphan_stubs` and `shapes`. Every forge path gives an rpc a method (a stub for a custom rpc, a shim for a CRUD one), so a hit means generate has not run since the proto changed or a hand edit dropped the method. `warn` whenever the list is non-empty. |
 | `deps` | `go_mod`, `go_sum`, `gen_go_mod` presence flags |
+| `lockfiles` | `managers[]`, `lockfiles{}` (manager → lockfile paths: npm `package-lock.json`/`npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, bun `bun.lock`/`bun.lockb`; `node_modules`, build output and `testdata` skipped), `primary_manager` (the root lock's, else the most used), and when mixed `stragglers[]`, `mixed_dirs[]` (`{dir, lockfiles[]}` — one directory, two managers' locks) and `hint`. `warn` when more than one manager locks the project; advisory, it never fails the audit. |
 
 ### Status semantics
 

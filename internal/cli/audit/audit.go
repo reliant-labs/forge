@@ -108,6 +108,7 @@ var auditCategoryOrder = []string{
 	"orphan_stubs",
 	"unhandled_rpcs",
 	"deps",
+	"lockfiles",
 }
 
 // CategoryNames returns every key `forge project audit --json` can put under
@@ -231,6 +232,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
 	report.Categories["unhandled_rpcs"] = auditUnhandledRPCs(f, abs)
 	report.Categories["deps"] = auditDeps(abs)
+	report.Categories["lockfiles"] = auditLockfiles(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
 	return report, nil

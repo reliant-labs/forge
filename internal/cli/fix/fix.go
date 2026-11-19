@@ -6,6 +6,9 @@
 //	forge fix narrow-deps <pkg>   retype a component's wide foreign Deps
 //	                              interfaces to the calls it makes
 //	                              (forgeconv-deps-surface)
+//	forge fix derive-contract <pkg>
+//	                              replace a hand-written Service with
+//	                              //forge:contract on its one implementation
 //	forge fix <codemod>           one release codemod (internal/codemod):
 //	                              the mechanical half of a migration skill
 package fix
@@ -37,6 +40,7 @@ func newCmd(f *factory.Factory) *cobra.Command {
 		Long:  "Codemods that rewrite the project's own code to what a forge lint rule asks for. Each runs only when you name it, and edits files that are yours: review the diff.",
 	}
 	cmd.AddCommand(newNarrowDepsCmd(f))
+	cmd.AddCommand(newDeriveContractCmd(f))
 	for _, c := range codemod.All() {
 		cmd.AddCommand(newCodemodCmd(f, c))
 	}

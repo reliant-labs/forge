@@ -236,14 +236,23 @@ type Endpoint struct {
 	P50Ms         float64
 	P95Ms         float64
 	P99Ms         float64
+	// ClientP95Ms and ClientCalls are the latency the browser saw for this
+	// rpc: its forge.rpc.client spans, joined by rpc.service/rpc.method to
+	// the server span's name. Zero when no frontend called it in range.
+	ClientP95Ms float64
+	ClientCalls float64
 }
 
 // EndpointsResult is the ranked endpoints.
 type EndpointsResult struct {
 	Endpoints []Endpoint
 	// Omitted counts endpoints the Top cap cut.
-	Omitted    int
-	Statements []Statement
+	Omitted int
+	// ClientUnavailable says why the client columns are empty when the
+	// client-span read failed: an enrichment, so its failure is a note and
+	// the endpoints still stand.
+	ClientUnavailable string
+	Statements        []Statement
 }
 
 // ── metrics ─────────────────────────────────────────────────────────────

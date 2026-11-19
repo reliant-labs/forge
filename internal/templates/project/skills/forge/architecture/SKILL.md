@@ -32,7 +32,7 @@ internal/                     # the application: components, DI, data access
     factories_gen_test.go     #     generated: New<Entity> / New<CreateRequest> test factories from the applied schema
     handlers_crud_ops_gen.go  #     generated: per-RPC CRUD ops + ToProto/FromProto
   handlers/mocks/             #   generated cross-service mocks (package mocks, one <svc>_mock_gen.go each)
-  <name>/                     #   standalone domain package: contract.go (yours) + mock_gen.go
+  <name>/                     #   standalone domain package: service.go with the //forge:contract struct (yours) + contract_gen.go and mock_gen.go (generated); a strategy interface is a hand-written contract.go instead
   workers/<name>/             #   workers (NOT top-level): worker.go + worker_test.go
   operators/<name>/           #   operators (NOT top-level): controller + types
   app/                        #   the composition graph — the LIVE composition root:
@@ -84,7 +84,7 @@ db/migrations/*.up.sql (shadow-applied to a real ephemeral postgres, introspecte
   → forge generate → internal/db/<entity>_orm.go, internal/handlers/<svc>/handlers_crud_ops_gen.go, frontend pages/nav/mocks
 
 proto/<project>/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_gen.k
-internal/<name>/contract.go (standalone domain packages) → forge generate → internal/<name>/mock_gen.go
+internal/<name>/service.go (//forge:contract struct) or contract.go (standalone domain packages) → forge generate → internal/<name>/contract_gen.go (derived Service) + mock_gen.go
 gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
 ```
 
@@ -185,7 +185,7 @@ Lint enforces the structural halves (`forgeconv-one-service-per-file`, `forgecon
 
 For the annotation vocabulary — every `// forge:*` marker, the proto→column mapping a birth applies, the projected `buf.validate` rules, and the `(forge.v1.service)`/`(forge.v1.method)` options — run **`forge project annotations --json`**: emitted from forge's own descriptors, so it cannot drift.
 
-This skill is the map. For depth, load: **proto** (annotations, CRUD naming, field rules); **db** (migrations, entity types, schema evolution, ORM, op-overrides); **contracts** (contracts at every boundary, `contract.go`, strict mode); **services** (`<Component>Config` config blocks → `pkg/config` + per-env KCL); **service-layer** / **api** (interfaces-at-the-consumer, structs-out, role interfaces); **observability** (interceptor chain, per-method decorator, dashboards); **testing** (`pkg/app/testing.go`, real-DB integration, mocks); **deploy** (KCL normalize-for-the-author ⇄ denormalize-for-the-machine, `forge.render`).
+This skill is the map. For depth, load: **proto** (annotations, CRUD naming, field rules); **db** (migrations, entity types, schema evolution, ORM, op-overrides); **contracts** (contracts at every boundary, the `//forge:contract` struct form, hand-written `contract.go`, strict mode); **services** (`<Component>Config` config blocks → `pkg/config` + per-env KCL); **service-layer** / **api** (interfaces-at-the-consumer, structs-out, role interfaces); **observability** (interceptor chain, per-method decorator, dashboards); **testing** (`pkg/app/testing.go`, real-DB integration, mocks); **deploy** (KCL normalize-for-the-author ⇄ denormalize-for-the-machine, `forge.render`).
 
 ## Rules
 

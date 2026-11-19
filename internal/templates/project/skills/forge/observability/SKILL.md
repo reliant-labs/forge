@@ -195,6 +195,9 @@ generated `middleware_gen.go` decorator routed through the owned
 `observe_chain.go` seam), and the ORM (`pkg/orm` registers the `bunotel` hook,
 so each query is a child span). Every contract package is decorated by default.
 Success-log sampling and opting a component out: `observability/component-chain`.
+A component span is named `<pkg>.<Method>` (newer decorators add `forge.op`,
+`code.function.name`, `code.file.path`): `forge obs ops` ranks them with the
+RPCs, and `forge obs blast-radius` maps a diff to them (`observability/query/ops`).
 
 ## Audit log
 

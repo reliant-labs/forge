@@ -3,6 +3,7 @@ package dbanalyze
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,7 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/stdlib" // also registers the "pgx" database/sql driver
+	"github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // Default per-statement limits of a session.
@@ -51,22 +54,54 @@ type Session struct {
 	// tx is the open file's transaction, nil between files.
 	tx *sql.Tx
 	sp int
+	// pg is conn's pgx connection, for the EXPLAIN that must bypass
+	// database/sql (explainJSON). conn is traced, so its driver connection
+	// is the tracer's wrapper, not a *stdlib.Conn.
+	pg *pgconn.PgConn
+}
+
+// capturingConnector is stdlib's connector that remembers the last pgx
+// connection it opened. A session pins one connection (MaxOpenConns 1, held
+// by its *sql.Conn), so that connection is the session's.
+type capturingConnector struct {
+	driver.Connector
+	last *pgconn.PgConn
+}
+
+func (c *capturingConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sc, ok := conn.(*stdlib.Conn); ok {
+		c.last = sc.Conn().PgConn()
+	}
+	return conn, nil
 }
 
 // Open connects to dsn and sets the session's timeouts. dsn must name a
 // disposable database: what a session runs is committed.
 func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error) {
-	db, err := sql.Open("pgx", dsn)
+	// Parsing dsn here, where sql.Open would leave it to the first
+	// connection, makes its error that connection's.
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open target: %w", err)
+		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
+	connector := &capturingConnector{Connector: stdlib.GetConnector(*cfg)}
+	db := dbtrace.OpenDB(connector)
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
-	s := &Session{db: db, conn: conn}
+	if connector.last == nil {
+		_ = conn.Close()
+		_ = db.Close()
+		return nil, errors.New("connect to target: no pgx connection opened")
+	}
+	s := &Session{db: db, conn: conn, pg: connector.last}
 	settings := []string{
 		"SET statement_timeout = " + timeoutSetting(opts.StatementTimeout, DefaultStatementTimeout),
 		"SET lock_timeout = " + timeoutSetting(opts.LockTimeout, DefaultLockTimeout),
@@ -186,12 +221,10 @@ func (s *Session) explainJSON(ctx context.Context, query string, noSeqScan bool)
 		defer func() { _, _ = s.conn.ExecContext(context.WithoutCancel(ctx), "RESET enable_seqscan") }()
 	}
 	var plan []byte
-	err := s.conn.Raw(func(driverConn any) error {
-		c, ok := driverConn.(*stdlib.Conn)
-		if !ok {
-			return fmt.Errorf("unexpected driver connection %T", driverConn)
-		}
-		results, err := c.Conn().PgConn().Exec(ctx, "EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) "+query).ReadAll()
+	// Raw holds conn exclusively while the plan is read off its pgx
+	// connection.
+	err := s.conn.Raw(func(any) error {
+		results, err := s.pg.Exec(ctx, "EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) "+query).ReadAll()
 		if err != nil {
 			return err
 		}

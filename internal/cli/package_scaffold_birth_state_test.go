@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/contractcheck"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -94,15 +95,21 @@ func TestScaffoldedPackagesPassTheirOwnConventionRules(t *testing.T) {
 					shape.flag, shape.value, len(fs), contractcheck.AsResult(fs).FormatText())
 			}
 
-			// The stub mock must exist for every shape that got a contract.go.
-			// Scaffolding without it is how a hand-rolled fake gets written
-			// next to a mock that was one command away.
-			if fileExists(filepath.Join(dir, "internal", "widgets", "contract.go")) {
-				mock := filepath.Join(dir, "internal", "widgets", "mock_gen.go")
-				if !fileExists(mock) {
-					t.Errorf("--%s %s scaffolded a contract.go but no mock_gen.go; an author who sees no mock writes a fake",
-						shape.flag, shape.value)
-				}
+			// The stub mock must exist for every shape that got a contract —
+			// a contract.go, or a //forge:contract type. Scaffolding without
+			// it is how a hand-rolled fake gets written next to a mock that
+			// was one command away.
+			pkgDir := filepath.Join(dir, "internal", "widgets")
+			if !contractsrc.HasContract(pkgDir) {
+				t.Errorf("--%s %s scaffolded a package with no contract (no contract.go, no //forge:contract type)",
+					shape.flag, shape.value)
+			}
+			if p := contractsrc.Path(pkgDir); !fileExists(p) {
+				t.Errorf("--%s %s: the contract file %q does not exist after scaffold", shape.flag, shape.value, p)
+			}
+			if !fileExists(filepath.Join(pkgDir, "mock_gen.go")) {
+				t.Errorf("--%s %s scaffolded a contract but no mock_gen.go; an author who sees no mock writes a fake",
+					shape.flag, shape.value)
 			}
 		})
 	}

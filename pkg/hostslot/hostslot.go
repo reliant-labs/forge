@@ -27,6 +27,18 @@
 // waiter prints one line naming the holders (pid, command, age) and repeats it
 // periodically, and gives up when its context is cancelled.
 //
+// Lanes. Holders are unbounded in duration — a whole-repo lint holds a slot
+// for most of an hour — so a single FIFO made a one-minute scoped command
+// wait behind every hour-long job ahead of it. So each class has two lanes
+// (see LaneBulk, LaneExpress): bulk, the default, and express, for commands
+// bounded to minutes. Each lane has its own ticket queue, FIFO within the
+// lane. The top R slot indices are reserved for express (ExpressSlotsEnv,
+// default DefaultExpressSlots): bulk holders lock only [0, N-R). An express
+// holder may lock any index, reserved ones first, and a bulk waiter defers
+// to any live express ticket. N is unchanged: the lanes divide the budget.
+// Options.Lane, else FORGE_SLOT_LANE (EnvLane) in Options.Env, picks the
+// lane.
+//
 // Re-entrancy. A process that already runs inside a slot must not take
 // another: a gate step holding a slot that runs `forge generate`, which wants
 // a slot of its own, would otherwise deadlock as soon as every slot is held by
@@ -101,8 +113,13 @@ type Options struct {
 	// Poll is the mean interval between attempts while waiting, jittered
 	// ±50%. Zero is 500ms.
 	Poll time.Duration
-	// Env is the environment read for FORGE_SLOT_HELD, FORGE_SLOTS_DIR and
-	// FORGE_<CLASS>_SLOTS — normally os.Environ(). The package reads no
+	// Lane is the lane to wait in: LaneBulk or LaneExpress. Empty is
+	// FORGE_SLOT_LANE from Env, else bulk. A value naming no lane is an
+	// error; an unknown FORGE_SLOT_LANE is bulk.
+	Lane string
+	// Env is the environment read for FORGE_SLOT_HELD, FORGE_SLOTS_DIR,
+	// FORGE_SLOT_LANE, FORGE_<CLASS>_SLOTS and FORGE_<CLASS>_EXPRESS_SLOTS —
+	// normally os.Environ(). The package reads no
 	// ambient variable itself, so a nil Env means none is set; in
 	// particular, a caller that leaves it nil cannot see the slot its parent
 	// passed it and will queue for one of its own.
@@ -114,6 +131,7 @@ type Options struct {
 type Slot struct {
 	class     string
 	capacity  Capacity
+	lane      string
 	index     int
 	file      *os.File
 	nonce     string
@@ -143,7 +161,11 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Slot{class: class, capacity: capy, index: -1, parent: lookupEnv(opt.Env, EnvHeld)}
+	lane, err := opt.lane()
+	if err != nil {
+		return nil, err
+	}
+	s := &Slot{class: class, capacity: capy, lane: lane, index: -1, parent: lookupEnv(opt.Env, EnvHeld)}
 	if capy.Unlimited {
 		return s, nil
 	}
@@ -157,10 +179,47 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	}
 
 	start := time.Now()
-	q := queue{dir: filepath.Join(dir, "queue")}
-	var holders []Holder
-	if q.ahead("") == 0 {
+	bulkQ, expressQ := queue{dir: filepath.Join(dir, "queue")}, queue{dir: filepath.Join(dir, expressQueueDir)}
+	own, reach := bulkQ, capy.bulkSlots()
+	if lane == LaneExpress {
+		own, reach = expressQ, capy.Slots
+	}
+	// expressFirst is how many express waiters a bulk waiter defers to: a
+	// bulk waiter tries for a slot only while no express ticket is live.
+	expressFirst := func() int {
+		if lane == LaneExpress {
+			return 0
+		}
+		return expressQ.ahead("")
+	}
+	// admit takes a slot for this lane. The express check before it is not
+	// enough alone: an express waiter can file its ticket after that check
+	// and before the lock, and a bulk waiter that then took the freed slot
+	// would overtake it. So a bulk waiter checks again once it holds the
+	// lock, and gives the slot back if an express ticket is live. An express
+	// waiter files its ticket before it tries any slot, so either the
+	// re-check sees that ticket, or the bulk lock came first and the slot
+	// was never free for it.
+	admit := func() (bool, []Holder, error) {
+		if lane != LaneExpress && bulkAdmitting != nil {
+			bulkAdmitting()
+		}
 		ok, h, err := s.tryAny(dir, opt)
+		if err != nil || !ok || lane == LaneExpress {
+			return ok, h, err
+		}
+		if expressQ.ahead("") > 0 {
+			s.giveBack()
+			if deferredToExpress != nil {
+				deferredToExpress()
+			}
+			return false, nil, nil
+		}
+		return true, nil, nil
+	}
+	var holders []Holder
+	if own.ahead("") == 0 && expressFirst() == 0 {
+		ok, h, err := admit()
 		if err != nil {
 			return nil, err
 		}
@@ -170,7 +229,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 		holders = h
 	}
 
-	t, err := q.enqueue(opt.record(""))
+	t, err := own.enqueue(opt.record("", lane))
 	if err != nil {
 		return nil, err
 	}
@@ -182,9 +241,15 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	}
 	var lastNotice time.Time
 	for {
-		ahead := q.ahead(t.name)
-		if ahead < capy.Slots {
-			ok, h, err := s.tryAny(dir, opt)
+		ahead := own.ahead(t.name)
+		first := 0
+		if ahead < reach {
+			if first = expressFirst(); first > 0 && deferredToExpress != nil {
+				deferredToExpress()
+			}
+		}
+		if ahead < reach && first == 0 {
+			ok, h, err := admit()
 			if err != nil {
 				return nil, err
 			}
@@ -195,7 +260,7 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 			holders = h
 		}
 		if opt.Out != nil && time.Since(lastNotice) >= every {
-			fmt.Fprintln(opt.Out, waitingLine(capy, holders, ahead, time.Since(start)))
+			fmt.Fprintln(opt.Out, waitingLine(capy, lane, holders, ahead, first, time.Since(start)))
 			lastNotice = time.Now()
 		}
 		select {
@@ -206,14 +271,28 @@ func Acquire(ctx context.Context, class string, opt Options) (*Slot, error) {
 	}
 }
 
-// tryAny tries every slot once, from a random start so concurrent waiters do
-// not all contend on slot 0. On failure it returns the holders it saw.
+// deferredToExpress, when set (tests only), runs each time a bulk waiter
+// that could try for a slot defers to a live express ticket instead.
+var deferredToExpress func()
+
+// bulkAdmitting, when set (tests only), runs each time a bulk waiter has
+// found no express ticket live and is about to lock a slot.
+var bulkAdmitting func()
+
+// giveBack unlocks a slot tryAny just took, leaving s able to try again.
+func (s *Slot) giveBack() {
+	_ = s.file.Truncate(0)
+	_ = unlock(s.file)
+	_ = s.file.Close()
+	s.file, s.index, s.nonce = nil, -1, ""
+}
+
+// tryAny tries once every slot this slot's lane may lock (Capacity.laneOrder:
+// each range from a random start, so concurrent waiters do not all contend on
+// slot 0). On failure it returns the holders it saw.
 func (s *Slot) tryAny(dir string, opt Options) (bool, []Holder, error) {
-	n := s.capacity.Slots
-	off := mrand.IntN(n)
 	var holders []Holder
-	for k := 0; k < n; k++ {
-		i := (off + k) % n
+	for _, i := range s.capacity.laneOrder(s.lane) {
 		path := slotPath(dir, i)
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
@@ -237,7 +316,7 @@ func (s *Slot) tryAny(dir string, opt Options) (bool, []Holder, error) {
 			_ = f.Close()
 			return false, nil, err
 		}
-		rec := opt.record(nonce)
+		rec := opt.record(nonce, s.lane)
 		if err := f.Truncate(0); err == nil {
 			_, _ = f.WriteAt(rec.encode(), 0)
 		}
@@ -336,6 +415,9 @@ func (s *Slot) Index() int { return s.index }
 // Capacity is the class's capacity as Acquire resolved it.
 func (s *Slot) Capacity() Capacity { return s.capacity }
 
+// Lane is the lane Acquire waited in: LaneBulk or LaneExpress.
+func (s *Slot) Lane() string { return s.lane }
+
 // Reentrant reports why Acquire took nothing because this process already
 // runs inside a slot of the class ("" when it did take one, or the limit is
 // off).
@@ -354,6 +436,9 @@ func (s *Slot) String() string {
 		return s.class + " slots off (" + s.capacity.Source + ")"
 	case s.reentrant != "":
 		return s.class + " slot inherited (" + s.reentrant + ")"
+	}
+	if s.lane == LaneExpress {
+		return fmt.Sprintf("%s slot %d/%d (express)", s.class, s.index+1, s.capacity.Slots)
 	}
 	return fmt.Sprintf("%s slot %d/%d", s.class, s.index+1, s.capacity.Slots)
 }
@@ -429,6 +514,9 @@ func (o Options) capacity(class string) (Capacity, error) {
 	}
 	if o.Slots > 0 {
 		c.Slots, c.Unlimited, c.Source = o.Slots, false, fmt.Sprintf("requested %d", o.Slots)
+		if err := c.resolveExpress(o.Env); err != nil {
+			return Capacity{}, err
+		}
 	}
 	return c, nil
 }
@@ -449,8 +537,10 @@ func (o Options) BaseDir() string {
 
 func (o Options) classDir(class string) (string, error) {
 	dir := filepath.Join(o.BaseDir(), class)
-	if err := os.MkdirAll(filepath.Join(dir, "queue"), 0o755); err != nil {
-		return "", fmt.Errorf("create slot directory: %w", err)
+	for _, q := range []string{"queue", expressQueueDir} {
+		if err := os.MkdirAll(filepath.Join(dir, q), 0o755); err != nil {
+			return "", fmt.Errorf("create slot directory: %w", err)
+		}
 	}
 	return dir, nil
 }
@@ -463,12 +553,12 @@ func (o Options) jitteredPoll() time.Duration {
 	return time.Duration(float64(p) * (0.5 + mrand.Float64()))
 }
 
-func (o Options) record(nonce string) record {
+func (o Options) record(nonce, lane string) record {
 	label := o.Label
 	if label == "" {
 		label = commandLine(os.Args)
 	}
-	return record{pid: os.Getpid(), cmd: oneLine(label), since: time.Now(), nonce: nonce, subtree: o.Subtree}
+	return record{pid: os.Getpid(), cmd: oneLine(label), since: time.Now(), nonce: nonce, subtree: o.Subtree, lane: lane}
 }
 
 func newNonce() (string, error) {
@@ -516,6 +606,9 @@ type Holder struct {
 	Since   time.Time
 	// Subtree is set when the holder's descendants count as inside its slot.
 	Subtree bool
+	// Lane is LaneBulk or LaneExpress. A record written by a forge that
+	// predates lanes reads as bulk.
+	Lane string
 }
 
 func (h Holder) String() string {
@@ -527,25 +620,45 @@ func (h Holder) String() string {
 	if cmd == "" {
 		cmd = "?"
 	}
+	if h.Lane == LaneExpress {
+		return fmt.Sprintf("pid %d (%s) %s express", h.PID, cmd, age)
+	}
 	return fmt.Sprintf("pid %d (%s) %s", h.PID, cmd, age)
 }
 
-func waitingLine(c Capacity, holders []Holder, ahead int, waited time.Duration) string {
+// Overdue reports an express holder older than ExpressOverdue: the lane is
+// meant for commands bounded to minutes, so one this old was misdeclared.
+func (h Holder) Overdue() bool {
+	return h.Lane == LaneExpress && h.Slot >= 0 && !h.Since.IsZero() && time.Since(h.Since) > ExpressOverdue
+}
+
+func waitingLine(c Capacity, lane string, holders []Holder, ahead, expressFirst int, waited time.Duration) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⏳ forge: waiting for a %s slot (%s)", c.Class, waited.Round(time.Second))
+	fmt.Fprintf(&b, "⏳ forge: waiting for a %s slot (%s lane, %s)", c.Class, lane, waited.Round(time.Second))
+	reach, what := c.Slots, ""
+	if lane != LaneExpress && c.Express > 0 {
+		reach, what = c.bulkSlots(), " bulk"
+	}
 	if len(holders) > 0 {
 		parts := make([]string, len(holders))
 		for i, h := range holders {
 			parts[i] = h.String()
 		}
-		fmt.Fprintf(&b, " — %d of %d held: %s", len(holders), c.Slots, strings.Join(parts, ", "))
+		fmt.Fprintf(&b, " — %d of %d%s slots held: %s", len(holders), reach, what, strings.Join(parts, ", "))
 	} else {
-		fmt.Fprintf(&b, " — all %d held", c.Slots)
+		fmt.Fprintf(&b, " — all %d%s slots held", reach, what)
 	}
 	if ahead > 0 {
-		fmt.Fprintf(&b, "; %d queued ahead", ahead)
+		fmt.Fprintf(&b, "; %d queued ahead in the %s lane", ahead, lane)
 	}
-	fmt.Fprintf(&b, ". %d slots = %s; set %s to change, `forge slot status` to list.", c.Slots, c.Source, SlotsEnv(c.Class))
+	if expressFirst > 0 {
+		fmt.Fprintf(&b, "; %d express waiter(s) go first", expressFirst)
+	}
+	fmt.Fprintf(&b, ". %d slots = %s, %d reserved for express; set %s to change, `forge slot status` to list.",
+		c.Slots, c.Source, c.Express, SlotsEnv(c.Class))
+	if lane != LaneExpress {
+		fmt.Fprintf(&b, " A command bounded to minutes (the tests or lint of named packages) can wait in the express lane: %s=%s.", EnvLane, LaneExpress)
+	}
 	return b.String()
 }
 
@@ -556,6 +669,7 @@ type record struct {
 	since   time.Time
 	nonce   string
 	subtree bool
+	lane    string
 }
 
 func (r record) encode() []byte {
@@ -563,12 +677,20 @@ func (r record) encode() []byte {
 	if r.subtree {
 		sub = "1"
 	}
-	return []byte(fmt.Sprintf("pid=%d\ncmd=%s\nsince=%s\nnonce=%s\nsubtree=%s\n",
-		r.pid, r.cmd, r.since.UTC().Format(time.RFC3339Nano), r.nonce, sub))
+	lane := r.lane
+	if lane == "" {
+		lane = LaneBulk
+	}
+	return []byte(fmt.Sprintf("pid=%d\ncmd=%s\nsince=%s\nnonce=%s\nsubtree=%s\nlane=%s\n",
+		r.pid, r.cmd, r.since.UTC().Format(time.RFC3339Nano), r.nonce, sub, lane))
 }
 
 func (r record) holder(slot int) Holder {
-	return Holder{Slot: slot, PID: r.pid, Command: r.cmd, Since: r.since, Subtree: r.subtree}
+	lane := r.lane
+	if lane != LaneExpress {
+		lane = LaneBulk
+	}
+	return Holder{Slot: slot, PID: r.pid, Command: r.cmd, Since: r.since, Subtree: r.subtree, Lane: lane}
 }
 
 func readRecord(path string) (record, bool) {
@@ -593,6 +715,8 @@ func readRecord(path string) (record, bool) {
 			r.nonce = v
 		case "subtree":
 			r.subtree = v == "1"
+		case "lane":
+			r.lane = v
 		}
 	}
 	return r, r.pid > 0

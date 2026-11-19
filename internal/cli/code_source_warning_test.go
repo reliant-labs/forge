@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -227,4 +228,55 @@ func statusVerdictBlock(t *testing.T, text string) string {
 	}
 	t.Fatalf("no tally line in the report:\n%s", text)
 	return ""
+}
+
+// A snapshot binding is observed per consumer slot, not through the hosted
+// observer — and the two-repositories warning is about the app, not that
+// read: `forge env status` of a hosted env bound to a snapshot carries it in
+// its text report and as code_sources.warning in --json, as the observer
+// path does; without one, neither.
+func TestCodeSourceWarningInSnapshotEnvStatus(t *testing.T) {
+	digest := sha("1")
+	snap := release.Snapshot{
+		Artifacts: map[release.ArtifactID]release.SnapshotArtifact{"api": {Location: "r.example/api", Content: digest}},
+		Consumers: []release.Consumer{{Key: release.ConsumerKey{Cluster: "prod", Workload: "api"}, Slots: []string{"container:api"}}},
+		Bindings:  []release.ConsumerBinding{{Consumer: release.ConsumerKey{Cluster: "prod", Workload: "api"}, Slot: "container:api", Artifact: "api"}},
+		Resources: []release.SnapshotResource{{Key: release.ResourceKey{Cluster: "prod", Kind: "Deployment", Namespace: "shop", Name: "api"}}},
+	}
+	lister := &stubLister{images: []cluster.WorkloadImage{{Name: "api", Container: "api", Image: "r.example/api@" + digest}}}
+	for _, tc := range codeSourceWarningCases[:2] {
+		t.Run(tc.golden, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			opts := envStatusOptions{
+				Bindings: newMemBindingStore(map[string]release.Promotion{"prod": {ID: "prom-1", Release: "v1", Snapshot: &snap}}),
+				Lister:   lister, Resolver: stubResolver{}, Timeout: time.Minute,
+				HostedCodeSourceWarning: func(context.Context, string) string { return tc.warning },
+			}
+			var err error
+			text := captureStdout(t, func() { err = runEnvStatusRelease(context.Background(), "prod", opts) })
+			if err != nil {
+				t.Fatalf("the warning must not change the verdict: %v\n%s", err, text)
+			}
+			assertCodeSourceGolden(t, "status_snapshot_text_"+tc.golden, statusVerdictBlock(t, text))
+
+			opts.JSON = true
+			raw := captureStdout(t, func() { err = runEnvStatusRelease(context.Background(), "prod", opts) })
+			if err != nil {
+				t.Fatalf("--json: the warning must not change the verdict: %v", err)
+			}
+			var doc map[string]json.RawMessage
+			if jerr := json.Unmarshal([]byte(raw), &doc); jerr != nil {
+				t.Fatalf("--json is not one document: %v\n%s", jerr, raw)
+			}
+			if string(doc["source"]) != `"snapshot consumer-slot observation"` {
+				t.Fatalf("not the snapshot path: source = %s", doc["source"])
+			}
+			field := map[string]json.RawMessage{}
+			if cs, ok := doc["code_sources"]; ok {
+				field["code_sources"] = cs
+			}
+			out, _ := json.MarshalIndent(field, "", "  ")
+			assertCodeSourceGolden(t, "status_snapshot_json_"+tc.golden, string(out)+"\n")
+		})
+	}
 }

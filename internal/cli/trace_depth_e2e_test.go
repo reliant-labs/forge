@@ -112,16 +112,16 @@ func writeTraceDepthCode(t *testing.T, projectDir string) {
 		writeFileE2E(t, p, strings.Replace(s, old, new, 1))
 	}
 
-	edit("internal/pricing/contract.go", "type Service interface {\n\t// Define your interface methods here.\n}",
-		"type Service interface {\n\tQuote(ctx context.Context, id string) (int64, error)\n}")
-	edit("internal/pricing/contract.go", "package pricing\n", "package pricing\n\nimport \"context\"\n")
 	edit("internal/pricing/service.go", "\t// Add your dependencies here.\n}", "\tWidgets db.WidgetStore\n\tRates   rates.Service\n}")
 	edit("internal/pricing/service.go", "import (\n",
 		"import (\n\t\"context\"\n\n\t\"example.com/traceapp/internal/db\"\n\t\"example.com/traceapp/internal/rates\"\n")
 	// Instrumented by DEFAULT: drop the scaffold's opt-in marker.
 	edit("internal/pricing/service.go", "// forge:constructor\n//\n", "")
 	svc := readFileE2E(t, filepath.Join(projectDir, "internal", "pricing", "service.go"))
+	// The contract is the //forge:contract service type's method set:
+	// generate derives Service (with Quote) into contract_gen.go.
 	writeFileE2E(t, filepath.Join(projectDir, "internal", "pricing", "service.go"), svc+`
+// Quote prices the widget stored under id.
 func (s *service) Quote(ctx context.Context, id string) (int64, error) {
 	s.deps.Logger.InfoContext(ctx, "trace-depth: quoting", "widget", id)
 	w, err := s.deps.Widgets.GetWidgetByID(ctx, id)

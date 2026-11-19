@@ -1011,7 +1011,8 @@ benefits:
     category: test
     title: A generated mock per interface
     claim: >-
-      Every interface in a package's `contract.go` gets a recording mock in
+      Every interface in a package's contract (`contract.go`, or the `Service`
+      derived from a `//forge:contract` struct) gets a recording mock in
       `mock_gen.go`, configured per method by field, so unit tests never
       hand-roll a fake.
     availability: forge
@@ -1723,9 +1724,9 @@ benefits:
     category: guardrails
     title: Package contracts enforced
     claim: >-
-      An internal package with exported methods and no `contract.go` is flagged,
-      so every component is visible to wiring, mocks, the observability
-      decorator and the reporters.
+      An internal package with exported methods and no contract (`contract.go`
+      or a `//forge:contract` type) is flagged, so every component is visible
+      to wiring, mocks, the observability decorator and the reporters.
     availability: forge
     evidence:
       - command: lint --contract

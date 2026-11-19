@@ -22,6 +22,7 @@ var obsEndpointsSchema = obsout.Schema{
 		"query_mode", "sort",
 		"endpoints", "endpoints.service", "endpoints.name", "endpoints.requests", "endpoints.errors", "endpoints.error_ratio",
 		"endpoints.rate_per_second", "endpoints.p50_ms", "endpoints.p95_ms", "endpoints.p99_ms", "endpoints.health",
+		"endpoints.client_p95_ms", "endpoints.client_calls", "client_note",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
 	},
@@ -37,6 +38,10 @@ type obsEndpointDoc struct {
 	P50Ms         float64 `json:"p50_ms"`
 	P95Ms         float64 `json:"p95_ms"`
 	P99Ms         float64 `json:"p99_ms"`
+	// ClientP95Ms and ClientCalls are the browser's view of this rpc (the
+	// web runtime's forge.rpc.client spans); absent when no frontend called it.
+	ClientP95Ms float64 `json:"client_p95_ms,omitempty"`
+	ClientCalls float64 `json:"client_calls,omitempty"`
 	// Health is true for the gRPC health check (grpc.health.v1.Health/Check).
 	// The calls `forge env up` sends are declared probes, which release health
 	// and the dashboards leave out; this table lists them so a stack's
@@ -47,10 +52,13 @@ type obsEndpointDoc struct {
 
 type obsEndpointsDoc struct {
 	obsout.Head
-	Scope      obsout.Scope           `json:"scope"`
-	QueryMode  string                 `json:"query_mode"`
-	Sort       string                 `json:"sort"`
-	Endpoints  []obsEndpointDoc       `json:"endpoints"`
+	Scope     obsout.Scope     `json:"scope"`
+	QueryMode string           `json:"query_mode"`
+	Sort      string           `json:"sort"`
+	Endpoints []obsEndpointDoc `json:"endpoints"`
+	// ClientNote says why the client columns are empty when the client-span
+	// read failed; the endpoints are still shown.
+	ClientNote string                 `json:"client_note,omitempty"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	obsout.Page
 	Suggested []string `json:"suggested,omitempty"`
@@ -70,6 +78,10 @@ func newObsEndpointsCmd() *cobra.Command {
 		Long: `Rank the env's server endpoints (server spans by service and span name) by
 traffic, p95 latency, error ratio or rate: request count, errors, p50/p95/p99.
 [env] defaults to dev. Counts are weighted for tail sampling.
+
+CLIENT P95 is the latency the browser saw for the same rpc: the web
+runtime's client spans (forge.rpc.client), all frontends together, joined to
+the endpoint by rpc.service/rpc.method. "-" when no frontend called it.
 
   ` + Name() + ` obs endpoints dev --sort p95 --top 5
   ` + Name() + ` obs endpoints dev --sort errors --service api --since 6h
@@ -114,6 +126,10 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 		return fail(err)
 	}
 	doc := obsEndpointsDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Sort: o.sort, Endpoints: []obsEndpointDoc{}}
+	if res.ClientUnavailable != "" {
+		doc.ClientNote = "client p95 unavailable: " + res.ClientUnavailable
+		fmt.Fprintln(d.Stderr, "note:", doc.ClientNote)
+	}
 	if n.Explain {
 		doc.Statements = res.Statements
 	}
@@ -121,6 +137,7 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 		doc.Endpoints = append(doc.Endpoints, obsEndpointDoc{
 			Service: e.Service, Name: e.Name, Requests: e.Requests, Errors: e.Errors, ErrorRatio: e.ErrorRatio,
 			RatePerSecond: e.RatePerSecond, P50Ms: e.P50Ms, P95Ms: e.P95Ms, P99Ms: e.P99Ms,
+			ClientP95Ms: e.ClientP95Ms, ClientCalls: e.ClientCalls,
 			Health: isHealthEndpoint(e.Name),
 		})
 	}
@@ -147,9 +164,12 @@ func runObsEndpoints(ctx context.Context, d obsDeps, env string, o obsEndpointsO
 			name += " (health check)"
 		}
 		rows[i] = []string{e.Service, name, fmt.Sprintf("%.0f", e.Requests), strconv.FormatFloat(e.ErrorRatio*100, 'f', 1, 64) + "%",
-			strconv.FormatFloat(e.RatePerSecond, 'f', 2, 64) + "/s", ms(e.P50Ms), ms(e.P95Ms), ms(e.P99Ms)}
+			strconv.FormatFloat(e.RatePerSecond, 'f', 2, 64) + "/s", ms(e.P50Ms), ms(e.P95Ms), ms(e.P99Ms), "-"}
+		if e.ClientCalls > 0 {
+			rows[i][8] = ms(e.ClientP95Ms)
+		}
 	}
-	obsout.Table(d.Stdout, []string{"SERVICE", "ENDPOINT", "REQUESTS", "ERRORS", "RATE", "P50", "P95", "P99"}, rows, 60)
+	obsout.Table(d.Stdout, []string{"SERVICE", "ENDPOINT", "REQUESTS", "ERRORS", "RATE", "P50", "P95", "P99", "CLIENT P95"}, rows, 60)
 	if res.Omitted > 0 {
 		fmt.Fprintf(d.Stdout, "\n(%d more; --top to show them)\n", res.Omitted)
 	}

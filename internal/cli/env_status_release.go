@@ -421,6 +421,10 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	if binding.Snapshot != nil {
 		source = "snapshot consumer-slot observation"
 		results = snapshotStatusImages(ctx, *binding.Snapshot, envName, binding.Release, opts)
+		// The two-repositories warning is about the app, not about how its
+		// release is observed: a snapshot binding of a hosted env carries it
+		// exactly as the observer path below does.
+		codeSourceWarning = hostedCodeSourceWarning(ctx, envName, opts)
 	} else if _, hosted := opts.Bindings.(*hostedStore); hosted || opts.HostedRollout != nil {
 		// A HOSTED env: forge cannot read its cluster, so the control
 		// plane's observer is the witness (env_verify_hosted.go). The
@@ -541,6 +545,30 @@ type hostedStatusRead struct {
 	identity *envIdentityReport
 	// codeSourceWarning is the env's app's two-repositories warning.
 	codeSourceWarning string
+}
+
+// hostedCodeSourceWarning is a hosted env's app's two-repositories warning,
+// read on its own for a status whose release is not read through the hosted
+// observer (a snapshot binding); "" for an env that is not hosted, or when the
+// read fails — a warning is never a reason to fail a status.
+// verifyHostedWithIdentity reads the same warning from the target it resolves
+// for the rollout, so that path pays no second lookup.
+func hostedCodeSourceWarning(ctx context.Context, envName string, opts envStatusOptions) string {
+	readCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if opts.HostedCodeSourceWarning != nil {
+		return opts.HostedCodeSourceWarning(readCtx, envName)
+	}
+	if _, hosted := opts.Bindings.(*hostedStore); !hosted || opts.HostedRollout != nil {
+		// Not hosted; or a test stating the observer's answer, which
+		// states the warning too (HostedCodeSourceWarning) or has none.
+		return ""
+	}
+	target, err := resolveDeclaredWaitTarget(readCtx, envName)
+	if err != nil {
+		return ""
+	}
+	return target.CodeSourceWarning
 }
 
 // verifyHostedWithIdentity is verifyHosted plus the env's managed identity,

@@ -5,7 +5,7 @@ description: The package-level contract markers — //forge:exclude-contract (no
 
 # Package markers
 
-The full rules for the package-level contract markers. `contracts` has the one-table summary of which marker to pick.
+The full rules for the package-level contract markers. `contracts` has the one-table summary of which marker to pick, and the `//forge:contract` struct form that derives a package's `Service` interface. These package markers are independent of which form the contract takes. Package-level `// forge:no-observe` may sit on the marked type's doc, as it may on a `Service` interface doc.
 
 ## Packages forge should not manage: `//forge:exclude-contract: <why>`
 
@@ -34,7 +34,7 @@ var registry = map[string]Strategy{}
 func Register(s Strategy) { registry[s.Name()] = s }
 ```
 
-It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together. The trade is real — **no contract means no generated mock, no observability decorator and no seam** — so the marker costs something at lint time:
+It is the per-package equivalent of a `contracts.exclude` entry in `forge.yaml`: the package is skipped by the canonical-shape check, by bootstrap wiring, and by mock generation together. (A `//forge:contract` type in an excluded package still gets its `contract_gen.go`, because that interface is what the package's own code compiles against; only the mock and decorator are dropped.) The trade is real — **no contract means no generated mock, no observability decorator and no seam** — so the marker costs something at lint time:
 
 - **A bare marker is a lint error** (`forge-exclude-contract-reason`). Write why, the same way a suppressed error-severity rule needs a reason. Codegen still honours a bare marker, so a missing reason never breaks `forge generate`; it fails `forge lint`.
 - **The reason follows a colon, and only a colon.** `//forge:exclude-contract — why` (an em-dash, a hyphen, a bare space) is NOT the directive: the package is not excluded. `forge lint` reports it (`forge-go-markers`, with file:line and the expected form), and so does the contract finding it leaves behind. The same lint fails on any `//forge:<name>` forge does not read — a typo is a silent no-op otherwise. `forge project annotations --kind go` lists every Go-source marker and its form.
@@ -76,7 +76,7 @@ A package may repeat a marker only **identically**: the same reason, and the sam
 
 ## Packages the server does not have: `//forge:not-a-component: <why>`
 
-By default every `internal/<pkg>/contract.go` package is a **server component**: `internal/app/compose.go` constructs it, and `forge generate` must resolve every `Deps` field from another component or from `*Infra` (`internal/app/providers.go`), or it fails with `<Pkg>.Deps.<Field> (<type>) has no provider`.
+By default every contract package (`internal/<pkg>/contract.go`, or a package with a `//forge:contract` type) is a **server component**: `internal/app/compose.go` constructs it, and `forge generate` must resolve every `Deps` field from another component or from `*Infra` (`internal/app/providers.go`), or it fails with `<Pkg>.Deps.<Field> (<type>) has no provider`.
 
 Constructing it means calling `pkg.New(pkg.Deps{…})`, so a composed package needs a `type Deps struct` and a constructor `func New(Deps) T` or `func New(Deps) (T, error)` (any name, with `// forge:constructor`). A composed package without one — an interface catalogue, a constants package that grew a `contract.go`, a `New` that takes something other than `Deps` — fails `forge generate` before `compose.go` is written, naming the package and what is wrong with it. Give it the constructor, or mark it with whichever marker below is true.
 
@@ -93,8 +93,8 @@ What it keeps and what it drops:
 
 | | not-a-component package |
 |---|---|
-| `contract.go` + contract lint (`forge lint --contract`, `forgeconv-*`, including `forgeconv-deps-are-interfaces`) | kept — it is still a contract package |
-| `mock_gen.go` (one mock per interface in `contract.go`) | kept |
+| `contract.go` (or the `//forge:contract` type and its `contract_gen.go`) + contract lint (`forge lint --contract`, `forgeconv-*`, including `forgeconv-deps-are-interfaces`) | kept — it is still a contract package |
+| `mock_gen.go` (one mock per interface in the contract) | kept |
 | `middleware_gen.go` decorator | kept when `New` carries `// forge:constructor`; whoever constructs it wraps it: `pkg.New<Iface>WithForgeMiddleware(pkg.New(deps))` |
 | a `compose.go` field and construction, an `Infra` field, `Deps` resolution | **none** |
 | `helpers_gen_test.go` (`NewTest<Pkg>`) | none — there is no forge-built instance for it to stand in for; test against `New(Deps{…})` with the mocks |
@@ -114,7 +114,7 @@ The marker is checked from both sides, so it cannot quietly go stale:
 
 - **A server component that requires it by type fails `forge generate`**, naming the marker and its reason. The way out is whichever is true: delete the marker (the server needs it and forge can build it), switch to `//forge:external-component` (the server needs it and you build it), or remove the `Deps` field (`//forge:optional-dep` if the consumer copes with nil — an optional consumer is allowed, it just gets nil).
 - **Declare it once, in `doc.go`.** Repetitions must be identical (see "One declaration per package" above; `forge-not-a-component-conflict`).
-- **`forge lint` refuses a bare marker** (`forge-not-a-component-reason`) and **a marker where composition does not read it** (`forge-not-a-component-scope`): on a service handler, worker or operator (server components by definition), beside `//forge:external-component` (a contradiction), or on a package without `contract.go`, outside `internal/`, or already `//forge:exclude-contract` (no effect). A contract package *nested below* a handler is an ordinary internal package and may carry it.
+- **`forge lint` refuses a bare marker** (`forge-not-a-component-reason`) and **a marker where composition does not read it** (`forge-not-a-component-scope`): on a service handler, worker or operator (server components by definition), beside `//forge:external-component` (a contradiction), or on a package without a contract (`contract.go` or a `//forge:contract` type), outside `internal/`, or already `//forge:exclude-contract` (no effect). A contract package *nested below* a handler is an ordinary internal package and may carry it.
 
 **When generate suggests it.** If a package's `Deps` have no provider and no service, worker or operator reaches the package through a chain of `Deps`, the missing-provider error adds the marker as a second remedy. It is a hint, not a decision: a server package whose consumer you have not written yet looks the same, and for that one the answer is to write the consumer (or wire `Infra`).
 

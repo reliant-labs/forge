@@ -57,6 +57,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"sort"
 	"strings"
 	"time"
@@ -329,19 +330,26 @@ func ParsePGO(r io.Reader, q PGOQuery) (PGOProfile, error) {
 	return p, nil
 }
 
+// jsonInt reads an exact integer. Every column PGOEdgesSQL selects is an
+// integer type; a number written in float form ("500.0", "9e3") is accepted
+// only when its value is exactly an int64. It is parsed as a rational, never
+// through float64, so a fractional value (a corrupt answer) is refused rather
+// than truncated into a different edge, and a large weight keeps every digit.
 func jsonInt(n json.Number) (int64, error) {
 	if n == "" {
 		return 0, nil
 	}
-	v, err := n.Int64()
-	if err == nil {
+	if v, err := n.Int64(); err == nil {
 		return v, nil
 	}
-	f, ferr := n.Float64()
-	if ferr != nil {
-		return 0, fmt.Errorf("%q: %w", n, err)
+	r, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return 0, fmt.Errorf("%q is not a number", n)
 	}
-	return int64(f), nil
+	if !r.IsInt() || !r.Num().IsInt64() {
+		return 0, fmt.Errorf("%q is not an exact 64-bit integer", n)
+	}
+	return r.Num().Int64(), nil
 }
 
 func sortEdges(es []Edge) {

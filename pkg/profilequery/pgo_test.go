@@ -154,6 +154,11 @@ func TestParsePGORefusesPartialAnswers(t *testing.T) {
 		"null row":          row + "null\n",
 		"array row":         row + `["main.main","main.hot",7,1]` + "\n",
 		"string row":        row + `"x"` + "\n",
+		"fractional offset": `{"caller":"main.main","callee":"main.hot","offset":7.9,"weight":"9000"}` + "\n",
+		"fractional weight": `{"caller":"main.main","callee":"main.hot","offset":7,"weight":9000.5}` + "\n",
+		"fractional exp":    `{"caller":"main.main","callee":"main.hot","offset":7,"weight":9.0005e3}` + "\n",
+		"weight over int64": `{"caller":"main.main","callee":"main.hot","offset":7,"weight":1e19}` + "\n",
+		"fractional hour":   `{"caller":"main.main","callee":"main.hot","offset":7,"weight":"9000","oldest":1761900000.5}` + "\n",
 	} {
 		if p, err := ParsePGO(strings.NewReader(in), pgoQuery()); err == nil {
 			t.Errorf("%s: accepted as %+v", name, p.Edges)

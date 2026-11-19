@@ -71,6 +71,49 @@ func TestClassifyJoinFilterCarryingARestrictionMarksTheFullReadUnserved(t *testi
 	}
 }
 
+// A subquery's filter restricts the subquery, not the query around it: an
+// outer join that nothing filters stays unfiltered when a SubPlan or InitPlan
+// below it filters a table of its own.
+func TestClassifySubqueryFilterDoesNotRestrictTheOuterJoin(t *testing.T) {
+	for _, parent := range []string{"SubPlan", "InitPlan"} {
+		t.Run(parent, func(t *testing.T) {
+			plan := []byte(`[{"Plan": {"Node Type": "Hash Join", "Hash Cond": "(o.customer_id = c.id)", "Plans": [
+			  {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public", "Alias": "o", "Disabled": true},
+			  {"Node Type": "Hash", "Plans": [
+			    {"Node Type": "Seq Scan", "Relation Name": "customers", "Schema": "public", "Alias": "c", "Disabled": true}]},
+			  {"Node Type": "Aggregate", "Parent Relationship": "` + parent + `", "Subplan Name": "` + parent + ` 1", "Plans": [
+			    {"Node Type": "Seq Scan", "Relation Name": "items", "Schema": "public", "Alias": "i", "Disabled": true,
+			     "Filter": "(i.kind = 'x'::text)"}]}]}}]`)
+			root, err := parsePlan(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rels := map[string]*relInfo{
+				"orders":    {table: "orders", indexes: map[string]indexInfo{"orders_customer": {}}},
+				"customers": {table: "customers", indexes: map[string]indexInfo{}},
+				"items":     {table: "items", indexes: map[string]indexInfo{}},
+			}
+			got, err := classify(root, root, func(_, name string) (*relInfo, error) { return rels[name], nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{
+				"orders":    AccessUnfiltered + "/",
+				"customers": AccessUnfiltered + "/",
+				"items":     AccessUnserved + "/" + UnservedFilter,
+			}
+			if len(got) != len(want) {
+				t.Fatalf("access = %+v, want %v", got, want)
+			}
+			for _, c := range got {
+				if v := c.Verdict + "/" + c.How; v != want[c.Table] {
+					t.Errorf("%s: %s, want %s", c.Table, v, want[c.Table])
+				}
+			}
+		})
+	}
+}
+
 func TestConjunctsSplitTopLevelAnds(t *testing.T) {
 	for in, want := range map[string][]string{
 		"(o.id = c.id)": {"(o.id = c.id)"},

@@ -116,6 +116,16 @@ func (n *rawPlan) ancestors() []*rawPlan {
 	return out
 }
 
+// queryLevel is the top node of n's own query level: the plan's root, or
+// the InitPlan or SubPlan n belongs to.
+func (n *rawPlan) queryLevel() *rawPlan {
+	cur := n
+	for cur.up != nil && cur.Parent != "InitPlan" && cur.Parent != "SubPlan" {
+		cur = cur.up
+	}
+	return cur
+}
+
 // indexUses are the indexes a scan reads and their Index Conds: its own, or
 // a Bitmap Heap Scan's bitmap index scans.
 func (n *rawPlan) indexUses() []*rawPlan {
@@ -292,7 +302,7 @@ type classified struct {
 // LIMIT untouched. Otherwise it is unserved when it evaluates a Filter on
 // every row — a disabled Seq Scan, or an index walked in full for want of a
 // usable one —, when every row is sorted for a LIMIT, or when it is read in
-// full to be joined in a statement that restricts something: an index that
+// full to be joined in a query level that restricts something: an index that
 // leads with the join column but that the plan does not read by it serves
 // nothing. A full read that nothing constrains is
 // unfiltered: no index would help it.
@@ -333,27 +343,28 @@ func classify(normal, noSeq *rawPlan, lookup lookupFunc) ([]classified, error) {
 		return nil, lookupErr
 	}
 
-	// A statement restricts rows when some predicate names at most one
-	// relation (a filter, not a join condition), or a partial index implies
-	// one.
-	restricted := false
+	// A query level restricts rows when some predicate of its own names at
+	// most one relation (a filter, not a join condition), or a partial index
+	// it reads implies one. Each InitPlan and SubPlan is a level of its own:
+	// a subquery's filter restricts the subquery, not the query around it.
+	restricted := map[*rawPlan]bool{}
 	noSeq.walk(func(n *rawPlan) {
 		for _, p := range n.predicates() {
 			if len(referenced(p, aliases)) <= 1 {
-				restricted = true
+				restricted[n.queryLevel()] = true
 			}
 		}
 	})
 	for _, sc := range scans {
 		if partialUse(sc.n, sc.ri) != "" {
-			restricted = true
+			restricted[sc.n.queryLevel()] = true
 		}
 	}
 
 	byTable := map[string]*classified{}
 	var order []string
 	for _, sc := range scans {
-		a := accessOf(sc.n, sc.ri, noSeq, aliases, restricted, partialUse(sc.n, sc.ri))
+		a := accessOf(sc.n, sc.ri, noSeq, aliases, restricted[sc.n.queryLevel()], partialUse(sc.n, sc.ri))
 		cur, ok := byTable[sc.ri.table]
 		if !ok {
 			byTable[sc.ri.table] = &classified{TableAccess: a, reltuples: sc.ri.reltuples}

@@ -55,6 +55,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -63,12 +64,14 @@ const crudOwnerResolverRule = "forgeconv-crud-owner-resolver"
 // lintCRUDOwnerResolverFile reports the wrappers in one parsed handler file
 // whose owner source disagrees with their siblings'. keyColumns maps an
 // RPC to its entity's primary-key column (codegen.ScanCRUDOpKeyColumns);
-// it is called only for a file with owner uses.
-func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.File, keyColumns func() map[string]string) []Finding {
+// it is called only for a file with owner uses. major is the project's
+// connect-go major, which decides whether bare-message (v2) methods are
+// handlers (codegen.ScanCRUDOwnerSources).
+func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.File, major connectmajor.Major, keyColumns func() map[string]string) []Finding {
 	if ast.IsGenerated(file) {
 		return nil
 	}
-	uses := codegen.ScanCRUDOwnerSources(fset, file)
+	uses := codegen.ScanCRUDOwnerSources(fset, file, major)
 	if len(uses) == 0 {
 		return nil
 	}

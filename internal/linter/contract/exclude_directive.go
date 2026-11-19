@@ -164,6 +164,10 @@ func outboundIOSignals() []outboundIOSignal {
 		{label: "a gRPC client call", pkgPath: "google.golang.org/grpc", recv: []string{"ClientConn"}},
 		{label: "a gRPC client dial", pkgPath: "google.golang.org/grpc", funcs: []string{"Dial", "DialContext", "NewClient"}},
 		{label: "a Connect client call", pkgPath: "connectrpc.com/connect", recv: []string{"Client"}},
+		// connect-go v2: one untyped *connect.Client (CallUnary,
+		// CallClientStream, CallServerStream) that every generated client
+		// wraps.
+		{label: "a Connect client call", pkgPath: "connectrpc.com/connect/v2", recv: []string{"Client"}},
 		{label: "a NATS call", pkgPath: "github.com/nats-io/nats.go", prefix: true, recv: []string{"Conn", "EncodedConn", "JetStreamContext", "Subscription", "KeyValue", "ObjectStore"}},
 		{label: "a NATS dial", pkgPath: "github.com/nats-io/nats.go", funcs: []string{"Connect"}},
 		{label: "a NATS JetStream call", pkgPath: "github.com/nats-io/nats.go/jetstream", prefix: true},

@@ -373,6 +373,8 @@ func ApplyOptions[C any, O ~func(*C)](cfg *C, opts ...O) *C {
 // lets the request through: pass [ValidateRequests] to reject it as
 // production does. A later release makes rejecting the default (see
 // validate.go).
+//
+// connect-go v2 services use NewConnectClientV2.
 func NewConnectClient[C any](
 	t *testing.T,
 	register func(mux *http.ServeMux, opts ...connect.HandlerOption),
@@ -410,6 +412,8 @@ func NewConnectClient[C any](
 //
 // Defaults are AuthedContext's (UserID "test-user", Role/Roles "admin"), so
 // an in-process row and an over-the-wire row agree on who is calling.
+//
+// connect-go v2 test servers use ServerPrincipalV2.
 func ServerPrincipal(withClaims func(context.Context, *auth.Claims) context.Context, opts ...ClaimsOption) connect.HandlerOption {
 	return connect.WithInterceptors(serverPrincipal{install: func(ctx context.Context) context.Context {
 		claims := defaultTestClaims()

@@ -1,5 +1,7 @@
 package templates
 
+import "slices"
+
 // ProjectMemoryData is what the framework memory template
 // (project/reliant.md.tmpl) renders from — on disk for a harness that reads a
 // file (`forge project new`), and live for reliant (cli.RenderProjectMemory).
@@ -66,6 +68,24 @@ type ProjectMemoryData struct {
 	Unmanaged []string
 	// Gate is the project's own test / lint / build commands.
 	Gate MemoryGate
+}
+
+// ScaffoldEnvs reports that the guide may describe the envs forge scaffolds:
+// staging and prod, already bound to Reliant hosting. True when the envs are
+// unknown (the guide `forge project new` writes before the tree exists) or
+// deploy/kcl declares both staging and prod. Any other project — reliant's
+// dev, demo and desktop, or no deploy tree at all — gets a guide that names
+// its real envs and claims no hosting binding.
+//
+// Whether an env actually binds forge.OnHosted is known only to a render of
+// it, which the memory (read at the start of every agent session) does not
+// pay for. So the guide never infers hosting for an env it did not scaffold:
+// it names the env and points at its main.k and `env render`.
+func (d ProjectMemoryData) ScaffoldEnvs() bool {
+	if !d.Derived {
+		return true
+	}
+	return slices.Contains(d.DeployEnvs, "staging") && slices.Contains(d.DeployEnvs, "prod")
 }
 
 // MemoryDatabase is the project's migration tool, as the memory names it.

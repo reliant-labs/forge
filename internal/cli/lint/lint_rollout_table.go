@@ -29,6 +29,7 @@
 package lint
 
 import (
+	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -248,6 +249,11 @@ var newRules = []rolloutGroup{
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
+	// forge lint --static-export on a Vite frontend bound to a static
+	// runtime: build.outDir vs the env's public_dir, base vs its base_path.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{
+		staticexport.RuleViteOutDir, staticexport.RuleViteBase,
+	}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

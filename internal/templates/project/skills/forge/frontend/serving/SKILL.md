@@ -184,6 +184,14 @@ run it. The lint is a text scan: it does not follow a re-exported
 `generateStaticParams` or a computed next.config, and stays silent rather
 than guess.
 
+The same lane checks each **Vite** frontend bound to a static runtime: that
+`vite build` writes into the env's `public_dir` (`build.outDir`, `dist` by
+default), and that `base` matches the env's `base_path` (`/` at the site
+root). A relative `base` with a path-based client router warns. A value it
+cannot read statically is named in a note, not guessed. Every other frontend,
+such as an unbound Vite app or an Expo app, gets an explicit "not applicable"
+line.
+
 ## Serving under a path prefix (`base_path`)
 
 To mount a frontend under a URL prefix, declare `base_path: /admin` in

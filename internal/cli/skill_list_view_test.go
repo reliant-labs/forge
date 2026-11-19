@@ -46,8 +46,9 @@ func TestSkillListDefaultFitsOnOneScreen(t *testing.T) {
 	// 57: `adopt` (an existing app in any language) is a top-level entry
 	// point, like `migration`, not a sub-skill of one. 58: so is `connect`
 	// (how each MCP client reaches the local server and the hosted connector).
-	if lines > 58 {
-		t.Errorf("default `skill list` is %d lines, want <= 58 — it must be readable in one call:\n%s", lines, got)
+	// 59: so is `compare` (limits and prices next to other platforms).
+	if lines > 59 {
+		t.Errorf("default `skill list` is %d lines, want <= 59 — it must be readable in one call:\n%s", lines, got)
 	}
 	if lines < 10 {
 		t.Errorf("default `skill list` collapsed to %d lines — it stopped being a catalog:\n%s", lines, got)

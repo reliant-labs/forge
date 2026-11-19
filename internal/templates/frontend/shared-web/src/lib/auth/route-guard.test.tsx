@@ -82,8 +82,8 @@ describe("RouteGuard", () => {
 
   it("offers a signed-in visitor every route", () => {
     session.isAuthenticated = true;
-    renderAt("/orders", ["/", "/orders", "/admin"]);
-    for (const p of ["/", "/orders", "/admin"]) {
+    renderAt("/orders", ["/", "/orders", "/settings"]);
+    for (const p of ["/", "/orders", "/settings"]) {
       expect(screen.getByText(`${p}: open`)).toBeTruthy();
     }
   });

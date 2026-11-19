@@ -14,9 +14,11 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -70,7 +72,7 @@ func newPackageCmd() *cobra.Command {
 		Long: `Manage internal packages with Go interface contracts.
 
 Internal packages live under internal/<name>/ and define their boundary
-through a Go interface in contract.go. Unlike proto API services, internal
+through a Go interface, Service. Unlike proto API services, internal
 package contracts use native Go interfaces — supporting channels, complex
 types, factories, and other constructs that proto cannot express.
 
@@ -82,13 +84,16 @@ Subcommands:
 		Use:   "new <name>",
 		Short: "Create a new internal package with contract interface",
 		Long: `Create a new internal package under internal/<name>/ with:
-  - contract.go  — Go interface that IS the package contract
-  - service.go   — Implementation with unexported concrete type
+  - service.go       — Deps, New, and the unexported service type marked
+                       //forge:contract: its exported methods ARE the contract
+  - contract_gen.go  — the Service interface, derived from that type
+  - deps.go          — the package's dependency interfaces (mocked too)
 
 It ends with a 'forge generate' run, which writes mock_gen.go and
 middleware_gen.go and wires the package into internal/app/compose.go, so
 the project lints clean straight away (--no-generate skips it). After you
-add methods to contract.go, run 'forge generate' again.
+add methods to the service type, run 'forge generate' again.
+(--type adapter and --kind keep a hand-written contract.go.)
 
 ` + packageTypeHelp + `
 
@@ -134,6 +139,9 @@ func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
 		return runPackageNew(cmd, args)
 	}
 	return withGenerateLock(root, func() error {
+		// An adapter's --base-url edits the config proto: it ends as `buf
+		// format` writes it (internal/protofmt).
+		defer protofmt.Begin(root, os.Stderr)()
 		if err := runPackageNew(cmd, args); err != nil {
 			return err
 		}
@@ -229,8 +237,9 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// The directory IS the registry: a package exists because
-	// internal/<name>/ holds a contract.go, which is what both the bootstrap
-	// codegen and every reporter discover it from.
+	// internal/<name>/ holds a contract — a contract.go or a
+	// `//forge:contract` type — which is what both the bootstrap codegen and
+	// every reporter discover it from.
 	pkgDir := filepath.Join(root, "internal", name)
 	if dirExists(pkgDir) {
 		if pkgType == "adapter" && fileExists(filepath.Join(pkgDir, "adapter.go")) && codegen.HasOutboundIODirective(pkgDir) {
@@ -333,18 +342,21 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// EVERY scaffold that produced a contract.go gets its stub mock_gen.go
+	// EVERY scaffold that produced a contract gets its stub mock_gen.go
 	// here, not just the default one. When only the default path emitted it,
 	// an author who scaffolded an adapter or an eventbus opened the directory,
 	// saw no mock, and hand-rolled a fake — which is how a `fakeStore` ends up
 	// in the same package as, and adjacent to, a generated `MockStore`. The
-	// generator mocks EVERY interface in contract.go, so the stub also covers
-	// the dep interfaces declared alongside Service.
+	// contract is read from contractsrc.Path: the derived contract_gen.go for
+	// the default (marker) scaffold, contract.go for the strategy templates.
+	// The generator mocks EVERY interface in it, and in a derived contract's
+	// companions (deps.go), so the stub also covers the dep interfaces
+	// declared beside Service.
 	//
 	// Soft warning rather than a hard error: the canonical fix for any
 	// generator hiccup is to run `forge generate` once the project is
 	// quiescent, and a broken stub should not block package creation.
-	if contractPath := filepath.Join(pkgDir, "contract.go"); fileExists(contractPath) {
+	if contractPath := contractsrc.Path(pkgDir); contractPath != "" && fileExists(contractPath) {
 		if err := contract.Generate(contractPath); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not emit stub mock_gen.go for %s: %v\n", name, err)
 			fmt.Fprintln(os.Stderr, "         run `forge generate` to retry.")
@@ -368,7 +380,8 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// forge.yaml is NOT touched. A package is declared by its own source —
-	// internal/<name>/contract.go, plus the `//forge:outbound-io` marker the
+	// its contract (service.go's `//forge:contract` type, or contract.go),
+	// plus the `//forge:outbound-io` marker the
 	// adapter scaffold stamps — and that is what codegen wires and what
 	// `forge project map` / `forge project audit` / the architecture doc
 	// report. A `packages:` list next to it could only ever be a copy that
@@ -486,7 +499,8 @@ func printPackagePlan(name, pkgType, kind string, hasConfigBlock bool) error {
 			files = append(files, strings.TrimSuffix(f, ".tmpl"))
 		}
 	default:
-		files = []string{"contract.go", "service.go", "contract_test.go"}
+		files = append(files, defaultPackageFiles...)
+		files = append(files, contractsrc.DerivedFileName)
 	}
 	files = append(files, "mock_gen.go", "observe_chain.go")
 	sort.Strings(files)
@@ -520,9 +534,11 @@ var packageFileRoles = map[string]string{
 	"adapter_test.go":  "httptest-backed test, already passing",
 	"cache.go":         "empty by design: where the TTL/rate-budget goes when you add one",
 	"contract.go":      "the Service interface — the boundary callers depend on",
-	"service.go":       "the implementation",
+	"contract_gen.go":  "generated: the Service interface, derived from the //forge:contract type in service.go",
+	"deps.go":          "the dependency interfaces Deps names — mocked alongside Service",
+	"service.go":       "Deps, New, and the //forge:contract implementation — its exported methods ARE the contract, start here",
 	"contract_test.go": "contract-level test (yours after this scaffold)",
-	"mock_gen.go":      "generated: one mock per interface in contract.go",
+	"mock_gen.go":      "generated: one mock for Service and one per dependency interface",
 	"observe_chain.go": "owned observability seam (add/drop middleware, set log level)",
 	"client.go":        "HTTP client implementation",
 	"eventbus.go":      "event bus implementation",
@@ -573,13 +589,20 @@ func printScaffoldedPackageSummary(pkgDir, name, pkgType string) {
 	}
 
 	// The next step differs by shape: an adapter arrives with a working
-	// HealthCheck to extend, so the work is in adapter.go; the default
-	// package arrives with an empty interface, so the work starts in
-	// contract.go.
+	// HealthCheck to extend, so the work is in adapter.go; a --kind package
+	// keeps its hand-written contract.go; the default package derives its
+	// interface from service.go's `//forge:contract` type, so the work starts
+	// there.
 	if pkgType == "adapter" {
 		fmt.Printf("\n   Next: implement the downstream calls in internal/%s/adapter.go, declaring each\n", name)
 		fmt.Printf("         one on the Service interface in internal/%s/contract.go as you go, then run\n", name)
 		fmt.Printf("         `forge generate` to refresh internal/%s/mock_gen.go — one mock per interface.\n", name)
+		return
+	}
+	if contractsrc.HasMarkedType(pkgDir) {
+		fmt.Printf("\n   Next: add the package's methods on *service in internal/%s/service.go (each exported one is\n", name)
+		fmt.Printf("         part of Service) and its dependency interfaces in internal/%s/deps.go, then run `forge generate`\n", name)
+		fmt.Printf("         to refresh contract_gen.go and mock_gen.go — one mock per interface, ready for tests.\n")
 		return
 	}
 	fmt.Printf("\n   Next: edit internal/%s/contract.go to declare the Service interface (and any dep interfaces),\n", name)
@@ -613,34 +636,36 @@ func renderPackageKindTree(pkgDir, kindOrType string, data any, requireNonEmpty 
 	return nil
 }
 
-// renderDefaultPackageScaffold renders the default internal-package set:
-// contract.go, service.go, and a once-only contract_test.go (owned by the
-// user after the first scaffold). The stub mock_gen.go is emitted by the
-// caller, which does it for every scaffold shape rather than just this one.
+// renderDefaultPackageScaffold renders the default internal-package set —
+// service.go (Deps, the `//forge:contract` service type, New), deps.go (the
+// home of the package's dependency interfaces) and a once-only
+// contract_test.go, all owned by the user after the first scaffold — and
+// derives contract_gen.go from the marked type. The stub mock_gen.go is
+// emitted by the caller, which does it for every scaffold shape rather than
+// just this one.
 func renderDefaultPackageScaffold(pkgDir string, data any) error {
-	contractContent, err := templates.InternalPkgTemplates().Render("contract.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render contract.go: %w", err)
-	}
-	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "contract.go"), contractContent, 0o644); err != nil {
-		return fmt.Errorf("write contract.go: %w", err)
-	}
-
-	serviceContent, err := templates.InternalPkgTemplates().Render("service.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render service.go: %w", err)
-	}
-	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "service.go"), serviceContent, 0o644); err != nil {
-		return fmt.Errorf("write service.go: %w", err)
+	for _, file := range defaultPackageFiles {
+		content, err := templates.InternalPkgTemplates().Render(file+".tmpl", data)
+		if err != nil {
+			return fmt.Errorf("render %s: %w", file, err)
+		}
+		if err := atomicfile.WriteFile(filepath.Join(pkgDir, file), content, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", file, err)
+		}
 	}
 
-	contractTestContent, err := templates.InternalPkgTemplates().Render("contract_test.go.tmpl", data)
-	if err != nil {
-		return fmt.Errorf("render contract_test.go: %w", err)
+	// service.go's `//forge:contract` type IS the contract; the Service
+	// interface New returns is derived from it into contract_gen.go. Derive
+	// it now, not at the next `forge generate`: until it exists the package
+	// does not compile, and the stub mock the caller emits is read from it.
+	if _, err := contract.SyncDerivedContract(pkgDir, contract.Options{}); err != nil {
+		return fmt.Errorf("derive %s: %w", contractsrc.DerivedFileName, err)
 	}
-	if err := atomicfile.WriteFile(filepath.Join(pkgDir, "contract_test.go"), contractTestContent, 0o644); err != nil {
-		return fmt.Errorf("write contract_test.go: %w", err)
-	}
-
 	return nil
 }
+
+// defaultPackageFiles are the owned files the default (marker-form) package
+// scaffold renders, each from <file>.tmpl in the internal-package templates.
+// There is no contract.go: service.go's `//forge:contract` type declares the
+// contract, and contract_gen.go is derived from it.
+var defaultPackageFiles = []string{"service.go", "deps.go", "contract_test.go"}

@@ -65,6 +65,7 @@ type lintFlags struct {
 	graph             bool
 	slowTests         bool
 	testWaits         bool
+	protoFormat       bool
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
@@ -209,6 +210,9 @@ Examples:
                                  # built without its decorator) and rewrite
                                  # each log call to its ...Context form and
                                  # each such New to NewInstrumented
+  forge lint --proto-format      # FAIL on a .proto buf format would rewrite
+                                 # (the pre-commit buf-format hook's check);
+                                 # --fix writes buf's output
   forge lint --proto-options     # Flag a (forge.v1.*) annotation naming an
                                  # option field forge's descriptors do not
                                  # define — it compiles, and forge reads it
@@ -376,6 +380,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.testWaits, "test-waits", false, "Fail on a Go test that waits on the wall clock where it should wait on an event — a time.Sleep before the test goes on, an event wait that fails the test after a deadline under 5s (select on time.After, testify Eventually, a poll bounded by time.Now().Add), or an upper bound asserted on real elapsed time — the shapes that flake on a loaded machine. Runs in every forge lint; the fix is testkit.Eventually / testkit.Receive")
+	cmd.Flags().BoolVar(&flags.protoFormat, "proto-format", false, "Fail on a .proto that buf format would rewrite — the scaffolded pre-commit buf-format hook's own check (buf format -d over the buf workspace), so lint and the commit hook cannot disagree. Runs in every forge lint; with --fix, writes buf's output")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, contract refusals in a tree with no forge.yaml, and an advisory lane's own could-not-run report (the typed-config guardrail when golangci-lint never reported). Not needed for a gating lane that could NOT run: that always fails, unless --allow-skip accepts it")
 	// No backticks (see --optional-deps-guard): cobra would take the quoted
 	// span as the argument placeholder.

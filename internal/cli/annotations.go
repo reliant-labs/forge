@@ -352,6 +352,13 @@ func markerSpecs() []MarkerSpec {
 			Placement: "leading full-line comment above the field, or a trailing comment on the field line",
 			Example:   "string api_token = 2; // forge:secret",
 		},
+		{
+			Name:      codegen.ProtoMarkerRequestOption,
+			AppliesTo: "field",
+			Effect:    "Declares a List request field a request knob, not a filter: the generated List op neither filters on it nor refuses it for naming no column, the scaffolded list page renders no control for it, and forgeconv-list-filter-optional does not judge it. The lint already leaves alone a field that names none of the listed message's fields (the generated filter never reads one); the marker is for a knob that shares its name with one. Read on every `forge generate`. Use it for an opt-in behaviour flag whose zero value is the old behaviour — `optional` would change a shipped field's cardinality, and `required` would forbid turning the flag off.",
+			Placement: "leading full-line comment above the field, or a trailing comment after the field's `;`",
+			Example:   "bool archived = 8; // forge:request-option — also return archived rows; not a filter on the archived column",
+		},
 
 		// ── Column-comment markers ──
 		//
@@ -510,6 +517,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
 		},
 		{
+			Name:      "forge:no-capture",
+			AppliesTo: "contract",
+			Effect:    "Keeps parameters out of the forge.forensics event a component span records when a call fails or runs slow. Forensics is redacted at generation time already (IDs, numbers and bools by value; other strings and collections by length; everything else by type); this drops the named parameters entirely, or every parameter when bare. forge.yaml `observability: {forensics: false}` turns capture off project-wide.",
+			Placement: "above one interface method, or on its implementation's doc comment",
+			Example:   "type Service interface {\n\t// forge:no-capture customerID\n\tLookup(ctx context.Context, customerID string) error\n}",
+		},
+		{
 			Name:      "forge:service",
 			AppliesTo: "contract",
 			Effect:    "Declares this interface to be the package's contract when it is not named `Service`. `forge:contract` is an accepted synonym. Names are deliberately free — `Service` is a poor name for a mailer or a store — but the signature is not: the constructor must take Deps and return the contract, or there is nothing to wire.",
@@ -554,9 +568,9 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:contract",
 			AppliesTo: "contract",
-			Effect:    "Synonym of `forge:service`: declares this interface the package's contract when it is not named `Service`. `contract` reads better on a non-service package.",
-			Placement: "on the interface's doc comment",
-			Example:   "// forge:contract\ntype Store interface { Get(ctx context.Context, id string) (Row, error) }",
+			Effect:    "On a struct (any non-interface type): its exported methods ARE the package's contract — `forge generate` derives `type Service interface` from them into the forge-owned contract_gen.go (method docs copied, plus `var _ Service = (*T)(nil)`), and mock_gen.go and middleware_gen.go follow from it. One per package; not on an alias or a generic type, and not beside a hand-written Service. On an interface: synonym of `forge:service`, declaring it the package's contract when it is not named `Service`.",
+			Placement: "on the implementing type's doc comment (the derived form), or on the interface's doc comment",
+			Example:   "// forge:contract\ntype service struct{ deps Deps }\n\n// Send delivers one message.\nfunc (s *service) Send(ctx context.Context, to string) error",
 		},
 		{
 			Name:      "forge:provided",
@@ -582,7 +596,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:root",
 			AppliesTo: "root",
-			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it) and migrate=apply|wait|none (what its process does about the schema); an unknown option fails generate.",
+			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it), migrate=apply|wait|none (what its process does about the schema) and adopt (in a project still on the legacy Infra / NewComponents composition, generate this root's graph beside it — one root at a time, migrations/v1.0.0/composition-graph); an unknown option fails generate.",
 			Placement: "on the struct's doc comment, unspaced",
 			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
 		},

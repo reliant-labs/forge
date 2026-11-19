@@ -34,7 +34,15 @@ func upgradeAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) (rows []
 	if err != nil {
 		return nil, "", err
 	}
-	if cfg == nil || (cfg.CI.Provider != "" && cfg.CI.Provider != "github") {
+	if cfg == nil {
+		return rows, "", nil
+	}
+	switch cfg.CI.EffectiveProvider() {
+	case config.CIProviderGitHub:
+	case config.CIProviderReliant:
+		// The Reliant workflows do not depend on any env's render.
+		return append(rows, generator.CIWorkflowAdvisoryFiles(projectDir, cfg, generator.CIInputs{})...), "", nil
+	default:
 		return rows, "", nil
 	}
 	if topo := discoverCIHostedEnvs(projectDir); len(topo.Unrendered) > 0 {

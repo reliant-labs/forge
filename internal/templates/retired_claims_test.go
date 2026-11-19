@@ -69,10 +69,10 @@ var retiredClaims = []retiredClaim{
 				"|service's `contract\\.go`" +
 				"|contract\\.go, impl,? and generated handlers"),
 		truth: "a handler package (internal/handlers/<svc>/) has no contract.go: its *Service methods ARE the rpc " +
-			"logic, and `forge scaffold package <name>` writes internal/<name>/contract.go for logic that needs isolation",
+			"logic, and `forge scaffold package <name>` writes internal/<name>/ (a //forge:contract service) for logic that needs isolation",
 		see:  "forge/api",
 		bad:  "Internal services (`internal/handlers/<svc>/contract.go`) probably already split cleanly",
-		good: "Domain packages behind the handlers (`internal/<name>/contract.go`, from `forge scaffold package`)",
+		good: "Domain packages behind the handlers (`internal/<name>/service.go`, from `forge scaffold package`)",
 	},
 	{
 		id:      "per-service-business-layer",
@@ -81,7 +81,7 @@ var retiredClaims = []retiredClaim{
 			"*Service methods, and a standalone internal/<name>/ package is opt-in via `forge scaffold package`",
 		see:  "forge/service-layer",
 		bad:  "| Business decisions, DB calls | `internal/<svc>/contract.go` (interface) + `service.go` (impl) |",
-		good: "a standalone package — `forge scaffold package <name>` writes `internal/<name>/contract.go`",
+		good: "a standalone package — `forge scaffold package <name>` writes `internal/<name>/service.go`",
 	},
 	{
 		id:      "thin-translation-handler",

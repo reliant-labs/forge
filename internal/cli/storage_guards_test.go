@@ -32,7 +32,7 @@ func TestStorageReserveBlocksDirectBuildLanes(t *testing.T) {
 		"variant":  func() buildResult { return buildVariant(ctx, "test", "./cmd/test", BuildVariant{Name: "debug"}, "bin") },
 		"frontend": func() buildResult { return buildFrontend(ctx, config.FrontendConfig{Name: "web"}, buildMemoryCaps{}) },
 		"project Docker": func() buildResult {
-			return dockerBuildProject(ctx, cfg, dockerImageTags{}, "", versionInfo{}, projectImageGuard{})
+			return dockerBuildProject(ctx, cfg, dockerImageTags{}, "", versionInfo{}, nil, projectImageGuard{})
 		},
 		"frontend Docker": func() buildResult { return dockerBuild(ctx, cfg, "web", ".", dockerImageTags{}, "") },
 		"service Docker":  func() buildResult { return buildServiceDocker(ctx, cfg, "api", "api", nil, buildOptions{}, "", "") },

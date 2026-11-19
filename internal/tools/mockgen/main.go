@@ -31,6 +31,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractsrc"
+	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
@@ -77,8 +79,15 @@ func run(root string, out io.Writer) error {
 	generated, changed := 0, 0
 	for _, target := range targets {
 		dir := filepath.Dir(target)
-		if filepath.Base(target) == "contract.go" && contract.ExcludedByDirective(dir) {
+		if filepath.Base(target) != depsurface.DepsFileName && contract.ExcludedByDirective(dir) {
 			continue
+		}
+		// A contract derived from a `//forge:contract` type is read from
+		// contract_gen.go, so that file is brought current first.
+		if filepath.Base(target) == contractsrc.DerivedFileName {
+			if _, err := contract.SyncDerivedContract(dir, opts); err != nil {
+				return fmt.Errorf("derive the contract of %s: %w", dir, err)
+			}
 		}
 		rel, err := filepath.Rel(root, dir)
 		if err != nil {

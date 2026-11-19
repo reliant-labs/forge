@@ -31,6 +31,8 @@ func FuncMap() template.FuncMap {
 		"browserReplayPrivacyGuard": func() string { return browserReplayPrivacyGuard },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
+		// pgoBuildArg names a binary's PGO ARG in the Dockerfile (PGOBuildArg).
+		"pgoBuildArg": PGOBuildArg,
 		"humanize": func(s string) string {
 			words := strings.Fields(naming.Humanize(s))
 			for i, w := range words {
@@ -303,6 +305,15 @@ func listTemplates(root string, recursive bool) ([]string, error) {
 		return nil, err
 	}
 	return files, nil
+}
+
+// ReliantCIWorkflowData is what a ci.provider reliant workflow
+// (ci/reliant/*.yaml.tmpl) renders with. The workflow's logic is all
+// literal YAML; the only project fact in it is the check's name.
+type ReliantCIWorkflowData struct {
+	// Check is the GitHub check run the workflow posts, "<project>/ci" or
+	// "<project>/review": the name a branch ruleset requires.
+	Check string
 }
 
 // CIWorkflowData holds data for the spec-driven CI workflow template.
@@ -780,7 +791,7 @@ type FrontendTemplateData struct {
 	// image what it means in the repository. Empty falls back to
 	// frontends/<FrontendName>, where the scaffolder writes every frontend.
 	RepoPath string
-	// Public renders the frontend WITHOUT a sign-in gate (auth_mode: none):
+	// Public renders the frontend WITHOUT a sign-in gate (--auth-mode none):
 	// providers.tsx / routes.tsx mount no RouteGuard and the Vite tree
 	// declares no /auth/sign-in route. See generator.FrontendGenOptions.Public.
 	Public bool

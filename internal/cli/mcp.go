@@ -86,6 +86,7 @@ default is the directory the server was started in, or -C):
               libraries      forge/pkg and web-runtime APIs
               audit          what THIS project currently is
               shapes         where every rpc/message/table/handler is, with file:line
+              blast_radius   the ops a diff changes, with their traffic when an env is given
               skill_list     the skill catalog
               skill_search   find a skill by keyword
               skill_load     print one skill

@@ -3,6 +3,7 @@ package contract
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/inspect"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // RequireContractAnalyzer checks that internal packages with exported methods
@@ -40,6 +42,11 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	// The package-under-test is analyzed separately and still subject to the
 	// contract rule.
 	if strings.HasSuffix(pass.Pkg.Name(), "_test") {
+		return nil, nil
+	}
+
+	// Skip commands (`package main`). See isMainPackage.
+	if isMainPackage(pass) {
 		return nil, nil
 	}
 
@@ -166,11 +173,13 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	// Check for contract.go in the package.
+	// Check for a contract in the package: contract.go, the contract_gen.go
+	// derived from a `//forge:contract` type, or that marked type itself
+	// (before the first `forge generate` writes contract_gen.go).
 	hasContract := false
 	for _, file := range pass.Files {
 		filename := pass.Fset.Position(file.Pos()).Filename
-		if filepath.Base(filename) == "contract.go" {
+		if contractsrc.IsContractFile(filepath.Base(filename)) || declaresMarkedContractType(file) {
 			hasContract = true
 			break
 		}
@@ -238,6 +247,20 @@ var stdlibConventionMethods = map[string]bool{
 // convention methods rather than exempting the package.
 func isStdlibConventionMethod(decl *ast.FuncDecl) bool {
 	return stdlibConventionMethods[decl.Name.Name]
+}
+
+// isMainPackage reports whether the package under analysis is a command
+// (`package main`). Go refuses to import a main package, so nothing outside
+// it can call its exported methods or read its exported vars: exporting is
+// not an API surface there, and a rule about a package's API has nothing to
+// judge. The exported methods a command does have are almost always a
+// stdlib interface it hands to the stdlib — flag.Value's Set, sort's Less —
+// and demanding a contract.go for them only trained authors to spend the
+// //forge:exclude-contract opt-out on every command
+// (internal/consumercanary, internal/apigate). The command's collaborators,
+// the packages it imports, are analyzed on their own.
+func isMainPackage(pass *analysis.Pass) bool {
+	return pass.Pkg.Name() == "main"
 }
 
 // isInternalPackage returns true if the package path contains an "internal/" segment.
@@ -338,6 +361,35 @@ func isCompositionSeamPackage(pass *analysis.Pass, pkgPath string) bool {
 		base := filepath.Base(pass.Fset.Position(file.Pos()).Filename)
 		if composeSeamFiles[base] {
 			return true
+		}
+	}
+	return false
+}
+
+// declaresMarkedContractType reports whether file declares a non-interface
+// type carrying `//forge:contract`: the implementation a package's Service
+// contract is derived from.
+func declaresMarkedContractType(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
+				continue
+			}
+			var declDoc *ast.CommentGroup
+			if len(gd.Specs) == 1 {
+				declDoc = gd.Doc
+			}
+			if contractsrc.HasDirectiveComment(contractsrc.Marker, declDoc, ts.Doc, ts.Comment) {
+				return true
+			}
 		}
 	}
 	return false

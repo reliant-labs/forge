@@ -60,6 +60,7 @@ func TestStartRouterCarriesBothPaths(t *testing.T) {
 		"72 hours",                                 // what the agent must tell the user
 		"claim link",                               // ...and hand over
 		"forge env status prod --claimable",        // how to get the link again
+		"forge skill load compare",                 // the honest comparison: limits and prices
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("`forge start` is missing %q", want)
@@ -106,7 +107,7 @@ func TestStartRouterCommandsParse(t *testing.T) {
 // TestStartRouterNamesShippedSkills checks the skills named bare in prose
 // (`frontend/design`), which the command parse above does not see.
 func TestStartRouterNamesShippedSkills(t *testing.T) {
-	for _, name := range []string{"frontend/design", "frontend/serving", "migration", "deploy/static-site", "deploy/hosting"} {
+	for _, name := range []string{"frontend/design", "frontend/serving", "migration", "deploy/static-site", "deploy/hosting", "compare"} {
 		if !strings.Contains(startRouter, name) {
 			t.Errorf("router no longer names %q: drop it from this list", name)
 		}

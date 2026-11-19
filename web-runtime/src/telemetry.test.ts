@@ -25,9 +25,8 @@ const addAction = vi.fn();
 const setGlobalAttributes = vi.fn();
 const stopSessionRecorder = vi.fn();
 
-// The SDK as a bundler hands it back: a module NAMESPACE, whose members are
-// read-only getters at the top level AND the real client under `default`. The
-// real client's methods use `this`, so calling one on the namespace throws.
+// The client's methods use `this`, so calling one on anything but the client
+// throws.
 const client = {
   init(this: unknown, ...args: unknown[]) {
     if (this !== client) {
@@ -63,22 +62,11 @@ const client = {
   },
 };
 
-vi.mock("@hyperdx/browser", () => {
-  const ns = { default: client } as Record<string, unknown>;
-  for (const key of [
-    "init",
-    "recordException",
-    "addAction",
-    "setGlobalAttributes",
-    "stopSessionRecorder",
-  ] as const) {
-    Object.defineProperty(ns, key, {
-      get: () => client[key],
-      enumerable: true,
-    });
-  }
-  return ns;
-});
+// The runtime's HyperDX client (sdk-client.ts) as initBrowserTelemetry loads
+// it. The client itself is tested over a fake @hyperdx/otel-web in
+// sdk-client.test.ts; what is pinned here is what initBrowserTelemetry hands
+// it, and that it calls the client, never something in front of it.
+vi.mock("./sdk-client.js", () => ({ loadSdkClient: async () => client }));
 
 const ORIGIN = "http://localhost:3000";
 
@@ -179,7 +167,7 @@ describe("initBrowserTelemetry", () => {
     init.mockImplementation(() => {
       throw new Error("boom");
     });
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { t } = await load();
 
     await expect(
@@ -219,6 +207,34 @@ describe("initBrowserTelemetry", () => {
 
     expect(recordException).toHaveBeenCalledWith(err, {
       "react.component_stack": "at X",
+    });
+  });
+
+  it("tells the RPC span stage what it may record: forensics per rpcForensics, nothing once disabled", async () => {
+    stubDom();
+    let { t, k } = await load();
+    let gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: true,
+    });
+    k.disableTelemetry();
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: false,
+      forensics: false,
+    });
+
+    ({ t, k } = await load());
+    gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      rpcForensics: false,
+    });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: false,
     });
   });
 });
@@ -513,7 +529,7 @@ describe("benign browser errors", () => {
   });
 
   it("leaves everything as it was when the SDK fails to start", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await start({}, { initThrows: true });
     expect(console.error).toBe(consoleUnderSdk);
     const { trace } = await import("@opentelemetry/api");
@@ -529,7 +545,7 @@ describe("benign browser errors", () => {
   });
 
   it("undoes the tracer wrap and the console tap when startup fails after the SDK init", async () => {
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     setGlobalAttributes.mockImplementationOnce(() => {
       throw new Error("late failure");
     });
@@ -2999,5 +3015,36 @@ describe("frame stall spans", () => {
         },
       ]);
     }
+  });
+});
+
+describe("setTelemetryAttributes", () => {
+  it("stamps the app's attributes on every span: held before the SDK runs, applied at once after", async () => {
+    stubDom();
+    const { t } = await load();
+    t.setTelemetryAttributes({ "reliant.build": "b1", ignored: 3 as never });
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(setGlobalAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({ "reliant.build": "b1", "app.client": "web" }),
+    );
+    expect(
+      setGlobalAttributes.mock.calls.some(([a]) => "ignored" in (a as object)),
+    ).toBe(false);
+
+    t.setTelemetryAttributes({ "reliant.build": "b2" });
+    expect(setGlobalAttributes).toHaveBeenLastCalledWith({
+      "reliant.build": "b2",
+    });
+  });
+
+  it("is a no-op after disableTelemetry()", async () => {
+    stubDom();
+    const { t, k } = await load();
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    k.disableTelemetry();
+    setGlobalAttributes.mockClear();
+    t.setTelemetryAttributes({ "reliant.build": "b3" });
+    expect(setGlobalAttributes).not.toHaveBeenCalled();
   });
 });

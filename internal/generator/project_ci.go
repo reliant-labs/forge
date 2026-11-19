@@ -7,6 +7,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -30,15 +31,18 @@ func githubOwnerFromModulePath(modulePath string) string {
 	return rest[:slash]
 }
 
-// generateCIFiles writes the GitHub Actions workflows, dependabot, and the
-// .github starters at `forge project new` time.
+// generateCIFiles writes the CI files of the project's ci.provider (GitHub
+// Actions workflows and dependabot, or the Reliant workflows), and the
+// .github starters, at `forge project new` time.
 //
 // The workflow set and every template's data come from CIWorkflows — the
 // same function `forge generate` calls — fed the forge.yaml this scaffold
 // just wrote, read back through the loader `forge generate` uses. So the
 // two commands cannot render different workflows for the same project.
 func (g *ProjectGenerator) generateCIFiles() error {
-	const provider = "github"
+	// The PR template and CODEOWNERS are GitHub repository files, not CI:
+	// they come from the github templates whichever provider runs CI.
+	const provider = config.CIProviderGitHub
 
 	cfg, err := ReadProjectConfig(filepath.Join(g.Path, "forge.yaml"))
 	if err != nil {
@@ -71,7 +75,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	// scaffold states what it just wrote.
 	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs}
 	for _, f := range CIWorkflowsFor(g.Path, cfg, in) {
-		content, err := templates.CITemplates(provider).Render(f.Template, f.Data)
+		content, err := f.Render()
 		if err != nil {
 			return fmt.Errorf("render CI template %s: %w", f.Template, err)
 		}

@@ -18,7 +18,9 @@
 // Two constructions are untraced by design and never flagged: a pool opened
 // only to look its driver up (probesDriverOnly — how a traced pool is built
 // from a driver name), and a client in a file that exports telemetry over
-// OTLP (exportsTelemetry — tracing an exporter traces its own exports).
+// OTLP (exportsTelemetry — tracing an exporter traces its own exports),
+// whether through an OTel exporter package or an OTLP/JSON payload the file
+// encodes itself.
 
 package tracinglint
 
@@ -26,6 +28,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/linter/finding"
@@ -98,9 +102,10 @@ func rawHTTPClientFindings(f *goFile) []finding.Finding {
 }
 
 // exportsTelemetry reports a file that speaks OTLP — it imports an OTLP
-// exporter or marshaller (otlptracehttp, pprofileotlp, …). Its client sends
-// telemetry, and is untraced on purpose: a traced exporter opens a span per
-// export, which the next export carries, which opens another, forever.
+// exporter or marshaller (otlptracehttp, pprofileotlp, …), or encodes the
+// OTLP/JSON payload itself (otlpJSONEncoder). Its client sends telemetry, and
+// is untraced on purpose: a traced exporter opens a span per export, which
+// the next export carries, which opens another, forever.
 func exportsTelemetry(f *goFile) bool {
 	for _, p := range f.imports {
 		if !strings.HasPrefix(p, "go.opentelemetry.io/") {
@@ -110,7 +115,41 @@ func exportsTelemetry(f *goFile) bool {
 			return true
 		}
 	}
-	return false
+	return otlpJSONEncoder(f)
+}
+
+// otlpJSONRoots are the top-level keys of an OTLP/JSON export request, one per
+// signal. The protocol fixes them (lowerCamelCase protobuf field names), so a
+// file that hand-encodes a payload — a CLI that posts its events as OTLP logs
+// without linking an SDK exporter — must spell one of them.
+var otlpJSONRoots = map[string]bool{
+	"resourceSpans":    true,
+	"resourceLogs":     true,
+	"resourceMetrics":  true,
+	"resourceProfiles": true,
+}
+
+// otlpJSONEncoder reports a file that encodes an OTLP/JSON export request
+// itself: a struct field tagged json:"resourceLogs" (or another signal's
+// root), or that key as a string literal (a map-built payload).
+func otlpJSONEncoder(f *goFile) bool {
+	found := false
+	ast.Inspect(f.file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return !found
+		}
+		v, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		name, _, _ := strings.Cut(reflect.StructTag(v).Get("json"), ",")
+		if otlpJSONRoots[v] || otlpJSONRoots[name] {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // untracedTransport explains why the client literal's transport is untraced,

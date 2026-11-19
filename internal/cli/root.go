@@ -135,7 +135,7 @@ func NewRootCmd() *cobra.Command {
 	var rootCmd *cobra.Command
 	rootCmd = &cobra.Command{
 		Use:   "forge",
-		Short: "Build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
+		Short: "Reliant Forge: build, run and ship static sites, SPAs, web/mobile apps and APIs, LLM-first",
 		Long: `Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge, Foundry's
 forge (Solidity) or Laravel Forge.
 
@@ -146,6 +146,8 @@ observability and linters from day 0.
 New here? 'forge start' prints, in about 60 lines, the one command for the
 directory you are in: deploy the app already here with no account
 ('forge env deploy prod --claimable'), or create one.
+'forge skill load compare' says where forge fits next to Vercel, Supabase or
+Render: what it replaces, its limits and what hosting costs.
 
 A landing page, docs site, SPA or PWA with no backend is a complete forge
 project: one static frontend on hosted static hosting, no server to run.
@@ -347,8 +349,13 @@ path from an empty directory to authored protos, in one call.`,
 	// lives under it with the env as a positional argument. Commands where
 	// env is an optional modifier (e.g. `forge build [env]`) stay at root.
 	rootCmd.AddCommand(newEnvCmd())
+	// `app` acts on a hosted app as a whole — every env the control plane
+	// runs for this project: stop, tear down, delete (app_lifecycle.go).
+	rootCmd.AddCommand(newAppCmd())
 	// `obs` reads back what the local observability stack collected.
 	rootCmd.AddCommand(newObsCmd())
+	// `pgo` writes each Go binary's default.pgo from an env's profiles (pgo.go).
+	rootCmd.AddCommand(newPGOCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on
 	// `forge env build --release` and advancing one stays on `forge env
 	// promote` — both act on the thing that owns them. What lives here is

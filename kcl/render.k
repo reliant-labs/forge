@@ -887,6 +887,55 @@ _profiling_env = lambda w: any, env: {str:} -> {str:str} {
         | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
 }
 
+# A project-relative path the one way the PGO rules compare it: surrounding
+# space trimmed, empty and `.` segments dropped ("./", "." and "" are the
+# root; "./Dockerfile" is "Dockerfile"); an absolute path as it is.
+# internal/cli pgoProjectPath is the same function. A GitSource (another
+# repository's file) is no project path: "-", which matches nothing.
+_pgo_project_path = lambda p: any -> str {
+    _p = "-" if typeof(p) == "GitSource" else str(p).strip()
+    _p if _p.startswith("/") else "/".join([s for s in _p.split("/") if s and s != "."])
+}
+
+# The image binary a command names, or "": the scaffolded Dockerfile's
+# WORKDIR is /app, so /app/<bin>, /app/bin/<bin> and bin/<bin> all name
+# <bin>. internal/cli commandBinary is the same function.
+_pgo_command_binary = lambda c0: str -> str {
+    _bin = c0[9:] if c0.startswith("/app/bin/") else (c0[5:] if c0.startswith("/app/") else (c0[4:] if c0.startswith("bin/") else ""))
+    _bin if "/" not in _bin else ""
+}
+
+# The binary a DockerBuild workload runs, as the key its `pgo` names it by
+# ("./cmd/<bin>"), or "". internal/cli dockerWorkloadBinary is the same
+# rule, and the two must agree (kcl/tests/positive_build_pgo_docker_binary.k
+# is rendered by both): a command naming an image binary is ./cmd/<bin>;
+# with no command the project Dockerfile's ENTRYPOINT runs ./cmd/<project>;
+# another Dockerfile runs a binary only when its pgo names it (the
+# command's, or its only key).
+_pgo_docker_binary = lambda w: any, b: DockerBuild, project: str -> str {
+    _bin = _pgo_command_binary(w.command[0] if w.command else "")
+    _from_cmd = "./cmd/${_bin}" if _bin else ""
+    _project_df = _pgo_project_path(b.dockerfile) in ["", "Dockerfile"] and _pgo_project_path(b.context) == ""
+    (_from_cmd if _from_cmd else ("" if w.command else ("./cmd/${project}" if project else ""))) if _project_df else \
+        (_from_cmd if _from_cmd and _from_cmd in b.pgo else ([k for k in b.pgo][0] if len(b.pgo) == 1 else ""))
+}
+
+# Whether the binary w runs builds with PGO disabled (kcl/schema.k PGO).
+_pgo_off = lambda w: any, project: str -> bool {
+    _b = w.build if w.build else None
+    _docker_bin = _pgo_docker_binary(w, _b, project) if _b and _b.type == "docker" else ""
+    (not _b.pgo.enabled) if _b and _b.type == "go" else \
+        (_docker_bin in _b.pgo and not _b.pgo[_docker_bin].enabled if _docker_bin else False)
+}
+
+# FORGE_PROFILES_PGO=off for a workload whose binary has PGO disabled: the
+# runtime (forge/pkg/observe) then stops attaching the per-frame start lines
+# `forge pgo pull` reads, which nothing would use. Unless the workload's own
+# env sets it.
+_pgo_env = lambda w: any, bundle: Bundle, env: {str:} -> {str:str} {
+    {FORGE_PROFILES_PGO = "off"} if not _env_set(env, "FORGE_PROFILES_PGO") and _pgo_off(w, bundle.project) else {}
+}
+
 # The keys forge derives for w on rt (only those the author left unset).
 _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
@@ -896,6 +945,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
         | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
         | (_obs_env(rt, bundle, _env) if _runs else {}) \
         | (_profiling_env(w, _env) if _runs else {}) \
+        | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
 }
@@ -1992,7 +2042,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 }
 
 # ReleaseHealth, resolved. The key set is the release shape's
-# `release_health`; the window is in seconds and fail_on is sorted.
+# `release_health`; the window is in seconds and fail_on is sorted, without
+# the findings warn_on demotes (the shape records only the failing set, so
+# every reader, of any age, judges by it).
 # require_baseline is present only when it is not the default ("any"), and
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
@@ -2006,7 +2058,7 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_error_rate_increase": h.max_error_rate_increase
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
-        "fail_on": sorted(h.fail_on)
+        "fail_on": sorted([c for c in h.fail_on if c not in h.warn_on])
         if h.require_baseline != "any":
             "require_baseline": h.require_baseline
         if h.regressed_issue_min_events and h.regressed_issue_min_events != h.new_issue_min_events:
@@ -2901,6 +2953,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 #   PAGE_VIEWS           "false" only; unset means page_viewed events
 #   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
+#   RPC_FORENSICS        "false" only; unset means a failed RPC's span carries
+#                        its redacted request shape
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
 #                        default "identified" and browser telemetry is not
 #                        off; unset means identified
@@ -2914,6 +2968,7 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
         | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
         | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {}) \
+        | ({RPC_FORENSICS = "false"} if _t and not _t.rpc_forensics else {}) \
         | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 
@@ -3043,6 +3098,24 @@ _render_build_variant = lambda bv: BuildVariant -> any {
 }
 
 
+# A build's PGO (kcl/schema.k PGO), every field explicit. A GoBuild whose
+# PGO is the default renders no `pgo` key, so an env that declares none
+# renders exactly as it did before PGO existed; the Go decoder reads an
+# absent key as the defaults.
+_render_pgo = lambda p: PGO -> any {
+    {
+        "enabled": p.enabled
+        "from_env": p.from_env
+        "since": p.since
+        "min_weight": p.min_weight
+        "services": p.services
+    }
+}
+
+_pgo_is_default = lambda p: PGO -> bool {
+    p.enabled and not p.from_env and p.since == "168h" and p.min_weight == "10s" and not p.services
+}
+
 _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
@@ -3056,6 +3129,8 @@ _render_go_build = lambda b: GoBuild -> any {
         "tags": b.tags
         "flags": b.flags
         "env": b.env if b.env else {}
+        if not _pgo_is_default(b.pgo):
+            "pgo": _render_pgo(b.pgo)
     }
 }
 
@@ -3078,6 +3153,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         # docker.build_contexts. Where the image goes is the workload's
         # `image`, not a field here.
         "build_contexts": b.build_contexts if b.build_contexts else {}
+        # Per-binary PGO, keyed by package path; absent when none is named.
+        if b.pgo:
+            "pgo": {k: _render_pgo(v) for k, v in b.pgo}
     }
 }
 

@@ -257,7 +257,39 @@ const (
 	// scanner (RawProtoService.Unmanaged), from the comment block above
 	// `service X {`, with the entity markers' placement rule.
 	ProtoMarkerUnmanaged = "forge:unmanaged"
+
+	// ProtoMarkerRequestOption declares that a List request field is a
+	// request knob, not a filter: an opt-in behaviour flag
+	// (`bool withhold_costs_without_billing_read`) whose zero value is the
+	// old behaviour. Read on every generate, by both extractors
+	// (SchemaFieldDef.RequestOption, MessageFieldDef.RequestOption): the
+	// generated List op filters on nothing for it, the scaffolded list page
+	// renders no control for it, and forgeconv-list-filter-optional does not
+	// judge it.
+	//
+	// forgeconv-list-filter-optional already leaves alone a field that names
+	// none of the listed message's fields, because the generated filter
+	// never reads one (forge#2264). The marker is for the knob that happens
+	// to share its name with one, which name-matching would take for a
+	// filter.
+	ProtoMarkerRequestOption = "forge:request-option"
 )
+
+// requestOptionMarkerLineRE recognizes ProtoMarkerRequestOption in a
+// `//`-prefixed proto comment, leading the field on its own line or trailing
+// its declaration (the raw scanner's shape).
+var requestOptionMarkerLineRE = ProtoMarkerAnyLineRE([]string{ProtoMarkerRequestOption})
+
+// requestOptionMarkerCommentRE is requestOptionMarkerLineRE for comment text
+// buf has already stripped the `//` from — the descriptor path's shape.
+var requestOptionMarkerCommentRE = ProtoMarkerAnyCommentRE([]string{ProtoMarkerRequestOption})
+
+// CommentMarksRequestOption reports whether a field's comment text (slashes
+// already stripped, the descriptor path's shape) carries
+// ProtoMarkerRequestOption.
+func CommentMarksRequestOption(comment string) bool {
+	return requestOptionMarkerCommentRE.MatchString(comment)
+}
 
 // KnownProtoMarkers is the complete set of `forge:*` marker names a .proto
 // comment may carry, spanning every pass that reads one (entity birth,
@@ -280,6 +312,7 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerQueryScope,
 	ProtoMarkerCustom,
 	ProtoMarkerUnmanaged,
+	ProtoMarkerRequestOption,
 }
 
 // customCommentRE recognizes ProtoMarkerCustom in comment text buf has already

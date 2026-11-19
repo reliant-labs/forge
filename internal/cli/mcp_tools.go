@@ -77,6 +77,14 @@ type skillLoadArgs struct {
 	Name string `json:"name" jsonschema:"skill path from skill_list or skill_search, e.g. forge, db, db/seeding"`
 }
 
+type blastRadiusInput struct {
+	dirInput
+	Env   string `json:"env,omitempty" jsonschema:"env whose telemetry weighs each op by its traffic, e.g. prod; omit for the static mapping alone"`
+	Base  string `json:"base,omitempty" jsonschema:"commit the diff starts from (default: the merge base of origin/main, else main, with the head)"`
+	Head  string `json:"head,omitempty" jsonschema:"commit the diff ends at (default: the working tree: base..HEAD's commits, then base against the working tree, staged and unstaged, plus every untracked file .gitignore does not exclude)"`
+	Since string `json:"since,omitempty" jsonschema:"traffic window with env, e.g. 24h or 7d (default 7d)"`
+}
+
 type lintInput struct {
 	dirInput
 	Scope []string `json:"scope,omitempty" jsonschema:"project-relative paths to lint instead of the whole project, e.g. internal/handlers/jobs; whole-project lanes are skipped and named, so run unscoped before merging"`
@@ -100,10 +108,10 @@ type reportBugInput struct {
 
 // Descriptions of the tools the hosted connector shares with this server.
 const (
-	mcpDescBenefits    = "What forge does for the repo at dir, as JSON. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate), to quote to your user. In a forge project: every shipped benefit. Then skill_load name=adopt."
-	mcpDescSkillList   = "The skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge."
+	mcpDescBenefits    = "What Reliant Forge does for the repo at dir, as JSON: each benefit's claim and the command, lint lane or library that backs it, checked against this binary, so you can tell your user what they get without reading the docs. With no forge.yaml: the benefits that work in any repo in any language (standalone lint lanes, runtime libraries, playbooks, the no-account static site path), each with its first step (adopt) and the agent time to first value (estimate). In a forge project: every shipped benefit. Limits and hosting prices next to Vercel, Supabase or Render: skill_load name=compare. Then skill_load name=adopt."
+	mcpDescSkillList   = "The Reliant Forge skill catalog (forge-shipped, project and user skills): playbooks for adopting forge in an existing app, debugging, testing, migrations, observability, deploy, and forge's own architecture, proto, db and api. Outside a forge project, start with skill_load name=adopt; in one, name=forge."
 	mcpDescSkillSearch = "Find skills by keyword. Scores paths, descriptions and bodies, so it finds a skill whose title never mentions your term."
-	mcpDescSkillLoad   = "Print one skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: the entry point that names the rest. Skills quote the forge CLI; each command has the tool of the same name here."
+	mcpDescSkillLoad   = "Print one Reliant Forge skill, authoritative for the forge version running. In a repo that is not a forge project, name=adopt: what forge does for it, the survey, the estimates and every entry point. In a forge project, name=forge: what the project gets with no setup (traces, per-endpoint latency and errors, alerts, release health checks), then the entry point that names the rest. name=compare: where forge fits next to Vercel, Supabase or Render, its limits and hosting prices. Skills quote the forge CLI; each command has the tool of the same name here."
 )
 
 // addBenefitsTool registers benefits: what forge does for the repo at dir.
@@ -136,7 +144,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "capabilities",
-		Description: "Everything forge can do, in one call: every command, every lint analyzer (including ones hidden from --help) and every // forge:* marker. Read this before hand-writing something forge may already scaffold.",
+		Description: "Everything Reliant Forge can do, in one call: every command, every lint analyzer (including ones hidden from --help) and every // forge:* marker. Read it before hand-writing a scaffold, check or helper forge already has; one call replaces paging through --help.",
 		Annotations: readOnly,
 	}, func(in dirInput) cmdSpec {
 		return cmdSpec{dir: in.Dir, args: []string{"project", "capabilities"}}
@@ -174,7 +182,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "shapes",
-		Description: "Where every symbol is: each rpc, message, enum, table, store, handler and hook with file:line, derived live from proto, migrations and source. Start recon here instead of grepping. grep takes a regex, so ask about several entities at once.",
+		Description: "Where every symbol is: each rpc, message, enum, table, store, handler and hook with file:line, derived live from proto, migrations and source, so one call answers what a grep across five directories would. Start recon here instead of grepping. grep takes a regex, so ask about several entities at once.",
 		Annotations: readOnly,
 	}, func(in shapesInput) cmdSpec {
 		args := []string{"project", "shapes"}
@@ -192,6 +200,8 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		}
 		return cmdSpec{dir: in.Dir, args: args}
 	})
+
+	addBlastRadiusTool(srv, r)
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_list",
@@ -314,6 +324,55 @@ func addCmdTool[In any](srv *mcp.Server, r *mcpRunner, tool *mcp.Tool, spec func
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// addBlastRadiusTool registers blast_radius: `forge obs blast-radius --json`.
+// The result is the document alone: the verb's stderr note when telemetry is
+// unavailable repeats the document's telemetry.reason, and interleaving it
+// would make the JSON unparseable.
+func addBlastRadiusTool(srv *mcp.Server, r *mcpRunner) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "blast_radius",
+		Description: "The ops a diff can change (rpcs and component methods), why each is reached (method, handler, helper, package or proto), the commits and PRs that changed it, and the changed files no op is mapped from, as JSON (forge.obs.blast_radius/v1). " +
+			"Default diff: this branch's merge base with origin/main to the working tree. With env, each op also carries its traffic (calls, errors, p50/p95/p99 per service) and ops are ordered busiest first; telemetry that cannot be read leaves telemetry.status unavailable and still answers with the mapping. Use it to judge a change's risk before review or release.",
+		// Read-only; open-world because with env it may ask the env's control plane.
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: ptr(true)},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in blastRadiusInput) (*mcp.CallToolResult, any, error) {
+		stdout, stderr, err := r.execStreams(ctx, in.Dir, nil, blastRadiusArgs(in)...)
+		if err != nil && ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		res := &mcp.CallToolResult{}
+		text := strings.TrimSpace(stdout)
+		if err != nil {
+			// The failure document is on stdout; anything that failed before
+			// it (an unknown flag) is only on stderr.
+			res.IsError = true
+			if text == "" {
+				text = strings.TrimSpace(stderr + "\nError: " + err.Error())
+			}
+		}
+		if text == "" {
+			text = "(no output)"
+		}
+		res.Content = []mcp.Content{&mcp.TextContent{Text: text}}
+		return res, nil, nil
+	})
+}
+
+// blastRadiusArgs is the command line a blast_radius call runs.
+func blastRadiusArgs(in blastRadiusInput) []string {
+	args := []string{"obs", "blast-radius"}
+	if in.Env != "" {
+		args = append(args, in.Env)
+	}
+	args = append(args, "--json")
+	for _, f := range []struct{ flag, value string }{{"--base", in.Base}, {"--head", in.Head}, {"--since", in.Since}} {
+		if f.value != "" {
+			args = append(args, f.flag+"="+f.value)
+		}
+	}
+	return args
+}
 
 // addSchemaTool registers the schema tool: the JSON Schemas forge publishes.
 func addSchemaTool(srv *mcp.Server, r *mcpRunner, readOnly *mcp.ToolAnnotations) {

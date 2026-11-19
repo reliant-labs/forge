@@ -20,7 +20,7 @@ Add an interactor whenever you find yourself wanting to call two or more deps in
 
 If a workflow only calls one dep, you don't need an interactor — that one method belongs on that dep's own interface. Interactors earn their keep by *composing*.
 
-Scaffold it — don't hand-roll the package: `forge scaffold package <name>` emits `contract.go`, `service.go`, and a starter `contract_test.go`; declare your dep interfaces in `contract.go` and grow the all-mock workflow tests as you implement. Never write orchestration inline in a handlers package — it grows into a god-function (and trips `funlen`).
+Scaffold it — don't hand-roll the package: `forge scaffold package <name>` emits `service.go` (`Deps`, the `//forge:contract`-marked `service` struct and `New`) and a starter `contract_test.go`; forge derives the `Service` interface into `contract_gen.go`. Declare your dep interfaces in `deps.go` and grow the all-mock workflow tests as you implement. Never write orchestration inline in a handlers package — it grows into a god-function (and trips `funlen`).
 
 ## What goes in
 
@@ -32,7 +32,7 @@ Scaffold it — don't hand-roll the package: `forge scaffold package <name>` emi
 
 ## What does NOT go in
 
-- Direct calls to HTTP / vendor SDK / queue / storage. That's an adapter's job. Declare a role interface in `contract.go`, add the matching `Deps` field, and call `s.deps.Foo.Fetch(ctx, ...)`.
+- Direct calls to HTTP / vendor SDK / queue / storage. That's an adapter's job. Declare a role interface in `deps.go`, add the matching `Deps` field, and call `s.deps.Foo.Fetch(ctx, ...)`.
 - Transport-layer logic — request/response shape conversion, validation tied to wire types. That's the handler's job; the handler *calls* the interactor.
 - Cross-package state. If two interactors need to share state, the state belongs on a service (or a dedicated state holder both interactors depend on as another `Deps` field).
 
@@ -41,15 +41,15 @@ Scaffold it — don't hand-roll the package: `forge scaffold package <name>` emi
 The reason interactors are testable is that **every `Deps` field is an interface**. Concrete struct pointers in the dep set defeat the all-mock test surface and force tests to drag in real downstreams. This is lint-enforced for every package, not just this one: `forgeconv-deps-are-interfaces` FAILS `forge lint` on any `Deps` field that is a concrete struct or a pointer to one.
 
 ```go
-type Service interface {
-    ChargeAndAudit(ctx context.Context, in ChargeAndAuditInput) error
-}
+// Service is derived: contract_gen.go holds it, built from the exported
+// methods of the //forge:contract-marked `service` struct below, so there is
+// no hand-written interface here.
 
 // Dep interfaces — what this interactor needs FROM each dep.
-// They live in contract.go (here), not next to the adapter, for two
-// reasons: the interactor's full dep surface is documented in one
-// place, and contract.go is the file `forge generate` mocks — an
-// interface declared anywhere else gets no mock.
+// They live in deps.go (here; first line `// forge:deps — ...`), not next
+// to the adapter, for two reasons: the interactor's full dep surface is
+// documented in one place, and deps.go is a file `forge generate` mocks —
+// an interface declared anywhere else gets no mock.
 type Charger interface {
     Charge(ctx context.Context, userID string, amount int64) (chargeID string, err error)
 }
@@ -66,6 +66,7 @@ type Deps struct {
     Auditor Auditor
 }
 
+//forge:contract
 type service struct{ deps Deps }
 
 func New(deps Deps) (Service, error) { return &service{deps: deps}, nil }
@@ -122,7 +123,7 @@ For the related case where a typed Deps field can't reference its target yet bec
 
 ## How to test
 
-All-mock deps — and the mocks already exist. **Never hand-roll a fake here.** `forge generate` writes one mock per interface in `contract.go` into `mock_gen.go`, in the same package: `Charger` → `MockCharger`, `Auditor` → `MockAuditor`. A hand-rolled `fakeCharger` is a reimplementation of a file sitting next to the one you are typing in.
+All-mock deps — and the mocks already exist. **Never hand-roll a fake here.** `forge generate` writes one mock per interface in the contract (`Service` and the dep interfaces in `deps.go`) into `mock_gen.go`, in the same package: `Charger` → `MockCharger`, `Auditor` → `MockAuditor`. A hand-rolled `fakeCharger` is a reimplementation of a file sitting next to the one you are typing in.
 
 Each mock has a `XxxFunc` field per method (assign it to script the call; leave it unset and the method returns a `"MockCharger.ChargeFunc not set"` error, which is itself a useful assertion) and embeds `contractkit.Recorder`, which records every call. That recorder is what removes the bookkeeping the hand-rolled version existed for:
 
@@ -181,14 +182,15 @@ This emits the canonical package layout:
 
 ```
 internal/billing-flow/
-  contract.go     # Service + the dep interfaces this workflow needs
-  service.go      # Deps + service struct; New(Deps) (Service, error)
+  service.go      # Deps + //forge:contract service struct; New(Deps) (Service, error)
+  deps.go         # the dep interfaces this workflow needs (// forge:deps) — added as you declare them
+  contract_gen.go # generated: Service, derived from service's exported methods
   contract_test.go
-  mock_gen.go     # one mock per interface in contract.go — emitted immediately
+  mock_gen.go     # one mock per interface in the contract — emitted immediately
   observe_chain.go
 ```
 
-The scaffold ships with `Logger` and `Config` as its only deps, so `forge generate` stays green the moment the package exists. Declare one role interface per dep in `contract.go` and add the matching `Deps` field **once its implementation exists** — `forge generate` wires each field by type to the registered component that implements it. Declaring a dep interface before any component satisfies it fails generate loudly (`MissingProvider`): scaffold the adapter first, then declare the dep.
+The scaffold ships with `Logger` and `Config` as its only deps, so `forge generate` stays green the moment the package exists. Declare one role interface per dep in `deps.go` and add the matching `Deps` field **once its implementation exists** — `forge generate` wires each field by type to the registered component that implements it. Declaring a dep interface before any component satisfies it fails generate loudly (`MissingProvider`): scaffold the adapter first, then declare the dep.
 
 ## Lint enforcement
 

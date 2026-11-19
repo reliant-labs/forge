@@ -17,6 +17,13 @@
 //   - pprof has no link concept. The `trace_id` / `span_id` labels that
 //     DoWithProfileLabels puts on request goroutines become the OTLP link table
 //     entries, so a sample can be joined to its span.
+//   - It sorts each location's lines by line number, which scrambles an
+//     inlinee and the caller it was inlined into. Their pprof order (inlinee
+//     first, as OTLP also specifies) is restored here (profiles_pgo.go).
+//   - The clickhouse exporter drops Function.start_line, which Go's PGO needs.
+//     CPU samples carry it as the forge.profile.start_lines attribute, beside
+//     forge.profile.leaf_frames (profiles_pgo.go; PROFILES.md, "PGO start
+//     lines").
 
 package observe
 
@@ -50,8 +57,15 @@ const (
 // OTLP profiles carrying res as their resource. It returns an empty Profiles
 // (SampleCount() == 0) for a profile that recorded nothing. Sample types named
 // in drop are left out (the heap profile's types that are not selected); the
-// last remaining type is never dropped.
+// last remaining type is never dropped. CPU samples carry the PGO start-line
+// attributes (profiles_pgo.go).
 func pprofToOTLP(r io.Reader, res *resource.Resource, drop ...string) (pprofile.Profiles, error) {
+	return pprofToOTLPWith(r, res, true, drop...)
+}
+
+// pprofToOTLPWith is pprofToOTLP with the PGO start-line attributes optional:
+// startLines false (FORGE_PROFILES_PGO=off) leaves them off CPU samples.
+func pprofToOTLPWith(r io.Reader, res *resource.Resource, startLines bool, drop ...string) (pprofile.Profiles, error) {
 	p, err := profile.Parse(r)
 	if err != nil {
 		return pprofile.Profiles{}, fmt.Errorf("parse pprof: %w", err)
@@ -78,12 +92,16 @@ func pprofToOTLP(r io.Reader, res *resource.Resource, drop ...string) (pprofile.
 		pruneUnreferenced(p)
 	}
 	links := extractLinks(p)
+	inlined := inlineOrder(p)
 
 	out, err := pproftrans.ConvertPprofToProfiles(p)
 	if err != nil {
 		return pprofile.Profiles{}, fmt.Errorf("convert pprof to OTLP profiles: %w", err)
 	}
 	pd := *out
+	if err := restoreInlineOrder(p, inlined, pd); err != nil {
+		return pprofile.Profiles{}, err
+	}
 
 	linkTable := pd.Dictionary().LinkTable()
 	if linkTable.Len() == 0 {
@@ -134,6 +152,11 @@ func pprofToOTLP(r io.Reader, res *resource.Resource, drop ...string) (pprofile.
 					}
 					return true
 				})
+				if startLines && isCPUProfile(pd.Dictionary(), prof) {
+					if err := attachStartLines(pd.Dictionary(), prof); err != nil {
+						return pprofile.Profiles{}, fmt.Errorf("attach %s: %w", startLinesAttribute, err)
+					}
+				}
 			}
 		}
 	}

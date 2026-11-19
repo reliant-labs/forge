@@ -233,7 +233,7 @@
             "alias": "p99"
           }
         ],
-        "where": "ServiceName IN ('shop-api') AND SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND match(SpanName, '^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$')",
+        "where": "ServiceName IN ('shop-api') AND SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND match(SpanName, '^[A-Za-z0-9_.]+/[A-Za-z0-9_]+$') AND SpanAttributes['forge.probe'] != 'true'",
         "whereLanguage": "sql",
         "groupBy": "SpanName"
       }

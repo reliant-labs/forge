@@ -33,6 +33,10 @@ One project image carries every binary. Its ENTRYPOINT is the binary and
 its CMD the default subcommand (`server`), so a workload's `args` select
 what the pod runs, the same subcommand the host runtime runs.
 
+## Profile-guided builds
+
+A Go binary with a committed `cmd/<bin>/default.pgo` is built with it (Go's default `-pgo=auto`), on every runtime. `forge pgo pull --env prod` writes the file from production's CPU profiles and `forge env build` prints a `pgo:` line per binary; `pgo = forge.PGO {...}` on a `GoBuild` (or `DockerBuild.pgo`, keyed by binary) sets the source env and window, and `enabled = False` passes `-pgo=off`. Load `observability/profiles`.
+
 ## Skip an unchanged ShellBuild with `inputs`
 
 A `forge.ShellBuild` runs its `cmd` on every build, because forge cannot see
@@ -55,9 +59,24 @@ only when the content fingerprint of the inputs, `cmd`, `env`, platform and
 destination match the last SUCCESSFUL build in this env, and the registry
 still serves that build's digest at the tag; deploy then pins that digest.
 `--rebuild` (on `forge build`, `forge env build`, `forge env up`) forces a
-run. An image-less build, an input glob that matches nothing, and `--release`
-always run. Keep the command's outputs out of its inputs; forge warns when a
-build rewrites its own inputs.
+run. An image-less build and an input glob that matches nothing always run.
+Keep the command's outputs out of its inputs; forge warns when a build
+rewrites its own inputs.
+
+**Releases reuse the previous release's image.** `forge env build <env>
+--release <v>` compares the same inputs, with `cmd`/`env` from a render
+whose `image_tag` is a sentinel (so only the tag the KCL composed in is left
+out; the cwd is keyed relative to the project), against the `inputs_digest` the image
+recorded in the release the env runs now, then the project's newest release.
+Equal, and the registry still serves that digest: forge points the new tag
+at it and records `carried_from`, without running the command, so a build
+that is not reproducible no longer rolls every workload pinned to it. The log
+names the matched inputs and the reused digest, or why it ran (no inputs,
+no earlier release, a release cut before forge recorded inputs, inputs
+changed, digest gone). A command that bakes the tag into the image (a
+version stamp) would carry the old stamp: give it no `inputs`. A hosted
+ledger keeps `inputs_digest` only once its control plane stores it; until
+then hosted releases rebuild as before.
 
 ## The hosted registry takes your control-plane credential
 

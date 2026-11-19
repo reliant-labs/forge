@@ -41,17 +41,26 @@ import (
 func TestFrontendScaffoldImportsResolve(t *testing.T) {
 	t.Parallel()
 
-	for _, kind := range []string{"", "vite-spa", "mobile"} {
+	for _, tc := range []struct {
+		kind   string
+		public bool
+	}{{"", false}, {"vite-spa", false}, {"mobile", false}, {"", true}, {"vite-spa", true}} {
+		kind := tc.kind
 		label := kind
 		if label == "" {
 			label = "web(default)"
+		}
+		if tc.public {
+			// A public frontend (--auth-mode none) leaves the sign-in flow
+			// out (isSignInScreen): nothing it still emits may import it.
+			label += "/public"
 		}
 		t.Run(label, func(t *testing.T) {
 			t.Parallel()
 
 			root := t.TempDir()
 			if err := GenerateFrontendFilesWithOptions(
-				root, "example.com/app", "app", "fe", 8080, kind, FrontendGenOptions{},
+				root, "example.com/app", "app", "fe", 8080, kind, FrontendGenOptions{Public: tc.public},
 			); err != nil {
 				t.Fatalf("GenerateFrontendFilesWithOptions(kind=%q): %v", kind, err)
 			}

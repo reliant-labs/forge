@@ -36,6 +36,20 @@ type GraphGenInput struct {
 	// Roots, when set, receives the roots as processes — the reach the
 	// deploy config (config_gen.k's ROOTS) projects.
 	Roots *[]GraphRoot
+	// Mixed generates only the adopted roots of a legacy project
+	// (CompositionMixed): their constructors in MixedComposeFile, a graph of
+	// exactly what they reach, and nothing the legacy composition owns
+	// (mounts_services_gen.go stays, no service catalog is written).
+	Mixed bool
+}
+
+// composeRel is the owned constructor file this graph reconciles:
+// compose.go, or MixedComposeFile beside a legacy composition.
+func (in GraphGenInput) composeRel() string {
+	if in.Mixed {
+		return filepath.Join("internal", "app", MixedComposeFile)
+	}
+	return filepath.Join("internal", "app", "compose.go")
 }
 
 func (in GraphGenInput) warnings() io.Writer {
@@ -166,8 +180,17 @@ func GenerateGraph(in GraphGenInput) error {
 	for _, w := range staleGraphMethods(m.compose, m.byName) {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
 	}
-	if w := m.unbuiltWarning(); w != "" {
+	// Beside a legacy composition everything the adopted roots do not
+	// reach is left out by design, so it is not news.
+	if w := m.unbuiltWarning(); w != "" && !in.Mixed {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
+	}
+	if !in.Mixed {
+		for _, r := range m.roots {
+			if r.Adopt {
+				fmt.Fprintf(in.warnings(), "  ⚠️  %s:%d: root %s declares adopt, which only generates a root beside a legacy Infra / NewComponents composition; this project has none, so remove it\n", r.File, r.Line, r.TypeName)
+			}
+		}
 	}
 
 	// graph_gen.go
@@ -182,8 +205,11 @@ func GenerateGraph(in GraphGenInput) error {
 		return err
 	}
 
-	// Write: the generated pair, then the owned compose.go.
-	RetireGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), in.Checksums)
+	// Write: the generated pair, then the owned compose.go. Beside a
+	// legacy composition the legacy mount surface is still in use.
+	if !in.Mixed {
+		RetireGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), in.Checksums)
+	}
 	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "graph_gen.go"), graphSrc, in.Checksums); err != nil {
 		return fmt.Errorf("write internal/app/graph_gen.go: %w", err)
 	}
@@ -191,15 +217,19 @@ func GenerateGraph(in GraphGenInput) error {
 		return fmt.Errorf("write internal/app/routes_gen.go: %w", err)
 	}
 	if !m.disowned && m.compose != m.existing {
-		if err := writeUserScaffold(filepath.Join(in.ProjectDir, "internal", "app", "compose.go"), []byte(m.compose)); err != nil {
-			return fmt.Errorf("write internal/app/compose.go: %w", err)
+		if err := writeUserScaffold(filepath.Join(in.ProjectDir, in.composeRel()), []byte(m.compose)); err != nil {
+			return fmt.Errorf("write %s: %w", filepath.ToSlash(in.composeRel()), err)
 		}
 	}
 	if in.Roots != nil {
 		*in.Roots = graphRoots(m.rootViews)
 	}
-	if err := emitGraphCatalog(in, m); err != nil {
-		return fmt.Errorf("write service catalog: %w", err)
+	// The service catalog describes the whole process set, which beside a
+	// legacy composition the adopted roots are not.
+	if !in.Mixed {
+		if err := emitGraphCatalog(in, m); err != nil {
+			return fmt.Errorf("write service catalog: %w", err)
+		}
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
 	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.groups, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
@@ -254,6 +284,11 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	providers, roots, groups, err := discoverAppDeclsAndGroups(in.ProjectDir)
 	if err != nil {
 		return nil, err
+	}
+	if in.Mixed {
+		if roots = adoptedRoots(roots); len(roots) == 0 {
+			return nil, fmt.Errorf("internal/app declares the legacy Infra / NewComponents composition and no root marked adopt, so there is no graph to generate beside it: mark a //forge:root struct `adopt` to generate it")
+		}
 	}
 
 	// Nodes: components, providers, then the generated ones.
@@ -342,6 +377,11 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if err := m.validateReachedConstructors(roots); err != nil {
 		return nil, err
 	}
+	if in.Mixed {
+		if err := m.validateMixedReach(in.ProjectDir, providers); err != nil {
+			return nil, err
+		}
+	}
 	return m, nil
 }
 
@@ -357,6 +397,11 @@ func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []gra
 			return nil, err
 		}
 		allProblems := slices.Concat(problems, m.constructorGraphProblems())
+		if in.Mixed {
+			// Beside a legacy composition the graph is the adopted
+			// roots' closure and nothing more.
+			return m.outOfMixedReach(roots, draft, allProblems)
+		}
 		if len(allProblems) == 0 {
 			return nil, nil
 		}
@@ -517,11 +562,11 @@ func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView
 // — or the error to fail with, and the file is reconciled again without them.
 // A nil scope fails on any problem.
 func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *graphResolver, scope reachScope) (graphComposeFile, error) {
-	composeRel := filepath.Join("internal", "app", "compose.go")
+	composeRel := in.composeRel()
 	composeAbs := filepath.Join(in.ProjectDir, composeRel)
 	raw, rerr := os.ReadFile(composeAbs)
 	if rerr != nil && !os.IsNotExist(rerr) {
-		return graphComposeFile{}, fmt.Errorf("read internal/app/compose.go: %w", rerr)
+		return graphComposeFile{}, fmt.Errorf("read %s: %w", filepath.ToSlash(composeRel), rerr)
 	}
 	f := graphComposeFile{existing: string(raw)}
 	if disownedFilePresent(in.Checksums, composeRel, composeAbs) {

@@ -407,6 +407,34 @@ func endpointsPanel() obsquery.Panel {
 	}
 }
 
+// clientRPCPanel is the browser side of `endpoints`: the web runtime's client
+// span per rpc (forge.rpc.client, named <rpc.service>/<rpc.method> under the
+// frontend's service.name). It groups by rpc.service and rpc.method alone, so
+// several frontends calling one rpc are one weighted p95 over all their calls,
+// not a max of per-frontend p95s.
+func clientRPCPanel() obsquery.Panel {
+	return obsquery.Panel{
+		ID: "endpoints-client", Kind: "table", Signal: "traces",
+		Where: []obsquery.PanelPredicate{{Field: "span.attr.forge.rpc.client", Op: "eq", Value: "true"}},
+		Series: []obsquery.PanelSeries{
+			{Label: "calls", Agg: "count"},
+			{Label: "p95", Agg: "quantile", Quantile: 0.95, Field: "span.duration"},
+		},
+		GroupBy: []string{"span.attr.rpc.service", "span.attr.rpc.method"},
+		Limit:   obsquery.MaxTableRows,
+	}
+}
+
+// clientNarrow is n for clientRPCPanel. The browser's spans are under the
+// frontend's service.name and carry none of the server's attributes, so
+// --service and --filter, which narrow the server endpoints, would drop every
+// one of them; the join to the endpoints already read is what narrows them.
+// The range and the instance narrowing still apply.
+func clientNarrow(n Narrow) Narrow {
+	n.Services, n.Filters = nil, nil
+	return n
+}
+
 // Endpoints implements Backend. The table is the busiest MaxTableRows
 // endpoints; a different sort re-ranks within them.
 func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsResult, error) {
@@ -420,7 +448,12 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 	if err != nil {
 		return EndpointsResult{}, compileErr(err)
 	}
-	res := EndpointsResult{Statements: []Statement{stmt("endpoints", st)}}
+	cq := obsquery.PanelQuery{Scope: l.scope(clientNarrow(req.Narrow)), Panel: clientRPCPanel()}
+	cst, cshape, err := cq.Compile()
+	if err != nil {
+		return EndpointsResult{}, compileErr(err)
+	}
+	res := EndpointsResult{Statements: []Statement{stmt("endpoints", st), stmt("endpoints client", cst)}}
 	if req.Explain {
 		return res, nil
 	}
@@ -450,8 +483,36 @@ func (l Local) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 		}
 		res.Endpoints = append(res.Endpoints, e)
 	}
+	clients, err := l.clientRPCs(ctx, cst, cshape)
+	if err := withClientRPCs(ctx, &res, clients, err); err != nil {
+		return res, err
+	}
 	rankEndpoints(&res, req)
 	return res, nil
+}
+
+// clientRPCs runs clientRPCPanel: client calls and p95 by
+// "<rpc.service>/<rpc.method>".
+func (l Local) clientRPCs(ctx context.Context, st obsquery.Stmt, shape obsquery.PanelShape) (map[string]clientRPC, error) {
+	r, err := l.run(ctx, st, DefaultLimits())
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]clientRPC{}
+	for _, row := range r.Rows {
+		if len(row) < 1+shape.Series {
+			return nil, Undetermined("the local ClickStack returned %d columns for client rpcs, want %d", len(row), 1+shape.Series)
+		}
+		if len(out) == shape.Rows {
+			break
+		}
+		labels := AsStrings(row[0])
+		if len(labels) < 2 || labels[0] == "" || labels[1] == "" {
+			continue
+		}
+		out[labels[0]+"/"+labels[1]] = clientRPC{calls: finite(AsFloat(row[1])), p95Ms: finite(AsFloat(row[2]))}
+	}
+	return out, nil
 }
 
 // ── metrics ─────────────────────────────────────────────────────────────

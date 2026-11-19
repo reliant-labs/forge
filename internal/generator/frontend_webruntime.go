@@ -47,7 +47,6 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
-	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // WebRuntimePackage is the npm package name of forge's frontend runtime
@@ -70,7 +69,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // and 0.13.12 is the first release that exports no session replay after
 // analytics consent is withdrawn (#2159); a compatible latest release is
 // insufficient when a lockfile retains the floor.
-const webRuntimePublishedRange = "^0.13.17"
+const webRuntimePublishedRange = "^0.13.19"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a
@@ -381,59 +380,15 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-// browserSDKPackage is the HyperDX browser SDK. web-runtime/telemetry imports it
-// lazily and declares it an OPTIONAL, exact-pinned peer, so nothing installs it
-// for the app: the app's own package.json must.
-const browserSDKPackage = "@hyperdx/browser"
-
-// EnsureBrowserTelemetryDependencies declares the packages the generated
-// src/lib/otel_gen.ts needs in a web frontend's package.json.
-//
-// A project scaffolded before web-runtime 0.4.0 has none of them, and
-// `forge generate` rewrites otel_gen.ts (Tier-1) to import the SDK, so without
-// this the first build after upgrading fails to resolve "@hyperdx/browser".
-//
-// Add-only: a version the project already declares is its own decision, and the
-// peer is exact-pinned, so a different one is reported by npm, not rewritten
-// here. The specifier is the runtime's own (webruntimepeers.PeerSpec).
-func EnsureBrowserTelemetryDependencies(projectDir, feRelDir, feName string) {
-	spec, ok := webruntimepeers.PeerSpec(browserSDKPackage)
-	if !ok {
-		return
-	}
-	pkgPath := filepath.Join(projectDir, feRelDir, "package.json")
-	info, err := os.Stat(pkgPath)
-	if err != nil {
-		return
-	}
-	original, err := os.ReadFile(pkgPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", pkgPath, err)
-		return
-	}
-	text := string(original)
-	if regexp.MustCompile(`"` + regexp.QuoteMeta(browserSDKPackage) + `"\s*:`).MatchString(text) {
-		return
-	}
-	text, err = insertDependency(text, browserSDKPackage, spec)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", browserSDKPackage, pkgPath, err)
-		return
-	}
-	if !json.Valid([]byte(text)) {
-		fmt.Fprintf(os.Stderr, "warning: declaring %s in %s would have produced invalid JSON; left unchanged\n", browserSDKPackage, pkgPath)
-		return
-	}
-	checksums.RecordPreWriteAbs(pkgPath)
-	if err := atomicfile.WriteFile(pkgPath, []byte(text), info.Mode().Perm()); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", pkgPath, err)
-		return
-	}
-	fmt.Printf("  + frontend %s: declared %s@%s (browser telemetry); run npm install\n", feName, browserSDKPackage, spec)
-}
+// The HyperDX browser SDK is no longer an app dependency. web-runtime 0.13
+// and earlier imported @hyperdx/browser and declared it an optional peer, so
+// forge added it to every web frontend's package.json. The runtime now
+// carries the SDK's parts (@hyperdx/otel-web, rrweb) as its own dependencies,
+// so nothing is added; a project that declares @hyperdx/browser keeps it,
+// unused, until it removes it (the telemetry skill, "Upgrading").
 
 // FrontendDependencyNotices is the read-only counterpart of
-// EnsureWebRuntimeDependency + EnsureBrowserTelemetryDependencies, for a
+// EnsureWebRuntimeDependency, for a
 // frontend whose package.json the project DISOWNED (`forge project disown
 // <frontend>/package.json`): it reports what those would change instead of
 // changing it, one line each.
@@ -468,17 +423,12 @@ func FrontendDependencyNotices(projectDir, feRelDir string) []string {
 			}
 		}
 	}
-	if spec, ok := webruntimepeers.PeerSpec(browserSDKPackage); ok &&
-		!regexp.MustCompile(`"`+regexp.QuoteMeta(browserSDKPackage)+`"\s*:`).MatchString(text) {
-		out = append(out, fmt.Sprintf("generated src/lib/otel_gen.ts imports %s, which package.json does not declare — `npm install %s@%s`",
-			browserSDKPackage, browserSDKPackage, spec))
-	}
 	return out
 }
 
 // SyncFrontendLock brings the lockfile that governs feRelDir's package.json
-// back in step with the dependency ranges forge manages there
-// (WebRuntimePackage, browserSDKPackage).
+// back in step with the dependency range forge manages there
+// (WebRuntimePackage).
 //
 // The Ensure* functions above rewrite those ranges in package.json and nothing
 // else, so a project with a lockfile is left with one that records the OLD
@@ -499,7 +449,7 @@ func SyncFrontendLock(projectDir, feRelDir string) error {
 	if !ok {
 		return nil
 	}
-	managed := []string{WebRuntimePackage, browserSDKPackage}
+	managed := []string{WebRuntimePackage}
 	drift, err := frontenddeps.LockDrift(lock, manifestDir, managed...)
 	if err != nil {
 		return fmt.Errorf("%s: compare package.json with %s: %w", feRelDir, lock.File, err)

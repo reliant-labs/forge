@@ -7,6 +7,15 @@
 // project); Stack is the interchange value, and Pprof, Speedscope and Folded
 // write it for `go tool pprof`, speedscope.app (and an embedded speedscope view)
 // and flamegraph.pl respectively.
+//
+// PGOQuery, ParsePGO and WritePGO are the profile-guided-optimization half:
+// they read the hourly call-edge table default.profile_pgo_edges and write the
+// default.pgo a binary's `go build` consumes. Go's PGO reads only the first
+// `samples/count` or `cpu/nanoseconds` sample type, keys call sites on
+// (caller symbol, callee symbol, call line - caller's Function.start_line),
+// takes edges from the two leaf-most frames of each sample only, refuses a
+// profile with no start lines, and ignores files, addresses and mappings. See
+// pgo.go for where in the toolchain each of those comes from.
 package profilequery
 
 import (

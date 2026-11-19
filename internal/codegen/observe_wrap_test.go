@@ -65,3 +65,56 @@ func TestDetectObserveChainSeam_MissingDir(t *testing.T) {
 		t.Fatal("missing dir should not detect a seam")
 	}
 }
+
+const seamSrc = "package x\n\nimport \"github.com/reliant-labs/forge/pkg/observe\"\n\nfunc newObserveChain() *observe.ComponentChain { return nil }\n"
+
+func TestUnreferencedObserveChainSeam(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			// The generated decorator was the only caller; it does not count.
+			name: "only the generated decorator calls it",
+			files: map[string]string{
+				"observe_chain.go":  seamSrc,
+				"middleware_gen.go": "package x\n\nvar _ = newObserveChain()\n",
+				"chain_test.go":     "package x\n\nvar _ = newObserveChain()\n",
+			},
+			want: "observe_chain.go",
+		},
+		{
+			name: "a hand-written caller keeps it in use",
+			files: map[string]string{
+				"observe_chain.go": seamSrc,
+				"service.go":       "package x\n\nfunc build() { _ = newObserveChain() }\n",
+			},
+		},
+		{
+			name: "a recursive call is not a use",
+			files: map[string]string{
+				"chain.go": "package x\n\nfunc newObserveChain() any { if false { return newObserveChain() }; return nil }\n",
+			},
+			want: "chain.go",
+		},
+		{
+			name:  "no seam",
+			files: map[string]string{"service.go": "package x\n\ntype service struct{}\n"},
+		},
+		{
+			name: "an unparseable file might hold the caller",
+			files: map[string]string{
+				"observe_chain.go": seamSrc,
+				"broken.go":        "package x\n\nfunc {\n",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UnreferencedObserveChainSeam(writeObserveDir(t, tc.files)); got != tc.want {
+				t.Fatalf("UnreferencedObserveChainSeam = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

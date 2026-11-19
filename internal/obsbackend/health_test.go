@@ -106,6 +106,39 @@ func TestCloudReleaseHealthSendsWindowPromotionAndOverrides(t *testing.T) {
 	}
 }
 
+// A control plane that predates the changed-op thresholds refuses their
+// names, so they are held back from the request: the CLI applies them itself
+// (releasehealth.WithChangedOps). An override of only them sends none at all.
+func TestCloudReleaseHealthHoldsBackTheChangedOpThresholds(t *testing.T) {
+	for name, tc := range map[string]struct {
+		overrides map[string]string
+		want      map[string]any // nil: no thresholdOverrides at all
+	}{
+		"mixed": {map[string]string{"min_requests": "10", releasehealth.ThresholdChangedOpMinCalls: "5", releasehealth.ThresholdChangedOpMaxP95Ratio: "3"},
+			map[string]any{"min_requests": "10"}},
+		"only changed-op": {map[string]string{releasehealth.ThresholdChangedOpMinErrors: "2"}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeCaller{replies: map[string]string{procGetReleaseHealth: healthWire}}
+			if _, err := cloudWith(f).ReleaseHealth(context.Background(), HealthRequest{
+				PromotionID: "p9", Now: t0c, Options: releasehealth.Options{Overrides: tc.overrides},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, set := f.reqs[procGetReleaseHealth]["thresholdOverrides"]
+			if tc.want == nil {
+				if set {
+					t.Errorf("thresholdOverrides = %v, want none sent", got)
+				}
+				return
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("thresholdOverrides = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCloudReleaseHealthErrorMapping(t *testing.T) {
 	for name, tc := range map[string]struct {
 		code string
@@ -177,27 +210,45 @@ func TestLocalReleaseHealthNeedsAnInstantAndLabelsWhatItSkipped(t *testing.T) {
 }
 
 // A frontend with no server spans is judged on its browser telemetry: enough
-// page views prove it, and a JavaScript error spike is a (warning) finding.
+// page views prove it, and a JavaScript error spike fails it by default
+// (owner, 2026-11-18). An env that demotes browser_errors with
+// forge.ReleaseHealth.warn_on (the render records fail_on without it) gets a
+// PASS with the spike as a warning.
 func TestLocalReleaseHealthJudgesAFrontendOnBrowserTelemetry(t *testing.T) {
 	browser := func(errs string) Result {
 		return Result{Rows: [][]any{{"web", num64("500"), num64("200"), num64(errs), num64("1000"), num64("1"), []any{num64("300"), num64("900"), num64("1200")}}}}
 	}
-	// RED, RED by endpoint (both windows, then the baseline window), issues,
-	// then browser RED before and after.
-	l := Local{Env: "dev", Runner: &seqRunner{results: []Result{{}, {}, {}, {}, {}, {}, browser("5"), browser("200")}}}
-	res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := res.Report
-	if r.Verdict != releasehealth.Pass || r.NoRequestTelemetry() || len(r.Services) != 1 || r.Services[0].Signal != releasehealth.SignalBrowser {
-		t.Fatalf("verdict %s services %+v", r.Verdict, r.Services)
-	}
-	if b := r.Services[0].Browser; b == nil || b.After.JSErrors != 200 || b.Before.PageLoadP95Ms != 900 {
-		t.Fatalf("browser figures = %+v", b)
-	}
-	if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthBrowserErrors || r.Findings[0].Policy != releasehealth.PolicyWarn {
-		t.Fatalf("findings = %+v, want one browser_errors warning", r.Findings)
+	demoted := release.DefaultReleaseHealth()
+	demoted.FailOn = slices.DeleteFunc(demoted.FailOn, func(c string) bool { return c == release.HealthBrowserErrors })
+	for _, tc := range []struct {
+		name    string
+		policy  *release.ShapeReleaseHealth
+		verdict releasehealth.Verdict
+		policyF string
+	}{
+		{"the default fails on it", nil, releasehealth.Fail, releasehealth.PolicyFail},
+		{"warn_on browser_errors warns", &demoted, releasehealth.Pass, releasehealth.PolicyWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// RED, RED by endpoint (both windows, then the baseline window),
+			// issues, then browser RED before and after.
+			l := Local{Env: "dev", Runner: &seqRunner{results: []Result{{}, {}, {}, {}, {}, {}, browser("5"), browser("200")}}}
+			res, err := l.ReleaseHealth(context.Background(), HealthRequest{PromotedAt: t0c.Add(-20 * time.Minute), Now: t0c,
+				Options: releasehealth.Options{Shape: tc.policy}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := res.Report
+			if r.Verdict != tc.verdict || r.NoRequestTelemetry() || len(r.Services) != 1 || r.Services[0].Signal != releasehealth.SignalBrowser {
+				t.Fatalf("verdict %s (want %s) services %+v", r.Verdict, tc.verdict, r.Services)
+			}
+			if b := r.Services[0].Browser; b == nil || b.After.JSErrors != 200 || b.Before.PageLoadP95Ms != 900 {
+				t.Fatalf("browser figures = %+v", b)
+			}
+			if len(r.Findings) != 1 || r.Findings[0].Code != release.HealthBrowserErrors || r.Findings[0].Policy != tc.policyF {
+				t.Fatalf("findings = %+v, want one browser_errors finding with policy %s", r.Findings, tc.policyF)
+			}
+		})
 	}
 }
 

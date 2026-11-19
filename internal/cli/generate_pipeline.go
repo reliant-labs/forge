@@ -2669,10 +2669,13 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 	}
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
+	// An env that did not render would drop its frontends and processes from
+	// every output (they are the union of all envs), so keep them as they
+	// are instead — a warning, not a failure (generate_observability_keep.go).
+	if failed := ctx.renderedEnvs().failed; len(failed) > 0 {
+		return keepObservabilityOutputs(os.Stderr, ctx.AbsPath, failed)
+	}
 	return ctx.warnOrFail("observability dashboards", func() error {
-		if err := observabilityRenderGuard(ctx.renderedEnvs().failed); err != nil {
-			return err
-		}
 		funnels, err := declaredFunnels(ctx.renderedFrontends(), ctx.renderedEnvs().analytics...)
 		if err != nil {
 			return err
@@ -2704,26 +2707,6 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		fmt.Printf("  ✅ Generated %d observability file(s) under deploy/observability/\n", len(written))
 		return nil
 	}())
-}
-
-// observabilityRenderGuard refuses to derive the observability outputs while
-// any environment fails to render. The dashboards, alerts and project spec
-// are the union of what every env declares (frontends, workloads, analytics),
-// so an env that did not render would silently drop its part: a version-skewed
-// KCL import once shrank control-plane's project_gen.json by 512 lines while
-// the run went on to write it. Leaving the files as they were, and failing the
-// step, keeps a broken input from degrading committed output.
-func observabilityRenderGuard(failed []envRenderFailure) error {
-	if len(failed) == 0 {
-		return nil
-	}
-	var b strings.Builder
-	b.WriteString("an environment did not render, so the observability outputs under deploy/observability/ are left as they were (deriving them without it would drop the frontends and processes it declares):")
-	for _, f := range failed {
-		fmt.Fprintf(&b, "\n    deploy/kcl/%s: %s", f.Env, renderFailureCause(f.Err))
-	}
-	fmt.Fprintf(&b, "\n  Fix it (`%s env render <env>` shows the full error) and re-run `%s generate`.", Name(), Name())
-	return errors.New(b.String())
 }
 
 // renderedFrontendEntities flattens rendered per-env frontends.

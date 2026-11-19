@@ -375,7 +375,7 @@ func TestObsQueryNeedsExactlyOneSource(t *testing.T) {
 
 func TestObsStructuredQueryModeAndRawAreDistinguishedInEveryDocument(t *testing.T) {
 	sr := &scriptedRunner{}
-	for _, v := range []string{"logs", "traces", "endpoints"} {
+	for _, v := range []string{"logs", "traces", "endpoints", "ops"} {
 		out, _, err := obsRun(t, devFacts(), sr, v, "dev", "--json")
 		if err != nil {
 			t.Fatal(err)
@@ -437,7 +437,7 @@ func TestObsGroupHasNoObserveAlias(t *testing.T) {
 			for _, s := range c.Commands() {
 				verbs = append(verbs, s.Name())
 			}
-			for _, want := range []string{"logs", "traces", "trace", "endpoints", "metrics", "query", "profile", "alerts", "dashboards"} {
+			for _, want := range []string{"logs", "traces", "trace", "endpoints", "ops", "blast-radius", "metrics", "query", "profile", "alerts", "dashboards"} {
 				if !strings.Contains(" "+strings.Join(verbs, " ")+" ", " "+want+" ") {
 					t.Errorf("forge obs lacks %s (has %v)", want, verbs)
 				}

@@ -55,15 +55,24 @@ func AuditInterceptorV2(logger *slog.Logger, claimsFrom ClaimsLookup) connectv2.
 // *connect.Error it carries (a v2 one first). The duration covers the whole
 // server call, which in v2 includes handing the response to the stream.
 func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) connectv2.ServerInterceptor {
+	return newAuditInterceptorV2(logger, claimsFrom, sink).wrapV2
+}
+
+// newAuditInterceptorV2 is the shared audit interceptor marked for a v2
+// chain.
+func newAuditInterceptorV2(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) *auditInterceptor {
 	a := newAuditInterceptor(logger, claimsFrom, sink)
 	a.v2 = true
-	return func(next connectv2.ServerFunc) connectv2.ServerFunc {
-		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
-			start := time.Now()
-			err := next(ctx, spec, stream)
-			a.logAudit(ctx, spec.Procedure, peerAddrV2(ctx), start, err)
-			return err
-		}
+	return a
+}
+
+// wrapV2 is the audit interceptor as a [connectv2.ServerInterceptor].
+func (a *auditInterceptor) wrapV2(next connectv2.ServerFunc) connectv2.ServerFunc {
+	return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+		start := a.now()
+		err := next(ctx, spec, stream)
+		a.logAudit(ctx, spec.Procedure, peerAddrV2(ctx), start, err)
+		return err
 	}
 }
 

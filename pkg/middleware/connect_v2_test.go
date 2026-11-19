@@ -217,18 +217,19 @@ func TestAuditInterceptorWithSinkV2_MatchesV1(t *testing.T) {
 			sink1, sink2 := newFakeSink(), newFakeSink()
 			headers := map[string]string{"X-Test-User": "u-7", "X-Request-Id": "req-1"}
 
-			_ = serveV1(t, tc.v1, testContextV1, AuditInterceptorWithSink(slog.New(slog.NewJSONHandler(&buf1, nil)), rlClaimsFromContext, sink1))(headers)
-			_ = callV2(t, serveV2(t, tc.v2, testContextV2, AuditInterceptorWithSinkV2(slog.New(slog.NewJSONHandler(&buf2, nil)), rlClaimsFromContext, sink2)), false, headers)
+			a1 := newAuditInterceptor(slog.New(slog.NewJSONHandler(&buf1, nil)), rlClaimsFromContext, sink1)
+			a2 := newAuditInterceptorV2(slog.New(slog.NewJSONHandler(&buf2, nil)), rlClaimsFromContext, sink2)
+			clock1, clock2 := newSteppingClock(), newSteppingClock()
+			a1.now, a2.now = clock1.now, clock2.now
+			_ = serveV1(t, tc.v1, testContextV1, a1)(headers)
+			_ = callV2(t, serveV2(t, tc.v2, testContextV2, a2.wrapV2), false, headers)
 
 			ev1, ev2 := sink1.waitOne(t), sink2.waitOne(t)
 			if ev2.Procedure != echoProcedure || !strings.HasPrefix(ev2.PeerAddress, "127.0.0.1:") {
 				t.Errorf("v2 event procedure %q peer %q", ev2.Procedure, ev2.PeerAddress)
 			}
-			if ev2.Duration <= 0 || ev2.Timestamp.IsZero() {
-				t.Errorf("v2 event timing not recorded: %+v", ev2)
-			}
-			ev1.Duration, ev2.Duration = 0, 0
-			ev1.Timestamp, ev2.Timestamp = time.Time{}, time.Time{}
+			clock1.assertTiming(t, ev1)
+			clock2.assertTiming(t, ev2)
 			ev1.PeerAddress, ev2.PeerAddress = "", ""
 			if ev1 != ev2 {
 				t.Errorf("audit events differ:\n  v1 %+v\n  v2 %+v", ev1, ev2)

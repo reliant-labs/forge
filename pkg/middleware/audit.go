@@ -165,6 +165,7 @@ func newAuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup, sink Audi
 		logger:     logger.With("log_type", "audit"),
 		claimsFrom: claimsFrom,
 		sink:       sink,
+		now:        time.Now,
 	}
 }
 
@@ -175,11 +176,15 @@ type auditInterceptor struct {
 	// v2 marks the interceptor of a connect-go v2 chain: an error's code is
 	// read from a v2 *connect.Error first (see errorCode).
 	v2 bool
+	// now is the clock a call's timestamp and duration are read from:
+	// time.Now, or a test's fake, whose steps make a duration exact on
+	// every OS (Windows' clock can measure a fast call as 0s).
+	now func() time.Time
 }
 
 func (a *auditInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		start := time.Now()
+		start := a.now()
 
 		resp, err := next(ctx, req)
 
@@ -195,7 +200,7 @@ func (a *auditInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 
 func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		start := time.Now()
+		start := a.now()
 
 		err := next(ctx, conn)
 
@@ -206,7 +211,7 @@ func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFun
 }
 
 func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr string, start time.Time, err error) {
-	duration := time.Since(start)
+	duration := a.now().Sub(start)
 
 	event := AuditEvent{
 		Timestamp:   start,

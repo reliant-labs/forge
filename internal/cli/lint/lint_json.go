@@ -1359,8 +1359,9 @@ func collectFrontendLintJSON(rc *lintRunCtx) ([]lintJSONFinding, bool) {
 
 	var out []lintJSONFinding
 	gated := false
+	deps := rc.frontendDeps()
 	for _, f := range frontends {
-		fs, g := collectFrontendDirJSON(ctx, rc.frontendDeps(), f.name, f.dir, cssHealth, rc.fix)
+		fs, g := collectFrontendDirJSON(ctx, deps, f.name, f.dir, cssHealth, rc.fix)
 		out = append(out, fs...)
 		gated = gated || g
 	}
@@ -1419,6 +1420,9 @@ func collectFrontendDirJSON(ctx context.Context, deps frontendDepsPolicy, name, 
 		}
 		if state.note != "" {
 			out = append(out, ranNote(state.note))
+		}
+		if state.warning != nil {
+			out = append(out, *state.warning)
 		}
 	}
 

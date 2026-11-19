@@ -104,7 +104,9 @@ This command will:
   Severity is lint.frontend.typecheck (error | warn | off) in forge.yaml.
   Both read the installed node_modules and never install: a frontend with
   none is a lane that could NOT run, named with its install command, unless
-  --install asks lint to install it first.
+  --install asks lint to install it first. (Warn-first: below the
+  forge-frontend-no-install rule's gates-from release, lint still installs
+  and warns that it will stop.)
 - Optionally run targeted rule sets (--contract, --db, --migration-safety,
   --conventions, --tests). Name several to run them all under one verdict:
   forge lint --conventions --contract

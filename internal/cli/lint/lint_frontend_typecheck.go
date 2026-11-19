@@ -126,6 +126,9 @@ type typecheckResult struct {
 	// note is an info line for a typecheck that ran anyway (a stale
 	// node_modules; lint_frontend_deps.go).
 	note string
+	// warning is the rollout's finding for an implicit install
+	// (ruleFrontendNoInstall, lint_frontend_deps.go).
+	warning *lintJSONFinding
 }
 
 // frontendTypecheckTargets resolves the frontends this lane walks.
@@ -259,9 +262,19 @@ func resolveLocalTSC(feDir, projectRoot string) string {
 // probe and the "where is the compiler?" probe cannot disagree about what a
 // workspace layout means.
 func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
+	_, ok := nearestNodeModulesDir(feDir, projectRoot)
+	return ok
+}
+
+// nearestNodeModulesDir is the directory whose node_modules the frontend at
+// feDir resolves from: feDir itself, else the nearest ancestor up to and
+// including projectRoot that has one (a workspace root that hoists). It is
+// returned in feDir's form — relative stays relative — so messages naming it
+// read like the frontend's own path.
+func nearestNodeModulesDir(feDir, projectRoot string) (string, bool) {
 	dir, err := filepath.Abs(feDir)
 	if err != nil {
-		return false
+		return "", false
 	}
 	root := projectRoot
 	if abs, absErr := filepath.Abs(projectRoot); absErr == nil {
@@ -269,11 +282,18 @@ func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
 	}
 	for {
 		if dirExists(filepath.Join(dir, "node_modules")) {
-			return true
+			if !filepath.IsAbs(feDir) {
+				if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+					if rel, relErr := filepath.Rel(cwd, dir); relErr == nil {
+						return rel, true
+					}
+				}
+			}
+			return dir, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir || dir == root {
-			return false
+			return "", false
 		}
 		dir = parent
 	}
@@ -330,7 +350,7 @@ func typecheckFrontend(ctx context.Context, deps frontendDepsPolicy, t frontendT
 		res.fixHint = state.fix
 		return res
 	}
-	res.note = state.note
+	res.note, res.warning = state.note, state.warning
 
 	var cmd *exec.Cmd
 	switch {
@@ -508,6 +528,11 @@ func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, erro
 	for _, r := range results {
 		if r.note != "" && r.status != typecheckNotApplicable {
 			out = append(out, ranNote(r.note))
+		}
+		if r.warning != nil {
+			w := *r.warning
+			w.File = frontendTypecheckScopeFile(rc.scope, r.target.dir)
+			out = append(out, w)
 		}
 		switch r.status {
 		case typecheckNotApplicable:

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
@@ -70,15 +71,15 @@ func readLog(t *testing.T, path string) string {
 	return string(b)
 }
 
-// fakeInstaller replaces the opted-in install for one test: it records each
-// call, prints what a package manager prints, and creates node_modules (or
-// fails with err).
+// fakeInstaller replaces lint's install for one test: it records the
+// directory of each call, prints what a package manager prints, and creates
+// node_modules (or fails with err).
 func fakeInstaller(t *testing.T, err error) (calls *[]string) {
 	t.Helper()
 	calls = &[]string{}
 	prev := installFrontendDeps
-	installFrontendDeps = func(_ context.Context, out io.Writer, name, dir string) error {
-		*calls = append(*calls, name)
+	installFrontendDeps = func(_ context.Context, out io.Writer, _, dir string) error {
+		*calls = append(*calls, dir)
 		if out != nil {
 			_, _ = io.WriteString(out, "Done in 415ms using pnpm v12.15.0\n")
 		}
@@ -91,18 +92,35 @@ func fakeInstaller(t *testing.T, err error) (calls *[]string) {
 	return calls
 }
 
-// installed gives dir a node_modules that is current against its manifests.
+// Fixed instants for the staleness fixtures, so no test reads the wall clock:
+// manifests written, then installed, then a lockfile change.
+var (
+	manifestTime = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	installTime  = time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	lockBumpTime = time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+)
+
+// touch sets path's mtime to at.
+func touch(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// installed gives dir a node_modules that is current against the manifests
+// it holds.
 func installed(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-time.Hour)
-	for _, f := range []string{"package.json", "package-lock.json"} {
-		if err := os.Chtimes(filepath.Join(dir, f), old, old); err != nil {
-			t.Fatal(err)
+	for _, f := range []string{"package.json", "package-lock.json", "pnpm-lock.yaml"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			touch(t, filepath.Join(dir, f), manifestTime)
 		}
 	}
+	touch(t, filepath.Join(dir, "node_modules"), installTime)
 }
 
 // ── the decision: lint never installs unless the run opts in ────────────────
@@ -182,10 +200,7 @@ func TestFrontendDepsStaleRunsWithNoteOrRefreshesUnderInstall(t *testing.T) {
 	calls := fakeInstaller(t, nil)
 	dir := freshFrontend(t, `{"scripts":{"lint":"eslint ."}}`)
 	installed(t, dir)
-	newer := time.Now().Add(time.Minute)
-	if err := os.Chtimes(filepath.Join(dir, "package-lock.json"), newer, newer); err != nil {
-		t.Fatal(err)
-	}
+	touch(t, filepath.Join(dir, "package-lock.json"), lockBumpTime)
 
 	got := frontendDepsPolicy{}.check(context.Background(), "web", dir, dir, "eslint")
 	if got.missing || !strings.Contains(got.note, "older than its lockfile") || !strings.Contains(got.note, "forge lint --install") {
@@ -198,6 +213,44 @@ func TestFrontendDepsStaleRunsWithNoteOrRefreshesUnderInstall(t *testing.T) {
 	got = frontendDepsPolicy{install: true, out: io.Discard}.check(context.Background(), "web", dir, dir, "eslint")
 	if got.missing || got.note != "" || len(*calls) != 1 {
 		t.Fatalf("--install over a stale tree: got %+v, installs %v", got, *calls)
+	}
+}
+
+// A hoisted workspace member reads the root's node_modules, so the ROOT's
+// lockfile is what makes it stale: without --install the lane runs with a
+// note naming the root; with --install the root is refreshed.
+func TestFrontendDepsHoistedStaleRootIsRefreshedAtTheRoot(t *testing.T) {
+	calls := fakeInstaller(t, nil)
+	root := t.TempDir()
+	for name, body := range map[string]string{"package.json": `{"private":true}`, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installed(t, root)
+	dir := filepath.Join(root, "frontends", "web")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	touch(t, filepath.Join(root, "pnpm-lock.yaml"), lockBumpTime)
+
+	got := frontendDepsPolicy{}.check(context.Background(), "web", dir, root, "eslint")
+	if got.missing || !strings.Contains(got.note, "older than its lockfile") || !strings.Contains(got.note, filepath.ToSlash(root)) {
+		t.Fatalf("hoisted, root lockfile newer: want a run with a note naming the root, got %+v", got)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("refreshed without --install: %v", *calls)
+	}
+
+	got = frontendDepsPolicy{install: true, out: io.Discard}.check(context.Background(), "web", dir, root, "eslint")
+	if got.missing || got.note != "" {
+		t.Fatalf("--install over a stale workspace root: got %+v", got)
+	}
+	if len(*calls) != 1 || (*calls)[0] != root {
+		t.Fatalf("--install must refresh the workspace root %s, installed at %v", root, *calls)
 	}
 }
 
@@ -375,6 +428,124 @@ func TestQuietRunOverMissingDepsNamesTheLaneAndPrintsNoInstall(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "Done in") {
 		t.Errorf("--quiet printed the install's output:\n%s", out.String())
+	}
+}
+
+// ── warn first: the refusal rolls out like a new rule (lint_rollout.go) ───
+
+// implicitInstallRollout over a synthetic row: the pin below GatesFrom keeps
+// the install and warns with the rollout note; at GatesFrom (or unpinned) lint
+// refuses; lint.rules wins — error refuses now, warn installs and warns with no
+// date, off installs silently.
+func TestImplicitInstallRolloutDecision(t *testing.T) {
+	withPreviousPin(t, "")
+	table := map[string]ruleRollout{ruleFrontendNoInstall: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}}
+	for _, tc := range []struct {
+		name         string
+		pin          string
+		rules        map[string]string
+		wantImplicit bool
+		wantWarn     bool
+		wantGrace    bool
+	}{
+		{name: "pin below GatesFrom", pin: "v1.0.0", wantImplicit: true, wantWarn: true, wantGrace: true},
+		{name: "pin at GatesFrom", pin: "v1.0.1"},
+		{name: "pin past GatesFrom", pin: "v1.2.0"},
+		{name: "unpinned", pin: ""},
+		{name: "dialled error before GatesFrom", pin: "v1.0.0", rules: map[string]string{ruleFrontendNoInstall: "error"}},
+		{name: "dialled warn past GatesFrom", pin: "v1.2.0", rules: map[string]string{ruleFrontendNoInstall: "warn"}, wantImplicit: true, wantWarn: true},
+		{name: "dialled off", pin: "v1.2.0", rules: map[string]string{ruleFrontendNoInstall: "off"}, wantImplicit: true},
+		{name: "wildcard error", pin: "v1.0.0", rules: map[string]string{"*": "error"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			implicit, warn := implicitInstallRollout(table, pinnedCfg(tc.pin, tc.rules))
+			if implicit != tc.wantImplicit || (warn != nil) != tc.wantWarn || (warn != nil && (warn.grace != nil) != tc.wantGrace) {
+				t.Fatalf("implicit=%v warn=%+v, want implicit=%v warn=%v grace=%v", implicit, warn, tc.wantImplicit, tc.wantWarn, tc.wantGrace)
+			}
+		})
+	}
+}
+
+// pinnedDashboard is dashboardWithoutDeps pinned at pin, with git history
+// out of the picture.
+func pinnedDashboard(t *testing.T, pin string) *config.ProjectConfig {
+	t.Helper()
+	withPreviousPin(t, "")
+	cfg := dashboardWithoutDeps(t)
+	cfg.ForgeVersion = pin
+	return cfg
+}
+
+// Below the rule's GatesFrom, with the real table: lint still installs, as it
+// did, the run passes, the warning names the change to make, and --quiet
+// prints none of the install.
+func TestPinBelowGatesFromInstallsAndWarnsQuietly(t *testing.T) {
+	ro := lintRollouts[ruleFrontendNoInstall]
+	cfg := pinnedDashboard(t, ro.IntroducedIn)
+	npmCalls := fakeNPM(t, 0) // the lint script, once installed
+	calls := fakeInstaller(t, nil)
+	rc := &lintRunCtx{ctx: context.Background(), cfg: cfg, installOut: installOutput(true)}
+	outcomes := collectLintOutcomesFrom(rc, []linterStep{findStep(t, "frontend lint")})
+
+	var out strings.Builder
+	if err := renderLintOutcomes(&out, outcomes, true, nil); err != nil {
+		t.Fatalf("a pin below GatesFrom must keep the gate green: %v\n%s", err, out.String())
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("a pin below GatesFrom must still install: %v", *calls)
+	}
+	if strings.Contains(out.String(), "Done in") {
+		t.Errorf("--quiet printed the install's output:\n%s", out.String())
+	}
+	if got := readLog(t, npmCalls); !strings.Contains(got, "run lint") {
+		t.Errorf("the lane did not lint after installing: npm calls %q", got)
+	}
+	fs, _ := flattenLintOutcomes(outcomes)
+	w := findRule(t, fs, ruleFrontendNoInstall)
+	if w.Severity != lintSevWarning || w.Grace == nil || w.Grace.GatesFrom != ro.GatesFrom {
+		t.Fatalf("want a warning carrying the rollout note, got %+v", w)
+	}
+	for _, want := range []string{"will stop installing", ro.GatesFrom} {
+		if !strings.Contains(w.Message, want) {
+			t.Errorf("warning %q does not say %q", w.Message, want)
+		}
+	}
+	for _, want := range []string{"--install", "npm install", "release.yml"} {
+		if !strings.Contains(w.FixHint, want) {
+			t.Errorf("fix %q does not name %q", w.FixHint, want)
+		}
+	}
+}
+
+// At GatesFrom the refusal gates: nothing is installed and the lane could
+// NOT run, naming --install.
+func TestPinAtGatesFromRefusesToInstall(t *testing.T) {
+	cfg := pinnedDashboard(t, lintRollouts[ruleFrontendNoInstall].GatesFrom)
+	calls := fakeInstaller(t, nil)
+	rc := &lintRunCtx{ctx: context.Background(), cfg: cfg, installOut: installOutput(true)}
+
+	var out strings.Builder
+	err := renderLintOutcomes(&out, collectLintOutcomesFrom(rc, []linterStep{findStep(t, "frontend lint")}), true, nil)
+	if err == nil || !strings.Contains(err.Error(), "forge lint --install") {
+		t.Fatalf("at GatesFrom the lane must fail naming --install, got err=%v\n%s", err, out.String())
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("installed at GatesFrom: %v", *calls)
+	}
+}
+
+// The typecheck lane reports the same warning, anchored to its frontend.
+func TestTypecheckPinBelowGatesFromInstallsAndWarns(t *testing.T) {
+	ro := lintRollouts[ruleFrontendNoInstall]
+	withPreviousPin(t, "")
+	calls := fakeInstaller(t, nil)
+	dir := freshFrontend(t, `{"scripts":{"typecheck":"tsc --noEmit"}}`)
+	implicit, warn := implicitInstallRollout(lintRollouts, pinnedCfg(ro.IntroducedIn, nil))
+	deps := frontendDepsPolicy{implicit: implicit, warn: warn, out: io.Discard}
+
+	res := typecheckFrontend(context.Background(), deps, frontendTarget{name: "web", dir: dir}, dir)
+	if len(*calls) != 1 || res.warning == nil || res.warning.Rule != ruleFrontendNoInstall {
+		t.Fatalf("want an implicit install and its warning, got installs=%v result=%+v", *calls, res)
 	}
 }
 

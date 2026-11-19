@@ -2351,6 +2351,11 @@ benefits:
         bug_class: >-
           A `package.json` range the lockfile does not record: the state `npm
           ci` and `pnpm --frozen-lockfile` refuse
+      - id: forge-frontend-no-install
+        lane: ""
+        bug_class: >-
+          A linter that installs dependencies mutates the checkout it judges and
+          hides a pipeline that never prepared its frontends
 
   - id: lint-rules-deploy-secrets
     category: guardrails

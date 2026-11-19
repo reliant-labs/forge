@@ -287,6 +287,13 @@ job says so with `--skip-frontends`, or accepts the gap by name with
 older than its lockfile is linted as it stands, with a note naming the
 command that refreshes it.
 
+The refusal rolls out warn-first (`ci/lint-rollout`) as rule
+`forge-frontend-no-install`: while your pin is below its gates-from release,
+lint still installs a missing `node_modules` (output on stderr, none under
+`--quiet`) and warns that it will stop. Add `--install` or an install step
+before `forge lint` then (a scaffolded `release.yml` is the usual place);
+`lint.rules: {forge-frontend-no-install: error}` refuses now.
+
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
 
 ## Linting the workflows themselves

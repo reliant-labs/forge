@@ -248,6 +248,11 @@ var newRules = []rolloutGroup{
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
+	// The frontend lanes stop installing a missing node_modules: until it
+	// gates, lint installs as it did and warns (lint_frontend_deps.go), so a
+	// pipeline that relied on the install — a scaffolded release.yml — is
+	// told to add --install or an install step before it turns red.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Fix: "forge lint --install", Rules: []string{ruleFrontendNoInstall}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

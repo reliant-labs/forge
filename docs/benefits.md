@@ -1959,6 +1959,7 @@ _Enforced · Forge, on any infrastructure_
 | `forgeconv-frontend-env-forge-owned`       | A committed dotenv line setting a forge-owned variable (mock API, API URL) drifts from KCL and risks shipping a mock build                                                                                 | `--conventions`     |
 | `forgeconv-frontend-stores-no-server-data` | A Zustand store importing a generated Connect client creates a second source of truth beside React Query                                                                                                   | `--frontend-stores` |
 | `forge-frontend-lock-drift`                | A `package.json` range the lockfile does not record: the state `npm ci` and `pnpm --frozen-lockfile` refuse                                                                                                | bare `forge lint`   |
+| `forge-frontend-no-install`                | A linter that installs dependencies mutates the checkout it judges and hides a pipeline that never prepared its frontends                                                                                  | bare `forge lint`   |
 
 <a id="lint-rules-deploy-secrets"></a>
 

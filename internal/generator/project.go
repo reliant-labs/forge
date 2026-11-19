@@ -121,9 +121,10 @@ type ProjectGenerator struct {
 
 	// ConnectMajor is the connect-go major the scaffold targets. The zero
 	// value means "the project's own": the major treeDir()'s go.mod selects
-	// (internal/connectmajor), which is v1 for a fresh project and the
-	// adopted module's choice for `--in-place`. A caller that is about to
-	// write a v2 go.mod sets it explicitly.
+	// (internal/connectmajor), which is v1 for a directory with no go.mod and
+	// the adopted module's choice for `--in-place`. A caller that is about to
+	// write a v2 go.mod sets it explicitly — `forge project new` does for
+	// every new service project, whose default is v2.
 	ConnectMajor connectmajor.Major
 }
 

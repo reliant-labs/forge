@@ -19,9 +19,8 @@ func TestResolveNewConnectMajor(t *testing.T) {
 		want    connectmajor.Major
 		wantErr string
 	}{
-		// Not passed: zero, so the go.mod decides — v1 for a fresh project,
-		// the adopted module's major for --in-place. forge major 1 never
-		// changes what an existing invocation scaffolds.
+		// Not passed: zero, so resolveScaffoldConnectMajor decides — v2 for
+		// a fresh service project, the adopted module's major for --in-place.
 		{name: "unset", want: 0},
 		{name: "unset with an unknown value", value: "v9", want: 0},
 		{name: "v1", changed: true, value: "v1", want: connectmajor.V1},
@@ -109,7 +108,7 @@ func TestNewCmdHasConnectFlag(t *testing.T) {
 		t.Fatal("project new has no --connect flag")
 	}
 	if f.DefValue != "" {
-		t.Fatalf("--connect default = %q, want unset (v1 for a new project, the go.mod's major in place)", f.DefValue)
+		t.Fatalf("--connect default = %q, want unset (v2 for a new service project, the go.mod's major in place)", f.DefValue)
 	}
 	for _, w := range []string{"v1", "v2", "go.mod"} {
 		if !strings.Contains(f.Usage, w) {

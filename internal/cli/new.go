@@ -127,7 +127,8 @@ Valid feature names: orm, codegen, migrations, ci, build, deploy,
 contracts, docs, frontend, observability, hot_reload.
 
 --connect picks the connect-go major a service project's Go code targets:
-v1 (connectrpc.com/connect, the default) or v2 (connectrpc.com/connect/v2).
+v2 (connectrpc.com/connect/v2, the default) or v1 (connectrpc.com/connect,
+selectable until forge drops it).
 It decides what go.mod and gen/go.mod require, which protoc-gen-connect-go
 tools/tools.go pins, and the shape of every handler, mount and test forge
 writes. After this the project's go.mod IS the declaration: forge generate
@@ -151,7 +152,7 @@ Example:
   forge project new my-project --mod github.com/example/my-project --service gateway
   forge project new my-project --mod github.com/example/my-project --frontend web
   forge project new my-project --mod github.com/example/my-project --frontend web --auth-mode none
-  forge project new my-project --mod github.com/example/my-project --service orders --connect v2
+  forge project new my-project --mod github.com/example/my-project --service orders --connect v1
   forge project new mycli      --mod github.com/example/mycli --kind cli
   forge project new mylib      --mod github.com/example/mylib --kind library
   forge project new landing    --kind site                          # new static site (Next.js export)
@@ -256,7 +257,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVar(&forgeRoot, "forge-root", "", "The forge checkout --link-forge bridges to (also: "+buildinfo.ForgeRootEnv+"). Default: the checkout this binary was built from, else the go.mod replace it embeds forge through, else the checkout it sits or was started in")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
-	cmd.Flags().StringVar(&connectFlag, "connect", "", "connect-go major of a service project: v1 (default; connectrpc.com/connect) or v2 (connectrpc.com/connect/v2). Chooses what go.mod requires; from then on forge generate reads the major from go.mod (a direct require of connectrpc.com/connect/v2 is v2). With --in-place and no --connect, the existing go.mod's major is kept")
+	cmd.Flags().StringVar(&connectFlag, "connect", "", "connect-go major of a service project: v2 (default; connectrpc.com/connect/v2) or v1 (connectrpc.com/connect). Chooses what go.mod requires; from then on forge generate reads the major from go.mod (a direct require of connectrpc.com/connect/v2 is v2). With --in-place and no --connect, the existing go.mod's major is kept")
 	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
@@ -843,7 +844,7 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 	// inherits. Resolved against staging instead, an adopted v2 module
 	// was born with v1 service and middleware files that generate never
 	// rewrites.
-	major, err := resolveScaffoldConnectMajor(targetPath, newConnectMajor)
+	major, err := resolveScaffoldConnectMajor(targetPath, newConnectMajor, cfg.kind)
 	if err != nil {
 		return inPlaceMergeResult{}, err
 	}
@@ -959,7 +960,7 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.AuthNone = newAuthMode == authModeNone
 	gen.ConnectMajor = c.connectMajor
 	if gen.ConnectMajor == 0 {
-		major, err := resolveScaffoldConnectMajor(c.targetPath, newConnectMajor)
+		major, err := resolveScaffoldConnectMajor(c.targetPath, newConnectMajor, c.kind)
 		if err != nil {
 			return nil, err
 		}
@@ -1572,14 +1573,14 @@ func autoLinkForge(kind string, link bool, adopted *adoptedForge) bool {
 var newClaimable bool
 
 // newConnectMajor is --connect for the `project new` run in progress: zero
-// when not passed (the target's go.mod decides — v1 for a fresh directory),
+// when not passed (the target's go.mod decides — newProjectConnectMajor for a
+// fresh service project; resolveScaffoldConnectMajor),
 // else the major asked for (generator.ProjectGenerator.ConnectMajor).
 var newConnectMajor connectmajor.Major
 
-// resolveNewConnectMajor validates --connect. Not passed is zero, so the
-// default stays v1 for a new project and the adopted go.mod's major for
-// --in-place: forge major 1 never changes what an existing invocation
-// scaffolds.
+// resolveNewConnectMajor validates --connect. Not passed is zero, so
+// resolveScaffoldConnectMajor applies the default: v2 for a new service
+// project, the adopted go.mod's major for --in-place.
 func resolveNewConnectMajor(changed bool, value, kindFlag string) (connectmajor.Major, error) {
 	if !changed {
 		return 0, nil
@@ -1588,7 +1589,7 @@ func resolveNewConnectMajor(changed bool, value, kindFlag string) (connectmajor.
 	if err != nil {
 		return 0, cliutil.UserErr("forge project new",
 			fmt.Sprintf("invalid --connect %q", value), "",
-			"pass --connect v1 (connectrpc.com/connect, the default) or --connect v2 (connectrpc.com/connect/v2)")
+			"pass --connect v2 (connectrpc.com/connect/v2, the default) or --connect v1 (connectrpc.com/connect)")
 	}
 	if kind := strings.ToLower(strings.TrimSpace(kindFlag)); kind != "" && kind != config.ProjectKindService {
 		return 0, cliutil.UserErr("forge project new",
@@ -1602,14 +1603,16 @@ func resolveNewConnectMajor(changed bool, value, kindFlag string) (connectmajor.
 // targetPath is born on. An explicit --connect (flag) wins, once
 // checkConnectMajorAgreesWithGoMod has accepted it. With none, a go.mod
 // already at targetPath decides — the module `--in-place` adopts — and a
-// directory with no go.mod stays zero, so the generator keeps its
-// historical v1 default. targetPath must be the real target, never an
-// in-place staging directory: staging holds no go.mod to agree with.
+// directory with no go.mod is a new project: a service project
+// (kind, normalized) is born on connect-go v2, the default; any other kind
+// stays zero, since it has no Connect code to target. targetPath must be the
+// real target, never an in-place staging directory: staging holds no go.mod
+// to agree with.
 //
 // The refusal holds with --force too. --force replaces the adopted go.mod
 // with forge's, but not the code already importing that go.mod's major, so
 // a contradicting --connect would still leave the project on two majors.
-func resolveScaffoldConnectMajor(targetPath string, flag connectmajor.Major) (connectmajor.Major, error) {
+func resolveScaffoldConnectMajor(targetPath string, flag connectmajor.Major, kind string) (connectmajor.Major, error) {
 	if flag != 0 {
 		if err := checkConnectMajorAgreesWithGoMod(targetPath, flag); err != nil {
 			return 0, err
@@ -1617,15 +1620,20 @@ func resolveScaffoldConnectMajor(targetPath string, flag connectmajor.Major) (co
 		return flag, nil
 	}
 	if _, err := os.Stat(filepath.Join(targetPath, "go.mod")); err != nil {
+		if kind == config.ProjectKindService {
+			return newProjectConnectMajor, nil
+		}
 		return 0, nil
 	}
 	return connectmajor.DetectOrDefault(targetPath), nil
 }
 
-// checkConnectMajorAgreesWithGoMod refuses an explicit --connect that the
-// target's existing go.mod contradicts: --in-place keeps that go.mod, and
-// forge generate reads the major from it, so the scaffold would be born on
-// one major and regenerated on the other.
+// newProjectConnectMajor is the connect-go major `project new` gives a new
+// service project when --connect is not passed. connect-go v1 stays
+// selectable with --connect v1 until reliant and control-plane have moved to
+// v2; v1 support then leaves forge.
+const newProjectConnectMajor = connectmajor.V2
+
 func checkConnectMajorAgreesWithGoMod(targetPath string, want connectmajor.Major) error {
 	if want == 0 {
 		return nil

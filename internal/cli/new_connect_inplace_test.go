@@ -13,17 +13,21 @@ import (
 // The scaffold's major is decided against the REAL target: an explicit
 // --connect the go.mod there contradicts is refused (with or without
 // --force), an unset one inherits the go.mod's major, and a directory with
-// no go.mod keeps the generator's own default (zero).
+// no go.mod is a new project: v2 for a service, zero (no Connect code) for
+// any other kind.
 func TestResolveScaffoldConnectMajor(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		gomod   string
 		flag    connectmajor.Major
+		kind    string // default service
 		want    connectmajor.Major
 		wantErr string
 	}{
-		{name: "no go.mod, unset", want: 0},
+		{name: "no go.mod, unset", want: connectmajor.V2},
+		{name: "no go.mod, unset, cli", kind: "cli", want: 0},
+		{name: "no go.mod, unset, library", kind: "library", want: 0},
 		{name: "no go.mod, v1", flag: connectmajor.V1, want: connectmajor.V1},
 		{name: "no go.mod, v2", flag: connectmajor.V2, want: connectmajor.V2},
 		{name: "v1 go.mod, unset", gomod: v1ProjectGoMod, want: connectmajor.V1},
@@ -39,7 +43,11 @@ func TestResolveScaffoldConnectMajor(t *testing.T) {
 			if tc.gomod != "" {
 				writeGoModIn(t, dir, tc.gomod)
 			}
-			got, err := resolveScaffoldConnectMajor(dir, tc.flag)
+			kind := tc.kind
+			if kind == "" {
+				kind = "service"
+			}
+			got, err := resolveScaffoldConnectMajor(dir, tc.flag, kind)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)

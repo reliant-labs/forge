@@ -173,7 +173,7 @@ func frontendKCLDeclaration(frontendName, kclType string, binding frontendBindin
 		fmt.Fprintf(&b, "        routes = [%s]\n", strings.Join(quoted, ", "))
 	}
 	if binding != frontendOnHost {
-		b.WriteString("        public_dir = \"out\"\n")
+		fmt.Fprintf(&b, "        public_dir = %q\n", frontendPublicDir(kclType))
 	}
 	b.WriteString("}\n")
 	return strings.ReplaceAll(b.String(), "\n        ", "\n    ")
@@ -244,6 +244,19 @@ func frontendKCLStanzaHint(projectName, env, frontendName, kclType string, bindi
 	b.WriteString("    # inside the bundle, alongside workloads:\n")
 	b.WriteString(frontendKCLEntry(frontendName, kclType, binding, pinnedPort, routes))
 	return b.String()
+}
+
+// frontendPublicDir is where the scaffolded frontend's `npm run build`
+// writes, by KCL type: a Next.js static export into out/, while the Vite
+// scaffold (no build.outDir) and an Expo web export write Vite's and Expo's
+// default dist/ — the render's own convention (kcl/render.k _public_dir).
+// Declaring "out" for every type published a directory a Vite build never
+// wrote.
+func frontendPublicDir(kclType string) string {
+	if kclType == "" || kclType == "nextjs" {
+		return "out"
+	}
+	return "dist"
 }
 
 // kclFrontendType is the KCL spelling of a scaffold frontend type

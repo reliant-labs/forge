@@ -2,13 +2,9 @@ package middleware
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -77,14 +73,26 @@ func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, si
 // without the handler running again. Streaming calls pass through, as in
 // v1. Returns nil when opts.CacheSize <= 0 or claimsFrom is nil.
 //
-// Unlike the v1 interceptor, which keys its cache by procedure and client
-// key alone, the v2 cache is scoped to the authenticated caller: claimsFrom
-// names the principal (claims.UserID) and its tenant (claims.OrgID), and
-// both are part of the key, so one caller can never be handed another's
-// answer by reusing their Idempotency-Key. A call with no identity —
-// claimsFrom reports none, or a claim with an empty UserID — is neither
-// cached nor replayed: the handler runs as if no key were sent. Put the
-// interceptor after authentication in the chain, so the claims are there.
+// Unlike the plain v1 interceptor, which keys its cache by procedure and
+// client key alone, the v2 cache is partitioned by the authenticated caller
+// and every authority it presented — exactly as
+// [IdempotencyInterceptorWithCaller], the v1 caller-scoped twin, does. By
+// default the partition digests the claims' fixed fields (UserID, OrgID,
+// Email, EmailVerified, Role, sorted Roles), the credential (its kind and
+// an API key's prefix) and claims.Raw canonically encoded, leaving out only
+// the volatile registered claims iat, exp, nbf and jti. So one caller can
+// never be handed another's answer by reusing their Idempotency-Key, and
+// neither can the same person holding a token with fewer permissions, while
+// a refreshed token of the same authority still replays.
+// [IdempotencyOptions.Partition] replaces that digest with the
+// application's own.
+//
+// A call whose partition cannot be established is neither cached nor
+// replayed: the handler runs as if no key were sent. That is a call with no
+// identity — claimsFrom reports none, nil claims, an empty UserID — or Raw
+// that json cannot encode, or a Partition func that returns ok=false or "".
+// There is no shared fallback key. Put the interceptor after authentication
+// in the chain, so the claims are there.
 //
 // A v2 handler returns no response value — it sends its reply on the
 // stream — so the interceptor records what the handler sends, and with it
@@ -100,45 +108,15 @@ func IdempotencyInterceptorV2(opts IdempotencyOptions, claimsFrom ClaimsLookup) 
 	if opts.TTL <= 0 {
 		opts.TTL = time.Hour
 	}
-	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL, claimsFrom: claimsFrom}
+	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL, scope: newCallerScope(opts, claimsFrom)}
 	return i.wrap
 }
 
 type idempotencyInterceptorV2 struct {
-	mu         sync.Mutex
-	cache      *lruCache[*cachedRPCReply]
-	ttl        time.Duration
-	claimsFrom ClaimsLookup
-}
-
-// callerCacheKey is the cache key of one caller's (procedure, key) pair, or
-// "" when ctx carries no authenticated caller. The caller is its tenant, its
-// user AND the authority it presented: the credential kind, an API key's
-// prefix, and its role(s). So a person's token and an API key issued to the
-// same person, or the same key before and after a role change, never share
-// an entry, and a replay never hands a result to a credential the handler
-// might have refused. Each part is length-prefixed before hashing, so no
-// choice of values can make two different tuples collide.
-func (i *idempotencyInterceptorV2) callerCacheKey(ctx context.Context, procedure, clientKey string) string {
-	claims, ok := i.claimsFrom(ctx)
-	if !ok || claims == nil || claims.UserID == "" {
-		return ""
-	}
-	roles := slices.Clone(claims.Roles)
-	slices.Sort(roles)
-	h := sha256.New()
-	for _, part := range []string{
-		claims.OrgID, claims.UserID,
-		claims.Credential.Kind().String(), claims.Credential.KeyPrefix(),
-		claims.Role, strings.Join(roles, "\x00"),
-		procedure, clientKey,
-	} {
-		var n [8]byte
-		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
-		h.Write(n[:])
-		h.Write([]byte(part))
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	mu    sync.Mutex
+	cache *lruCache[*cachedRPCReply]
+	ttl   time.Duration
+	scope *callerScope
 }
 
 // cachedRPCReply is one recorded v2 unary answer.
@@ -163,9 +141,9 @@ func (i *idempotencyInterceptorV2) wrap(next connectv2.ServerFunc) connectv2.Ser
 		if key == "" {
 			return next(ctx, spec, stream)
 		}
-		cacheKey := i.callerCacheKey(ctx, spec.Procedure, key)
+		cacheKey := i.scope.cacheKey(ctx, spec.Procedure, key)
 		if cacheKey == "" {
-			return next(ctx, spec, stream) // no caller to scope the answer to
+			return next(ctx, spec, stream) // no partition to scope the answer to
 		}
 
 		i.mu.Lock()

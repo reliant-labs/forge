@@ -146,6 +146,12 @@ const (
 	// policy. That is the fail-closed reading: nothing is enabled that nobody
 	// converged.
 	BundleFeatureIdentitySignIn = "shape-identity-signin"
+	// BundleFeatureIdentityCodeLifetime is ShapeIdentity.CodeLifetime: how
+	// long a password-set code stays redeemable (forge#2265). A control
+	// plane that predates it keeps the provider's one-hour default, so a
+	// shape declaring a lifetime is sent to it without one rather than
+	// refused.
+	BundleFeatureIdentityCodeLifetime = "shape-identity-code-lifetime"
 	// BundleFeatureExternalDatabases is Shape.ExternalDatabases: the
 	// databases the env uses but forge does not run, as routes (Service,
 	// database, role, password Secret name). A control plane that predates it
@@ -217,7 +223,7 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -384,6 +390,11 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		// The login_policy output is a sign-in addition too: a reader predating
 		// it rejects a consumer that maps or omits it as an unknown output.
 		id.Consumers = withoutLoginPolicyOutput(id.Consumers)
+		s.Identity = &id
+	}
+	if !r.Supports(BundleFeatureIdentityCodeLifetime) && s.Identity != nil && s.Identity.CodeLifetime != "" {
+		id := *s.Identity
+		id.CodeLifetime = ""
 		s.Identity = &id
 	}
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {

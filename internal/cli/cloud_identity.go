@@ -218,8 +218,8 @@ type identityPasswordCodeWire struct {
 
 // writePasswordCode prints a returned code: the env's reset link when the
 // identity declares one to build it from, else the bare code. Its lifetime
-// is the identity provider's (an hour by default) and no flag extends it, so
-// it is said up front, with the command that issues a fresh code: a link an
+// is the env's (ManagedIdentity.code_lifetime, an hour by default) and no
+// flag extends it, so it is said up front, with the command that issues a fresh code: a link an
 // operator hands over by chat is routinely opened after it lapsed
 // (forge#2265, "Code is expired (CODE-QvUQ4P)"). reissue is that command.
 func writePasswordCode(w io.Writer, c *identityPasswordCodeWire, reissue string, now time.Time) {
@@ -231,7 +231,7 @@ func writePasswordCode(w io.Writer, c *identityPasswordCodeWire, reissue string,
 		}
 	}
 	fmt.Fprintf(w, "Password-set code — a credential: give it only to this person, over a channel you control. Single use.\n")
-	fmt.Fprintf(w, "⚠️  It expires %s, and its lifetime cannot be extended: deliver it now.\n", expires)
+	fmt.Fprintf(w, "⚠️  It expires %s, and no flag extends it (the env's ManagedIdentity.code_lifetime sets how long codes live): deliver it now.\n", expires)
 	if c.ResetURL != "" {
 		fmt.Fprintf(w, "  %s\n", c.ResetURL)
 	} else {

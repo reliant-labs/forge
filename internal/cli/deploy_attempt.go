@@ -78,7 +78,14 @@ var (
 	attemptLogLimit = 256 * 1024
 	// attemptReportLimit bounds the captured --json document.
 	attemptReportLimit = 1024 * 1024
+	// attemptFlushBackoff is the first wait between the final reports that
+	// deliver a code source still owed at finish; it doubles per try.
+	attemptFlushBackoff = 250 * time.Millisecond
 )
+
+// attemptFlushTries bounds those final reports: each is one call of at most
+// attemptCallTimeout, at the end of a deploy whose own work is done.
+const attemptFlushTries = 3
 
 type deployAttemptCtxKey struct{}
 
@@ -122,6 +129,14 @@ type deployAttempt struct {
 	codeSourceTried   string
 	codeSourcePending map[string]any
 	codeSourceDone    bool
+
+	// reportMu serializes report1, so one report at a time resolves the
+	// code source and consumes it: two reports could otherwise both find it
+	// unresolved, both read the release and both send it. Taken before mu,
+	// never while holding it.
+	reportMu sync.Mutex
+	// flushBackoff overrides attemptFlushBackoff; tests shrink it.
+	flushBackoff time.Duration
 }
 
 // deployAttemptMode is the attempt mode for a deploy invocation, or "" when
@@ -362,12 +377,16 @@ func (a *deployAttempt) heartbeat(ctx context.Context) {
 	}
 }
 
-// report1 sends one heartbeat with whatever changed and the pending output.
-func (a *deployAttempt) report1(ctx context.Context) {
+// report1 sends one heartbeat with whatever changed and the pending output,
+// and returns the call's error: nil when nothing was sent or the server took
+// it. A pending code source is cleared only when the server took it.
+func (a *deployAttempt) report1(ctx context.Context) error {
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
 	a.mu.Lock()
 	if !a.opened || a.dead {
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	logChunk := a.pending.String()
 	a.pending.Reset()
@@ -418,19 +437,61 @@ func (a *deployAttempt) report1(ctx context.Context) {
 			a.codeSourceWarning = msg
 		}
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if hostedErrorHasCode(err, cloud.CodeFailedPrecondition) || hostedErrorHasCode(err, cloud.CodeNotFound) {
 		// The server closed or lost it; nothing more can be written.
 		a.dead = true
-		return
+		return err
 	}
-	// Transient: keep the chunk for the next beat, still bounded.
+	// Transient: keep the chunk for the next beat, still bounded. A pending
+	// code source stays pending for the same reason.
 	rest := a.pending.String()
 	a.pending.Reset()
 	a.appendLocked(&a.pending, logChunk+rest, attemptLogLimit)
+	return err
+}
+
+// flushCodeSource delivers a code source still owed when the deploy ends —
+// its release became known too late for a heartbeat to carry it, or the
+// heartbeat that carried it failed — on final reports: the close carries no
+// source. A transient failure is retried, a bounded number of times with a
+// doubling backoff; an answer that will not change (the attempt is gone, the
+// server keeps no reports, the request is refused) ends it.
+func (a *deployAttempt) flushCodeSource(ctx context.Context) {
+	backoff := a.flushBackoff
+	if backoff <= 0 {
+		backoff = attemptFlushBackoff
+	}
+	for try := 1; ; try++ {
+		err := a.report1(ctx)
+		a.mu.Lock()
+		owed := !a.dead && a.codeSourceOwedLocked()
+		a.mu.Unlock()
+		if !owed || err == nil || try >= attemptFlushTries || attemptErrorIsFinal(err) {
+			return
+		}
+		t := time.NewTimer(backoff)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return
+		}
+		backoff *= 2
+	}
+}
+
+// attemptErrorIsFinal: a report error that a retry would only repeat.
+func attemptErrorIsFinal(err error) bool {
+	for _, code := range []string{cloud.CodeUnimplemented, cloud.CodeInvalidArgument, cloud.CodePermissionDenied, cloud.CodeUnauthenticated} {
+		if hostedErrorHasCode(err, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // finish closes the attempt with the invocation's outcome. Always safe to
@@ -450,14 +511,11 @@ func (a *deployAttempt) finish(ctx context.Context, runErr error) {
 	if opened {
 		close(stop)
 		<-a.beatDone
-		// A source still owed — the release became known too late for a
-		// heartbeat to carry it — goes on one last report: the close
-		// carries no source.
 		a.mu.Lock()
 		owed := !a.dead && a.codeSourceOwedLocked()
 		a.mu.Unlock()
 		if owed {
-			a.report1(context.WithoutCancel(ctx))
+			a.flushCodeSource(context.WithoutCancel(ctx))
 		}
 	}
 	// After the deploy's own output, and whatever its outcome: it is about

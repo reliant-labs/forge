@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -517,5 +519,117 @@ func assertCodeSource(t *testing.T, what string, body map[string]any, want map[s
 		if got[k] != v {
 			t.Errorf("%s: codeSource.%s = %v, want %v", what, k, got[k], v)
 		}
+	}
+}
+
+// noteReleaseQuietly names the attempt's release without nudging a
+// heartbeat, so only the calls a test makes report.
+func noteReleaseQuietly(a *deployAttempt, version string) {
+	a.mu.Lock()
+	a.release = version
+	a.mu.Unlock()
+}
+
+// reportsCarryingSource counts the reports that carried a code source.
+func reportsCarryingSource(c *attemptCaller) int { return len(c.sourcesSent(procReportDeployAttempt)) }
+
+// A source still owed at finish survives a transient failure of the final
+// report: it is retried, with backoff, until the server takes it — and the
+// release behind it is read once, not once per try.
+func TestDeployAttemptFinalFlushRetriesATransientFailure(t *testing.T) {
+	t.Parallel()
+	unavailable := &cloud.Error{Code: cloud.CodeUnavailable, Message: "try again"}
+	c := &attemptCaller{releases: attemptReleases(), reportErrs: []error{unavailable, unavailable}}
+	ctx, a := newTestAttempt("prod", "apply", io.Discard)
+	a.flushBackoff = time.Millisecond
+	attachDeployAttempt(ctx, "prod", attemptLedger(c, codeSource{Remote: "github.com/acme/ops", Commit: sourceCommitA}))
+	noteReleaseQuietly(a, "v1")
+
+	a.finish(ctx, nil)
+	if got := c.count(procReportDeployAttempt); got != 3 {
+		t.Fatalf("final reports = %d, want 3 (two transient failures, then delivery)", got)
+	}
+	if got := reportsCarryingSource(c); got != 3 {
+		t.Errorf("reports carrying the source = %d, want every try to carry it", got)
+	}
+	assertCodeSource(t, "delivered", map[string]any{"codeSource": c.sourcesSent(procReportDeployAttempt)[2]},
+		map[string]any{"remote": "github.com/acme/shop", "commit": sourceCommitB})
+	if got := c.count(procGetRelease); got != 1 {
+		t.Errorf("GetRelease called %d times, want 1", got)
+	}
+	a.mu.Lock()
+	done, pending := a.codeSourceDone, a.codeSourcePending
+	a.mu.Unlock()
+	if !done || pending != nil {
+		t.Errorf("after delivery: done = %v, pending = %v", done, pending)
+	}
+	if c.last(procCloseDeployAttempt) == nil {
+		t.Error("the attempt was never closed")
+	}
+}
+
+// The final flush is bounded: a server that keeps failing is tried
+// attemptFlushTries times, the source stays undelivered (never cleared as
+// sent), and the attempt still closes.
+func TestDeployAttemptFinalFlushIsBounded(t *testing.T) {
+	t.Parallel()
+	var errs []error
+	for range attemptFlushTries + 2 {
+		errs = append(errs, &cloud.Error{Code: cloud.CodeUnavailable, Message: "down"})
+	}
+	c := &attemptCaller{releases: attemptReleases(), reportErrs: errs}
+	ctx, a := newTestAttempt("prod", "apply", io.Discard)
+	a.flushBackoff = time.Millisecond
+	attachDeployAttempt(ctx, "prod", attemptLedger(c, codeSource{}))
+	noteReleaseQuietly(a, "v1")
+
+	a.finish(ctx, nil)
+	if got := c.count(procReportDeployAttempt); got != attemptFlushTries {
+		t.Errorf("final reports = %d, want %d", got, attemptFlushTries)
+	}
+	a.mu.Lock()
+	done, pending := a.codeSourceDone, a.codeSourcePending
+	a.mu.Unlock()
+	if done || pending == nil {
+		t.Errorf("an undelivered source was cleared: done = %v, pending = %v", done, pending)
+	}
+	if c.last(procCloseDeployAttempt) == nil {
+		t.Error("the attempt was never closed")
+	}
+}
+
+// Reports race — the heartbeat, a nudge, finish — and the source is
+// resolved and sent by exactly one of them: report1 is serialized, so the
+// first resolves and delivers it and the rest find nothing owed.
+func TestDeployAttemptConcurrentReportsSendTheSourceOnce(t *testing.T) {
+	t.Parallel()
+	c := &attemptCaller{releases: attemptReleases()}
+	ctx, a := newTestAttempt("prod", "apply", io.Discard)
+	attachDeployAttempt(ctx, "prod", attemptLedger(c, codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web"}))
+	noteReleaseQuietly(a, "v1")
+
+	const reporters = 16
+	start := make(chan struct{})
+	var ready, done sync.WaitGroup
+	ready.Add(reporters)
+	done.Add(reporters)
+	for range reporters {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			_ = a.report1(context.Background())
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	a.finish(ctx, nil)
+
+	if got := reportsCarryingSource(c); got != 1 {
+		t.Errorf("reports carrying the source = %d, want exactly 1", got)
+	}
+	if got := c.count(procGetRelease); got != 1 {
+		t.Errorf("GetRelease called %d times, want 1", got)
 	}
 }

@@ -118,21 +118,12 @@ type ProjectGenerator struct {
 	// forge control plane, so the CI scaffolded beside them is the hosted
 	// pipeline (generateCIFiles) without rendering a half-born project.
 	hostedEnvs []string
-
-	// ConnectMajor is the connect-go major the scaffold targets. The zero
-	// value means "the project's own": the major treeDir()'s go.mod selects
-	// (internal/connectmajor), which is v1 for a fresh project and the
-	// adopted module's choice for `--in-place`. A caller that is about to
-	// write a v2 go.mod sets it explicitly.
-	ConnectMajor connectmajor.Major
 }
 
-// connectMajor resolves ConnectMajor: the explicit choice, else the major
-// the project's go.mod selects (v1 when there is none).
+// connectMajor is the connect-go major the scaffold targets: the major
+// treeDir()'s go.mod selects (internal/connectmajor), which is v1 for a
+// fresh project and the adopted module's choice for `--in-place`.
 func (g *ProjectGenerator) connectMajor() connectmajor.Major {
-	if g.ConnectMajor != 0 {
-		return g.ConnectMajor
-	}
 	return connectmajor.DetectOrDefault(g.treeDir())
 }
 

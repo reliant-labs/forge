@@ -58,9 +58,9 @@ type InventoryServiceData struct {
 	Package string
 	// ConnectPkg / ProtoServiceName drive the ConnectPath descriptor and,
 	// when REST is on, the connect import. Mirrors the bootstrap fields.
-	// ProtoServiceName is the RAW proto service name: protoc-gen-connect-go
-	// spells the `<Service>Name` constant from it rather than from the
-	// GoName (naming.ConnectServiceNameConst).
+	// ProtoServiceName is the RAW proto service name: v1's
+	// protoc-gen-connect-go spells the `<Service>Name` constant from it
+	// rather than from the GoName, v2's from the GoName (ServiceNameConst).
 	ConnectPkg       string
 	ProtoServiceName string
 	// BaseService and Version carry the proto identity SPLIT into its
@@ -89,6 +89,17 @@ type InventoryServiceData struct {
 	// Audience is the trust domain the service declares (`(forge.v1.service)
 	// .audience`), "user" when it declares none: which route set mounts it.
 	Audience string
+}
+
+// ServiceNameConst is the `<…>Name` constant protoc-gen-connect-go declares
+// for the service in ConnectPkg: spelled from the raw proto name by the v1
+// plugin (naming.ConnectServiceNameConst), from the GoName by the v2 one
+// (naming.ConnectServiceNameConstV2).
+func (d InventoryServiceData) ServiceNameConst(connectV2 bool) string {
+	if connectV2 {
+		return naming.ConnectServiceNameConstV2(d.ProtoServiceName)
+	}
+	return naming.ConnectServiceNameConst(d.ProtoServiceName)
 }
 
 // serviceAudienceOrUser is a service's audience, defaulting to "user" the way

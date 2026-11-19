@@ -376,3 +376,31 @@ func Mount(m *mountkit.MuxV2, a *items.Service, b *later.Service, c *mocks.Items
 		})
 	}
 }
+
+// The `<…>Name` constant the mounts and route sets reference is spelled from
+// the raw proto name by v1's plugin and from the GoName by v2's, which differ
+// for a service name with a lowercase letter after a digit.
+func TestInventoryServiceNameConstPerMajor(t *testing.T) {
+	row := InventoryServiceData{Name: "alpha", FieldName: "Alpha", ProtoServiceName: "Alphav1connectService", ConnectPkg: "alphav1connectv1connect", Audience: "user"}
+	if got := row.ServiceNameConst(false); got != "Alphav1connectServiceName" {
+		t.Errorf("v1 = %q", got)
+	}
+	if got := row.ServiceNameConst(true); got != "Alphav1ConnectServiceName" {
+		t.Errorf("v2 = %q", got)
+	}
+	for _, v2 := range []bool{false, true} {
+		want := row.ServiceNameConst(v2)
+		mounts := string(renderProjectTemplate(t, "mounts_services_gen.go.tmpl", InventoryGenData{Module: "example.com/x", Services: []InventoryServiceData{row}, ConnectV2: v2}))
+		view := routesGenView{Module: "example.com/x", Services: []routesServiceView{{InventoryServiceData: row, Type: "*alpha.Service"}},
+			Audiences: []routesAudienceView{{Name: "UserRoutes", Audience: "user", Default: true}}, ConnectV2: v2}
+		routes, err := renderGoTemplate("routes_gen.go.tmpl", view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, src := range map[string]string{"mounts_services_gen.go": mounts, "routes_gen.go": string(routes)} {
+			if strings.Count(src, "alphav1connectv1connect."+want) < 2 {
+				t.Errorf("v2=%v %s must reference alphav1connectv1connect.%s in its mount and its inventory row:\n%s", v2, name, want, src)
+			}
+		}
+	}
+}

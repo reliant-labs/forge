@@ -119,7 +119,7 @@ func (o MountOptions) Mount{{.FieldName}}(c *Components, m *mountkit.MuxV2, cfg 
 {{- if .HasWebhooks}}
 	c.{{.FieldName}}.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)
 {{- end}}
-	return []string{ {{.ConnectPkg}}.{{.ProtoServiceName}}Name }
+	return []string{ {{.ConnectPkg}}.{{.ServiceNameConst true}} }
 }
 
 // Mount{{.FieldName}} mounts the {{.Name}} service with no per-service
@@ -212,7 +212,7 @@ var Inventory = []mountinv.ComponentInfo{
 {{- range .Services}}
 	{
 		Name:        "{{.Name}}",
-		ConnectPath: {{.ConnectPkg}}.{{.ProtoServiceName}}Name,
+		ConnectPath: {{.ConnectPkg}}.{{.ServiceNameConst $v2}},
 		BaseService: "{{.BaseService}}",
 		Version:     "{{.Version}}",
 		Kind:        "service",

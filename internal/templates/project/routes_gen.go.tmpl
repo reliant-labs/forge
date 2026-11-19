@@ -104,7 +104,7 @@ func (o MountOptions) Mount{{.FieldName}}(m *mountkit.MuxV2, svc {{.Type}}, logg
 {{- if .HasWebhooks}}
 	svc.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)
 {{- end}}
-	return []string{ {{.ConnectPkg}}.{{.ProtoServiceName}}Name }
+	return []string{ {{.ConnectPkg}}.{{.ServiceNameConst true}} }
 }
 {{- else}}
 // Mount{{.FieldName}} registers the {{.Name}} service's Connect and HTTP routes on
@@ -196,7 +196,7 @@ var Inventory = []mountinv.ComponentInfo{
 {{- range .Services}}
 	{
 		Name:        "{{.Name}}",
-		ConnectPath: {{.ConnectPkg}}.{{.ProtoServiceName}}Name,
+		ConnectPath: {{.ConnectPkg}}.{{.ServiceNameConst $v2}},
 		BaseService: "{{.BaseService}}",
 		Version:     "{{.Version}}",
 		Kind:        "service",

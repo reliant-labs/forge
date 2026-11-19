@@ -36,11 +36,13 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 		}
 	}
 
-	if err := codegen.GenerateAuthSetup(modPath, projectDir); err != nil {
+	wrote, err := codegen.GenerateAuthSetup(modPath, projectDir)
+	if err != nil {
 		return err
 	}
-
-	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	}
 	return generateLoginBroker(modPath, projectDir)
 }
 
@@ -48,15 +50,23 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 // of the API-only sign-in flow, so a project that wants its own sign-in
 // screen has the endpoint already written rather than having to derive it
 // from the issuer's API docs. Inert until wired.
+//
+// The "Scaffolded" line prints only when this run wrote the file: it is
+// scaffold-once, and declined when the project already has it, deleted it on
+// purpose, or declares no config the broker could read. Agents and people
+// take a ✅ line as proof the file exists.
 func generateLoginBroker(modulePath, projectDir string) error {
 	projectName := filepath.Base(projectDir)
-	if err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir); err != nil {
+	wrote, err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir)
+	if err != nil {
 		return err
 	}
 	if w := codegen.LoginBrokerCookieMismatch(projectDir); w != "" {
 		fmt.Printf("  ⚠️  %s\n", w)
 	}
-	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	}
 	return nil
 }
 

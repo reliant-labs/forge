@@ -109,7 +109,13 @@ func LoginBrokerCookieMismatch(projectDir string) string {
 // bytes, including the security-critical handler that decides which
 // credentials get checked. See the template's header for what must not be
 // changed carelessly.
-func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
+//
+// The bool reports whether this call created the file: false when the
+// scaffold-once guard declined (the file exists, or was deleted on purpose)
+// or no config declares the broker's settings. Callers print a "Scaffolded"
+// line only on true; one printed on false is a claim that a file exists
+// which does not.
+func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, error) {
 	appDir := filepath.Join(projectDir, "internal", "app")
 	path := filepath.Join(appDir, "login_broker.go")
 	rel := filepath.Join("internal", "app", "login_broker.go")
@@ -117,7 +123,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		// Never clobber an existing copy, and never resurrect a deleted
 		// one. A project that uses the issuer-hosted login pages deletes
 		// this file and it stays gone.
-		return nil
+		return false, nil
 	}
 	configType, declared := configDeclaring(projectDir, brokerConfigFields)
 	if !declared && GraphComposition(projectDir) {
@@ -125,10 +131,10 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		// it could read none of them: nothing to scaffold (providers.go
 		// wires no sign-in routes). Not recorded, so declaring them later
 		// births it.
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		return fmt.Errorf("create internal/app dir: %w", err)
+		return false, fmt.Errorf("create internal/app dir: %w", err)
 	}
 	declares := func(field string) bool {
 		in, ok := configDeclaring(projectDir, append(append([]string{}, brokerConfigFields...), field))
@@ -147,11 +153,11 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) error {
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
 	})
 	if err != nil {
-		return fmt.Errorf("render app-login-broker.go.tmpl: %w", err)
+		return false, fmt.Errorf("render app-login-broker.go.tmpl: %w", err)
 	}
 	if err := writeUserScaffold(path, content); err != nil {
-		return err
+		return false, err
 	}
 	checksums.RecordScaffold(projectDir, rel)
-	return nil
+	return true, nil
 }

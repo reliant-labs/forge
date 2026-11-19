@@ -2205,7 +2205,7 @@ schema RenderedSecretKey:
         from != "literal" or value != Undefined, \
             "RenderedSecretKey(from='literal') requires `value`"
         from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
-            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='dotenv'"
+            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='file'"
 
 schema RenderedSecret:
     """A single k8s Secret forge renders + applies from declared
@@ -2312,7 +2312,7 @@ schema TestJWKS:
                         for one of them can be pointed at this JWKS).
                         `derive_jwk` refuses an alg the key cannot sign.
       * `private_key` — StoreRef to the ES256/RS256 private-key PEM in
-                        `.env.<env>`. Read at render time to derive the
+                        `secrets/<env>.yaml`. Read at render time to derive the
                         public JWK; never published.
     """
     name: str
@@ -4467,8 +4467,8 @@ schema FrontendErrors:
 
 schema BrowserTelemetry:
     """What a frontend declares about its browser telemetry beyond the
-    environment's observability signals (Observability.signals.browser and
-    .replay still decide whether anything is collected at all).
+    environment's observability signals (Observability.signals.browser still
+    decides whether anything is collected at all).
 
         forge.Frontend {
             name = "web"
@@ -7080,15 +7080,12 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
-    # Session replay is OPT-IN (the only category that defaults off) and is
-    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
-    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
-    # The platform drops replay events (browser logs of instrumentation scope
-    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
-    # `telemetry.replay`. True here opts the env in without switching any
-    # frontend on (each still needs OTEL_REPLAY in its runtime config).
-    replay: bool = False
+    # (Session replay is not a signal here: it is OPT-IN, switched on per
+    # frontend with `forge.BrowserTelemetry {replay = True}`, which renders the
+    # frontend's OTEL_REPLAY = "true" and opts the env in. The platform drops
+    # replay events, browser logs of instrumentation scope `rum.rr-web`, unless
+    # some frontend of the env opted in. The render records the result as
+    # `signals.replay` and `policy.opt_in`.)
     # The product events forge emits on the app's behalf: every create, update
     # and delete that lands through a generated CRUD handler records
     # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
@@ -7534,7 +7531,7 @@ schema Observability:
         (alertmanager_port == 0) == (alerts_port == 0), \
             "Observability: alertmanager_port and alerts_port go together (the local Alertmanager delivers its in-app alerts to the evaluator on alerts_port, and the evaluator posts to the Alertmanager). Set both or neither"
         not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
-            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (see migrations/v0.1.45), or leave signals.profiles unset"
+            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (a fresh `forge project new` scaffolds that service), or leave signals.profiles unset"
         not enabled or sampling.traces_ratio >= 1.0 or destination, \
             "Observability.sampling.traces_ratio < 1.0 needs a destination: sampling runs in the collector that forwards, and the local ClickStack stores everything"
 
@@ -7909,12 +7906,6 @@ schema IdentitySeedUser:
 
     check:
         regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
-
-schema IdentitySocialProvider:
-    """Deprecated: declare `forge.IdentityGoogle` or `forge.IdentityGitHub` in
-    `ManagedIdentity.social`. This was the reserved placeholder; it was always
-    refused at render and `social` no longer accepts it."""
-    provider: str
 
 # A first-factor sign-in method (ManagedIdentity.methods).
 type IdentityMethod = "password" | "passkey" | "magic_link"

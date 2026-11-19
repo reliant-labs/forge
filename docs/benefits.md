@@ -406,7 +406,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge scaffold operator`
 - library [`pkg/controller`](../pkg/controller)
-- library [`pkg/appkit`](../pkg/appkit)
+- library [`pkg/appkit/operatorkit`](../pkg/appkit/operatorkit)
 - library [`pkg/stsresize`](../pkg/stsresize)
 - library [`pkg/cmdkit`](../pkg/cmdkit)
 - command `forge scaffold crd`
@@ -468,18 +468,6 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - library [`pkg/money`](../pkg/money)
-
-<a id="lib-approval"></a>
-
-### Human approval queue
-
-`pkg/approval` holds items an agent proposed until a person approves or rejects them, expires the undecided at their deadline and hands each decided item to the app's follow-up exactly once.
-
-_Enforced · Forge, on any infrastructure_
-
-**Evidence:**
-
-- library [`pkg/approval`](../pkg/approval)
 
 ---
 
@@ -709,13 +697,10 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** forge fix tx-isolation
-
 **Evidence:**
 
 - library [`pkg/orm`](../pkg/orm)
 - lint lane `forge lint --conventions`
-- command `forge fix tx-isolation`
 - skill `service-layer/transactions` (`forge skill load service-layer/transactions`)
 
 <a id="never-waiting-migrations"></a>
@@ -879,7 +864,6 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/contractkit`](../pkg/contractkit)
 - source [`internal/generator/contract`](../internal/generator/contract)
 - skill `contracts` (`forge skill load contracts`)
-- command `forge fix harness-mocks`
 
 <a id="test-tiers"></a>
 
@@ -1472,7 +1456,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Codemods for convention moves
 
-`forge fix` rewrites a project onto a new convention in one command (Connect errors, narrow Deps, transaction isolation, harness mocks, the composition graph, operatorkit, the config proto package), and takes back a rewrite that fails.
+`forge fix` rewrites a project onto a new convention in one command (Connect errors, narrow Deps, the composition graph, operatorkit, the config proto package), and takes back a rewrite that fails.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -1480,8 +1464,6 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge fix connect-errors`
 - command `forge fix narrow-deps`
-- command `forge fix tx-isolation`
-- command `forge fix harness-mocks`
 - command `forge fix composition-graph`
 - command `forge fix operatorkit`
 - command `forge fix config-proto-package`
@@ -3115,7 +3097,6 @@ _Recorded · Forge, on any infrastructure_
 **Evidence:**
 
 - skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
-- library [`pkg/approval`](../pkg/approval)
 
 <a id="gate-evidence"></a>
 

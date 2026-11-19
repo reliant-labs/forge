@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // upgrade_converge.go — `forge project upgrade` as the one verb that takes a
@@ -342,9 +344,6 @@ func (r *upgradeRun) banner() {
 	} else {
 		fmt.Fprintf(r.out, "%s project upgrade: %s → %s\n", Name(), describeVersion(r.from), describeVersion(r.target))
 	}
-	if isPreV01Baseline(r.from) {
-		fmt.Fprintln(r.out, "  Baseline is pre-v0.1: forge has not declared backwards compatibility yet, so expect template churn.")
-	}
 	fmt.Fprintln(r.out)
 	printApplicableMigrations(r.projectDir, r.from)
 }
@@ -465,11 +464,6 @@ func (r *upgradeRun) phaseCodemods() error {
 		fmt.Fprintln(r.out, "📝 UPGRADE_NOTES.md written at the project root.")
 		fmt.Fprintln(r.out, "    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
-	if !r.check {
-		if err := migrateLegacyChecksums(r.projectDir); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -488,12 +482,22 @@ func (r *upgradeRun) printCodemods(merged CodemodReport) {
 	fmt.Fprintln(r.out)
 }
 
+// migrationSkillManualPath names release version's migration skill as the
+// manual path, when forge still ships it: a codemod outlives its release's
+// playbook once that release ages out of the upgrade window.
+func migrationSkillManualPath(version string) string {
+	if _, err := templates.ProjectTemplates().Get(path.Join("skills", "forge", migrationSkillsRoot, version, "SKILL.md")); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("; `%s skill load %s/%s` is the manual path", Name(), migrationSkillsRoot, version)
+}
+
 func (r *upgradeRun) humanBlocked(cr upgradeCodemodRun) {
 	r.human(upgradeHumanItem{
 		Kind: "codemod-blocked", ID: cr.Name,
 		Message: fmt.Sprintf("forge fix %s wrote nothing: %s", cr.Name, strings.Join(cr.Blocked, "; ")),
-		Fix: fmt.Sprintf("clear each item it lists (`%s fix %s --dry-run`), then re-run `%s project upgrade`; `%s skill load migrations/%s` is the manual path",
-			Name(), cr.Name, Name(), Name(), cr.Version),
+		Fix: fmt.Sprintf("clear each item it lists (`%s fix %s --dry-run`), then re-run `%s project upgrade`", Name(), cr.Name, Name()) +
+			migrationSkillManualPath(cr.Version),
 	})
 }
 

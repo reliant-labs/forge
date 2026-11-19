@@ -11,7 +11,7 @@
 //
 // Add it to `newRules` below:
 //
-//	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{"my-new-rule"}},
 //
 // IntroducedIn is the release the rule will ship in — the one NEXT_VERSION
 // names, never a guess at VERSION's patch+1 —, GatesFrom the release after
@@ -135,58 +135,59 @@ var shippedRules = []rolloutGroup{
 		"migration-compat-reason",
 		"migration-compat-undeclared",
 	}},
-}
 
-// newRules joined `forge lint`, or were tightened, after rolloutBaseline:
-// they warn in a project pinned below GatesFrom.
-var newRules = []rolloutGroup{
+	// The rules below joined `forge lint` (or were tightened) after warn-first
+	// existed, and each warned for a grace window. Every window closed at
+	// rolloutBaseline (owner, 2026-11-19: forge has no users outside the
+	// group that pins it), so they gate at any pin.
+
 	// Tightened: a warning until v0.1.46, a gate since.
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-column-markers", // #1042: COMMENT ON TABLE/VIEW markers, and the lane now gates
 	}},
 	// Tightened: no longer silenced by an svcerr import (#1112).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forgeconv-no-handler-error-mapping",
 	}},
 
 	// forge lint --closed-sets (#1082).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-closed-set"}},
+	{IntroducedIn: "v1.0.0", Rules: []string{"forge-closed-set"}},
 	// forge lint --db-grants (#1172).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-db-grants-undecided", "forge-db-grants-unverified",
 	}},
 	// Commit policy: a generated file only tooling reads (the proto
 	// descriptor) is never committed.
-	{IntroducedIn: "v1.0.10", GatesFrom: "v1.0.11", Fix: "forge generate && git rm -r --cached gen/forge_descriptor", Rules: []string{"tool-derived-file-tracked"}},
+	{IntroducedIn: "v1.0.10", Rules: []string{"tool-derived-file-tracked"}},
 	// forge lint --go-markers (#1039).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-go-markers"}},
+	{IntroducedIn: "v1.0.0", Rules: []string{"forge-go-markers"}},
 	// forge lint --graph (#968, #1017).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-graph-assemble", "forge-graph-audience", "forge-graph-unreachable",
 	}},
 	// forge lint --slow-tests (#925).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-slow-test-inputs", "forge-slow-test-unmarked",
 	}},
 	// forge lint --tracing (#993).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge lint --tracing --fix", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-tracing-log-without-ctx",
 	}},
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forge-tracing-contract-uninstrumented", "forge-tracing-raw-http-client", "forge-tracing-raw-sql-open",
 	}},
 	// forge lint --secrets (#1131).
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"openbao-wildcard-read",
 		"secrets-cluster-kind", "secrets-env-not-rendered", "secrets-es-policy", "secrets-escrow-in-cluster",
 		"secrets-immutable-pin", "secrets-key-coverage", "secrets-out-of-band-reason", "secrets-single-owner",
 		"secrets-unreferenced-key",
 	}},
 	// Least-knowledge Deps rules (#968, #996, #1173) and the D3 / tx / error rules.
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix narrow-deps <package-dir>", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forgeconv-deps-surface",
 	}},
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forgeconv-activity-declared", // D3: every mutating rpc declares its activity (#936)
 		"forgeconv-deps-no-downcast",
 		"forgeconv-deps-root-config",
@@ -194,61 +195,66 @@ var newRules = []rolloutGroup{
 		"forgeconv-no-getenv",
 		"forgeconv-tx-lock-under-serializable", // #1069
 	}},
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix connect-errors", Rules: []string{
+	{IntroducedIn: "v1.0.0", Rules: []string{
 		"forgeconv-handler-connect-error", // #1112
 	}},
 
 	// The golangci-lint build-tag passes (#1205, #1224): findings in files
 	// behind a project build tag, which `forge lint` used to not see at all.
 	// The pass has no rule ID of its own; see lint_rollout.go.
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{rolloutGolangciBuildTags}},
+	{IntroducedIn: "v1.0.0", Rules: []string{rolloutGolangciBuildTags}},
 	// The frontend lockfile lane: package.json ranges the lockfile does not record.
-	{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Rules: []string{"forge-frontend-lock-drift"}},
+	{IntroducedIn: "v1.0.0", Rules: []string{"forge-frontend-lock-drift"}},
 	// A workload whose args select no command of the project binary (the
 	// per-service workloads a graph-composed project was scaffolded with).
-	{IntroducedIn: "v1.0.3", GatesFrom: "v1.0.4", Rules: []string{ruleComponentDriftNoCommand}},
+	{IntroducedIn: "v1.0.3", Rules: []string{ruleComponentDriftNoCommand}},
 	// A login broker that mounts public sign-up in every environment. The
 	// lane is advisory (its findings are warnings at any pin); the row is
 	// what lets lint.rules raise it.
-	{IntroducedIn: "v1.0.16", GatesFrom: "v1.0.17", Rules: []string{ruleOpenSignup}},
+	{IntroducedIn: "v1.0.16", Rules: []string{ruleOpenSignup}},
 	// forgeconv-allocate-port-spacing: graded since v0.1.40 but no lane ran
 	// it until the conventions lane did (bug 13245924), so it warns first.
-	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-allocate-port-spacing"}},
+	{IntroducedIn: "v1.1.0", Rules: []string{"forgeconv-allocate-port-spacing"}},
 	// Commit policy: the birth ledger and the other committed .forge/ state
 	// must not be gitignored (a `.forge/` line voids the scaffold's
 	// re-includes, and deleted scaffolds come back in every fresh clone).
-	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forge-state-ignored"}},
+	{IntroducedIn: "v1.1.0", Rules: []string{"forge-state-ignored"}},
 	// An owner-scoping wrapper whose owner source disagrees with its
 	// siblings' (growth: appended Lists scoped tenant_id by claims.UserID).
-	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{"forgeconv-crud-owner-resolver"}},
+	{IntroducedIn: "v1.1.0", Rules: []string{"forgeconv-crud-owner-resolver"}},
 	// Identity v2: a declared sign-in method or sign-up mode the login
 	// broker does not serve, which would be converged and silently ignored.
-	{IntroducedIn: "v1.1.0", GatesFrom: "v1.1.1", Rules: []string{ruleIdentityMethods}},
+	{IntroducedIn: "v1.1.0", Rules: []string{ruleIdentityMethods}},
 	// A forge:identity-subject column the read-only role cannot read
 	// (forge:secret, or a credential-shaped name with no forge:readable): the
 	// console never sees it, so the identity link is never drawn.
-	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
+	{IntroducedIn: "v1.2.0", Rules: []string{ruleIdentitySubjectUnreadable}},
 	// A deployed sign-up whose address nobody proves (email delivery "none",
 	// or auth_self_signup outside development): its email is a contact
 	// field no proof ever claims (forge#2121).
-	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: []string{ruleUnprovenSignup}},
+	{IntroducedIn: "v1.8.0", Rules: []string{ruleUnprovenSignup}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
-	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
+	{IntroducedIn: "v1.5.0", Rules: []string{
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 	}},
 	// A product event property whose key names personal data (email, name,
 	// ip, url, path, token). Advisory; --strict raises it.
-	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{"forgeconv-product-event-pii"}},
+	{IntroducedIn: "v1.5.0", Rules: []string{"forgeconv-product-event-pii"}},
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.7.0", GatesFrom: "v1.7.1", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", Rules: dbanalyze.RuleIDs()},
 	// forge lint --proto-format: a .proto `buf format` would rewrite — the
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
-	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
+	{IntroducedIn: "v1.8.0", Rules: []string{ruleProtoFormat}},
 }
+
+// newRules joined `forge lint`, or were tightened, after rolloutBaseline:
+// they warn in a project pinned below GatesFrom. Empty when every rule that
+// shipped gates; the next rule to join (or be tightened) goes here.
+var newRules = []rolloutGroup{}
 
 // lintRollouts is the declaration of every rule, by ID.
 var lintRollouts = buildRollouts(shippedRules, newRules)

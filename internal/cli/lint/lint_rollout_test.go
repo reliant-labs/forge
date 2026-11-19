@@ -29,6 +29,17 @@ var testRollouts = map[string]ruleRollout{
 	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"},
 }
 
+// withRollouts makes table the rollout declaration for the rest of the test,
+// for a test that goes through an entry point reading lintRollouts. The real
+// table may hold no rule in grace (newRules empty), so the semantics are
+// pinned on a synthetic one.
+func withRollouts(t *testing.T, table map[string]ruleRollout) {
+	t.Helper()
+	saved := lintRollouts
+	lintRollouts = table
+	t.Cleanup(func() { lintRollouts = saved })
+}
+
 func pinnedCfg(pin string, rules map[string]string) *config.ProjectConfig {
 	return &config.ProjectConfig{ForgeVersion: pin, Lint: config.LintConfig{Rules: rules}}
 }
@@ -643,10 +654,8 @@ func TestMergedBuildTagFindingsStillDedupe(t *testing.T) {
 
 // Through the real engine: the verdict a user reads.
 func TestRolloutVerdictThroughTheEngine(t *testing.T) {
-	ro, ok := lintRollouts[rolloutRule]
-	if !ok || ro.GatesFrom == "" {
-		t.Fatalf("%s must carry a rollout row for this test", rolloutRule)
-	}
+	withRollouts(t, testRollouts)
+	ro := testRollouts[rolloutRule]
 	step := linterStep{
 		name: "closed-sets lint", gates: true, scope: scopeByFile,
 		shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },

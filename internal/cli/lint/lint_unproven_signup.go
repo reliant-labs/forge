@@ -124,7 +124,7 @@ func collectUnprovenSignupJSON(root string) ([]lintJSONFinding, error) {
 				"nobody proves. That address is a contact field the person typed, never proven and never claimed by a later proof",
 			FixHint: "deliver mail so sign-up proves the address first: drop `delivery = \"none\"` (platform delivery is the default) " +
 				"or declare `smtp`, and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-				"(`forge skill load migrations/v1.1.0/identity-v2`)",
+				"(`forge skill load auth/frontend`)",
 		})
 	}
 	return out, nil

@@ -63,10 +63,9 @@ IDENTITY = forge.ManagedIdentity {
 			off[step.name] = true
 		}
 	}
-	ro, ok := lintRollouts[ruleUnprovenSignup]
-	if !ok {
-		t.Fatalf("%s has no rollout row", ruleUnprovenSignup)
-	}
+	// Graded through a synthetic row: the rule's own grace window closed.
+	ro := ruleRollout{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}
+	withRollouts(t, map[string]ruleRollout{ruleUnprovenSignup: ro})
 	sweep := func(pin string) ([]lintJSONFinding, bool) {
 		t.Helper()
 		outcomes := collectLintOutcomes(&lintRunCtx{ctx: t.Context(), cwd: root, cfg: pinnedCfg(pin, nil), lanesOff: off})

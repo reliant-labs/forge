@@ -500,8 +500,7 @@ func reapStaleInstance(dir string, e os.DirEntry) {
 // SIGKILLing it killed every test still using it.
 //
 // A pooled server is in use while any lease of its scope is held, whichever
-// pid namespace holds it (lease.go). The pool an older forge keeps
-// (legacyPoolStateFile) still names its users by pid.
+// pid namespace holds it (lease.go).
 func portsInUse() map[string]bool { return portsInUseExceptBoot("") }
 
 // The reaper holding skipBoot's lock must not count its own lock as a boot.
@@ -511,9 +510,6 @@ func portsInUseExceptBoot(skipBoot string) map[string]bool {
 		if st := readPoolStateOf(scope); st.Port != 0 && liveLeases(scope, "", false) > 0 {
 			in[strconv.FormatUint(uint64(st.Port), 10)] = true
 		}
-	}
-	if st := readLegacyPoolState(); st.Port != 0 && len(prunePIDs(st.Users)) > 0 {
-		in[strconv.FormatUint(uint64(st.Port), 10)] = true
 	}
 	entries, _ := os.ReadDir(instanceRoot())
 	for _, e := range entries {

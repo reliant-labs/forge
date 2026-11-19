@@ -68,7 +68,7 @@ The `*Service` methods ARE the handlers; they reach `internal/db/` and other col
 ## Proto and schema rules
 
 - An rpc is CRUD only when unary and named exactly `Create<E>`/`Get<E>`/`Update<E>`/`Delete<E>`/`List<Es>` for an entity (a table AND a message). Everything else is custom and yours. A CRUD-named rpc that does more (`CreateTask` also wires dependencies) gets `// forge:custom` above it; never rename one to dodge detection (`proto`).
-- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete. The old proto entity annotations are retired and ignored: delete leftovers. Fields clients must not write: `db/write-policy`.
+- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete. The old proto entity annotations are removed (a proto carrying one no longer compiles): delete leftovers. Fields clients must not write: `db/write-policy`.
 - List filter fields **must** be `optional` (otherwise they silently no-op); one service per `.proto` file; shared messages in `proto/shared/v1/types.proto`, never service-to-service imports. `forge lint --conventions` enforces these.
 
 ## The scaffolded frontend is starter code

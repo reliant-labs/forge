@@ -232,6 +232,10 @@ var newRules = []rolloutGroup{
 	// or auth_self_signup outside development): its email is a contact
 	// field no proof ever claims (forge#2121).
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: []string{ruleUnprovenSignup}},
+	// The same lane, newly finding a config schema that DEFAULTS
+	// auth_self_signup to true (sign-up on in every env that does not set
+	// it): found after ruleUnprovenSignup shipped, so it warns first.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{ruleUnprovenSignupDefault}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{

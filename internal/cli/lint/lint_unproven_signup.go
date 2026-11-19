@@ -38,21 +38,32 @@ import (
 // ruleUnprovenSignup is the rule ID this lane emits.
 const ruleUnprovenSignup = "forgeconv-unproven-signup"
 
+// ruleUnprovenSignupDefault is the lane's second rule: a config schema that
+// DEFAULTS auth_self_signup to true (`auth_self_signup: bool = True`, a proto
+// default_value of "true" projected into config_gen.k), which turns the
+// legacy sign-up on in every environment that does not override it, prod
+// included. Its own ID because it was found after ruleUnprovenSignup shipped:
+// it warns for a release before it gates (lint_rollout_table.go).
+const ruleUnprovenSignupDefault = "forgeconv-unproven-signup-default"
+
 var (
 	kclNoMail = regexp.MustCompile(`\bdelivery\s*[:=]\s*"none"`)
 	// kclLegacySelfSign matches auth_self_signup SET to true: a config value
-	// (`auth_self_signup = True`), an env var (`"AUTH_SELF_SIGNUP" = "true"`),
-	// or a schema default (`auth_self_signup: bool = True`). The value must
-	// be the whole expression, ending the line or the entry, so the env
-	// projection forge generates into every config_gen.k —
-	// `"AUTH_SELF_SIGNUP" = "true" if c.auth_self_signup else "false"` —
-	// reads as what it is, a mapping of whatever the env declares, and not
-	// as sign-up turned on.
-	kclLegacySelfSign = regexp.MustCompile(`(?im)\bauth_self_signup"?\s*[:=]\s*(?:bool\s*=\s*)?("?true"?|"1")\s*(?:[,;}\]]|$)`)
+	// (`auth_self_signup = True`) or an env var (`"AUTH_SELF_SIGNUP" =
+	// "true"`). The value must be the whole expression, ending the line or
+	// the entry, so the env projection forge generates into every
+	// config_gen.k — `"AUTH_SELF_SIGNUP" = "true" if c.auth_self_signup else
+	// "false"` — reads as what it is, a mapping of whatever the env
+	// declares, and not as sign-up turned on.
+	kclLegacySelfSign = regexp.MustCompile(`(?im)\bauth_self_signup"?\s*[:=]\s*("?true"?|"1")\s*(?:[,;}\]]|$)`)
+	// kclSelfSignDefault matches a schema attribute defaulting it to true
+	// (ruleUnprovenSignupDefault).
+	kclSelfSignDefault = regexp.MustCompile(`(?im)\bauth_self_signup\s*:\s*bool\s*=\s*true\s*$`)
 )
 
 // unprovenSignupFinding is one declaration of a sign-up nobody proves.
 type unprovenSignupFinding struct {
+	Rule  string // ruleUnprovenSignup or ruleUnprovenSignupDefault
 	Where string // file:line
 	What  string
 }
@@ -84,6 +95,7 @@ func findUnprovenSignups(root string) ([]unprovenSignupFinding, error) {
 		lineOf := func(off int) int { return strings.Count(text[:off], "\n") + 1 }
 		if signup := kclSignup.FindStringSubmatchIndex(text); signup != nil && kclNoMail.MatchString(text) {
 			out = append(out, unprovenSignupFinding{
+				Rule:  ruleUnprovenSignup,
 				Where: fmt.Sprintf("%s:%d", rel, lineOf(signup[0])),
 				What:  fmt.Sprintf("signup %q with email delivery \"none\"", text[signup[2]:signup[3]]),
 			})
@@ -91,8 +103,16 @@ func findUnprovenSignups(root string) ([]unprovenSignupFinding, error) {
 		if !strings.HasPrefix(rel, "deploy/kcl/dev/") {
 			if m := kclLegacySelfSign.FindStringIndex(text); m != nil {
 				out = append(out, unprovenSignupFinding{
+					Rule:  ruleUnprovenSignup,
 					Where: fmt.Sprintf("%s:%d", rel, lineOf(m[0])),
 					What:  "auth_self_signup (the legacy sign-up) outside development",
+				})
+			}
+			if m := kclSelfSignDefault.FindStringIndex(text); m != nil {
+				out = append(out, unprovenSignupFinding{
+					Rule:  ruleUnprovenSignupDefault,
+					Where: fmt.Sprintf("%s:%d", rel, lineOf(m[0])),
+					What:  "auth_self_signup defaulting to true (the legacy sign-up in every environment that does not set it)",
 				})
 			}
 		}
@@ -101,7 +121,12 @@ func findUnprovenSignups(root string) ([]unprovenSignupFinding, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Where < out[j].Where })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Where != out[j].Where {
+			return out[i].Where < out[j].Where
+		}
+		return out[i].Rule < out[j].Rule
+	})
 	return out, nil
 }
 
@@ -123,16 +148,22 @@ func collectUnprovenSignupJSON(root string) ([]lintJSONFinding, error) {
 			file = f.Where[:i]
 			_, _ = fmt.Sscanf(f.Where[i+1:], "%d", &line)
 		}
+		hint := "deliver mail so sign-up proves the address first: drop `delivery = \"none\"` (platform delivery is the default) " +
+			"or declare `smtp`, and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
+			"(`forge skill load migrations/v1.1.0/identity-v2`)"
+		if f.Rule == ruleUnprovenSignupDefault {
+			hint = "default auth_self_signup to false in the config proto (`default_value: \"false\"`, then `forge generate`), " +
+				"and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
+				"(`forge skill load migrations/v1.1.0/identity-v2`)"
+		}
 		out = append(out, lintJSONFinding{
-			Rule:     ruleUnprovenSignup,
+			Rule:     f.Rule,
 			Severity: "error",
 			File:     file,
 			Line:     line,
 			Message: "this environment declares " + f.What + ": a sign-up creates its account with a password and an address " +
 				"nobody proves. That address is a contact field the person typed, never proven and never claimed by a later proof",
-			FixHint: "deliver mail so sign-up proves the address first: drop `delivery = \"none\"` (platform delivery is the default) " +
-				"or declare `smtp`, and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-				"(`forge skill load migrations/v1.1.0/identity-v2`)",
+			FixHint: hint,
 		})
 	}
 	return out, nil

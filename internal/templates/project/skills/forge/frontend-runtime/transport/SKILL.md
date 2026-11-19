@@ -76,6 +76,7 @@ not (`pin`, `userPIN`, `cvv2`, `security_code`; not `spinner`, `shipping`,
 `count`, `total`, `size`, `len` or `length`, or whose first word is `num`, is
 a quantity and keeps its value (`max_tokens`, `session_count`,
 `num_sessions`); a trailing `num` is not (`pin_num` records its digit count),
+nor is an id-shaped secret name (`max_session_id` records its digit count),
 and a string named like a quantity still records its length. `uuid`, `*_uuid` and `*Uuid` are id-shaped like `id`. A secret-named
 bool or enum keeps its value (`mfa_enabled`). The
 server records the same names the same way. Every other string and

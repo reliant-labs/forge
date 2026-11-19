@@ -41,7 +41,8 @@
 // so `spinner`, `pinned`, `shipping` and `tank` are not. A NUMBER whose
 // first or last word is max, min, limit, count, total, size, len or length,
 // or whose FIRST word is num, is a quantity and keeps its value
-// (`max_tokens`, `num_sessions`); a trailing num reads as "number", so
+// (`max_tokens`, `num_sessions`), unless its name is id-shaped
+// (`max_session_id` records its digit count); a trailing num reads as "number", so
 // `pin_num` still records its digit count, and a string named like a
 // quantity still records its length. A bool or an enum
 // keeps its value under a secret name (`mfa_enabled`, `session_state`):
@@ -173,10 +174,12 @@ const QUANTITY_WORDS = new Set([
 const LEADING_QUANTITY_WORD = "num";
 
 /**
- * Whether a NUMBER field's name hides its value: a secret name whose first
- * and last words are not quantity words (max, min, limit, count, total,
- * size, len, length, and num as the first word only). So `pin`, `pin_num`
- * and `otp_counter_id` record their digit count, and `max_tokens`,
+ * Whether a NUMBER field's name hides its value: a secret name that is
+ * id-shaped, or whose first and last words are not quantity words (max, min,
+ * limit, count, total, size, len, length, and num as the first word only).
+ * An id-shaped secret name is never a quantity: a session or OTP id is the
+ * credential itself. So `pin`, `pin_num`, `otp_counter_id` and
+ * `max_session_id` record their digit count, and `max_tokens`,
  * `session_count` and `num_sessions` their value. The exemption is
  * for numbers only: a string under any secret name records its length.
  * forge's server-side rule (ForensicSecretNumberName) is the same.
@@ -184,6 +187,9 @@ const LEADING_QUANTITY_WORD = "num";
 export function isSecretNumberNamed(name: string): boolean {
   if (!isSecretNamed(name)) {
     return false;
+  }
+  if (isIdShaped(name)) {
+    return true;
   }
   const words = nameWords(name);
   if (words.length === 0) {

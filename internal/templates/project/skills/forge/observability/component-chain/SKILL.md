@@ -168,7 +168,9 @@ whose FIRST word is `num`, is a quantity and keeps its value (`max_tokens`,
 `token_limit`, `session_count`, `num_sessions`;
 `observe.ForensicSecretNumberName`). A trailing `num` reads as "number", so
 `pin_num`, `ssn_num` and `otpNum` still record their digit count, as does
-`otp_counter_id` (last word `id`); a string named like a quantity records its
+`otp_counter_id` (last word `id`). An ID-shaped secret name is never a
+quantity, whatever leads it: `max_session_id` and `num_otp_id` record their
+digit count. A string named like a quantity records its
 length. A secret-named bool or enum keeps its
 value (`mfa_enabled`, `session_state`): one of a few values the schema lists
 cannot carry a typed secret. A field the rule misses that must never be

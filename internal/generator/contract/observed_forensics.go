@@ -86,8 +86,8 @@ func classifyParam(name, typeExpr string, imports, aliases map[string]string) ca
 		return kind
 	}
 	if t == "string" {
-		// ForensicIDName is false for a secret name: its length only.
-		if observe.ForensicIDName(name) {
+		// ForensicIDValueName is false for a secret name: its length only.
+		if observe.ForensicIDValueName(name) {
 			return captureID
 		}
 		return captureLen

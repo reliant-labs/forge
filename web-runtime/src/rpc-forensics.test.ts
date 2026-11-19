@@ -740,6 +740,8 @@ describe("a secret-named plain number", () => {
         { name: "token_limit", type: Type.STRING },
         { name: "pin_num", type: Type.INT64 },
         { name: "otpNum", type: Type.UINT32 },
+        { name: "max_session_id", type: Type.INT64 },
+        { name: "num_otp_id", type: Type.UINT64 },
       ],
       [
         {
@@ -771,6 +773,8 @@ describe("a secret-named plain number", () => {
           "ninety-nine",
           3141n,
           774_411,
+          90_817_263n,
+          55_443_322n,
         ]),
       ),
     );
@@ -795,6 +799,9 @@ describe("a secret-named plain number", () => {
       // "number", the secret itself.
       "forensics.arg.pin_num": "[len=4]",
       "forensics.arg.otpNum": "[len=6]",
+      // An id-shaped secret name is never a quantity, whatever leads it.
+      "forensics.arg.max_session_id": "[len=8]",
+      "forensics.arg.num_otp_id": "[len=8]",
     });
     const recorded = JSON.stringify(out);
     for (const secret of [
@@ -807,6 +814,8 @@ describe("a secret-named plain number", () => {
       "ninety",
       "3141",
       "774411",
+      "90817263",
+      "55443322",
     ]) {
       expect(recorded, secret).not.toContain(secret);
     }

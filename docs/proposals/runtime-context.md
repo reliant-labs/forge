@@ -99,8 +99,10 @@ interfaces stay hand-declared, consumer-side, in `deps.go` (the existing
    `token_limit`, `session_count`, `num_sessions`). `num` counts only as the
    first word: last, it reads as "number", so `pin_num`, `ssn_num` and
    `otpNum` are the secret itself and record their digit count, as does
-   `otp_counter_id` (last word `id`); a string named like a quantity still
-   records its length.
+   `otp_counter_id` (last word `id`). An ID-shaped secret name is never a
+   quantity, whatever leads it: `max_session_id` and `num_otp_id` record
+   their digit count. A string named like a quantity still records its
+   length.
    Server (`pkg/observe/forensic_names.go`) and browser
    (`web-runtime/src/rpc-forensics.ts`) are held to one table,
    `pkg/observe/testdata/forensic_secret_names.json`. Times and durations (Go and proto well-known types)

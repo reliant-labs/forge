@@ -565,7 +565,9 @@ not. A number whose first or last word is `max`, `min`, `limit`, `count`,
 quantity, not a secret, and keeps its value (`isSecretNumberNamed`:
 `max_tokens`, `token_limit`, `session_count`, `num_sessions`). A trailing
 `num` reads as "number", so `pin_num`, `ssn_num` and `otpNum` still record
-their digit count, as does `otp_counter_id` (last word `id`); a string named
+their digit count, as does `otp_counter_id` (last word `id`). An id-shaped
+secret name is never a quantity, whatever leads it: `max_session_id` and
+`num_otp_id` record their digit count. A string named
 like a quantity still records its length. A secret-named bool or enum keeps its value (`mfa_enabled`,
 `session_state`): one of a few values the schema lists cannot carry a typed
 secret. forge's server-side forensics applies the same rules, id shapes

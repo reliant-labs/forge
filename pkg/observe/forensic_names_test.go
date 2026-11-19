@@ -79,13 +79,16 @@ func TestForensicNamesSharedTable(t *testing.T) {
 		}
 	}
 	for _, name := range tab.IDValue {
-		if !ForensicIDName(name) {
-			t.Errorf("ForensicIDName(%q) = false, want true", name)
+		if !ForensicIDValueName(name) {
+			t.Errorf("ForensicIDValueName(%q) = false, want true", name)
 		}
 	}
+	// An ID-shaped secret name hides a string's value and a number's, a
+	// leading quantity word (`max_session_id`) notwithstanding.
 	for _, name := range tab.IDHidden {
-		if ForensicIDName(name) || !ForensicSecretIDName(name) {
-			t.Errorf("%q: ForensicIDName = %v, ForensicSecretIDName = %v; want false, true", name, ForensicIDName(name), ForensicSecretIDName(name))
+		if ForensicIDValueName(name) || !idShapedName(name) || !ForensicSecretName(name) || !ForensicSecretNumberName(name) {
+			t.Errorf("%q: ForensicIDValueName = %v, idShapedName = %v, ForensicSecretName = %v, ForensicSecretNumberName = %v; want false, true, true, true",
+				name, ForensicIDValueName(name), idShapedName(name), ForensicSecretName(name), ForensicSecretNumberName(name))
 		}
 	}
 	for _, name := range tab.NotID {
@@ -96,6 +99,30 @@ func TestForensicNamesSharedTable(t *testing.T) {
 	for _, c := range tab.FloatLengths {
 		if got := jsNumberString(c.Value); len(got) != c.Len {
 			t.Errorf("jsNumberString(%v) = %q (len %d), want len %d", c.Value, got, len(got), c.Len)
+		}
+	}
+}
+
+// TestDeprecatedForensicIDPredicatesKeepTheirMeaning pins the exported
+// predicates forensics no longer records by to what they always answered:
+// pkg/ is semver at major 1, so ForensicIDValueName carries the new rule
+// and these keep the old one.
+func TestDeprecatedForensicIDPredicatesKeepTheirMeaning(t *testing.T) {
+	for name, want := range map[string]bool{
+		"ORDERID": true, "VOID": true, "orderID": true, "order_id": true, "id": true,
+		"pin_id": true, "cvvID": true, "session_id": false, "otp_counter_id": false,
+		"uuid": false, "order_uuid": false, "paid": false,
+	} {
+		if got := ForensicIDName(name); got != want {
+			t.Errorf("ForensicIDName(%q) = %v, want %v", name, got, want)
+		}
+	}
+	for name, want := range map[string]bool{
+		"session_id": true, "sessionID": true, "max_session_id": true, "SESSIONID": true,
+		"pin_id": false, "session_uuid": false, "orderID": false, "session": false,
+	} {
+		if got := ForensicSecretIDName(name); got != want {
+			t.Errorf("ForensicSecretIDName(%q) = %v, want %v", name, got, want)
 		}
 	}
 }
@@ -182,6 +209,8 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 				field("token_limit", 13, descriptorpb.FieldDescriptorProto_TYPE_STRING),
 				field("pin_num", 14, descriptorpb.FieldDescriptorProto_TYPE_INT64),
 				field("otpNum", 15, descriptorpb.FieldDescriptorProto_TYPE_UINT32),
+				field("max_session_id", 16, descriptorpb.FieldDescriptorProto_TYPE_INT64),
+				field("num_otp_id", 17, descriptorpb.FieldDescriptorProto_TYPE_UINT64),
 			},
 		}},
 	}
@@ -207,6 +236,8 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 	set("token_limit", protoreflect.ValueOfString("ninety-nine"))
 	set("pin_num", protoreflect.ValueOfInt64(3141))
 	set("otpNum", protoreflect.ValueOfUint32(774411))
+	set("max_session_id", protoreflect.ValueOfInt64(90817263))
+	set("num_otp_id", protoreflect.ValueOfUint64(55443322))
 
 	chain, rec := newRecordedChain(t)
 	args := pinArgs{pin: 8402, cvv: 513, tan: 30.25, attempt: 3, mfaEnabled: true, maxTokens: 2048, req: msg}
@@ -236,6 +267,9 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 		// as "number", the secret itself.
 		"forensics.arg.req.pin_num": "[len=4]",
 		"forensics.arg.req.otpNum":  "[len=6]",
+		// An ID-shaped secret name is never a quantity, whatever leads it.
+		"forensics.arg.req.max_session_id": "[len=8]",
+		"forensics.arg.req.num_otp_id":     "[len=8]",
 	} {
 		if a[k].AsString() != want {
 			t.Errorf("%s = %q, want %q", k, a[k].AsString(), want)
@@ -259,7 +293,7 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 		t.Errorf("a secret-named bool lost its value: %v %v", a["forensics.arg.mfaEnabled"], a["forensics.arg.req.mfa_enabled"])
 	}
 	for _, kv := range ev[0].Attributes {
-		for _, secret := range []string{"8402", "513", "30.25", "4831", "927", "219099999", "55021", "718293", "661204", "ninety", "3141", "774411"} {
+		for _, secret := range []string{"8402", "513", "30.25", "4831", "927", "219099999", "55021", "718293", "661204", "ninety", "3141", "774411", "90817263", "55443322"} {
 			if strings.Contains(kv.Value.Emit(), secret) {
 				t.Fatalf("a secret-named number reached forensics: %s=%s", kv.Key, kv.Value.Emit())
 			}

@@ -98,7 +98,10 @@ func TestClassifyParam(t *testing.T) {
 		{"ssn_num", "uint64", captureDigits},
 		{"otpNum", "int32", captureDigits},
 		{"otp_counter_id", "int64", captureDigits}, // last word `id`
-		{"tokenCounter", "int", captureDigits},     // `counter` is not `count`
+		{"max_session_id", "int64", captureDigits}, // ID-shaped: never a quantity
+		{"num_otp_id", "uint64", captureDigits},
+		{"maxSessionID", "int", captureDigits},
+		{"tokenCounter", "int", captureDigits}, // `counter` is not `count`
 		{"maxTokens", "string", captureLen},
 		{"session_count", "Status", captureInt}, // local named int
 		{"spinner", "int", captureInt},          // `pin` matches a whole word only

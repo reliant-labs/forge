@@ -11,7 +11,7 @@
 //	  (ForensicSecretNumberName; `max_tokens` is a quantity and keeps its value)
 //	time.Time, time.Duration                      "[type=Time]", "[type=Duration]" — never the value
 //	proto Timestamp, Duration                     "[type=Timestamp]", "[type=Duration]"
-//	string named like an ID (ForensicIDName)      the value, at most MaxForensicValue bytes
+//	string named like an ID (ForensicIDValueName) the value, at most MaxForensicValue bytes
 //	any other string, []byte                      "[len=42]" — the length only
 //	slice, array, map, variadic                   "[count=3]" — the element count only
 //	pointer to a proto message (a gen/ import)    walked here, under the same rules
@@ -379,7 +379,7 @@ func (r *ForensicRecorder) field(name string, fd protoreflect.FieldDescriptor, v
 			r.Float(name, v.Float())
 		}
 	case protoreflect.StringKind:
-		if ForensicIDName(string(fd.Name())) {
+		if ForensicIDValueName(string(fd.Name())) {
 			r.ID(name, v.String())
 		} else {
 			r.Len(name, len(v.String()))

@@ -70,16 +70,21 @@ var forensicQuantityWords = map[string]bool{
 const forensicLeadingQuantityWord = "num"
 
 // ForensicSecretNumberName reports whether a NUMBER named name hides its
-// value: a secret name (ForensicSecretName) whose first and last words are
-// not quantity words (max, min, limit, count, total, size, len, length, and
-// num as the first word only). So `pin`, `pin_num` and `otp_counter_id`
-// record their digit count, and `max_tokens`, `token_limit`,
-// `session_count` and `num_sessions` their value. The quantity
-// exemption is for numbers only: a string or bytes value under any secret
-// name records its length.
+// value: a secret name (ForensicSecretName) that is ID-shaped, or whose first
+// and last words are not quantity words (max, min, limit, count, total, size,
+// len, length, and num as the first word only). So `pin`, `pin_num`,
+// `otp_counter_id` and `max_session_id` record their digit count, and
+// `max_tokens`, `token_limit`, `session_count` and `num_sessions` their
+// value. An ID-shaped secret name is never a quantity: whatever word leads
+// it, a session or OTP ID is the credential itself. The quantity exemption
+// is for numbers only: a string or bytes value under any secret name records
+// its length.
 func ForensicSecretNumberName(name string) bool {
 	if !ForensicSecretName(name) {
 		return false
+	}
+	if idShapedName(name) {
+		return true
 	}
 	words := forensicNameWords(name)
 	if len(words) == 0 {
@@ -89,24 +94,69 @@ func ForensicSecretNumberName(name string) bool {
 	return !forensicQuantityWords[first] && first != forensicLeadingQuantityWord && !forensicQuantityWords[last]
 }
 
-// ForensicIDName reports whether a parameter or proto field named name holds
-// an identifier whose value forensics may record: id / ids / uuid / uuids, a
-// `_id` / `_ids` / `_uuid` / `_uuids` suffix (any case), or an `Id` / `ID` /
-// `Ids` / `IDs` / `Uuid` / `UUID` / `Uuids` / `UUIDs` suffix after a
+// ForensicIDValueName reports whether a parameter or proto field named name
+// holds an identifier whose value forensics may record: id / ids / uuid /
+// uuids, a `_id` / `_ids` / `_uuid` / `_uuids` suffix (any case), or an `Id`
+// / `ID` / `Ids` / `IDs` / `Uuid` / `UUID` / `Uuids` / `UUIDs` suffix after a
 // lower-case letter or digit — unless the name is also secret
 // (ForensicSecretName: `session_id`, `pin_id`), which records the length
 // only. The generator, the proto walk and the browser runtime share this one
 // rule.
-func ForensicIDName(name string) bool {
+func ForensicIDValueName(name string) bool {
 	return idShapedName(name) && !ForensicSecretName(name)
 }
 
-// ForensicSecretIDName reports whether name is ID-shaped and secret
-// (`otp_counter_id`, `sessionID`). Every secret name hides its value, ID-shaped
-// or not; this is ForensicSecretName narrowed to ID-shaped names, kept for
-// callers that ask that narrower question.
+// ForensicIDName reports whether a parameter or proto field named name holds
+// an identifier whose value forensics may record: id / ids, a `_id` / `_ids`
+// suffix, or an `ID` / `Id` / `IDs` / `Ids` suffix — unless the name also
+// mentions a credential (token, secret, password, session, cookie, api key,
+// …), which records the length only (ForensicSecretIDName).
+//
+// Deprecated: use ForensicIDValueName, the rule forensics records by. This
+// keeps its original matching (`ORDERID` and `VOID` are ID-shaped here, not
+// there; `pin_id` is recorded here, not there) for callers that pinned it.
+func ForensicIDName(name string) bool {
+	return legacyIDShapedName(name) && !legacySensitiveName(name)
+}
+
+// ForensicSecretIDName reports whether name is ID-shaped but mentions a
+// credential (`otp_counter_id`, `sessionID`): its value is never recorded,
+// whatever its type — a string records its length, a number its digit count
+// ("[len=9]").
+//
+// Deprecated: forensics hides every secret name's value, ID-shaped or not:
+// use ForensicSecretName (and ForensicSecretNumberName for a number). This
+// keeps its original matching for callers that pinned it.
 func ForensicSecretIDName(name string) bool {
-	return idShapedName(name) && ForensicSecretName(name)
+	return legacyIDShapedName(name) && legacySensitiveName(name)
+}
+
+// legacySensitiveName is the credential match ForensicIDName and
+// ForensicSecretIDName have always used: the fragments, with only `_`
+// removed.
+func legacySensitiveName(name string) bool {
+	folded := strings.ReplaceAll(strings.ToLower(name), "_", "")
+	for _, s := range forensicSensitive {
+		if strings.Contains(folded, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// legacyIDShapedName is the ID shape ForensicIDName and ForensicSecretIDName
+// have always matched, kept so neither changes meaning within v1.
+func legacyIDShapedName(name string) bool {
+	switch name {
+	case "id", "ids", "ID", "IDs", "Id", "Ids":
+		return true
+	}
+	for _, suffix := range []string{"_id", "_ids", "ID", "Id", "IDs", "Ids"} {
+		if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func sensitiveName(name string) bool {

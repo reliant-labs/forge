@@ -107,6 +107,8 @@ What it writes, in order:
   - deploy/: KCL config, observability dashboards and alert defaults, CI
     workflows, seed data
 then go mod tidy, goimports, and a validating go build of the whole tree.
+A failed build rolls back every file the run wrote; --keep-on-build-failure
+keeps them, for a migration that ports hand-written code after generating.
 
 Hand-written code is never overwritten. Files that are yours from birth
 (handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
@@ -152,6 +154,7 @@ Examples:
   forge generate --no-cache # Run every step even if nothing changed since the last verified run
   forge generate --explain  # Print per-file provenance log after generate
   forge generate --verbose  # Also print routine lines (skipped steps, pinned-tool resolution)
+  forge generate --keep-on-build-failure  # Mid-migration: keep the output although the project does not compile yet
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
@@ -174,6 +177,7 @@ func newGenerateCmd() *cobra.Command {
 		planOnly        bool
 		heal            bool
 		noRevert        bool
+		keepOnFailure   bool
 		timings         bool
 		noCache         bool
 		steps           string
@@ -204,21 +208,22 @@ func newGenerateCmd() *cobra.Command {
 				})
 			}
 			flags := pipelineFlags{
-				Force:           force,
-				ExplainDrift:    explainDrift,
-				SkipValidate:    skipValidate,
-				SkipPreChecks:   skipPreChecks,
-				SkipConfigCheck: skipConfigCheck,
-				ForceCleanup:    forceCleanup,
-				TemplatesOnly:   templatesOnly,
-				Strict:          strict,
-				Verbose:         verbose,
-				Heal:            heal,
-				NoRevert:        noRevert,
-				Timings:         timings,
-				Cache:           true,
-				NoCache:         noCache,
-				Steps:           steps,
+				Force:              force,
+				ExplainDrift:       explainDrift,
+				SkipValidate:       skipValidate,
+				SkipPreChecks:      skipPreChecks,
+				SkipConfigCheck:    skipConfigCheck,
+				ForceCleanup:       forceCleanup,
+				TemplatesOnly:      templatesOnly,
+				Strict:             strict,
+				Verbose:            verbose,
+				Heal:               heal,
+				NoRevert:           noRevert,
+				KeepOnBuildFailure: keepOnFailure,
+				Timings:            timings,
+				Cache:              true,
+				NoCache:            noCache,
+				Steps:              steps,
 			}
 			// A run with nothing to do must not queue for a heavy slot
 			// behind real work first: the cache check is a second of
@@ -318,6 +323,12 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Run every step even when nothing changed since a full run verified this tree (a no-op generate otherwise skips in about a second; see the 'Skipping' section above). FORGE_GENERATE_NO_CACHE=1 does the same.")
 	cmd.Flags().BoolVar(&timings, "timings", false, "Print each pipeline step's wall time when the run ends, slowest first (FORGE_GENERATE_TIMINGS=1 does the same for runs you do not type, such as verify-generated's)")
 	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")
+	// The public spelling for "the project is not expected to compile yet".
+	// --skip-validate and --no-revert stay as they were (hidden, unchanged):
+	// the first hides the compile errors a migration is steered by, the
+	// second keeps a tree half-written by ANY failed step, mid-pipeline.
+	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): every step still runs, the compile errors are printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again.")
+	cmd.MarkFlagsMutuallyExclusive("keep-on-build-failure", "strict")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
@@ -482,6 +493,19 @@ type pipelineFlags struct {
 	// non-zero with the underlying error. Off by default (the safe,
 	// clean-tree behavior).
 	NoRevert bool
+
+	// KeepOnBuildFailure (--keep-on-build-failure) is for a tree that is not
+	// expected to compile yet: a migration whose hand-written code is ported
+	// after generating (connect-go v2's section 5 is the case that asked).
+	// The compile check still runs, but its failure is a failed step the run
+	// goes on past (warnOrFail) rather than one that rolls the tree back: the
+	// writes stand, the compile errors are reported, and the run exits
+	// non-zero and is never recorded as a verified fixed point. Unlike
+	// NoRevert it covers only the compile check, after every emitter has
+	// run, so the tree it keeps is complete output, never a half-written
+	// one. Unlike SkipValidate the errors the migration is steered by are
+	// still printed. --strict contradicts it, and the command refuses both.
+	KeepOnBuildFailure bool
 
 	// Heal (--heal) opts IN to overwriting on-disk content that matches a
 	// PRIOR forge render (an older vintage, but not the latest) with the
@@ -732,7 +756,40 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// unless a step failed soft, in which case its outputs were not
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
-	return softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
+	outcome := softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
+	reportKeptBuildFailure(os.Stderr, ctx.keptBuildFailure)
+	return outcome
+}
+
+// reportKeptBuildFailure ends a --keep-on-build-failure run whose compile
+// check failed: it says the files were kept, what to do next, and repeats
+// the compiler output so it is the last thing on screen. No-op when the
+// check passed or never ran.
+func reportKeptBuildFailure(w io.Writer, buildErr error) {
+	if buildErr == nil {
+		return
+	}
+	fmt.Fprintf(w, "\n📝 --keep-on-build-failure: the project does not compile, and this run's generated files were KEPT on disk "+
+		"(the tree was not rolled back). Port or fix the code the compiler errors point at, then run `%s generate` "+
+		"without the flag: it checks the tree again, and only a run that compiles is recorded as verified.\n", Name())
+	reprintCompilerOutput(buildErr, "")
+}
+
+// hintKeepOnBuildFailure follows the rollback of a run whose compile check
+// failed with the flag that keeps the output instead. A migration that
+// ports hand-written code after generating (connect-go v2) fails exactly
+// here, and the rollback undoes the output it needs; the flag is how to
+// keep it. Only a compile failure gets the hint: no other failure leaves
+// complete output worth keeping.
+func hintKeepOnBuildFailure(w io.Writer, stepErr error) {
+	var interrupted *generateInterruptedError
+	var ve *validateBuildError
+	if errors.As(stepErr, &interrupted) || !errors.As(stepErr, &ve) {
+		return
+	}
+	fmt.Fprintf(w, "   Not expected to compile yet (a migration that ports hand-written code after generating, "+
+		"such as connect-go v2)? `%s generate --keep-on-build-failure` keeps the generated files and reports "+
+		"these errors instead of rolling back.\n", Name())
 }
 
 // runPipelineSteps runs, in order, every step whose gate passes and returns
@@ -829,7 +886,9 @@ func cleanUpFailedStep(ctx *pipelineContext, flags pipelineFlags, err error, onl
 	// the journal instead of restoring it) and say so; the run still
 	// fails with the underlying error.
 	if !flags.NoRevert {
-		return rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
+		rolledBack := rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
+		hintKeepOnBuildFailure(os.Stderr, err)
+		return rolledBack
 	}
 	checksums.CommitRollback()
 	fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")

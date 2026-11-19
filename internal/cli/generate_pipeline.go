@@ -195,6 +195,14 @@ type pipelineContext struct {
 	// the warnOrFail helper. See pipelineFlags.Strict for the rationale.
 	Strict bool
 
+	// KeepOnBuildFailure turns a failed compile check (the validate step)
+	// into a failed step the run goes on past, keeping its writes. See
+	// pipelineFlags.KeepOnBuildFailure.
+	KeepOnBuildFailure bool
+	// keptBuildFailure is the compile check's error when KeepOnBuildFailure
+	// kept the run's writes despite it, for the report the run ends with.
+	keptBuildFailure error
+
 	// Verbose toggles per-step skip messages. See pipelineFlags.Verbose
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.
 	Verbose bool
@@ -340,18 +348,19 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 	// same once-read answer as every emitter.
 	bindCodegenToolsMajor(projectDir, major)
 	return &pipelineContext{
-		ProjectDir:      projectDir,
-		AbsPath:         abs,
-		Force:           flags.Force,
-		ExplainDrift:    flags.ExplainDrift,
-		SkipValidate:    flags.SkipValidate,
-		SkipPreChecks:   flags.SkipPreChecks,
-		SkipConfigCheck: flags.SkipConfigCheck,
-		ForceCleanup:    flags.ForceCleanup,
-		TemplatesOnly:   flags.TemplatesOnly,
-		Strict:          flags.Strict,
-		Verbose:         flags.Verbose,
-		connectMajorV:   major,
+		ProjectDir:         projectDir,
+		AbsPath:            abs,
+		Force:              flags.Force,
+		ExplainDrift:       flags.ExplainDrift,
+		SkipValidate:       flags.SkipValidate,
+		SkipPreChecks:      flags.SkipPreChecks,
+		SkipConfigCheck:    flags.SkipConfigCheck,
+		ForceCleanup:       flags.ForceCleanup,
+		TemplatesOnly:      flags.TemplatesOnly,
+		Strict:             flags.Strict,
+		KeepOnBuildFailure: flags.KeepOnBuildFailure,
+		Verbose:            flags.Verbose,
+		connectMajorV:      major,
 	}, nil
 }
 
@@ -608,7 +617,7 @@ func generateSteps() []GenStep {
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
-		{Name: "go build (validate generated code)", Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
+		{Name: goBuildValidateStep, Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
 		// The deploy tree must COMPILE, and a tree that does not is a hard
 		// failure rather than a warning. See generate_kcl_loadable.go: a
 		// generate that exits 0 on an unrenderable tree defers the discovery
@@ -3024,8 +3033,29 @@ func stepPostGenValidate(ctx *pipelineContext) error {
 // non-compiling Go. Includes the pre-refactor heuristic hints
 // (forge/pkg pin skew / pkg/config) on failure to nudge the user
 // toward the most likely fix.
+//
+// With --keep-on-build-failure a failed compile is a failed step the run
+// goes on past (warnOrFail), not one that rolls the tree back: the run keeps
+// every file it wrote, still runs the steps after this one, exits non-zero,
+// and is never recorded as a verified fixed point. That is the shape of a
+// migration whose hand-written code is ported AFTER generating — connect-go
+// v2 is the case that asked for it — where the default rollback would undo
+// the very output the next step needs to read.
 func stepGoBuildValidate(ctx *pipelineContext) error {
-	// Skipped when the tree's build inputs are ones it already passed on
-	// (generate_go_memo.go).
-	return memoizedGoValidate(ctx.ProjectDir, func() error { return runGoBuildValidate(ctx.ProjectDir) })
+	err := goBuildValidate(ctx.ProjectDir)
+	if err == nil || !ctx.KeepOnBuildFailure {
+		return err
+	}
+	ctx.keptBuildFailure = err
+	return ctx.warnOrFail(goBuildValidateStep, err)
+}
+
+// goBuildValidateStep names the validate step's compile check.
+const goBuildValidateStep = "go build (validate generated code)"
+
+// goBuildValidate is the validate step's compile check, skipped when the
+// tree's build inputs are ones it already passed on (generate_go_memo.go). A
+// variable so a test can fail the step without a toolchain.
+var goBuildValidate = func(projectDir string) error {
+	return memoizedGoValidate(projectDir, func() error { return runGoBuildValidate(projectDir) })
 }

@@ -73,6 +73,10 @@ type ServiceTemplateData struct {
 	// (ProjectHasTypedConfig): service.go imports <module>/pkg/config and
 	// declares Deps.Config only then.
 	HasConfig bool
+	// MountMethod is the name service.go gives its mount helper
+	// (mountMethodFor): Register, or Mount when the service declares an RPC
+	// called Register.
+	MountMethod string
 }
 
 // protoImportPath derives the relative proto import path for a service
@@ -159,7 +163,8 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		Methods:             methods,
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
 		// With no project to look at, keep the historical shape.
-		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
+		HasConfig:   pd == "" || ProjectHasTypedConfig(pd),
+		MountMethod: mountMethodFor(svc),
 	}
 }
 
@@ -377,14 +382,10 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 	// sign-up endpoint. The mock's mount helper is called Register too, and
 	// one type cannot carry both, so the template renames the helper when
 	// they would collide. Without this the generated mock does not compile,
-	// and the error names a method the author never wrote.
-	hasRegisterRPC := false
-	for _, m := range svc.Methods {
-		if m.GoName() == "Register" {
-			hasRegisterRPC = true
-			break
-		}
-	}
+	// and the error names a method the author never wrote. mountMethodFor
+	// decides, as it does for the real service, so the mock and the service
+	// agree on the name.
+	hasRegisterRPC := mountMethodFor(svc) != "Register"
 
 	return map[string]any{
 		// The mock embeds and constructs connect-go's handler types, so it

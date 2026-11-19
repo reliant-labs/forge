@@ -220,6 +220,10 @@ type serviceGoData struct {
 	HandlerName         string
 	Methods             []string
 	HasConfig           bool
+	// MountMethod names the mount helper: empty (Register) here, since a
+	// freshly scaffolded service declares no RPC yet. codegen's
+	// ServiceTemplateData carries the resolved name once it does.
+	MountMethod string
 }
 
 // renderAndWriteWithMode renders a service template then delegates the

@@ -64,8 +64,13 @@ func (s *Service) Name() string {
 	return "{{.ServiceName}}"
 }
 
+{{if eq .MountMethod "Mount" -}}
+// Mount registers the service handlers with the HTTP mux.
+func (s *Service) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) {
+{{- else -}}
 // Register registers the service handlers with the HTTP mux.
 func (s *Service) Register(mux *http.ServeMux, opts ...connect.HandlerOption) {
+{{- end}}
 	path, handler := {{.ProtoConnectPackage}}.New{{.HandlerName}}Handler(s, opts...)
 	mux.Handle(path, handler)
 }

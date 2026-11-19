@@ -1971,6 +1971,10 @@ func ComponentTestHelperRelPath(handlerLeaf string) string {
 // sign-up endpoint — which collides with the scaffolded Register(mux,
 // opts...) mount helper. The handler renames its helper to Mount in that
 // case, so every generated call site has to follow.
+//
+// It is the one place the name is decided: the service template, the mock,
+// the stub reconciler (reconcileMountHelper), the mounts, the route sets and
+// the test helpers all read it, so they cannot disagree.
 func mountMethodFor(svc ServiceDef) string {
 	for _, m := range svc.Methods {
 		if m.GoName() == "Register" {

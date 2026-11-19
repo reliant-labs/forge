@@ -202,6 +202,11 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	if err := reconcileConnectIdentity(svc, projectDir, targetDir, cs); err != nil {
 		return nil, fmt.Errorf("reconcile Connect service identity: %w", err)
 	}
+	// Before the scan: a helper still named Register beside an RPC of that
+	// name would otherwise be counted as the RPC's implementation.
+	if err := reconcileMountHelper(svc, projectDir, targetDir, cs); err != nil {
+		return nil, fmt.Errorf("reconcile the service's mount helper name: %w", err)
+	}
 	existing, err := ScanExistingMethods(targetDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("scan existing methods: %w", err)

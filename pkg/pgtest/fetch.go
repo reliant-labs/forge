@@ -40,6 +40,9 @@ import (
 //
 //   - it forwards each GET to the real repository, retrying a transient
 //     failure (a transport error, 408, 425, 429, 5xx) with bounded backoff;
+//   - when Maven Central still has not served the file — a 404 included —
+//     it asks an independent mirror of Maven Central before giving up (see
+//     mavenCentralMirrorURL for why a 404 is not taken at its word);
 //   - it records the last upstream failure — URL, status, attempts — so a
 //     Start that still fails is reported as the fetch failure it was;
 //   - everything else stays the library's: it still computes the archive
@@ -68,6 +71,22 @@ import (
 // for it but no getter, and the relay has to know where to forward.
 const defaultBinaryRepositoryURL = "https://repo1.maven.org/maven2"
 
+// mavenCentralMirrorURL is Google's mirror of Maven Central on Cloud Storage,
+// asked when Maven Central has not served a file.
+//
+// WHY A 404 FROM MAVEN CENTRAL FALLS BACK rather than being final. Maven
+// Central's CDN has answered 404 for the published 18.3.0 linux-amd64 archive
+// (on Maven Central since 2026-03-01) twice on forge's main: the Windows job
+// once, then pkg/alerting and pkg/alerting/pgstore (run 44491105411,
+// 2026-11-19), while the same URL answered 200 from elsewhere minutes later.
+// A 404 is the registry's "no such file", so retrying the same edge buys
+// nothing; a second repository on separate infrastructure (Cloud Storage, not
+// Maven Central's CDN) does. It mirrors the same artifacts byte for byte — the
+// 18.3.0 archive's .sha256 sidecar is identical on both — and the library
+// still checks the archive against that sidecar. Only a 404 from BOTH is
+// reported as "no published binary".
+const mavenCentralMirrorURL = "https://maven-central.storage-download.googleapis.com/maven2"
+
 // fetchPolicy bounds the retries. Package-level so a test can shrink the
 // waits; production never changes it.
 //
@@ -84,14 +103,16 @@ var fetchPolicy = struct {
 	maxDelay      time.Duration
 	maxRetryAfter time.Duration
 	perAttempt    time.Duration
-	upstreamURL   string
+	// repositories are asked in order, each with the full retry budget,
+	// until one serves the file.
+	repositories []string
 }{
 	attempts:      6,
 	firstDelay:    2 * time.Second,
 	maxDelay:      30 * time.Second,
 	maxRetryAfter: 60 * time.Second,
 	perAttempt:    2 * time.Minute,
-	upstreamURL:   defaultBinaryRepositoryURL,
+	repositories:  []string{defaultBinaryRepositoryURL, mavenCentralMirrorURL},
 }
 
 // FetchError is a postgres binary download that failed. It replaces the
@@ -106,26 +127,65 @@ type FetchError struct {
 	Attempts int
 	// Err is the last transport error, when Status is 0.
 	Err error
+	// Also is what the other repositories asked answered (forge tries Maven
+	// Central, then a mirror of it), in the order they were asked. The fields
+	// above describe the most telling failure: a transient one when there was
+	// any, so Status is 404 only when every repository answered 404.
+	Also []*FetchError
 }
 
 func (e *FetchError) Error() string {
-	var last string
-	switch {
-	case e.Status == http.StatusNotFound:
-		// The one status that plausibly DOES mean "no such version".
+	if e.Status == http.StatusNotFound {
+		// The one status that plausibly DOES mean "no such version" — and
+		// only when no repository said otherwise.
+		urls := []string{e.URL}
+		for _, o := range e.Also {
+			urls = append(urls, o.URL)
+		}
 		return fmt.Sprintf("download postgres binary: %s returned 404 Not Found — this postgres "+
-			"version/platform has no published binary (not a transient failure)", e.URL)
-	case e.Status != 0:
-		last = fmt.Sprintf("HTTP %d %s", e.Status, http.StatusText(e.Status))
-	case e.Err != nil:
-		last = e.Err.Error()
-	default:
-		last = "no response"
+			"version/platform has no published binary (not a transient failure)", strings.Join(urls, " and "))
 	}
-	return fmt.Sprintf("download postgres binary: fetch of %s failed after %d attempt(s), last: %s. "+
+	msg := fmt.Sprintf("download postgres binary: fetch of %s failed after %d attempt(s), last: %s. "+
 		"This is a registry/network failure, possibly transient — the version exists; re-run. "+
 		"To take the registry off the critical path, cache the embedded-postgres archive directory "+
-		"(see pkg/pgtest/fetch.go)", e.URL, e.Attempts, last)
+		"(see pkg/pgtest/fetch.go)", e.URL, e.Attempts, e.lastAnswer())
+	for _, o := range e.Also {
+		msg += fmt.Sprintf(". Also tried %s: %s", o.URL, o.lastAnswer())
+	}
+	return msg
+}
+
+// lastAnswer is the final thing the repository said, in a few words.
+func (e *FetchError) lastAnswer() string {
+	switch {
+	case e.Status != 0:
+		return fmt.Sprintf("HTTP %d %s", e.Status, http.StatusText(e.Status))
+	case e.Err != nil:
+		return e.Err.Error()
+	default:
+		return "no response"
+	}
+}
+
+// fetchFailure folds each repository's failure, in the order they were
+// asked, into one FetchError led by the most telling: the first that was not
+// a 404, since one transient failure means the file may well exist.
+func fetchFailure(failures []*FetchError) *FetchError {
+	lead := 0
+	for i, f := range failures {
+		if f.Status != http.StatusNotFound {
+			lead = i
+			break
+		}
+	}
+	fe := *failures[lead]
+	fe.Also = nil
+	for i, f := range failures {
+		if i != lead {
+			fe.Also = append(fe.Also, f)
+		}
+	}
+	return &fe
 }
 
 func (e *FetchError) Unwrap() error { return e.Err }
@@ -142,24 +202,29 @@ func retryableStatus(code int) bool {
 
 // fetchRelay is the loopback repository the library fetches through.
 type fetchRelay struct {
-	upstream string
-	client   *http.Client
-	srv      *http.Server
-	ln       net.Listener
+	repositories []string // asked in order; see fetchPolicy.repositories
+	client       *http.Client
+	srv          *http.Server
+	ln           net.Listener
 
 	mu      sync.Mutex
 	failure *FetchError // the last artifact GET that never succeeded
 }
 
-func startFetchRelay(upstream string) (*fetchRelay, error) {
+func startFetchRelay(repositories ...string) (*fetchRelay, error) {
+	if len(repositories) == 0 {
+		return nil, errors.New("pgtest: start postgres download relay: no repository to fetch from")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("pgtest: start postgres download relay: %w", err)
 	}
 	r := &fetchRelay{
-		upstream: strings.TrimRight(upstream, "/"),
-		client:   observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: fetchPolicy.perAttempt}),
-		ln:       ln,
+		client: observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: fetchPolicy.perAttempt}),
+		ln:     ln,
+	}
+	for _, repo := range repositories {
+		r.repositories = append(r.repositories, strings.TrimRight(repo, "/"))
 	}
 	r.srv = &http.Server{Handler: r, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = r.srv.Serve(ln) }()
@@ -188,14 +253,27 @@ func (r *fetchRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	target := r.upstream + req.URL.Path
-	resp, attempts, err := r.getWithRetry(req.Context(), target)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		fe := &FetchError{URL: target, Attempts: attempts, Err: err}
-		if resp != nil {
-			fe.Status = resp.StatusCode
-			_ = resp.Body.Close()
+	var failures []*FetchError
+	var resp *http.Response
+	for _, repo := range r.repositories {
+		target := repo + req.URL.Path
+		got, attempts, err := r.getWithRetry(req.Context(), target)
+		if err == nil && got.StatusCode == http.StatusOK {
+			resp = got
+			break
 		}
+		fe := &FetchError{URL: target, Attempts: attempts, Err: err}
+		if got != nil {
+			fe.Status = got.StatusCode
+			_ = got.Body.Close()
+		}
+		failures = append(failures, fe)
+		if req.Context().Err() != nil {
+			break // the library gave up; asking the next repository is moot
+		}
+	}
+	if resp == nil {
+		fe := fetchFailure(failures)
 		// The .sha256 sidecar is optional to the library (it skips the check
 		// on a non-200), so only the archive itself is worth reporting.
 		if !strings.HasSuffix(req.URL.Path, ".sha256") {
@@ -287,7 +365,7 @@ func retryAfter(h http.Header, now time.Time) (wait time.Duration, ok bool) {
 // as the library's "no version found".
 //
 // cfg must not set BinaryRepositoryURL: the relay takes that slot and
-// forwards to Maven Central, the library's default.
+// forwards to Maven Central, the library's default, then to a mirror of it.
 //
 // The returned Embedded owns the temp log file the library created for this
 // Start (see embeddedlog.go): Stop removes it after the library's final
@@ -295,7 +373,7 @@ func retryAfter(h http.Header, now time.Time) (wait time.Duration, ok bool) {
 // Start removes its own file here. No other process's log file is ever
 // touched.
 func StartEmbedded(cfg embeddedpostgres.Config) (*Embedded, error) {
-	relay, err := startFetchRelay(fetchPolicy.upstreamURL)
+	relay, err := startFetchRelay(fetchPolicy.repositories...)
 	if err != nil {
 		return nil, err
 	}

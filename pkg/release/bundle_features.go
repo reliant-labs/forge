@@ -218,6 +218,23 @@ const (
 // plane adds this by hand, in the change that makes its promote judge both.
 const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 
+// CapabilityServesDashboardFilterParams is advertised beside the bundle
+// features by a control plane that serves the dashboards forge ships only to
+// a server that says so: the built-in card dashboards (pkg/obsbuiltin.Cards:
+// Traffic and Uptime) and any dashboard whose sql panels read filter params
+// ({f_<name>:String}, pkg/dashspec.FilterParam). Serving one needs the forge
+// whose obsquery binds a filter param (to the empty string when the request
+// names none); an older control plane cannot run such a panel.
+//
+// Like [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]: a control plane advertises that list on every forge pin
+// bump, and the bundles recorded while it does must also be served by the
+// release it would roll back to. So a control plane adds this by hand, once
+// its rollback target binds filter params too. Until a control plane names
+// it, forge withholds those dashboards from the bundles it records there, and
+// a bundle built for no control plane (the machine ledger) carries none.
+const CapabilityServesDashboardFilterParams = "serves-dashboard-filter-params"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its

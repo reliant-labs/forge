@@ -70,6 +70,10 @@ func TestAlertOnAnIssueThatPredatesTheRelease(t *testing.T) {
 	dormant.Before.Versions = nil // no event of another version in the baseline window
 	quiet := dormant
 	quiet.After.Versions = []IssueVersionEvents{versionEvents(rc9, 2, t0.Add(20*time.Minute), t0.Add(25*time.Minute))}
+	// No event of the release's version in a well-read after window: no
+	// evidence of what the release did to the issue.
+	silent := steadyIssue(id)
+	silent.After.Versions = silent.After.Versions[:1]
 	// [B2] The release's events read past the after window's end: 23 over
 	// 49 minutes looks like the old rate, but the window's own events
 	// cannot be told from the later ones.
@@ -120,6 +124,7 @@ func TestAlertOnAnIssueThatPredatesTheRelease(t *testing.T) {
 		{name: "a pre-existing issue firing 3x as often fails", alerts: []Alert{spike}, issues: []AlertIssue{worse}, verdict: Fail},
 		{name: "an issue born with the release fails", alerts: []Alert{spike}, issues: []AlertIssue{born}, verdict: Fail},
 		{name: "a dormant issue the release woke fails", alerts: []Alert{spike}, issues: []AlertIssue{dormant}, verdict: Fail},
+		{name: "no release event in the after window cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{silent}, verdict: Fail},
 		{name: "release events past the after window cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{pastWindow}, verdict: Fail},
 		{name: "a baseline read across the promotion cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{baselineLeaks}, verdict: Fail},
 		{name: "evidence read without its windows cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{unwindowed}, verdict: Fail},

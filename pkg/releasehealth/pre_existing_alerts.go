@@ -19,8 +19,8 @@ package releasehealth
 //   - the issue was first seen before the promotion, in a version other than
 //     the release (first_build), and
 //   - under the release it does not fire materially faster than it did
-//     before: the release's version fired fewer than new_issue_min_events of
-//     its events in the after window, or its rate there is at most
+//     before: the release's version fired at least one and fewer than
+//     new_issue_min_events of its events in the after window, or its rate there is at most
 //     [PreExistingIssueMaxRateRatio] times the other versions' rate in the
 //     baseline window, or the events above that rate number fewer than
 //     new_issue_min_events. The two windows are read apart ([AlertIssue]
@@ -324,6 +324,11 @@ func preExisting(is AlertIssue, a Alert, s Subject, minEvents int) (PreExistingI
 	pe.BaselinePerHour = baseRate
 	first := firstNonEmpty(firstVersion, is.FirstSeenAt.UTC().Format(time.RFC3339))
 	since := fmt.Sprintf("issue %s was first seen %s in %s, before the promotion", is.ID, is.FirstSeenAt.UTC().Format(time.RFC3339), firstNonEmpty(firstVersion, "an earlier version"))
+	if rel.Events == 0 {
+		// No event of the release's version in its window says nothing
+		// about what the release did to the issue: no evidence clears it.
+		return pe, "", false
+	}
 	if rel.Events < int64(minEvents) {
 		return pe, fmt.Sprintf("pre-existing alert (first seen %s, too few events under the release to have risen): %s, and fired %d time(s) under %s (new_issue_min_events %d)",
 			first, since, rel.Events, s.Release, minEvents), true

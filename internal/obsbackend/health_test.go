@@ -106,6 +106,39 @@ func TestCloudReleaseHealthSendsWindowPromotionAndOverrides(t *testing.T) {
 	}
 }
 
+// A control plane that predates the changed-op thresholds refuses their
+// names, so they are held back from the request: the CLI applies them itself
+// (releasehealth.WithChangedOps). An override of only them sends none at all.
+func TestCloudReleaseHealthHoldsBackTheChangedOpThresholds(t *testing.T) {
+	for name, tc := range map[string]struct {
+		overrides map[string]string
+		want      map[string]any // nil: no thresholdOverrides at all
+	}{
+		"mixed": {map[string]string{"min_requests": "10", releasehealth.ThresholdChangedOpMinCalls: "5", releasehealth.ThresholdChangedOpMaxP95Ratio: "3"},
+			map[string]any{"min_requests": "10"}},
+		"only changed-op": {map[string]string{releasehealth.ThresholdChangedOpMinErrors: "2"}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeCaller{replies: map[string]string{procGetReleaseHealth: healthWire}}
+			if _, err := cloudWith(f).ReleaseHealth(context.Background(), HealthRequest{
+				PromotionID: "p9", Now: t0c, Options: releasehealth.Options{Overrides: tc.overrides},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got, set := f.reqs[procGetReleaseHealth]["thresholdOverrides"]
+			if tc.want == nil {
+				if set {
+					t.Errorf("thresholdOverrides = %v, want none sent", got)
+				}
+				return
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("thresholdOverrides = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCloudReleaseHealthErrorMapping(t *testing.T) {
 	for name, tc := range map[string]struct {
 		code string

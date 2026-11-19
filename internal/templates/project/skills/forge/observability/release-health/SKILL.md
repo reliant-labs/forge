@@ -1,6 +1,6 @@
 ---
 name: observability/release-health
-description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, and the control plane's stored verdict the promotion health gate reads.
+description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, the per-op changed_op_errors / changed_op_latency findings on the ops the release's commits changed, and the control plane's stored verdict the promotion health gate reads.
 ---
 
 # Release health: what a release answers for
@@ -54,6 +54,40 @@ The local backend reads endpoint figures for both windows and the baseline
 window. A control plane that does not supply them is judged service-wide, and
 `obs check` holds its answer to the floor even when the control plane
 predates it, listing `error_rate_min_errors` in `thresholds`.
+
+## Changed ops: `changed_op_errors`, `changed_op_latency`
+
+A service-wide rate hides a regression in one op on a busy service. So the
+check also judges each op (`observability/query/ops`) the release's commits
+changed, before vs after, on that op's own spans. Which ops changed:
+
+- hosted: the commits the release recorded, mapped in this checkout;
+- local: the commits since `--since`, plus uncommitted changes.
+
+| Finding | Fires when |
+|---|---|
+| `changed_op_errors` | the op's error rate rose by more than `changed_op_max_error_rate_increase` (default 0.05) with at least `changed_op_min_errors` (5) errors after |
+| `changed_op_latency` | the op's p95 after is more than `changed_op_max_p95_ratio` (2.0) times its p95 before |
+
+An op is compared only with `changed_op_min_calls` (50) calls in both
+windows; the thinner ones are named in one `not_evaluated` entry,
+`changed_op: N op(s) below changed_op_min_calls …`.
+On a hosted env an op's after-window figures count only the judged release's
+`service.version` (`changed_ops[].after_version`) and its before-window
+figures only one baseline version's (`changed_ops[].before_version`: the
+previous release, else the version that served most of the op's before window,
+never the judged release itself), so an old version still in rotation on
+either side never makes it a finding, and an op without per-version figures
+for either window is listed under `not_evaluated` instead of judged.
+`--threshold k=v` overrides each, and `thresholds` lists each with its source.
+Both warn by default; add them to `fail_on` (KCL `release_health`, or
+`--fail-on`) to gate. Each finding carries `op`, `commit` and `pr` (from a
+trailing `(#123)` in the commit subject), and the document's `changed_ops[]`
+lists every changed op with both windows and its commits.
+
+When the mapping cannot run (no checkout, the release's commits not in it, a
+backend that cannot rank ops), `not_evaluated` says why and the check goes
+on: changed ops never fail a check by being unreadable.
 
 ## The stored verdict
 

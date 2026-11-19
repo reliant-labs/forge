@@ -125,6 +125,8 @@ var hostedToolInfos = []AccountToolInfo{
 		Description: "Search the environment's logs with the log query language (service:api severity:error \"connection refused\", trace_id:…, attr.http.route:/v1/jobs). The `forge obs logs <env> <query> --json` document."},
 	{Name: "obs_traces", Title: "Find traces", NeedsTarget: true,
 		Description: "The environment's traces, newest first or slowest first, failing only or by route, with a rate / errors / duration summary. The `forge obs traces <env> --json` document."},
+	{Name: "obs_ops", Title: "Ops by traffic and latency", NeedsTarget: true,
+		Description: "Every component op (<pkg>.<Method> spans from forge's generated component decorators) and RPC: calls, error ratio, p50/p95/p99 weighted for tail sampling, with the op's code location. The `forge obs ops <env> --json` document."},
 	{Name: "obs_check", Title: "Release health verdict", NeedsTarget: true,
 		Description: "Judge a release: PASS, FAIL or INCONCLUSIVE for the env's current promotion (or the one named), comparing the windows before and after it. exit_code 0 good, 1 regressed (see findings and suggested), 2 not proven good, 8 not enough data yet: check again later. The `forge obs check <env> --json` document."},
 	{Name: "obs_changes", Title: "What changed", NeedsTarget: true,
@@ -156,7 +158,7 @@ func HostedInstructions() string { return hostedInstructions }
 
 const hostedInstructions = "This is Reliant Forge (github.com/reliant-labs/forge), signed in to the user's Reliant account — not " +
 	"Atlassian Forge and not Foundry's forge. These tools read and act on what lives in the account: monitoring " +
-	"(obs_status, obs_issues, obs_issue, obs_logs, obs_traces, obs_check, obs_changes), releases (releases_list, " +
+	"(obs_status, obs_issues, obs_issue, obs_logs, obs_traces, obs_ops, obs_check, obs_changes), releases (releases_list, " +
 	"release_show, release_record) and environments (envs_list, obs_init). Each takes `project` (the forge project " +
 	"name, as in the console's https://forge.reliantlabs.io/forge/p/<project>) and usually `env`; start with " +
 	"envs_list or obs_status. Every result is the CLI's --json document plus console_url, the page that shows it. " +
@@ -206,23 +208,33 @@ type hostedTarget struct {
 	Env     string `json:"env" jsonschema:"the environment, e.g. prod or staging (envs_list names them)"`
 }
 
-// hostedWindow is the time range and page size of a read.
-type hostedWindow struct {
+// hostedRange is the time range and services of a read.
+type hostedRange struct {
 	Since    string   `json:"since,omitempty" jsonschema:"how far back to read: 15m, 2h, 7d (default: the tool's own window)"`
 	From     string   `json:"from,omitempty" jsonschema:"range start, RFC 3339 (overrides since)"`
 	To       string   `json:"to,omitempty" jsonschema:"range end, RFC 3339 (default now)"`
 	Services []string `json:"services,omitempty" jsonschema:"only these service.name values"`
-	Limit    int      `json:"limit,omitempty" jsonschema:"most items to return (default: the tool's own page size)"`
+}
+
+func (r hostedRange) args() []string {
+	var a []string
+	a = flagArg(a, "--since", r.Since)
+	a = flagArg(a, "--from", r.From)
+	a = flagArg(a, "--to", r.To)
+	for _, s := range r.Services {
+		a = flagArg(a, "--service", s)
+	}
+	return a
+}
+
+// hostedWindow is the time range and page size of a read.
+type hostedWindow struct {
+	hostedRange
+	Limit int `json:"limit,omitempty" jsonschema:"most items to return (default: the tool's own page size)"`
 }
 
 func (w hostedWindow) args() []string {
-	var a []string
-	a = flagArg(a, "--since", w.Since)
-	a = flagArg(a, "--from", w.From)
-	a = flagArg(a, "--to", w.To)
-	for _, s := range w.Services {
-		a = flagArg(a, "--service", s)
-	}
+	a := w.hostedRange.args()
 	if w.Limit > 0 {
 		a = append(a, "--limit", fmt.Sprint(w.Limit))
 	}
@@ -267,6 +279,15 @@ type hostedObsTracesInput struct {
 	MinDuration string `json:"min_duration,omitempty" jsonschema:"only traces at least this long, e.g. 500ms"`
 	Route       string `json:"route,omitempty" jsonschema:"only traces whose root span name contains this"`
 	PageToken   string `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
+}
+
+// hostedObsOpsInput has no limit: an ops ranking's size is top.
+type hostedObsOpsInput struct {
+	hostedTarget
+	hostedRange
+	Sort string   `json:"sort,omitempty" jsonschema:"calls | p95 | errors | rate (default calls)"`
+	Top  int      `json:"top,omitempty" jsonschema:"most ops to return (default 20)"`
+	Kind []string `json:"kind,omitempty" jsonschema:"only these kinds: rpc, endpoint, component (default all)"`
 }
 
 type hostedObsCheckInput struct {
@@ -478,6 +499,24 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			}
 			return obs(newObsTracesCmdWith, args, func(c hostedCall) string { return c.console.View("traces", c.target.Env) })(ctx, req, in.hostedTarget)
 		})
+	case "obs_ops":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsOpsInput) (*mcp.CallToolResult, any, error) {
+			args := func() []string {
+				a := in.hostedRange.args()
+				a = flagArg(a, "--sort", in.Sort)
+				if in.Top > 0 {
+					a = append(a, "--top", fmt.Sprint(in.Top))
+				}
+				for _, k := range in.Kind {
+					a = flagArg(a, "--kind", k)
+				}
+				return a
+			}
+			// No locator: the code location is the span's own, since the
+			// server has no checkout to find the rest in.
+			build := func(d obsDepsFunc) *cobra.Command { return newObsOpsCmdWith(d, nil) }
+			return obs(build, args, func(c hostedCall) string { return c.console.View("traces", c.target.Env) })(ctx, req, in.hostedTarget)
+		})
 	case "obs_check":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsCheckInput) (*mcp.CallToolResult, any, error) {
 			args := func() []string {
@@ -651,6 +690,7 @@ func (h *hostedTools) obsDeps(c hostedCall, stdout, stderr io.Writer) obsDeps {
 		Suspects: func(context.Context, io.Writer, obsbackend.GetIssueResult, string) ([]obsSuspectDoc, string) {
 			return []obsSuspectDoc{}, "suspect commits need the repository: run `forge obs issue <id> <env>` in it"
 		},
+		OpChanges: noCheckoutOpChanges,
 	}
 }
 

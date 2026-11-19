@@ -130,8 +130,16 @@ const (
 
 // lintUnwrappedDomainErrorFile reports every Connect handler in the file
 // that returns a domain error without applying anything to it.
-func lintUnwrappedDomainErrorFile(relPath string, fset *token.FileSet, file *ast.File) []Finding {
+//
+// projectV2 says the project is on connect-go v2 (internal/connectmajor):
+// a v2 handler's signature names no connect type (isConnectV2BoundaryFunc),
+// so its shape is read only where v2 is known to be in use — the project's
+// go.mod, or this file's own v2 import. A v1 project's handlers are read
+// exactly as before.
+func lintUnwrappedDomainErrorFile(relPath string, fset *token.FileSet, file *ast.File, projectV2 bool) []Finding {
 	svcerrAlias := svcerrImportAlias(file)
+	names := fileConnectNames(file)
+	v2 := projectV2 || names.importsV2()
 
 	var findings []Finding
 	for _, decl := range file.Decls {
@@ -139,10 +147,10 @@ func lintUnwrappedDomainErrorFile(relPath string, fset *token.FileSet, file *ast
 		if !ok || fn.Body == nil {
 			continue
 		}
-		if !isConnectBoundaryFunc(fn) {
+		if !isConnectBoundaryFunc(fn) && (!v2 || !isConnectV2BoundaryFunc(fn)) {
 			continue
 		}
-		for _, ret := range rawErrorReturns(fn, receiverIdent(fn), svcerrAlias) {
+		for _, ret := range rawErrorReturns(fn, receiverIdent(fn), svcerrAlias, names) {
 			pos := fset.Position(ret.pos)
 			findings = append(findings, Finding{
 				Rule:     unwrappedDomainErrorRule,
@@ -175,7 +183,7 @@ type rawReturn struct {
 // rawErrorReturns walks fn's own statements — never descending into a
 // nested func literal, whose returns do not cross the RPC boundary — and
 // collects the returns whose error operand is an unwrapped domain error.
-func rawErrorReturns(fn *ast.FuncDecl, recv, svcerrAlias string) []rawReturn {
+func rawErrorReturns(fn *ast.FuncDecl, recv, svcerrAlias string, names connectNames) []rawReturn {
 	bindings := collectBindings(fn.Body)
 	shadowed := signatureIdents(fn)
 
@@ -204,7 +212,7 @@ func rawErrorReturns(fn *ast.FuncDecl, recv, svcerrAlias string) []rawReturn {
 		}
 		origin := ""
 		for _, site := range sites {
-			switch classifyBinding(site, id.Name, recv, svcerrAlias) {
+			switch classifyBinding(site, id.Name, recv, svcerrAlias, names) {
 			case bindingWrapped, bindingUnknown:
 				return
 			case bindingRaw:
@@ -259,14 +267,14 @@ func collectBindings(body *ast.BlockStmt) map[string][]bindingSite {
 }
 
 // classifyBinding decides whether a binding leaves the error raw.
-func classifyBinding(site bindingSite, name, recv, svcerrAlias string) bindingKind {
+func classifyBinding(site bindingSite, name, recv, svcerrAlias string, names connectNames) bindingKind {
 	call, ok := site.rhs.(*ast.CallExpr)
 	if !ok {
 		// `err := someVar`, `err := <-ch`, a type assertion: not a call,
 		// so the rule cannot tell what this value is.
 		return bindingUnknown
 	}
-	if isWireErrorConstructor(call, svcerrAlias) {
+	if isWireErrorConstructor(call, svcerrAlias, names) {
 		return bindingWrapped
 	}
 	if callMentionsIdent(call, name) {
@@ -339,6 +347,55 @@ func isConnectBoundaryFunc(fn *ast.FuncDecl) bool {
 	return false
 }
 
+// isConnectV2BoundaryFunc reports whether fn has the shape of a connect-go
+// v2 handler method. v2 handlers are "simple": no connect type in the
+// signature, so the RPC is recognized by how protoc-gen-connect-go v2 and
+// buf's standard lint name it — a method whose first parameter is a
+// context.Context and whose error is its last result, and which takes
+// either
+//
+//   - its own request message, `*<pkg>.<Method>Request` (unary and
+//     server-streaming), or
+//   - its own generated stream, `<pkg>.<Svc><Method>ServerStream`
+//     (client-, server- and bidi-streaming).
+//
+// Tying the message to the method's name is what keeps a helper that
+// happens to take some proto message — `s.toProto(ctx, *pb.Chat)` — off
+// the boundary.
+func isConnectV2BoundaryFunc(fn *ast.FuncDecl) bool {
+	if fn.Recv == nil || fn.Type == nil || fn.Type.Params == nil || fn.Name == nil {
+		return false
+	}
+	res := fn.Type.Results
+	if res == nil || len(res.List) == 0 {
+		return false
+	}
+	if id, ok := res.List[len(res.List)-1].Type.(*ast.Ident); !ok || id.Name != "error" {
+		return false
+	}
+	params := fn.Type.Params.List
+	if len(params) < 2 {
+		return false
+	}
+	if ident, name := qualifier(params[0].Type); ident != "context" || name != "Context" {
+		return false
+	}
+	method := fn.Name.Name
+	for _, p := range params[1:] {
+		t := p.Type
+		if star, ok := t.(*ast.StarExpr); ok {
+			if _, name := qualifier(star.X); name == method+"Request" {
+				return true
+			}
+			continue
+		}
+		if _, name := qualifier(t); strings.HasSuffix(name, method+"ServerStream") && len(name) > len(method+"ServerStream") {
+			return true
+		}
+	}
+	return false
+}
+
 // receiverIdent returns the handler receiver's variable name ("s" in
 // `func (s *Service) ...`), or "" for an unnamed receiver — in which case
 // no collaborator chain can be rooted at it and the rule stays silent.
@@ -400,7 +457,8 @@ func svcerrImportAlias(file *ast.File) string {
 // error: anything from connect-go itself, or anything from forge's
 // svcerr. Both are libraries whose whole job is to carry a status code,
 // so a value they produced is by construction not a raw domain error.
-func isWireErrorConstructor(call *ast.CallExpr, svcerrAlias string) bool {
+// connect-go v2 counts under any name the file binds it to.
+func isWireErrorConstructor(call *ast.CallExpr, svcerrAlias string, names connectNames) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -409,7 +467,7 @@ func isWireErrorConstructor(call *ast.CallExpr, svcerrAlias string) bool {
 	if depth != 1 {
 		return false
 	}
-	return root == "connect" || (svcerrAlias != "" && root == svcerrAlias)
+	return root == "connect" || names.isV2(root) || (svcerrAlias != "" && root == svcerrAlias)
 }
 
 // callMentionsIdent reports whether name appears anywhere in call's

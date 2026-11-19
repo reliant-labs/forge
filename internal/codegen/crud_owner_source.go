@@ -23,7 +23,8 @@
 // # What counts as a source
 //
 // The scan is syntactic and reads only RPC handlers — `*Service` methods
-// shaped `(ctx context.Context, req *connect.Request[T])` — so a helper
+// shaped `(ctx context.Context, req *connect.Request[T])`, or under
+// connect-go v2 `(ctx context.Context, req *pb.<Method>Request)` — so a helper
 // that receives the owner as a parameter is not mistaken for a policy. In
 // each, an owner USE is `orm.WhereEq("<col>", x)` or `e.<Field> = x`, and
 // x is traced back to the statement that bound it:
@@ -268,8 +269,16 @@ func ScanCRUDOpKeyColumns(file *ast.File) map[string]string {
 }
 
 // rpcHandlerCtxParam reports whether fn is a connect RPC handler — a method
-// taking (ctx context.Context, req *connect.Request[T]) — and returns its
-// context parameter's name.
+// taking (ctx context.Context, req *connect.Request[T]) under connect-go v1,
+// or (ctx context.Context, req *<pkg>.<Method>Request) under v2, whose
+// handlers take the bare request message — and returns its context
+// parameter's name.
+//
+// The v2 shape is tied to the method's own name (CreateTask takes
+// *pb.CreateTaskRequest, as protoc-gen-connect-go v2 and buf's standard
+// lint name it), so a helper that receives some other message is not read
+// as a policy, and a v1 file — whose method of that name must take a
+// connect.Request — reads exactly as before.
 func rpcHandlerCtxParam(fn *ast.FuncDecl) (string, bool) {
 	if fn.Recv == nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 2 {
 		return "", false
@@ -282,11 +291,17 @@ func rpcHandlerCtxParam(fn *ast.FuncDecl) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	idx, ok := star.X.(*ast.IndexExpr)
-	if !ok || !isSelectorExpr(idx.X, "connect", "Request") {
-		return "", false
+	switch x := star.X.(type) {
+	case *ast.IndexExpr:
+		if isSelectorExpr(x.X, "connect", "Request") {
+			return ctxField.Names[0].Name, true
+		}
+	case *ast.SelectorExpr:
+		if _, isPkg := x.X.(*ast.Ident); isPkg && x.Sel != nil && x.Sel.Name == fn.Name.Name+"Request" {
+			return ctxField.Names[0].Name, true
+		}
 	}
-	return ctxField.Names[0].Name, true
+	return "", false
 }
 
 // readVerbs and writeVerbs are the RPC verbs whose noun names an entity.

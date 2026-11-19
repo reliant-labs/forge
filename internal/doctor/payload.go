@@ -51,8 +51,9 @@ package doctor
 //
 //  1. The composition root's own AST — the cmd/** parse this check already
 //     performs. A reference to the connect-go runtime type HandlerOption,
-//     or a call to a generated <pkg>connect.New*Handler constructor, is
-//     direct proof, resolved through the file's IMPORTS so a local
+//     or a call to a generated <pkg>connect.New*Handler constructor (under
+//     connect-go v2: connect.Server, connecthttp.Mount, a generated
+//     <pkg>connect.Register*Handler), is direct proof, resolved through the file's IMPORTS so a local
 //     identifier that merely happens to be spelled `connect` cannot fake it
 //     and a comment cannot produce it at all.
 //  2. The proto descriptor (gen/forge_descriptor/, read through
@@ -90,6 +91,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // payloadCapOptions are the connect handler options whose argument must
@@ -519,13 +521,21 @@ func determineConnectMounting(projectDir string, cmdEvidence []string) mountingV
 //     protoc-gen-connect-go emits those into a package whose import path
 //     ends in "connect", and calling one IS the mount.
 //
+// connect-go v2 (connectrpc.com/connect/v2) has neither: a service is
+// registered with the generated Register…Handler on a *connect.Server, and
+// connecthttp.Mount puts the server on a mux. So under v2 the proof is a
+// reference to connect.Server / connect.NewServer (server-only — the
+// client half is connect.Client), a connecthttp.Mount call, or a generated
+// Register…Handler call.
+//
 // Import resolution is what makes this immune to the two failures of the
 // grep it replaces: a comment produces no AST node at all, and a local
 // variable that merely happens to be named `connect` is not bound to any
 // import so it never matches.
 func connectHandlerEvidence(file *ast.File, fset *token.FileSet, rel string) []string {
 	runtime, generated := connectImportNames(file)
-	if len(runtime) == 0 && len(generated) == 0 {
+	httpv2 := connectV2HTTPNames(file)
+	if len(runtime) == 0 && len(generated) == 0 && len(httpv2) == 0 {
 		return nil
 	}
 
@@ -549,11 +559,17 @@ func connectHandlerEvidence(file *ast.File, fset *token.FileSet, rel string) []s
 		if !ok {
 			return true
 		}
-		switch {
-		case runtime[pkg.Name] && sel.Sel.Name == "HandlerOption":
+		switch major := runtime[pkg.Name]; {
+		case major == connectmajor.V1 && sel.Sel.Name == "HandlerOption":
 			add(sel.Pos(), fmt.Sprintf("references %s.HandlerOption (connect-go's server-side option type)", pkg.Name))
+		case major == connectmajor.V2 && (sel.Sel.Name == "Server" || sel.Sel.Name == "NewServer"):
+			add(sel.Pos(), fmt.Sprintf("references %s.%s (connect-go v2's server, which only handlers are registered on)", pkg.Name, sel.Sel.Name))
+		case httpv2[pkg.Name] && sel.Sel.Name == "Mount":
+			add(sel.Pos(), fmt.Sprintf("calls %s.Mount (connect-go v2's handler mount)", pkg.Name))
 		case generated[pkg.Name] && isConnectHandlerConstructor(sel.Sel.Name):
 			add(sel.Pos(), fmt.Sprintf("calls %s.%s (a generated Connect handler constructor)", pkg.Name, sel.Sel.Name))
+		case generated[pkg.Name] && isConnectV2HandlerRegistration(sel.Sel.Name):
+			add(sel.Pos(), fmt.Sprintf("calls %s.%s (a generated connect-go v2 handler registration)", pkg.Name, sel.Sel.Name))
 		}
 		return true
 	})
@@ -569,14 +585,37 @@ func isConnectHandlerConstructor(name string) bool {
 		len(name) >= len("NewHandler")
 }
 
-// connectRuntimePaths are the import paths of the connect-go runtime — the
-// current module and its pre-rename spelling. Matched in FULL rather than
-// by last path element so a project's own internal/connect package cannot
-// be mistaken for the runtime whose HandlerOption type this check treats as
-// proof.
-var connectRuntimePaths = map[string]bool{
-	"connectrpc.com/connect":         true,
-	"github.com/bufbuild/connect-go": true,
+// isConnectV2HandlerRegistration matches protoc-gen-connect-go v2's
+// registration naming — Register<Service>Handler, which adds a service to a
+// *connect.Server. v2 has no handler constructor.
+func isConnectV2HandlerRegistration(name string) bool {
+	return strings.HasPrefix(name, "Register") && strings.HasSuffix(name, "Handler") &&
+		len(name) > len("RegisterHandler")
+}
+
+// connectV2HTTPPath is connect-go v2's net/http binding, whose Mount puts a
+// *connect.Server's handlers on a mux.
+const connectV2HTTPPath = connectmajor.ModuleV2 + "/connecthttp"
+
+// connectV2HTTPNames resolves the file-local identifiers bound to
+// connect-go v2's connecthttp package.
+func connectV2HTTPNames(file *ast.File) map[string]bool {
+	out := map[string]bool{}
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || importPath != connectV2HTTPPath {
+			continue
+		}
+		local := "connecthttp"
+		if spec.Name != nil {
+			if spec.Name.Name == "_" || spec.Name.Name == "." {
+				continue
+			}
+			local = spec.Name.Name
+		}
+		out[local] = true
+	}
+	return out
 }
 
 // connectImportNames resolves the FILE-LOCAL identifiers bound to the
@@ -586,8 +625,15 @@ var connectRuntimePaths = map[string]bool{
 // Generated packages are the `<proto package>connect` leaves
 // protoc-gen-connect-go emits (billingv1connect, …) — identified by the
 // suffix because the prefix is the project's own proto package name.
-func connectImportNames(file *ast.File) (runtime, generated map[string]bool) {
-	runtime = map[string]bool{}
+//
+// The runtime is matched by its FULL import path (connectmajor's
+// IsRuntimeImport: v1, its pre-rename spelling, and v2) rather than by last
+// path element, so a project's own internal/connect package cannot be
+// mistaken for the runtime whose server-side types this check treats as
+// proof. Each runtime name maps to its major, since the proof differs: v1's
+// HandlerOption, v2's Server.
+func connectImportNames(file *ast.File) (runtime map[string]connectmajor.Major, generated map[string]bool) {
+	runtime = map[string]connectmajor.Major{}
 	generated = map[string]bool{}
 	for _, spec := range file.Imports {
 		importPath, err := strconv.Unquote(spec.Path.Value)
@@ -595,7 +641,7 @@ func connectImportNames(file *ast.File) (runtime, generated map[string]bool) {
 			continue
 		}
 		base := pathpkg.Base(importPath)
-		isRuntime := connectRuntimePaths[importPath]
+		major, isRuntime := connectmajor.IsRuntimeImport(importPath)
 		isGenerated := !isRuntime && strings.HasSuffix(base, "connect")
 		if !isRuntime && !isGenerated {
 			continue
@@ -616,7 +662,7 @@ func connectImportNames(file *ast.File) (runtime, generated map[string]bool) {
 			local = spec.Name.Name
 		}
 		if isRuntime {
-			runtime[local] = true
+			runtime[local] = major
 		} else {
 			generated[local] = true
 		}

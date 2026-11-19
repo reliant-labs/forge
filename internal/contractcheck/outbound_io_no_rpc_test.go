@@ -79,3 +79,45 @@ func TestLintOutboundIONoRPC_NoInternalDir(t *testing.T) {
 		t.Errorf("empty project should produce 0 findings, got %d", len(fs))
 	}
 }
+
+// TestLintOutboundIONoRPC_FiresOnConnectV2 is the connect-go v2 twin of
+// TestLintOutboundIONoRPC_Fires: v2 has no handler constructor, and a
+// service is registered with the generated `Register<Svc>Handler(server,
+// impl)` instead.
+func TestLintOutboundIONoRPC_FiresOnConnectV2(t *testing.T) {
+	t.Parallel()
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "outbound_io_with_rpc_v2"),
+		Options{Rules: []Rule{RuleOutboundIONoRPC}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	got := findingsForRule(fs, string(RuleOutboundIONoRPC))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding, got %d:\n%s", len(got), AsResult(fs).FormatText())
+	}
+	if !strings.Contains(got[0].Message, "billingv1connect.RegisterBillingServiceHandler") {
+		t.Errorf("message should name the v2 registration; got: %s", got[0].Message)
+	}
+	if HasErrors(fs) {
+		t.Errorf("rule must not gate the build; HasErrors() = true")
+	}
+}
+
+// TestLintOutboundIONoRPC_ConnectV2ClientIsClean: building a v2 client of a
+// remote service — connect.NewClient, a generated New<Svc>Client — is the
+// outbound I/O the marker claims, not an inbound handler.
+func TestLintOutboundIONoRPC_ConnectV2ClientIsClean(t *testing.T) {
+	t.Parallel()
+	fs, err := Inspect(context.Background(),
+		filepath.Join("testdata", "outbound_io_clean_v2"),
+		Options{Rules: []Rule{RuleOutboundIONoRPC}},
+	)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if got := findingsForRule(fs, string(RuleOutboundIONoRPC)); len(got) != 0 {
+		t.Fatalf("expected 0 findings, got %d:\n%s", len(got), AsResult(fs).FormatText())
+	}
+}

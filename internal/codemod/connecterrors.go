@@ -150,6 +150,12 @@ change what clients read:
 
 Generated files, vendor/ and testdata/ are left alone, as is every
 connect.NewError in a test (a fixture). Re-running it changes nothing.
+
+connect-go v2 code (a file importing connectrpc.com/connect/v2) is not
+rewritten: v2's NewError takes a message string and its errors meet svcerr
+through a different interceptor, so v1's wire-identity proof does not carry
+over. Each such file is listed instead, and forge lint's
+forgeconv-handler-connect-error classifies its sites.
 --dry-run prints each rewrite as file:line: old → new, and the worklist; after a
 real run every file:line is the rewritten file's.
 

@@ -51,8 +51,9 @@
 // Soundness. A success exit misread as a failure would credit the helper
 // with a guard it does not establish, so errNonNil accepts only error
 // expressions that cannot be nil: a composite literal or `&T{}`, an
-// `Err*` sentinel, `errors.New`, `fmt.Errorf`, `connect.NewError`, a
-// forge svcerr constructor, an svcerr wrapper of one of these, and a local
+// `Err*` sentinel, `errors.New`, `fmt.Errorf`, `connect.NewError` (and
+// connect-go v2's `connect.Errorf` and its `.WithCause`/`.WithDetail`
+// clones), a forge svcerr constructor, an svcerr wrapper of one of these, and a local
 // the enclosing branch proved non-nil (`if err != nil { return err }`).
 // Every other error expression, a call to some other function included,
 // is taken to be a possible success, which under-credits the helper (flag
@@ -65,6 +66,8 @@ import (
 	"go/token"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // Pseudo guard keys. They begin with a NUL byte, so no Go identifier (an
@@ -88,7 +91,9 @@ const svcerrImportPath = "github.com/reliant-labs/forge/pkg/svcerr"
 var svcerrConstructors = map[string]bool{
 	// New takes a wire code, not an error: even invalid codes and empty
 	// detail produce a non-nil error, so it is not a nil-preserving wrapper.
-	"New":          true,
+	"New": true,
+	// NewV2 is New taking a connect-go v2 code.
+	"NewV2":        true,
 	"ScaffoldStub": true, "Canceled": true, "Unknown": true, "InvalidArgument": true,
 	"DeadlineExceeded": true, "NotFound": true, "AlreadyExists": true,
 	"PermissionDenied": true, "ResourceExhausted": true, "FailedPrecondition": true,
@@ -352,6 +357,11 @@ func (w *optionalGuardWalker) errNonNil(e ast.Expr, guarded map[string]bool) boo
 		if !ok {
 			return false
 		}
+		// connect-go v2's *Error builders return a clone of a non-nil
+		// receiver: `connect.NewError(c, "msg").WithCause(err)`.
+		if inner, ok := unparen(sel.X).(*ast.CallExpr); ok && connectV2ErrorMethods[sel.Sel.Name] {
+			return w.isConnectV2Error(inner)
+		}
 		path, ok := w.importPath(sel.X)
 		if !ok {
 			return false
@@ -360,7 +370,8 @@ func (w *optionalGuardWalker) errNonNil(e ast.Expr, guarded map[string]bool) boo
 		switch {
 		case path == "errors" && name == "New",
 			path == "fmt" && name == "Errorf",
-			path == "connectrpc.com/connect" && name == "NewError":
+			path == "connectrpc.com/connect" && name == "NewError",
+			path == connectmajor.ModuleV2 && (name == "NewError" || name == "Errorf"):
 			return true
 		case path == svcerrImportPath && svcerrConstructors[name]:
 			return true
@@ -369,6 +380,24 @@ func (w *optionalGuardWalker) errNonNil(e ast.Expr, guarded map[string]bool) boo
 		}
 	}
 	return false
+}
+
+// connectV2ErrorMethods are connect-go v2's *Error methods that return a
+// non-nil clone of their receiver.
+var connectV2ErrorMethods = map[string]bool{"WithCause": true, "WithDetail": true}
+
+// isConnectV2Error reports whether call builds a connect-go v2 *Error that
+// cannot be nil: NewError/Errorf, or a chain of With* methods on one.
+func (w *optionalGuardWalker) isConnectV2Error(call *ast.CallExpr) bool {
+	sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if inner, ok := unparen(sel.X).(*ast.CallExpr); ok {
+		return connectV2ErrorMethods[sel.Sel.Name] && w.isConnectV2Error(inner)
+	}
+	path, ok := w.importPath(sel.X)
+	return ok && path == connectmajor.ModuleV2 && (sel.Sel.Name == "NewError" || sel.Sel.Name == "Errorf")
 }
 
 // isDepsValue reports whether e denotes a whole Deps value: a Deps ident,
@@ -601,6 +630,10 @@ func fileImports(f *ast.File) map[string]string {
 			continue
 		}
 		name := path[strings.LastIndex(path, "/")+1:]
+		if path == connectmajor.ModuleV2 {
+			// Package connect, under a major-version path element.
+			name = "connect"
+		}
 		if imp.Name != nil {
 			name = imp.Name.Name
 		}

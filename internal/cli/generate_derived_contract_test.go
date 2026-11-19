@@ -125,6 +125,11 @@ func TestGenerate_DerivesTheContractFromAMarkedStruct(t *testing.T) {
 	if !strings.Contains(mw, "Send(") || !strings.Contains(mw, "Schedule(") {
 		t.Errorf("middleware_gen.go does not wrap the derived methods:\n%s", mw)
 	}
+	// The derived methods route through the op form: error-only Send via
+	// RunOp, the value-and-error Schedule via AroundOp.
+	if !strings.Contains(mw, "observe.RunOp(") || !strings.Contains(mw, "observe.AroundOp(") {
+		t.Errorf("middleware_gen.go does not use the observe.RunOp/AroundOp op form:\n%s", mw)
+	}
 
 	if !testing.Short() {
 		buildDerivedContractPackage(t, forgeRoot, root)

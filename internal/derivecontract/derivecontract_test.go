@@ -677,6 +677,21 @@ func TestPlan_PointerAndValueMethodSets(t *testing.T) {
 	}
 }
 
+// A package-local interface whose method set satisfies Service — here a
+// role embedding it, and one equal to it — is a contract, not a second
+// implementation: the concrete type still migrates.
+func TestPlan_LocalInterfaceIsNotAnImplementation(t *testing.T) {
+	testkit.Slow(t, typeChecks)
+	root, dir := writePkg(t, map[string]string{
+		"contract.go": runContract,
+		"service.go":  runImpl,
+		"roles.go":    "package billing\n\nimport \"context\"\n\n// Runner is a role callers declare.\ntype Runner interface {\n\tRun(ctx context.Context) error\n}\n\n// Closer embeds the contract.\ntype Closer interface {\n\tService\n\tClose() error\n}\n",
+	})
+	if m := migrate(t, root, dir); m.Type != "service" {
+		t.Fatalf("migration = %+v, want the concrete service", m)
+	}
+}
+
 // Signatures are equal when their types are, whatever the text: a type
 // alias spells context.Context another way.
 func TestPlan_TypeAliasIsTheSameSignature(t *testing.T) {
@@ -706,7 +721,7 @@ func TestPlan_RefusesSymlinksOutOfTheProject(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.Symlink(outside, dir); err != nil {
-			t.Skipf("symlinks unavailable: %v", err)
+			t.Skipf("host resource missing: this filesystem cannot create symlinks: %v", err)
 		}
 		_, err := Plan(root, "internal/billing")
 		var refused *RefusedError
@@ -721,7 +736,7 @@ func TestPlan_RefusesSymlinksOutOfTheProject(t *testing.T) {
 		outside := t.TempDir()
 		writeFiles(t, outside, map[string]string{"contract.go": happyContract})
 		if err := os.Symlink(filepath.Join(outside, "contract.go"), filepath.Join(dir, "contract.go")); err != nil {
-			t.Skipf("symlinks unavailable: %v", err)
+			t.Skipf("host resource missing: this filesystem cannot create symlinks: %v", err)
 		}
 		_, err := Plan(root, dir)
 		var refused *RefusedError

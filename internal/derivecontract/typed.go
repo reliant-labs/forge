@@ -208,8 +208,14 @@ func findImplementation(p *pkgSrc, tp *packages.Package, svc *serviceDecl) (*typ
 		if file, _ := position(tp, tn); !sources[file] {
 			continue // generated (a mock) or not this package's source
 		}
+		// Interfaces are contracts, not implementations: a package-local
+		// interface that Service's method set satisfies (a narrower role,
+		// or one embedding Service) is not a second implementation.
 		named, ok := tn.Type().(*types.Named)
-		if !ok || types.IsInterface(named) {
+		if !ok {
+			continue
+		}
+		if _, isIface := named.Underlying().(*types.Interface); isIface {
 			continue
 		}
 		declared := declaredMethods(named)

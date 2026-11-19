@@ -234,132 +234,174 @@ func newFileImports(file *ast.File) *fileImports {
 
 // deriveContract parses dir and collects the marked type's exported method
 // set, refusing every shape the derived interface could not express.
-//
-//nolint:funlen // One pass over the package: refuse, collect, resolve imports.
 func deriveContract(dir string, r *Resolver) (*derived, error) {
-	rel := dir
 	m, err := CheckMarkedContract(dir)
 	if err != nil {
 		return nil, err
 	}
-
-	fset := token.NewFileSet()
-	d := &derived{typeName: m.Name, typeFile: m.File}
-	perFile := map[string]*fileImports{}
-	var qualified []struct {
-		file, qualifier string
-		method          string
+	c := &deriveCollector{
+		dir:     dir,
+		marked:  m,
+		fset:    token.NewFileSet(),
+		d:       &derived{typeName: m.Name, typeFile: m.File},
+		perFile: map[string]*fileImports{},
 	}
-
 	for _, name := range contractsrc.SourceFiles(dir) {
-		path := filepath.Join(dir, name)
-		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+		if err := c.collectFile(name); err != nil {
+			return nil, err
 		}
-		if d.pkg == "" {
-			d.pkg = file.Name.Name
-		}
-		if collides := topLevelServiceDecl(file); collides != "" {
-			return nil, fmt.Errorf("%s declares a %s named %s, the name of the interface forge derives from the //forge:contract type %s; rename it", path, collides, contractsrc.InterfaceName, m.Name)
-		}
-		fi := newFileImports(file)
-		perFile[name] = fi
+	}
+	imports, err := c.resolveImports(r)
+	if err != nil {
+		return nil, err
+	}
+	c.d.imports = imports
+	return c.d, nil
+}
 
-		for _, decl := range file.Decls {
-			switch dd := decl.(type) {
-			case *ast.GenDecl:
-				if name != m.File || dd.Tok != token.TYPE {
-					continue
-				}
-				for _, spec := range dd.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok || ts.Name.Name != m.Name {
-						continue
-					}
-					doc := ts.Doc
-					if doc == nil && len(dd.Specs) == 1 {
-						doc = dd.Doc
-					}
-					d.typeDoc = proseLines(doc)
-					switch ts.Type.(type) {
-					case *ast.StructType, *ast.ArrayType, *ast.MapType:
-						d.valueLit = true
-					}
-				}
-			case *ast.FuncDecl:
-				if dd.Recv == nil || len(dd.Recv.List) != 1 || !dd.Name.IsExported() {
-					continue
-				}
-				if receiverTypeName(dd.Recv.List[0].Type) != m.Name {
-					continue
-				}
-				if fi.dot {
-					return nil, fmt.Errorf("%s: %s.%s is declared in a file with a dot import; a derived contract cannot tell its package's types from the dot-imported ones — import that package by name", path, m.Name, dd.Name.Name)
-				}
-				var buf bytes.Buffer
-				if err := format.Node(&buf, fset, dd.Type); err != nil {
-					return nil, fmt.Errorf("render %s.%s: %w", m.Name, dd.Name.Name, err)
-				}
-				d.methods = append(d.methods, derivedMethod{
-					name:    dd.Name.Name,
-					doc:     methodDocLines(dd.Doc),
-					sig:     strings.TrimPrefix(buf.String(), "func"),
-					pointer: isPointerReceiver(dd.Recv.List[0].Type),
-				})
-				ast.Inspect(dd.Type, func(n ast.Node) bool {
-					sel, ok := n.(*ast.SelectorExpr)
-					if !ok {
-						return true
-					}
-					if id, ok := sel.X.(*ast.Ident); ok {
-						qualified = append(qualified, struct {
-							file, qualifier string
-							method          string
-						}{name, id.Name, dd.Name.Name})
-					}
-					return false
-				})
+// deriveCollector gathers one derivation across the package's files: the
+// marked type's doc and shape, its exported methods, and every package
+// qualifier those methods' signatures spell.
+type deriveCollector struct {
+	dir       string
+	marked    contractsrc.MarkedType
+	fset      *token.FileSet
+	d         *derived
+	perFile   map[string]*fileImports
+	qualified []qualifierUse
+}
+
+// qualifierUse is one `pkg.` a derived method's signature spells, with the
+// file whose imports bind it.
+type qualifierUse struct {
+	file, qualifier, method string
+}
+
+// collectFile folds one source file into the derivation.
+func (c *deriveCollector) collectFile(name string) error {
+	path := filepath.Join(c.dir, name)
+	file, err := parser.ParseFile(c.fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	if c.d.pkg == "" {
+		c.d.pkg = file.Name.Name
+	}
+	if collides := topLevelServiceDecl(file); collides != "" {
+		return fmt.Errorf("%s declares a %s named %s, the name of the interface forge derives from the //forge:contract type %s; rename it", path, collides, contractsrc.InterfaceName, c.marked.Name)
+	}
+	fi := newFileImports(file)
+	c.perFile[name] = fi
+	for _, decl := range file.Decls {
+		switch dd := decl.(type) {
+		case *ast.GenDecl:
+			if name == c.marked.File && dd.Tok == token.TYPE {
+				c.collectTypeDecl(dd)
+			}
+		case *ast.FuncDecl:
+			if err := c.collectMethod(name, path, fi, dd); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
 
-	// Each qualifier resolves against the imports of the file its method is
-	// declared in. Aliased imports keep their alias; an unaliased one binds
-	// its package's declared name, which the convention gives for the
-	// standard library and the toolchain (the Resolver) for the rest.
+// collectTypeDecl records the marked type's doc prose and whether it takes
+// a composite literal.
+func (c *deriveCollector) collectTypeDecl(gd *ast.GenDecl) {
+	for _, spec := range gd.Specs {
+		ts, ok := spec.(*ast.TypeSpec)
+		if !ok || ts.Name.Name != c.marked.Name {
+			continue
+		}
+		doc := ts.Doc
+		if doc == nil && len(gd.Specs) == 1 {
+			doc = gd.Doc
+		}
+		c.d.typeDoc = proseLines(doc)
+		switch ts.Type.(type) {
+		case *ast.StructType, *ast.ArrayType, *ast.MapType:
+			c.d.valueLit = true
+		}
+	}
+}
+
+// collectMethod records fn when it is an exported method declared on the
+// marked type, with every package qualifier its signature spells.
+func (c *deriveCollector) collectMethod(name, path string, fi *fileImports, fn *ast.FuncDecl) error {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 || !fn.Name.IsExported() {
+		return nil
+	}
+	if receiverTypeName(fn.Recv.List[0].Type) != c.marked.Name {
+		return nil
+	}
+	if fi.dot {
+		return fmt.Errorf("%s: %s.%s is declared in a file with a dot import; a derived contract cannot tell its package's types from the dot-imported ones — import that package by name", path, c.marked.Name, fn.Name.Name)
+	}
+	var buf bytes.Buffer
+	if err := format.Node(&buf, c.fset, fn.Type); err != nil {
+		return fmt.Errorf("render %s.%s: %w", c.marked.Name, fn.Name.Name, err)
+	}
+	c.d.methods = append(c.d.methods, derivedMethod{
+		name:    fn.Name.Name,
+		doc:     methodDocLines(fn.Doc),
+		sig:     strings.TrimPrefix(buf.String(), "func"),
+		pointer: isPointerReceiver(fn.Recv.List[0].Type),
+	})
+	ast.Inspect(fn.Type, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := sel.X.(*ast.Ident); ok {
+			c.qualified = append(c.qualified, qualifierUse{file: name, qualifier: id.Name, method: fn.Name.Name})
+		}
+		return false
+	})
+	return nil
+}
+
+// resolveImports resolves each qualifier against the imports of the file
+// its method is declared in. Aliased imports keep their alias; an unaliased
+// one binds its package's declared name, which the convention gives for the
+// standard library and the toolchain (the Resolver) for the rest.
+func (c *deriveCollector) resolveImports(r *Resolver) ([]ImportDef, error) {
 	needed := map[string]ImportDef{} // local name → import
-	resolve := func(fi *fileImports, q string) (ImportDef, bool) {
-		if imp, ok := fi.byName[q]; ok {
-			return imp, true
-		}
-		for _, imp := range fi.unnamed {
-			if r.packageName(imp.Path) == q {
-				return ImportDef{Path: imp.Path, Name: q}, true
-			}
-		}
-		return ImportDef{}, false
-	}
-	for _, q := range qualified {
-		fi := perFile[q.file]
-		imp, ok := resolve(fi, q.qualifier)
+	for _, q := range c.qualified {
+		fi := c.perFile[q.file]
+		imp, ok := fi.resolve(q.qualifier, r)
 		if !ok && r == nil {
-			r = NewResolver(filepath.Join(dir, m.File))
-			imp, ok = resolve(fi, q.qualifier)
+			r = NewResolver(filepath.Join(c.dir, c.marked.File))
+			imp, ok = fi.resolve(q.qualifier, r)
 		}
 		if !ok {
-			return nil, fmt.Errorf("%s: %s.%s names %s., which no import of %s binds", filepath.Join(rel, q.file), m.Name, q.method, q.qualifier, q.file)
+			return nil, fmt.Errorf("%s: %s.%s names %s., which no import of %s binds", filepath.Join(c.dir, q.file), c.marked.Name, q.method, q.qualifier, q.file)
 		}
 		if prev, seen := needed[q.qualifier]; seen && prev.Path != imp.Path {
-			return nil, fmt.Errorf("%s: the methods of %s use %s for two packages (%s and %s) in different files; contract_gen.go needs one name per package — alias one of the imports", rel, m.Name, q.qualifier, prev.Path, imp.Path)
+			return nil, fmt.Errorf("%s: the methods of %s use %s for two packages (%s and %s) in different files; contract_gen.go needs one name per package — alias one of the imports", c.dir, c.marked.Name, q.qualifier, prev.Path, imp.Path)
 		}
 		needed[q.qualifier] = imp
 	}
+	imports := make([]ImportDef, 0, len(needed))
 	for _, imp := range needed {
-		d.imports = append(d.imports, imp)
+		imports = append(imports, imp)
 	}
-	sort.Slice(d.imports, func(i, j int) bool { return d.imports[i].Path < d.imports[j].Path })
-	return d, nil
+	sort.Slice(imports, func(i, j int) bool { return imports[i].Path < imports[j].Path })
+	return imports, nil
+}
+
+// resolve returns the import a qualifier q binds in this file.
+func (fi *fileImports) resolve(q string, r *Resolver) (ImportDef, bool) {
+	if imp, ok := fi.byName[q]; ok {
+		return imp, true
+	}
+	for _, imp := range fi.unnamed {
+		if r.packageName(imp.Path) == q {
+			return ImportDef{Path: imp.Path, Name: q}, true
+		}
+	}
+	return ImportDef{}, false
 }
 
 // topLevelServiceDecl reports what a file declares under the derived

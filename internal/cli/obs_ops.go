@@ -214,15 +214,19 @@ func runObsOps(ctx context.Context, d obsDeps, env string, o obsOpsOpts) error {
 		return fail(err)
 	}
 	doc := obsOpsDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Sort: o.sort, Names: names, Ops: []obsOpDoc{}}
-	if n.Explain {
-		doc.Statements = res.Statements
-	}
-	for _, op := range res.Ops {
-		od := opDoc(op, o.locate)
-		od.Found = true
-		doc.Ops = append(doc.Ops, od)
-	}
 	omitted := res.Omitted
+	if n.Explain {
+		// --explain is the compiled statements alone: the backend only
+		// compiled them (Narrow.Explain), and no row, found or missing, is
+		// a measurement.
+		doc.Statements, omitted = res.Statements, 0
+	} else {
+		for _, op := range res.Ops {
+			od := opDoc(op, o.locate)
+			od.Found = true
+			doc.Ops = append(doc.Ops, od)
+		}
+	}
 	if len(names) > 0 && !n.Explain {
 		doc.Ops = append(doc.Ops, missingOps(names, res.Ops, o.locate)...)
 		if o.top > 0 && len(doc.Ops) > o.top {

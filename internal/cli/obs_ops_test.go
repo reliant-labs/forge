@@ -298,3 +298,37 @@ func TestObsOpsNameRefusals(t *testing.T) {
 		}
 	}
 }
+
+// --name with --explain compiles the narrowed statements and measures
+// nothing: no statement runs, and no op, found or missing, is listed.
+func TestObsOpsNameExplainListsNoOps(t *testing.T) {
+	sr := &scriptedRunner{answers: namedOpsAnswers()}
+	out, _, err := obsRun(t, devFacts(), sr, "ops", "dev", "--json", "--explain", "--name", "todo.Create,claimable.IsUnclaimedUser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sr.ran) != 0 {
+		t.Fatalf("--explain ran %d statements", len(sr.ran))
+	}
+	doc := decode(t, out)
+	if ops, ok := doc["ops"].([]any); !ok || len(ops) != 0 {
+		t.Errorf("--explain ops = %v, want []", doc["ops"])
+	}
+	if doc["truncated"] == true || doc["suggested"] != nil {
+		t.Errorf("--explain carries measurements: %v", doc)
+	}
+	stmts, _ := doc["statements"].([]any)
+	if len(stmts) != 2 {
+		t.Fatalf("statements = %v, want the component and code panels", stmts)
+	}
+	for _, s := range stmts {
+		st := s.(map[string]any)
+		if !strings.Contains(fmt.Sprint(st["sql"]), "SpanName IN (") {
+			t.Errorf("%v not narrowed by name: %v", st["purpose"], st["sql"])
+		}
+		params := fmt.Sprint(st["params"])
+		if !strings.Contains(params, "todo.Create") || !strings.Contains(params, "claimable.IsUnclaimedUser") {
+			t.Errorf("%v params lack the names: %s", st["purpose"], params)
+		}
+	}
+}

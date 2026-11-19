@@ -741,7 +741,7 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	}
 	data.Package = pkg
 	data.DBImport = ORMImportSpec(modulePath, ProjectORMPackage(projectDir))
-	data.ConnectV2 = projectConnectV2(projectDir)
+	data.ConnectV2 = connectV2For(svc, projectDir)
 	for i := range data.CRUDMethods {
 		data.CRUDMethods[i].ConnectV2 = data.ConnectV2
 	}
@@ -1140,7 +1140,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	if len(missing) == 0 {
 		return nil
 	}
-	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing)
+	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing, majorOf(data.ConnectV2))
 	blocks, err := renderCRUDShimMethods(missing)
 	if err != nil {
 		return err
@@ -2027,7 +2027,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data.UnfilledDeps = UnfilledDepsFor(targetDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
 	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
-	data.ConnectV2 = projectConnectV2(projectDir)
+	data.ConnectV2 = connectV2For(svc, projectDir)
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {

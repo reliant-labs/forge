@@ -836,6 +836,18 @@ type scaffoldFilesInput struct {
 func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 	targetPath := in.gen.targetPath
 	cfg := in.gen
+	// The connect-go major is decided against the REAL target, before an
+	// in-place run swaps targetPath for an empty staging directory: the
+	// adopted go.mod is the one the scaffold must agree with (an explicit
+	// --connect it contradicts is refused) and the one an unset --connect
+	// inherits. Resolved against staging instead, an adopted v2 module
+	// was born with v1 service and middleware files that generate never
+	// rewrites.
+	major, err := resolveScaffoldConnectMajor(targetPath, newConnectMajor)
+	if err != nil {
+		return inPlaceMergeResult{}, err
+	}
+	cfg.connectMajor = major
 	if in.inPlace {
 		staging, err := os.MkdirTemp("", "forge-inplace-*")
 		if err != nil {
@@ -868,7 +880,7 @@ func writeScaffoldFiles(in scaffoldFilesInput) (inPlaceMergeResult, error) {
 	// `buf generate` reads buf.gen.yaml. 'local' is what the template
 	// already emits.
 	if in.bufPlugins == "remote" {
-		applyRemoteBufPlugins(root, cfg.frontendNames)
+		applyRemoteBufPlugins(root, cfg.frontendNames, gen.ConnectMajor)
 	}
 
 	if !in.inPlace {
@@ -911,6 +923,12 @@ type newGeneratorConfig struct {
 	// adopting reports an in-place target that already holds a project
 	// (dirHoldsProject; generator.ProjectGenerator.Adopting).
 	adopting bool
+	// connectMajor is the connect-go major writeScaffoldFiles resolved
+	// against the real target (resolveScaffoldConnectMajor), carried into
+	// a generator that may be rendering into a staging directory. Zero
+	// means unresolved: configureProjectGenerator resolves --connect
+	// against targetPath itself.
+	connectMajor connectmajor.Major
 }
 
 // configureProjectGenerator builds and configures the project generator from
@@ -939,10 +957,14 @@ func configureProjectGenerator(c newGeneratorConfig) (*generator.ProjectGenerato
 	gen.Adopting = c.adopting
 	gen.Claimable = newClaimable
 	gen.AuthNone = newAuthMode == authModeNone
-	if err := checkConnectMajorAgreesWithGoMod(c.targetPath, newConnectMajor); err != nil {
-		return nil, err
+	gen.ConnectMajor = c.connectMajor
+	if gen.ConnectMajor == 0 {
+		major, err := resolveScaffoldConnectMajor(c.targetPath, newConnectMajor)
+		if err != nil {
+			return nil, err
+		}
+		gen.ConnectMajor = major
 	}
-	gen.ConnectMajor = newConnectMajor
 	if len(c.frontendNames) > 0 {
 		gen.FrontendName = c.frontendNames[0]
 	}
@@ -1025,8 +1047,8 @@ func generateAdditionalFrontends(targetPath, modulePath, projectName string, fro
 // applyRemoteBufPlugins switches the scaffolded Go and per-frontend buf.gen.yaml
 // files from local: plugins to BSR-hosted remote: plugins, the coherent
 // --buf-plugins=remote opt-in. Failures are warned, not fatal.
-func applyRemoteBufPlugins(targetPath string, frontendNames []string) {
-	if err := rewriteBufGenYamlToRemote(targetPath); err != nil {
+func applyRemoteBufPlugins(targetPath string, frontendNames []string, major connectmajor.Major) {
+	if err := rewriteBufGenYamlToRemote(targetPath, major); err != nil {
 		fmt.Fprintf(os.Stderr, "\n⚠️  Failed to switch buf.gen.yaml to remote plugins: %v\n", err)
 	} else {
 		fmt.Println("\n🔧 Switched buf.gen.yaml to BSR-hosted (remote:) plugins per --buf-plugins=remote")
@@ -1344,7 +1366,14 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 //
 // Idempotent: a buf.gen.yaml that already declares the remote plugins is
 // rewritten to itself.
-func rewriteBufGenYamlToRemote(projectDir string) error {
+//
+// major is the project's connect-go major (zero: v1). The v1 entry stays the
+// unversioned buf.build/connectrpc/go it always was. A v2 project pins the
+// plugin at the connect-go v2 release its go.mod is scaffolded with
+// (connectmajor.V2ScaffoldVersion): unversioned resolves to the newest
+// plugin, whose generated code may need a newer runtime than the module
+// requires — or, should the BSR's latest ever be a v1 build, the wrong major.
+func rewriteBufGenYamlToRemote(projectDir string, major connectmajor.Major) error {
 	path := filepath.Join(projectDir, "buf.gen.yaml")
 	if _, err := os.Stat(path); err != nil {
 		// No buf.gen.yaml in this project (e.g. library kind). Nothing to do.
@@ -1353,6 +1382,7 @@ func rewriteBufGenYamlToRemote(projectDir string) error {
 		}
 		return fmt.Errorf("stat buf.gen.yaml: %w", err)
 	}
+	connectPlugin := remoteConnectGoPlugin(major)
 	remote := `version: v2
 # Switched to BSR-hosted plugins via 'forge project new --buf-plugins=remote'.
 # No local protoc-gen-go install required, but anonymous users may hit
@@ -1364,12 +1394,21 @@ func rewriteBufGenYamlToRemote(projectDir string) error {
     out: gen
     opt:
       - paths=source_relative
-  - remote: buf.build/connectrpc/go
+  - remote: ` + connectPlugin + `
     out: gen
     opt:
       - paths=source_relative
 `
 	return atomicfile.WriteFile(path, []byte(remote), 0o644)
+}
+
+// remoteConnectGoPlugin is the BSR plugin reference for protoc-gen-connect-go
+// of major: unversioned for v1 (unchanged), pinned for v2.
+func remoteConnectGoPlugin(major connectmajor.Major) string {
+	if major.IsV2() {
+		return "buf.build/connectrpc/go:" + connectmajor.V2ScaffoldVersion
+	}
+	return "buf.build/connectrpc/go"
 }
 
 // rewriteFrontendBufGenYamlToRemote switches a frontend's buf.gen.yaml from
@@ -1557,6 +1596,30 @@ func resolveNewConnectMajor(changed bool, value, kindFlag string) (connectmajor.
 			"drop --connect, or use --kind service")
 	}
 	return m, nil
+}
+
+// resolveScaffoldConnectMajor decides the connect-go major a scaffold into
+// targetPath is born on. An explicit --connect (flag) wins, once
+// checkConnectMajorAgreesWithGoMod has accepted it. With none, a go.mod
+// already at targetPath decides — the module `--in-place` adopts — and a
+// directory with no go.mod stays zero, so the generator keeps its
+// historical v1 default. targetPath must be the real target, never an
+// in-place staging directory: staging holds no go.mod to agree with.
+//
+// The refusal holds with --force too. --force replaces the adopted go.mod
+// with forge's, but not the code already importing that go.mod's major, so
+// a contradicting --connect would still leave the project on two majors.
+func resolveScaffoldConnectMajor(targetPath string, flag connectmajor.Major) (connectmajor.Major, error) {
+	if flag != 0 {
+		if err := checkConnectMajorAgreesWithGoMod(targetPath, flag); err != nil {
+			return 0, err
+		}
+		return flag, nil
+	}
+	if _, err := os.Stat(filepath.Join(targetPath, "go.mod")); err != nil {
+		return 0, nil
+	}
+	return connectmajor.DetectOrDefault(targetPath), nil
 }
 
 // checkConnectMajorAgreesWithGoMod refuses an explicit --connect that the

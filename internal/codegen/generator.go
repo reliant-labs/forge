@@ -74,8 +74,9 @@ type ServiceTemplateData struct {
 	// (ProjectHasTypedConfig): service.go imports <module>/pkg/config and
 	// declares Deps.Config only then.
 	HasConfig bool
-	// ConnectV2 is whether the project builds against connect-go v2
-	// (connectmajor.Detect on its go.mod). It selects the v2 shapes in
+	// ConnectV2 is whether the project builds against connect-go v2 (the
+	// run's major stamped on the ServiceDef, else connectmajor.Detect on
+	// its go.mod; connectV2For). It selects the v2 shapes in
 	// every service template: bare-message handler signatures, the
 	// per-rpc generated stream types, RegisterV2 on a *connect.Server, and
 	// the tdd/testkit V2 helpers in the scaffolded tests. False renders the
@@ -109,11 +110,36 @@ func (d ServiceTemplateData) NamesPbMessages() bool {
 	return false
 }
 
-// projectConnectV2 reports whether the project at projectDir builds
-// against connect-go v2. No project ("" — test-only callers) is v1, the
+// connectV2For reports whether svc's emitted files target connect-go v2:
+// the major stamped on svc (ServiceDef.ConnectMajor) when there is one,
+// else the major projectDir's go.mod selects — the fallback for a caller
+// outside a generate run. No project ("" — test-only callers) is v1, the
 // historical shape, as is any go.mod connectmajor cannot read.
-func projectConnectV2(projectDir string) bool {
-	return projectDir != "" && connectmajor.DetectOrDefault(projectDir).IsV2()
+func connectV2For(svc ServiceDef, projectDir string) bool {
+	return GenContext{ProjectDir: projectDir, ConnectMajor: svc.ConnectMajor}.connectV2()
+}
+
+// majorOf is the connect-go major a rendered ConnectV2 flag stands for.
+func majorOf(connectV2 bool) connectmajor.Major {
+	if connectV2 {
+		return connectmajor.V2
+	}
+	return connectmajor.V1
+}
+
+// WithConnectMajor returns services with ConnectMajor set to major on each,
+// leaving the input slice untouched. `forge generate` applies it once to the
+// services it parsed, so every per-service emitter renders the run's major.
+func WithConnectMajor(services []ServiceDef, major connectmajor.Major) []ServiceDef {
+	if services == nil {
+		return nil
+	}
+	out := make([]ServiceDef, len(services))
+	for i, s := range services {
+		s.ConnectMajor = major
+		out[i] = s
+	}
+	return out
 }
 
 // protoImportPath derives the relative proto import path for a service
@@ -201,7 +227,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
 		// With no project to look at, keep the historical shape.
 		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
-		ConnectV2: projectConnectV2(pd),
+		ConnectV2: connectV2For(svc, pd),
 	}
 }
 
@@ -215,7 +241,7 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 	}
 
 	// Prepare template data
-	data := prepareServiceData(svc, projectConnectV2(projectDir))
+	data := prepareServiceData(svc, connectV2For(svc, projectDir))
 
 	// Parse and execute template
 	tmpl, err := template.New("mock").Parse(mockTemplate)
@@ -408,9 +434,16 @@ func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 	res := newMockTypeResolver(svc)
 
 	for _, method := range svc.Methods {
-		sig, ret := buildMethodSignature(method, res), buildReturnType(method, res)
+		// Only the selected major's builders may see the resolver: it
+		// records every package a signature names as an import, so a
+		// discarded v1 signature (which names both messages of a stream)
+		// would leave a v2 mock importing a package only its per-rpc
+		// stream type mentions — an unused import, which does not compile.
+		var sig, ret string
 		if connectV2 {
 			sig, ret = buildMethodSignatureV2(svc, method, res), buildReturnTypeV2(method, res)
+		} else {
+			sig, ret = buildMethodSignature(method, res), buildReturnType(method, res)
 		}
 		methods = append(methods, map[string]any{
 			"Name":       method.GoName(),

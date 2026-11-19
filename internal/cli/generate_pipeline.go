@@ -132,8 +132,13 @@ type pipelineContext struct {
 	// connectMajorV is the connect-go major the project's go.mod selects
 	// (internal/connectmajor), read ONCE per generate — eagerly in
 	// newPipelineContextWithFlags, lazily (connectMajor) for a synthetic
-	// context — and threaded into every emitter of project wiring, so one
-	// run cannot render half its files for one major and half for the other.
+	// context — and threaded into every major-sensitive part of the run:
+	// project wiring (GenContext.ConnectMajor), the per-service emitters
+	// (stamped on ctx.Services, codegen.WithConnectMajor), the command tree
+	// (generateConfigLoader) and the codegen tool pins
+	// (bindCodegenToolsMajor). So one run cannot render half its files —
+	// or run a plugin — for one major and half for the other, even when a
+	// tidy or a user hook rewrites go.mod mid-run.
 	connectMajorV connectmajor.Major
 
 	// Inputs (set in newPipelineContextWithFlags).
@@ -330,6 +335,10 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
+	major := connectmajor.DetectOrDefault(projectDir)
+	// Codegen tool pinning (protoc-gen-connect-go's major) follows the
+	// same once-read answer as every emitter.
+	bindCodegenToolsMajor(projectDir, major)
 	return &pipelineContext{
 		ProjectDir:      projectDir,
 		AbsPath:         abs,
@@ -342,7 +351,7 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 		TemplatesOnly:   flags.TemplatesOnly,
 		Strict:          flags.Strict,
 		Verbose:         flags.Verbose,
-		connectMajorV:   connectmajor.DetectOrDefault(projectDir),
+		connectMajorV:   major,
 	}, nil
 }
 
@@ -352,6 +361,7 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 func (ctx *pipelineContext) connectMajor() connectmajor.Major {
 	if ctx.connectMajorV == 0 {
 		ctx.connectMajorV = connectmajor.DetectOrDefault(ctx.ProjectDir)
+		bindCodegenToolsMajor(ctx.ProjectDir, ctx.connectMajorV)
 	}
 	return ctx.connectMajorV
 }
@@ -1773,7 +1783,7 @@ func stepConfigLoader(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		features = ctx.Cfg.Features
 	}
-	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, ctx.Checksums)
+	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, ctx.connectMajor(), ctx.Checksums)
 	if cfgErr != nil {
 		return fmt.Errorf("config loader generation failed: %w", cfgErr)
 	}
@@ -1832,8 +1842,10 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 		}
 	}
 
-	ctx.Services = services
-	ctx.DeclaredServices = declared
+	// Every per-service emitter renders the major this run read once, not
+	// whatever go.mod says by the time it runs (codegen.WithConnectMajor).
+	ctx.Services = codegen.WithConnectMajor(services, ctx.connectMajor())
+	ctx.DeclaredServices = codegen.WithConnectMajor(declared, ctx.connectMajor())
 	ctx.ModulePath = modulePath
 	return nil
 }

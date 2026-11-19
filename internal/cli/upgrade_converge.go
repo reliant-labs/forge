@@ -117,6 +117,18 @@ type upgradeReport struct {
 	// templates are not new across the range: upgrade did not add them,
 	// and Command does.
 	Offers []upgradeOffer `json:"offers"`
+	// Crossed is what forge from..to brings: one entry per release tag the
+	// bump crosses, then the untagged commits up to a pseudo-version
+	// target, each with its changelog entries and the instructions its
+	// PRs address to the agent running the upgrade (upgrade_crossed.go).
+	Crossed []upgradeCrossed `json:"crossed"`
+	// GeneratedChanges are the generated files generate changed, by
+	// generator, with the range's notes on each (upgrade_generated.go).
+	// Under --check, the range's notes alone, planned.
+	GeneratedChanges []upgradeGeneratedChange `json:"generated_changes"`
+	// GeneratedHint is said when generated output changes: tests that pin
+	// it may need updating.
+	GeneratedHint string `json:"generated_hint,omitempty"`
 }
 
 // upgradeOffer is one scaffold-once file upgrade offers instead of writing.
@@ -207,6 +219,7 @@ func newUpgradeReport(opts upgradeOptions) *upgradeReport {
 		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, StartsGating: []upgradeStartsGating{},
 		TemplateDrift: []string{},
 		Offers:        []upgradeOffer{},
+		Crossed:       []upgradeCrossed{}, GeneratedChanges: []upgradeGeneratedChange{},
 	}
 }
 
@@ -258,6 +271,10 @@ func convergeUpgrade(opts upgradeOptions, rep *upgradeReport) error {
 	if err != nil {
 		return err
 	}
+	if c := crossedFor(r.from, r.target); c != nil {
+		rep.Crossed = c
+	}
+	r.noteGenerated(nil)
 	// The pin moves in "pin"; generate and lint then judge the project under
 	// the forge it now pins.
 	phases := []struct {
@@ -716,9 +733,11 @@ func (r *upgradeRun) phaseGenerate() error {
 		return nil
 	}
 	fmt.Fprintln(r.out, "🔁 regenerating")
+	before := snapshotGenerated(r.projectDir)
 	if err := r.steps.generate(r.projectDir); err != nil {
 		return fmt.Errorf("forge generate failed after the upgrade's rewrites (the pin is already moved; fix the cause and run `%s generate`): %w", Name(), err)
 	}
+	r.noteGenerated(diffGenerated(before, snapshotGenerated(r.projectDir)))
 	return nil
 }
 
@@ -931,8 +950,21 @@ func countStartsGating(rows []upgradeStartsGating, errs []lintDocFinding) {
 
 // ── printing ─────────────────────────────────────────────────────────────────
 
-// printUpgradeSummary is the human tail: what is left, and what is coming.
+// noteGenerated records generated_changes: the files generate changed (nil
+// before it runs) grouped by generator, with the crossed range's notes.
+func (r *upgradeRun) noteGenerated(changed []string) {
+	r.rep.GeneratedChanges = groupGenerated(changed, generatedNotes(r.rep.Crossed), r.check || changed == nil)
+	r.rep.GeneratedHint = ""
+	if len(r.rep.GeneratedChanges) > 0 {
+		r.rep.GeneratedHint = generatedHint
+	}
+}
+
+// printUpgradeSummary is the human tail: what the range brings, what is
+// left, and what is coming.
 func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
+	printCrossed(w, rep.From, rep.To, rep.Crossed)
+	printGenerated(w, rep.GeneratedChanges, rep.GeneratedHint)
 	if len(rep.StartsGating) > 0 {
 		fmt.Fprintf(w, "\nStarts gating at %s (warn-first rules whose grace this pin ends):\n", rep.To)
 		for _, g := range rep.StartsGating {

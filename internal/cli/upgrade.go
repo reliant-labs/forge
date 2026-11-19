@@ -74,9 +74,17 @@ EXIT CODES (the contract a pin bot branches on)
 --json prints exactly one document on stdout (schema forge-project-upgrade/v1:
 ok, exit_code, error, mode, from, to, converged, phases, codemods, locks,
 playbooks, vendored_contracts, needs_human, upcoming, starts_gating,
-template_drift); progress
+template_drift, offers, crossed, generated_changes); progress
 goes to stderr. ok and exit_code are the process's own. It is also printed for
 a failing run, so a bot can read what was applied before the failure.
+
+What the range brings is printed first (--json: crossed): each release tag the
+bump crosses and the commits after the last one, with their changelog entries,
+and the steps their PRs address to the agent running the upgrade
+(agent_instructions; forge's PRs declare them with an Agent-Instructions:
+commit trailer). generated_changes names the generated files generate changed,
+by generator, with what the range says about each: a test that pins generated
+output may need updating.
 
 Template drift: detect on frozen files (files written at 'forge project new' time but
 not updated by 'forge generate') and apply updates from newer Forge templates.

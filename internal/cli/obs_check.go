@@ -49,7 +49,7 @@ var obsCheckSchema = obsout.Schema{
 		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release", "subject.live_at",
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
-		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed", "findings.pre_existing", "findings.op", "findings.commit", "findings.pr",
+		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed", "findings.pre_existing", "findings.alert", "findings.op", "findings.commit", "findings.pr",
 		"changed_ops", "changed_ops.op", "changed_ops.service", "changed_ops.kind",
 		"changed_ops.before", "changed_ops.before.requests", "changed_ops.before.error_rate", "changed_ops.before.p50_ms", "changed_ops.before.p95_ms", "changed_ops.before.p99_ms",
 		"changed_ops.after", "changed_ops.after.requests", "changed_ops.after.error_rate", "changed_ops.after.p50_ms", "changed_ops.after.p95_ms", "changed_ops.after.p99_ms", "changed_ops.after_version", "changed_ops.before_version",
@@ -578,32 +578,59 @@ func withAlertBaseline(ctx context.Context, d obsDeps, b obsbackend.Backend, r r
 
 // withPreExistingAlerts applies the pre-existing-alert rule (pkg/releasehealth
 // pre_existing_alerts.go): it reads the issue each counted alert_firing alert
-// names, its events by version over the baseline window before the promotion
-// through the after window's end. An issue that cannot be read leaves its
-// alert counted: nothing proves the condition is old.
+// names twice, its events by version in the baseline window before the
+// promotion and in the after window from it, so neither side counts the
+// other's events. An issue that cannot be read leaves its alert counted:
+// nothing proves the condition is old.
+//
+// The baseline is read over whole hours inside [P - baseline_window, P): the
+// control plane counts an issue's events by the hour, so a range that cuts
+// an hour answers for all of it, and an hour holding the promotion would
+// count the release's rollout as the baseline. The after window is read as
+// it is, [P, its end); an hour it cuts shows as events outside it, and the
+// rule then counts the alert (releasehealth.IssueWindow).
 func withPreExistingAlerts(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, live []releasehealth.Alert, overrides map[string]string) releasehealth.Report {
 	ir, ok := b.(issueVersionReader)
 	ids := releasehealth.AlertIssueIDs(r, live)
-	if !ok || len(ids) == 0 || r.Subject.PromotedAt.IsZero() || r.Subject.Release == "" {
+	p := r.Subject.PromotedAt
+	if !ok || len(ids) == 0 || p.IsZero() || r.Subject.Release == "" {
 		return r
 	}
-	from := r.Subject.PromotedAt.Add(-checkBaselineWindow(r.Thresholds))
-	to := r.After.To
-	if now := d.Now(); to.IsZero() || to.After(now) {
-		to = now
+	beforeFrom := p.Add(-checkBaselineWindow(r.Thresholds))
+	if t := beforeFrom.Truncate(time.Hour); t.Before(beforeFrom) {
+		beforeFrom = t.Add(time.Hour)
+	}
+	beforeTo := p.Truncate(time.Hour)
+	afterTo := r.After.To
+	if now := d.Now(); afterTo.IsZero() || afterTo.After(now) {
+		afterTo = now
+	}
+	read := func(id string, from, to time.Time) (obsbackend.GetIssueResult, releasehealth.IssueWindow, error) {
+		w := releasehealth.IssueWindow{From: from, To: to}
+		if !from.Before(to) {
+			return obsbackend.GetIssueResult{}, w, nil // an empty window: no evidence
+		}
+		res, err := ir.GetIssue(ctx, obsbackend.GetIssueRequest{Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: from, To: to}}, ID: id})
+		for _, v := range res.ByVersion {
+			w.Versions = append(w.Versions, releasehealth.IssueVersionEvents{Version: v.Version, Events: v.Events, FirstSeenAt: v.FirstSeen, LastSeenAt: v.LastSeen})
+		}
+		return res, w, err
 	}
 	var issues []releasehealth.AlertIssue
 	for _, id := range ids[:min(len(ids), maxAttributedIssues)] {
-		res, err := ir.GetIssue(ctx, obsbackend.GetIssueRequest{Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: from, To: to}}, ID: id})
+		res, after, err := read(id, p, afterTo)
+		if err == nil && res.Issue.ID == "" {
+			err = fmt.Errorf("no issue %s in the after window", id)
+		}
+		var before releasehealth.IssueWindow
+		if err == nil {
+			_, before, err = read(id, beforeFrom, beforeTo)
+		}
 		if err != nil {
 			fmt.Fprintf(d.Stderr, "could not read issue %s, so the alert that names it counts as the release's: %v\n", id, err)
 			continue
 		}
-		is := releasehealth.AlertIssue{ID: id, FirstSeenAt: res.Issue.FirstSeen, FirstVersion: res.Issue.FirstVersion}
-		for _, v := range res.ByVersion {
-			is.Versions = append(is.Versions, releasehealth.IssueVersionEvents{Version: v.Version, Events: v.Events, FirstSeenAt: v.FirstSeen, LastSeenAt: v.LastSeen})
-		}
-		issues = append(issues, is)
+		issues = append(issues, releasehealth.AlertIssue{ID: id, FirstSeenAt: res.Issue.FirstSeen, FirstVersion: res.Issue.FirstVersion, Before: before, After: after})
 	}
 	return releasehealth.WithPreExistingAlerts(r, issues, live, overrides)
 }

@@ -20,13 +20,23 @@ package releasehealth
 //     the release (first_build), and
 //   - under the release it does not fire materially faster than it did
 //     before: the release's version fired fewer than new_issue_min_events of
-//     its events, or its rate is at most [PreExistingIssueMaxRateRatio] times
-//     the other versions' rate, or the events above that rate number fewer
-//     than new_issue_min_events. The rates are per version over the
-//     version's own first and last event of the issue in the range
-//     [P - baseline_window, after window's end), so they are what the issue
-//     did while each version ran, however coarsely the backend buckets its
-//     counts (the control plane counts by hour).
+//     its events in the after window, or its rate there is at most
+//     [PreExistingIssueMaxRateRatio] times the other versions' rate in the
+//     baseline window, or the events above that rate number fewer than
+//     new_issue_min_events. The two windows are read apart ([AlertIssue]
+//     Before and After): the baseline is the other versions' events before
+//     the promotion, the release's rate its own events from the promotion to
+//     the after window's end, each over its first and last event in its
+//     window. A window whose counted events reach outside it (a backend that
+//     counts by the hour answers for whole hours) cannot tell the issue
+//     before the release from the issue under it, so the alert counts.
+//
+// The alert is matched to its own finding: Evaluate names the alert on its
+// alert_firing finding ([Finding.Alert]). A finding that names none (a
+// judged report from a control plane that predates the field) is matched
+// only when it is the one counted finding of its rule and the report itself
+// lists exactly one alert of that rule; anything less exact leaves the
+// finding counted.
 //
 // A pre-existing alert's alert_firing finding is kept with policy warn,
 // pre_existing set and a reason in [Finding.Unattributed], and the alert
@@ -74,9 +84,17 @@ type AlertIssue struct {
 	// first_build label.
 	FirstSeenAt  time.Time
 	FirstVersion string
-	// Versions are the issue's events by service.version over
-	// [P - baseline_window, the after window's end), each with the first and
-	// last of them in that range.
+	// Before is the issue's events by version over the baseline window
+	// before the promotion, [P - baseline_window, P) or a range inside it;
+	// After over [P, the after window's end) or a range inside it. Each is
+	// read on its own, so neither counts the other's events.
+	Before IssueWindow
+	After  IssueWindow
+}
+
+// IssueWindow is an issue's events by version over [From, To).
+type IssueWindow struct {
+	From, To time.Time
 	Versions []IssueVersionEvents
 }
 
@@ -86,6 +104,32 @@ type IssueVersionEvents struct {
 	Events      int64
 	FirstSeenAt time.Time
 	LastSeenAt  time.Time
+}
+
+// sum is the events of the versions keep selects over w, and whether they
+// are w's alone: a window that is unset, or a selected version whose events
+// reach outside it, is not evidence of what the issue did in w.
+func (w IssueWindow) sum(keep func(version string) bool) (IssueVersionEvents, bool) {
+	if w.From.IsZero() || !w.From.Before(w.To) {
+		return IssueVersionEvents{}, false
+	}
+	var out IssueVersionEvents
+	for _, v := range w.Versions {
+		if !keep(v.Version) || v.Events <= 0 {
+			continue
+		}
+		if v.FirstSeenAt.IsZero() || v.LastSeenAt.IsZero() || v.FirstSeenAt.Before(w.From) || !v.LastSeenAt.Before(w.To) {
+			return IssueVersionEvents{}, false
+		}
+		out.Events += v.Events
+		if out.FirstSeenAt.IsZero() || v.FirstSeenAt.Before(out.FirstSeenAt) {
+			out.FirstSeenAt = v.FirstSeenAt
+		}
+		if v.LastSeenAt.After(out.LastSeenAt) {
+			out.LastSeenAt = v.LastSeenAt
+		}
+	}
+	return out, true
 }
 
 // PreExistingIssue is set on an alert of [Report.PreExistingAlerts]: the
@@ -165,74 +209,82 @@ func discountPreExistingAlerts(r Report, issues []AlertIssue, live []Alert, minE
 		judged[is.ID] = true
 	}
 
-	// Each rule's alerts behind its counted alert_firing findings, as
-	// Evaluate counts them; the baseline-alert rule's already discounted.
-	type tally struct {
-		counted int
-		pre     []Alert
-		why     []string
+	// The alerts that could be behind a counted alert_firing finding, by
+	// rule; the baseline-alert rule's already discounted.
+	type candidate struct {
+		a          Alert
+		fromReport bool // listed in r.FiringAlerts, not only in live
+		why        string
+		pre        bool
 	}
-	rules := map[string]*tally{}
+	rules := map[string][]candidate{}
 	var order []string
 	seen := map[string]bool{}
 	for _, a := range slices.Concat(r.BaselineAlerts, r.PreExistingAlerts) {
 		seen[alertKey(a)] = true
 	}
-	consider := func(a Alert) {
+	consider := func(a Alert, fromReport bool) {
 		k := alertKey(a)
 		if seen[k] || a.Excluded() || mirrorsJudgedIssue(a, r.NotEvaluated) || afterWindow(a, r.After.To) ||
 			(!a.FiringAt.IsZero() && a.FiringAt.Before(p)) {
 			return
 		}
 		seen[k] = true
-		t := rules[a.Rule]
-		if t == nil {
-			t = &tally{}
-			rules[a.Rule] = t
+		if _, ok := rules[a.Rule]; !ok {
 			order = append(order, a.Rule)
 		}
+		c := candidate{a: a, fromReport: fromReport}
 		id := issueOf(a)
-		is, read := byID[id]
-		if id == "" || !read || judged[id] || a.Critical() {
-			t.counted++
-			return
+		if is, read := byID[id]; id != "" && read && !judged[id] && !a.Critical() {
+			if pe, why, ok := preExisting(is, a, r.Subject, minEvents); ok {
+				c.a.Issue, c.why, c.pre = &pe, why, true
+			}
 		}
-		pe, why, ok := preExisting(is, a, r.Subject, minEvents)
-		if !ok {
-			t.counted++
-			return
-		}
-		a.Issue = &pe
-		t.pre, t.why = append(t.pre, a), append(t.why, why)
+		rules[a.Rule] = append(rules[a.Rule], c)
 	}
 	for _, a := range r.FiringAlerts {
-		consider(a)
+		consider(a, true)
 	}
 	for _, a := range live {
-		consider(a)
+		consider(a, false)
 	}
 
 	out := r
 	out.Findings = slices.Clone(r.Findings)
 	moved := map[string]bool{}
 	for _, rule := range order {
-		t := rules[rule]
+		cs := rules[rule]
 		var idx []int
+		named := false
 		for i, f := range out.Findings {
 			if countedAlertFinding(f) && findingNamesRule(f, rule) {
 				idx = append(idx, i)
+				named = named || f.Alert != ""
 			}
 		}
-		take := min(len(t.pre), len(idx)-t.counted)
-		for j := 0; j < take; j++ {
-			a := t.pre[j]
-			i := idx[len(idx)-1-j]
+		for _, c := range cs {
+			if !c.pre {
+				continue
+			}
+			// The finding this alert is behind, exactly, or none.
+			i := -1
+			for _, j := range idx {
+				if out.Findings[j].Alert == alertKey(c.a) {
+					i = j
+				}
+			}
+			if i < 0 && !named && len(idx) == 1 && len(cs) == 1 && c.fromReport {
+				i = idx[0]
+			}
+			if i < 0 || !countedAlertFinding(out.Findings[i]) {
+				continue
+			}
 			out.Findings[i].Policy = PolicyWarn
 			out.Findings[i].PreExisting = true
-			out.Findings[i].Unattributed = t.why[j]
-			out.Findings[i].Message += fmt.Sprintf("; its issue %s predates the release, so it is not counted against the release", a.Issue.ID)
-			out.PreExistingAlerts = append(slices.Clip(out.PreExistingAlerts), a)
-			moved[alertKey(a)] = true
+			out.Findings[i].Unattributed = c.why
+			out.Findings[i].Message += fmt.Sprintf("; its issue %s predates the release, so it is not counted against the release", c.a.Issue.ID)
+			out.PreExistingAlerts = append(slices.Clip(out.PreExistingAlerts), c.a)
+			moved[alertKey(c.a)] = true
 		}
 	}
 	if len(moved) == 0 {
@@ -255,22 +307,20 @@ func preExisting(is AlertIssue, a Alert, s Subject, minEvents int) (PreExistingI
 	if s.Release == "" || is.FirstSeenAt.IsZero() || !is.FirstSeenAt.Before(s.PromotedAt) || firstVersion == s.Release {
 		return pe, "", false // new with the release, or nothing to tell its version by
 	}
-	var rel, base IssueVersionEvents
-	for _, v := range is.Versions {
-		into := &base
-		if v.Version == s.Release {
-			into = &rel
-		}
-		into.Events += v.Events
-		if !v.FirstSeenAt.IsZero() && (into.FirstSeenAt.IsZero() || v.FirstSeenAt.Before(into.FirstSeenAt)) {
-			into.FirstSeenAt = v.FirstSeenAt
-		}
-		if v.LastSeenAt.After(into.LastSeenAt) {
-			into.LastSeenAt = v.LastSeenAt
-		}
+	// Each side read in its own window, on its own side of the promotion:
+	// the other versions before it, the release's version after it.
+	if is.Before.To.After(s.PromotedAt) || is.After.From.Before(s.PromotedAt) {
+		return pe, "", false
 	}
+	rel, relOK := is.After.sum(func(v string) bool { return v == s.Release })
+	if !relOK {
+		return pe, "", false // the release's events cannot be told from what came after its window
+	}
+	// A baseline that cannot be told from the release's window is none: no
+	// rate before the release, so only too few events under it can clear it.
+	base, _ := is.Before.sum(func(v string) bool { return v != s.Release })
 	pe.ReleaseEvents, pe.BaselineEvents = rel.Events, base.Events
-	baseRate, baseOK := perHour(base)
+	baseRate, baseRated := perHour(base)
 	pe.BaselinePerHour = baseRate
 	first := firstNonEmpty(firstVersion, is.FirstSeenAt.UTC().Format(time.RFC3339))
 	since := fmt.Sprintf("issue %s was first seen %s in %s, before the promotion", is.ID, is.FirstSeenAt.UTC().Format(time.RFC3339), firstNonEmpty(firstVersion, "an earlier version"))
@@ -278,9 +328,9 @@ func preExisting(is AlertIssue, a Alert, s Subject, minEvents int) (PreExistingI
 		return pe, fmt.Sprintf("pre-existing alert (first seen %s, too few events under the release to have risen): %s, and fired %d time(s) under %s (new_issue_min_events %d)",
 			first, since, rel.Events, s.Release, minEvents), true
 	}
-	relRate, relOK := perHour(rel)
+	relRate, relRated := perHour(rel)
 	pe.ReleasePerHour = relRate
-	if !baseOK || !relOK {
+	if !baseRated || !relRated {
 		return pe, "", false // no rate before it to compare with, or a burst too short to measure
 	}
 	excess := float64(rel.Events) - baseRate*rel.LastSeenAt.Sub(rel.FirstSeenAt).Hours()

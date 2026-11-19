@@ -722,6 +722,11 @@ type Finding struct {
 	// and fires no faster under it (pre_existing_alerts.go). Such a finding
 	// is a warn, with the reason in Unattributed.
 	PreExisting bool `json:"pre_existing,omitempty"`
+	// Alert names the alert behind an alert_firing finding: its fingerprint,
+	// or its rule and labels when it has none. It is what matches the finding
+	// to its own alert (pre_existing_alerts.go); "" on a finding judged
+	// before the field existed, and on every other code.
+	Alert string `json:"alert,omitempty"`
 	// Op, Commit and PR are set on a changed-op finding (changed_ops.go):
 	// the op (its span name, also the Ref), the newest commit of the
 	// release's range that changed it, and that commit's pull request when
@@ -898,7 +903,7 @@ func Evaluate(in Input) Report {
 			continue
 		}
 		r.FiringAlerts = append(r.FiringAlerts, a)
-		add(Finding{Code: release.HealthAlertFiring, Ref: a.Rule, Value: 1, Threshold: 1,
+		add(Finding{Code: release.HealthAlertFiring, Ref: a.Rule, Alert: alertKey(a), Value: 1, Threshold: 1,
 			Message: fmt.Sprintf("alert %s opened after the promotion and is still firing", a.Rule)})
 	}
 	for _, w := range in.Workloads {

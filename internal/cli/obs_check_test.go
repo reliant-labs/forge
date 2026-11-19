@@ -985,20 +985,24 @@ func TestObsCheckAlertOnAPreExistingIssueDoesNotFail(t *testing.T) {
 	const spike = `{"rule":"IssueSpike","fingerprint":"s1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","issue_id":"7f55","first_build":"v1","service":"workspace-controller"}}`
 	const finding = `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert IssueSpike opened after the promotion and is still firing"}`
 	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+spike+`],"verdict"`, 1)
-	// ~24 an hour on v1 since 08:00, and on v2 after the 11:40 promotion.
-	issue := func(v2Events int) string {
-		return fmt.Sprintf(`{"issue":{"id":"7f55","service":"workspace-controller","firstSeenAt":"2026-10-22T08:00:00Z","firstVersion":"v1"},"byVersion":[`+
-			`{"version":"v1","events":"90","firstSeenAt":"2026-10-22T08:00:00Z","lastSeenAt":"2026-10-22T11:42:00Z"},`+
-			`{"version":"v2","events":"%d","firstSeenAt":"2026-10-22T11:41:00Z","lastSeenAt":"2026-10-22T11:54:00Z"}]}`, v2Events)
+	// ~30 an hour on v1 since 08:00, and ~23 on v2 after the 11:40
+	// promotion. The issue is read twice: the after window first, then the
+	// baseline's whole hours before the promotion.
+	const header = `{"issue":{"id":"7f55","service":"workspace-controller","firstSeenAt":"2026-10-22T08:00:00Z","firstVersion":"v1"},"byVersion":[`
+	before := header + `{"version":"v1","events":"90","firstSeenAt":"2026-10-22T08:00:00Z","lastSeenAt":"2026-10-22T10:59:00Z"}]}`
+	issue := func(v2Events int, v2Last string) []string {
+		return []string{fmt.Sprintf(header+
+			`{"version":"v1","events":"12","firstSeenAt":"2026-10-22T11:00:00Z","lastSeenAt":"2026-10-22T11:42:00Z"},`+
+			`{"version":"v2","events":"%d","firstSeenAt":"2026-10-22T11:41:00Z","lastSeenAt":"%s"}]}`, v2Events, v2Last), before}
 	}
-	run := func(t *testing.T, issueReply string, errs map[string]error) (map[string]any, string, *seqCaller, error) {
+	run := func(t *testing.T, issueReplies []string, errs map[string]error) (map[string]any, string, *seqCaller, error) {
 		t.Helper()
-		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procGetIssueCheck: {issueReply}}, errs: errs}
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procGetIssueCheck: issueReplies}, errs: errs}
 		out, stderr, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
 		return decode(t, out), stderr, caller, err
 	}
 
-	doc, _, caller, err := run(t, issue(6), nil)
+	doc, _, caller, err := run(t, issue(6, "2026-10-22T11:54:00Z"), nil)
 	if err != nil {
 		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
 	}
@@ -1013,25 +1017,31 @@ func TestObsCheckAlertOnAPreExistingIssueDoesNotFail(t *testing.T) {
 	if pa, _ := doc["pre_existing_alerts"].([]any); len(pa) != 1 || pa[0].(map[string]any)["issue"].(map[string]any)["id"] != "7f55" {
 		t.Errorf("pre_existing_alerts = %v", doc["pre_existing_alerts"])
 	}
-	var body string
+	var bodies []string
 	for _, c := range caller.calls {
 		if c.procedure == procGetIssueCheck {
-			body = c.body
+			bodies = append(bodies, c.body)
 		}
 	}
-	// From the baseline window's start (24h before 11:40) to the after
-	// window's end.
-	if !strings.Contains(body, `"issueId":"7f55"`) || !strings.Contains(body, `"start":"2026-10-21T11:40:00Z"`) || !strings.Contains(body, `"end":"2026-10-22T11:55:00Z"`) {
-		t.Errorf("GetIssue request = %s", body)
+	// The after window from the promotion to its end, then the baseline's
+	// whole hours: from the first hour inside the 24h before 11:40 to the
+	// hour holding the promotion, which the rollout shares.
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"issueId":"7f55"`) ||
+		!strings.Contains(bodies[0], `"start":"2026-10-22T11:40:00Z"`) || !strings.Contains(bodies[0], `"end":"2026-10-22T11:55:00Z"`) ||
+		!strings.Contains(bodies[1], `"start":"2026-10-21T12:00:00Z"`) || !strings.Contains(bodies[1], `"end":"2026-10-22T11:00:00Z"`) {
+		t.Errorf("GetIssue requests = %v", bodies)
 	}
 
 	for name, tc := range map[string]struct {
-		issue  string
+		issue  []string
 		errs   map[string]error
 		stderr string
 	}{
-		"the issue fires 3x as often": {issue: issue(18)},
-		"the issue unreadable":        {issue: issue(6), errs: map[string]error{procGetIssueCheck: errors.New("permission denied")}, stderr: "could not read issue 7f55, so the alert that names it counts"},
+		"the issue fires 3x as often": {issue: issue(18, "2026-10-22T11:54:00Z")},
+		// The hour the after window ends in, counted past its end: the
+		// window's own events cannot be told from the later ones.
+		"the release's events reach past the after window": {issue: issue(9, "2026-10-22T12:30:00Z")},
+		"the issue unreadable":                             {issue: issue(6, "2026-10-22T11:54:00Z"), errs: map[string]error{procGetIssueCheck: errors.New("permission denied")}, stderr: "could not read issue 7f55, so the alert that names it counts"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			doc, stderr, _, err := run(t, tc.issue, tc.errs)

@@ -1,6 +1,7 @@
 package releasehealth
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,14 +36,24 @@ func spikeInput(t *testing.T, alerts []Alert, issues []AlertIssue, history []Ale
 	return in
 }
 
+// afterEnd is the end of spikeInput's after window: 15 minutes after rc9
+// went live at 12:13:37.
+var afterEnd = t0.Add(28*time.Minute + 37*time.Second)
+
 // The issue of the rc.9 case: first seen 08:43 in v1.22.0-rc.2, 92 events on
-// rc.2 until 12:07:51, then 23 on rc.9 from 12:10:07 — ~27 an hour on both.
+// rc.2 before the promotion, then 8 on rc.9 in the after window — ~28 an
+// hour on both. Each side is read in its own window.
 func steadyIssue(id string) AlertIssue {
 	return AlertIssue{ID: id, FirstSeenAt: t0.Add(-3*time.Hour - 16*time.Minute - 42*time.Second), FirstVersion: "v1.22.0-rc.2",
-		Versions: []IssueVersionEvents{
-			versionEvents("v1.22.0-rc.2", 92, t0.Add(-3*time.Hour-16*time.Minute-42*time.Second), t0.Add(7*time.Minute+51*time.Second)),
-			versionEvents(rc9, 23, t0.Add(10*time.Minute+7*time.Second), t0.Add(59*time.Minute+32*time.Second)),
-		}}
+		Before: IssueWindow{From: t0.Add(-24 * time.Hour), To: t0, Versions: []IssueVersionEvents{
+			versionEvents("v1.22.0-rc.2", 92, t0.Add(-3*time.Hour-16*time.Minute-42*time.Second), t0.Add(-time.Minute)),
+		}},
+		After: IssueWindow{From: t0, To: afterEnd, Versions: []IssueVersionEvents{
+			// rc.2 still ran during the rollout; only the release's own events count.
+			versionEvents("v1.22.0-rc.2", 4, t0.Add(-30*time.Minute), t0.Add(7*time.Minute+51*time.Second)),
+			versionEvents(rc9, 8, t0.Add(10*time.Minute+7*time.Second), t0.Add(25*time.Minute+7*time.Second)),
+		}},
+	}
 }
 
 func TestAlertOnAnIssueThatPredatesTheRelease(t *testing.T) {
@@ -51,14 +62,27 @@ func TestAlertOnAnIssueThatPredatesTheRelease(t *testing.T) {
 	spike := issueSpike(id, "v1.22.0-rc.2", spikeAt)
 	down := Alert{Rule: "ServiceDown", Fingerprint: "d1", FiringAt: spikeAt, Labels: map[string]string{"severity": "warning", "service": "api"}}
 	worse := steadyIssue(id)
-	// Three times as often under the release: 69 events over the same span.
-	worse.Versions[1].Events = 69
+	// Three times as often under the release: 24 events over the same span.
+	worse.After.Versions[1].Events = 24
 	critical := issueSpike(id, "v1.22.0-rc.2", spikeAt)
 	critical.Labels["severity"] = "critical"
 	dormant := steadyIssue(id)
-	dormant.Versions = dormant.Versions[1:] // no event of another version in the baseline window
+	dormant.Before.Versions = nil // no event of another version in the baseline window
 	quiet := dormant
-	quiet.Versions = []IssueVersionEvents{versionEvents(rc9, 2, t0.Add(20*time.Minute), t0.Add(25*time.Minute))}
+	quiet.After.Versions = []IssueVersionEvents{versionEvents(rc9, 2, t0.Add(20*time.Minute), t0.Add(25*time.Minute))}
+	// [B2] The release's events read past the after window's end: 23 over
+	// 49 minutes looks like the old rate, but the window's own events
+	// cannot be told from the later ones.
+	pastWindow := steadyIssue(id)
+	pastWindow.After.Versions[1] = versionEvents(rc9, 23, t0.Add(10*time.Minute+7*time.Second), t0.Add(59*time.Minute+32*time.Second))
+	// The baseline read across the promotion: rc.2's rollout events after it
+	// are not the baseline, and nothing separates them.
+	baselineLeaks := steadyIssue(id)
+	baselineLeaks.Before.Versions[0].LastSeenAt = t0.Add(7*time.Minute + 51*time.Second)
+	// One query over both windows, as the rule read it before: no window
+	// on either side, so no evidence of either.
+	unwindowed := steadyIssue(id)
+	unwindowed.Before, unwindowed.After.From, unwindowed.After.To = IssueWindow{}, time.Time{}, time.Time{}
 	born := steadyIssue(id)
 	born.FirstSeenAt, born.FirstVersion = t0.Add(10*time.Minute), rc9
 	same := map[string]string{"severity": "warning", "service": "api"}
@@ -96,6 +120,9 @@ func TestAlertOnAnIssueThatPredatesTheRelease(t *testing.T) {
 		{name: "a pre-existing issue firing 3x as often fails", alerts: []Alert{spike}, issues: []AlertIssue{worse}, verdict: Fail},
 		{name: "an issue born with the release fails", alerts: []Alert{spike}, issues: []AlertIssue{born}, verdict: Fail},
 		{name: "a dormant issue the release woke fails", alerts: []Alert{spike}, issues: []AlertIssue{dormant}, verdict: Fail},
+		{name: "release events past the after window cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{pastWindow}, verdict: Fail},
+		{name: "a baseline read across the promotion cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{baselineLeaks}, verdict: Fail},
+		{name: "evidence read without its windows cannot clear it", alerts: []Alert{spike}, issues: []AlertIssue{unwindowed}, verdict: Fail},
 		{name: "an issue that could not be read fails", alerts: []Alert{spike}, issues: []AlertIssue{{ID: "another"}}, verdict: Fail},
 		{name: "a critical alert fails", alerts: []Alert{critical}, issues: []AlertIssue{steadyIssue(id)}, verdict: Fail},
 		{name: "an issue the issue rule judged keeps its alert", alerts: []Alert{spike}, issues: []AlertIssue{steadyIssue(id)}, regressed: true, verdict: Fail},
@@ -152,9 +179,9 @@ func TestWithPreExistingAlertsOverAJudgedReport(t *testing.T) {
 		t.Fatalf("verdict = %s, pre_existing_alerts = %+v, firing_alerts = %+v", r.Verdict, r.PreExistingAlerts, r.FiringAlerts)
 	}
 	pe := r.PreExistingAlerts[0].Issue
-	if pe == nil || pe.ID != id || pe.FirstVersion != "v1.22.0-rc.2" || pe.ReleaseEvents != 23 || pe.BaselineEvents != 92 ||
+	if pe == nil || pe.ID != id || pe.FirstVersion != "v1.22.0-rc.2" || pe.ReleaseEvents != 8 || pe.BaselineEvents != 92 ||
 		pe.ReleasePerHour < 25 || pe.ReleasePerHour > 29 || pe.BaselinePerHour < 25 || pe.BaselinePerHour > 29 {
-		t.Errorf("issue = %+v, want both rates ~27/h", pe)
+		t.Errorf("issue = %+v, want both rates ~28/h", pe)
 	}
 	if !strings.Contains(alertFindings(r)[0].Message, "its issue "+id+" predates the release") {
 		t.Errorf("message = %q", alertFindings(r)[0].Message)
@@ -173,14 +200,82 @@ func TestWithPreExistingAlertsOverAJudgedReport(t *testing.T) {
 	if r := WithPreExistingAlerts(bare, []AlertIssue{steadyIssue(id)}, []Alert{spike}, nil); r.Verdict != Pass {
 		t.Errorf("from the live state: verdict = %s; findings %+v", r.Verdict, r.Findings)
 	}
-	// new_issue_min_events from the request: a bar above the release's 23
+	// [B1] The same answer from a control plane that predates Finding.Alert:
+	// its finding names no alert, so only the report's own alert list can
+	// match it, and the live state alone cannot.
+	legacy := bare
+	legacy.Findings = withoutAlertNames(bare.Findings)
+	if r := WithPreExistingAlerts(legacy, []AlertIssue{steadyIssue(id)}, []Alert{spike}, nil); r.Verdict != Fail || r.PreExistingAlerts != nil {
+		t.Errorf("unnamed finding, alert only in the live state: verdict = %s, pre_existing_alerts = %+v; want it counted", r.Verdict, r.PreExistingAlerts)
+	}
+	legacy.FiringAlerts = judged.FiringAlerts
+	if r := WithPreExistingAlerts(legacy, []AlertIssue{steadyIssue(id)}, nil, nil); r.Verdict != Pass {
+		t.Errorf("unnamed finding, the one alert of its rule listed: verdict = %s; findings %+v", r.Verdict, r.Findings)
+	}
+	// new_issue_min_events from the request: a bar above the release's 24
 	// events reads them as too few to have risen.
 	worse := steadyIssue(id)
-	worse.Versions[1].Events = 69
+	worse.After.Versions[1].Events = 24
 	if r := WithPreExistingAlerts(judged, []AlertIssue{worse}, nil, nil); r.Verdict != Fail {
 		t.Errorf("3x the rate: verdict = %s, want FAIL", r.Verdict)
 	}
 	if r := WithPreExistingAlerts(judged, []AlertIssue{worse}, nil, map[string]string{ThresholdNewIssueMinEvents: "100"}); r.Verdict != Pass {
 		t.Errorf("3x the rate under new_issue_min_events=100: verdict = %s, want PASS", r.Verdict)
+	}
+}
+
+func withoutAlertNames(fs []Finding) []Finding {
+	out := slices.Clone(fs)
+	for i := range out {
+		out[i].Alert = ""
+	}
+	return out
+}
+
+// [B1] Two alerts of one rule, one on an issue that predates the release and
+// one on an issue the release made worse: only the first one's own finding
+// warns. A report whose findings name no alert cannot say which finding is
+// whose, so both stay counted.
+func TestPreExistingAlertMatchesItsOwnFinding(t *testing.T) {
+	const old, hot = "issue-old", "issue-hot"
+	at := t0.Add(15 * time.Minute)
+	a, b := issueSpike(old, "v1.22.0-rc.2", at), issueSpike(hot, "v1.22.0-rc.2", at)
+	b.Labels["service"] = "api"
+	worse := steadyIssue(hot)
+	worse.After.Versions[1].Events = 24
+	in := spikeInput(t, []Alert{b, a}, []AlertIssue{steadyIssue(old), worse}, nil)
+
+	r := Evaluate(in)
+	if r.Verdict != Fail {
+		t.Fatalf("verdict = %s, want FAIL: the hot issue's alert counts", r.Verdict)
+	}
+	var warned, failed []string
+	for _, f := range alertFindings(r) {
+		if f.PreExisting {
+			warned = append(warned, f.Alert)
+		} else if f.Policy == PolicyFail {
+			failed = append(failed, f.Alert)
+		}
+	}
+	if !slices.Equal(warned, []string{alertKey(a)}) || !slices.Equal(failed, []string{alertKey(b)}) {
+		t.Errorf("pre-existing findings = %v, failing = %v; want [%s] and [%s]", warned, failed, alertKey(a), alertKey(b))
+	}
+	if len(r.PreExistingAlerts) != 1 || r.PreExistingAlerts[0].Issue.ID != old || len(r.FiringAlerts) != 1 || r.FiringAlerts[0].Issue != nil {
+		t.Errorf("pre_existing_alerts = %+v, firing_alerts = %+v", r.PreExistingAlerts, r.FiringAlerts)
+	}
+
+	// The same two alerts judged without the rule, by a control plane whose
+	// findings name no alert: nothing ties either finding to the old issue.
+	in.AlertIssues = nil
+	judged := Evaluate(in)
+	judged.Findings = withoutAlertNames(judged.Findings)
+	got := WithPreExistingAlerts(judged, []AlertIssue{steadyIssue(old), worse}, nil, nil)
+	if got.PreExistingAlerts != nil || len(got.FiringAlerts) != 2 {
+		t.Errorf("unnamed findings: pre_existing_alerts = %+v, firing_alerts = %+v; want both counted", got.PreExistingAlerts, got.FiringAlerts)
+	}
+	for _, f := range alertFindings(got) {
+		if f.PreExisting || f.Policy != PolicyFail {
+			t.Errorf("unnamed finding %+v was discounted", f)
+		}
 	}
 }

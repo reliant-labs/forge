@@ -69,6 +69,9 @@ type lintFlags struct {
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
+	// install is --install: the frontend lanes install missing
+	// dependencies first. Off, lint never installs (lint_frontend_deps.go).
+	install bool
 	// allowSkip is --allow-skip: `<lane>[,<lane>…]=<reason>` values
 	// accepting that a gating lane may not run (lint_skip.go).
 	allowSkip []string
@@ -99,6 +102,9 @@ This command will:
   typecheck runs the project's own "typecheck" npm script when it has one,
   and otherwise runs the frontend's TypeScript compiler with --noEmit.
   Severity is lint.frontend.typecheck (error | warn | off) in forge.yaml.
+  Both read the installed node_modules and never install: a frontend with
+  none is a lane that could NOT run, named with its install command, unless
+  --install asks lint to install it first.
 - Optionally run targeted rule sets (--contract, --db, --migration-safety,
   --conventions, --tests). Name several to run them all under one verdict:
   forge lint --conventions --contract
@@ -145,6 +151,8 @@ Examples:
   forge lint --fix               # Apply the mechanical fixes, then gate
   forge lint --fix ./internal/x/...  # ...only in the packages you are working on
   forge lint --skip-frontends    # Backend-only gate; no Node toolchain needed
+  forge lint --install           # Install missing frontend dependencies first
+                                 # (lint never installs on its own)
   forge lint --contract          # Run contract interface enforcement linter
   forge lint --db                # Run DB entity lint rules
   forge lint --migration-safety  # Run SQL migration safety checks
@@ -387,6 +395,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().StringArrayVar(&flags.allowSkip, "allow-skip", nil, "Accept that a gating lane may NOT run here, by name and with a reason: LANE[,LANE...]=REASON (repeatable), e.g. --allow-skip 'frontend-typecheck=frontends typecheck in the web job'. A gating lane that could not run (a tool missing, a frontend with no node_modules) fails forge lint otherwise; an accepted one is listed as SKIPPED (allowed) in the verdict. forge.yaml lint.allow_skip is the project-level form. Accepts only could-not-run: a lane that ran and found problems still fails")
 	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form and every undecorated contract construction to NewInstrumented; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
+	cmd.Flags().BoolVar(&flags.install, "install", false, "Install a frontend's missing dependencies (and refresh a node_modules older than its lockfile) with its own package manager, frozen to the lockfile, before the frontend lanes run. Off by default: lint never mutates the checkout, and a frontend with no node_modules is a lane that could NOT run, named in the verdict with its install command. The install's output goes to stderr, and nowhere under --quiet unless it fails")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the mechanical fixes in place (Go formatting, the tracing log rewrite, frontend prettier, eslint --fix), each Go rewrite type-checked and taken back if it breaks its package. Never golangci-lint fixes. Off by default: lint is a gate and reports")
 	cmd.Flags().BoolVar(&flags.check, "check", false, "Report only: write nothing, print the diff each fix would apply, and exit non-zero if any is pending. The default; beats --fix (also spelled --no-fix)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
@@ -429,6 +438,10 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
+	// install is --install (lint_frontend_deps.go); installOut receives its
+	// output.
+	install    bool
+	installOut io.Writer
 	// formatSkipFrontends keeps the format lane off the frontends without
 	// dropping their typecheck: a frontend whose lint lane is off
 	// (frontendSkips).

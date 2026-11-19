@@ -1335,7 +1335,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Works in any repo** (no forge.yaml). **Start:** Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why. **Agent time:** ~10 min.
 
-**Use:** `forge lint`; `--quiet` prints only what failed, `--scope <path>` lints a slice of a shared checkout, `--json` and `--gate-json` are for machines, `--skip-frontends` is a backend-only gate, and `lint.frontend.typecheck` dials the frontend typecheck.
+**Use:** `forge lint`; `--quiet` prints only what failed, `--scope <path>` lints a slice of a shared checkout, `--json` and `--gate-json` are for machines, `--skip-frontends` is a backend-only gate, `--install` installs a frontend's missing dependencies first (lint never installs on its own: a frontend with no `node_modules` is a lane that could not run), and `lint.frontend.typecheck` dials the frontend typecheck.
 
 **Why:** `lint.rules` in `forge.yaml` grades every forge rule `error`, `warn` or `off` identically in every output mode. Never pipe `forge lint` through `head`: the verdict is the last line.
 

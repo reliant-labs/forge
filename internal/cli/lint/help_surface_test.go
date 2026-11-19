@@ -137,6 +137,10 @@ func TestLintHelpSurface(t *testing.T) {
 		// symptom is a user's save returning a 500 from the raw CHECK.
 		"guarded-fields",
 		"help-dev",
+		// Visible: lint never installs a frontend's dependencies on its own,
+		// and a lane that could not run for want of them names this flag as
+		// the fix — a hint pointing at a hidden flag is no hint.
+		"install",
 		"json",
 		"migration-safety",
 		"no-fix",

@@ -273,6 +273,20 @@ what the gate reported, run `forge lint --fix` and commit the result.
 `--json` is always detect-only, and so are the targeted lanes (`--contract`,
 `--db`, …).
 
+It never installs anything either. A frontend whose `node_modules` is missing
+is a lane that could NOT run: the verdict names the lane (`frontend lint`,
+`frontend typecheck`) and the exact install command (`pnpm install
+--frozen-lockfile` in `frontends/web`, …), and the run fails, as any gating
+lane that did not run does. Prepare the tree first — the scaffolded ci.yml
+installs every frontend in its setup steps, and `task ci`'s `deps-<fe>` rows run
+before its lint rows — or opt in with `forge lint --install`, which installs
+with the frontend's own package manager, frozen to its lockfile (its output
+goes to stderr, and nowhere under `--quiet` unless it fails). A backend-only
+job says so with `--skip-frontends`, or accepts the gap by name with
+`--allow-skip 'frontend-lint,frontend-typecheck=<why>'`. A `node_modules`
+older than its lockfile is linted as it stands, with a note naming the
+command that refreshes it.
+
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
 
 ## Linting the workflows themselves

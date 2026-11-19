@@ -373,7 +373,10 @@ func (a *deployAttempt) heartbeat(ctx context.Context) {
 		case <-t.C:
 		case <-a.nudge:
 		}
-		a.report1(ctx)
+		// A heartbeat is best effort: a failed report keeps its output and
+		// any pending code source for the next tick, and finish retries the
+		// last one, so the error has nothing more to do here.
+		_ = a.report1(ctx)
 	}
 }
 

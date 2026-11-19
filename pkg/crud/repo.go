@@ -1268,6 +1268,9 @@ func (r *Repo[M]) UpdateMasked(ctx context.Context, db orm.Context, entity *M, f
 // pass themselves.
 func (r *Repo[M]) UpdateWhere(ctx context.Context, db orm.Context, values *M, fields []string, filters ...orm.QueryOption) (int64, error) {
 	r.ensureMeta(db)
+	if values == nil {
+		return 0, fmt.Errorf("update %s where: nil values — pass a %s carrying the column values to write", r.m.table, r.m.entityName)
+	}
 	if len(fields) == 0 {
 		return 0, nil
 	}

@@ -65,6 +65,9 @@ func TestRepoUpdateWhere(t *testing.T) {
 		t.Fatalf("limited batch: %d, %v; want 1", n, err)
 	}
 
+	if _, err := repo.UpdateWhere(ctx, db, nil, []string{"name"}, orm.WhereEq("name", "x")); err == nil {
+		t.Error("UpdateWhere accepted nil values")
+	}
 	if _, err := repo.UpdateWhere(ctx, db, tmpl, []string{"name"}); err == nil {
 		t.Error("an unfiltered UpdateWhere wrote the whole table")
 	}

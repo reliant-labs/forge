@@ -565,9 +565,8 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// Services are enumerated from the proto descriptor (the authoritative,
 	// non-brittle source) — see codegen.IntrospectComponents.
 	// Workers/operators are owned code with no
-	// proto contract; forge does not inventory them (the app names them in
-	// its own wiring and enumerates them at runtime), so the shape reports
-	// services only.
+	// proto contract, so they are not listed here: the processes that run
+	// them are, as roots and workloads (auditInventory).
 	for _, s := range codegen.IntrospectComponents(projectDir) {
 		info := svcInfo{Name: s.Name, Type: s.EffectiveKind()}
 		// match by ProtoService name suffix (Echo → EchoService)
@@ -621,8 +620,15 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
 	status := audittype.StatusOK
-	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s) (workers/operators are owned code — not inventoried by forge)",
+	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s)",
 		cfg.EffectiveKind(), len(services), len(frontends))
+	// Processes are inventoried whatever code they run: every //forge:root
+	// and every declared workload (audit_inventory.go).
+	inventory, inventoryWarn := auditInventory(f, projectDir, details)
+	summary += inventory
+	if inventoryWarn {
+		status = audittype.StatusWarn
+	}
 	if len(unmanaged) > 0 {
 		sort.Slice(unmanaged, func(i, j int) bool { return unmanaged[i].Name < unmanaged[j].Name })
 		details["unmanaged_services"] = unmanaged

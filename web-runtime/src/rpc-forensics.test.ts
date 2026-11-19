@@ -2,6 +2,10 @@
 //
 // The redacted request shape a failed RPC's `forge.forensics` event carries:
 // deny by default, `debug_redact` honoured, bounded.
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
   create,
   createFileRegistry,
@@ -22,6 +26,7 @@ import {
   classifyRequest,
   isIdShaped,
   isSecretNamed,
+  isSecretNumberNamed,
   MAX_ARGS,
   MAX_SIGNATURES,
   MAX_VALUE_CHARS,
@@ -579,6 +584,232 @@ describe("classifyRequest", () => {
     expect(classifyRequest(desc, { $typeName: "nope", chatId: 5 })).toBeTypeOf(
       "object",
     );
+  });
+});
+
+/**
+ * The one table of forensics name rules, read by this file AND forge's
+ * server-side tests (pkg/observe/forensic_names_test.go), so the browser and
+ * the server cannot disagree about a name.
+ */
+interface ForensicNameTable {
+  secret: string[];
+  number_value: string[];
+  not_secret: string[];
+  id_value: string[];
+  id_hidden: string[];
+  not_id: string[];
+  float_lengths: Array<{ value: number; len: number }>;
+}
+
+const nameTable = JSON.parse(
+  readFileSync(
+    resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../pkg/observe/testdata/forensic_secret_names.json",
+    ),
+    "utf8",
+  ),
+) as ForensicNameTable;
+
+/** A message with one optional field per (name, type), numbered from 1. */
+function fieldsMessage(
+  fields: Array<{ name: string; type: Type; typeName?: string }>,
+  enumType: Array<{
+    name: string;
+    value: Array<{ name: string; number: number }>;
+  }> = [],
+): DescMessage {
+  const registry = createFileRegistry(
+    create(FileDescriptorProtoSchema, {
+      name: "forensics_secret_numbers.proto",
+      package: "forensics.v1",
+      syntax: "proto3",
+      enumType,
+      messageType: [
+        {
+          name: "Confirm",
+          field: fields.map((f, i) => ({
+            ...f,
+            number: i + 1,
+            label: opt,
+            jsonName: `f${i}`,
+          })),
+        },
+      ],
+    }),
+    () => undefined,
+  );
+  const desc = registry.getMessage("forensics.v1.Confirm");
+  if (!desc) throw new Error("confirm message did not register");
+  return desc;
+}
+
+/** An init object setting desc's fields, in order, to values. */
+function byPosition(desc: DescMessage, values: unknown[]): never {
+  const init: Record<string, unknown> = {};
+  values.forEach((v, i) => {
+    init[desc.fields[i]!.localName] = v;
+  });
+  return init as never;
+}
+
+describe("the name table shared with the server", () => {
+  it("has every section", () => {
+    for (const section of [
+      nameTable.secret,
+      nameTable.number_value,
+      nameTable.not_secret,
+      nameTable.id_value,
+      nameTable.id_hidden,
+      nameTable.not_id,
+      nameTable.float_lengths,
+    ]) {
+      expect(section.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("names a secret exactly where the server does", () => {
+    for (const name of nameTable.secret) {
+      expect(isSecretNamed(name), name).toBe(true);
+    }
+    for (const name of nameTable.not_secret) {
+      expect(isSecretNamed(name), name).toBe(false);
+      expect(isSecretNumberNamed(name), name).toBe(false);
+    }
+  });
+
+  it("exempts a quantity, for numbers only, exactly where the server does", () => {
+    // Every number_value name is secret, or the case exercises nothing.
+    for (const name of nameTable.number_value) {
+      expect(nameTable.secret, name).toContain(name);
+    }
+    const quantity = new Set(nameTable.number_value);
+    for (const name of nameTable.secret) {
+      expect(isSecretNumberNamed(name), name).toBe(!quantity.has(name));
+    }
+  });
+
+  it("records an id's value exactly where the server does", () => {
+    for (const name of nameTable.id_value) {
+      expect(isIdShaped(name) && !isSecretNamed(name), name).toBe(true);
+    }
+    for (const name of nameTable.id_hidden) {
+      expect(isIdShaped(name) && isSecretNamed(name), name).toBe(true);
+    }
+    for (const name of nameTable.not_id) {
+      expect(isIdShaped(name), name).toBe(false);
+    }
+  });
+
+  it("counts a secret-named double's digits as the server does", () => {
+    const desc = fieldsMessage([{ name: "pin", type: Type.DOUBLE }]);
+    for (const { value, len } of nameTable.float_lengths) {
+      const out = classifyRequest(
+        desc,
+        create(desc, byPosition(desc, [value])),
+      );
+      // proto3 leaves a zero unset, so it records nothing at all.
+      expect(out["forensics.arg.pin"], String(value)).toBe(
+        value === 0 ? undefined : `[len=${len}]`,
+      );
+    }
+  });
+});
+
+describe("a secret-named plain number", () => {
+  it("records its digit count and never its value", () => {
+    const desc = fieldsMessage(
+      [
+        { name: "pin", type: Type.INT32 },
+        { name: "card_cvv", type: Type.UINT32 },
+        { name: "ssn", type: Type.FIXED64 },
+        { name: "security_code", type: Type.SINT64 },
+        { name: "tan", type: Type.DOUBLE },
+        { name: "mfaCode", type: Type.SFIXED32 },
+        { name: "spinner", type: Type.INT32 },
+        { name: "mfa_enabled", type: Type.BOOL },
+        {
+          name: "mfa_method",
+          type: Type.ENUM,
+          typeName: ".forensics.v1.Method",
+        },
+        { name: "max_tokens", type: Type.INT32 },
+        { name: "session_count", type: Type.UINT32 },
+        { name: "num_sessions", type: Type.INT64 },
+        { name: "token_limit", type: Type.STRING },
+        { name: "pin_num", type: Type.INT64 },
+        { name: "otpNum", type: Type.UINT32 },
+      ],
+      [
+        {
+          name: "Method",
+          value: [
+            { name: "METHOD_UNSPECIFIED", number: 0 },
+            { name: "METHOD_TOTP", number: 1 },
+          ],
+        },
+      ],
+    );
+    const out = classifyRequest(
+      desc,
+      create(
+        desc,
+        byPosition(desc, [
+          4831,
+          927,
+          219_099_999n,
+          -55_021n,
+          718_293,
+          661_204,
+          12,
+          true,
+          1,
+          4096,
+          17,
+          23n,
+          "ninety-nine",
+          3141n,
+          774_411,
+        ]),
+      ),
+    );
+    expect(out).toEqual({
+      "forensics.arg.pin": "[len=4]",
+      "forensics.arg.card_cvv": "[len=3]",
+      "forensics.arg.ssn": "[len=9]",
+      "forensics.arg.security_code": "[len=6]",
+      "forensics.arg.tan": "[len=6]",
+      "forensics.arg.mfaCode": "[len=6]",
+      // `pin` matches a whole word only; a bool and an enum keep their value.
+      "forensics.arg.spinner": 12,
+      "forensics.arg.mfa_enabled": true,
+      "forensics.arg.mfa_method": "METHOD_TOTP",
+      // A quantity keeps its value under a secret name — a number only: a
+      // string named like one records its length.
+      "forensics.arg.max_tokens": 4096,
+      "forensics.arg.session_count": 17,
+      "forensics.arg.num_sessions": 23,
+      "forensics.arg.token_limit": "[len=11]",
+      // `num` is a quantity only as the first word: a trailing one reads as
+      // "number", the secret itself.
+      "forensics.arg.pin_num": "[len=4]",
+      "forensics.arg.otpNum": "[len=6]",
+    });
+    const recorded = JSON.stringify(out);
+    for (const secret of [
+      "4831",
+      "927",
+      "219099999",
+      "55021",
+      "718293",
+      "661204",
+      "ninety",
+      "3141",
+      "774411",
+    ]) {
+      expect(recorded, secret).not.toContain(secret);
+    }
   });
 });
 

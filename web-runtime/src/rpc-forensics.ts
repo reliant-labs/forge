@@ -12,14 +12,16 @@
 //
 //   number, bool                      the value (a 64-bit integer beyond 2^53
 //                                     as its decimal string)
+//   number with a secret name         "[len=N]": its digit count, never its
+//     (isSecretNumberNamed: `pin`,    value, whether or not the name is
+//     `cvv`, `security_code`,         id-shaped; a quantity (`max_tokens`,
+//     `session_id`)                   `session_count`) keeps its value
 //   enum                              the value's name, else its number
 //   string named like an id           the value, cut to MAX_VALUE_CHARS
-//     (`id`, `ids`, `*_id`, `*_ids`, `*Id`, `*ID`, `*Ids`, `*IDs`)
+//     (`id`, `ids`, `uuid`, `*_id`, `*_ids`, `*_uuid`, `*Id`, `*ID`,
+//     `*Ids`, `*IDs`, `*Uuid`, `*UUID`)
 //   ...whose name also names a secret "[len=N]": `session_id`, `apiKeyId`,
-//     (token, secret, passw,          `otp_id` are credentials, not handles.
-//     credential, session, cookie,    Matched case-insensitively with `_` and
-//     apikey, privatekey, signingkey, `-` removed (forge's server-side rule).
-//     otp)                            A number so named records its digit count.
+//                                     `otp_id` are credentials, not handles
 //   any other string                  "[len=N]": its length only
 //   bytes                             "[len=N]"
 //   repeated, map                     "[count=N]": its length only
@@ -30,6 +32,22 @@
 //   other message                     its set fields, recursively, down to
 //                                     MAX_DEPTH levels ("[message]" below that)
 //   field option `debug_redact`       never: the field is left out entirely
+//
+// A name is secret when, lowercased with `_` and `-` removed, it contains
+// token, secret, passw, credential, session, cookie, apikey, privatekey,
+// signingkey or otp; or when one of its words (split on `_`, `-`, camelCase
+// and letter/digit boundaries), or two adjacent words joined, is pin, otp,
+// cvv, cvc, ssn, tan, passcode, securitycode, mfa or totp, plural or not —
+// so `spinner`, `pinned`, `shipping` and `tank` are not. A NUMBER whose
+// first or last word is max, min, limit, count, total, size, len or length,
+// or whose FIRST word is num, is a quantity and keeps its value
+// (`max_tokens`, `num_sessions`); a trailing num reads as "number", so
+// `pin_num` still records its digit count, and a string named like a
+// quantity still records its length. A bool or an enum
+// keeps its value under a secret name (`mfa_enabled`, `session_state`):
+// either is one of a few values the schema itself lists, so it cannot carry
+// anything a person typed. These are forge's server-side rules
+// (pkg/observe/forensic_names.go), tested against the same table.
 //
 // Unset fields are left out, so a record names what the caller sent. Keys are
 // `forensics.arg.<proto field name>`, nested fields joined with `.`
@@ -69,20 +87,25 @@ export const FORENSICS_EVENT = "forge.forensics";
 /** The attribute prefix of a recorded argument. */
 export const FORENSICS_ARG_PREFIX = "forensics.arg.";
 
-// `id`, `ids`, `owner_id`, `owner_ids` (proto's snake_case), and `ownerId`,
-// `ownerID`, `ownerIds`, `ownerIDs` for a .proto that spells fields in camel.
-const SNAKE_ID_RE = /(^|_)ids?$/i;
-const CAMEL_ID_RE = /[a-z0-9](Id|ID|Ids|IDs)$/;
+// `id`, `ids`, `uuid`, `uuids`, `owner_id`, `owner_uuids` (proto's
+// snake_case, any case), and `ownerId`, `ownerID`, `ownerIds`, `ownerIDs`,
+// `ownerUuid`, `ownerUUID` (plural too) for a .proto that spells fields in
+// camel. Spelled exactly as forge's server-side rule (idShapedName in
+// pkg/observe/forensic_names.go), with no `i` flag so both engines read
+// them alike.
+const SNAKE_ID_RE = /(^|_)([uU][uU])?[iI][dD][sS]?$/;
+const CAMEL_ID_RE = /[a-z0-9](Id|ID|Ids|IDs|Uuid|UUID|Uuids|UUIDs)$/;
 
 /** Whether a field's name says it holds an identifier. */
 export function isIdShaped(name: string): boolean {
   return SNAKE_ID_RE.test(name) || CAMEL_ID_RE.test(name);
 }
 
-// Words that make an id-shaped name a credential: a session id or an API key
-// id authenticates whoever holds it. Matched against the name lowercased with
-// `_` and `-` removed, so `api_key_id`, `apiKeyId` and `API-KEY-ID` all hit.
-const SECRET_WORDS = [
+// Fragments that make a name a secret wherever they appear: a session id or
+// an API key id authenticates whoever holds it. Matched against the name
+// lowercased with `_` and `-` removed, so `api_key_id`, `apiKeyId` and
+// `API-KEY-ID` all hit.
+const SECRET_FRAGMENTS = [
   "token",
   "secret",
   "passw",
@@ -95,10 +118,141 @@ const SECRET_WORDS = [
   "otp",
 ];
 
-/** Whether a field's name says its value is a secret, whatever its shape. */
+// Secrets too short to match as fragments (`pin` is in `spinner` and
+// `shipping`, `tan` in `tank`): they match only a whole word of the name
+// (nameWords), or two adjacent words joined (`security_code`, `passCode`),
+// optionally plural (`pins`).
+const SECRET_WORDS = new Set([
+  "pin",
+  "otp",
+  "cvv",
+  "cvc",
+  "ssn",
+  "tan",
+  "passcode",
+  "securitycode",
+  "mfa",
+  "totp",
+]);
+
+/**
+ * Whether a field's name says its value is a secret, whatever its shape or
+ * type: it contains a secret fragment, or one of its words (or two adjacent
+ * words joined) is a secret word, plural or not. `pin`, `userPIN`, `cvv2`,
+ * `security_code` and `SSNs` are secret; `spinner`, `pinned`, `shipping`
+ * and `tank` are not. forge's server-side rule (ForensicSecretName in
+ * pkg/observe) is the same, tested against the same table.
+ */
 export function isSecretNamed(name: string): boolean {
   const folded = name.toLowerCase().replace(/[_-]/g, "");
-  return SECRET_WORDS.some((w) => folded.includes(w));
+  if (SECRET_FRAGMENTS.some((w) => folded.includes(w))) {
+    return true;
+  }
+  const words = nameWords(name);
+  return words.some(
+    (w, i) =>
+      secretWord(w) || (i + 1 < words.length && secretWord(w + words[i + 1])),
+  );
+}
+
+// Words that make a number a quantity, not a secret, as its first or last
+// word: `max_tokens`, `token_limit`, `session_count`.
+const QUANTITY_WORDS = new Set([
+  "max",
+  "min",
+  "limit",
+  "count",
+  "total",
+  "size",
+  "len",
+  "length",
+]);
+
+// A quantity only as the FIRST word (`num_sessions`): last, it reads as
+// "number", and `pin_num`, `ssn_num` and `otpNum` are the secret itself.
+const LEADING_QUANTITY_WORD = "num";
+
+/**
+ * Whether a NUMBER field's name hides its value: a secret name whose first
+ * and last words are not quantity words (max, min, limit, count, total,
+ * size, len, length, and num as the first word only). So `pin`, `pin_num`
+ * and `otp_counter_id` record their digit count, and `max_tokens`,
+ * `session_count` and `num_sessions` their value. The exemption is
+ * for numbers only: a string under any secret name records its length.
+ * forge's server-side rule (ForensicSecretNumberName) is the same.
+ */
+export function isSecretNumberNamed(name: string): boolean {
+  if (!isSecretNamed(name)) {
+    return false;
+  }
+  const words = nameWords(name);
+  if (words.length === 0) {
+    return true;
+  }
+  const first = words[0]!;
+  const last = words[words.length - 1]!;
+  return (
+    !QUANTITY_WORDS.has(first) &&
+    first !== LEADING_QUANTITY_WORD &&
+    !QUANTITY_WORDS.has(last)
+  );
+}
+
+function secretWord(w: string): boolean {
+  return (
+    SECRET_WORDS.has(w) || (w.endsWith("s") && SECRET_WORDS.has(w.slice(0, -1)))
+  );
+}
+
+const isLower = (c: string): boolean => c >= "a" && c <= "z";
+const isUpper = (c: string): boolean => c >= "A" && c <= "Z";
+const isDigit = (c: string): boolean => c >= "0" && c <= "9";
+
+/**
+ * nameWords splits a name into lowercase words at `_` and `-`, at a
+ * lower-to-upper change (`userPin` → user, pin), at the end of an upper-case
+ * run followed by a word (`PINCode` → pin, code, but `SSNs` stays one word),
+ * and between letters and digits (`cvv2` → cvv, 2). Only ASCII decides a
+ * boundary; any other character belongs to the word around it.
+ */
+function nameWords(name: string): string[] {
+  const words: string[] = [];
+  let start = -1;
+  const flush = (end: number): void => {
+    if (start >= 0 && end > start) {
+      words.push(
+        name.slice(start, end).replace(/[A-Z]/g, (c) => c.toLowerCase()),
+      );
+    }
+    start = -1;
+  };
+  const at = (i: number): string => name[i] ?? "";
+  for (let i = 0; i < name.length; i++) {
+    const c = at(i);
+    if (c === "_" || c === "-") {
+      flush(i);
+      continue;
+    }
+    if (start < 0) {
+      start = i;
+      continue;
+    }
+    const p = at(i - 1);
+    const next = at(i + 1);
+    if (
+      (isLower(p) && isUpper(c)) ||
+      isDigit(p) !== isDigit(c) ||
+      (isUpper(p) &&
+        isUpper(c) &&
+        isLower(next) &&
+        (next !== "s" || isLower(at(i + 2))))
+    ) {
+      flush(i);
+      start = i;
+    }
+  }
+  flush(name.length);
+  return words;
 }
 
 /** Whether a field's value is recorded as it is: an id that is no secret. */
@@ -220,8 +374,9 @@ function classifyLeaf(
     case ScalarType.BOOL:
       return Boolean(value);
     default:
-      // A numeric session or OTP id is as much a credential as a string one.
-      return isIdShaped(field.name) && isSecretNamed(field.name)
+      // A numeric PIN, CVV or session id is as much a secret as a string
+      // one: its digit count only. A quantity (`max_tokens`) is not.
+      return isSecretNumberNamed(field.name)
         ? `[len=${String(value).length}]`
         : number(value);
   }

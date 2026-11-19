@@ -131,7 +131,7 @@ type linterStep struct {
 // they tracked removed linters and are preserved for diffability against
 // git history).
 //
-//nolint:funlen // declarative 14-entry linter registry, not branching complexity
+//nolint:funlen,gocognit // declarative linter registry: each entry's small shouldRun/collect closures add to the count, not branching in this function
 func lintPipeline() []linterStep {
 	return []linterStep{
 		// 1. Standard Go linters (golangci-lint).
@@ -243,6 +243,22 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectBufLintJSON(rc.ctx)
 				return fs, g, nil
+			},
+		},
+
+		// 4b. Proto format — `buf format -d` over the workspace, the
+		// scaffolded pre-commit hook's own check, so "all gating linters
+		// passed" and the commit hook cannot disagree
+		// (lint_proto_format.go). Gates through the warn-first rollout.
+		{
+			name:  "proto-format lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && fileExists(filepath.Join(rc.cwd, "buf.yaml")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectProtoFormatJSON(rc.ctx, rc.cwd, formatKeep(rc.scope, rc.paths), rc.fix)
 			},
 		},
 
@@ -976,6 +992,23 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectIdentityMethodsJSON(rc.cwd)
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 14a-quater. Unproven sign-up — a deployed sign-up that creates
+		// accounts whose address nobody proves (email delivery "none", or
+		// auth_self_signup outside development; see
+		// lint_unproven_signup.go). Errors, graded by the rollout table.
+		{
+			name:  unprovenSignupLane,
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "deploy", "kcl")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectUnprovenSignupJSON(rc.cwd)
 				return fs, len(fs) > 0, err
 			},
 		},

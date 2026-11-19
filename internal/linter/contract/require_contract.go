@@ -45,6 +45,11 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip commands (`package main`). See isMainPackage.
+	if isMainPackage(pass) {
+		return nil, nil
+	}
+
 	// Skip proto-service handler packages (internal/handlers/<svc>). By forge
 	// convention these are pb-through Connect handlers: the package's
 	// exported methods are the proto-defined RPC methods (GetCurrentUser, ...)
@@ -242,6 +247,20 @@ var stdlibConventionMethods = map[string]bool{
 // convention methods rather than exempting the package.
 func isStdlibConventionMethod(decl *ast.FuncDecl) bool {
 	return stdlibConventionMethods[decl.Name.Name]
+}
+
+// isMainPackage reports whether the package under analysis is a command
+// (`package main`). Go refuses to import a main package, so nothing outside
+// it can call its exported methods or read its exported vars: exporting is
+// not an API surface there, and a rule about a package's API has nothing to
+// judge. The exported methods a command does have are almost always a
+// stdlib interface it hands to the stdlib — flag.Value's Set, sort's Less —
+// and demanding a contract.go for them only trained authors to spend the
+// //forge:exclude-contract opt-out on every command
+// (internal/consumercanary, internal/apigate). The command's collaborators,
+// the packages it imports, are analyzed on their own.
+func isMainPackage(pass *analysis.Pass) bool {
+	return pass.Pkg.Name() == "main"
 }
 
 // isInternalPackage returns true if the package path contains an "internal/" segment.

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 func TestGoMarkersSorted(t *testing.T) {
@@ -81,6 +83,7 @@ func TestGoMarkerRegistryAgreesWithRecognizers(t *testing.T) {
 		"forge:outbound-io":        func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, "forge:outbound-io") },
 		directiveConstructorMarker: func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveConstructorMarker) },
 		directiveNoObserve:         func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveNoObserve) },
+		contract.NoCaptureMarker:   func(raw string) bool { _, ok := contract.ParseNoCaptureComment(raw); return ok },
 		directiveServiceMarker: func(raw string) bool {
 			return HasServiceContractMarker(&ast.CommentGroup{List: []*ast.Comment{{Text: raw}}})
 		},

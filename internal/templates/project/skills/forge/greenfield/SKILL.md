@@ -1,6 +1,6 @@
 ---
 name: greenfield
-description: An app with an API, from an empty directory to a deployed release — `forge project new` with every service named up front and the flags that matter, evolving the schema with migrations, where business logic goes, running it locally (`forge env up`), and shipping it to Reliant hosting.
+description: A Reliant Forge app with an API, from an empty directory to a deployed release — `forge project new` with every service named up front and the flags that matter, evolving the schema with migrations, where business logic goes, running it locally (`forge env up`), and shipping it to Reliant hosting.
 ---
 
 # Greenfield: an app with an API, end to end
@@ -8,6 +8,8 @@ description: An app with an API, from an empty directory to a deployed release �
 The sequence for **an app with an API** — services, a database, a frontend
 over generated Connect RPC hooks. A frontend-only site follows
 `deploy/static-site` instead. Authoring each service proto: `authoring`.
+
+<!-- @benefits glance app -->
 
 ## Greenfield, end to end
 
@@ -49,6 +51,7 @@ deployment unit, not a domain entity, so forge never invents a service from its 
 | `--kind site` | `--in-place` only: adopts the Vite or Next.js app at the directory root as a frontend-only project — writes `forge.yaml` and the `deploy/kcl` envs, no Go (`deploy/static-site`) |
 | `--name` | names an `--in-place` project whose directory is a worktree or branch name rather than the product |
 | `--path <dir>` | parent directory for the project (default `.`) |
+| `--claimable` | deploying with no account (`forge env deploy prod --claimable`): sizes prod to the free anonymous plan, which the default prod does not fit; leave it off to deploy signed in |
 
 Everything else has a working default — `--kind` (`service` / `cli` / `library`,
 each with its own `features:` block), `--harness` (`none` writes no agent file at

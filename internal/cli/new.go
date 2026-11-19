@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/nodeengine"
+	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/pkg/deploy"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -533,6 +534,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		return err
 	}
 	defer scaffold.undoUnlessFinished()
+
+	// Every proto the scaffold writes ends byte-identical to `buf format`'s
+	// output; an in-place target's own protos are left as they were. The
+	// bootstrap's generate settles the session before it reads the tree.
+	defer protofmt.Begin(targetPath, os.Stderr)()
 
 	steps := cliutil.NewStepRunner(Name()+" project new", verbose)
 	defer steps.Close() //nolint:errcheck // the log is best-effort

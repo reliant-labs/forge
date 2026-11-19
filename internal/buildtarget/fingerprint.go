@@ -42,6 +42,17 @@ type Fingerprint struct {
 	files map[string]string
 }
 
+// Paths lists every selected input (slash-separated, relative to cwd),
+// sorted: what a fingerprint match was a match OVER, for an audit line.
+func (f Fingerprint) Paths() []string {
+	out := make([]string, 0, len(f.files))
+	for p := range f.files {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Changed lists the paths whose entry differs between f and other (added,
 // removed or modified), sorted. It names what a build touched in its own
 // declared inputs.

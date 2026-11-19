@@ -1,10 +1,12 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing/docs site, SPA or PWA — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
+description: Ship a landing page, marketing/docs site, SPA or PWA with Reliant Forge — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
 applies: any
 ---
 
 # Static sites
+
+<!-- @benefits glance site -->
 
 A landing page, a marketing site, a docs site or a SPA over someone else's API
 is a **frontend with no backend**. Forge ships it the same way it ships an app:
@@ -23,8 +25,6 @@ files on a host is the part that is hard to retrofit later:
   which path (edge or ingress) each hostname takes.
 - **Config without a rebuild.** A hosted site's `config.js` is written per env
   by the platform, so one bundle serves every env.
-- **Browser logs on disk.** Under `forge env up dev` every `console.*` call
-  and uncaught error lands in `.forge/logs/dev/frontend_<name>.log`.
 - **A path to an API.** When the site grows a waitlist, checkout or login,
   the API is its own forge project, and the site reaches it by URL (see
   "Growing a backend").

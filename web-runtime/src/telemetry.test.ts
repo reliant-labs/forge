@@ -209,6 +209,34 @@ describe("initBrowserTelemetry", () => {
       "react.component_stack": "at X",
     });
   });
+
+  it("tells the RPC span stage what it may record: forensics per rpcForensics, nothing once disabled", async () => {
+    stubDom();
+    let { t, k } = await load();
+    let gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: true,
+    });
+    k.disableTelemetry();
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: false,
+      forensics: false,
+    });
+
+    ({ t, k } = await load());
+    gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      rpcForensics: false,
+    });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: false,
+    });
+  });
 });
 
 describe("reportException de-duplication", () => {

@@ -8,6 +8,7 @@
     "node": ">=22.12"
   },
   "// vitest range note": "vitest is ^5 on purpose, and internal/templates/frontend_vitest_pin_test.go pins the major so the next bump is a decision rather than a drift. 3.x pulls tinypool (GHSA-5gmw-xhrv-c9v3 and GHSA-85c8-ppgw-ccpr, critical) and a vulnerable @vitest/mocker (GHSA-82fw-gwwq-j7x9), which failed a fresh project's own vuln-npm gate. 4.x carries neither, but npm 10 (the npm Node 22 ships) crashes resolving its peer set with \"Cannot read properties of null (reading 'edgesOut')\", so `npm install` never finishes. 5.x installs and audits clean. Same pin as the vite-spa scaffold.",
+  "// zod note": "zod and @hookform/resolvers move together, and forge reads both here: a create/edit page it generates later is written for the majors this file declares (zod 3 or a resolver below 5 gets the older form). zod stays at 4.6.6 or later for GHSA-mrhx-c7xc-m3w5; react-hook-form at 7.55 or later, which @hookform/resolvers 5+ requires.",
   "scripts": {
     "dev": "next dev --webpack",
     "build": "NODE_ENV=production next build --webpack",
@@ -24,7 +25,7 @@
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
     "@connectrpc/connect-web": "^2.0.0",
-    "@hookform/resolvers": "^3.9.0",
+    "@hookform/resolvers": "^7.0.7",
     "@opentelemetry/api": "^1.9.0",
     "@reliantlabs/forge-web-runtime": "^0.13.0",
     "@tanstack/react-query": "^5.62.0",
@@ -38,8 +39,8 @@
     "next": "^16.3.5",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-hook-form": "^7.53.0",
-    "zod": "^3.23.0",
+    "react-hook-form": "^7.55.0",
+    "zod": "^4.6.6",
     "zustand": "^5.0.0"
   },
   "devDependencies": {

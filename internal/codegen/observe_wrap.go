@@ -126,3 +126,53 @@ func DetectObserveChainSeam(dir string) bool {
 	}
 	return false
 }
+
+// UnreferencedObserveChainSeam returns the name of the file in dir that
+// declares the owned newObserveChain seam when no hand-written source in the
+// package calls it, and "" otherwise (no seam, a caller exists, or dir is
+// unreadable).
+//
+// The only caller forge writes is the generated decorator (middleware_gen.go),
+// so a package that opts out with `// forge:no-observe` loses it and its seam
+// becomes dead code that golangci's `unused` rejects. The seam is the user's
+// file, so forge names it rather than deleting it. Generated and test files are
+// ignored, as in DetectObserveChainSeam, and so is the seam's own body: a
+// recursive call is not a use.
+func UnreferencedObserveChainSeam(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	fset := token.NewFileSet()
+	seamFile := ""
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") ||
+			strings.HasSuffix(name, "_test.go") || strings.HasSuffix(name, "_gen.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			// An unparseable file might hold the caller; claiming the seam is
+			// unused would then be wrong.
+			return ""
+		}
+		for _, decl := range file.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name != nil && fn.Name.Name == observeChainSeamFunc {
+				seamFile = name
+				continue
+			}
+			referenced := false
+			ast.Inspect(decl, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && id.Name == observeChainSeamFunc {
+					referenced = true
+				}
+				return !referenced
+			})
+			if referenced {
+				return ""
+			}
+		}
+	}
+	return seamFile
+}

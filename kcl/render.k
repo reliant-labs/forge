@@ -1983,7 +1983,9 @@ _render_delivery_policy = lambda p: DeliveryPolicy, hosted: bool -> any {
 }
 
 # ReleaseHealth, resolved. The key set is the release shape's
-# `release_health`; the window is in seconds and fail_on is sorted.
+# `release_health`; the window is in seconds and fail_on is sorted, without
+# the findings warn_on demotes (the shape records only the failing set, so
+# every reader, of any age, judges by it).
 # require_baseline is present only when it is not the default ("any"), and
 # regressed_issue_min_events only when it is set and differs from
 # new_issue_min_events (which it follows unset), and error_rate_min_errors
@@ -1997,7 +1999,7 @@ _render_release_health = lambda h: ReleaseHealth -> any {
         "max_error_rate_increase": h.max_error_rate_increase
         "max_p95_ratio": h.max_p95_ratio
         "new_issue_min_events": h.new_issue_min_events
-        "fail_on": sorted(h.fail_on)
+        "fail_on": sorted([c for c in h.fail_on if c not in h.warn_on])
         if h.require_baseline != "any":
             "require_baseline": h.require_baseline
         if h.regressed_issue_min_events and h.regressed_issue_min_events != h.new_issue_min_events:
@@ -2892,6 +2894,8 @@ _otel_endpoint_declared = lambda f: Frontend -> bool {
 #   REPLAY_SAMPLE_RATE   only when it is not every session
 #   PAGE_VIEWS           "false" only; unset means page_viewed events
 #   IDENTIFY_USER        "false" only; unset means the signed-in user is stamped
+#   RPC_FORENSICS        "false" only; unset means a failed RPC's span carries
+#                        its redacted request shape
 #   ANALYTICS_MODE       telemetry.analytics.mode, only when it is not the
 #                        default "identified" and browser telemetry is not
 #                        off; unset means identified
@@ -2905,6 +2909,7 @@ _telemetry_runtime_config = lambda f: Frontend, bundle: Bundle -> {str:str} {
         | ({REPLAY_SAMPLE_RATE = str(_t.replay_sample_rate)} if _t and _t.replay_sample_rate != 1.0 else {}) \
         | ({PAGE_VIEWS = "false"} if _t and not _t.page_views else {}) \
         | ({IDENTIFY_USER = "false"} if _t and not _t.identify_user else {}) \
+        | ({RPC_FORENSICS = "false"} if _t and not _t.rpc_forensics else {}) \
         | ({ANALYTICS_MODE = _t.analytics.mode} if _t and _t.analytics and _t.analytics.mode != "identified" and not _obs_browser_off(bundle) else {})
 }
 

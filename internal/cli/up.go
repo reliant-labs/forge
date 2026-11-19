@@ -54,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/procguard"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 
@@ -901,8 +902,14 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// defer closes it for every other way out, a failure included — the
 	// failed run is the one whose timings are most worth having.
 	timings := newUpTimings(nil)
+	// When this run started: the per-RPC table's window (up_endpoints.go).
+	upStarted := time.Now()
 	timingsRun := upTimingsRun{opts: opts, version: runningForgeVersion(), runID: newUpRunID()}
 	ctx = withUpTimings(ctx, timings)
+	// A failed run's last line is its RESULT line (command_result.go).
+	// Registered first so it runs last, after the timings record took the
+	// error as it was.
+	defer func() { err = upResultOnError(err, opts.env, timings.failedStage()) }()
 	defer func() { finishUpTimings(timings, timingsRun, err, os.Stderr) }()
 
 	// PROXY PREFLIGHT, first thing. When the environment routes through an HTTP
@@ -1318,6 +1325,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err != nil {
 		return err
 	}
+	// One health rpc to each host service, now, so its span is stored by
+	// the time the per-RPC table below reads it (up_endpoints.go).
+	healthSent := sendUpHealthProbes(ctx, upStarted, collectUpServices(entities, opts.env, opts.targets, frontendsOn, portInUse))
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
 	// run (readiness gate passed), so the schema is current. Warn-never-
 	// fatal: a seed failure never breaks the dev loop.
@@ -1351,7 +1361,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// the summary lists exactly the frontends this run actually started.
 	// The cluster verdict rides in the same box: the half of "what came up"
 	// that runs in Kubernetes was missing from it entirely.
-	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
+	upRows := printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
 
 	// Opportunistic storage maintenance, after the summary so its output never
 	// pushes the URLs off screen, and only on an env that actually came up —
@@ -1361,6 +1371,15 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// a 24h timestamp, and never fatal. See storage_converge.go.
 	if upReclaimsStorage(entities, clusterErr) {
 		maybeOpportunisticGC(ctx, os.Stdout, declaredRegistryContainers(entities.Clusters))
+	}
+	// The stack is up: what its RPCs did, then one line saying so, the last
+	// of the bring-up. A run whose cluster gate failed gets its line on the
+	// error instead.
+	if clusterErr == nil {
+		if upHasHostService(upRows) {
+			printUpEndpoints(ctx, os.Stdout, opts.env, healthSent)
+		}
+		fmt.Printf("\n%s\n", upResult(opts.env, upRows, detach).Line())
 	}
 
 	// PRESENCE, reported after the stack is actually up (§7.4). Here and
@@ -2243,7 +2262,7 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // It is what makes the box tell the truth about BOTH halves of what was
 // brought up; a box that lists only host processes is the same silence the
 // exit code used to keep.
-func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary, registries ...*procRegistry) {
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary, registries ...*procRegistry) []upServiceRow {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
 	for i := range rows {
 		if rows[i].Port <= 0 && len(registries) > 0 {
@@ -2257,7 +2276,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	probeRowsListening(compose, portInUse)
 	rows = append(rows, compose...)
 	if len(rows) == 0 && cluster == nil {
-		return
+		return rows
 	}
 	var trailers []string
 	// The lifecycle trailer is about the host/frontend children. With no
@@ -2282,6 +2301,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	// notReadyLabel="starting" because a just-launched port not yet bound is
 	// booting, not down.
 	renderUpSummary(os.Stdout, env, rows, "starting", false, trailers, cluster)
+	return rows
 }
 
 // authParityTrailer returns a one-line banner warning when this environment's
@@ -3736,6 +3756,12 @@ type procRegistry struct {
 	// readStopTable reads the process table for the shutdown sweep; nil is
 	// the OS table. A test injects a failing or modelled one.
 	readStopTable func() (*stopTable, error)
+	// selfLineage is the command's own lineage, which the sweep never
+	// selects; nil is procguard.Self. A test with a modelled table injects
+	// an empty one, so a modelled pid that happens to be a real ancestor of
+	// the test process (Windows pids are small multiples of 4) is not
+	// skipped.
+	selfLineage func() procguard.Lineage
 }
 
 // stopped reports whether shutdown has run, so a second teardown path (a

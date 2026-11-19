@@ -141,6 +141,9 @@ func TestLintHelpSurface(t *testing.T) {
 		"migration-safety",
 		"no-fix",
 		"optional-deps-guard",
+		// The pre-commit buf-format hook's own check; visible so the lane a
+		// refused commit names is one --help shows.
+		"proto-format",
 		// A continuous rule about the user's own protos, and the only place
 		// a misspelled forge:* marker surfaces at all — visible for the same
 		// reason column-markers is.

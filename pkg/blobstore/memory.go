@@ -39,6 +39,7 @@ var (
 	_ Store             = (*Memory)(nil)
 	_ LevelLister       = (*Memory)(nil)
 	_ DownloadPresigner = (*Memory)(nil)
+	_ ObjectAccess      = (*Memory)(nil)
 )
 
 // Put stores data at key, as a completed upload would. It is the test's

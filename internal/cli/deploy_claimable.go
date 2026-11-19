@@ -169,6 +169,22 @@ type deployClaimJSON struct {
 	// connection to, or resolve a name on, the internet until it is claimed.
 	// Absent for a static site, which makes no outbound calls.
 	NoOutboundInternet bool `json:"no_outbound_internet,omitempty"`
+	// ConsoleURL is the project's page in the Reliant console: where the
+	// person who claims the deploy finds its releases, logs and dashboards.
+	// Empty when forge does not know the control plane's web app.
+	ConsoleURL string `json:"console_url,omitempty"`
+}
+
+// afterClaimNote is what the person who claims a deploy gets, for the agent to
+// pass on. Every clause is the control plane's behaviour on claim
+// (control-plane internal/claimable: the deploy's org becomes theirs, the
+// agent's claimable token is revoked, the org follows the normal plan rules)
+// and the claim page's own copy ("The free plan includes one static site").
+func afterClaimNote(env string) string {
+	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): the free plan "+
+		"includes one static site, and a backend or database needs billing on their account. "+
+		"This machine's claimable credential stops working at the claim; to redeploy as them: %s login, then %s env deploy %s",
+		Name(), Name(), env)
 }
 
 // claimAttemptJSON is the `claim.last_attempt` object.
@@ -349,8 +365,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if deployErr != nil {
 			return claimableDeployError(envName, deployErr)
 		}
+		doc := session.document(compute)
+		doc.ConsoleURL = deployConsole(ep.URL, project).Home(envName)
+		noteDeployClaim(ctx, doc)
 		if !f.jsonOut {
-			printClaimBlock(os.Stdout, envName, session.document(compute))
+			printClaimBlock(os.Stdout, envName, doc)
 		}
 		return nil
 	}()
@@ -1077,6 +1096,8 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
 	if !published {
 		instr = nothingPublishedInstructions(env, cl)
+	} else if claimableState(state) {
+		instr += ". " + afterClaimNote(env)
 	}
 	if compute {
 		instr += ". " + noOutboundNote
@@ -1169,6 +1190,27 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 		fmt.Fprintf(w, "  not a bug in the app. It ends when the deploy is claimed: the platform restarts\n")
 		fmt.Fprintf(w, "  the backend on the normal hosted network.\n")
 	}
+	if claimableState(c.State) {
+		printAfterClaim(w, env, c.ConsoleURL)
+	}
+}
+
+// claimableState reports whether a deploy in state can still be claimed: live,
+// or suspended (offline, not yet deleted). What the claimer gets is said only
+// then; a claimed or expired deploy has no claim left to make.
+func claimableState(state string) bool { return state == "live" || state == "suspended" }
+
+// printAfterClaim tells the agent what to pass on about owning the deploy:
+// where it is managed, what the free plan covers, and how to redeploy once
+// this machine's claimable credential is revoked (afterClaimNote).
+func printAfterClaim(w io.Writer, env, consoleURL string) {
+	fmt.Fprintf(w, "\n  ONCE CLAIMED it is theirs, in their own Reliant account (free to sign up).\n")
+	if consoleURL != "" {
+		fmt.Fprintf(w, "  Its releases, logs and dashboards: %s (signed in)\n", consoleURL)
+	}
+	fmt.Fprintf(w, "  The free plan includes one static site; a backend or database needs billing on their account.\n")
+	fmt.Fprintf(w, "  The claim revokes this machine's claimable credential. To redeploy as them:\n")
+	fmt.Fprintf(w, "  %s login, then %s env deploy %s\n", Name(), Name(), env)
 }
 
 // formatLifetime renders a span as hours (72h, 41h) up to three days, days

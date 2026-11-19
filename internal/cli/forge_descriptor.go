@@ -508,8 +508,8 @@ func fieldHasOwnerMarker(f *protogen.Field) bool {
 // `// forge:request-option` as its LEADING or TRAILING comment: on a List
 // request, a request knob rather than a filter (codegen.ProtoMarkerRequestOption).
 func fieldHasRequestOptionMarker(f *protogen.Field) bool {
-	return codegen.RequestOptionMarkerCommentRE.MatchString(string(f.Comments.Leading)) ||
-		codegen.RequestOptionMarkerCommentRE.MatchString(string(f.Comments.Trailing))
+	return codegen.CommentMarksRequestOption(string(f.Comments.Leading)) ||
+		codegen.CommentMarksRequestOption(string(f.Comments.Trailing))
 }
 
 // fieldGeneratedExpr returns the SQL expression a `// forge:generated <expr>`

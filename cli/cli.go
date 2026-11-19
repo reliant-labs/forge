@@ -49,6 +49,26 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	return internalcli.ResolvePinnedForge(ctx, projectRoot, command, log)
 }
 
+// ResolvePinnedForgePath is `forge version --pinned` for a host: the forge the
+// project at or above dir ("" for the working directory) pins, ready to run,
+// whether or not it is this one. Unlike ResolvePinnedForge, which answers only
+// when the command must be handed elsewhere, it always names an executable:
+// this forge's own (os.Executable(), Source "self", and Args ["forge"] when
+// forge is embedded in it) when this forge already is the pin; otherwise the
+// pinned forge, obtained exactly as HandOffToPinned obtains it — the linked
+// checkout's build, the project's .tools/bin/forge, the cache, or a build —
+// and checked to report the pinned version. It errors, running nothing, when
+// there is no project, no forge_version, or the pinned forge cannot be had.
+// The hand-off's overrides (FORGE_ALLOW_VERSION_SKEW) do not change the
+// answer: they say which forge to run, not which one is pinned. log receives
+// the one-time build notice.
+func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (PinnedForge, error) {
+	return internalcli.ResolvePinnedForgePath(ctx, dir, log)
+}
+
+// PinnedSourceSelf is PinnedForge.Source when this forge is the project's.
+const PinnedSourceSelf = internalcli.PinnedSourceSelf
+
 // SetVersion sets the version, build date, and git commit for the Forge CLI.
 func SetVersion(version, buildDate, gitCommit string) {
 	internalcli.SetVersion(version, buildDate, gitCommit)

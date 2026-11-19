@@ -319,7 +319,9 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 			return err
 		}
 	}
-	if projectRoot == "" {
+	if projectRoot == "" || versionPinnedRun(cmd, rel) {
+		// `version --pinned` reports the skew as its answer; the warning
+		// would only restate it, and probe the forge it is about to find.
 		return nil
 	}
 	readOnlyFlags, gated := pinGateFor(rel)

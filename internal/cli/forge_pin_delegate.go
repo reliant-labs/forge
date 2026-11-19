@@ -72,6 +72,10 @@ import (
 // describe or operate this binary or this machine, not the project.
 //
 //   - version, help, completion: about this binary and this shell.
+//     `version --pinned` included: it ANSWERS which forge the project pins
+//     (forge_pinned.go), so handing it to that forge would only make the
+//     answer depend on the forge in hand, and a tool outside the project
+//     asks it precisely because it cannot reach the pin itself.
 //   - project upgrade: moves the pin, so it is run by the forge being moved
 //     TO, and must work when the old pin cannot be built.
 //   - project new: the project it writes is not the one around the cwd.
@@ -533,6 +537,19 @@ type PinnedForge struct {
 	Key string
 	// Want says which forge the project wants, for a message.
 	Want string
+	// Source says where Path came from: PinnedSourceSelf (this forge is the
+	// project's), or forgedelegate's KindTools, KindCache or KindBuilt.
+	Source string
+	// Args are the arguments that come before forge's own when running Path:
+	// ["forge"] when Path is this forge's executable and forge is embedded
+	// in it (`reliant forge`), else none. Set by ResolvePinnedForgePath.
+	Args []string
+	// Version is the version Path reports. Set by ResolvePinnedForgePath.
+	Version string
+	// Pin is forge.yaml's forge_version, and Checkout the local forge
+	// checkout the project is linked to, when it is. Set by
+	// ResolvePinnedForgePath.
+	Pin, Checkout string
 }
 
 // ResolvePinnedForge is the hand-off's decision and resolution without the
@@ -553,7 +570,7 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String()}, true, nil
+	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(), Source: res.Kind}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an

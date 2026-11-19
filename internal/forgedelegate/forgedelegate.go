@@ -133,7 +133,20 @@ type Result struct {
 	Path string
 	// Source says where it came from, for the one-line notice.
 	Source string
+	// Kind says where it came from, for a program: KindTools, KindCache or
+	// KindBuilt.
+	Kind string
 }
+
+// The Kinds of Result.
+const (
+	// KindTools is the project's own .tools/bin/forge.
+	KindTools = "tools"
+	// KindCache is a build this resolver made earlier and kept.
+	KindCache = "cache"
+	// KindBuilt is a build this call made.
+	KindBuilt = "built"
+)
 
 // CacheDirEnv relocates the builds the resolver keeps (default
 // <user cache dir>/forge/pinned), for read-only home directories and test
@@ -216,7 +229,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 		return Result{}, errors.New("forge.yaml pins no forge_version")
 	}
 	if local, ok := r.LocalPinned(ctx, projectRoot, pin); ok {
-		return Result{Path: local, Source: "the project's .tools/bin/forge"}, nil
+		return Result{Path: local, Source: "the project's .tools/bin/forge", Kind: KindTools}, nil
 	}
 
 	dir, err := r.cacheDir()
@@ -232,7 +245,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
 		touch(entry)
-		return Result{Path: bin, Source: "the cached build of " + pin}, nil
+		return Result{Path: bin, Source: "the cached build of " + pin, Kind: KindCache}, nil
 	}
 
 	if err := os.MkdirAll(entry, 0o755); err != nil {
@@ -245,7 +258,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	defer done()
 	if tmp == "" {
 		touch(entry)
-		return Result{Path: bin, Source: "the cached build of " + pin}, nil
+		return Result{Path: bin, Source: "the cached build of " + pin, Kind: KindCache}, nil
 	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge %s (one time; cached in %s)\n", pin, dir)
@@ -264,7 +277,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	touch(entry)
 	r.prune(dir, safeName(pin))
-	return Result{Path: bin, Source: "forge " + pin + " (just built)"}, nil
+	return Result{Path: bin, Source: "forge " + pin + " (just built)", Kind: KindBuilt}, nil
 }
 
 // dirtyPinError says why the +dirty pin cannot be obtained, naming the clean
@@ -307,7 +320,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	bin := filepath.Join(entry, exeName())
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
 		touch(entry)
-		return Result{Path: bin, Source: "the build of checkout " + dir}, nil
+		return Result{Path: bin, Source: "the build of checkout " + dir, Kind: KindCache}, nil
 	}
 	if err := os.MkdirAll(entry, 0o755); err != nil {
 		return Result{}, err
@@ -319,7 +332,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	defer done()
 	if tmp == "" {
 		touch(entry)
-		return Result{Path: bin, Source: "the build of checkout " + dir}, nil
+		return Result{Path: bin, Source: "the build of checkout " + dir, Kind: KindCache}, nil
 	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge from the checkout %s (cached until it changes)\n", dir)
@@ -339,7 +352,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	}
 	touch(entry)
 	r.prune(cache, filepath.Base(filepath.Dir(entry)))
-	return Result{Path: bin, Source: "forge built from checkout " + dir}, nil
+	return Result{Path: bin, Source: "forge built from checkout " + dir, Kind: KindBuilt}, nil
 }
 
 // buildSettings are the environment variables that change the bytes `go

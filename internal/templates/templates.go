@@ -121,6 +121,25 @@ func (c TemplateCategory) Get(name string) ([]byte, error) {
 	return stripBuildIgnore(data), nil
 }
 
+// SourceRoot is where the embedded template tree lives in forge's module
+// source: a SourcePath joined under it names the same file in any forge
+// release's module directory.
+const SourceRoot = "internal/templates"
+
+// SourcePath names the template file Get and Render read for name, as a
+// slash path in the embedded tree (e.g. "project/Taskfile.yml.tmpl").
+func (c TemplateCategory) SourcePath(name string) string {
+	return path.Join(c.basePath, filepath.ToSlash(name))
+}
+
+// Source returns a template file's bytes exactly as this forge embeds them,
+// by its SourcePath — raw, before any //go:build ignore strip or render. It
+// is what `forge project upgrade` compares with the same file in an older
+// forge's module source to learn whether a template changed between them.
+func Source(sourcePath string) ([]byte, error) {
+	return templateFS.ReadFile(sourcePath)
+}
+
 // selfDefaulting is a payload that can fill its own optional fields before
 // rendering. Declared HERE, at the consumer, and deliberately one method wide:
 // Render's whole knowledge of the idea is "ask the payload to complete itself,"

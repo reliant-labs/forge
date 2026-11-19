@@ -116,6 +116,15 @@ is bumped to the current binary version (or to --to when provided). Migrations
 whose declared version range AND detection script both match this project are
 surfaced first, so the LLM running upgrade can follow them step-by-step.
 
+Across a pin bump, the template report lists only the files whose forge
+template changed between the pinned forge and this one (compared with the
+pinned forge's source in the module cache), and counts the rest in one line
+per section: they are the same rows the last bump listed. --all lists every
+file. When the pinned forge's source is not in the module cache, every file is
+listed and the report says why. --json carries every row either way, as
+template_drift_rows with changed_in_range (null when it could not be told),
+and template_drift_hidden counts the rows the text left out.
+
 --check SUMMARIZES; --check <path> DETAILS. The report names each file that
 differs and sizes the difference in lines — it does NOT print diffs inline,
 because on a real project that is thousands of lines nobody reads. Files are
@@ -392,6 +401,13 @@ type upgradeCounts struct {
 	// modifiedRows are the user-modified rows, sized, for the remedy
 	// block to rank the same way the listing above it did.
 	modifiedRows []driftRow
+	// shownRows are the modifiedRows the listing printed: all of them
+	// under --all, otherwise those whose template the range changed (or
+	// could not tell). The remedy block offers commands for these only.
+	shownRows []driftRow
+	// hiddenByRange is how many modifiedRows the listing left out because
+	// their template did not change in the range.
+	hiddenByRange int
 }
 
 // tallyAndPrintUpgradeResults reports the managed (Tier-2) lane and returns
@@ -406,7 +422,12 @@ type upgradeCounts struct {
 // Files that are up to date are counted, not listed. "up to date" is the
 // answer to a question nobody asked while looking for what changed; the
 // headline count carries it.
-func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showAll bool) upgradeCounts {
+//
+// A user-modified row whose template the upgrade's range did not change is
+// counted in one line instead of listed (driftView): it is the same row the
+// last bump printed, and nothing this bump did is in it.
+func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check bool, view driftView) upgradeCounts {
+	showAll := view.showAll
 	var c upgradeCounts
 	var updatedRows, modifiedRows []driftRow
 	for _, r := range results {
@@ -424,6 +445,7 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		case generator.UpgradeUserModified:
 			c.userModified++
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
+			row.Changed = view.rng.changed(r.Template)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
 			switch {
@@ -478,7 +500,8 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		printDriftGroup(updatedTitle(check), refreshes, showAll)
 	}
 	if len(modifiedRows) > 0 {
-		cheap, merge, absent := groupDriftRows(modifiedRows)
+		c.shownRows, c.hiddenByRange = view.split(modifiedRows)
+		cheap, merge, absent := groupDriftRows(c.shownRows)
 		// Cheap first: these are the rows where `--force <path>` is a
 		// complete answer, and burying them under the merges is the
 		// defect this report exists to fix.
@@ -492,6 +515,8 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		printDriftGroup("Cheap adopts (nothing here the template lacks):", cheap, showAll)
 		printDriftGroup("Your lines and the template's (merge by hand):", merge, showAll)
 		printDriftGroup("Shipped by the template, absent here:", absent, showAll)
+		view.noteUnknown(c.shownRows)
+		view.printCollapse(c.hiddenByRange, len(c.shownRows))
 	}
 	return c
 }
@@ -555,15 +580,19 @@ func forcedNote(check bool) string {
 //
 // The cheap rows lead, because those are the ones where running the
 // printed command is the whole job.
+//
+// Only the rows the listing showed get a command: a remedy for a row the
+// reader was not shown is a command they cannot judge. The hidden ones are
+// one --all away, remedies included.
 func printUserModifiedRemedies(c upgradeCounts, showAll bool) {
-	paths := c.userModifiedPaths
-	if len(paths) == 0 {
+	rows := c.shownRows
+	if len(rows) == 0 {
 		return
 	}
-	cheap, merge, absent := groupDriftRows(c.modifiedRows)
+	cheap, merge, absent := groupDriftRows(rows)
 
 	fmt.Println()
-	fmt.Printf("  Two ways to resolve the %d file(s) with local edits:\n", len(paths))
+	fmt.Printf("  Two ways to resolve the %d file(s) with local edits:\n", len(rows))
 	if len(cheap) > 0 || len(absent) > 0 {
 		fmt.Println("  Adopt the current template for one file (its contents are replaced):")
 		printAdoptCommands(append(append([]driftRow{}, cheap...), absent...), showAll)
@@ -574,7 +603,7 @@ func printUserModifiedRemedies(c upgradeCounts, showAll bool) {
 		printAdoptCommands(merge, showAll)
 	}
 	fmt.Println("  Or claim a file as yours — upgrade never touches it again, even with --force:")
-	fmt.Printf("    %s project disown %s --reason \"<what the template can't express>\"\n", Name(), paths[0])
+	fmt.Printf("    %s project disown %s --reason \"<what the template can't express>\"\n", Name(), rows[0].Path)
 	printDetailPointer()
 }
 

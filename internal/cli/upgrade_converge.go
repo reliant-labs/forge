@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/lint"
@@ -113,6 +114,15 @@ type upgradeReport struct {
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
+	// TemplateDriftRows are every file both template lanes report and do
+	// not write — upgrade-managed ("managed") and scaffold-once — sized,
+	// with whether the range changed its template (upgrade_drift_range.go).
+	// TemplateDriftHidden is how many of them the text did not list, and
+	// TemplateDriftRangeNote why changed_in_range is null for all of them,
+	// when the pinned forge's templates could not be read.
+	TemplateDriftRows      []upgradeDriftRow `json:"template_drift_rows"`
+	TemplateDriftHidden    int               `json:"template_drift_hidden"`
+	TemplateDriftRangeNote string            `json:"template_drift_range_note,omitempty"`
 	// Offers are scaffold-once files this project never had whose
 	// templates are not new across the range: upgrade did not add them,
 	// and Command does.
@@ -132,6 +142,11 @@ type upgradePhase struct {
 	// Status is done, skipped, planned (--check) or failed.
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// DurationMS is the phase's wall time. A phase --skip left out did not
+	// run and records 0; one that ran and found nothing to do under the
+	// mode (generate and lint under --check) records the time it took to
+	// decide that.
+	DurationMS int64 `json:"duration_ms"`
 }
 
 type upgradeCodemodRun struct {
@@ -247,6 +262,7 @@ type upgradeRun struct {
 // report; the error, when set, is what the process exits with.
 func runUpgradeConverge(opts upgradeOptions) (*upgradeReport, error) {
 	rep := newUpgradeReport(opts)
+	rep.TemplateDriftRows = []upgradeDriftRow{}
 	err := convergeUpgrade(opts, rep)
 	rep.stamp(err)
 	rep.Converged = err == nil && !opts.check && len(rep.NeedsHuman) == 0
@@ -349,13 +365,16 @@ func (r *upgradeRun) banner() {
 	printApplicableMigrations(r.projectDir, r.from)
 }
 
-// step runs one phase and records its status. A skipped phase is recorded and
-// not run; a failed one stops the run with its error.
+// step runs one phase and records its status and wall time. A skipped phase
+// is recorded and not run (duration 0); a failed one stops the run with its
+// error.
 func (r *upgradeRun) step(name string, run func() error) error {
 	if r.opts.skip[name] {
 		r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: "skipped", Detail: r.skipDetail(name)})
 		return nil
 	}
+	start := time.Now()
+	defer func() { r.setPhaseDuration(name, time.Since(start)) }()
 	err := run()
 	switch {
 	case err != nil:
@@ -368,6 +387,16 @@ func (r *upgradeRun) step(name string, run func() error) error {
 		r.setPhase(name, status, "")
 	}
 	return err
+}
+
+// setPhaseDuration records how long a phase that ran took.
+func (r *upgradeRun) setPhaseDuration(name string, d time.Duration) {
+	for i := range r.rep.Phases {
+		if r.rep.Phases[i].Name == name {
+			r.rep.Phases[i].DurationMS = d.Milliseconds()
+			return
+		}
+	}
 }
 
 func (r *upgradeRun) hasPhase(name string) bool {
@@ -508,13 +537,22 @@ func (r *upgradeRun) phaseTemplates() error {
 	if err != nil {
 		return err
 	}
-	counts := tallyAndPrintUpgradeResults(results, r.check, r.opts.showAll)
+	rng := newTemplateRange(r.from, r.target)
+	view := driftView{showAll: r.opts.showAll, rng: rng}
+	counts := tallyAndPrintUpgradeResults(results, r.check, view)
 	printSkippedPaths(counts, r.opts.showAll)
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
 	r.rep.Offers = append(r.rep.Offers, counts.offers...)
-	if _, err := runAdvisoryPass(r.projectDir, r.cfg, selection, r.check, r.opts.showAll); err != nil {
+	adv, err := runAdvisoryPassView(r.projectDir, r.cfg, selection, r.check, view)
+	if err != nil {
 		return err
+	}
+	appendDriftRows(r.rep, "managed", counts.modifiedRows)
+	appendDriftRows(r.rep, "scaffold-once", adv.rows)
+	r.rep.TemplateDriftHidden = counts.hiddenByRange + adv.hidden
+	if rng.dir == "" && len(r.rep.TemplateDriftRows) > 0 {
+		r.rep.TemplateDriftRangeNote = rng.why
 	}
 	r.setPhase("templates", map[bool]string{true: "planned", false: "done"}[r.check],
 		fmt.Sprintf("%d updated, %d modified by you (kept), %d up to date", counts.updated, counts.userModified, counts.upToDate))
@@ -933,6 +971,9 @@ func countStartsGating(rows []upgradeStartsGating, errs []lintDocFinding) {
 
 // printUpgradeSummary is the human tail: what is left, and what is coming.
 func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
+	if line := slowPhasesLine(rep.Phases); line != "" {
+		fmt.Fprintf(w, "\n%s\n", line)
+	}
 	if len(rep.StartsGating) > 0 {
 		fmt.Fprintf(w, "\nStarts gating at %s (warn-first rules whose grace this pin ends):\n", rep.To)
 		for _, g := range rep.StartsGating {

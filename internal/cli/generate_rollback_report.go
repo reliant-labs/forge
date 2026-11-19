@@ -146,6 +146,53 @@ type rollbackReport struct {
 	// afresh by the next run, so when one of them is what broke this run
 	// the user needs the way to decline it, here, rather than in a skill.
 	Unborn []string
+	// Spared are files this run wrote that another writer changed
+	// afterwards (an agent or editor in the same checkout). The revert left
+	// them as that writer left them rather than destroy its bytes
+	// (forge#2267).
+	Spared []string
+	// Unverified are files the revert could not verify (unreadable, now or
+	// before the run) and so left as they are rather than overwrite or
+	// delete them blind.
+	Unverified []string
+}
+
+// writeSparedFiles names the files the revert left to the writer that
+// changed them after this run did.
+func writeSparedFiles(w io.Writer, spared []string) {
+	if len(spared) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n   ✋ %d file(s) this run wrote were changed by someone else afterwards (new bytes, or replaced by a symlink or directory), so they were NOT reverted (that writer's bytes are kept; check they build with the rest of the tree):\n", len(spared))
+	shown := spared
+	if len(shown) > residueListLimit {
+		shown = shown[:residueListLimit]
+	}
+	for _, p := range shown {
+		fmt.Fprintf(w, "      - %s\n", p)
+	}
+	if more := len(spared) - len(shown); more > 0 {
+		fmt.Fprintf(w, "      … and %d more\n", more)
+	}
+}
+
+// writeUnverifiedFiles names the files the revert could not verify and so
+// left as they are.
+func writeUnverifiedFiles(w io.Writer, unverified []string) {
+	if len(unverified) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n   ❔ %d file(s) could not be verified (unreadable, or forge could not record its own write), so they were left as is — check them by hand:\n", len(unverified))
+	shown := unverified
+	if len(shown) > residueListLimit {
+		shown = shown[:residueListLimit]
+	}
+	for _, p := range shown {
+		fmt.Fprintf(w, "      - %s\n", p)
+	}
+	if more := len(unverified) - len(shown); more > 0 {
+		fmt.Fprintf(w, "      … and %d more\n", more)
+	}
 }
 
 // goBuildRestoredTree runs `go build ./...` against the tree the rollback
@@ -285,6 +332,8 @@ func writeRollbackReport(w io.Writer, rep rollbackReport) {
 		writePreRunDoesNotCompileNote(w)
 	}
 	writeUnbornScaffolds(w, rep.Unborn)
+	writeSparedFiles(w, rep.Spared)
+	writeUnverifiedFiles(w, rep.Unverified)
 
 	// 3. The post-rollback errors, quarantined behind the artifact marker.
 	if rep.Consistency.Checked && !rep.Consistency.Builds && strings.TrimSpace(rep.Consistency.Output) != "" {

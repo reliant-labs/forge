@@ -48,7 +48,7 @@ func TestAuthenticate_EnrichCannotChangeTheCredential(t *testing.T) {
 			}
 			a := &interceptor{policy: p}
 
-			ctx, err := a.authenticate(context.Background(), "Bearer x")
+			ctx, err := a.authenticate(context.Background(), "Bearer x", ChannelAuthorization)
 			if err != nil {
 				t.Fatalf("authenticate: %v", err)
 			}

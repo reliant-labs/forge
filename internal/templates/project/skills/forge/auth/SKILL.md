@@ -129,6 +129,20 @@ Two forge-specific facts worth knowing before you write it:
 - **`middleware.GetUser(ctx)` is where the principal comes from.** The
   interceptor already proved the caller has an identity; that call gets it.
 
+## Requiring a person in the browser
+
+The same user can call you from the app (the HttpOnly session cookie) and from software holding their token (`Authorization: Bearer`, a CLI, an agent). For a sensitive action — approving something, managing keys — require the cookie:
+
+```go
+m, _ := middleware.AuthMethod(ctx) // forge/pkg/authn: Channel + Credential kind
+if !m.IsBrowserSession() {          // cookie channel, and not an API key
+    return nil, connect.NewError(connect.CodePermissionDenied,
+        errors.New("approve this in the app, signed in"))
+}
+```
+
+The interceptor records the method beside the claims, from the request and the validator's credential kind, so no token's contents and no `Enrich` can set it. A page's scripts cannot read an HttpOnly cookie or turn it into a header, which is why the cookie is the person signal; a non-browser client can still send a `Cookie` header, so a cookie holding a server-side session id proves more than one holding the bearer token itself. It adds nothing against CSRF beyond the cookie's SameSite (see `credentialFrom`'s comment in `pkg/middleware/middleware.go`). Existing projects get it with no edit: the channel is inferred from where `credentialFrom`'s token sits in the request; `authn.Policy.ExtractCredential` names it exactly. Test such a handler with `authn.ContextWithAuthMethod`.
+
 ## Making a principal an application principal: the `Enrich` seam
 
 The token says who the caller is; your database says what they are. `enrichClaims(ctx, claims)` runs AFTER validation and BEFORE any handler sees the claims — the one chokepoint where an IdP identity becomes an application principal. Hydrate roles/org by `claims.UserID` (the IdP `sub`), never by email.

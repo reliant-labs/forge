@@ -87,6 +87,23 @@
 // With export on, Setup also records Go runtime metrics
 // (go.opentelemetry.io/contrib/instrumentation/runtime).
 //
+// # Resource metrics
+//
+// With export on or off, Setup registers the process and host resource
+// metrics of pkg/resmetrics on its meter provider, so they are on /metrics
+// and, with export on, in OTLP: the process's CPU, RSS, fds against their
+// limit, threads, context switches, page faults, disk IO and uptime, and the
+// machine's CPU, load, memory, swap, filesystems and fd/pid pressure, or —
+// inside a Kubernetes pod — the container's cgroup v2 memory, OOM kills,
+// pressure, throttling and pids instead of the node's. One switch turns them
+// down, and wins over Config.ResourceMetrics:
+//
+//	FORGE_OBSERVE_RESOURCE_METRICS   auto (default) | all | process | host | off
+//	FORGE_OBSERVE_RESOURCE_INTERVAL  max age of a sample, a Go duration (15s; at least 1s)
+//
+// off starts no sampler. OTEL_SDK_DISABLED and OTEL_METRICS_EXPORTER=none
+// govern export only and leave /metrics as it is.
+//
 // # Logs
 //
 // serverkit's logger writes JSON lines to stdout. NewLogHandler adds trace_id

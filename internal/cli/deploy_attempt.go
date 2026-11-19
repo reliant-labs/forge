@@ -135,7 +135,8 @@ type deployAttempt struct {
 	// unresolved, both read the release and both send it. Taken before mu,
 	// never while holding it.
 	reportMu sync.Mutex
-	// flushBackoff overrides attemptFlushBackoff; tests shrink it.
+	// flushBackoff is the first wait between final flush reports
+	// (attemptFlushBackoff, which tests shrink); it doubles per try.
 	flushBackoff time.Duration
 }
 
@@ -172,6 +173,7 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 		nudge:   make(chan struct{}, 1),
 
 		shipsCheckout: deployShipsCheckout(f),
+		flushBackoff:  attemptFlushBackoff,
 	}
 	if run, err := f.promote.run.resolveRun(); err == nil {
 		a.runID, a.runURL = run.ID, run.URL

@@ -59,15 +59,20 @@ func renderProjectTemplate(t *testing.T, name string, data any) []byte {
 	return out
 }
 
-func goldenInventoryRows() []InventoryServiceData {
+// goldenInventoryRows are the inventory rows generate builds for the major:
+// billing declares an RPC named like the mount helper, so its helper is the
+// renamed one (mountMethodFor).
+func goldenInventoryRows(v2 bool) []InventoryServiceData {
+	orders := ServiceDef{Methods: []Method{{Name: "GetOrder"}}}
+	billing := ServiceDef{Methods: []Method{{Name: defaultMountMethod(v2)}}}
 	return []InventoryServiceData{
 		{
-			Name: "orders", FieldName: "Orders", MountMethod: "Register", Package: "orders",
+			Name: "orders", FieldName: "Orders", MountMethod: mountMethodFor(orders, v2), Package: "orders",
 			ConnectPkg: "ordersv1connect", ProtoServiceName: "OrdersService",
 			BaseService: "orders", Version: "v1", Audience: "user",
 		},
 		{
-			Name: "billing", FieldName: "Billing", MountMethod: "Mount", Package: "billing",
+			Name: "billing", FieldName: "Billing", MountMethod: mountMethodFor(billing, v2), Package: "billing",
 			ConnectPkg: "billingv1connect", ProtoServiceName: "BillingService",
 			BaseService: "billing", Version: "v1", HasWebhooks: true, Audience: "daemon",
 		},
@@ -80,7 +85,7 @@ var goldenConnectImports = []string{
 }
 
 func goldenRoutesView(v2 bool) routesGenView {
-	rows := goldenInventoryRows()
+	rows := goldenInventoryRows(v2)
 	orders := routesServiceView{InventoryServiceData: rows[0], Type: "*orders.Service"}
 	billing := routesServiceView{InventoryServiceData: rows[1], Type: "*billing.Service"}
 	return routesGenView{
@@ -128,7 +133,7 @@ func goldenHelperData(v2 bool) componentTestHelperData {
 		ConnectServiceGoName:   "OrdersService",
 		ProtoConnectImportPath: "example.com/shop/gen/services/orders/v1/ordersv1connect",
 		ProtoConnectPkg:        "ordersv1connect",
-		MountMethod:            "Register",
+		MountMethod:            defaultMountMethod(v2),
 		UnfilledDeps:           []UnresolvedAutoStub{{FieldName: "Billing", TypeExpr: "billing.Client"}},
 		ConnectV2:              v2,
 	}
@@ -156,7 +161,7 @@ func connectGoldenCases() []connectGoldenCase {
 		}},
 		{"mounts_services_gen", func(t *testing.T, v2 bool) []byte {
 			return renderProjectTemplate(t, "mounts_services_gen.go.tmpl", InventoryGenData{
-				Module: "example.com/shop", Services: goldenInventoryRows(), ConnectImports: goldenConnectImports, ConnectV2: v2,
+				Module: "example.com/shop", Services: goldenInventoryRows(v2), ConnectImports: goldenConnectImports, ConnectV2: v2,
 			})
 		}},
 		{"mounts_services_gen_empty", func(t *testing.T, v2 bool) []byte {

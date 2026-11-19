@@ -92,6 +92,12 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		// later replace this file with descriptor-derived imports.
 		connectPkg := pkg + "v1connect"
 		connectImport := g.ModulePath + "/gen/services/" + pkg + "/v1/" + connectPkg
+		// The service's mount helper (codegen's mountMethodFor): no RPC
+		// exists yet, so none collides with it.
+		mountMethod := "Register"
+		if g.connectMajor().IsV2() {
+			mountMethod = "RegisterV2"
+		}
 		services = []bootstrapTestService{
 			{
 				Name:                   g.ServiceName,
@@ -101,7 +107,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ConnectServiceGoName:   connectService,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
-				MountMethod:            "Register",
+				MountMethod:            mountMethod,
 				Alias:                  pkg,
 				VarName:                lowerFirstRune(fieldName),
 				// Spelled out rather than taken from

@@ -114,7 +114,7 @@ type MountOptions struct {
 // o.Mount{{.FieldName}} satisfies MountFunc.
 func (o MountOptions) Mount{{.FieldName}}(c *Components, m *mountkit.MuxV2, cfg *config.Config, logger *slog.Logger) []string {
 	r := mountkit.ResolveV2(fmw.HTTPStack(logger, middleware.ClaimsFromContext), o.{{.FieldName}}...)
-	m.Register(c.{{.FieldName}}.RegisterV2, o.{{.FieldName}}...)
+	m.Register(c.{{.FieldName}}.{{if .MountMethod}}{{.MountMethod}}{{else}}RegisterV2{{end}}, o.{{.FieldName}}...)
 	c.{{.FieldName}}.RegisterHTTP(m.Mux(), r.HTTPStack)
 {{- if .HasWebhooks}}
 	c.{{.FieldName}}.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)

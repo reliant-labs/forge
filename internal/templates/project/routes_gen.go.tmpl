@@ -99,7 +99,7 @@ type MountOptions struct {
 // o.{{.FieldName}}'s HTTP stack, else the default. Returns its proto service name.
 func (o MountOptions) Mount{{.FieldName}}(m *mountkit.MuxV2, svc {{.Type}}, logger *slog.Logger) []string {
 	r := mountkit.ResolveV2(fmw.HTTPStack(logger, authn.ClaimsFromContext), o.{{.FieldName}}...)
-	m.Register(svc.RegisterV2, o.{{.FieldName}}...)
+	m.Register(svc.{{if .MountMethod}}{{.MountMethod}}{{else}}RegisterV2{{end}}, o.{{.FieldName}}...)
 	svc.RegisterHTTP(m.Mux(), r.HTTPStack)
 {{- if .HasWebhooks}}
 	svc.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)

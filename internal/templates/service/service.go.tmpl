@@ -71,10 +71,22 @@ func (s *Service) Name() string {
 }
 
 {{if connectV2 . -}}
+{{if eq .MountMethod "MountV2" -}}
+// MountV2 registers the service's Connect handlers on server. The mount owns
+// the server — its interceptor chain and the HTTP mux it is served on — so
+// this only names the rpcs.
+//
+// NOT named RegisterV2: this service declares an RPC called RegisterV2, and
+// the mount helper and the RPC method cannot share one name on one type. The
+// RPC wins, because it is the service's own API; forge's generated mounts
+// call MountV2.
+func (s *Service) MountV2(server *connect.Server) {
+{{- else -}}
 // RegisterV2 registers the service's Connect handlers on server
 // (mountkit.RegistrarV2). The mount owns the server — its interceptor
 // chain and the HTTP mux it is served on — so this only names the rpcs.
 func (s *Service) RegisterV2(server *connect.Server) {
+{{- end}}
 	{{.ProtoConnectPackage}}.Register{{.HandlerName}}Handler(server, s)
 }
 {{- else -}}

@@ -511,7 +511,8 @@ type BootstrapTestServiceData struct {
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
 	// MountMethod is the handler method that mounts the service — "Register"
 	// normally, "Mount" when the service declares an RPC of its own called
-	// Register (one type cannot carry both, and the RPC wins).
+	// Register (one type cannot carry both, and the RPC wins); RegisterV2 /
+	// MountV2 for connect-go v2 (mountMethodFor).
 	MountMethod string
 	Fallible    bool // true if the constructor returns (T, error)
 	HasDB       bool // true if Deps struct has a DB orm.Context field
@@ -781,7 +782,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ConnectServiceGoName:   svc.GoName(),
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
-			MountMethod:            mountMethodFor(svc),
+			MountMethod:            mountMethodFor(svc, in.connectV2()),
 			Fallible:               fallible,
 			Constructor:            DetectConstructorName(handlerDir),
 			HasDB:                  hasDB,
@@ -1973,17 +1974,37 @@ func ComponentTestHelperRelPath(handlerLeaf string) string {
 	return filepath.Join("internal", "handlers", handlerLeaf, componentTestHelperFile)
 }
 
-// mountMethodFor names the handler method that mounts svc.
+// mountMethodFor names the handler method that mounts svc, for the
+// connect-go major the project targets.
 //
 // A service may declare an RPC called Register — the obvious name for a
 // sign-up endpoint — which collides with the scaffolded Register(mux,
 // opts...) mount helper. The handler renames its helper to Mount in that
-// case, so every generated call site has to follow.
-func mountMethodFor(svc ServiceDef) string {
+// case, so every generated call site has to follow. A connect-go v2 helper
+// is RegisterV2(server) (mountkit.RegistrarV2), so there only an RPC called
+// RegisterV2 collides, and the helper becomes MountV2.
+//
+// It is the one place the name is decided: the service template, the mock,
+// the stub reconciler (reconcileMountHelper), the mounts, the route sets and
+// the test helpers all read it, so they cannot disagree.
+func mountMethodFor(svc ServiceDef, connectV2 bool) string {
+	register, mount := defaultMountMethod(connectV2), "Mount"
+	if connectV2 {
+		mount = "MountV2"
+	}
 	for _, m := range svc.Methods {
-		if m.GoName() == "Register" {
-			return "Mount"
+		if m.GoName() == register {
+			return mount
 		}
+	}
+	return register
+}
+
+// defaultMountMethod is the mount helper's name when no RPC collides with
+// it: Register (v1) or RegisterV2 (v2).
+func defaultMountMethod(connectV2 bool) string {
+	if connectV2 {
+		return "RegisterV2"
 	}
 	return "Register"
 }

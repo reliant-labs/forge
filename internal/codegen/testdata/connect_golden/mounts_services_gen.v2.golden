@@ -103,7 +103,7 @@ func (c *Components) MountOrders(m *mountkit.MuxV2, cfg *config.Config, logger *
 // o.MountBilling satisfies MountFunc.
 func (o MountOptions) MountBilling(c *Components, m *mountkit.MuxV2, cfg *config.Config, logger *slog.Logger) []string {
 	r := mountkit.ResolveV2(fmw.HTTPStack(logger, middleware.ClaimsFromContext), o.Billing...)
-	m.Register(c.Billing.RegisterV2, o.Billing...)
+	m.Register(c.Billing.MountV2, o.Billing...)
 	c.Billing.RegisterHTTP(m.Mux(), r.HTTPStack)
 	c.Billing.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)
 	return []string{ billingv1connect.BillingServiceName }

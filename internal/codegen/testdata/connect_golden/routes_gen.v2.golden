@@ -78,7 +78,7 @@ func (o MountOptions) MountOrders(m *mountkit.MuxV2, svc *orders.Service, logger
 // o.Billing's HTTP stack, else the default. Returns its proto service name.
 func (o MountOptions) MountBilling(m *mountkit.MuxV2, svc *billing.Service, logger *slog.Logger) []string {
 	r := mountkit.ResolveV2(fmw.HTTPStack(logger, authn.ClaimsFromContext), o.Billing...)
-	m.Register(svc.RegisterV2, o.Billing...)
+	m.Register(svc.MountV2, o.Billing...)
 	svc.RegisterHTTP(m.Mux(), r.HTTPStack)
 	svc.RegisterWebhookRoutes(m.Mux(), r.HTTPStack)
 	return []string{billingv1connect.BillingServiceName}

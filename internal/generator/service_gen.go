@@ -225,6 +225,10 @@ type serviceGoData struct {
 	// ConnectV2 renders service.go for connect-go v2 (RegisterV2 on a
 	// *connect.Server) — the project's go.mod requires connect/v2 directly.
 	ConnectV2 bool
+	// MountMethod names the v2 mount helper: empty (RegisterV2) here, since a
+	// freshly scaffolded service declares no RPC yet. codegen's
+	// ServiceTemplateData carries the resolved name once it does.
+	MountMethod string
 }
 
 // renderAndWriteWithMode renders a service template then delegates the

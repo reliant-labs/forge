@@ -82,6 +82,11 @@ type ServiceTemplateData struct {
 	// the tdd/testkit V2 helpers in the scaffolded tests. False renders the
 	// v1 shapes byte-for-byte as before.
 	ConnectV2 bool
+	// MountMethod is the name service.go gives its mount helper
+	// (mountMethodFor): RegisterV2 for a v2 service, MountV2 when the service
+	// declares an RPC called RegisterV2. The v1 template still always writes
+	// Register.
+	MountMethod string
 }
 
 // HasStreamingMethods reports whether any method streams in either
@@ -212,6 +217,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 	// ServicePackage / ServiceImportPath / TestHelperName from disk truth
 	// — see GenerateMissingHandlerStubs's applyDiskIdentity.
 	pkgName := naming.ServicePackage(svc.Name)
+	v2 := connectV2For(svc, pd)
 
 	return ServiceTemplateData{
 		ServiceName:         pkgName,
@@ -226,8 +232,9 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		Methods:             methods,
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
 		// With no project to look at, keep the historical shape.
-		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
-		ConnectV2: connectV2For(svc, pd),
+		HasConfig:   pd == "" || ProjectHasTypedConfig(pd),
+		ConnectV2:   v2,
+		MountMethod: mountMethodFor(svc, v2),
 	}
 }
 
@@ -461,18 +468,9 @@ func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 	// and the error names a method the author never wrote.
 	//
 	// A v2 mock's helper is RegisterV2 (mountkit.RegistrarV2), so only an
-	// RPC of that name collides with it.
-	mountName := "Register"
-	if connectV2 {
-		mountName = "RegisterV2"
-	}
-	hasRegisterRPC := false
-	for _, m := range svc.Methods {
-		if m.GoName() == mountName {
-			hasRegisterRPC = true
-			break
-		}
-	}
+	// RPC of that name collides with it. mountMethodFor decides, as it does
+	// for the real service, so the mock and the service agree on the name.
+	hasRegisterRPC := mountMethodFor(svc, connectV2) != defaultMountMethod(connectV2)
 
 	return map[string]any{
 		// The mock embeds and constructs connect-go's handler types, so it

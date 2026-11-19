@@ -51,6 +51,7 @@ type InventoryServiceData struct {
 	// "Register" normally, "Mount" when the service declares an RPC of its
 	// own called Register. One type cannot carry both a Register(mux,
 	// opts...) helper and a Register(ctx, req) RPC, and the RPC wins.
+	// connect-go v2: "RegisterV2", or "MountV2" beside a RegisterV2 RPC.
 	MountMethod string
 	// Package is the Go package clause.
 	Package string
@@ -224,7 +225,7 @@ func inventoryRows(in InventoryGenInput) ([]InventoryServiceData, []string, erro
 		// a sign-up endpoint — which collides with the scaffolded mount
 		// helper. The handler renames its helper to Mount in that case, so
 		// this call site has to follow.
-		mountMethod := mountMethodFor(svc)
+		mountMethod := mountMethodFor(svc, in.connectV2())
 
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,

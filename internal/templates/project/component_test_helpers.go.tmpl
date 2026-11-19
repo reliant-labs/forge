@@ -410,7 +410,7 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 	if cfg.validateRequests {
 		interceptors = append(interceptors, testkit.ValidateRequestsV2())
 	}
-	return testkit.NewConnectClientV2(t, svc.RegisterV2, {{.ProtoConnectPkg}}.New{{.ConnectServiceGoName}}Client, interceptors...)
+	return testkit.NewConnectClientV2(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}RegisterV2{{end}}, {{.ProtoConnectPkg}}.New{{.ConnectServiceGoName}}Client, interceptors...)
 {{- else}}
 	var handlerOpts []connect.HandlerOption
 	if !cfg.anonymous {

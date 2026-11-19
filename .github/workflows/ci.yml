@@ -1065,6 +1065,14 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
+      # Both integration steps below boot pkg/pgtest's embedded postgres
+      # (pkg/alerting's end-to-end tests, pkg/alerting/pgstore, the db squash
+      # and `why` tests). Until this restore they fetched the archive from
+      # Maven Central on every push to main, and a CDN 404 for the published
+      # 18.3.0 failed them (run 44491105411, 2026-11-19).
+      # internal/ciguard's TestEveryTestJobRestoresEmbeddedPostgres holds
+      # every job that runs `go test` to restoring it first.
+      - uses: ./.github/actions/embedded-postgres-cache
       # pkg/obsquery's SQL and pkg/alerting's rules evaluated by a real
       # ClickHouse (the `integration` build tag). No lane ran them until
       # forge#1870: one was red on main for days and nobody saw it. They start
@@ -1108,6 +1116,12 @@ jobs:
           go test -tags=integration -count=1 -timeout=25m \
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
+      # Main only (this job runs nowhere else): keeps any archive this job had
+      # to fetch, so the next run does not (see embedded-postgres-cache's
+      # header).
+      - name: Save the embedded postgres archives (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/embedded-postgres-cache-save
 
   # Every check that is not a Go test, in one job (they were the Verify
   # Generated Code and Quick checks jobs, and before those the pre-commit and

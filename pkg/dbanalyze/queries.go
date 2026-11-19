@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/sqllex"
 	"github.com/reliant-labs/forge/pkg/querycapture"
 )
 
@@ -80,6 +82,10 @@ func AnalyzeQueries(ctx context.Context, s *Session, info TargetInfo, shapes []q
 func planShape(ctx context.Context, s *Session, cat *catalog, q *Query) ([]classified, error) {
 	if n := len(SplitStatements(q.SQL)); n != 1 {
 		q.Error = fmt.Sprintf("the shape holds %d statements, not one: it is not explained", n)
+		return nil, nil
+	}
+	if kw, ok := queryStatement(q.SQL); !ok {
+		q.Error = fmt.Sprintf("the shape is a %s statement, not a query (%s): it is not explained", kw, strings.Join(explainedKeywords, ", "))
 		return nil, nil
 	}
 	plans := [2]*rawPlan{}
@@ -202,4 +208,42 @@ func (c *catalog) lookup(ctx context.Context, schema, name string) (*relInfo, er
 	}
 	c.rels[key] = ri
 	return ri, nil
+}
+
+// explainedKeywords are the statements the query pass plans: queries, and
+// the data changes a plain EXPLAIN plans without running. Anything else a
+// test captured (DDL, ANALYZE, EXECUTE, DECLARE, CREATE TABLE AS …) is
+// recorded with an Error and never sent, and the EXPLAIN that is sent runs
+// read-only (Session.explainJSON).
+var explainedKeywords = []string{"SELECT", "WITH", "VALUES", "TABLE", "INSERT", "UPDATE", "DELETE", "MERGE"}
+
+// queryStatement is sql's first keyword, past comments and opening
+// parentheses, and whether it is one of explainedKeywords.
+func queryStatement(sql string) (string, bool) {
+	i := 0
+	for i < len(sql) {
+		switch c := sql[i]; {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '(':
+			i++
+		case strings.HasPrefix(sql[i:], "--"):
+			if nl := strings.IndexByte(sql[i:], '\n'); nl >= 0 {
+				i += nl + 1
+			} else {
+				i = len(sql)
+			}
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = sqllex.BlockCommentEnd(sql, i)
+		default:
+			j := i
+			for j < len(sql) && sqllex.IsIdentByte(sql[j]) {
+				j++
+			}
+			kw := strings.ToUpper(sql[i:j])
+			if kw == "" {
+				return fmt.Sprintf("%q", sql[i:i+1]), false
+			}
+			return kw, slices.Contains(explainedKeywords, kw)
+		}
+	}
+	return "empty", false
 }

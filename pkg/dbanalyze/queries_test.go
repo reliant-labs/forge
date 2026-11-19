@@ -3,6 +3,7 @@ package dbanalyze_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -297,5 +298,63 @@ func TestAnalyzeQueriesRefusesPostgresOlderThan16(t *testing.T) {
 		dbanalyze.TargetInfo{ServerVersion: "15.4", ServerVersionNum: 150004}, nil, dbanalyze.Config{})
 	if !errors.Is(err, dbanalyze.ErrServerTooOld) || !strings.Contains(err.Error(), "15.4") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A captured statement that is not a query is never explained, and the
+// EXPLAIN of one that is runs read-only and rolls back: nothing the query
+// pass is handed changes the schema the next shape plans against (PR #2212
+// review, B1: EXPLAIN accepts utility statements, and the session commits).
+func TestAnalyzeQueriesNeverChangesTheDatabase(t *testing.T) {
+	s, info := querySession(t)
+	ctx := context.Background()
+	refused := []string{
+		`CREATE TABLE evil AS SELECT 1 AS x`,
+		`/* a comment */ ( DROP TABLE orders`,
+		`ANALYZE orders`,
+		`EXECUTE p (1)`,
+		`DECLARE c CURSOR FOR SELECT * FROM orders`,
+	}
+	var shapes []querycapture.Shape
+	for i, sql := range refused {
+		shapes = append(shapes, querycapture.Shape{Fingerprint: fmt.Sprintf("refused-%d", i), SQL: sql})
+	}
+	// Planned, never run: a data change, and a query whose CTE writes.
+	shapes = append(shapes,
+		shape(`INSERT INTO orders (id, org_id) VALUES ($1, $2)`),
+		shape(`WITH w AS (DELETE FROM orgs RETURNING id) SELECT * FROM w`),
+		shape(`SELECT * FROM orders WHERE id = $1`),
+	)
+	queries, _, err := dbanalyze.AnalyzeQueries(ctx, s, info, shapes, dbanalyze.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range refused {
+		if q := queries[i]; !strings.Contains(q.Error, "not a query") || q.Plan != nil {
+			t.Errorf("%q: error %q, plan %v; want it refused unexplained", q.SQL, q.Error, q.Plan)
+		}
+	}
+	for _, q := range queries[len(refused):] {
+		if q.Error != "" {
+			t.Errorf("%q: %s", q.SQL, q.Error)
+		}
+	}
+	var evil, orders bool
+	var rows int
+	if err := s.Conn().QueryRowContext(ctx, `SELECT to_regclass('evil') IS NOT NULL, to_regclass('orders') IS NOT NULL,
+		(SELECT count(*) FROM orders) + (SELECT count(*) FROM orgs)`).Scan(&evil, &orders, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if evil || !orders || rows != 0 {
+		t.Errorf("after the pass: evil=%v orders=%v rows=%d; want the schema and data untouched", evil, orders, rows)
+	}
+	// The read-only transaction ended with each EXPLAIN: the session is
+	// writable again and enable_seqscan is back to on.
+	var seq string
+	if err := s.Conn().QueryRowContext(ctx, `SELECT current_setting('enable_seqscan')`).Scan(&seq); err != nil || seq != "on" {
+		t.Errorf("enable_seqscan = %q (%v), want on", seq, err)
+	}
+	if _, err := s.Conn().ExecContext(ctx, `CREATE TABLE after_pass (x int)`); err != nil {
+		t.Errorf("the session is not writable after the pass: %v", err)
 	}
 }

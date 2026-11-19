@@ -224,7 +224,12 @@ caller with its generated frame and tests (`callers[]`).
 
 A shape that cannot be planned (a table only its test created, a parameter
 whose type postgres cannot infer) carries `error`/`sqlstate` and is listed in
-`summary.skipped`: not a crash, not a pass.
+`summary.skipped`: not a crash, not a pass. So does a shape that is not a query:
+only `SELECT`, `WITH`, `VALUES`, `TABLE`, `INSERT`, `UPDATE`, `DELETE` and
+`MERGE` are explained (a plain EXPLAIN plans a data change without running it);
+DDL, `ANALYZE`, `EXECUTE`, `DECLARE` or `CREATE TABLE AS` a test captured is
+never sent. Each EXPLAIN runs in a read-only transaction that is rolled back, so
+no shape can change the schema the next one plans against.
 
 ## The document (`--json`)
 

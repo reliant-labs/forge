@@ -204,26 +204,34 @@ func (s *Session) Exec(ctx context.Context, query string) error {
 // explainJSON runs `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) query` on
 // the session's database, between files, and returns the plan document.
 // GENERIC_PLAN (postgres 16+) plans a statement whose $n parameters have no
-// values; it never executes it. noSeqScan plans it with enable_seqscan off,
-// reset before returning.
+// values; it never executes it. noSeqScan plans it with enable_seqscan off.
+//
+// The EXPLAIN runs in a READ ONLY transaction that is always rolled back, so
+// whatever a captured statement is, it can change nothing the next shape
+// plans against: postgres refuses a write in it, and the rollback discards
+// the transaction's settings (SET LOCAL enable_seqscan) with it. The caller
+// admits only query statements (planShape); this is the guard beneath it.
 //
 // It is sent over the simple query protocol: the extended protocol would make
 // the driver demand a value for every $n, which a generic plan exists to do
-// without. A statement that fails to plan fails alone: no transaction is open.
+// without. A statement that fails to plan fails alone.
 func (s *Session) explainJSON(ctx context.Context, query string, noSeqScan bool) ([]byte, error) {
 	if s.tx != nil {
 		return nil, errors.New("explain inside a migration file's transaction")
 	}
-	if noSeqScan {
-		if _, err := s.conn.ExecContext(ctx, "SET enable_seqscan = off"); err != nil {
-			return nil, fmt.Errorf("set enable_seqscan: %w", err)
-		}
-		defer func() { _, _ = s.conn.ExecContext(context.WithoutCancel(ctx), "RESET enable_seqscan") }()
-	}
 	var plan []byte
 	// Raw holds conn exclusively while the plan is read off its pgx
-	// connection.
+	// connection, and the connection leaves it idle, outside a transaction.
 	err := s.conn.Raw(func(any) error {
+		if _, err := s.pg.Exec(ctx, "BEGIN TRANSACTION READ ONLY").ReadAll(); err != nil {
+			return fmt.Errorf("begin read-only transaction: %w", err)
+		}
+		defer func() { _, _ = s.pg.Exec(context.WithoutCancel(ctx), "ROLLBACK").ReadAll() }()
+		if noSeqScan {
+			if _, err := s.pg.Exec(ctx, "SET LOCAL enable_seqscan = off").ReadAll(); err != nil {
+				return fmt.Errorf("set enable_seqscan: %w", err)
+			}
+		}
 		results, err := s.pg.Exec(ctx, "EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) "+query).ReadAll()
 		if err != nil {
 			return err

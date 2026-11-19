@@ -57,6 +57,11 @@ func TestSpecValidate(t *testing.T) {
 	if err := good.Validate(); err != nil {
 		t.Fatalf("a valid spec was rejected: %v", err)
 	}
+	digitSegment := good
+	digitSegment.Name = "system.cpu.load_average.1m"
+	if err := digitSegment.Validate(); err != nil {
+		t.Fatalf("a later segment that starts with a digit was rejected: %v", err)
+	}
 
 	cases := map[string]struct {
 		mut  func(*Spec)
@@ -65,6 +70,8 @@ func TestSpecValidate(t *testing.T) {
 		"no name":             {func(s *Spec) { s.Name = "" }, "name is required"},
 		"upper case name":     {func(s *Spec) { s.Name = "OrdersCreated" }, "lower snake case"},
 		"dash in name":        {func(s *Spec) { s.Name = "orders-created" }, "lower snake case"},
+		"leading digit":       {func(s *Spec) { s.Name = "1m.load" }, "lower snake case"},
+		"empty segment":       {func(s *Spec) { s.Name = "load..1m" }, "lower snake case"},
 		"no type":             {func(s *Spec) { s.Type = "" }, "type is required"},
 		"unknown type":        {func(s *Spec) { s.Type = "summary" }, "not one of counter"},
 		"no unit":             {func(s *Spec) { s.Unit = "" }, "unit is required"},

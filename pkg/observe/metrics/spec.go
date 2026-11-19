@@ -99,7 +99,9 @@ type Spec struct {
 }
 
 var (
-	nameRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`)
+	// nameRe: a segment after the first may start with a digit, as in the
+	// OpenTelemetry semantic conventions' system.cpu.load_average.1m.
+	nameRe  = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9][a-z0-9_]*)*$`)
 	keyRe   = nameRe
 	sinceRe = regexp.MustCompile(`^v?[0-9]+(\.[0-9]+){1,2}([-+][0-9A-Za-z.\-]+)?$`)
 )

@@ -12,7 +12,9 @@
 //   - whether the opt-in OTLP logs exporter is on,
 //   - the head-sampling ratio of a trace the server starts itself, which the
 //     SDK applies but does not expose (rootSampleRatio), and the sampler it
-//     names (envSampler), which Setup wraps so AI spans are never sampled.
+//     names (envSampler), which Setup wraps so AI spans are never sampled,
+//   - forge's own resource-metrics switch and whether the process runs in a
+//     Kubernetes pod (resourceMetricsEnv).
 //
 // pkg/.golangci.yml exempts exactly this file from the os.Getenv rule.
 
@@ -135,6 +137,28 @@ func envSampler() sdktrace.Sampler {
 	default:
 		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	}
+}
+
+// The resource-metrics switches (resource_metrics.go). They are forge's own
+// variables, not OTel's: OTEL_SDK_DISABLED and OTEL_METRICS_EXPORTER=none
+// govern export and leave the sampler alone.
+const (
+	// EnvResourceMetrics selects the process and host resource metrics:
+	// auto (the default), all, process, host or off.
+	EnvResourceMetrics = "FORGE_OBSERVE_RESOURCE_METRICS"
+	// EnvResourceInterval is how old a resource sample may be before a
+	// collection takes a new one, as a Go duration ("15s"), at least 1s.
+	EnvResourceInterval = "FORGE_OBSERVE_RESOURCE_INTERVAL"
+
+	// envKubernetesServiceHost is set in every Kubernetes pod; under auto it
+	// narrows the host group to the container's cgroup.
+	envKubernetesServiceHost = "KUBERNETES_SERVICE_HOST"
+)
+
+// resourceMetricsEnv returns the raw resource-metrics switch and interval, and
+// whether the process runs in a Kubernetes pod.
+func resourceMetricsEnv() (mode, interval string, inPod bool) {
+	return envValue(EnvResourceMetrics), envValue(EnvResourceInterval), envValue(envKubernetesServiceHost) != ""
 }
 
 // sdkDisabled reports OTEL_SDK_DISABLED=true.

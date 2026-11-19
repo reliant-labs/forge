@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
+
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -139,6 +141,68 @@ func TestWatchdogRevertsAnUnconfirmedBinary(t *testing.T) {
 	u.cfg.Policy = &countingPolicy{d: Decision{Action: Apply}}
 	if _, d, err := u.Check(context.Background()); err != nil || d.Action != Skip {
 		t.Fatalf("Check after a revert: %+v %v", d, err)
+	}
+}
+
+// holdLock takes the state lock as another instance would, so Confirm cannot.
+func holdLock(t *testing.T, dir string) *flock.Flock {
+	t.Helper()
+	l := flock.New(filepath.Join(dir, "lock"))
+	if err := l.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Unlock() })
+	return l
+}
+
+func TestAFailedConfirmCanBeRetried(t *testing.T) {
+	t.Parallel()
+	u, exe, _, _ := swapped(t, time.Hour)
+	rec := newExecRecorder()
+	p := bootAs(u, exe, 4242, rec, allAlive)
+	p.lockWait = 50 * time.Millisecond
+	l := holdLock(t, u.cfg.StateDir)
+	if err := p.Confirm(); err == nil {
+		t.Fatal("Confirm must report that it could not record the confirmation")
+	}
+	if st := readJSONState(t, u.cfg.StateDir); st.Swap.Phase != phaseSwapped {
+		t.Fatalf("phase = %s, want still swapped", st.Swap.Phase)
+	}
+	if err := l.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Confirm(); err != nil {
+		t.Fatalf("a retried Confirm: %v", err)
+	}
+	if st := readJSONState(t, u.cfg.StateDir); st.Swap.Phase != phaseConfirmed {
+		t.Fatalf("phase = %s, want confirmed", st.Swap.Phase)
+	}
+	if rec.count() != 0 {
+		t.Fatal("a confirmed binary must not be reverted")
+	}
+}
+
+func TestAFailedConfirmLeavesTheWatchdogArmed(t *testing.T) {
+	t.Parallel()
+	u, exe, oldBin, _ := swapped(t, time.Hour)
+	rec := newExecRecorder()
+	p := bootAs(u, exe, 4242, rec, allAlive)
+	p.lockWait = 50 * time.Millisecond
+	l := holdLock(t, u.cfg.StateDir)
+	p.deadline = time.Now() // the deadline passes while Confirm is failing
+	if err := p.Confirm(); err == nil {
+		t.Fatal("Confirm must report that it could not record the confirmation")
+	}
+	// The re-armed watchdog waits for the lock (revert's own 30s bound).
+	if err := l.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	testkit.Receive(t, "the re-armed watchdog's exec of the previous binary", rec.ch)
+	if got, _ := os.ReadFile(exe); !bytes.Equal(got, oldBin) {
+		t.Fatal("the previous binary is not back in place")
+	}
+	if st := readJSONState(t, u.cfg.StateDir); st.Swap.Phase != phaseReverted {
+		t.Fatalf("phase = %s, want reverted", st.Swap.Phase)
 	}
 }
 

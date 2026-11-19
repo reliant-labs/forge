@@ -40,6 +40,12 @@ type Pending struct {
 	mu    sync.Mutex
 	done  bool
 	timer *time.Timer
+	// deadline is when the watchdog reverts; a Confirm that fails re-arms
+	// the watchdog for whatever is left of it.
+	deadline time.Time
+	// lockWait bounds how long Confirm waits for the state lock (default
+	// 30s); a test seam.
+	lockWait time.Duration
 }
 
 // bootEnv is Boot's seams: which binary is running, how to exec, whether a
@@ -155,6 +161,7 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 	if watch > 0 {
 		p.Swapped = true
 		p.log.Info("selfupdate: running a new binary; waiting for confirmation", "from", p.From, "to", p.To, "within", watch)
+		p.deadline = time.Now().Add(watch)
 		p.timer = time.AfterFunc(watch, p.watchdog)
 	}
 	return p
@@ -162,7 +169,11 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 
 // Confirm marks the swapped binary good and stops the watchdog. Call it once
 // the app's own health check passes (for a daemon: registered and
-// authenticated). It does nothing when no swap is in flight.
+// authenticated). It does nothing when no swap is in flight. When the
+// confirmation cannot be recorded (the state lock is held, the state file
+// cannot be written) it returns the error and leaves the swap pending: the
+// watchdog is re-armed for the rest of its deadline, and Confirm may be
+// called again.
 func (p *Pending) Confirm() error {
 	if p == nil || !p.Swapped {
 		return nil
@@ -178,7 +189,26 @@ func (p *Pending) Confirm() error {
 	}
 	p.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := p.confirm(); err != nil {
+		p.mu.Lock()
+		p.done = false
+		if p.timer != nil {
+			// Reset re-arms a stopped timer, and one that already fired
+			// while Confirm held done (its watchdog then did nothing).
+			p.timer.Reset(max(time.Until(p.deadline), 0))
+		}
+		p.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (p *Pending) confirm() error {
+	wait := p.lockWait
+	if wait <= 0 {
+		wait = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	return withLock(ctx, p.dir, func() error {
 		st, err := loadState(p.dir)

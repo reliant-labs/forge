@@ -1,0 +1,374 @@
+package middleware
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
+	"github.com/reliant-labs/forge/pkg/auth"
+)
+
+const (
+	echoProcedure  = "/test.v1.EchoService/Echo"
+	watchProcedure = "/test.v1.EchoService/Watch"
+)
+
+// echoHandler answers a call from its context: the reply text, or an error.
+type echoHandler func(ctx context.Context) (string, error)
+
+// testContextV2 plays the interceptors that run before the ones under test:
+// it stashes the caller named by X-Test-User and the request id named by
+// X-Request-Id, as auth and the request-id middleware would.
+func testContextV2(next connectv2.ServerFunc) connectv2.ServerFunc {
+	return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+		if info, ok := connectv2.CallInfoForServerContext(ctx); ok {
+			ctx = testContext(ctx, info.RequestHeader().Get)
+		}
+		return next(ctx, spec, stream)
+	}
+}
+
+// testContextV1 is testContextV2 for a v1 chain.
+var testContextV1 = connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		return next(testContext(ctx, req.Header().Get), req)
+	}
+})
+
+func testContext(ctx context.Context, header func(string) string) context.Context {
+	if id := header("X-Test-User"); id != "" {
+		ctx = rlContextWithClaims(ctx, &auth.Claims{UserID: id, Email: id + "@example.com"})
+	}
+	if rid := header("X-Request-Id"); rid != "" {
+		ctx = ContextWithRequestID(ctx, rid)
+	}
+	return ctx
+}
+
+// serveV2 mounts a v2 server with a unary Echo and a server-streaming Watch
+// behind ints and returns a client for it.
+func serveV2(t *testing.T, h echoHandler, ints ...connectv2.ServerInterceptor) *connectv2.Client {
+	t.Helper()
+	serve := func(ctx context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
+		var req wrapperspb.StringValue
+		if err := stream.Receive(&req); err != nil {
+			return err
+		}
+		out, err := h(ctx)
+		if err != nil {
+			return err
+		}
+		return stream.Send(wrapperspb.String(out))
+	}
+	srv := connectv2.NewServer(ints...)
+	srv.Register(
+		connectv2.Method{Spec: connectv2.Spec{StreamType: connectv2.StreamTypeUnary, Procedure: echoProcedure}, Handler: serve},
+		connectv2.Method{Spec: connectv2.Spec{StreamType: connectv2.StreamTypeServer, Procedure: watchProcedure}, Handler: serve},
+	)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, srv)
+	hs := httptest.NewServer(mux)
+	t.Cleanup(hs.Close)
+	return connectv2.NewClient(connecthttp.NewTransport(hs.Client(), hs.URL))
+}
+
+// v2Reply is what a v2 call returned: the reply, its response headers, and
+// the error.
+type v2Reply struct {
+	value  string
+	header *connectv2.Header
+	err    error
+}
+
+// callV2 calls Echo, or Watch when stream is set, with headers.
+func callV2(t *testing.T, c *connectv2.Client, stream bool, headers map[string]string) v2Reply {
+	t.Helper()
+	ctx, info := connectv2.NewClientContext(context.Background())
+	for k, v := range headers {
+		info.RequestHeader().Set(k, v)
+	}
+	if !stream {
+		var res wrapperspb.StringValue
+		err := c.CallUnary(ctx, connectv2.Spec{StreamType: connectv2.StreamTypeUnary, Procedure: echoProcedure}, wrapperspb.String("hi"), &res)
+		return v2Reply{value: res.GetValue(), header: info.ResponseHeader(), err: err}
+	}
+	cs, err := c.CallServerStream(ctx, connectv2.Spec{StreamType: connectv2.StreamTypeServer, Procedure: watchProcedure}, wrapperspb.String("hi"))
+	if err != nil {
+		return v2Reply{err: err}
+	}
+	defer cs.Close()
+	var res wrapperspb.StringValue
+	if err := cs.Receive(&res); err != nil {
+		return v2Reply{err: err}
+	}
+	if err := cs.Receive(&wrapperspb.StringValue{}); !errors.Is(err, io.EOF) {
+		return v2Reply{err: err}
+	}
+	return v2Reply{value: res.GetValue(), header: info.ResponseHeader()}
+}
+
+// serveV1 serves the same unary Echo on connect-go v1 behind ints and
+// returns a function calling it.
+func serveV1(t *testing.T, h echoHandler, ints ...connect.Interceptor) func(headers map[string]string) error {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle(echoProcedure, connect.NewUnaryHandler(echoProcedure,
+		func(ctx context.Context, _ *connect.Request[wrapperspb.StringValue]) (*connect.Response[wrapperspb.StringValue], error) {
+			out, err := h(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return connect.NewResponse(wrapperspb.String(out)), nil
+		}, connect.WithInterceptors(ints...)))
+	hs := httptest.NewServer(mux)
+	t.Cleanup(hs.Close)
+	client := connect.NewClient[wrapperspb.StringValue, wrapperspb.StringValue](hs.Client(), hs.URL+echoProcedure)
+	return func(headers map[string]string) error {
+		req := connect.NewRequest(wrapperspb.String("hi"))
+		for k, v := range headers {
+			req.Header().Set(k, v)
+		}
+		_, err := client.CallUnary(context.Background(), req)
+		return err
+	}
+}
+
+func okHandler(context.Context) (string, error) { return "ok", nil }
+
+func TestRateLimitInterceptorV2_Disabled(t *testing.T) {
+	if RateLimitInterceptorV2(RateLimitOptions{Rps: 0}, nil) != nil || RateLimitInterceptorV2(RateLimitOptions{Rps: -1, Burst: 10}, nil) != nil {
+		t.Fatal("expected a nil interceptor when Rps <= 0")
+	}
+}
+
+// The burst is enforced per peer IP, over unary and streaming calls alike,
+// and a throttled call carries the same code and message as v1's.
+func TestRateLimitInterceptorV2_EnforcesBurstWithV1WireError(t *testing.T) {
+	c := serveV2(t, okHandler, RateLimitInterceptorV2(RateLimitOptions{Rps: 1, Burst: 2}, nil))
+	if r := callV2(t, c, false, nil); r.err != nil {
+		t.Fatalf("first call: %v", r.err)
+	}
+	if r := callV2(t, c, true, nil); r.err != nil {
+		t.Fatalf("second call (a stream, within burst): %v", r.err)
+	}
+	errV2 := callV2(t, c, false, nil).err
+
+	callV1 := serveV1(t, okHandler, RateLimitInterceptor(RateLimitOptions{Rps: 1, Burst: 2}, nil))
+	_ = callV1(nil)
+	_ = callV1(nil)
+	errV1 := callV1(nil)
+
+	e1, ok1 := errors.AsType[*connect.Error](errV1)
+	e2, ok2 := errors.AsType[*connectv2.Error](errV2)
+	if !ok1 || !ok2 {
+		t.Fatalf("third calls: v1 %v, v2 %v; want both throttled", errV1, errV2)
+	}
+	if e2.Code() != connectv2.CodeResourceExhausted || uint32(e2.Code()) != uint32(e1.Code()) || e2.Message() != e1.Message() {
+		t.Errorf("v2 %q (%v), v1 %q (%v); want the same throttle error", e2.Message(), e2.Code(), e1.Message(), e1.Code())
+	}
+}
+
+// Authenticated callers are keyed by subject, so one user exhausting the
+// bucket does not throttle another on the same IP.
+func TestRateLimitInterceptorV2_KeysByClaimSubject(t *testing.T) {
+	c := serveV2(t, okHandler, testContextV2, RateLimitInterceptorV2(RateLimitOptions{Rps: 1, Burst: 1}, rlClaimsFromContext))
+	if r := callV2(t, c, false, map[string]string{"X-Test-User": "a"}); r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r := callV2(t, c, false, map[string]string{"X-Test-User": "a"}); connectv2.CodeOf(r.err) != connectv2.CodeResourceExhausted {
+		t.Fatalf("user a's second call: %v, want throttled", r.err)
+	}
+	if r := callV2(t, c, false, map[string]string{"X-Test-User": "b"}); r.err != nil {
+		t.Fatalf("user b shares a's IP but not its bucket: %v", r.err)
+	}
+}
+
+// The v2 audit record is the v1 record, field for field, on success and on
+// failure.
+func TestAuditInterceptorWithSinkV2_MatchesV1(t *testing.T) {
+	for name, tc := range map[string]struct {
+		v1, v2 echoHandler
+	}{
+		"success": {okHandler, okHandler},
+		"denied": {
+			v1: func(context.Context) (string, error) {
+				return "", connect.NewError(connect.CodePermissionDenied, errors.New("nope"))
+			},
+			v2: func(context.Context) (string, error) {
+				return "", connectv2.NewError(connectv2.CodePermissionDenied, "nope")
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf1, buf2 bytes.Buffer
+			sink1, sink2 := newFakeSink(), newFakeSink()
+			headers := map[string]string{"X-Test-User": "u-7", "X-Request-Id": "req-1"}
+
+			_ = serveV1(t, tc.v1, testContextV1, AuditInterceptorWithSink(slog.New(slog.NewJSONHandler(&buf1, nil)), rlClaimsFromContext, sink1))(headers)
+			_ = callV2(t, serveV2(t, tc.v2, testContextV2, AuditInterceptorWithSinkV2(slog.New(slog.NewJSONHandler(&buf2, nil)), rlClaimsFromContext, sink2)), false, headers)
+
+			ev1, ev2 := sink1.waitOne(t), sink2.waitOne(t)
+			if ev2.Procedure != echoProcedure || !strings.HasPrefix(ev2.PeerAddress, "127.0.0.1:") {
+				t.Errorf("v2 event procedure %q peer %q", ev2.Procedure, ev2.PeerAddress)
+			}
+			if ev2.Duration <= 0 || ev2.Timestamp.IsZero() {
+				t.Errorf("v2 event timing not recorded: %+v", ev2)
+			}
+			ev1.Duration, ev2.Duration = 0, 0
+			ev1.Timestamp, ev2.Timestamp = time.Time{}, time.Time{}
+			ev1.PeerAddress, ev2.PeerAddress = "", ""
+			if ev1 != ev2 {
+				t.Errorf("audit events differ:\n  v1 %+v\n  v2 %+v", ev1, ev2)
+			}
+			if ev2.UserID != "u-7" || ev2.Email != "u-7@example.com" || ev2.RequestID != "req-1" {
+				t.Errorf("v2 event identity/correlation: %+v", ev2)
+			}
+			for _, field := range []string{`"msg":"audit.event"`, `"log_type":"audit"`, `"user_id":"u-7"`, `"request_id":"req-1"`} {
+				if !strings.Contains(buf2.String(), field) {
+					t.Errorf("v2 slog record lacks %s: %s", field, buf2.String())
+				}
+			}
+			if name == "denied" {
+				if ev2.ErrorCode != "permission_denied" || ev2.ErrorMessage != "permission_denied: nope" || ev2.Status != "error" {
+					t.Errorf("v2 error fields: %+v", ev2)
+				}
+				// Same severity as the v1 record (a rejected request is INFO).
+				lvl := func(s string) string {
+					_, after, _ := strings.Cut(s, `"level":"`)
+					v, _, _ := strings.Cut(after, `"`)
+					return v
+				}
+				if lvl(buf1.String()) != lvl(buf2.String()) {
+					t.Errorf("v1 logged at %s, v2 at %s", lvl(buf1.String()), lvl(buf2.String()))
+				}
+			}
+		})
+	}
+}
+
+// A stream is audited once, when it ends, as v1's streaming handler was.
+func TestAuditInterceptorV2_Streaming(t *testing.T) {
+	sink := newFakeSink()
+	var buf bytes.Buffer
+	ic := AuditInterceptorWithSinkV2(slog.New(slog.NewJSONHandler(&buf, nil)), nil, sink)
+	if r := callV2(t, serveV2(t, okHandler, ic), true, nil); r.err != nil {
+		t.Fatal(r.err)
+	}
+	ev := sink.waitOne(t)
+	if ev.Procedure != watchProcedure || ev.Status != "ok" || ev.UserID != "anonymous" {
+		t.Errorf("stream event = %+v", ev)
+	}
+	if AuditInterceptorV2(nil, nil) == nil {
+		t.Error("AuditInterceptorV2 must build a slog-only interceptor with a nil logger")
+	}
+}
+
+func TestErrorCode(t *testing.T) {
+	v1 := connect.NewError(connect.CodeNotFound, errors.New("x"))
+	v2 := connectv2.NewError(connectv2.CodePermissionDenied, "y")
+	v2OverV1 := v2.WithCause(v1)
+	for _, tc := range []struct {
+		err      error
+		preferV2 bool
+		want     string
+	}{
+		{v1, false, "not_found"},
+		{v1, true, "not_found"},
+		{v2, false, "permission_denied"},
+		{v2, true, "permission_denied"},
+		{v2OverV1, true, "permission_denied"}, // the outermost verdict
+		{v2OverV1, false, "not_found"},        // v1's connect.CodeOf, unchanged
+		{errors.New("plain"), true, "unknown"},
+		{errors.New("plain"), false, "unknown"},
+	} {
+		if got := errorCode(tc.err, tc.preferV2); got != tc.want {
+			t.Errorf("errorCode(%v, preferV2=%v) = %q, want %q", tc.err, tc.preferV2, got, tc.want)
+		}
+	}
+}
+
+func TestIdempotencyInterceptorV2_Disabled(t *testing.T) {
+	if IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 0}) != nil || IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: -1}) != nil {
+		t.Fatal("expected a nil interceptor when CacheSize <= 0")
+	}
+}
+
+// A repeated Idempotency-Key replays the first answer — its message and the
+// headers the handler set — without running the handler again; the headers
+// outer interceptors set stay the current request's.
+func TestIdempotencyInterceptorV2_ReplaysTheFirstAnswer(t *testing.T) {
+	var runs atomic.Int32
+	h := func(ctx context.Context) (string, error) {
+		n := runs.Add(1)
+		info, _ := connectv2.CallInfoForServerContext(ctx)
+		info.ResponseHeader().Set("X-Handler", "run-"+string(rune('0'+n)))
+		return "answer-" + string(rune('0'+n)), nil
+	}
+	var outer atomic.Int32
+	stampOuter := func(next connectv2.ServerFunc) connectv2.ServerFunc {
+		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+			info, _ := connectv2.CallInfoForServerContext(ctx)
+			info.ResponseHeader().Set("X-Outer", "call-"+string(rune('0'+outer.Add(1))))
+			return next(ctx, spec, stream)
+		}
+	}
+	c := serveV2(t, h, stampOuter, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}))
+	key := map[string]string{IdempotencyKeyHeader: "k1"}
+
+	first := callV2(t, c, false, key)
+	second := callV2(t, c, false, key)
+	if first.err != nil || second.err != nil {
+		t.Fatalf("calls: %v, %v", first.err, second.err)
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("handler ran %d times for one key, want 1", runs.Load())
+	}
+	if second.value != "answer-1" || second.header.Get("X-Handler") != "run-1" {
+		t.Errorf("replay = %q with X-Handler %q, want answer-1 / run-1", second.value, second.header.Get("X-Handler"))
+	}
+	if second.header.Get("X-Outer") != "call-2" {
+		t.Errorf("replay overwrote the current request's outer header: X-Outer %q, want call-2", second.header.Get("X-Outer"))
+	}
+
+	if r := callV2(t, c, false, map[string]string{IdempotencyKeyHeader: "k2"}); r.value != "answer-2" {
+		t.Errorf("a new key must run the handler, got %q", r.value)
+	}
+	if r := callV2(t, c, false, nil); r.value != "answer-3" {
+		t.Errorf("no key must run the handler, got %q", r.value)
+	}
+	// Streams are not deduplicated: the same key on Watch runs again.
+	if r := callV2(t, c, true, key); r.err != nil || r.value != "answer-4" {
+		t.Errorf("a stream with a seen key must run the handler, got %q (%v)", r.value, r.err)
+	}
+}
+
+func TestIdempotencyInterceptorV2_ReplaysTheError(t *testing.T) {
+	var runs atomic.Int32
+	c := serveV2(t, func(context.Context) (string, error) {
+		runs.Add(1)
+		return "", connectv2.NewError(connectv2.CodeAlreadyExists, "duplicate")
+	}, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10, TTL: time.Minute}))
+	key := map[string]string{IdempotencyKeyHeader: "k"}
+	e1, e2 := callV2(t, c, false, key).err, callV2(t, c, false, key).err
+	if runs.Load() != 1 {
+		t.Fatalf("handler ran %d times, want 1", runs.Load())
+	}
+	for _, err := range []error{e1, e2} {
+		if ce, ok := errors.AsType[*connectv2.Error](err); !ok || ce.Code() != connectv2.CodeAlreadyExists || ce.Message() != "duplicate" {
+			t.Errorf("call err = %v, want already_exists: duplicate", err)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
 
 	"github.com/reliant-labs/forge/pkg/middleware"
 )
@@ -33,8 +34,23 @@ import (
 //	    Audit: audit.Interceptor(logger, middleware.ClaimsFromContext, store),
 //	    // ...
 //	})
+//
+// connect-go v2 projects use [InterceptorV2].
 func Interceptor(logger *slog.Logger, claimsFrom middleware.ClaimsLookup, store Store) connect.Interceptor {
 	return middleware.AuditInterceptorWithSink(logger, claimsFrom, Sink(store, logger))
+}
+
+// InterceptorV2 is [Interceptor] for connect-go v2: the same slog record and
+// the same audit_log row per RPC, through
+// [middleware.AuditInterceptorWithSinkV2] and the same [Sink]. A nil store is
+// slog-only mode, identical to [middleware.AuditInterceptorV2].
+//
+//	srv := connect.NewServer( // connectrpc.com/connect/v2
+//	    audit.InterceptorV2(logger, middleware.ClaimsFromContext, store),
+//	    // ...
+//	)
+func InterceptorV2(logger *slog.Logger, claimsFrom middleware.ClaimsLookup, store Store) connectv2.ServerInterceptor {
+	return middleware.AuditInterceptorWithSinkV2(logger, claimsFrom, Sink(store, logger))
 }
 
 // Sink adapts a [Store] to [middleware.AuditSink] so any audit interceptor can

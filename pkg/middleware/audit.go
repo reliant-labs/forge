@@ -139,6 +139,9 @@ type AuditSink interface {
 // For compliance-grade durable persistence (so projects can delete a
 // hand-rolled DB-persisting interceptor), use [AuditInterceptorWithSink]
 // to additionally fan each event out to an [AuditSink].
+//
+// connect-go v2 projects use [AuditInterceptorV2] and
+// [AuditInterceptorWithSinkV2].
 func AuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup) connect.Interceptor {
 	return AuditInterceptorWithSink(logger, claimsFrom, nil)
 }
@@ -149,6 +152,12 @@ func AuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup) connect.Inte
 // request path, so the sink never blocks the RPC response. Passing a nil
 // sink yields behavior identical to [AuditInterceptor].
 func AuditInterceptorWithSink(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) connect.Interceptor {
+	return newAuditInterceptor(logger, claimsFrom, sink)
+}
+
+// newAuditInterceptor builds the audit interceptor both connect majors
+// share; AuditInterceptorWithSinkV2 wraps the same value in a v2 func.
+func newAuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) *auditInterceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -163,6 +172,9 @@ type auditInterceptor struct {
 	logger     *slog.Logger
 	claimsFrom ClaimsLookup
 	sink       AuditSink
+	// v2 marks the interceptor of a connect-go v2 chain: an error's code is
+	// read from a v2 *connect.Error first (see errorCode).
+	v2 bool
 }
 
 func (a *auditInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
@@ -247,9 +259,9 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 	}
 
 	if err != nil {
-		code := connect.CodeOf(err)
+		code := errorCode(err, a.v2)
 		event.Status = "error"
-		event.ErrorCode = code.String()
+		event.ErrorCode = code
 		// The CLIENT-VISIBLE message, deliberately: an audit stream is
 		// routinely shipped to a SIEM or a compliance store, and svcerr has
 		// already decided what text is safe to hand out. The unredacted
@@ -258,7 +270,7 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 		event.ErrorMessage = err.Error()
 		attrs = append(attrs,
 			slog.String("status", "error"),
-			slog.String("code", code.String()),
+			slog.String("code", code),
 			slog.String("error", err.Error()),
 		)
 		// Same severity policy as the operational log — a server fault is

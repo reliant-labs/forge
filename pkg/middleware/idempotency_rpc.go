@@ -50,6 +50,8 @@ type idempotencyInterceptor struct {
 // routes) see [IdempotencyMiddleware].
 //
 // When opts.CacheSize <= 0 the interceptor is disabled and nil is returned.
+//
+// connect-go v2 projects use [IdempotencyInterceptorV2].
 func IdempotencyInterceptor(opts IdempotencyOptions) connect.Interceptor {
 	if opts.CacheSize <= 0 {
 		return nil

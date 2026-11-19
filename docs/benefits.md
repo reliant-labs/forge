@@ -1852,6 +1852,7 @@ _Enforced · Forge, on any infrastructure_
 | `component-drift/undeclared-component`        | A component in the code with no `workloads.k` entry, so nothing deploys it                                                                                                                                                             | bare `forge lint`       |
 | `component-drift/no-such-command`             | A workload whose args select a command the binary does not have                                                                                                                                                                        | bare `forge lint`       |
 | `forgeconv-handler-file-size`                 | One handler file grown past `lint.handler_file_max_loc`; split per rpc with `forge scaffold handler-file`                                                                                                                              | `--conventions`         |
+| `forgeconv-one-rpc-per-file`                  | A handler file implementing several custom rpcs, where forge's convention is one `rpc_<name>.go` per rpc                                                                                                                               | `--conventions`         |
 
 <a id="lint-rules-api-errors"></a>
 

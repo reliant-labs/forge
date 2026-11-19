@@ -2078,6 +2078,11 @@ benefits:
         bug_class: >-
           One handler file grown past `lint.handler_file_max_loc`; split per rpc
           with `forge scaffold handler-file`
+      - id: forgeconv-one-rpc-per-file
+        lane: --conventions
+        bug_class: >-
+          A handler file implementing several custom rpcs, where forge's
+          convention is one `rpc_<name>.go` per rpc
 
   - id: lint-rules-api-errors
     category: guardrails

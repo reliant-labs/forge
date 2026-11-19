@@ -127,11 +127,21 @@ type FetchError struct {
 	Attempts int
 	// Err is the last transport error, when Status is 0.
 	Err error
-	// Also is what the other repositories asked answered (forge tries Maven
-	// Central, then a mirror of it), in the order they were asked. The fields
-	// above describe the most telling failure: a transient one when there was
-	// any, so Status is 404 only when every repository answered 404.
-	Also []*FetchError
+	// also backs Also. A pointer, not a slice, so FetchError stays
+	// comparable: a slice field would make == on it a compile error for
+	// callers, an incompatible change to pkg/ at major 1.
+	also *[]*FetchError
+}
+
+// Also is what the other repositories asked answered (forge tries Maven
+// Central, then a mirror of it), in the order they were asked. The fields of
+// e describe the most telling failure: a transient one when there was any,
+// so Status is 404 only when every repository answered 404.
+func (e *FetchError) Also() []*FetchError {
+	if e.also == nil {
+		return nil
+	}
+	return *e.also
 }
 
 func (e *FetchError) Error() string {
@@ -139,7 +149,7 @@ func (e *FetchError) Error() string {
 		// The one status that plausibly DOES mean "no such version" — and
 		// only when no repository said otherwise.
 		urls := []string{e.URL}
-		for _, o := range e.Also {
+		for _, o := range e.Also() {
 			urls = append(urls, o.URL)
 		}
 		return fmt.Sprintf("download postgres binary: %s returned 404 Not Found — this postgres "+
@@ -149,7 +159,7 @@ func (e *FetchError) Error() string {
 		"This is a registry/network failure, possibly transient — the version exists; re-run. "+
 		"To take the registry off the critical path, cache the embedded-postgres archive directory "+
 		"(see pkg/pgtest/fetch.go)", e.URL, e.Attempts, e.lastAnswer())
-	for _, o := range e.Also {
+	for _, o := range e.Also() {
 		msg += fmt.Sprintf(". Also tried %s: %s", o.URL, o.lastAnswer())
 	}
 	return msg
@@ -179,11 +189,15 @@ func fetchFailure(failures []*FetchError) *FetchError {
 		}
 	}
 	fe := *failures[lead]
-	fe.Also = nil
+	var also []*FetchError
 	for i, f := range failures {
 		if i != lead {
-			fe.Also = append(fe.Also, f)
+			also = append(also, f)
 		}
+	}
+	fe.also = nil
+	if len(also) > 0 {
+		fe.also = &also
 	}
 	return &fe
 }

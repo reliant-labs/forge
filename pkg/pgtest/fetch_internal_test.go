@@ -259,7 +259,7 @@ func TestFetchRelay_A404EverywhereIsNoPublishedBinary(t *testing.T) {
 		t.Errorf("relay answered %d, want 404", status)
 	}
 	fe := relay.lastFailure()
-	if fe == nil || fe.Status != http.StatusNotFound || len(fe.Also) != 1 {
+	if fe == nil || fe.Status != http.StatusNotFound || len(fe.Also()) != 1 {
 		t.Fatalf("FetchError = %+v, want a 404 with the mirror's 404 in Also", fe)
 	}
 	for _, want := range []string{primary.URL + relayArtifact, mirror.URL + relayArtifact, "no published binary"} {

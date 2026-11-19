@@ -30,7 +30,8 @@ func GetUserIDFromContext(ctx context.Context) (string, bool) {
 	return id, ok
 }
 
-// MustGetUserID is NOT declared: wrapping a resolver does not make one.
+// MustGetUserID is not declared, but it calls a resolver: a handler calling
+// it resolves the caller through the wrapper (audit_unscoped_auth_module.go).
 func MustGetUserID(ctx context.Context) string {
 	id, _ := GetUserIDFromContext(ctx)
 	return id
@@ -86,10 +87,10 @@ func TestUnscopedAuth_RecognisesADeclaredCallerResolver(t *testing.T) {
 	cat := auditUnscopedAuth(nil, dir)
 	got := unscopedMethods(t, cat)
 	slices.Sort(got)
-	want := []string{"GetSession", "ListInvoices", "ListOrders"}
+	want := []string{"GetSession", "ListInvoices"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("unscoped = %v, want %v — a declared resolver (plain or aliased import) clears its handler; "+
-			"an undeclared wrapper, a same-named function in another package, and a method do not", got, want)
+		t.Fatalf("unscoped = %v, want %v — a declared resolver (plain or aliased import) and a wrapper of one clear "+
+			"their handler; a same-named function in another package and a method do not", got, want)
 	}
 
 	resolvers, _ := cat.Details["caller_resolvers"].([]string)

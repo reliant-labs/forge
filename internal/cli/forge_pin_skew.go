@@ -349,7 +349,12 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 			return err
 		}
 	}
-	if projectRoot == "" || pinIndependent(rel) {
+	if projectRoot == "" || pinIndependent(rel) || versionPinnedRun(cmd, rel) {
+		// `version --pinned` is not pin-independent — it is ABOUT the pin —
+		// but it reports the skew as its answer: the warning would only
+		// restate it, and probe the forge it is about to find. It is a flag
+		// of `version`, not a group, so pinIndependentCommands (whole
+		// groups) cannot name it; plain `version` keeps its warning.
 		return nil
 	}
 	readOnlyFlags, gated := pinGateFor(rel)

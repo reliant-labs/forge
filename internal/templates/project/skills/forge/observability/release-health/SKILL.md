@@ -61,8 +61,8 @@ A service-wide rate hides a regression in one op on a busy service. So the
 check also judges each op (`observability/query/ops`) the release's commits
 changed, before vs after, on that op's own spans. Which ops changed:
 
-- hosted: the commits the release recorded, mapped in this checkout;
-- local: the commits since `--since`, plus uncommitted changes.
+- on hosting: the commits the release recorded, mapped in this checkout;
+- locally: the commits since `--since`, plus uncommitted changes.
 
 | Finding | Fires when |
 |---|---|

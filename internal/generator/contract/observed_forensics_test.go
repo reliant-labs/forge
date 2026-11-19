@@ -77,6 +77,40 @@ func TestClassifyParam(t *testing.T) {
 		{"sessionID", "Status", captureDigits}, // local named int
 		{"counterID", "int64", captureInt},
 		{"tokenOK", "bool", captureBool},
+		// A secret name hides a number's value whether or not it is
+		// ID-shaped: a PIN, a CVV, a security code record their digit count.
+		{"pin", "int", captureDigits},
+		{"userPIN", "int32", captureDigits},
+		{"cvv", "uint16", captureDigits},
+		{"cvv2", "uint64", captureDigits},
+		{"securityCode", "int64", captureDigits},
+		{"ssn", "Status", captureDigits}, // local named int
+		{"tan", "float64", captureDigits},
+		// A quantity (first or last word max, min, limit, count, num,
+		// total, size, len, length) is not a secret, for numbers only.
+		{"maxTokens", "int", captureInt},
+		{"max_tokens", "int32", captureInt},
+		{"session_count", "uint64", captureUint},
+		{"token_limit", "float64", captureFloat},
+		{"num_sessions", "int", captureInt},
+		{"numSessions", "int64", captureInt},
+		{"pin_num", "int", captureDigits}, // a trailing `num` is "number", not a count
+		{"ssn_num", "uint64", captureDigits},
+		{"otpNum", "int32", captureDigits},
+		{"otp_counter_id", "int64", captureDigits}, // last word `id`
+		{"max_session_id", "int64", captureDigits}, // ID-shaped: never a quantity
+		{"num_otp_id", "uint64", captureDigits},
+		{"maxSessionID", "int", captureDigits},
+		{"max_SESSIONID", "int64", captureDigits}, // ID-shaped as ForensicIDName always read it
+		{"maxSESSIONID", "uint32", captureDigits},
+		{"tokenCounter", "int", captureDigits}, // `counter` is not `count`
+		{"maxTokens", "string", captureLen},
+		{"session_count", "Status", captureInt}, // local named int
+		{"spinner", "int", captureInt},          // `pin` matches a whole word only
+		{"shipping", "uint32", captureUint},
+		{"pin", "string", captureLen},
+		{"pinID", "string", captureLen}, // ID-shaped, but secret
+		{"mfaEnabled", "bool", captureBool},
 		// Named types fail closed: a value only through a resolved local
 		// primitive, and still under the secret-name rule.
 		{"otpID", "OTPCode", captureDigits},      // local int64, secret-shaped name
@@ -331,5 +365,43 @@ type Service interface {
 	}
 	if strings.Contains(got, "a.fee") || strings.Contains(got, `r.Int("otpID"`) {
 		t.Errorf("a named type leaked a value:\n%s", got)
+	}
+}
+
+// TestObservedDecoratorSecretNamedPlainNumbers is the regression for a
+// secret-named number that is not ID-shaped: `pin`, `cvv`,
+// `securityCode` and `tan` record their digit count and never reach a value recorder;
+// a bool under a secret name, a plain number and a quantity (`maxTokens`)
+// keep their value, and a string named like a quantity records its length.
+func TestObservedDecoratorSecretNamedPlainNumbers(t *testing.T) {
+	_, dir := writeModule(t, map[string]string{
+		"contract.go": `package orders
+
+import "context"
+
+type Service interface {
+	Confirm(ctx context.Context, pin int, cvv uint16, securityCode int64, tan float32, mfaEnabled bool, spinner int, maxTokens int, tokenLimit string) error
+}
+`,
+	})
+	got := renderOrders(t, dir, Options{})
+	for _, want := range []string{
+		`r.IntDigits("pin", int64(a.pin))`,
+		`r.UintDigits("cvv", uint64(a.cvv))`,
+		`r.IntDigits("securityCode", a.securityCode)`,
+		`r.FloatDigits("tan", float64(a.tan))`,
+		`r.Bool("mfaEnabled", a.mfaEnabled)`,
+		`r.Int("spinner", int64(a.spinner))`,
+		`r.Int("maxTokens", int64(a.maxTokens))`,
+		`r.Len("tokenLimit", len(a.tokenLimit))`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("decorator missing %q\n---\n%s", want, got)
+		}
+	}
+	for _, leak := range []string{`r.Int("pin"`, `r.Uint("cvv"`, `r.Int("securityCode"`} {
+		if strings.Contains(got, leak) {
+			t.Errorf("a secret-named number is recorded by value (%s):\n%s", leak, got)
+		}
 	}
 }

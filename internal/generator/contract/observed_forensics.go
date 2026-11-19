@@ -51,7 +51,7 @@ const (
 	captureProto                       // pointer to a generated proto message: walked
 	captureNamed                       // a named generated type (a proto enum): its name
 	captureType                        // anything else: the type only
-	captureDigits                      // a number with a secret-shaped ID name: its digit count
+	captureDigits                      // a number with a secret name (observe.ForensicSecretNumberName): its digit count
 )
 
 func (k captureKind) String() string {
@@ -77,13 +77,17 @@ func classifyParam(name, typeExpr string, imports, aliases map[string]string) ca
 		return captureCount
 	}
 	if kind, ok := capturePrimitives[t]; ok {
-		if kind != captureBool && observe.ForensicSecretIDName(name) {
+		// A secret-named number (`pin`, `cvv`, `sessionID`) records its digit
+		// count, never its value, unless its name is a quantity
+		// (`max_tokens`); a bool keeps its value, being one of two.
+		if kind != captureBool && observe.ForensicSecretNumberName(name) {
 			return captureDigits
 		}
 		return kind
 	}
 	if t == "string" {
-		if observe.ForensicIDName(name) {
+		// ForensicIDValueName is false for a secret name: its length only.
+		if observe.ForensicIDValueName(name) {
 			return captureID
 		}
 		return captureLen
@@ -119,7 +123,7 @@ func classifyParam(name, typeExpr string, imports, aliases map[string]string) ca
 	// A named type fails CLOSED: its value is recorded only when it resolves
 	// to a predeclared primitive declared in this package (`type OTPCode
 	// int64`), and then under the same name rules as that primitive — a
-	// secret-shaped ID name still hides it (digits only). Anything not
+	// secret name still hides it (digits only). Anything not
 	// resolved — another package's named type, a type over another named
 	// type, a struct — records its type and nothing else.
 	if isIdent(t) {

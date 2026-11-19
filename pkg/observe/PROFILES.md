@@ -105,7 +105,16 @@ on-demand pprof instead of expecting sparse defaults to catch a short spike.
 `FORGE_PROFILES_HEAP_INTERVAL` win over it. A forge workload's `profiling`
 block (KCL, `forge.Profiling`) renders those two variables, so one service can
 turn a type on, or the heap cadence up, for a while without a code change.
-Invalid values are logged and ignored; they never stop the service. Mutex and
+Invalid values are logged and ignored; they never stop the service.
+
+| Variable                       | Value                                                                          | Rendered by                                    |
+| ------------------------------ | ------------------------------------------------------------------------------ | ---------------------------------------------- | --------- |
+| `FORGE_PROFILES`               | the types, comma-separated (`cpu,heap,alloc`), or `none`                       | `profiling`                                    |
+| `FORGE_PROFILES_HEAP_INTERVAL` | Go duration between heap snapshots                                             | `profiling`                                    |
+| `FORGE_PROFILES_CPU_INTERVAL`  | Go duration between capture cycles, at least 30s                               | the workload's `env`                           |
+| `FORGE_PROFILES_CPU_DURATION`  | Go duration of each CPU window, 1s to half the cycle                           | the workload's `env`                           |
+| `FORGE_PROFILES_PGO`           | `on` (default) or `off`: whether CPU samples carry the PGO start lines (below) | `off` when the binary's build has PGO disabled | Mutex and |
+
 block sampling rates are set only while those profiles are selected, and put
 back when the profiler stops.
 
@@ -201,3 +210,46 @@ can make database savings differ.
 Production's ~7% exact duplicate excess remains unexplained. An ambiguous
 successful write followed by a retry can still create duplicates downstream.
 The transport replay test proves identical payload/IDs, not exactly-once storage.
+
+## PGO start lines
+
+Go's profile-guided optimization keys a call edge on (caller, the call's line
+minus the caller's `Function.StartLine`, callee). The collector's ClickHouse
+exporter stores `FunctionNames`, `FileNames` and `LineNumbers` per frame but
+drops start lines, and its flat arrays lose where one location ends and the
+next begins. So every **CPU** sample carries two attributes (`profiles_pgo.go`),
+which `profiles-schema.sql`'s `profile_pgo_edges_mv` (and the control plane's
+tenant schema) read:
+
+| Attribute                   | Value                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `forge.profile.start_lines` | One decimal per stored frame, comma-separated, in `FunctionNames` order: locations leaf first, each location's lines inlinee first, a line-less location as one `0`. Unknown is `0`. |
+| `forge.profile.leaf_frames` | How many of those frames belong to the stack's first two locations. Go's PGO graph counts edges only there (`internal/profile` `NewGraph`).                                          |
+
+Heap, goroutine, mutex and block samples carry neither. `FORGE_PROFILES_PGO=off`
+leaves both off CPU samples too. The KCL render sets it for every workload whose
+binary builds with `pgo = forge.PGO {enabled = False}`: nothing reads the start
+lines of a binary that is never built with a profile, and they are about a
+quarter of a CPU profile's gzipped wire size (below).
+
+The translator sorts each location's lines by line number, which scrambled an
+inlined function and the caller it was inlined into. The converter restores
+pprof's order (inlinee first, which OTLP specifies too) before export, so the
+attributes, `FunctionNames` and flamegraphs agree. Stacks with inlined frames
+got a new `StackHash` once with that change.
+
+Measured, 2026-11-18: three real 5s CPU profiles of a 4-goroutine JSON, regexp,
+sort and gzip workload (366-436 stored rows each, ~10.7 frames a row):
+
+| Cost                                        |                  Without |                   With |
+| ------------------------------------------- | -----------------------: | ---------------------: |
+| OTLP request, protobuf                      | 42.3-46.7 KB per profile | 60.5-67.7 KB (+43-45%) |
+| OTLP request, gzip (what the sender posts)  | 19.9-21.8 KB per profile | 24.8-27.2 KB (+24-25%) |
+| `SampleAttributes` per stored row (logical) |                  0 bytes |              ~95 bytes |
+
+The wire share is large because nearly every sample is a distinct stack, and
+each distinct stack adds one attribute string to the dictionary, while names
+and lines are already deduplicated there. Storage is what is billed: ~95 bytes
+on a ~4.5 KB row is about 2% of CPU rows and under 1% of all profile bytes at
+the default cadence (CPU is about half the bytes). These are logical sizes,
+not compressed disk bytes.

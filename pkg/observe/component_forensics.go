@@ -7,16 +7,22 @@
 //
 //	parameter                                     recorded as
 //	ints, uints, floats, bools                    the value
+//	secret-named number, not a quantity           "[len=N]": its digit count, ID-shaped or not
+//	  (ForensicSecretNumberName; `max_tokens` is a quantity and keeps its value)
 //	time.Time, time.Duration                      "[type=Time]", "[type=Duration]" — never the value
 //	proto Timestamp, Duration                     "[type=Timestamp]", "[type=Duration]"
-//	string named like an ID (ForensicIDName)      the value, at most MaxForensicValue bytes
-//	ID-shaped name mentioning a credential        "[len=N]": a string's length, a number's digit count
+//	string named like an ID (ForensicIDValueName) the value, at most MaxForensicValue bytes
 //	any other string, []byte                      "[len=42]" — the length only
 //	slice, array, map, variadic                   "[count=3]" — the element count only
 //	pointer to a proto message (a gen/ import)    walked here, under the same rules
-//	a proto enum                                  the enum value's name
+//	a proto enum                                  the enum value's name, secret-named or not
 //	anything else (structs, pointers, interfaces) "[type=*pkg.Type]" — the type only
 //	`// forge:no-capture <param>` on the method    nothing
+//
+// A bool or an enum keeps its value under a secret name (`mfa_enabled`,
+// `session_state`): either is one of a few values the schema itself lists,
+// so it cannot carry anything a person typed. The name rules are in
+// forensic_names.go.
 //
 // The encoding is the browser runtime's (@reliantlabs/forge-web-runtime,
 // forge#2348), so client and server forensics read the same way.
@@ -231,7 +237,7 @@ func (r *ForensicRecorder) Uint(name string, v uint64) {
 }
 
 // IntDigits records only the digit count of a secret-named integer
-// (ForensicSecretIDName): "[len=N]", N the length of its decimal form.
+// (ForensicSecretNumberName): "[len=N]", N the length of its decimal form.
 func (r *ForensicRecorder) IntDigits(name string, v int64) {
 	r.Len(name, len(strconv.FormatInt(v, 10)))
 }
@@ -241,10 +247,34 @@ func (r *ForensicRecorder) UintDigits(name string, v uint64) {
 	r.Len(name, len(strconv.FormatUint(v, 10)))
 }
 
-// FloatDigits is IntDigits for a floating-point number (its shortest
-// decimal form).
+// FloatDigits is IntDigits for a floating-point number: the length of the
+// form JavaScript's String(v) prints, so the browser runtime records the
+// same N for the same value.
 func (r *ForensicRecorder) FloatDigits(name string, v float64) {
-	r.Len(name, len(strconv.FormatFloat(v, 'g', -1, 64)))
+	r.Len(name, len(jsNumberString(v)))
+}
+
+// jsNumberString formats v as JavaScript's Number.prototype.toString does:
+// the shortest round-trip digits, positional for 1e-6 <= |v| < 1e21 and
+// exponential ("1e+21", "1.5e-7") outside it.
+func jsNumberString(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return "NaN"
+	case math.IsInf(v, 1):
+		return "Infinity"
+	case math.IsInf(v, -1):
+		return "-Infinity"
+	case v == 0:
+		return "0" // -0 too
+	}
+	if a := math.Abs(v); a >= 1e-6 && a < 1e21 {
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	s := strconv.FormatFloat(v, 'e', -1, 64) // "1e+21", "1.5e-07"
+	mant, exp, _ := strings.Cut(s, "e")
+	sign, digits := exp[:1], strings.TrimLeft(exp[1:], "0")
+	return mant + "e" + sign + digits
 }
 
 // Float records a floating-point parameter.
@@ -331,25 +361,25 @@ func (r *ForensicRecorder) field(name string, fd protoreflect.FieldDescriptor, v
 		r.add(forensicKey(name).String(enumName(fd.Enum(), v.Enum())))
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		if ForensicSecretIDName(string(fd.Name())) {
+		if ForensicSecretNumberName(string(fd.Name())) {
 			r.IntDigits(name, v.Int())
 		} else {
 			r.Int(name, v.Int())
 		}
 	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		if ForensicSecretIDName(string(fd.Name())) {
+		if ForensicSecretNumberName(string(fd.Name())) {
 			r.UintDigits(name, v.Uint())
 		} else {
 			r.Uint(name, v.Uint())
 		}
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
-		if ForensicSecretIDName(string(fd.Name())) {
+		if ForensicSecretNumberName(string(fd.Name())) {
 			r.FloatDigits(name, v.Float())
 		} else {
 			r.Float(name, v.Float())
 		}
 	case protoreflect.StringKind:
-		if ForensicIDName(string(fd.Name())) {
+		if ForensicIDValueName(string(fd.Name())) {
 			r.ID(name, v.String())
 		} else {
 			r.Len(name, len(v.String()))
@@ -406,53 +436,4 @@ func boundValue(v string) string {
 		cut--
 	}
 	return v[:cut] + "…"
-}
-
-// forensicSensitive are name fragments that keep even an ID-shaped name's
-// value out of forensics: a session or token "ID" is often the credential
-// itself.
-var forensicSensitive = []string{
-	"token", "secret", "passw", "credential", "session", "cookie",
-	"apikey", "privatekey", "signingkey", "otp",
-}
-
-// ForensicIDName reports whether a parameter or proto field named name holds
-// an identifier whose value forensics may record: id / ids, a `_id` / `_ids`
-// suffix, or an `ID` / `Id` / `IDs` / `Ids` suffix — unless the name also
-// mentions a credential (token, secret, password, session, cookie, api key,
-// …), which records the length only (ForensicSecretIDName). The generator
-// and the proto walk share this one rule.
-func ForensicIDName(name string) bool {
-	return idShapedName(name) && !sensitiveName(name)
-}
-
-// ForensicSecretIDName reports whether name is ID-shaped but mentions a
-// credential (`otp_counter_id`, `sessionID`): its value is never recorded,
-// whatever its type — a string records its length, a number its digit count
-// ("[len=9]"), as the browser runtime does.
-func ForensicSecretIDName(name string) bool {
-	return idShapedName(name) && sensitiveName(name)
-}
-
-func sensitiveName(name string) bool {
-	folded := strings.ReplaceAll(strings.ToLower(name), "_", "")
-	for _, s := range forensicSensitive {
-		if strings.Contains(folded, s) {
-			return true
-		}
-	}
-	return false
-}
-
-func idShapedName(name string) bool {
-	switch name {
-	case "id", "ids", "ID", "IDs", "Id", "Ids":
-		return true
-	}
-	for _, suffix := range []string{"_id", "_ids", "ID", "Id", "IDs", "Ids"} {
-		if strings.HasSuffix(name, suffix) && len(name) > len(suffix) {
-			return true
-		}
-	}
-	return false
 }

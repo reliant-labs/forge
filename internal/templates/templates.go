@@ -31,6 +31,8 @@ func FuncMap() template.FuncMap {
 		"browserReplayPrivacyGuard": func() string { return browserReplayPrivacyGuard },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
+		// pgoBuildArg names a binary's PGO ARG in the Dockerfile (PGOBuildArg).
+		"pgoBuildArg": PGOBuildArg,
 		"humanize": func(s string) string {
 			words := strings.Fields(naming.Humanize(s))
 			for i, w := range words {

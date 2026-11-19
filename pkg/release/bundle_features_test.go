@@ -45,6 +45,9 @@ var bundleFeatureKeys = map[string][]string{
 	// A value feature: it adds the funnel by values "visitor" and "person"
 	// under shape.frontend_telemetry and no key.
 	BundleFeatureFunnelPerson: {},
+	// A value feature: it adds the changed_op_* codes to
+	// shape.release_health.fail_on and no key.
+	BundleFeatureReleaseHealthChangedOps: {},
 }
 
 // snapshotKeys are not features: a snapshot bundle is its own schema, gated

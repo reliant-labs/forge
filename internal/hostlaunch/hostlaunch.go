@@ -93,6 +93,10 @@ type RunnerSpec struct {
 	// and delve execute. Empty falls back to the workload name, which is
 	// what `forge build` names a binary with no output_name.
 	OutputName string
+	// PGOOff is true when the env builds GoPkg with PGO disabled (KCL
+	// `pgo = forge.PGO {enabled = False}`). The runners that compile on
+	// launch (go-run, air) then build with -pgo=off: see WithPGO.
+	PGOOff bool
 
 	// Command, when non-empty, is the workload's spec.command: an explicit
 	// entrypoint run verbatim with Args, for any runner but air. It is how
@@ -361,6 +365,42 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 		cmd.Dir = dir
 	}
 	return cmd, nil
+}
+
+// WithPGO returns env with `-pgo=off` appended to GOFLAGS when spec's binary
+// builds with PGO disabled and its runner compiles it on launch — go-run, or
+// air, whose `go build` inherits the environment. Go's default -pgo=auto
+// would otherwise read a committed cmd/<bin>/default.pgo. The binary and
+// delve runners execute what `forge build` compiled, which already passed
+// -pgo=off. GOFLAGS the environment already carries is kept, and a -pgo in
+// it is the user's choice and wins. env is not modified.
+func WithPGO(spec RunnerSpec, env []string) []string {
+	var compiles bool
+	switch strings.TrimSpace(spec.Runner) {
+	case "air":
+		compiles = true
+	case "", "go-run":
+		compiles = len(spec.Command) == 0 // a spec.command runs verbatim
+	}
+	if !spec.PGOOff || !compiles {
+		return env
+	}
+	const key = "GOFLAGS="
+	out := make([]string, 0, len(env)+1)
+	flags := ""
+	for _, kv := range env {
+		if strings.HasPrefix(kv, key) {
+			flags = strings.TrimPrefix(kv, key) // the last one is what the go tool reads
+			continue
+		}
+		out = append(out, kv)
+	}
+	for _, f := range strings.Fields(flags) {
+		if name, _, _ := strings.Cut(strings.TrimLeft(f, "-"), "="); strings.HasPrefix(f, "-") && name == "pgo" {
+			return env
+		}
+	}
+	return append(out, key+strings.TrimSpace(flags+" -pgo=off"))
 }
 
 func runnerOrDefault(r string) string {

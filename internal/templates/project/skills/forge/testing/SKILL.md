@@ -16,7 +16,7 @@ The tiers map onto forge machinery, and which one you are in decides what is
 already available:
 
 1. **Unit** — the real subject plus the **generated contract mocks** for its
-   collaborators (`mock_gen.go`, one per interface in `contract.go` — never
+   collaborators (`mock_gen.go`, one per interface in the contract — never
    hand-roll a fake for something declared there).
 2. **Integration** — `testkit.NewPostgresDB(t)` gives a real ephemeral postgres
    with your own `db/migrations/*.up.sql` applied, no Docker required. The ORM
@@ -79,7 +79,7 @@ stays real at every tier.
   yours; the durable fix is to replace the seed block and literal create
   requests with the factory calls (see `testing/patterns`).
 - **Mock at the typed client interface, not at HTTP.** Forge generates the
-  former for every interface in a `contract.go`; mocking HTTP instead forces
+  former for every interface in a contract; mocking HTTP instead forces
   each test to know your serialization shape.
 - **Live external dependencies** belong behind an explicit opt-in env var and a
   skip-with-reason, so `task test` stays hermetic in CI.
@@ -105,7 +105,7 @@ The canonical entry point for table-driven tests in a forge project is the `gith
 | Helper | Use |
 |--------|-----|
 | `tdd.Case[Req, Resp]` + `tdd.TableRPC` | unary Connect RPC tests (unit/integration/E2E) |
-| `tdd.ContractCase` + `tdd.TableContract` | `internal/<pkg>/contract.go` Service tests |
+| `tdd.ContractCase` + `tdd.TableContract` | tests of an `internal/<pkg>` contract's Service implementation (`contract.go` or `//forge:contract`) |
 | `tdd.E2EClient(t, srv, factory)` | `httptest.Server` → typed Connect client |
 | `tdd.NewMock(opts...)` | terse Forge MockService construction |
 | `tdd.AssertConnectError`, `tdd.WithTimeout`, `tdd.SetupMockDB` | standalone helpers |

@@ -354,6 +354,8 @@ path from an empty directory to authored protos, in one call.`,
 	rootCmd.AddCommand(newAppCmd())
 	// `obs` reads back what the local observability stack collected.
 	rootCmd.AddCommand(newObsCmd())
+	// `pgo` writes each Go binary's default.pgo from an env's profiles (pgo.go).
+	rootCmd.AddCommand(newPGOCmd())
 	// `release` is the release-ledger noun. Cutting a ledger stays on
 	// `forge env build --release` and advancing one stays on `forge env
 	// promote` — both act on the thing that owns them. What lives here is

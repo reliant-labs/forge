@@ -25,14 +25,14 @@ forge obs check <env> --wait --json   # after a deploy: proves the release good,
 
 ## Critical rules
 
-1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`. Edit the input (the proto, a migration, config, a package's `contract.go`) and run `forge generate`. It never overwrites your files: handlers, `internal/app/providers.go` and `compose.go` are yours (forge only adds new components and Deps keys to compose.go). Parallel runs queue on `.forge/forge.lock`; an unchanged tree says `nothing to do` in seconds.
+1. **Never edit generated code** — `gen/`, `*_gen.go`, `*-hooks.ts`. Edit the input (the proto, a migration, config, a package's `contract.go`, or the exported methods of its `//forge:contract` type, from which `contract_gen.go` is derived) and run `forge generate`. It never overwrites your files: handlers, `internal/app/providers.go` and `compose.go` are yours (forge only adds new components and Deps keys to compose.go). Parallel runs queue on `.forge/forge.lock`; an unchanged tree says `nothing to do` in seconds.
 2. **Proto is the API's canonical input; migrations are the DB source of truth.** Entities and the ORM are projected from the APPLIED `db/migrations` schema, never from proto.
 3. **The gate before you call a phase done:**
    ```
    forge generate && forge lint && go build ./... && task test
    ```
    Never pipe `forge lint` through `head`: the verdict is the LAST line. `--quiet` prints only what failed; `--scope <path>` lints your slice of a shared checkout (run it unscoped before merging).
-4. **Iterate on `task test:short -- ./internal/<pkg>/...`** (cached; never add `-count=1` or `-race`, never set a private `GOCACHE`), then `task test` once before you finish; `task ci` is the whole PR gate (`ci`). A test over ~2s calls `testkit.Slow(t, "<why>")` first — gate, don't gut (`testing`). `⏳ waiting for a heavy slot` is a queue, not a hang: never kill the holders (`ci/slots`).
+4. **Iterate on `task test:short -- ./internal/<pkg>/...`** (cached; never add `-count=1` or `-race`, never set a private `GOCACHE`), then `task test` once before you finish; `task ci` is the whole PR gate (`ci`). A test over ~2s calls `testkit.Slow(t, "<why>")` first — gate, don't gut (`testing`). `⏳ waiting for a heavy slot` is a queue, not a hang: never kill the holders (`ci/slots`). A command bounded to minutes (the tests or lint of named packages) may wait in the express lane, ahead of hour-long jobs: `FORGE_SLOT_LANE=express`.
    Anything over ~2 minutes runs in the background (`run_in_background` + `shell_wait`), never detached with `nohup`, `&`, `setsid` or `disown`.
 5. **Debugging: `forge skill load debug` first.** Frontend `console.*` calls and uncaught errors are on disk beside the backend logs: `grep '\[browser:error\]' .forge/logs/dev/*.log`.
 6. **`auth_required: false` publishes one RPC, never a page.** The pages a signed-out visitor may open are the frontend route guard's `publicExactPaths` (`src/lib/auth/route-guard.tsx`). What a caller may do — access checks, row scoping — is your handler code (`middleware.GetUser`); forge generates none of it (`auth`).
@@ -47,7 +47,9 @@ gen/services/<svc>/v1/...             ← generated stubs (never edit)
 internal/handlers/<svc>/              ← THE SERVICE, one dir: service.go (Deps, New), rpc_<name>.go
                                         (one custom rpc per file — the logic goes HERE), handlers_crud.go
                                         (CRUD shims), handlers_crud_ops_gen.go (generated)
-internal/<pkg>/                       ← optional `forge scaffold package <pkg>`: contract.go + service.go
+internal/<pkg>/                       ← optional `forge scaffold package <pkg>`: service.go (Deps, the
+                                        `//forge:contract` struct, New — yours); contract_gen.go (the derived
+                                        Service interface) and mock_gen.go are generated
 ```
 
 The `*Service` methods ARE the handlers; they reach `internal/db/` and other collaborators through `s.deps`. Load `architecture` for the full tree, and `service-layer` for the package-boundary rules.

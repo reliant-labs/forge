@@ -15,7 +15,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | A background worker                          | `forge scaffold worker <name>`      | Worker with Start/Stop lifecycle |
 | A cron-scheduled worker                      | `forge scaffold worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
 | A one-shot step that must finish before something else starts | declare a `kind = "job"` workload in `deploy/kcl/workloads.k` and bind it per env (see below) | Ordering primitive — no scaffold needed |
-| An internal Go package with interface contract | `forge package new <name>`   | Package directory with contract interface and default implementation |
+| An internal Go package with interface contract | `forge package new <name>`   | Package directory with a `//forge:contract`-marked `service` struct (forge derives the `Service` interface and its mock) |
 | A Next.js web frontend                       | `forge scaffold frontend <name>`    | Next.js app wired into the project |
 | A React Native mobile frontend               | `forge scaffold frontend <name> --kind mobile` | Expo app with Connect-web transport |
 

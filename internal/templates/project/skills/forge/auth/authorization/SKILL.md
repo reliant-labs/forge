@@ -31,13 +31,12 @@ Enrichment runs on every authenticated request, so a query here is on the hot pa
 
 **Enrichment that reads the database is a component, not an edit to `enrichClaims`.** The function above is a package function with no `Deps`, so it has no way to reach a store. A package that does database I/O must be a composed component: `requirecontract` refuses a plain helper, and `//forge:exclude-contract` is refused for outbound I/O. So the seam is a component:
 
-1. `forge scaffold package membership`, then put the method on its `Service` interface and implement it over the store:
+1. `forge scaffold package membership`, then add the method to the marked `service` type and implement it over the store:
 
    ```go
-   // internal/membership/contract.go
-   type Service interface {
-       EnrichClaims(ctx context.Context, claims *auth.Claims) (*auth.Claims, error)
-   }
+   // internal/membership/service.go — the exported method is the contract;
+   // Service is derived from it into contract_gen.go
+   func (s *service) EnrichClaims(ctx context.Context, claims *auth.Claims) (*auth.Claims, error) { /* ... */ }
    ```
 
    `middleware.Claims` is an alias of `github.com/reliant-labs/forge/pkg/auth.Claims`, so the package does not need to import `pkg/middleware`.

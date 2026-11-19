@@ -19,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
@@ -95,6 +96,12 @@ type obsCheckHarness struct {
 	sleeps int
 	slept  []time.Duration
 	ledger obsbackend.LedgerReader
+	// opChanges is the changed-op source; nil reads none (no git in a
+	// test), so a check judges no changed ops unless the test says.
+	opChanges opChangeFunc
+	// wrapLocal replaces the local backend, to give it another OpsReader
+	// or none (obs_check_changed_ops_test.go).
+	wrapLocal func(obsbackend.Local) obsbackend.Backend
 }
 
 func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsbackend.Caller, local obsbackend.Runner, args ...string) (string, string, error) {
@@ -112,12 +119,20 @@ func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsba
 	obsDepsOverride = &obsDeps{
 		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return facts, nil },
 		Local: func(env string) obsbackend.Backend {
-			return obsbackend.Local{Env: env, Runner: local, Ledger: func() (obsbackend.LedgerReader, error) { return e.ledger, nil }}
+			l := obsbackend.Local{Env: env, Runner: local, Ledger: func() (obsbackend.LedgerReader, error) { return e.ledger, nil }}
+			if e.wrapLocal != nil {
+				return e.wrapLocal(l)
+			}
+			return l
 		},
 		Cloud: func(_ context.Context, env string) (obsbackend.Cloud, error) {
 			return obsbackend.Cloud{Env: env, EnvID: "env-prod", OrgID: "org-1", Caller: caller}, nil
 		},
-		Now: func() time.Time { return e.now },
+		Now:       func() time.Time { return e.now },
+		OpChanges: e.opChanges,
+	}
+	if e.opChanges == nil {
+		obsDepsOverride.OpChanges = func(context.Context, string, releasehealth.Subject) opChanges { return opChanges{} }
 	}
 	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)

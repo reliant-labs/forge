@@ -78,7 +78,14 @@ var (
 	attemptLogLimit = 256 * 1024
 	// attemptReportLimit bounds the captured --json document.
 	attemptReportLimit = 1024 * 1024
+	// attemptFlushBackoff is the first wait between the final reports that
+	// deliver a code source still owed at finish; it doubles per try.
+	attemptFlushBackoff = 250 * time.Millisecond
 )
+
+// attemptFlushTries bounds those final reports: each is one call of at most
+// attemptCallTimeout, at the end of a deploy whose own work is done.
+const attemptFlushTries = 3
 
 type deployAttemptCtxKey struct{}
 
@@ -109,6 +116,28 @@ type deployAttempt struct {
 	stop              chan struct{}
 	beatDone          chan struct{}
 	restore           []func()
+
+	// THE ATTEMPT'S CODE SOURCE (code_source.go, forAttempt) is sent once:
+	// with the open when what ships is known then, else with the first
+	// report after it is — a --from deploy learns its release only after
+	// the attempt opened. codeSourceStore reads that release and the
+	// checkout. codeSourceTried is the release last resolved, so a release
+	// that cannot be read costs one read, not one per heartbeat.
+	// codeSourcePending is a resolved source not yet delivered;
+	// codeSourceDone ends it, delivered or known to say nothing.
+	codeSourceStore   *hostedStore
+	codeSourceTried   string
+	codeSourcePending map[string]any
+	codeSourceDone    bool
+
+	// reportMu serializes report1, so one report at a time resolves the
+	// code source and consumes it: two reports could otherwise both find it
+	// unresolved, both read the release and both send it. Taken before mu,
+	// never while holding it.
+	reportMu sync.Mutex
+	// flushBackoff is the first wait between final flush reports
+	// (attemptFlushBackoff, which tests shrink); it doubles per try.
+	flushBackoff time.Duration
 }
 
 // deployAttemptMode is the attempt mode for a deploy invocation, or "" when
@@ -144,6 +173,7 @@ func beginDeployAttempt(ctx context.Context, env string, f deployCmdFlags) (cont
 		nudge:   make(chan struct{}, 1),
 
 		shipsCheckout: deployShipsCheckout(f),
+		flushBackoff:  attemptFlushBackoff,
 	}
 	if run, err := f.promote.run.resolveRun(); err == nil {
 		a.runID, a.runURL = run.ID, run.URL
@@ -216,12 +246,12 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 		req["run"] = map[string]any{"id": a.runID, "url": a.runURL}
 	}
 	shipsCheckout, version := a.shipsCheckout, a.release
+	a.codeSourceStore = store
 	a.mu.Unlock()
-	// The checkout this deploy runs from, and the commit it ships
-	// (code_source.go). Read outside the lock: the first read runs git, and
-	// a named release is read from the ledger.
-	shipped := attemptRelease(ctx, store, shipsCheckout, version)
-	if src := store.source.get(ctx).forAttempt(shipsCheckout, shipped).wire(); src != nil {
+	// What this deploy ships (code_source.go). Read outside the lock: the
+	// first read runs git, and a named release is read from the ledger.
+	src, sourceKnown := attemptCodeSource(ctx, store, shipsCheckout, version)
+	if src != nil {
 		req["codeSource"] = src
 	}
 
@@ -242,6 +272,7 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 	if msg := resp.CodeSources.warning(); msg != "" {
 		a.codeSourceWarning = msg
 	}
+	a.codeSourceTried, a.codeSourceDone = version, sourceKnown
 	a.opened = true
 	a.phase = "start"
 	a.stop = make(chan struct{})
@@ -249,11 +280,41 @@ func attachDeployAttempt(ctx context.Context, env string, l envLedger) {
 	go a.heartbeat(context.WithoutCancel(ctx))
 }
 
+// attemptCodeSource is the wire source of what a deploy ships, and whether
+// that is known yet (codeSource.forAttempt). nil and known: the source says
+// nothing. nil and not known: the release is not resolved, or could not be
+// read, so there is nothing coherent to send yet.
+func attemptCodeSource(ctx context.Context, store *hostedStore, shipsCheckout bool, version string) (map[string]any, bool) {
+	shipped := attemptRelease(ctx, store, shipsCheckout, version)
+	if !shipsCheckout && shipped == nil {
+		return nil, false
+	}
+	src, known := store.source.get(ctx).forAttempt(shipsCheckout, shipped)
+	return src.wire(), known
+}
+
+// codeSourceOwedLocked reports whether the attempt still owes its code
+// source: one resolved and undelivered, or a release noted since the last
+// resolution.
+func (a *deployAttempt) codeSourceOwedLocked() bool {
+	if a.codeSourceDone {
+		return false
+	}
+	return a.codeSourcePending != nil || a.codeSourceUnresolvedLocked()
+}
+
+// codeSourceUnresolvedLocked: a deploy of an already-cut release whose
+// release is now known and has not been resolved yet.
+func (a *deployAttempt) codeSourceUnresolvedLocked() bool {
+	return !a.codeSourceDone && a.codeSourcePending == nil && !a.shipsCheckout &&
+		a.codeSourceStore != nil && a.release != "" && a.release != a.codeSourceTried
+}
+
 // attemptRelease is the named release a deploy ships, as its ledger recorded
-// it, so the attempt can send the commit that release was cut from. nil when
+// it, so the attempt can send the source that release was cut from. nil when
 // the deploy ships the checkout, names no release yet (--from resolves it
 // after the attempt opens), or the read fails or finds none: the attempt is
-// best-effort and a failed read only leaves its commit unknown.
+// best-effort and a failed read only leaves its source unsent.
 func attemptRelease(ctx context.Context, store *hostedStore, shipsCheckout bool, version string) *release.Release {
 	if shipsCheckout || version == "" {
 		return nil
@@ -314,16 +375,23 @@ func (a *deployAttempt) heartbeat(ctx context.Context) {
 		case <-t.C:
 		case <-a.nudge:
 		}
-		a.report1(ctx)
+		// A heartbeat is best effort: a failed report keeps its output and
+		// any pending code source for the next tick, and finish retries the
+		// last one, so the error has nothing more to do here.
+		_ = a.report1(ctx)
 	}
 }
 
-// report1 sends one heartbeat with whatever changed and the pending output.
-func (a *deployAttempt) report1(ctx context.Context) {
+// report1 sends one heartbeat with whatever changed and the pending output,
+// and returns the call's error: nil when nothing was sent or the server took
+// it. A pending code source is cleared only when the server took it.
+func (a *deployAttempt) report1(ctx context.Context) error {
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
 	a.mu.Lock()
 	if !a.opened || a.dead {
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	logChunk := a.pending.String()
 	a.pending.Reset()
@@ -335,25 +403,100 @@ func (a *deployAttempt) report1(ctx context.Context) {
 		"logAppend":      logChunk,
 	}
 	client := a.client
+	resolve, store, version := a.codeSourceUnresolvedLocked(), a.codeSourceStore, a.release
 	a.mu.Unlock()
+
+	// The source of what ships, once it is known (see codeSourceStore):
+	// resolved outside the lock, since it reads the ledger and runs git.
+	if resolve {
+		src, known := attemptCodeSource(ctx, store, false, version)
+		a.mu.Lock()
+		a.codeSourceTried = version
+		switch {
+		case known && src == nil:
+			a.codeSourceDone = true
+		case known:
+			a.codeSourcePending = src
+		}
+		a.mu.Unlock()
+	}
+	a.mu.Lock()
+	sentSource := a.codeSourcePending
+	a.mu.Unlock()
+	if sentSource != nil {
+		req["codeSource"] = sentSource
+	}
 
 	callCtx, cancel := context.WithTimeout(ctx, attemptCallTimeout)
 	defer cancel()
-	err := client.Call(callCtx, procReportDeployAttempt, req, &struct{}{})
+	var resp struct {
+		CodeSources *wireAppCodeSources `json:"codeSources"`
+	}
+	err := client.Call(callCtx, procReportDeployAttempt, req, &resp)
 	if err == nil {
-		return
+		a.mu.Lock()
+		if sentSource != nil {
+			a.codeSourceDone, a.codeSourcePending = true, nil
+		}
+		if msg := resp.CodeSources.warning(); msg != "" {
+			a.codeSourceWarning = msg
+		}
+		a.mu.Unlock()
+		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if hostedErrorHasCode(err, cloud.CodeFailedPrecondition) || hostedErrorHasCode(err, cloud.CodeNotFound) {
 		// The server closed or lost it; nothing more can be written.
 		a.dead = true
-		return
+		return err
 	}
-	// Transient: keep the chunk for the next beat, still bounded.
+	// Transient: keep the chunk for the next beat, still bounded. A pending
+	// code source stays pending for the same reason.
 	rest := a.pending.String()
 	a.pending.Reset()
 	a.appendLocked(&a.pending, logChunk+rest, attemptLogLimit)
+	return err
+}
+
+// flushCodeSource delivers a code source still owed when the deploy ends —
+// its release became known too late for a heartbeat to carry it, or the
+// heartbeat that carried it failed — on final reports: the close carries no
+// source. A transient failure is retried, a bounded number of times with a
+// doubling backoff; an answer that will not change (the attempt is gone, the
+// server keeps no reports, the request is refused) ends it.
+func (a *deployAttempt) flushCodeSource(ctx context.Context) {
+	backoff := a.flushBackoff
+	if backoff <= 0 {
+		backoff = attemptFlushBackoff
+	}
+	for try := 1; ; try++ {
+		err := a.report1(ctx)
+		a.mu.Lock()
+		owed := !a.dead && a.codeSourceOwedLocked()
+		a.mu.Unlock()
+		if !owed || err == nil || try >= attemptFlushTries || attemptErrorIsFinal(err) {
+			return
+		}
+		t := time.NewTimer(backoff)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return
+		}
+		backoff *= 2
+	}
+}
+
+// attemptErrorIsFinal: a report error that a retry would only repeat.
+func attemptErrorIsFinal(err error) bool {
+	for _, code := range []string{cloud.CodeUnimplemented, cloud.CodeInvalidArgument, cloud.CodePermissionDenied, cloud.CodeUnauthenticated} {
+		if hostedErrorHasCode(err, code) {
+			return true
+		}
+	}
+	return false
 }
 
 // finish closes the attempt with the invocation's outcome. Always safe to
@@ -365,20 +508,31 @@ func (a *deployAttempt) finish(ctx context.Context, runErr error) {
 	// Output first: restoring the streams drains the pipes, so the final
 	// chunk is in pending before the close sends it.
 	a.release1()
+
+	a.mu.Lock()
+	opened := a.opened
+	stop := a.stop
+	a.mu.Unlock()
+	if opened {
+		close(stop)
+		<-a.beatDone
+		a.mu.Lock()
+		owed := !a.dead && a.codeSourceOwedLocked()
+		a.mu.Unlock()
+		if owed {
+			a.flushCodeSource(context.WithoutCancel(ctx))
+		}
+	}
 	// After the deploy's own output, and whatever its outcome: it is about
 	// the app, not this deploy. Printed even if the attempt never opened, as
 	// a cut's warning may be held here.
 	a.printCodeSourceWarning()
-
-	a.mu.Lock()
-	opened, dead := a.opened, a.dead
-	stop := a.stop
-	a.mu.Unlock()
 	if !opened {
 		return
 	}
-	close(stop)
-	<-a.beatDone
+	a.mu.Lock()
+	dead := a.dead
+	a.mu.Unlock()
 	if dead {
 		return
 	}

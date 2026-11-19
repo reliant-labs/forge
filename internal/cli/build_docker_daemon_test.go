@@ -44,7 +44,7 @@ func TestProjectImageWithoutADaemonFails(t *testing.T) {
 	}
 	stubDaemon(t, errors.New("cannot reach the Docker daemon"))
 	res := dockerBuildProject(context.Background(), &config.ProjectConfig{Name: "demo"},
-		imageTagSet("registry.example/acme/demo", "v1", true, true), "amd64", versionInfo{},
+		imageTagSet("registry.example/acme/demo", "v1", true, true), "amd64", versionInfo{}, nil,
 		projectImageGuard{outputDir: "bin", envLabel: "prod"})
 	if res.err == nil || !strings.Contains(res.err.Error(), "no Docker daemon answered") {
 		t.Fatalf("err = %v", res.err)

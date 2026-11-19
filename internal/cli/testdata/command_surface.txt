@@ -226,6 +226,7 @@ forge fix	group	allow-version-skew:bool project-dir/C:string
 forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
@@ -279,6 +280,7 @@ forge obs	group	allow-version-skew:bool control-plane:string project-dir/C:strin
 forge obs alerts	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts check	cmd	allow-version-skew:bool control-plane:string env:string json:bool max-rows:int project-dir/C:string project:string rule:string sql:bool timeout:duration
 forge obs alerts run	cmd	alertmanager:string allow-version-skew:bool control-plane:string env:string listen:string max-rows:int project-dir/C:string project:string timeout:duration
+forge obs blast-radius	cmd	all-instances:bool allow-version-skew:bool backend:string base:string control-plane:string explain:bool fields:string filter:stringArray from:string head:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs changes	cmd	allow-version-skew:bool backend:string control-plane:string fields:string from:string json:bool limit:int project-dir/C:string project:string since:duration to:string
 forge obs check	cmd	allow-inconclusive:bool allow-version-skew:bool backend:string control-plane:string early-pass:duration explain:bool fail-on:string fields:string gate-json:string json:bool limit:int project-dir/C:string project:string promotion:string release:string since:string threshold:stringArray timeout:duration wait:bool window:duration
 forge obs dashboards	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
@@ -301,6 +303,7 @@ forge obs metrics describe	cmd	all-instances:bool allow-version-skew:bool backen
 forge obs metrics exemplars	cmd	all-instances:bool allow-version-skew:bool around:duration at:string backend:string control-plane:string explain:bool fields:string filter:stringArray from:string group:stringArray instance:string json:bool limit:int min-value:float64 print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string where:stringArray
 forge obs metrics list	cmd	all-instances:bool allow-version-skew:bool backend:string contains:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs metrics query	cmd	agg:string all-instances:bool allow-version-skew:bool backend:string compare:string control-plane:string explain:bool fields:string filter:stringArray formula:string from:string group-by:stringArray instance:string json:bool kind:string limit:int panel-out:string print-sql:bool project-dir/C:string project:string quantile:float64 query:stringArray service:stringArray since:duration step:duration to:string top:int user:string where:stringArray
+forge obs ops	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool kind:stringSlice limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration sort:string to:string top:int user:string
 forge obs profile	cmd	allow-version-skew:bool control-plane:string env:string format:string from:string list:bool output/o:string project-dir/C:string project:string service:string since:duration span:string sql:bool to:string trace:string type:string
 forge obs query	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int panel:string param:stringArray print-sql:bool project-dir/C:string project:string service:stringArray since:duration sql-file:string sql:string step:duration to:string user:string
 forge obs receivers	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
@@ -322,6 +325,9 @@ forge obs users	cmd	all-instances:bool allow-version-skew:bool backend:string co
 forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge package	group	allow-version-skew:bool project-dir/C:string
 forge package new	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
+forge pgo	group	allow-version-skew:bool project-dir/C:string
+forge pgo pull	cmd	allow-version-skew:bool binary:stringArray dry-run:bool env:string from-env:string json:bool project-dir/C:string since:duration
+forge pgo status	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string
 forge project	group	allow-version-skew:bool project-dir/C:string
 forge project annotations	cmd	allow-version-skew:bool json:bool kind:string project-dir/C:string
 forge project audit	cmd	allow-version-skew:bool json:bool project-dir/C:string

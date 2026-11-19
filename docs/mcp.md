@@ -282,6 +282,7 @@ revokes it.
 | `obs_issue` (`project`, `env`, `id`, `events`)                                             | `forge obs issue <id> <env> --json`          | no                                  |
 | `obs_logs` (… `query`, `severity`, `trace`, `oldest`, `page_token`)                        | `forge obs logs <env> <query> --json`        | no                                  |
 | `obs_traces` (… `errors`, `slow`, `min_duration`, `route`, `page_token`)                   | `forge obs traces <env> --json`              | no                                  |
+| `obs_ops` (`project`, `env`, `since`, `services`, `sort`, `top`, `kind`)                   | `forge obs ops <env> --json`                 | no                                  |
 | `obs_check` (`project`, `env`, `release`, `promotion`, `window`)                           | `forge obs check <env> --json`               | no                                  |
 | `obs_changes` (`project`, `env`, `since`, `limit`)                                         | `forge obs changes <env> --json`             | no                                  |
 | `releases_list` (`project`, `env`, `since`, `limit`)                                       | `forge env releases list <env> --json`       | no                                  |

@@ -2,7 +2,7 @@
 -- `profiles-schema` service on every `forge env up`. YOURS: forge scaffolds it
 -- once and never rewrites it.
 --
--- Three tiers, all in the `default` database next to ClickStack's own tables:
+-- Four tables, all in the `default` database next to ClickStack's own tables:
 --
 --   otel_profiles       RAW. One row per sample, written by the collector's
 --                       clickhouse exporter. 24h TTL. Whole-profile and
@@ -11,6 +11,8 @@
 --                       exporter's StackHash. 30d TTL.
 --   profile_samples_1m  Per-minute totals per (service, env, type, stack). 30d TTL.
 --                       This is what a flamegraph over a time range reads.
+--   profile_pgo_edges   Per-hour CPU call-site edge weights per (namespace,
+--                       service, env, version) for profile-guided builds. 30d TTL.
 --
 -- The raw table's columns and types must match the exporter's INSERT (contrib
 -- v0.162.0, exporter/clickhouseexporter profiles_table.sql); only the TTL
@@ -115,3 +117,67 @@ SELECT ServiceName,
 FROM default.otel_profiles
 WHERE SampleType != 'samples'
 GROUP BY ServiceName, Env, SampleType, SampleUnit, Minute, StackHash;
+
+-- Call-site edges for profile-guided builds (`forge pgo pull`), per hour.
+-- pkg/observe puts two attributes on every CPU sample:
+--   forge.profile.start_lines  each frame's Function.StartLine, comma-separated,
+--                              aligned with FunctionNames (the exporter drops it)
+--   forge.profile.leaf_frames  how many leading frames belong to the stack's two
+--                              leaf-most locations (inlined frames included)
+-- The view counts edges the way Go's PGO graph does (internal/profile
+-- NewGraph): only among those leaf frames, frame i+1 the caller of frame i. A
+-- frame is a node (Address, LineNumber, FunctionName, StartLine); a sample adds
+-- its weight once per distinct (caller node, callee node) pair and never for a
+-- node paired with itself. Only then is a pair projected to (caller name,
+-- caller line - caller start line, callee name) and summed, so one call
+-- reached through two different node pairs in a sample counts twice, as in Go.
+-- Unnamed (unsymbolized) frames cannot match a call site and are left out. A
+-- row without both attributes (an older pkg/observe, another producer) or with
+-- arrays that do not align contributes nothing.
+CREATE TABLE IF NOT EXISTS default.profile_pgo_edges
+(
+    ServiceNamespace LowCardinality(String),
+    ServiceName      LowCardinality(String),
+    Env              LowCardinality(String),
+    ServiceVersion   LowCardinality(String),
+    Hour             DateTime,
+    Caller           LowCardinality(String),
+    Callee           LowCardinality(String),
+    CallSiteOffset   Int32,
+    Weight           Int64
+)
+ENGINE = SummingMergeTree(Weight)
+PARTITION BY toDate(Hour)
+ORDER BY (ServiceNamespace, ServiceName, Env, Hour, Caller, Callee, CallSiteOffset, ServiceVersion)
+TTL Hour + INTERVAL 30 DAY
+SETTINGS ttl_only_drop_parts = 1;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS default.profile_pgo_edges_mv TO default.profile_pgo_edges AS
+SELECT ServiceNamespace, ServiceName, Env, ServiceVersion, Hour,
+       Pair.1.3 AS Caller, Pair.2.3 AS Callee, toInt32(Pair.1.2 - Pair.1.4) AS CallSiteOffset,
+       sum(Value) AS Weight
+FROM
+(
+    SELECT ResourceAttributes['service.namespace'] AS ServiceNamespace,
+           ServiceName,
+           ResourceAttributes['deployment.environment.name'] AS Env,
+           ResourceAttributes['service.version'] AS ServiceVersion,
+           toStartOfHour(Timestamp) AS Hour,
+           arraySum(Values) AS Value,
+           -- one node per frame: (address, line, name, start line)
+           arrayMap((a, l, n, s) -> (a, toInt64(l), n, s), Addresses, LineNumbers, FunctionNames,
+               arrayMap(s -> toInt64OrZero(s), splitByChar(',', SampleAttributes['forge.profile.start_lines']))) AS Nodes,
+           least(toUInt64OrZero(SampleAttributes['forge.profile.leaf_frames']), length(FunctionNames)) AS Leaf
+    FROM default.otel_profiles
+    WHERE SampleType = 'cpu' AND SampleUnit = 'nanoseconds'
+      AND mapContains(SampleAttributes, 'forge.profile.start_lines')
+      AND mapContains(SampleAttributes, 'forge.profile.leaf_frames')
+      AND length(LineNumbers) = length(FunctionNames)
+      AND length(Addresses) = length(FunctionNames)
+      AND length(splitByChar(',', SampleAttributes['forge.profile.start_lines'])) = length(FunctionNames)
+)
+-- (caller node, callee node) pairs: distinct, never a node with itself, named
+ARRAY JOIN arrayFilter(p -> p.1.3 != '' AND p.2.3 != '',
+    arrayDistinct(arrayFilter(p -> p.1 != p.2,
+        arrayMap(i -> (Nodes[i + 1], Nodes[i]), range(1, Leaf))))) AS Pair
+GROUP BY ServiceNamespace, ServiceName, Env, ServiceVersion, Hour, Caller, Callee, CallSiteOffset;

@@ -868,7 +868,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### A generated mock per interface
 
-Every interface in a package's `contract.go` gets a recording mock in `mock_gen.go`, configured per method by field, so unit tests never hand-roll a fake.
+Every interface in a package's contract (`contract.go`, or the `Service` derived from a `//forge:contract` struct) gets a recording mock in `mock_gen.go`, configured per method by field, so unit tests never hand-roll a fake.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -1622,7 +1622,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Package contracts enforced
 
-An internal package with exported methods and no `contract.go` is flagged, so every component is visible to wiring, mocks, the observability decorator and the reporters.
+An internal package with exported methods and no contract (`contract.go` or a `//forge:contract` type) is flagged, so every component is visible to wiring, mocks, the observability decorator and the reporters.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -3809,6 +3809,27 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
 - library [`pkg/profilequery`](../pkg/profilequery)
 - skill `observability/profiles` (`forge skill load observability/profiles`)
+
+<a id="profile-guided-builds"></a>
+
+### Profile-guided builds from production
+
+`forge pgo pull` turns the CPU profiles your env already collects into each Go binary's `cmd/<bin>/default.pgo`, which you commit; every build automatically uses the committed profile, so the compiler optimizes (inlining, devirtualization) the call sites production runs hot, and a build never depends on a live profile store.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge pgo status` shows each binary's file, source and age. A hosted env's profiles are pulled through the control plane (sign-in required). Tune or opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo` in KCL.
+
+**Why:** Go applies PGO per main package, so a binary that runs as server, worker and cron gets one profile merging all of them, weighted by CPU. A missing source, too little data or an older control plane leaves the committed file untouched and the build unaffected.
+
+**Evidence:**
+
+- command `forge pgo pull`
+- command `forge pgo status`
+- library [`pkg/profilequery`](../pkg/profilequery)
+- skill `observability/profiles` (`forge skill load observability/profiles`)
+- source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
+- `internal/handlers/observability/rpc_export_pgo_profile.go` in the control-plane repo
 
 <a id="alerts-as-code"></a>
 

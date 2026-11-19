@@ -578,7 +578,7 @@ func guardedStatement(ctx context.Context, conn *sql.Conn, run RunOptions, name 
 			return &LockTimeoutError{Name: name, Grants: true, Attempts: attempt, Timeout: limits.LockTimeout, Err: lockTimeoutCause(err)}
 		}
 		wait := jitter(backoff)
-		log.Warn("lock wait timed out; retrying",
+		log.WarnContext(ctx, "lock wait timed out; retrying",
 			"statement", name, "attempt", attempt, "attempts", limits.LockAttempts,
 			"lock_timeout", timeoutSetting(limits.LockTimeout), "retry_in", wait.String(), "error", err.Error())
 		retrySleep(wait)

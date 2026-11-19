@@ -60,6 +60,11 @@ type obsDeps struct {
 	// this checkout with git (suspectCommits); the hosted MCP tools have no
 	// checkout.
 	Suspects func(ctx context.Context, errOut io.Writer, res obsbackend.GetIssueResult, commitRange string) ([]obsSuspectDoc, string)
+	// OpChanges says which ops the code a judged release runs changed
+	// (obs_check_changed_ops.go). nil reads this checkout with git
+	// (checkoutOpChanges); the hosted MCP tools have no checkout
+	// (noCheckoutOpChanges).
+	OpChanges opChangeFunc
 }
 
 // obsDepsFunc builds a verb's deps from its command. defaultObsDeps is the
@@ -80,6 +85,14 @@ func (d obsDeps) suspects() func(context.Context, io.Writer, obsbackend.GetIssue
 		return d.Suspects
 	}
 	return suspectCommits
+}
+
+// opChanges is the changed-op source in use.
+func (d obsDeps) opChanges() opChangeFunc {
+	if d.OpChanges != nil {
+		return d.OpChanges
+	}
+	return checkoutOpChanges
 }
 
 var obsDepsOverride *obsDeps
@@ -143,6 +156,9 @@ func overrideObsDeps(d *obsDeps, o *obsDeps) {
 	}
 	if o.Suspects != nil {
 		d.Suspects = o.Suspects
+	}
+	if o.OpChanges != nil {
+		d.OpChanges = o.OpChanges
 	}
 }
 

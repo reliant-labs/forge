@@ -31,7 +31,7 @@ Forge instruments three boundaries, so a request is observable end to end:
    `Deadline.ExpiryIsError`); a caller's shorter deadline is WARN with
    `deadline=caller` (see `observability`, "Whose deadline").
 2. **The in-process component boundary** — every internal component→component
-   method call (a `contract.go` `Service`) gets one span, one metric sample
+   method call (a contract `Service`, hand-written or derived from a `//forge:contract` struct) gets one span, one metric sample
    and one log record (every failure, every success unless sampling is on),
    plus panic-recovery. This is the layer detailed below — the in-process
    twin of the edge chain.
@@ -61,7 +61,7 @@ It is the chain's Trace slot's choice (`serverkit.ChainDeps.Trace` / `observe.De
 ### The owned seam: `observe_chain.go`
 
 You never touch the generated decorator. The chain it routes through is
-assembled in an OWNED, scaffold-once file next to `contract.go`:
+assembled in an OWNED, scaffold-once file next to the contract (`contract.go`, or the marked type):
 
 ```go
 // observe_chain.go — yours: scaffolded once, never overwritten by forge.
@@ -147,14 +147,35 @@ each argument, classified at GENERATION time, deny by default:
 
 | Parameter | Recorded as |
 |---|---|
-| ints, uints, floats, bools (and local named types over them) | the value — except a number with a credential-mentioning ID name (`otp_counter_id`, `sessionID`): `[len=N]`, its digit count |
+| ints, uints, floats, bools (and local named types over them) | the value — except a number with a secret name (below: `pin`, `cvv`, `security_code`, `sessionID`) that is not a quantity, ID-shaped or not: `[len=N]`, its digit count |
 | `time.Time`, `time.Duration`, proto `Timestamp` / `Duration` | `[type=Time]`, `[type=Duration]`, `[type=Timestamp]` — never the value: an exact time in a request is user content |
-| a string named like an ID (`id`, `ids`, `*ID`, `*Id`, `*IDs`, `*_id`) — unless the name mentions a credential (`token`, `secret`, `password`, `session`, `cookie`, `apikey`, …) | the value, at most 128 bytes |
+| a string named like an ID (`id`, `ids`, `uuid`, `*ID`, `*Id`, `*IDs`, `*_id`, `*_uuid`, `*Uuid`, `*UUID`) — unless the name is secret | the value, at most 128 bytes |
 | any other string, `[]byte` | `[len=42]` — the length only |
 | a slice, array, map or variadic | `[count=3]` — the element count only |
 | a pointer to a proto message from a `gen/` import (or a protobuf well-known type) | dotted field paths, `forensics.arg.<param>.<field>`, under the same rules by field name, 3 levels deep (deeper: `[message]`); a `[debug_redact = true]` field is never read and leaves no key |
 | a proto enum | its value name |
 | anything else — structs, pointers, interfaces, funcs | `[type=*pkg.Type]` — the type only |
+
+A name is **secret** (`observe.ForensicSecretName`) when, lowercased with `_`
+and `-` removed, it contains `token`, `secret`, `passw`, `credential`,
+`session`, `cookie`, `apikey`, `privatekey`, `signingkey` or `otp`; or when one
+of its words (split on `_`, `-`, camelCase and letter/digit boundaries), or two
+adjacent words joined, is `pin`, `otp`, `cvv`, `cvc`, `ssn`, `tan`,
+`passcode`, `securitycode`, `mfa` or `totp`, plural or not. Whole words keep
+`spinner`, `pinned`, `shipping` and `tank` out. A NUMBER whose first or last
+word is `max`, `min`, `limit`, `count`, `total`, `size`, `len` or `length`, or
+whose FIRST word is `num`, is a quantity and keeps its value (`max_tokens`,
+`token_limit`, `session_count`, `num_sessions`;
+`observe.ForensicSecretNumberName`). A trailing `num` reads as "number", so
+`pin_num`, `ssn_num` and `otpNum` still record their digit count, as does
+`otp_counter_id` (last word `id`). An ID-shaped secret name is never a
+quantity, whatever leads it: `max_session_id` and `num_otp_id` record their
+digit count. A string named like a quantity records its
+length. A secret-named bool or enum keeps its
+value (`mfa_enabled`, `session_state`): one of a few values the schema lists
+cannot carry a typed secret. A field the rule misses that must never be
+recorded: `[debug_redact = true]` on a proto field, `// forge:no-capture` on a
+parameter.
 
 The encoding is the browser runtime's (`@reliantlabs/forge-web-runtime`), so a
 failed RPC's client-side and server-side forensics read the same way.

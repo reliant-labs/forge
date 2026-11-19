@@ -16,7 +16,7 @@ each takes about two minutes and neither needs the other.
 | Address | `npx -y @reliantlabs/forge mcp` (no install) | `https://api.reliantapi.com/forge/mcp` |
 | Sign-in | none (monitoring verbs it mentions use `forge login`) | OAuth: your Reliant account, in the browser |
 | Needs the repo | yes: it acts on the directory it starts in | no: phones and chat apps work |
-| Tools | the **repo** tools: `benefits`, `lint`, `generate`, `shapes`, `audit`, `capabilities`, `annotations`, `libraries`, `deploy_claimable`, `deploy_status`, `report_bug`, `explain_error`, `skill_list`, `skill_search`, `skill_load` | the **account** tools: `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_traces`, `obs_check`, `obs_changes`, `releases_list`, `release_show`, `envs_list`, `obs_init`*, `release_record`*, plus `benefits`, `explain_error`, `skill_list`, `skill_search`, `skill_load` |
+| Tools | the **repo** tools: `benefits`, `lint`, `generate`, `shapes`, `audit`, `capabilities`, `annotations`, `libraries`, `deploy_claimable`, `deploy_status`, `report_bug`, `explain_error`, `skill_list`, `skill_search`, `skill_load` | the **account** tools: `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_traces`, `obs_ops`, `obs_check`, `obs_changes`, `releases_list`, `release_show`, `envs_list`, `obs_init`*, `release_record`*, plus `benefits`, `explain_error`, `skill_list`, `skill_search`, `skill_load` |
 
 \* changes something: your client asks before calling it.
 

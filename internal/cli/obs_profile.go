@@ -33,7 +33,7 @@ func newObsCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newObsProfileCmd())
 	cmd.AddCommand(newObsAlertsCmd())
-	cmd.AddCommand(newObsLogsCmd(), newObsTracesCmd(), newObsTraceCmd(), newObsEndpointsCmd(), newObsQueryCmd())
+	cmd.AddCommand(newObsLogsCmd(), newObsTracesCmd(), newObsTraceCmd(), newObsEndpointsCmd(), newObsOpsCmd(), newObsBlastRadiusCmd(), newObsQueryCmd())
 	cmd.AddCommand(newObsIssuesCmd(), newObsIssueCmd())
 	cmd.AddCommand(newObsSessionsCmd(), newObsSessionCmd(), newObsUsersCmd())
 	cmd.AddCommand(newObsCheckCmd(), newObsChangesCmd())

@@ -1116,8 +1116,9 @@ func shouldRunFrontendTypecheck(rc *lintRunCtx) (bool, string) {
 	// A --scope that names no path inside any frontend cannot
 	// report a single typecheck finding (the lane is by file),
 	// so running it — a dependency install and a whole-frontend
-	// tsc — is work the scoped run was asked not to do.
-	if !rc.scope.reachesAnyDir(frontendTargetDirs(targets)) {
+	// tsc — is work the scoped run was asked not to do. The same
+	// selection narrows which frontends collect installs and checks.
+	if len(frontendTypecheckTargetsForRun(rc)) == 0 {
 		return false, "--scope reaches no frontend — skipping frontend typecheck"
 	}
 	return true, ""

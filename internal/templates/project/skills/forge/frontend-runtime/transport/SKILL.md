@@ -64,10 +64,22 @@ registers its own OpenTelemetry provider gets the spans from `/interceptors`.
 A failed call's span carries one **`forge.forensics`** event:
 `forensics.reason = error` and `forensics.arg.<field>` for the request
 message, classified deny by default — numbers, bools, enums and id-named
-strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values, except an id whose name
-also names a secret (`session_id`, `apiKeyId`, `otpId`: `token`, `secret`,
-`passw`, `credential`, `session`, `cookie`, `apikey`, `privatekey`,
-`signingkey`, `otp`), which is `"[len=N]"` only; every other string and
+strings (`*_id`, `*Id`, `*ID`, `*Ids`) as values, except that a string or
+number with a secret name is `"[len=N]"` only (a number's digit count),
+id-shaped or not. A name is secret when, lowercased with `_`/`-` removed, it
+contains `token`, `secret`, `passw`, `credential`, `session`, `cookie`,
+`apikey`, `privatekey`, `signingkey` or `otp` (`session_id`, `apiKeyId`), or
+when one of its words, or two adjacent words joined, is `pin`, `otp`, `cvv`,
+`cvc`, `ssn`, `tan`, `passcode`, `securitycode`, `mfa` or `totp`, plural or
+not (`pin`, `userPIN`, `cvv2`, `security_code`; not `spinner`, `shipping`,
+`tank`). A number whose first or last word is `max`, `min`, `limit`,
+`count`, `total`, `size`, `len` or `length`, or whose first word is `num`, is
+a quantity and keeps its value (`max_tokens`, `session_count`,
+`num_sessions`); a trailing `num` is not (`pin_num` records its digit count),
+nor is an id-shaped secret name (`max_session_id` records its digit count),
+and a string named like a quantity still records its length. `uuid`, `*_uuid` and `*Uuid` are id-shaped like `id`. A secret-named
+bool or enum keeps its value (`mfa_enabled`). The
+server records the same names the same way. Every other string and
 bytes as `"[len=N]"`; repeated and map fields as `"[count=N]"`; times
 (`Timestamp`, `Duration`, the `google.type` dates) as `"[type=<Name>]"`, never
 their value; nested messages walked three levels; `[debug_redact = true]`

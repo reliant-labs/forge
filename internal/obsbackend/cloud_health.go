@@ -8,6 +8,7 @@ package obsbackend
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -130,8 +131,8 @@ func (c Cloud) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 	case req.Release != "":
 		body["releaseVersion"] = req.Release
 	}
-	if len(o.Overrides) > 0 {
-		body["thresholdOverrides"] = o.Overrides
+	if ov := cloudOverrides(o.Overrides); len(ov) > 0 {
+		body["thresholdOverrides"] = ov
 	}
 	var w wireReleaseHealth
 	if err := c.callEnvWide(ctx, procGetReleaseHealth, body, &w); err != nil {
@@ -145,6 +146,20 @@ func (c Cloud) ReleaseHealth(ctx context.Context, req HealthRequest) (HealthResu
 		return HealthResult{}, err
 	}
 	return HealthResult{Report: rep}, nil
+}
+
+// cloudOverrides are the --threshold overrides the control plane is sent:
+// all but the changed-op thresholds. A control plane that predates them
+// refuses an unknown name, which would cost the whole check; the caller
+// applies them itself (releasehealth.WithChangedOps).
+func cloudOverrides(overrides map[string]string) map[string]string {
+	out := make(map[string]string, len(overrides))
+	for k, v := range overrides {
+		if !slices.Contains(releasehealth.ChangedOpThresholds, k) {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {

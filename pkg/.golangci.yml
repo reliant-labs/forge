@@ -200,3 +200,14 @@ linters:
       - path: ^obsbuiltin/clickhouse_harness_test\.go$
         linters:
           - forbidigo
+
+      # The PGO toolchain proof (TestWritePGODrivesTheGoToolchain, slow-gated)
+      # builds a probe program with the real `go` and hands it the inherited
+      # environment plus GOFLAGS=, GOWORK=off and GOTOOLCHAIN=local, so an
+      # ambient GOFLAGS or go.work cannot change what is being proven. A
+      # child go needs the environment to run at all (PATH, HOME, GOCACHE),
+      # the same reason release/capture passes it to git. Nothing is
+      # consulted; test-only, scoped to that one file.
+      - path: ^profilequery/pgo_test\.go$
+        linters:
+          - forbidigo

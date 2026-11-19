@@ -90,6 +90,22 @@ func TestRequireContract_WithContract(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiregood")
 }
 
+// TestRequireContract_MarkedStruct: a `//forge:contract` type IS the
+// package's contract, before forge generate has written contract_gen.go.
+func TestRequireContract_MarkedStruct(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiremarked")
+}
+
+// TestAnalyzer_DerivedContract: a derived contract_gen.go constrains its
+// implementation exactly as a hand-written contract.go does.
+func TestAnalyzer_DerivedContract(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.Analyzer, "derived")
+}
+
 func TestRequireContract_NoExportedMethods(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	testdata := analysistest.TestData()

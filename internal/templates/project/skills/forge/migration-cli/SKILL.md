@@ -72,7 +72,7 @@ contracts:
 Honest about the lack of test seam. Best for string-case conversions, pure formatters.
 
 ### (B) Wrap in a `Service` struct
-Expose functions as methods on a `Service` struct, define a `Service` interface in `contract.go`. Now mockable, but verbose at every call site (`naming.New().ToPascalCase(s)` instead of `naming.ToPascalCase(s)`).
+Expose functions as methods on a struct marked `//forge:contract` (forge derives the `Service` interface; or hand-write one in `contract.go`). Now mockable, but verbose at every call site (`naming.New().ToPascalCase(s)` instead of `naming.ToPascalCase(s)`).
 
 ### (C) Hybrid
 Keep free functions for ergonomics, ALSO expose a `Service` interface that delegates to them. Best of both, slightly redundant. Pick this when consumers want to mock but you don't want to break call sites.
@@ -94,7 +94,7 @@ Cobra commands themselves don't need `contract.go` (they are wired into the root
 
 ## When `forge generate` is mostly a no-op
 
-For `--kind cli`, `forge generate` does NOT regenerate Connect-RPC stubs or frontend hooks (none exist). It DOES re-project `internal/config` from your proto config blocks and produce `mock_gen.go` for any `internal/<name>/contract.go` it finds. (Observability lives in the `forge/pkg/observe` interceptor/helper layer, not per-package `*_gen.go` wrappers.)
+For `--kind cli`, `forge generate` does NOT regenerate Connect-RPC stubs or frontend hooks (none exist). It DOES re-project `internal/config` from your proto config blocks and produce `mock_gen.go` for any `internal/<name>` contract it finds (`contract.go` or a `//forge:contract` type). (Observability lives in the `forge/pkg/observe` interceptor/helper layer, not per-package `*_gen.go` wrappers.)
 
 Run `forge generate` after every config-block or contract-bearing package port. Skipping it means stale mocks/config; tests against your interface compile against the previous shape.
 
@@ -120,7 +120,7 @@ Every directory physically under `pkg/` joins the sub-module the moment `pkg/go.
 ## Final checks before declaring done
 
 ```bash
-forge generate          # config + mocks for any contract.go
+forge generate          # config + mocks for any contract
 forge lint              # contract + general lints
 go build ./...          # main module + sub-modules in the workspace
 go test ./...
@@ -141,5 +141,5 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 ## When this skill is not enough
 
 - **Server-shaped projects** — see `migration-service`.
-- **Designing the interface in `contract.go`** for non-trivial packages — see `contracts`.
+- **Designing the contract** (a `//forge:contract` struct, or `contract.go` for a strategy interface) for non-trivial packages — see `contracts`.
 - **Pre-flight, module path strategy, what to do when forge itself is wrong** — see `migration`.

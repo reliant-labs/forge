@@ -3,6 +3,7 @@ package contract
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"golang.org/x/tools/go/analysis/passes/inspect"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // RequireContractAnalyzer checks that internal packages with exported methods
@@ -171,11 +173,13 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
-	// Check for contract.go in the package.
+	// Check for a contract in the package: contract.go, the contract_gen.go
+	// derived from a `//forge:contract` type, or that marked type itself
+	// (before the first `forge generate` writes contract_gen.go).
 	hasContract := false
 	for _, file := range pass.Files {
 		filename := pass.Fset.Position(file.Pos()).Filename
-		if filepath.Base(filename) == "contract.go" {
+		if contractsrc.IsContractFile(filepath.Base(filename)) || declaresMarkedContractType(file) {
 			hasContract = true
 			break
 		}
@@ -357,6 +361,35 @@ func isCompositionSeamPackage(pass *analysis.Pass, pkgPath string) bool {
 		base := filepath.Base(pass.Fset.Position(file.Pos()).Filename)
 		if composeSeamFiles[base] {
 			return true
+		}
+	}
+	return false
+}
+
+// declaresMarkedContractType reports whether file declares a non-interface
+// type carrying `//forge:contract`: the implementation a package's Service
+// contract is derived from.
+func declaresMarkedContractType(file *ast.File) bool {
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
+				continue
+			}
+			var declDoc *ast.CommentGroup
+			if len(gd.Specs) == 1 {
+				declDoc = gd.Doc
+			}
+			if contractsrc.HasDirectiveComment(contractsrc.Marker, declDoc, ts.Doc, ts.Comment) {
+				return true
+			}
 		}
 	}
 	return false

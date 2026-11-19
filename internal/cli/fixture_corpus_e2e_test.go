@@ -170,18 +170,16 @@ func TestE2EFixtureCorpusCPForgeShaped(t *testing.T) {
 	// pgstore: adapter package hosting the concrete *Store.
 	runCmd(t, projectDir, forgeBin, "scaffold", "package", "pgstore", "--type", "adapter")
 
-	// ledger contract: Service + the package-local Repository interface.
+	// ledger's dependency interfaces, in the scaffold's deps.go. Its
+	// Service contract is DERIVED from the //forge:contract service type
+	// (Record, in record.go below) into contract_gen.go; deps.go's marker
+	// line keeps these interfaces mocked alongside it.
 	// Tier-2 (one-shot) — user edits are the steady state.
-	writeCorpusFile(t, filepath.Join(projectDir, "internal", "ledger", "contract.go"), `// yours: scaffolded once, never touched again — forge will not overwrite this file
+	writeCorpusFile(t, filepath.Join(projectDir, "internal", "ledger", "deps.go"), `// forge:deps — consumer-declared interfaces for this package's Deps.
+// yours: scaffolded once, never touched again — forge will not overwrite this file
 package ledger
 
 import "context"
-
-// Service defines the ledger package boundary.
-type Service interface {
-	// Record persists one ledger entry.
-	Record(ctx context.Context, entry string) error
-}
 
 // Repository is the ledger's persistence boundary. It is satisfied by
 // the CONCRETE *pgstore.Store adapter living in internal/pgstore — the

@@ -24,6 +24,10 @@ type fakeHostedCP struct {
 	via     []string
 	calls   []string
 	creates []string // projects a ResolveHostedProject call asked to create
+	// panels answers QueryPanel by the panel's id; the panels sent are
+	// recorded in sent.
+	panels map[string]string
+	sent   []map[string]any
 }
 
 func (f *fakeHostedCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +52,16 @@ func (f *fakeHostedCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"projectId":"p-1","orgId":"org-1"}`)
 	case "/controlplane.v1.DeployService/ListEnvironments":
 		_, _ = fmt.Fprint(w, `{"environments":[{"id":"env-1","name":"prod","project":"shop"},{"id":"env-x","name":"other","project":"elsewhere"}]}`)
+	case "/controlplane.v1.ObservabilityService/QueryPanel":
+		panel, _ := body["panel"].(map[string]any)
+		f.mu.Lock()
+		f.sent = append(f.sent, panel)
+		reply, ok := f.panels[fmt.Sprint(panel["id"])]
+		f.mu.Unlock()
+		if !ok {
+			reply = `{"rows":[]}`
+		}
+		_, _ = fmt.Fprint(w, reply)
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
 		_, _ = fmt.Fprint(w, `{"code":"unimplemented","message":"not in this fake"}`)
@@ -316,6 +330,78 @@ func TestHostedObsInitAuthorizesEveryEnvBeforeWriting(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// obs_ops is `forge obs ops <env> --json` over the control plane's QueryPanel:
+// its inputs become the verb's flags, and an op's code location is only what
+// its spans report, since the hosted server has no checkout to look in.
+func TestHostedObsOpsRanksOpsFromTheControlPlane(t *testing.T) {
+	cp := &fakeHostedCP{panels: map[string]string{
+		"ops-server": `{"rows":[
+			{"group":{"service.name":"api","span.name":"shop.v1.ShopService/ListWidgets"},"values":[100,1,2,5,9]}]}`,
+		"ops-component": `{"rows":[
+			{"group":{"service.name":"api","span.name":"widgets.List"},"values":[80,8,3,40,60]},
+			{"group":{"service.name":"api","span.name":"billing.Charge"},"values":[60,0,1,2,3]}]}`,
+		"ops-code": `{"rows":[
+			{"group":{"span.name":"widgets.List","span.attr.code.file.path":"internal/widgets/service.go","span.attr.code.function.name":"example.com/shop/internal/widgets.Service.List"},"values":[80]}]}`,
+	}}
+	ts := httptest.NewServer(cp)
+	t.Cleanup(ts.Close)
+	cs := connectHosted(t, AccountToolsOptions{ControlPlaneURL: ts.URL, ConsoleURL: "https://console.example", Token: staticToken("t"),
+		Authorize: func(context.Context, AccountToolInfo, AccountTarget) error { return nil }})
+
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.Name != "obs_ops" {
+			continue
+		}
+		props := schemaProps(t, tool.InputSchema)
+		for _, p := range []string{"project", "env", "since", "from", "to", "services", "sort", "top", "kind"} {
+			if _, ok := props[p]; !ok {
+				t.Errorf("obs_ops has no %s input", p)
+			}
+		}
+		if _, ok := props["limit"]; ok {
+			t.Error("obs_ops sizes its ranking with top; a limit input would do nothing")
+		}
+	}
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "obs_ops", Arguments: map[string]any{
+		"project": "shop", "env": "prod", "sort": "errors", "top": 5, "kind": []any{"component"}, "since": "6h"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("obs_ops failed: %s", res.Content[0].(*mcp.TextContent).Text)
+	}
+	doc, _ := res.StructuredContent.(map[string]any)
+	if doc["schema"] != schemaObsOps || doc["sort"] != "errors" {
+		t.Errorf("doc = %v", doc)
+	}
+	if got := doc["console_url"]; got != "https://console.example/forge/p/shop/observability/traces?env=prod" {
+		t.Errorf("console_url = %v", got)
+	}
+	ops, _ := doc["ops"].([]any)
+	if len(ops) != 2 {
+		t.Fatalf("ops = %v, want the two component ops (--kind component)", ops)
+	}
+	first, second := ops[0].(map[string]any), ops[1].(map[string]any)
+	if first["name"] != "widgets.List" || first["code_file_path"] != "internal/widgets/service.go" || first["code_source"] != "telemetry" {
+		t.Errorf("the failing op first, located by its spans: %v", first)
+	}
+	if _, ok := second["code_file_path"]; ok {
+		t.Errorf("an op its spans do not locate has no location on a server with no checkout: %v", second)
+	}
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, p := range cp.sent {
+		if p["id"] == "ops-server" {
+			t.Errorf("--kind component sent the server panel: %v", p)
+		}
 	}
 }
 

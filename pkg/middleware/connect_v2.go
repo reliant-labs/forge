@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -111,16 +112,27 @@ type idempotencyInterceptorV2 struct {
 }
 
 // callerCacheKey is the cache key of one caller's (procedure, key) pair, or
-// "" when ctx carries no authenticated caller. Each part is length-prefixed
-// before hashing, so no choice of ids, procedure or client key can make two
-// different triples collide.
+// "" when ctx carries no authenticated caller. The caller is its tenant, its
+// user AND the authority it presented: the credential kind, an API key's
+// prefix, and its role(s). So a person's token and an API key issued to the
+// same person, or the same key before and after a role change, never share
+// an entry, and a replay never hands a result to a credential the handler
+// might have refused. Each part is length-prefixed before hashing, so no
+// choice of values can make two different tuples collide.
 func (i *idempotencyInterceptorV2) callerCacheKey(ctx context.Context, procedure, clientKey string) string {
 	claims, ok := i.claimsFrom(ctx)
 	if !ok || claims == nil || claims.UserID == "" {
 		return ""
 	}
+	roles := slices.Clone(claims.Roles)
+	slices.Sort(roles)
 	h := sha256.New()
-	for _, part := range []string{claims.OrgID, claims.UserID, procedure, clientKey} {
+	for _, part := range []string{
+		claims.OrgID, claims.UserID,
+		claims.Credential.Kind().String(), claims.Credential.KeyPrefix(),
+		claims.Role, strings.Join(roles, "\x00"),
+		procedure, clientKey,
+	} {
 		var n [8]byte
 		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
 		h.Write(n[:])

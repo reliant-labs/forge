@@ -423,6 +423,54 @@ func TestIdempotencyInterceptorV2_ScopesTheCacheToTheCaller(t *testing.T) {
 	}
 }
 
+// The cache is scoped to the authority presented, not just the person: a
+// token-authorized answer is never replayed to an API key issued to the same
+// user and org (a handler may refuse keys), nor to a different key, nor to
+// the same caller holding a different role.
+func TestIdempotencyInterceptorV2_ScopesTheCacheToTheCredential(t *testing.T) {
+	var runs atomic.Int32
+	h := func(ctx context.Context) (string, error) {
+		claims, _ := rlClaimsFromContext(ctx)
+		if claims.Credential.IsAPIKey() {
+			return "", connectv2.NewError(connectv2.CodePermissionDenied, "keys may not call this")
+		}
+		return claims.Role + "#" + string(rune('0'+runs.Add(1))), nil
+	}
+	withCredential := func(next connectv2.ServerFunc) connectv2.ServerFunc {
+		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+			info, _ := connectv2.CallInfoForServerContext(ctx)
+			claims := &auth.Claims{UserID: "alice", OrgID: "acme", Role: info.RequestHeader().Get("X-Test-Role")}
+			if prefix := info.RequestHeader().Get("X-Test-Key"); prefix != "" {
+				claims.Credential = auth.APIKeyCredential(prefix)
+			} else {
+				claims.Credential = auth.TokenCredential()
+			}
+			return next(rlContextWithClaims(ctx, claims), spec, stream)
+		}
+	}
+	c := serveV2(t, h, withCredential, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}, rlClaimsFromContext))
+	call := func(key, role string) v2Reply {
+		hdr := map[string]string{IdempotencyKeyHeader: "shared-key", "X-Test-Role": role}
+		if key != "" {
+			hdr["X-Test-Key"] = key
+		}
+		return callV2(t, c, false, hdr)
+	}
+
+	if r := call("", "admin"); r.err != nil || r.value != "admin#1" {
+		t.Fatalf("token call = %q (%v), want admin#1", r.value, r.err)
+	}
+	if r := call("fk_live_abc", "admin"); connectv2.CodeOf(r.err) != connectv2.CodePermissionDenied {
+		t.Errorf("API key for the same user/org got %q (%v), want the handler's permission_denied", r.value, r.err)
+	}
+	if r := call("", "viewer"); r.err != nil || r.value != "viewer#2" {
+		t.Errorf("same token user with another role = %q (%v), want a fresh viewer#2", r.value, r.err)
+	}
+	if r := call("", "admin"); r.err != nil || r.value != "admin#1" {
+		t.Errorf("the token caller's own repeat = %q (%v), want its replay admin#1", r.value, r.err)
+	}
+}
+
 // A call with no authenticated caller is never cached or replayed, so two
 // anonymous calls with one key both run the handler.
 func TestIdempotencyInterceptorV2_NoIdentityNoReplay(t *testing.T) {

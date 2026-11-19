@@ -9,10 +9,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 
@@ -138,16 +140,43 @@ type FetchError struct {
 	// package build FetchError positionally (FetchError{url, status,
 	// attempts, err}), and any new field breaks that literal — an
 	// incompatible change to pkg/ at major 1. compat_test.go holds it.
-	// What the other repositories answered travels in fetchFailures.
+	// What the other repositories answered travels in fetchFailures, and
+	// Also reads it from alsoOf.
 }
 
-// Also always returns nil.
-//
-// Deprecated: FetchError describes one repository's answer. When forge asked
-// several (Maven Central, then a mirror of it), StartEmbedded's error
-// describes every answer in its message, and errors.As on it still finds the
-// most telling *FetchError.
-func (e *FetchError) Also() []*FetchError { return nil }
+// alsoOf holds, for a *FetchError that leads a fetchFailures, the other
+// repositories' answers that Also returns. It lives beside FetchError, not in
+// it, because FetchError can gain no field (above). Keyed by a weak pointer,
+// and the entry is dropped when its FetchError is collected, so it never
+// keeps an error alive.
+var alsoOf sync.Map // weak.Pointer[FetchError] -> []*FetchError
+
+// recordAlso makes also what lead.Also returns.
+func recordAlso(lead *FetchError, also []*FetchError) {
+	if len(also) == 0 {
+		return
+	}
+	key := weak.Make(lead)
+	alsoOf.Store(key, also)
+	runtime.AddCleanup(lead, func(k weak.Pointer[FetchError]) { alsoOf.Delete(k) }, key)
+}
+
+// Also is what the other repositories asked answered (forge tries Maven
+// Central, then a mirror of it), in the order they were asked. The fields of
+// e describe the most telling failure: a transient one when there was any,
+// so Status is 404 only when every repository answered 404. It is set on the
+// *FetchError that errors.As finds in StartEmbedded's error; a copy of that
+// value, or a FetchError built by hand, has none.
+func (e *FetchError) Also() []*FetchError {
+	if e == nil {
+		return nil
+	}
+	v, ok := alsoOf.Load(weak.Make(e))
+	if !ok {
+		return nil
+	}
+	return v.([]*FetchError)
+}
 
 func (e *FetchError) Error() string {
 	var ce *ChecksumError
@@ -226,6 +255,7 @@ func fetchFailure(failures []*FetchError) *fetchFailures {
 			ff.also = append(ff.also, f)
 		}
 	}
+	recordAlso(ff.lead, ff.also)
 	return ff
 }
 

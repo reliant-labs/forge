@@ -279,6 +279,18 @@ func TestFetchRelay_A404EverywhereIsNoPublishedBinary(t *testing.T) {
 	if fe == nil || fe.lead.Status != http.StatusNotFound || len(fe.also) != 1 {
 		t.Fatalf("fetch failure = %+v, want a 404 with the mirror's 404 beside it", fe)
 	}
+	// The public view: errors.As finds the lead, and its Also still names
+	// the mirror's answer, as it did before fetchFailures existed.
+	var lead *FetchError
+	if !errors.As(fe, &lead) {
+		t.Fatalf("errors.As(%v, *FetchError) = false", fe)
+	}
+	if also := lead.Also(); len(also) != 1 || also[0].URL != mirror.URL+relayArtifact || also[0].Status != http.StatusNotFound {
+		t.Errorf("Also() = %+v, want the mirror's 404", also)
+	}
+	if also := (&FetchError{URL: "x"}).Also(); also != nil {
+		t.Errorf("Also() on a FetchError built by hand = %+v, want nil", also)
+	}
 	for _, want := range []string{primary.URL + relayArtifact, mirror.URL + relayArtifact, "no published binary"} {
 		if !strings.Contains(fe.Error(), want) {
 			t.Errorf("error does not contain %q:\n%v", want, fe)

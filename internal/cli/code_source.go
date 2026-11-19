@@ -9,7 +9,9 @@ package cli
 // control plane stores it in hosted_project_sources).
 //
 // THE WIRE SHAPE is controlplane.v1.DeployCodeSource, the optional field
-// `code_source` on CutReleaseRequest and on OpenDeployAttemptRequest:
+// `code_source` on CutReleaseRequest, on OpenDeployAttemptRequest and on
+// ReportDeployAttemptRequest (the last for a deploy whose release is known
+// only after the attempt opened: forAttempt):
 //
 //	message DeployCodeSource {
 //	  string remote = 1;             // "host/owner/repo"; "" when there is no shareable remote
@@ -28,10 +30,16 @@ package cli
 // the commit the change was made on; the release's provenance already says
 // it was dirty.
 //
-// NOTHING LEAVES THAT NAMES THIS MACHINE. The remote is canonicalized
-// (release.CanonicalRepo: no scheme, no credentials, no ".git") and then
-// dropped unless it reads as a hosted repository, so neither a token in a URL
-// nor a home-directory path reaches the ledger.
+// NOTHING LEAVES THAT NAMES THIS MACHINE. The remote must first be one of
+// git's network forms (a network-scheme URL or [user@]host:path), is then
+// canonicalized (release.CanonicalRepo: no scheme, no credentials, no
+// ".git"), and is dropped unless it reads as a hosted repository, so neither
+// a token in a URL nor a local path, absolute or relative, reaches the ledger.
+//
+// ONE SOURCE IS ONE TUPLE. Remote, subpath and commit always describe the
+// same code: a deploy of a release cut elsewhere sends that release's
+// repository and commit, never the deploying checkout's remote beside the
+// release's commit (forRelease).
 
 import (
 	"context"
@@ -79,9 +87,20 @@ func putNonEmptyAny(m map[string]any, key, value string) {
 	}
 }
 
-// forRelease is the source a cut of r sends: the release's own commit
-// (provenance, else `release record --commit` / CI's), and the checkout's
-// remote, else the one r's provenance recorded.
+// forRelease is the source of the release r — what a cut or record of r
+// sends, and what a deploy of an already-cut r sends: r's own repository and
+// commit, as r recorded them. It is the tuple of the release, not of the
+// checkout that happens to run the command, which may be another clone,
+// another branch, or another repository altogether.
+//
+// The checkout adds its directory and its chat ONLY when r's provenance names
+// a shareable repository and it is the checkout's own: then it is the same
+// app's code, and forge.yaml's directory in it is r's too. A release whose
+// provenance is absent, names no repository, or names one that is not
+// shareable (a local path) sends its commit alone, and nothing when it names
+// no commit either: pairing the checkout's remote, directory or chat with a
+// release nothing says this checkout built would be false evidence — a
+// `release record` in CI, or a release cut in another repository.
 //
 // NEVER THE CHECKOUT'S HEAD. A release names the commit it was built or
 // recorded from; a release that names none, or names an invalid one, has an
@@ -89,38 +108,54 @@ func putNonEmptyAny(m map[string]any, key, value string) {
 // would record false provenance — `release record` in CI runs from a
 // checkout that need not be at the recorded commit.
 func (s codeSource) forRelease(r release.Release) codeSource {
+	out := codeSource{Remote: releaseRemote(r), Commit: releaseCommit(r)}
+	if out.Remote != "" && out.Remote == s.Remote {
+		out.Subpath, out.ReliantProjectID = s.Subpath, s.ReliantProjectID
+	}
+	return out
+}
+
+// forAttempt is the source a deploy attempt sends, and whether it is known
+// yet. The checkout's own source (HEAD included) only when the deploy ships
+// the checkout — no release named, no --from env — because then the release
+// it cuts is built from that HEAD. A deploy of an already-cut release sends
+// that release's tuple (forRelease). shipped is nil while that release is
+// unknown — a --from deploy resolves it after the attempt opens, or the read
+// failed — and then nothing is known yet: the attempt sends no source rather
+// than a checkout's repository beside a release it did not build, and sends
+// the shipped one on a later report (deploy_attempt.go).
+func (s codeSource) forAttempt(shipsCheckout bool, shipped *release.Release) (codeSource, bool) {
+	if shipsCheckout {
+		return s, true
+	}
+	if shipped == nil {
+		return codeSource{}, false
+	}
+	return s.forRelease(*shipped), true
+}
+
+// releaseCommit is the commit r names: its provenance's, else its git
+// record's; "" when it names none or an invalid one.
+func releaseCommit(r release.Release) string {
 	commit := r.Git.Commit
 	if r.Provenance != nil && r.Provenance.Commit != "" {
 		commit = r.Provenance.Commit
 	}
-	s.Commit = ""
 	if commit = strings.ToLower(strings.TrimSpace(commit)); release.ValidObjectID(commit) {
-		s.Commit = commit
+		return commit
 	}
-	if s.Remote == "" && r.Provenance != nil {
-		s.Remote = shareableRemote(r.Provenance.Repo)
-	}
-	return s
+	return ""
 }
 
-// forAttempt is the source a deploy attempt sends. The checkout's HEAD only
-// when the deploy ships the checkout — no release named, no --from env —
-// because then the release it cuts is built from that HEAD. A deploy of a
-// named release ships bytes some other commit built: shipped is that release
-// as its ledger recorded it, and the attempt sends its commit (forRelease),
-// never the HEAD of a checkout that did not build it. shipped is nil when
-// the release is unknown when the attempt opens — a --from deploy resolves
-// it later, and the attempt's releaseVersion names it once it does — or
-// could not be read; then the attempt sends no commit.
-func (s codeSource) forAttempt(shipsCheckout bool, shipped *release.Release) codeSource {
-	if shipsCheckout {
-		return s
+// releaseRemote is the shareable repository r's provenance recorded, "" when
+// it recorded none. Provenance holds an ALREADY canonical remote, so it is
+// screened as one (shareableCanonical): the original URL that would say
+// whether it was a network remote is gone.
+func releaseRemote(r release.Release) string {
+	if r.Provenance == nil {
+		return ""
 	}
-	if shipped != nil {
-		return s.forRelease(*shipped)
-	}
-	s.Commit = ""
-	return s
+	return shareableCanonical(release.CanonicalRepo(r.Provenance.Repo))
 }
 
 // codeSourceProbe captures the code source of one checkout, once per process,
@@ -200,16 +235,82 @@ func codeSourceGit(ctx context.Context, dir string, args ...string) (string, err
 // address. A single letter (a Windows drive) is not one.
 var shareableHost = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*[a-z0-9]$`)
 
-// shareableRemote is url canonicalized to "host/owner/repo", or "" when it
-// does not name a hosted repository: a local path, a file:// URL, anything
-// still carrying a credential, query or fragment after canonicalization.
+// networkSchemes are the URL schemes git reaches another machine with.
+// file:// is not one, and neither is a remote helper (<transport>::<address>).
+var networkSchemes = map[string]bool{
+	"https": true, "http": true, "ssh": true, "git": true,
+	"git+ssh": true, "ssh+git": true, "ftp": true, "ftps": true,
+}
+
+// shareableRemote is a git remote URL as the "host/owner/repo" it names on a
+// network, or "" when it does not name a hosted repository: a local path,
+// relative or absolute, a file:// URL, a remote helper, anything still
+// carrying a credential, query or fragment after canonicalization.
+//
+// CLASSIFIED BEFORE IT IS NORMALIZED. release.CanonicalRepo strips a scheme,
+// so a file:// URL or a relative path such as "sibling/repo" comes out of it
+// shaped like "host/owner/repo". The ORIGINAL url must first read as one of
+// git's network forms (networkRemote), and only then is it canonicalized.
 func shareableRemote(url string) string {
-	canon := release.CanonicalRepo(url)
+	network, ok := networkRemote(strings.TrimSpace(url))
+	if !ok {
+		return ""
+	}
+	return shareableCanonical(release.CanonicalRepo(network))
+}
+
+// networkRemote classifies u as git does (`git help urls`) and returns it as
+// a URL CanonicalRepo reads correctly: a URL with a network scheme and a
+// host, as it is; the SCP form [user@]host:path — a colon before any slash —
+// as ssh://[user@]host/path, because CanonicalRepo reads a user-less
+// "host:owner/repo" as a host with a port. Anything else is local.
+func networkRemote(u string) (string, bool) {
+	if u == "" || strings.ContainsAny(u, " \t\r\n\\") {
+		return "", false
+	}
+	if scheme, rest, ok := strings.Cut(u, "://"); ok {
+		if !networkSchemes[strings.ToLower(scheme)] {
+			return "", false
+		}
+		authority, _, _ := strings.Cut(rest, "/")
+		if at := strings.LastIndex(authority, "@"); at >= 0 {
+			authority = authority[at+1:]
+		}
+		return u, authority != ""
+	}
+	if strings.Contains(u, "::") {
+		return "", false
+	}
+	colon, slash := strings.Index(u, ":"), strings.Index(u, "/")
+	if colon <= 0 || (slash >= 0 && slash < colon) {
+		return "", false
+	}
+	userHost, path := u[:colon], u[colon+1:]
+	user, host := "", userHost
+	if at := strings.LastIndex(userHost, "@"); at >= 0 {
+		user, host = userHost[:at+1], userHost[at+1:]
+	}
+	if host == "" || strings.Trim(path, "/") == "" {
+		return "", false
+	}
+	return "ssh://" + user + host + "/" + path, true
+}
+
+// shareableCanonical is canon, an already canonical "host/owner/repo", when it
+// names a repository another machine can reach, else "". The host must be
+// fully qualified — a DNS name with a dot, or an address — and not this
+// machine: a bare name such as "gitserver" resolves only through this
+// machine's ssh config or search domain, and it is also what a relative path
+// ("sibling/repo") looks like once a scheme is gone.
+func shareableCanonical(canon string) string {
 	if canon == "" || strings.ContainsAny(canon, "@?#\\ \t\r\n") {
 		return ""
 	}
 	host, path, ok := strings.Cut(canon, "/")
 	if !ok || !shareableHost.MatchString(host) || strings.Trim(path, "/") == "" {
+		return ""
+	}
+	if !strings.Contains(host, ".") || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasPrefix(host, "127.") {
 		return ""
 	}
 	return canon

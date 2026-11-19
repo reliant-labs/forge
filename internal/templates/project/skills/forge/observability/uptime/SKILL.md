@@ -131,4 +131,3 @@ sql-panel SELECTs (`UptimeSummarySQL`, `UptimeTimelineSQL`, `UptimeChecksSQL`,
   starts begins where it began;
 - a check's **status** at the end of the range is `down` while an incident is
   open, `unknown` when its newest probe is more than 15 minutes old, else `up`.
-

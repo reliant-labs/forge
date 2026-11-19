@@ -1,9 +1,17 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+{{- if .DevLogFromRuntime}}
+import {
+  forgeDevLog,
+  forgeOtelProxy,
+  forgeRuntimeConfig,
+} from "@reliantlabs/forge-web-runtime/vite";
+{{- else}}
 import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
 
 import { devLogPlugin } from "./src/lib/devlog-plugin";
+{{- end}}
 
 // The dev server's port. `forge env up dev` sets PORT to the port it
 // allocated for this site; a bare `npm run dev` falls back to Vite's own.
@@ -30,11 +38,11 @@ const devAllowedHosts = (): string[] => {
 };
 
 export default defineConfig({
-  // devLogPlugin is dev-only: it receives the browser console lines that
+  // {{if .DevLogFromRuntime}}forgeDevLog{{else}}devLogPlugin{{end}} is dev-only: it receives the browser console lines that
   // installDevLogging() posts from src/main.tsx and prints them to this dev
   // server's stdout, which `forge env up` tees to
   // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
-  plugins: [react(), tailwindcss(), devLogPlugin(), forgeRuntimeConfig(), forgeOtelProxy()],
+  plugins: [react(), tailwindcss(), {{if .DevLogFromRuntime}}forgeDevLog(){{else}}devLogPlugin(){{end}}, forgeRuntimeConfig(), forgeOtelProxy()],
   build: {
     // The static export hosted static hosting serves. deploy/kcl/<env>/main.k
     // names this directory as the frontend's public_dir; move both together.

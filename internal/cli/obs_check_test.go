@@ -971,6 +971,80 @@ func TestObsCheckAlertThatFlappedBeforeThePromotionDoesNotFail(t *testing.T) {
 	}
 }
 
+// control-plane v1.23.0-rc.9 (2026-11-19): prod's check exited 1 on one
+// alert_firing finding, IssueSpike for an issue first seen 3.5h before the
+// promotion in the previous build and firing at the same rate under the
+// release; the IssueSpike instance first fired after the promotion, so the
+// history had nothing to discount. The check reads the issue the alert names,
+// its events by version from the baseline window's start to the after
+// window's end, and holds the answer to the pre-existing-alert rule: the
+// finding warns, the alert is listed in pre_existing_alerts, and the check
+// passes. The same issue firing 3x as often, or an issue it cannot read,
+// still fails.
+func TestObsCheckAlertOnAPreExistingIssueDoesNotFail(t *testing.T) {
+	const spike = `{"rule":"IssueSpike","fingerprint":"s1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","issue_id":"7f55","first_build":"v1","service":"workspace-controller"}}`
+	const finding = `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert IssueSpike opened after the promotion and is still firing"}`
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+spike+`],"verdict"`, 1)
+	// ~24 an hour on v1 since 08:00, and on v2 after the 11:40 promotion.
+	issue := func(v2Events int) string {
+		return fmt.Sprintf(`{"issue":{"id":"7f55","service":"workspace-controller","firstSeenAt":"2026-10-22T08:00:00Z","firstVersion":"v1"},"byVersion":[`+
+			`{"version":"v1","events":"90","firstSeenAt":"2026-10-22T08:00:00Z","lastSeenAt":"2026-10-22T11:42:00Z"},`+
+			`{"version":"v2","events":"%d","firstSeenAt":"2026-10-22T11:41:00Z","lastSeenAt":"2026-10-22T11:54:00Z"}]}`, v2Events)
+	}
+	run := func(t *testing.T, issueReply string, errs map[string]error) (map[string]any, string, *seqCaller, error) {
+		t.Helper()
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procGetIssueCheck: {issueReply}}, errs: errs}
+		out, stderr, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+		return decode(t, out), stderr, caller, err
+	}
+
+	doc, _, caller, err := run(t, issue(6), nil)
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
+	}
+	fs, _ := doc["findings"].([]any)
+	if doc["verdict"] != "PASS" || len(fs) != 1 || doc["firing_alerts"] != nil {
+		t.Fatalf("doc = %v", doc)
+	}
+	if f := fs[0].(map[string]any); f["policy"] != "warn" || f["pre_existing"] != true ||
+		!strings.Contains(fmt.Sprint(f["unattributed"]), "pre-existing alert (first seen v1, rate unchanged)") {
+		t.Errorf("finding = %v, want a pre-existing warn", f)
+	}
+	if pa, _ := doc["pre_existing_alerts"].([]any); len(pa) != 1 || pa[0].(map[string]any)["issue"].(map[string]any)["id"] != "7f55" {
+		t.Errorf("pre_existing_alerts = %v", doc["pre_existing_alerts"])
+	}
+	var body string
+	for _, c := range caller.calls {
+		if c.procedure == procGetIssueCheck {
+			body = c.body
+		}
+	}
+	// From the baseline window's start (24h before 11:40) to the after
+	// window's end.
+	if !strings.Contains(body, `"issueId":"7f55"`) || !strings.Contains(body, `"start":"2026-10-21T11:40:00Z"`) || !strings.Contains(body, `"end":"2026-10-22T11:55:00Z"`) {
+		t.Errorf("GetIssue request = %s", body)
+	}
+
+	for name, tc := range map[string]struct {
+		issue  string
+		errs   map[string]error
+		stderr string
+	}{
+		"the issue fires 3x as often": {issue: issue(18)},
+		"the issue unreadable":        {issue: issue(6), errs: map[string]error{procGetIssueCheck: errors.New("permission denied")}, stderr: "could not read issue 7f55, so the alert that names it counts"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, stderr, _, err := run(t, tc.issue, tc.errs)
+			if exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || doc["pre_existing_alerts"] != nil {
+				t.Errorf("exit = %d (%v), doc = %v; want FAIL", exitCodeForError(err), err, doc)
+			}
+			if !strings.Contains(stderr, tc.stderr) {
+				t.Errorf("stderr = %q, want %q", stderr, tc.stderr)
+			}
+		})
+	}
+}
+
 // control-plane v1.20.0-rc.4 (2026-11-14): a control plane that predates
 // regressed_issue_min_events failed prod on one event of an old transient
 // signature, and on the IssueRegressed and NewIssue alerts it and a 1-event

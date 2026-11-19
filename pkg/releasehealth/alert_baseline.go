@@ -253,6 +253,7 @@ func discountBaselineAlerts(r Report, history []AlertEvent, live []Alert, minFir
 			a := t.flapping[j]
 			i := idx[len(idx)-1-j]
 			out.Findings[i].Policy = PolicyWarn
+			out.Findings[i].PreExisting = true
 			out.Findings[i].Unattributed = fmt.Sprintf("the same alert fired %d time(s) in the %s before the promotion (alert_baseline_min_firings %d): it was flapping before this release",
 				a.BaselineFirings, durationText(window), minFirings)
 			out.Findings[i].Message += fmt.Sprintf("; it also fired %d time(s) in the %s before the promotion, so it is not counted against the release", a.BaselineFirings, durationText(window))

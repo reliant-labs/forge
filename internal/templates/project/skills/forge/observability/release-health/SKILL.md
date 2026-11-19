@@ -1,6 +1,6 @@
 ---
 name: observability/release-health
-description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, the per-op changed_op_errors / changed_op_latency findings on the ops the release's commits changed, and the control plane's stored verdict the promotion health gate reads.
+description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, pre_existing_alerts, which keep an alert on an issue older than the release and firing no faster under it from failing it, the per-op changed_op_errors / changed_op_latency findings on the ops the release's commits changed, and the control plane's stored verdict the promotion health gate reads.
 ---
 
 # Release health: what a release answers for
@@ -142,7 +142,7 @@ forge obs check prod --wait --json | jq '{verdict, live: .subject.live_at, versi
 
 An issue fails a release only with enough after-window events: `new_issue` needs `new_issue_min_events` (default 3) and an issue first seen in the release, `regressed_issue` needs `regressed_issue_min_events` (unset, the same as `new_issue_min_events`) and a regression at or after the promotion. One event of an old, transient signature is not a release regressing. Per call: `--threshold regressed_issue_min_events=1` counts every regression, the rule before the threshold existed.
 
-The platform's `NewIssue` and `IssueRegressed` alerts fire on those same issues with no threshold and no version, so they are judged as their issue: each is listed in `issue_alerts`, not counted again as an `alert_firing` finding. Three exceptions keep a real failure failing: an issue alert whose rule the env made critical (`severity=critical`) fails the release like any critical alert; when the backend could not read issues (`not_evaluated` names `new_issue` or `regressed_issue`) the alert is the only evidence and counts; and every other rule (`IssueSpike`, your own) counts as before. The check holds a control plane's answer to both rules even when that control plane predates them.
+The platform's `NewIssue` and `IssueRegressed` alerts fire on those same issues with no threshold and no version, so they are judged as their issue: each is listed in `issue_alerts`, not counted again as an `alert_firing` finding. Three exceptions keep a real failure failing: an issue alert whose rule the env made critical (`severity=critical`) fails the release like any critical alert; when the backend could not read issues (`not_evaluated` names `new_issue` or `regressed_issue`) the alert is the only evidence and counts; and every other rule (`IssueSpike`, your own) counts as before, unless its issue predates the release (below). The check holds a control plane's answer to both rules even when that control plane predates them.
 
 ## Alerts that were already flapping: `alert_baseline_min_firings`
 
@@ -161,6 +161,20 @@ Per env: `alert_baseline_min_firings = 3` in `release_health` asks for a flap ra
 ```bash
 forge obs check prod --json | jq '{verdict, baseline_alerts: [.baseline_alerts[]? | {rule, baseline_firings, labels}], discounted: [.findings[] | select(.code == "alert_firing" and .unattributed) | .unattributed]}'
 ```
+
+## Alerts on an issue older than the release: `pre_existing_alerts`
+
+An alert that names an issue (label `issue_id`) and is not `NewIssue` or `IssueRegressed` — `IssueSpike`, or a rule of your own over an issue — is about that issue's condition, which can be older than the alert instance. The case it was built for (control-plane v1.23.0-rc.9): `IssueSpike` for an issue first seen 3.5h before the promotion in the previous build, firing ~27 times an hour before and after it. The spike detector compares the last one to two hours with the day before, so that instance first fired after the promotion and had never fired before: there was nothing for `alert_baseline_min_firings` to discount.
+
+So the check reads the issue (`GetIssue`, its events by version from the `baseline_window`'s start to the after window's end). The alert is pre-existing when the issue was first seen before the promotion in another version (`first_build`), and under the release it fired fewer than `new_issue_min_events` times, or at most twice as fast (events per hour between each version's first and last event of it) as the other versions did, or by fewer than `new_issue_min_events` events above that rate. A pre-existing alert is listed in `pre_existing_alerts` (each with `issue`: its first seen time and version, and both rates), and its `alert_firing` finding stays in `findings` with policy `warn`, `pre_existing: true` and a `findings[].unattributed` reason starting `pre-existing alert (first seen <build>, rate unchanged)`, so it never returns exit 1. A baseline alert's finding carries `pre_existing: true` too.
+
+What still fails: an alert whose issue was first seen after the promotion or in the release; an issue the issue rule already judged (a new or regressed issue); one that fires faster under the release beyond those bars; a dormant issue (no event of another version in the window) the release fired `new_issue_min_events` times; an issue the check could not read (it says so on stderr); and every critical alert.
+
+```bash
+forge obs check prod --json | jq '{verdict, pre_existing_alerts: [.pre_existing_alerts[]? | {rule, issue}]}'
+```
+
+Like the baseline rule, the stored verdict applies this only once the control plane's judge passes the issues to forge's rule (`Input.AlertIssues`).
 
 ## The baseline: `require_baseline`
 

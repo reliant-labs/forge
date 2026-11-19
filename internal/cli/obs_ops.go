@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -20,8 +22,8 @@ var obsOpsSchema = obsout.Schema{
 	Name: schemaObsOps,
 	Fields: []string{
 		"scope", "scope.env", "scope.backend", "scope.from", "scope.to", "scope.services", "scope.instance", "scope.instance.id", "scope.instance.label", "scope.instance.user",
-		"query_mode", "sort",
-		"ops", "ops.service", "ops.name", "ops.kind", "ops.calls", "ops.errors", "ops.error_ratio",
+		"query_mode", "sort", "names",
+		"ops", "ops.service", "ops.name", "ops.kind", "ops.found", "ops.calls", "ops.errors", "ops.error_ratio",
 		"ops.rate_per_second", "ops.p50_ms", "ops.p95_ms", "ops.p99_ms",
 		"ops.code_file_path", "ops.code_function", "ops.code_line", "ops.code_source",
 		"statements", "statements.purpose", "statements.sql", "statements.params.*",
@@ -36,9 +38,12 @@ const (
 )
 
 type obsOpDoc struct {
-	Service       string  `json:"service"`
-	Name          string  `json:"name"`
-	Kind          string  `json:"kind"`
+	Service string `json:"service"`
+	Name    string `json:"name"`
+	Kind    string `json:"kind"`
+	// Found is false only for an op --name asked for that had no spans in
+	// the window and scope: no traffic, as opposed to not asked.
+	Found         bool    `json:"found"`
 	Calls         float64 `json:"calls"`
 	Errors        float64 `json:"errors,omitempty"`
 	ErrorRatio    float64 `json:"error_ratio"`
@@ -56,9 +61,11 @@ type obsOpDoc struct {
 
 type obsOpsDoc struct {
 	obsout.Head
-	Scope      obsout.Scope           `json:"scope"`
-	QueryMode  string                 `json:"query_mode"`
-	Sort       string                 `json:"sort"`
+	Scope     obsout.Scope `json:"scope"`
+	QueryMode string       `json:"query_mode"`
+	Sort      string       `json:"sort"`
+	// Names are the ops --name asked for, deduplicated, in the order given.
+	Names      []string               `json:"names,omitempty"`
 	Ops        []obsOpDoc             `json:"ops"`
 	Statements []obsbackend.Statement `json:"statements,omitempty"`
 	obsout.Page
@@ -95,6 +102,10 @@ type obsOpsOpts struct {
 	sort  string
 	top   int
 	kinds []string
+	// names restricts the answer to these ops (--name); the backend asks
+	// only for them, so a named request never scans every op.
+	names   []string
+	nameSet bool // --name was given, possibly as ""
 	// locate resolves the ops whose spans carry no code location; nil skips
 	// that (the hosted MCP tools have no checkout).
 	locate opLocator
@@ -129,8 +140,16 @@ name (code_source "static").
 
   ` + Name() + ` obs ops dev --sort p95 --top 5
   ` + Name() + ` obs ops prod --kind component --sort errors --since 6h
+  ` + Name() + ` obs ops prod --name billing.Charge --name todo.v1.TodoService/CreateTodo --since 7d
 
 Each kind's table is the busiest 200 ops; --sort re-ranks within them.
+
+--name asks for these ops only, by span name (repeatable or comma-separated,
+at most ` + strconv.Itoa(maxOpsNames) + ` names of at most ` + strconv.Itoa(maxOpsNameLen) + ` characters each). The query is narrowed to
+them, so it is cheap over any window. Every requested op is listed: one with
+no spans in the window and scope has "found": false and zero figures, which
+tells "no traffic" apart from "not asked". With --name, --top defaults to
+every requested op.
 
 ` + obsOpsSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
@@ -138,13 +157,18 @@ Each kind's table is the busiest 200 ops; --sort re-ranks within them.
 			if locator != nil {
 				o.locate = locator()
 			}
+			o.nameSet = cmd.Flags().Changed("name")
+			if len(o.names) > 0 && !cmd.Flags().Changed("top") {
+				o.top = 0 // every requested op
+			}
 			return runObsOps(cmd.Context(), deps(cmd), obsEnvArg(args, 0), o)
 		},
 	}
 	o.register(cmd, time.Hour, 0)
 	cmd.Flags().StringVar(&o.sort, "sort", "calls", "calls | p95 | errors | rate")
-	cmd.Flags().IntVar(&o.top, "top", 20, "most ops to return")
+	cmd.Flags().IntVar(&o.top, "top", 20, "most ops to return (with --name, default every requested op)")
 	cmd.Flags().StringSliceVar(&o.kinds, "kind", nil, "only these kinds, comma-separated: rpc, endpoint, component (default all)")
+	cmd.Flags().StringSliceVar(&o.names, "name", nil, "only these ops, by span name; repeatable or comma-separated (an op with no spans is listed with found false)")
 	_ = cmd.Flags().MarkHidden("limit")
 	return cmd
 }
@@ -158,6 +182,15 @@ func runObsOps(ctx context.Context, d obsDeps, env string, o obsOpsOpts) error {
 		return obsFail(d, o.out.JSON, schemaObsOps, err)
 	}
 	fail := func(err error) error { return obsFail(d, o.out.JSON, schemaObsOps, err) }
+	names, err := opsNames(o.names)
+	if err == nil && o.nameSet && len(names) == 0 {
+		// --name "" parses to no names; an unnarrowed scan is not what
+		// was asked for.
+		err = obsbackend.Wrong("--name: an empty op name")
+	}
+	if err != nil {
+		return fail(err)
+	}
 	n, err := o.narrow(d.Now())
 	if err != nil {
 		return fail(err)
@@ -170,19 +203,35 @@ func runObsOps(ctx context.Context, d obsDeps, env string, o obsOpsOpts) error {
 	if !ok {
 		return fail(obsbackend.Undetermined("the %s backend cannot rank ops", b.Info().Backend))
 	}
-	res, err := reader.Ops(ctx, obsbackend.OpsRequest{Narrow: n, Sort: o.sort, Top: o.top, Kinds: o.kinds})
+	req := obsbackend.OpsRequest{Narrow: n, Sort: o.sort, Top: o.top, Kinds: o.kinds, Names: names}
+	if len(names) > 0 {
+		// Uncapped, so an op missing from the answer had no spans rather
+		// than lost its place to --top; the cap applies below.
+		req.Top = 0
+	}
+	res, err := reader.Ops(ctx, req)
 	if err != nil {
 		return fail(err)
 	}
-	doc := obsOpsDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Sort: o.sort, Ops: []obsOpDoc{}}
+	doc := obsOpsDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Sort: o.sort, Names: names, Ops: []obsOpDoc{}}
 	if n.Explain {
 		doc.Statements = res.Statements
 	}
 	for _, op := range res.Ops {
-		doc.Ops = append(doc.Ops, opDoc(op, o.locate))
+		od := opDoc(op, o.locate)
+		od.Found = true
+		doc.Ops = append(doc.Ops, od)
 	}
-	doc.Page = obsout.Page{Truncated: res.Omitted > 0, Omitted: res.Omitted}
-	if len(doc.Ops) > 0 {
+	omitted := res.Omitted
+	if len(names) > 0 && !n.Explain {
+		doc.Ops = append(doc.Ops, missingOps(names, res.Ops, o.locate)...)
+		if o.top > 0 && len(doc.Ops) > o.top {
+			omitted = len(doc.Ops) - o.top
+			doc.Ops = doc.Ops[:o.top]
+		}
+	}
+	doc.Page = obsout.Page{Truncated: omitted > 0, Omitted: omitted}
+	if len(doc.Ops) > 0 && doc.Ops[0].Found {
 		doc.Suggested = o.inst.carrySuggested(opSuggestions(env, doc.Ops[0]))
 	}
 	doc.Stamp(schemaObsOps, nil)
@@ -194,15 +243,73 @@ func runObsOps(ctx context.Context, d obsDeps, env string, o obsOpsOpts) error {
 		return nil
 	}
 	rows := make([][]string, len(doc.Ops))
+	notFound := 0
 	for i, op := range doc.Ops {
-		rows[i] = []string{op.Service, op.Kind, op.Name, fmt.Sprintf("%.0f", op.Calls), strconv.FormatFloat(op.ErrorRatio*100, 'f', 1, 64) + "%",
+		service := op.Service
+		if !op.Found {
+			service = "(no spans)"
+			notFound++
+		}
+		rows[i] = []string{service, op.Kind, op.Name, fmt.Sprintf("%.0f", op.Calls), strconv.FormatFloat(op.ErrorRatio*100, 'f', 1, 64) + "%",
 			strconv.FormatFloat(op.RatePerSecond, 'f', 2, 64) + "/s", ms(op.P50Ms), ms(op.P95Ms), ms(op.P99Ms), opCode(op)}
 	}
 	obsout.Table(d.Stdout, []string{"SERVICE", "KIND", "OP", "CALLS", "ERRORS", "RATE", "P50", "P95", "P99", "CODE"}, rows, 60)
-	if res.Omitted > 0 {
-		fmt.Fprintf(d.Stdout, "\n(%d more; --top to show them)\n", res.Omitted)
+	if notFound > 0 {
+		fmt.Fprintf(d.Stdout, "\n(%d requested op(s) had no spans in the window)\n", notFound)
+	}
+	if omitted > 0 {
+		fmt.Fprintf(d.Stdout, "\n(%d more; --top to show them)\n", omitted)
 	}
 	return nil
+}
+
+// --name bounds: a request names a release's or a pipeline's ops, not every
+// op there is, and each name is a span name.
+const (
+	maxOpsNames   = 200
+	maxOpsNameLen = 200
+)
+
+// opsNames validates --name: each non-empty after trimming and at most
+// maxOpsNameLen characters, at most maxOpsNames of them once deduplicated.
+// The order given is kept.
+func opsNames(raw []string) ([]string, error) {
+	var names []string
+	seen := map[string]bool{}
+	for _, r := range raw {
+		name := strings.TrimSpace(r)
+		switch {
+		case name == "":
+			return nil, obsbackend.Wrong("--name: an empty op name")
+		case utf8.RuneCountInString(name) > maxOpsNameLen:
+			return nil, obsbackend.Wrong("--name %q…: an op name is at most %d characters", string([]rune(name)[:40]), maxOpsNameLen)
+		case seen[name]:
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) > maxOpsNames {
+		return nil, obsbackend.Wrong("--name: %d ops; at most %d per request", len(names), maxOpsNames)
+	}
+	return names, nil
+}
+
+// missingOps are the requested names the answer has no row for, in the
+// order requested: each with zero figures, Found false, and its code
+// location from this checkout when it has one.
+func missingOps(names []string, got []obsbackend.OpStats, locate opLocator) []obsOpDoc {
+	have := map[string]bool{}
+	for _, op := range got {
+		have[op.Name] = true
+	}
+	var out []obsOpDoc
+	for _, name := range names {
+		if !have[name] {
+			out = append(out, opDoc(obsbackend.OpStats{Name: name, Kind: obsbackend.OpKindOf(name)}, locate))
+		}
+	}
+	return out
 }
 
 // opDoc is op's document, its code location filled from this checkout when

@@ -288,6 +288,7 @@ type hostedObsOpsInput struct {
 	Sort string   `json:"sort,omitempty" jsonschema:"calls | p95 | errors | rate (default calls)"`
 	Top  int      `json:"top,omitempty" jsonschema:"most ops to return (default 20)"`
 	Kind []string `json:"kind,omitempty" jsonschema:"only these kinds: rpc, endpoint, component (default all)"`
+	Name []string `json:"name,omitempty" jsonschema:"only these ops, by span name (at most 200); each is listed, with found false when it had no spans; top then defaults to every requested op"`
 }
 
 type hostedObsCheckInput struct {
@@ -509,6 +510,9 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 				}
 				for _, k := range in.Kind {
 					a = flagArg(a, "--kind", k)
+				}
+				for _, n := range in.Name {
+					a = append(a, "--name", n)
 				}
 				return a
 			}

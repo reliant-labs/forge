@@ -165,3 +165,136 @@ func TestOpSuggestionsFindTheOpsTraces(t *testing.T) {
 		}
 	}
 }
+
+func TestOpsNamesValidation(t *testing.T) {
+	got, err := opsNames([]string{" todo.Create", "todo.Create", "GET /healthz "})
+	if err != nil || fmt.Sprint(got) != "[todo.Create GET /healthz]" {
+		t.Errorf("trimmed and deduplicated in order: %q, %v", got, err)
+	}
+	if got, err := opsNames(nil); err != nil || got != nil {
+		t.Errorf("no names: %v, %v", got, err)
+	}
+	full := make([]string, maxOpsNames)
+	for i := range full {
+		full[i] = fmt.Sprintf("pkg.Op%d", i)
+	}
+	if _, err := opsNames(full); err != nil {
+		t.Errorf("%d names: %v", maxOpsNames, err)
+	}
+	if _, err := opsNames(append(full, full[0])); err != nil {
+		t.Errorf("a duplicate does not count twice: %v", err)
+	}
+	for name, raw := range map[string][]string{
+		"empty":     {"a.B", "  "},
+		"too long":  {strings.Repeat("x", maxOpsNameLen+1)},
+		"too many":  append(append([]string{}, full...), "pkg.OneMore"),
+		"empty csv": {""},
+	} {
+		if _, err := opsNames(raw); exitCodeForError(err) != 1 {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	if _, err := opsNames([]string{strings.Repeat("é", maxOpsNameLen)}); err != nil {
+		t.Errorf("the limit counts characters, not bytes: %v", err)
+	}
+}
+
+// namedOpsAnswers answer a --name request: the component and server panels
+// hold only the names they were asked for, as a narrowed query would.
+func namedOpsAnswers() []scriptedAnswer {
+	row := func(labels []any, vals ...string) []any {
+		out := []any{labels}
+		for _, v := range vals {
+			out = append(out, jn(v))
+		}
+		return out
+	}
+	return []scriptedAnswer{
+		{"mapContains(SpanAttributes", obsbackend.Result{}},
+		{"match(SpanName", obsbackend.Result{Rows: [][]any{
+			row([]any{"api", "todo.Create"}, "600", "60", "3", "900", "1500"),
+		}}},
+		{"otel_traces", obsbackend.Result{Rows: [][]any{
+			row([]any{"api", "todo.v1.TodoService/CreateTodo"}, "3600", "36", "4", "20", "40"),
+		}}},
+	}
+}
+
+func TestObsOpsNameAsksForTheNamedOpsAndListsEachOne(t *testing.T) {
+	sr := &scriptedRunner{answers: namedOpsAnswers()}
+	out, _, err := obsRun(t, devFacts(), sr, "ops", "dev", "--json",
+		"--name", "todo.Create", "--name", "todo.v1.TodoService/CreateTodo,claimable.IsUnclaimedUser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sr.ran) != 3 {
+		t.Fatalf("ran %d statements, want the server, component and code panels", len(sr.ran))
+	}
+	for _, sql := range sr.ran {
+		if !strings.Contains(sql, "SpanName IN (") {
+			t.Errorf("a panel not narrowed to the names: %s", sql)
+		}
+	}
+	doc := decode(t, out)
+	if fmt.Sprint(doc["names"]) != "[todo.Create todo.v1.TodoService/CreateTodo claimable.IsUnclaimedUser]" {
+		t.Errorf("names = %v", doc["names"])
+	}
+	var got []string
+	for _, o := range doc["ops"].([]any) {
+		m := o.(map[string]any)
+		got = append(got, fmt.Sprint(m["name"], " found=", m["found"], " calls=", m["calls"]))
+	}
+	want := "[todo.v1.TodoService/CreateTodo found=true calls=3600 todo.Create found=true calls=600 claimable.IsUnclaimedUser found=false calls=0]"
+	if fmt.Sprint(got) != want {
+		t.Errorf("ops = %v\nwant %s", got, want)
+	}
+	missing := doc["ops"].([]any)[2].(map[string]any)
+	if missing["kind"] != "component" || missing["service"] != "" {
+		t.Errorf("the op with no spans: %v", missing)
+	}
+	if doc["truncated"] == true {
+		t.Errorf("--name defaults --top to every requested op: %v", doc)
+	}
+	if !strings.Contains(fmt.Sprint(doc["suggested"]), "--route todo.v1.TodoService/CreateTodo") {
+		t.Errorf("suggested = %v", doc["suggested"])
+	}
+
+	// Human: the op with no spans says so.
+	out, _, err = obsRun(t, devFacts(), &scriptedRunner{answers: namedOpsAnswers()}, "ops", "dev", "--name", "claimable.IsUnclaimedUser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"(no spans)", "claimable.IsUnclaimedUser", "(1 requested op(s) had no spans in the window)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("human output lacks %q:\n%s", want, out)
+		}
+	}
+
+	// An explicit --top caps the rows, ops with no spans included.
+	out, _, err = obsRun(t, devFacts(), &scriptedRunner{answers: namedOpsAnswers()}, "ops", "dev", "--json", "--top", "1",
+		"--name", "todo.Create,claimable.IsUnclaimedUser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc = decode(t, out)
+	if ops := doc["ops"].([]any); len(ops) != 1 || ops[0].(map[string]any)["name"] != "todo.Create" || doc["omitted"] != float64(1) {
+		t.Errorf("--top 1: ops %v, omitted %v", ops, doc["omitted"])
+	}
+}
+
+func TestObsOpsNameRefusals(t *testing.T) {
+	for _, args := range [][]string{
+		{"--name", ""},
+		{"--name", "a.B,,c.D"},
+		{"--name", strings.Repeat("x", maxOpsNameLen+1)},
+		{"--name", "todo.Create", "--kind", "rpc"},
+	} {
+		sr := &scriptedRunner{answers: namedOpsAnswers()}
+		if _, _, err := obsRun(t, devFacts(), sr, append([]string{"ops", "dev", "--json"}, args...)...); exitCodeForError(err) != 1 {
+			t.Errorf("%q: err = %v", args, err)
+		}
+		if len(sr.ran) != 0 {
+			t.Errorf("%q: ran %d statements", args, len(sr.ran))
+		}
+	}
+}

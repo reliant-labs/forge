@@ -298,6 +298,9 @@ type metricsInterceptor struct {
 
 func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if IsHealthProbe(req.Spec().Procedure, req.Header()) {
+			return next(ctx, req)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", req.Spec().Procedure))
 		if i.calls != nil {

@@ -105,6 +105,19 @@ type upTimings struct {
 	spans    []*upSpan
 	launched map[string]time.Time
 	finished bool
+	// failed is the first span that ended in an error: where a failed run
+	// failed, for its RESULT line.
+	failed string
+}
+
+// failedStage is the name of the first span that ended in an error, or "".
+func (t *upTimings) failedStage() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed
 }
 
 // upSpan is one timed phase. A nil *upSpan is the no-recorder case and every
@@ -272,6 +285,9 @@ func (s *upSpan) endWith(status string, err error) {
 	}
 	s.ended, s.stop = true, s.t.now()
 	s.status, s.errMsg = spanOutcome(status, err)
+	if err != nil && s.t.failed == "" {
+		s.t.failed = s.name
+	}
 }
 
 // discard drops the span from the record: a stage that turned out to have

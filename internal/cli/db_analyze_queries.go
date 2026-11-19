@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -214,7 +215,9 @@ func (r frameResolver) repoPath(f querycapture.Frame) (string, bool) {
 		abs = f.AbsFile
 	case f.File == "":
 		return "", false
-	case filepath.IsAbs(f.File):
+	case filepath.IsAbs(f.File) || path.IsAbs(f.File):
+		// A slash-rooted File is absolute wherever it was recorded, never
+		// module-relative — Windows' filepath.IsAbs alone wants a volume.
 		abs = f.File
 	case f.Module == "" || f.Module == r.module:
 		abs = filepath.Join(r.projectDir, filepath.FromSlash(f.File))

@@ -837,6 +837,12 @@ type DNSRecordEntity struct {
 // deploy dispatcher groups by Runtime, and a Hosted workload's Spec is
 // published verbatim as a forge.dev Workload CR.
 type WorkloadEntity struct {
+	// releaseTemplate is this workload's ShellBuild as a SECOND render of a
+	// --release build composed it, with image_tag bound to a sentinel: the
+	// command and env before the release tag went in. Set only by
+	// attachReleaseTemplates; never decoded (build_external_release_reuse.go).
+	releaseTemplate *shellBuildTemplate
+
 	Name string
 	// Kind is the workload kind (service|worker|job|cron|operator|tool). It
 	// always equals Spec.EffectiveKind().

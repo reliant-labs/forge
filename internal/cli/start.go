@@ -23,8 +23,11 @@
 //   - the sequence, the three authoring rules and the shape          the
 //     embedded `greenfield` and `authoring` skills, extracted by heading. A
 //     retitled or deleted heading is a hard error, never a silent omission.
-//   - the `project new` flags     looked up on the real cobra command, so a
-//     renamed flag fails loudly instead of advertising one that is gone.
+//   - what the project gets       the registry's app glance
+//     (internal/benefits), the same block the entry skills open with.
+//   - the `project new` flags     the greenfield skill's table, each flag
+//     looked up on the real cobra command, so a renamed flag fails loudly
+//     instead of advertising one that is gone.
 //   - the proto→column vocabulary  scaffold.ProtoSQLMappings(), the same
 //     iteration `forge project annotations` publishes.
 //   - the entity markers          markerSpecs(), whose names come from the
@@ -38,10 +41,12 @@ package cli
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/benefits"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 )
@@ -60,25 +65,12 @@ var briefSections = []struct{ skill, heading string }{
 	{"authoring", "The shape, in four lines"},
 }
 
-// briefNewFlags are the `forge project new` flags a greenfield invocation
-// actually needs, with the gloss this brief prints for each.
-//
-// The NAMES are looked up on the real command (see newProjectFlagLines);
-// only the gloss is a literal, because the real flag usage strings are
-// paragraph-length and written for `--help`, not for a brief. The rest of
-// the flag set is a `--help` call away and none of it is load-bearing
-// before the first proto.
-var briefNewFlags = []struct {
-	name  string
-	gloss string
-}{
-	{"mod", "Go module path (`github.com/acme/my-app`). Defaults to the project name; set it to the path you will publish under."},
-	{"service", "Repeatable. One empty proto stub per service — **and the only way to get `cmd/<bin>/main.go` wired for you.** Name after domain entities (`customers`, `jobs`), never after the binary."},
-	{"frontend", "Repeatable. One Next.js frontend each."},
-	{"in-place", "Scaffold into the current directory instead of creating a subdirectory. Takes no positional name."},
-	{"name", "Name an `--in-place` project whose directory is a worktree or branch name rather than the product."},
-	{"claimable", "Deploying with **no account** (`forge env deploy prod --claimable`)? Pass it: it sizes prod to the free anonymous plan, which the default prod does not fit. Leave it off to deploy signed in: a claimable prod refuses that until its `claimable = True` line is removed."},
-}
+// briefFlagsSection is the greenfield section whose `project new` flag
+// table the brief prints. Every `--flag` a row of it names is looked up on
+// the real command (checkBriefFlags), so a renamed flag fails loudly instead
+// of the brief advertising one that no longer parses. The table lives once,
+// in the skill: the brief used to print a second, hand-glossed copy of it.
+const briefFlagsSection = "Greenfield, end to end"
 
 // newStartCmd builds `forge start`: the router (start_router.go), which
 // sends an agent to the one next command for the directory it is in, and
@@ -117,7 +109,7 @@ func newStartAppCmd() *cobra.Command {
 		Long: `Print the greenfield brief.
 
 Everything needed to go from an empty directory to authored protos, and
-nothing else: the end-to-end sequence, the 'project new' flags that matter,
+nothing else: what the project gets with no setup, the end-to-end sequence, the 'project new' flags that matter,
 how an entity is marked and what scaffold births from it, the rule that
 forge injects CRUD rpcs ONLY, the proto->column vocabulary, and the FK
 diamond declaration.
@@ -173,17 +165,24 @@ func buildStartBrief() (string, error) {
 		sections[s.heading] = body
 	}
 
-	flags, err := newProjectFlagLines()
+	if err := checkBriefFlags(sections[briefFlagsSection]); err != nil {
+		return "", err
+	}
+	reg, err := benefits.Load()
+	if err != nil {
+		return "", err
+	}
+	glance, err := benefits.RenderGlance(reg, benefits.GlanceApp)
 	if err != nil {
 		return "", err
 	}
 
 	var b strings.Builder
 	b.WriteString(briefHeader)
+	b.WriteString(glance)
+	b.WriteString("\n")
 	b.WriteString(sections["Greenfield, end to end"])
-	b.WriteString("\n## `forge project new` — the flags that matter\n\n")
-	b.WriteString(flags)
-	b.WriteString("\nEverything else (`--kind`, `--harness`, `--disable`, `--binary`, …) has a\nworking default: `forge project new --help`.\n\n")
+	b.WriteString("\n")
 	b.WriteString(sections["Authoring a service proto"])
 	b.WriteString(fieldTypeBriefTable())
 	b.WriteString(entityMarkerBriefTable())
@@ -193,7 +192,7 @@ func buildStartBrief() (string, error) {
 	return b.String(), nil
 }
 
-const briefHeader = `# forge — greenfield brief
+const briefHeader = `# Reliant Forge — greenfield brief
 
 Empty directory to authored protos. Read once, then build. Depth is named at
 the end; do not load it preemptively.
@@ -276,23 +275,32 @@ func extractMarkdownSection(doc, heading string) (string, bool) {
 	return strings.TrimRight(body, "\n") + "\n", true
 }
 
-// newProjectFlagLines renders the briefNewFlags table, resolving every
-// flag against the real `forge project new` command so a rename cannot
-// leave the brief advertising a flag that no longer parses.
-func newProjectFlagLines() (string, error) {
-	cmd := newNewCmd()
+// briefFlagRow matches a flag-table row of the greenfield section:
+// "| `--service <name>` | …".
+var briefFlagRow = regexp.MustCompile("^\\| `--([a-z][a-z-]*)")
 
-	var b strings.Builder
-	b.WriteString("| Flag | Purpose |\n|---|---|\n")
-	for _, f := range briefNewFlags {
-		if cmd.Flags().Lookup(f.name) == nil {
-			return "", fmt.Errorf(
-				"`forge project new` has no --%s flag, so `forge start app` would advertise a flag that does not parse "+
-					"(fix: update briefNewFlags in internal/cli/start.go)", f.name)
+// checkBriefFlags resolves every flag the section's table names against the
+// real `forge project new` command.
+func checkBriefFlags(section string) error {
+	cmd := newNewCmd()
+	n := 0
+	for _, line := range strings.Split(section, "\n") {
+		m := briefFlagRow.FindStringSubmatch(line)
+		if m == nil {
+			continue
 		}
-		b.WriteString(fmt.Sprintf("| `--%s` | %s |\n", f.name, f.gloss))
+		n++
+		if cmd.Flags().Lookup(m[1]) == nil {
+			return fmt.Errorf(
+				"the greenfield skill's flag table names --%s, which `forge project new` does not have, "+
+					"so `forge start app` would advertise a flag that does not parse (fix: the table in "+
+					"skills/forge/greenfield/SKILL.md)", m[1])
+		}
 	}
-	return b.String(), nil
+	if n == 0 {
+		return fmt.Errorf("the greenfield skill's %q section has no `project new` flag table for `forge start app` to print", briefFlagsSection)
+	}
+	return nil
 }
 
 // fieldTypeBriefTable renders the proto→column vocabulary from the same

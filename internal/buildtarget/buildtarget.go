@@ -373,6 +373,16 @@ type State struct {
 	// reuses this build instead of running the command again. Empty when the
 	// ShellBuild declares no inputs, and on state an older forge wrote.
 	InputsFingerprint string `json:"inputs_fingerprint,omitempty"`
+	// ReleaseInputsDigest is the same declared inputs fingerprinted the way a
+	// release compares them: without the release tag the declaration composed
+	// in, which differs on every cut. Written by a --release build of
+	// a ShellBuild that declares inputs; a release cut from this state records
+	// it as the artifact's inputs_digest, and the next release reuses the
+	// image when its own equals it. Empty otherwise.
+	ReleaseInputsDigest string `json:"release_inputs_digest,omitempty"`
+	// CarriedFrom is the release whose image this state reuses (its declared
+	// inputs were unchanged); empty when the command ran.
+	CarriedFrom string `json:"carried_from,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

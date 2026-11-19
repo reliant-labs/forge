@@ -3,6 +3,8 @@ package obsbackend
 import (
 	"context"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Backend is what a `forge obs` verb reads telemetry through. The local
@@ -117,6 +119,35 @@ type AlertHistoryReader interface {
 //forge:contract
 type DeliveryReader interface {
 	TelemetryDeliveries(ctx context.Context) (DeliveriesResult, error)
+}
+
+// PromotionGateReader reads every gate recorded on a promotion, the
+// pre-promote ones and those appended after it: what says when an attempt of
+// it shipped (`forge obs check`, releasehealth.LiveAt). Only the cloud backend
+// implements it: a local env has no promotions.
+//
+//forge:contract
+type PromotionGateReader interface {
+	PromotionGates(ctx context.Context, promotionID string) ([]release.Gate, error)
+}
+
+// WorkloadReader reads the env's per-workload restarts, crash loops, last
+// termination reasons and failing jobs (`forge obs workloads`). Only the cloud
+// backend implements it: a local stack's workloads are host processes or a
+// cluster the user already has kubectl for.
+//
+//forge:contract
+type WorkloadReader interface {
+	Workloads(ctx context.Context, n Narrow) (WorkloadsResult, error)
+}
+
+// TraceExtentReader reads when one trace ran, from its spans: the range
+// `forge obs logs --trace` reads when none was named. Both backends implement
+// it.
+//
+//forge:contract
+type TraceExtentReader interface {
+	TraceExtent(ctx context.Context, req TraceRequest) (TraceExtent, error)
 }
 
 // DashboardReader replays the console's dashboards: the index it lists for an

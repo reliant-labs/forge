@@ -48,7 +48,7 @@ import (
 // reported with its file:line and the edit that clears it, and nothing is
 // written: a conversion that compiles but quietly changes what a process
 // serves (collapsing two deployment groups into one `server`, say) is worse
-// than none. migrations/v1.0.0 is the manual path, with control-plane's
+// than none. migrations/v1.0.0/composition-graph is the manual path, with control-plane's
 // ServeSpec knobs as the worked example.
 
 func init() {
@@ -77,7 +77,7 @@ which is what ` + "`<bin> server`" + ` ran. Anything the codemod cannot map with
 deciding for you — an Infra field of your own, a ServeSpec knob, a command
 that calls Serve, code that names Infra or Components — is listed with its
 file:line and the edit that clears it, and then NOTHING is written. Clear
-them (the migrations/v1.0.0 skill walks through each) and run it again.
+them (the migrations/v1.0.0/composition-graph skill walks through each) and run it again.
 
 It replaces files you own, so it runs only on a committed tree
 (--allow-dirty overrides); review with git diff, undo with git checkout.`,
@@ -170,13 +170,14 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	p.planLegacyGenerated()
 	p.planE2E()
 	p.planKCL()
+	p.planMixed()
 	p.scanReferences()
 
 	rep := Report{Verify: []string{"forge generate", "go build ./...", "forge lint --graph"}}
 	if len(p.blocked) > 0 {
 		sort.Strings(p.blocked)
 		rep.Blocked = p.blocked
-		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0` walks through them), then run `forge fix composition-graph` again — nothing was written"}
+		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0/composition-graph` walks through them), then run `forge fix composition-graph` again — nothing was written"}
 		rep.Verify = nil
 		return rep, nil
 	}
@@ -200,7 +201,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	if len(p.retired) > 0 {
 		rep.Next = append(rep.Next, fmt.Sprintf("retired subcommands (one root runs them all now): `%s %s`", p.bin, strings.Join(p.retired, "`, `"+p.bin+" ")))
 	}
-	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v1.0.0 — this changes the rendered env)")
+	rep.Next = append(rep.Next, "deploy/kcl is untouched and still runs `server`; to give each workload exactly its root's config, bind it with `config_gen.root_of(\"server\")` and project its env with `config_gen.workloadEnvMap(cfg, w)` (migrations/v1.0.0/composition-graph — this changes the rendered env)")
 	rep.Next = append(rep.Next, p.notes...)
 	if !write {
 		return rep, nil
@@ -1044,6 +1045,17 @@ func (p *cgPlan) planAPIKeyValidator() {
 	end := f.fset.Position(star.X.End()).Offset
 	p.writes[f.rel] = append(append(append([]byte(nil), src[:off]...), "DB"...), src[end:]...)
 	p.skipRef[refKey(f.rel, f.fset.Position(star.X.Pos()).Line)] = true
+}
+
+// planMixed: the constructor methods of roots adopted beside the legacy
+// composition (codegen.MixedComposeFile) become compose.go's when the project
+// converts, and two files declaring one method do not compile. The codemod
+// does not merge owned code for you.
+func (p *cgPlan) planMixed() {
+	rel := "internal/app/" + codegen.MixedComposeFile
+	if f, ok := p.files[rel]; ok {
+		p.block(f, token.NoPos, "%s holds the constructor methods of the roots adopted beside the legacy composition; once converted they belong in compose.go, which is rewritten as the graph's: move each `func (g *Graph) new<X>()` there after converting, or delete %s now and let `forge generate` inject them again (an owned value expression you wrote is then yours to re-apply)", rel, codegen.MixedComposeFile)
+	}
 }
 
 // current is a file's bytes as this plan leaves them so far.

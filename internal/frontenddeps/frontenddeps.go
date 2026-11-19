@@ -2,6 +2,8 @@
 // current against its lockfile. It is the single install step behind
 // `forge env up`, `forge build` and `forge lint`, so a fresh checkout (every
 // release worktree) never reaches a toolchain with missing dependencies.
+//
+//forge:exclude-contract: package-level operations over a frontend directory (lockfile reads, and exec of the project's own npm/pnpm/yarn); its only exported method is the Lock record's Path accessor, and callers call the functions directly, so there is no component to substitute
 package frontenddeps
 
 import (
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/envutil"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -180,8 +183,11 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		// enter the frontend lockfile that CI and Docker will install from.
 		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
 			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
-			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil {
+			var endStep func(error)
+			cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(filepath.Base(dir) + ": " + runner + " install --lockfile-only")
+			err := cmd.Run()
+			endStep(err)
+			if err != nil {
 				return fmt.Errorf("create frontend registry lockfile: %w", err)
 			}
 		}
@@ -199,9 +205,12 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 			runner, proxiedInstallSockets)
 	}
 	cmd := command(ctx, dir, runner, args...)
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	if err := cmd.Run(); err != nil {
+	stdout, stderr, endStep := buildlog.Step(filepath.Base(dir) + ": " + runner + " " + strings.Join(args, " "))
+	cmd.Stdout = io.MultiWriter(stdout, &buf)
+	cmd.Stderr = io.MultiWriter(stderr, &buf)
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		if unstartableExecutable(buf.String(), err) != "" {
 			// The executable itself will not start: every retry runs it again.
 			return fmt.Errorf("%w: %w: %s", ErrRunnerUnusable, err, strings.TrimSpace(buf.String()))

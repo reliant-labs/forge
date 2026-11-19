@@ -238,3 +238,35 @@ func packageLevelDecls(file *ast.File) []*ast.Ident {
 	}
 	return ids
 }
+
+// projectDeclaresName reports whether a file the project owns in the ORM
+// package dbDir declares name at package level — the test for a delegate
+// forge emits only when the project has not written its own.
+func projectDeclaresName(dbDir, name string) bool {
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		return false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		file := e.Name()
+		if e.IsDir() || !strings.HasSuffix(file, ".go") {
+			continue
+		}
+		path := filepath.Join(dbDir, file)
+		body, rerr := os.ReadFile(path)
+		if rerr != nil || ormOwnsFile(file, body) {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, path, body, parser.SkipObjectResolution)
+		if perr != nil || strings.HasSuffix(f.Name.Name, "_test") {
+			continue
+		}
+		for _, id := range packageLevelDecls(f) {
+			if id.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}

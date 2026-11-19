@@ -118,7 +118,7 @@ message Widget {
 		`quantity: z.coerce.number().gte(0, "Must be 0 or more"),`,
 		`name: z.string().min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters"),`,
 		`sku: z.string().regex(new RegExp("^SKU-[0-9]+$"), "Not in the expected format"),`,
-		`email: z.string().email("Enter a valid email address"),`,
+		`email: z.string().pipe(z.email("Enter a valid email address")),`,
 		`code: z.string().min(1, "Required"),`,
 		`currency: z.string().min(3, "Must be at least 3 characters").max(3, "Must be at most 3 characters"),`,
 	} {

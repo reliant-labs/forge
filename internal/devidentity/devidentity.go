@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -165,7 +166,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return res, err
 	}
-	if res.StoreKeys, err = writeStore(in.StorePath, values); err != nil {
+	if res.StoreKeys, err = writeStore(in.StorePath, values, snapshotKeys(in), time.Now()); err != nil {
 		return res, err
 	}
 	return res, nil
@@ -615,9 +616,67 @@ func StoreValues(in Input, out identity.Output, machineKey func(user string) ([]
 	return values, nil
 }
 
+// snapshotRestamp is how old a delivered JWKS snapshot's delivered_at may grow
+// before an unchanged one is delivered again with a fresh stamp: half the
+// validator's default jwt_jwks_snapshot_max_age, so a snapshot in the store is
+// always comfortably usable.
+const snapshotRestamp = auth.DefaultJWKSSnapshotMaxAge / 2
+
+// snapshotKeys are the store keys that carry the JWKS snapshot.
+func snapshotKeys(in Input) map[string]bool {
+	prefix := release.IdentitySecretPrefix + in.Identity.Name
+	keys := map[string]bool{}
+	for _, r := range in.Refs {
+		if r.SecretName == prefix && r.SecretKey == "JWKS" {
+			keys[r.EnvName] = true
+		}
+	}
+	return keys
+}
+
+// sameSnapshot reports whether the snapshot in the store says what the new one
+// does, apart from when it was taken, and is still young. Every pass stamps a
+// new delivered_at, so comparing bytes would rewrite the store (and announce
+// it) on every `forge env up`; a changed key set or issuer, or a stamp past
+// snapshotRestamp, is delivered.
+func sameSnapshot(have, want string, now time.Time) bool {
+	h, hAt, ok := splitSnapshot(have)
+	if !ok {
+		return false
+	}
+	w, _, ok := splitSnapshot(want)
+	if !ok || h != w {
+		return false
+	}
+	age := now.Sub(hAt)
+	return age >= -time.Minute && age < snapshotRestamp
+}
+
+// splitSnapshot is a snapshot document's canonical form without delivered_at,
+// and its delivered_at.
+func splitSnapshot(doc string) (string, time.Time, bool) {
+	var m map[string]any
+	if json.Unmarshal([]byte(doc), &m) != nil {
+		return "", time.Time{}, false
+	}
+	at, _ := m["delivered_at"].(string)
+	t, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	delete(m, "delivered_at")
+	canon, err := json.Marshal(m) // map keys sort, so this is canonical
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return string(canon), t, true
+}
+
 // writeStore sets each key in the local store, touching the file only when a
-// value actually changed. The store keeps its comments and every other key.
-func writeStore(path string, values map[string]string) ([]string, error) {
+// value actually changed. A JWKS snapshot (a key in snapshots) counts as
+// changed only by sameSnapshot. The store keeps its comments and every other
+// key.
+func writeStore(path string, values map[string]string, snapshots map[string]bool, now time.Time) ([]string, error) {
 	store := secretFile{Path: path}
 	var written []string
 	for _, k := range sortedKeys(values) {
@@ -625,7 +684,7 @@ func writeStore(path string, values map[string]string) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("read %s: %w", path, err)
 		}
-		if cur == values[k] {
+		if cur == values[k] || (snapshots[k] && sameSnapshot(cur, values[k], now)) {
 			continue
 		}
 		if err := store.set(k, values[k]); err != nil {

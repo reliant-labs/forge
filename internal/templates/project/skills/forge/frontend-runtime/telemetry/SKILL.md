@@ -75,6 +75,7 @@ into every environment it is promoted to.
 | replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
 | `page_viewed {route}` and `page_engaged {route, view_id, engaged_ms, scroll_pct}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
 | signed-in user id on every event | `IDENTIFY_USER = "false"` | KCL `telemetry.identify_user = False` | **on** with native sign-in |
+| redacted request shape on a failed RPC's span (`forge.forensics`; see `frontend-runtime/transport`) | `RPC_FORENSICS = "false"` | KCL `telemetry.rpc_forensics = False` | **on** |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the

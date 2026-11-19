@@ -228,6 +228,10 @@ var newRules = []rolloutGroup{
 	// (forge:secret, or a credential-shaped name with no forge:readable): the
 	// console never sees it, so the identity link is never drawn.
 	{IntroducedIn: "v1.2.0", GatesFrom: "v1.2.1", Rules: []string{ruleIdentitySubjectUnreadable}},
+	// A deployed sign-up whose address nobody proves (email delivery "none",
+	// or auth_self_signup outside development): its email is a contact
+	// field no proof ever claims (forge#2121).
+	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: []string{ruleUnprovenSignup}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
@@ -245,6 +249,10 @@ var newRules = []rolloutGroup{
 	// above: v1.7.0 shipped the migration pass alone, so these get their own
 	// warning release before they gate.
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: dbanalyze.QueryRuleIDs()},
+	// forge lint --proto-format: a .proto `buf format` would rewrite — the
+	// scaffolded pre-commit hook's own check, which lint used to pass while
+	// the hook refused the commit.
+	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

@@ -1,6 +1,6 @@
 ---
 name: frontend-runtime
-description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (error normalization, auth, brand, W3C traceparent; React Query owns retries), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
+description: The forge frontend runtime, @reliantlabs/forge-web-runtime — the web twin of forge/pkg. Transport interceptor stack (error normalization, auth, brand, a client span per RPC with redacted failure forensics, W3C traceparent; React Query owns retries), app-shell providers (session, error boundary, toast host), the generic <Resource> data-table container, and browser telemetry (the HyperDX SDK: errors, console, network, traces — to ClickStack through a same-origin /_otel route).
 ---
 
 # Frontend Runtime
@@ -53,7 +53,7 @@ must be one the bundle reads. Load `frontend-runtime/config`.
 
 | Battery | What it is | Load |
 |---|---|---|
-| Transport interceptor stack | `buildRuntimeInterceptors` in `connect.ts`: error-normalize → auth → brand → traceparent; React Query owns retries. Typed errors: branch on `.reason`, render with `userMessage(err)`, never match on message text | `frontend-runtime/transport` |
+| Transport interceptor stack | `buildRuntimeInterceptors` in `connect.ts`: error-normalize → auth → brand → rpc span → traceparent; React Query owns retries. One client span per RPC (`<rpc.service>/<rpc.method>`, joined to the server span), with a redacted `forge.forensics` request shape on failure (`RPC_FORENSICS` turns it off per env). Typed errors: branch on `.reason`, render with `userMessage(err)`, never match on message text | `frontend-runtime/transport` |
 | App-shell providers | `RuntimeShell` in `providers.tsx`: `useSession()`, `RuntimeErrorBoundary`, `RuntimeToastHost`, `RouteGuard` (a render gate, not a security boundary) | `frontend-runtime/shell` |
 | `<Resource>` | the data-table container: loading / error / empty / data ladder, server-side filter, cursor pagination, sorting | `frontend-runtime/resource` |
 | Browser telemetry | the HyperDX SDK, initialised for you: errors, console, network, traces to ClickStack through a same-origin `/_otel` route; source maps, replay, `reportException`, `interaction()` click-to-usable spans; cookieless product analytics by default (`identified`: nothing stored on the device; `full` only with `ANALYTICS_MODE = "full"` + `grantAnalyticsConsent()`), automatic `page_viewed` events with referrer/utm/click-id props and `page_engaged` (engaged time, scroll depth) per view and signed-in user identity (`PAGE_VIEWS` / `IDENTIFY_USER` turn them off per env), `trackExposure` + an OpenFeature hook | `frontend-runtime/telemetry` |

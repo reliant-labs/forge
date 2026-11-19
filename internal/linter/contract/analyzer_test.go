@@ -142,6 +142,19 @@ func TestRequireContract_ExternalTestPackageSkipped(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requireexttest")
 }
 
+// Regression: a command (`package main`) cannot be imported, so its exported
+// methods are no API surface and there is no consumer for a contract.go to
+// serve. forge's own internal/npmoverlay/cmd/npm-overlay was flagged for a
+// flag.Value's Set, and internal/consumercanary and internal/apigate had
+// each spent the //forge:exclude-contract opt-out on the same non-finding.
+// The fixture has exported methods (Set, Run) and NO contract.go, with NO
+// `want` comment: zero findings expected.
+func TestRequireContract_MainPackageSkipped(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiremain")
+}
+
 // Regression: a package whose ONLY exported methods come from a forge-generated
 // file (e.g. mock_gen.go's mock methods) must NOT
 // be required to add a contract.go — generated code is the output OF a contract,
@@ -259,6 +272,16 @@ func TestExportedVars_Bad(t *testing.T) {
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbad")
 }
 
+// A command's exported var is not reachable from any other package (Go
+// refuses to import `package main`), so exportedvars has nothing to judge.
+// Same fixture as TestRequireContract_MainPackageSkipped: `var Verbose`
+// carries no `want`.
+func TestExportedVars_MainPackageSkipped(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "internal/requiremain")
+}
+
 // Regression: an immutable lookup table or a compiled regexp is a `var`
 // only because Go has no const slice/map/regexp. The rule's premise —
 // "mutable global state should be behind a method or getter" — does not
@@ -276,6 +299,19 @@ func TestExportedVars_ImmutableDataAndRegexps(t *testing.T) {
 	}
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsimmutable")
+}
+
+// A value the package builds from its own inputs — constants joined by its
+// own helper (pkg/obsquery's ServerFingerprintSQL), or a literal table of
+// basic-field structs (obsquery.AffectedKeys) — is const-shaped too. One
+// that reads the environment, another package, a method or an exported var
+// is still reported, and so is one that IS a constant: it should be const.
+func TestExportedVars_BuiltValuesAndBasicStructTables(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs analysistest, which loads packages via go list; runs in task test")
+	}
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.ExportedVarsAnalyzer, "varsbuilt")
 }
 
 // Regression: a package carrying the per-package //forge:exclude-contract

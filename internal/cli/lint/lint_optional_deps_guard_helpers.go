@@ -103,11 +103,17 @@ var svcerrConstructors = map[string]bool{
 }
 
 // svcerrWrappers are the svcerr functions that return nil exactly when
-// their first argument is nil.
+// their error argument is nil — the first argument unless
+// svcerrWrapperErrArg names another.
 var svcerrWrappers = map[string]bool{
 	"Wrap": true, "WrapOr": true, "WithCause": true, "WithClass": true, "WithDetail": true,
 	"WithMessage": true, "WithReason": true, "WithMetadata": true, "ExpectedClose": true,
+	"RejectV2": true,
 }
+
+// svcerrWrapperErrArg is the index of the error argument of a wrapper whose
+// error is not its first argument: RejectV2(ctx, err).
+var svcerrWrapperErrArg = map[string]int{"RejectV2": 1}
 
 // helperKind is the result shape of a summarizable helper.
 type helperKind int
@@ -376,7 +382,8 @@ func (w *optionalGuardWalker) errNonNil(e ast.Expr, guarded map[string]bool) boo
 		case path == svcerrImportPath && svcerrConstructors[name]:
 			return true
 		case path == svcerrImportPath && svcerrWrappers[name]:
-			return len(v.Args) > 0 && w.errNonNil(v.Args[0], guarded)
+			i := svcerrWrapperErrArg[name]
+			return len(v.Args) > i && w.errNonNil(v.Args[i], guarded)
 		}
 	}
 	return false

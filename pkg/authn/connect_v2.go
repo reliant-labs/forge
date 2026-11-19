@@ -7,6 +7,8 @@ import (
 	"connectrpc.com/connect"
 	connectv2 "connectrpc.com/connect/v2"
 	connectv2proto "connectrpc.com/connect/v2/connectproto"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // This file is the connect-go v2 surface of the package. Every v2 symbol
@@ -28,9 +30,15 @@ import (
 // code and the same message ("missing Authorization header (…)", "invalid
 // authorization format", "invalid token: <err>", "identity enrichment
 // failed: <err>"), built as v2 *connect.Error values, because a v2 transport
-// sends any other error as a bare CodeUnknown. An Enrich hook may return a
-// *connect.Error of either major; it is passed through with its code,
-// message and details.
+// sends any other error as a bare CodeUnknown. An Enrich or MapError hook
+// may return a *connect.Error of either major; it is passed through with
+// its code, message and details, and its error metadata — the
+// x-forge-error-reason of a svcerr.WithReason verdict, anything on a v1
+// error's Meta — is sent where v1 sends it ([svcerr.RejectV2]). An error
+// the hook received from a client call (a remote one) is re-created as this
+// server's own with the same code, message and details, and its metadata
+// withheld, as v1 sends a forwarded error; v2 would otherwise scrub it to
+// an internal error with no message.
 func NewInterceptorV2(p Policy) (connectv2.ServerInterceptor, error) {
 	ic, err := newInterceptor(p, "authn.NewInterceptorV2")
 	if err != nil {
@@ -48,11 +56,11 @@ func (a *interceptor) wrapV2(next connectv2.ServerFunc) connectv2.ServerFunc {
 		if a.allowUnauthenticated(spec.Procedure) {
 			return next(ctx, spec, stream)
 		}
-		ctx, err := a.authenticate(ctx, a.policy.authorization(requestHeaderV2(ctx)))
+		authed, err := a.authenticate(ctx, a.policy.authorization(requestHeaderV2(ctx)))
 		if err != nil {
-			return errorToV2(err)
+			return errorToV2(ctx, err)
 		}
-		return next(ctx, spec, stream)
+		return next(authed, spec, stream)
 	}
 }
 
@@ -170,18 +178,22 @@ func errorToV1(err error) error {
 	return out
 }
 
-// errorToV2 makes an error this package returns carry its verdict to a v2
-// wire, as the v1 interceptor's reaches a v1 wire. A v2 *connect.Error is
-// returned unchanged; a v1 one is re-created with the same code, message and
-// details; any other error becomes CodeUnknown with its text, which is what
-// a v1 transport sent for a plain error.
-func errorToV2(err error) error {
+// errorToV2 makes an authentication rejection reach a v2 wire as the v1
+// interceptor's reaches a v1 wire, and is what wrapV2 returns. The verdict
+// is the outermost *connect.Error of either major in err — the one v1's
+// transport finds with errors.As — and it goes out through
+// svcerr.RejectV2: the same code, message and details, its metadata on the
+// call's headers or trailers where v1 sends a *connect.Error's Meta, and a
+// remote verdict re-created as a local one (metadata withheld). Any other
+// error becomes CodeUnknown with its text, which is what a v1 transport sent
+// for a plain error.
+func errorToV2(ctx context.Context, err error) error {
 	e1, e2 := outermostConnectError(err)
 	switch {
 	case e2 != nil:
-		return err
+		return svcerr.RejectV2(ctx, e2)
 	case e1 != nil:
-		return toV2Error(e1, err)
+		return svcerr.RejectV2(ctx, e1)
 	case err == nil:
 		return nil
 	}

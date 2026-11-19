@@ -6,7 +6,9 @@ package svcerr
 // WrapOr, WithCause, Classify and the Is* predicates are connect-free and
 // shared; what differs is the wire type at the boundary, so each exported
 // symbol that names a v1 type has a V2 twin here: [InterceptorV2],
-// [ToConnectV2], [CodeV2] and [NewV2].
+// [ToConnectV2], [CodeV2] and [NewV2]. [RejectV2] has no twin: it is what a
+// v2 interceptor returns to reject a call, where a v1 one returned the
+// *connect.Error itself.
 //
 // # One verdict, two encodings
 //
@@ -31,7 +33,10 @@ package svcerr
 // writes the verdict's metadata onto the response exactly where v1 put it —
 // the response headers for a unary Connect-protocol call, the trailers for
 // streaming Connect and for gRPC and gRPC-Web — so a client reads
-// x-forge-error-reason from the same place whichever major served it.
+// x-forge-error-reason from the same place whichever major served it. An
+// interceptor that rejects a call before the handler runs never passes back
+// through InterceptorV2, so it returns [RejectV2]'s error, which delivers the
+// same metadata the same way.
 //
 // A *connectv2.Error built by [ToConnectV2] keeps that metadata (and the
 // whole server-side chain) in an unexported cause, so returning
@@ -41,7 +46,6 @@ package svcerr
 import (
 	"context"
 	"net/http"
-	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -74,9 +78,11 @@ import (
 // interceptor is a func, and Go funcs are not comparable, so there is no
 // IsInterceptorV2. There does not need to be: InterceptorV2 is idempotent —
 // a second copy sees an error the first already converted and passes it
-// through with the same metadata — so a v2 chain builder installs it
-// unconditionally in its innermost slot (the last argument to
-// connectv2.NewServer), and a caller that also passed one is harmless.
+// through with the same verdict, and only the outermost copy running for a
+// call writes the verdict's metadata onto it, so nothing is sent twice — so
+// a v2 chain builder installs it unconditionally in its innermost slot (the
+// last argument to connectv2.NewServer), and a caller that also passed one
+// is harmless.
 // [WithInterceptorV2] is that append for hand-assembled chains.
 //
 // Innermost matters for the same reason it does in v1: every interceptor
@@ -101,16 +107,89 @@ func WithInterceptorV2(extras []connectv2.ServerInterceptor) []connectv2.ServerI
 // is the same value.
 func interceptV2(next connectv2.ServerFunc) connectv2.ServerFunc {
 	return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+		ctx, deliver := claimDelivery(ctx)
 		err := next(ctx, spec, stream)
 		if err == nil {
 			return nil
 		}
 		ce := ToConnect(err)
-		if !connect.IsWireError(ce) {
-			deliverMetadata(ctx, spec, ce.Meta())
+		if deliver != nil && !connect.IsWireError(ce) {
+			deliverMetadata(deliver, ce.Meta())
 		}
 		return toV2(err, ce)
 	}
+}
+
+// RejectV2 is how a connect-go v2 interceptor rejects a call without calling
+// next — an authentication failure, a refused credential — so that the
+// rejection reaches the wire exactly as returning err from a v1 interceptor
+// did. It returns err's verdict, as [ToConnect] reads it, as a
+// *connectv2.Error, and writes the verdict's metadata (the [ReasonHeader]
+// reason, [WithMetadata] entries, anything on a v1 *connect.Error's Meta)
+// onto the call where v1 sends it: the response headers of a unary
+// Connect-protocol call, the trailers otherwise. RejectV2(ctx, nil) is nil.
+//
+// It needs to exist because a v2 error carries no metadata of its own:
+// [InterceptorV2] delivers it for errors that come back through it, but a
+// call rejected before it reaches the handler never passes through the
+// innermost InterceptorV2, so without RejectV2 a v1 error's metadata —
+// typically the reason a frontend routes a denial on — is lost.
+//
+// The verdict is ToConnect's, so the rules are InterceptorV2's: a
+// *connect.Error of either major keeps its code, message and details; a
+// remote one (v2 IsRemote, v1 IsWireError) is re-created as this process's
+// own error, with its metadata withheld as v1 withholds a forwarded error's;
+// an error nothing recognises becomes CodeInternal with [InternalMessage].
+//
+// Metadata is delivered once per call, in the order and multiplicity the
+// verdict carries it: when an InterceptorV2 further out in the chain is
+// running for this call, RejectV2 leaves the delivery to it (the returned
+// error carries the metadata there), so an interceptor sitting between two
+// copies does not double a header.
+//
+// There is no v1 twin: a v1 interceptor returns the *connect.Error and the
+// v1 transport sends its Meta.
+func RejectV2(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	ce := ToConnect(err)
+	if !connect.IsWireError(ce) {
+		if info, ok := connectv2.CallInfoForServerContext(ctx); ok && !deliveryClaimed(ctx, info) {
+			deliverMetadata(info, ce.Meta())
+		}
+	}
+	return toV2(err, ce)
+}
+
+// deliveryOwner is the context key under which an InterceptorV2 records the
+// call it delivers error metadata for: the call's *connectv2.CallInfo.
+type deliveryOwner struct{}
+
+// claimDelivery makes the caller the deliverer of the call's error metadata
+// unless an InterceptorV2 further out already is. It returns the context to
+// run the rest of the call with and the CallInfo to deliver to, or nil when
+// someone further out delivers (or there is no call to deliver to).
+//
+// The outermost copy delivers because it sees the error the call actually
+// ends with — what v1 sends the metadata of — and delivering once keeps the
+// verdict's values exactly as it carries them: a repeated value stays
+// repeated, and nothing already on the response is merged away. The key is
+// the CallInfo, not a bare flag, so a nested server call that inherits this
+// context (an in-process transport) still delivers its own.
+func claimDelivery(ctx context.Context) (context.Context, *connectv2.CallInfo) {
+	info, ok := connectv2.CallInfoForServerContext(ctx)
+	if !ok || deliveryClaimed(ctx, info) {
+		return ctx, nil
+	}
+	return context.WithValue(ctx, deliveryOwner{}, info), info
+}
+
+// deliveryClaimed reports whether an InterceptorV2 further out delivers the
+// error metadata of the call info describes.
+func deliveryClaimed(ctx context.Context, info *connectv2.CallInfo) bool {
+	owner, _ := ctx.Value(deliveryOwner{}).(*connectv2.CallInfo)
+	return owner != nil && owner == info
 }
 
 // deliverMetadata writes a v1 error's metadata onto the v2 call, where the
@@ -121,25 +200,23 @@ func interceptV2(next connectv2.ServerFunc) connectv2.ServerFunc {
 // two places, so the trailer is the right home for everything but unary
 // Connect.
 //
-// A value already present is not added again, so a second InterceptorV2 in
-// the chain does not double the header.
-func deliverMetadata(ctx context.Context, spec connectv2.Spec, meta http.Header) {
+// Values are appended, as v1's mergeNonProtocolHeaders appends them: a
+// value the response already carries, or one the verdict repeats, is sent
+// as many times as v1 sends it. v2's transport drops protocol headers on
+// the way out, as v1's merge did. Callers deliver once per call
+// (claimDelivery), which is what keeps a second InterceptorV2 from doubling
+// a header.
+func deliverMetadata(info *connectv2.CallInfo, meta http.Header) {
 	if len(meta) == 0 {
 		return
 	}
-	info, ok := connectv2.CallInfoForServerContext(ctx)
-	if !ok {
-		return
-	}
 	dst := info.ResponseTrailer()
-	if spec.StreamType == connectv2.StreamTypeUnary && info.Protocol == connectv2.ProtocolNameConnect {
+	if info.Spec.StreamType == connectv2.StreamTypeUnary && info.Protocol == connectv2.ProtocolNameConnect {
 		dst = info.ResponseHeader()
 	}
 	for key, values := range meta {
 		for _, v := range values {
-			if !slices.Contains(dst.Values(key), v) {
-				dst.Add(key, v)
-			}
+			dst.Add(key, v)
 		}
 	}
 }

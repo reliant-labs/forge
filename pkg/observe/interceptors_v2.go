@@ -43,6 +43,18 @@ func callInfoV2(ctx context.Context) *connectv2.CallInfo {
 	return &connectv2.CallInfo{}
 }
 
+// errorMetadataV2 is where a failed unary call's metadata goes so that it
+// reaches the wire where v1's *connect.Error.Meta did: the Connect protocol
+// merges an error's metadata into the response headers, gRPC and gRPC-Web
+// write it as trailers (the same rule svcerr.InterceptorV2 delivers error
+// metadata by).
+func errorMetadataV2(info *connectv2.CallInfo) *connectv2.Header {
+	if info.Protocol == connectv2.ProtocolNameConnect {
+		return info.ResponseHeader()
+	}
+	return info.ResponseTrailer()
+}
+
 // isUnaryV2 reports whether spec takes v1's unary path.
 func isUnaryV2(spec connectv2.Spec) bool { return spec.StreamType == connectv2.StreamTypeUnary }
 
@@ -211,8 +223,12 @@ func RequestIDInterceptorV2() connectv2.ServerInterceptor {
 // TraceResponseInterceptorV2 is TraceResponseInterceptor for a connect-go v2
 // server: the traceresponse header names the server span on a successful
 // unary response, on a failed one, and on every stream's response headers.
-// A v2 error carries no metadata of its own; a failed call's headers are its
-// CallInfo's, which go out with the error, so the header is set there.
+//
+// A failed unary call carries it where v1 put it. v1 set it on the
+// *connect.Error's metadata, which the Connect protocol sends as response
+// headers and gRPC and gRPC-Web send as trailers. A v2 error carries no
+// metadata of its own, so the value goes on the CallInfo instead: its
+// response headers for Connect, its trailers for every other protocol.
 func TraceResponseInterceptorV2() connectv2.ServerInterceptor {
 	return func(next connectv2.ServerFunc) connectv2.ServerFunc {
 		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
@@ -227,7 +243,7 @@ func TraceResponseInterceptorV2() connectv2.ServerInterceptor {
 			}
 			err := next(ctx, spec, beforeFirstSend(stream, func() { info.ResponseHeader().Set(TraceResponseHeader, v) }))
 			if err != nil {
-				info.ResponseHeader().Set(TraceResponseHeader, v)
+				errorMetadataV2(info).Set(TraceResponseHeader, v)
 			}
 			return err
 		}

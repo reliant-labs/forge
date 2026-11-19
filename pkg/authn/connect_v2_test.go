@@ -30,6 +30,14 @@ type echoHandler func(ctx context.Context) (string, error)
 // behind ints and returns a client for it.
 func serveV2(t *testing.T, h echoHandler, ints ...connectv2.ServerInterceptor) *connectv2.Client {
 	t.Helper()
+	hs := httptest.NewServer(muxV2(h, ints...))
+	t.Cleanup(hs.Close)
+	return connectv2.NewClient(connecthttp.NewTransport(hs.Client(), hs.URL))
+}
+
+// muxV2 is a connect-go v2 server's mux: a unary Echo and a server-streaming
+// Watch, both answering with h, behind ints.
+func muxV2(h echoHandler, ints ...connectv2.ServerInterceptor) *http.ServeMux {
 	serve := func(ctx context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
 		var req wrapperspb.StringValue
 		if err := stream.Receive(&req); err != nil {
@@ -48,9 +56,7 @@ func serveV2(t *testing.T, h echoHandler, ints ...connectv2.ServerInterceptor) *
 	)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, srv)
-	hs := httptest.NewServer(mux)
-	t.Cleanup(hs.Close)
-	return connectv2.NewClient(connecthttp.NewTransport(hs.Client(), hs.URL))
+	return mux
 }
 
 // callV2 calls Echo, or Watch when stream is set, with headers.
@@ -105,139 +111,12 @@ func callV1(t *testing.T, h echoHandler, ic connect.Interceptor, headers map[str
 	return res.Msg.GetValue(), nil
 }
 
-// assertSameWireError fails unless the v1 and v2 calls failed with the same
-// code and the same message, and that code is want.
-func assertSameWireError(t *testing.T, errV1, errV2 error, want connect.Code) {
-	t.Helper()
-	e1, ok := errors.AsType[*connect.Error](errV1)
-	if !ok {
-		t.Fatalf("v1 call: %v, want a connect error", errV1)
-	}
-	e2, ok := errors.AsType[*connectv2.Error](errV2)
-	if !ok {
-		t.Fatalf("v2 call: %v, want a connect error", errV2)
-	}
-	if e1.Code() != want || uint32(e2.Code()) != uint32(e1.Code()) {
-		t.Errorf("codes v1 %v / v2 %v, want both %v", e1.Code(), e2.Code(), want)
-	}
-	if e2.Message() != e1.Message() {
-		t.Errorf("messages differ on the wire:\n  v1 %q\n  v2 %q", e1.Message(), e2.Message())
-	}
-}
-
 func whoAmI(ctx context.Context) (string, error) {
 	c, err := GetUser(ctx)
 	if err != nil {
 		return "", err
 	}
 	return c.UserID, nil
-}
-
-// Every rejection the v1 interceptor sends, the v2 interceptor sends with
-// the same code and message — including the policy hooks' remaps.
-func TestNewInterceptorV2_WireParityWithV1(t *testing.T) {
-	revoked := errors.New("account revoked")
-	validate := func(tok string) (*auth.Claims, error) {
-		switch tok {
-		case "good":
-			return &auth.Claims{UserID: "u1"}, nil
-		case "revoked":
-			return nil, revoked
-		}
-		return nil, errors.New("signature invalid")
-	}
-	base := Policy{ValidatorConfigured: true, Validate: validate}
-
-	for name, tc := range map[string]struct {
-		policy  func(Policy) Policy
-		headers map[string]string
-		want    connect.Code
-	}{
-		"missing header": {policy: func(p Policy) Policy { return p }, want: connect.CodeUnauthenticated},
-		"malformed":      {policy: func(p Policy) Policy { return p }, headers: map[string]string{"Authorization": "Token x"}, want: connect.CodeUnauthenticated},
-		"invalid token":  {policy: func(p Policy) Policy { return p }, headers: map[string]string{"Authorization": "Bearer nope"}, want: connect.CodeUnauthenticated},
-		"MapError remap": {
-			policy: func(p Policy) Policy {
-				p.MapError = func(err error, fb *connect.Error) *connect.Error {
-					if errors.Is(err, revoked) {
-						return connect.NewError(connect.CodePermissionDenied, errors.New("account revoked"))
-					}
-					return nil
-				}
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer revoked"}, want: connect.CodePermissionDenied,
-		},
-		"MapErrorV2 remap": {
-			policy: func(p Policy) Policy {
-				p.MapErrorV2 = func(err error, fb *connectv2.Error) *connectv2.Error {
-					if errors.Is(err, revoked) {
-						return connectv2.NewError(connectv2.CodePermissionDenied, "account revoked").WithCause(fb)
-					}
-					return nil
-				}
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer revoked"}, want: connect.CodePermissionDenied,
-		},
-		"MapErrorV2 keeps fallback": {
-			policy: func(p Policy) Policy {
-				p.MapErrorV2 = func(error, *connectv2.Error) *connectv2.Error { return nil }
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer nope"}, want: connect.CodeUnauthenticated,
-		},
-		"Enrich plain error": {
-			policy: func(p Policy) Policy {
-				p.Enrich = func(context.Context, *auth.Claims) (*auth.Claims, error) { return nil, errors.New("db down") }
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer good"}, want: connect.CodeUnauthenticated,
-		},
-		"Enrich v1 connect error": {
-			policy: func(p Policy) Policy {
-				p.Enrich = func(context.Context, *auth.Claims) (*auth.Claims, error) {
-					return nil, connect.NewError(connect.CodePermissionDenied, errors.New("suspended"))
-				}
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer good"}, want: connect.CodePermissionDenied,
-		},
-		"Enrich v2 connect error": {
-			policy: func(p Policy) Policy {
-				p.Enrich = func(context.Context, *auth.Claims) (*auth.Claims, error) {
-					return nil, connectv2.NewError(connectv2.CodePermissionDenied, "suspended")
-				}
-				return p
-			},
-			headers: map[string]string{"Authorization": "Bearer good"}, want: connect.CodePermissionDenied,
-		},
-		"no principal in handler": {
-			policy:  func(p Policy) Policy { p.AnonymousOK = true; return p },
-			headers: nil, want: connect.CodeUnauthenticated,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			p := tc.policy(base)
-			ic1, err := NewInterceptor(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ic2, err := NewInterceptorV2(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, errV1 := callV1(t, whoAmI, ic1, tc.headers)
-			_, errV2 := callV2(t, serveV2(t, func(ctx context.Context) (string, error) {
-				c, err := GetUserV2(ctx)
-				if err != nil {
-					return "", err
-				}
-				return c.UserID, nil
-			}, ic2), false, tc.headers)
-			assertSameWireError(t, errV1, errV2, tc.want)
-		})
-	}
 }
 
 func TestNewInterceptorV2_AdmitsAndStashesClaims(t *testing.T) {
@@ -412,7 +291,7 @@ func TestErrorConversionKeepsTheOutermostVerdict(t *testing.T) {
 	if got := errorToV1(outer); connect.CodeOf(got) != connect.CodePermissionDenied {
 		t.Errorf("errorToV1 took the wrapped v1 cause's code: %v", got)
 	}
-	if got := errorToV2(outer); got != error(outer) {
+	if got := errorToV2(context.Background(), outer); got != error(outer) {
 		t.Errorf("errorToV2 must keep a v2 error as is, got %v", got)
 	}
 	plain := errors.New("x")

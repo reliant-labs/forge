@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"connectrpc.com/connect"
 	connectv2 "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	connectv2proto "connectrpc.com/connect/v2/connectproto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -28,10 +30,28 @@ import (
 type parityCase struct {
 	name   string
 	v1, v2 func() error
+	// preset is response metadata already on the HTTP response when the RPC
+	// runs — what an HTTP middleware in front of the server writes. It is
+	// the same for both majors; error metadata is merged after it.
+	preset http.Header
+	// streamTrailer is response trailer metadata the streaming handler sets
+	// (each major its own way) before it fails; error metadata on a stream
+	// is merged into the same end-of-stream metadata after it.
+	streamTrailer http.Header
 }
 
 func sameError(name string, err func() error) parityCase {
 	return parityCase{name: name, v1: err, v2: err}
+}
+
+// repeated is a v1 *connect.Error a handler built with a metadata value
+// repeated: v1 sends every value, in order, so v2 must too.
+func repeated() error {
+	ce := connect.NewError(connect.CodePermissionDenied, errors.New("no"))
+	ce.Meta().Add("X-Value", "same")
+	ce.Meta().Add("X-Value", "same")
+	ce.Meta().Add("X-Value", "other")
+	return ce
 }
 
 func parityCases(t *testing.T) []parityCase {
@@ -52,6 +72,37 @@ func parityCases(t *testing.T) []parityCase {
 	remoteV2 := func() *connectv2.Error {
 		return connectv2.NewError(connectv2.CodeNotFound, "upstream says no").WithDetail(detailV2).WithRemote()
 	}
+	// A real upstream: the error a handler gets back from calling another
+	// Connect service, on each major — with the upstream's response
+	// metadata on it, which forwarding must not pass on.
+	upstreamV1 := httptest.NewServer(muxV1(func() error {
+		ce := connect.NewError(connect.CodeNotFound, errors.New("upstream says no"))
+		ce.AddDetail(detailV1)
+		ce.Meta().Set("X-Upstream", "yes")
+		return ce
+	}))
+	t.Cleanup(upstreamV1.Close)
+	upstreamV2 := httptest.NewServer(muxV2(func() error {
+		return svcerr.WithMetadata(connectv2.NewError(connectv2.CodeNotFound, "upstream says no").WithDetail(detailV2), "x-upstream", "yes")
+	}, svcerr.InterceptorV2()))
+	t.Cleanup(upstreamV2.Close)
+	callUpstreamV1 := func() error {
+		_, err := connect.NewClient[emptypb.Empty, emptypb.Empty](upstreamV1.Client(), upstreamV1.URL+unaryProcedure).
+			CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+		if !connect.IsWireError(err) {
+			t.Errorf("v1 upstream returned %v, want a wire error", err)
+		}
+		return err
+	}
+	callUpstreamV2 := func() error {
+		err := connectv2.NewClient(connecthttp.NewTransport(upstreamV2.Client(), upstreamV2.URL)).
+			CallUnary(context.Background(), unarySpecV2, &emptypb.Empty{}, &emptypb.Empty{})
+		if e, ok := errors.AsType[*connectv2.Error](err); !ok || !e.IsRemote() {
+			t.Errorf("v2 upstream returned %v, want a remote error", err)
+		}
+		return err
+	}
+	same := http.Header{"X-Value": {"same"}}
 	return []parityCase{
 		sameError("kind", func() error { return svcerr.PermissionDenied("admin only") }),
 		sameError("kind with reason and metadata", func() error {
@@ -85,35 +136,159 @@ func parityCases(t *testing.T) []parityCase {
 			v1:   func() error { return svcerr.WithReason(remoteV1(), "ignored_on_remote") },
 			v2:   func() error { return svcerr.WithReason(remoteV2(), "ignored_on_remote") },
 		},
+		{
+			name: "remote error from a real upstream call",
+			v1:   callUpstreamV1,
+			v2:   callUpstreamV2,
+		},
+		{
+			name: "wrapped remote error from a real upstream call",
+			v1:   func() error { return fmt.Errorf("inventory: %w", callUpstreamV1()) },
+			v2:   func() error { return fmt.Errorf("inventory: %w", callUpstreamV2()) },
+		},
+		sameError("repeated metadata values", repeated),
+		{
+			name:   "metadata beside the same value already on the response",
+			v1:     repeated,
+			v2:     repeated,
+			preset: same,
+		},
+		{
+			name:   "reason beside a reason already on the response",
+			v1:     func() error { return svcerr.WithReason(svcerr.NotFound("note"), "note_missing") },
+			v2:     func() error { return svcerr.WithReason(svcerr.NotFound("note"), "note_missing") },
+			preset: http.Header{svcerr.ReasonHeader: {"from_the_edge"}},
+		},
+		{
+			name:          "metadata beside the same value in the stream's trailers",
+			v1:            repeated,
+			v2:            repeated,
+			streamTrailer: same,
+		},
 	}
 }
 
-// wireResponse is what a client receives, minus what legitimately varies
-// between two responses (the Date header).
-type wireResponse struct {
-	status int
-	header http.Header
-	body   []byte
+// withPreset writes preset onto every response before h runs.
+func withPreset(h http.Handler, preset http.Header) http.Handler {
+	if len(preset) == 0 {
+		return h
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, vs := range preset {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
-func post(t *testing.T, url, contentType string, body []byte) wireResponse {
-	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+// parityServerV1 is the reference: tc's handler failure on connect-go v1
+// behind svcerr.Interceptor. With reject set, an interceptor in front of the
+// handler fails the call with svcerr.Wrap(tc.v1()) instead, never calling
+// it — what a v1 auth interceptor does.
+func parityServerV1(tc parityCase, reject bool) http.Handler {
+	ics := []connect.Interceptor{svcerr.Interceptor()}
+	if reject {
+		ics = append([]connect.Interceptor{rejectingV1{tc.v1}}, ics...)
 	}
-	req.Header.Set("Content-Type", contentType)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	opts := connect.WithInterceptors(ics...)
+	mux := http.NewServeMux()
+	mux.Handle(unaryProcedure, connect.NewUnaryHandler(unaryProcedure,
+		func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return nil, tc.v1()
+		}, opts))
+	mux.Handle(streamProcedure, connect.NewServerStreamHandler(streamProcedure,
+		func(_ context.Context, _ *connect.Request[emptypb.Empty], stream *connect.ServerStream[emptypb.Empty]) error {
+			for k, vs := range tc.streamTrailer {
+				for _, v := range vs {
+					stream.ResponseTrailer().Add(k, v)
+				}
+			}
+			if err := stream.Send(&emptypb.Empty{}); err != nil {
+				return err
+			}
+			return tc.v1()
+		}, opts))
+	return withPreset(mux, tc.preset)
+}
+
+type rejectingV1 struct{ err func() error }
+
+func (r rejectingV1) WrapUnary(connect.UnaryFunc) connect.UnaryFunc {
+	return func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+		return nil, svcerr.Wrap(r.err())
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func (r rejectingV1) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (r rejectingV1) WrapStreamingHandler(connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(context.Context, connect.StreamingHandlerConn) error { return svcerr.Wrap(r.err()) }
+}
+
+// rejectingV2 fails every call with svcerr.RejectV2 without calling next.
+func rejectingV2(err func() error) connectv2.ServerInterceptor {
+	return func(connectv2.ServerFunc) connectv2.ServerFunc {
+		return func(ctx context.Context, _ connectv2.Spec, _ connectv2.ServerStream) error {
+			return svcerr.RejectV2(ctx, err())
+		}
 	}
-	resp.Header.Del("Date")
-	return wireResponse{status: resp.StatusCode, header: resp.Header, body: data}
+}
+
+// parityServerV2 is tc's handler failure on connect-go v2 behind
+// interceptors.
+func parityServerV2(tc parityCase, interceptors ...connectv2.ServerInterceptor) http.Handler {
+	server := connectv2.NewServer(interceptors...)
+	server.Register(
+		connectv2.Method{Spec: unarySpecV2, Handler: func(_ context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
+			var req emptypb.Empty
+			if err := stream.Receive(&req); err != nil {
+				return err
+			}
+			return tc.v2()
+		}},
+		connectv2.Method{Spec: streamSpecV2, Handler: func(ctx context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
+			var req emptypb.Empty
+			if err := stream.Receive(&req); err != nil {
+				return err
+			}
+			if info, ok := connectv2.CallInfoForServerContext(ctx); ok {
+				for k, vs := range tc.streamTrailer {
+					for _, v := range vs {
+						info.ResponseTrailer().Add(k, v)
+					}
+				}
+			}
+			if err := stream.Send(&emptypb.Empty{}); err != nil {
+				return err
+			}
+			return tc.v2()
+		}},
+	)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	return withPreset(mux, tc.preset)
+}
+
+// passThroughV2 is an unrelated interceptor sitting between two copies of
+// svcerr.InterceptorV2.
+func passThroughV2(next connectv2.ServerFunc) connectv2.ServerFunc { return next }
+
+// wireExchange is what a client reads off the wire, minus what varies
+// between two responses whoever serves them (Date).
+type wireExchange struct {
+	status  int
+	header  http.Header
+	trailer http.Header
+	body    []byte
+}
+
+type wireProtocol struct {
+	name, procedure, contentType string
+	body                         []byte
 }
 
 func envelope(payload []byte) []byte {
@@ -122,7 +297,51 @@ func envelope(payload []byte) []byte {
 	return append(out, payload...)
 }
 
-func diffHeaders(a, b http.Header) []string {
+// wireProtocols are the ways an old client calls the two procedures. The
+// gRPC ones read the HTTP/2 trailers on their own, so metadata that moved
+// between headers and trailers shows up as a difference.
+var wireProtocols = []wireProtocol{
+	{"connect unary", unaryProcedure, "application/json", []byte("{}")},
+	{"connect server stream", streamProcedure, "application/connect+json", envelope([]byte("{}"))},
+	{"grpc unary", unaryProcedure, "application/grpc", envelope(nil)},
+	{"grpc server stream", streamProcedure, "application/grpc", envelope(nil)},
+	{"grpc-web unary", unaryProcedure, "application/grpc-web+proto", envelope(nil)},
+	{"grpc-web server stream", streamProcedure, "application/grpc-web+proto", envelope(nil)},
+}
+
+// h2Server serves h over TLS with HTTP/2, which gRPC needs.
+func h2Server(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(h)
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func rawCall(t *testing.T, srv *httptest.Server, p wireProtocol) wireExchange {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+p.procedure, bytes.NewReader(p.body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", p.contentType)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Header.Del("Date")
+	return wireExchange{status: resp.StatusCode, header: resp.Header, trailer: resp.Trailer, body: body}
+}
+
+// diffMetadata lists every key whose values — order and multiplicity
+// included — differ between a and b.
+func diffMetadata(what string, a, b http.Header) []string {
 	var diffs []string
 	keys := map[string]bool{}
 	for k := range a {
@@ -133,107 +352,99 @@ func diffHeaders(a, b http.Header) []string {
 	}
 	for k := range keys {
 		if !slices.Equal(a.Values(k), b.Values(k)) {
-			diffs = append(diffs, k+": v1="+strings.Join(a.Values(k), ",")+" v2="+strings.Join(b.Values(k), ","))
+			diffs = append(diffs, fmt.Sprintf("%s %s: v1 %q, v2 %q", what, k, a.Values(k), b.Values(k)))
 		}
 	}
 	slices.Sort(diffs)
 	return diffs
 }
 
+// assertSameExchange fails unless both exchanges are identical: status,
+// headers and trailers (each compared on its own) and body.
+func assertSameExchange(t *testing.T, v1, v2 wireExchange) {
+	t.Helper()
+	var diffs []string
+	if v1.status != v2.status {
+		diffs = append(diffs, fmt.Sprintf("status: v1 %d, v2 %d", v1.status, v2.status))
+	}
+	diffs = append(diffs, diffMetadata("header", v1.header, v2.header)...)
+	diffs = append(diffs, diffMetadata("trailer", v1.trailer, v2.trailer)...)
+	if !bytes.Equal(v1.body, v2.body) {
+		diffs = append(diffs, fmt.Sprintf("body: v1 %q, v2 %q", v1.body, v2.body))
+	}
+	if len(diffs) > 0 {
+		t.Errorf("the v2 wire differs from v1's:\n  %s", strings.Join(diffs, "\n  "))
+	}
+}
+
 // TestWireParity_InterceptorV1AndV2 is the proof that moving a server from
 // connect-go v1 + svcerr.Interceptor to connect-go v2 + svcerr.InterceptorV2
 // changes nothing a client receives: for each handler failure, the raw
-// Connect unary response (HTTP status, headers, JSON error body), the raw
-// Connect server-streaming response (end-of-stream message with its
-// metadata), and the gRPC status, message, details and metadata are
-// identical.
+// response — HTTP status, response headers, response trailers and body —
+// is identical over Connect unary and streaming, gRPC and gRPC-Web, with
+// InterceptorV2 installed once or twice (another interceptor between the
+// copies). It also proves svcerr.RejectV2: an interceptor that rejects with
+// it, alone or inside an InterceptorV2, sends what a v1 interceptor
+// rejecting with the same error sends.
 func TestWireParity_InterceptorV1AndV2(t *testing.T) {
 	for _, tc := range parityCases(t) {
 		t.Run(tc.name, func(t *testing.T) {
-			v1 := httptest.NewServer(muxV1(tc.v1))
-			t.Cleanup(v1.Close)
-			v2 := httptest.NewServer(muxV2(tc.v2, svcerr.InterceptorV2()))
-			t.Cleanup(v2.Close)
-
-			t.Run("connect unary", func(t *testing.T) {
-				a := post(t, v1.URL+unaryProcedure, "application/json", []byte("{}"))
-				b := post(t, v2.URL+unaryProcedure, "application/json", []byte("{}"))
-				if a.status != b.status {
-					t.Errorf("HTTP status: v1 %d, v2 %d", a.status, b.status)
+			v1 := h2Server(t, parityServerV1(tc, false))
+			v1Reject := h2Server(t, parityServerV1(tc, true))
+			variants := []struct {
+				name string
+				ref  *httptest.Server
+				srv  *httptest.Server
+			}{
+				{"interceptor", v1, h2Server(t, parityServerV2(tc, svcerr.InterceptorV2()))},
+				{"interceptor twice", v1, h2Server(t, parityServerV2(tc,
+					svcerr.WithInterceptorV2([]connectv2.ServerInterceptor{svcerr.InterceptorV2(), passThroughV2})...))},
+			}
+			if tc.streamTrailer == nil {
+				// A rejection never reaches the handler that sets them.
+				variants = append(variants,
+					struct {
+						name string
+						ref  *httptest.Server
+						srv  *httptest.Server
+					}{"RejectV2", v1Reject, h2Server(t, parityServerV2(tc, rejectingV2(tc.v2)))},
+					struct {
+						name string
+						ref  *httptest.Server
+						srv  *httptest.Server
+					}{"RejectV2 inside InterceptorV2", v1Reject, h2Server(t, parityServerV2(tc,
+						svcerr.InterceptorV2(), rejectingV2(tc.v2), svcerr.InterceptorV2()))},
+				)
+			}
+			for _, variant := range variants {
+				for _, p := range wireProtocols {
+					t.Run(variant.name+"/"+p.name, func(t *testing.T) {
+						a := rawCall(t, variant.ref, p)
+						if p.procedure == unaryProcedure && p.contentType == "application/json" && a.status == http.StatusOK {
+							t.Fatalf("v1 reference did not fail: %q", a.body)
+						}
+						assertSameExchange(t, a, rawCall(t, variant.srv, p))
+					})
 				}
-				if !bytes.Equal(a.body, b.body) {
-					t.Errorf("error body differs:\n v1 %s\n v2 %s", a.body, b.body)
-				}
-				if d := diffHeaders(a.header, b.header); len(d) > 0 {
-					t.Errorf("headers differ:\n %s", strings.Join(d, "\n "))
-				}
-				if a.status == http.StatusOK {
-					t.Fatalf("handler failure answered 200: %s", a.body)
-				}
-			})
-
-			t.Run("connect server stream", func(t *testing.T) {
-				req := envelope([]byte("{}"))
-				a := post(t, v1.URL+streamProcedure, "application/connect+json", req)
-				b := post(t, v2.URL+streamProcedure, "application/connect+json", req)
-				if a.status != b.status {
-					t.Errorf("HTTP status: v1 %d, v2 %d", a.status, b.status)
-				}
-				if !bytes.Equal(a.body, b.body) {
-					t.Errorf("stream body differs:\n v1 %q\n v2 %q", a.body, b.body)
-				}
-				if d := diffHeaders(a.header, b.header); len(d) > 0 {
-					t.Errorf("headers differ:\n %s", strings.Join(d, "\n "))
-				}
-			})
-
-			t.Run("grpc", func(t *testing.T) {
-				a := grpcCall(t, muxV1(tc.v1))
-				b := grpcCall(t, muxV2(tc.v2, svcerr.InterceptorV2()))
-				if a.code != b.code || a.message != b.message {
-					t.Errorf("status: v1 %v %q, v2 %v %q", a.code, a.message, b.code, b.message)
-				}
-				if !slices.Equal(a.details, b.details) {
-					t.Errorf("details: v1 %q, v2 %q", a.details, b.details)
-				}
-				if d := diffHeaders(a.meta, b.meta); len(d) > 0 {
-					t.Errorf("metadata differs:\n %s", strings.Join(d, "\n "))
-				}
-			})
+			}
 		})
 	}
 }
 
-type grpcResult struct {
-	code    connect.Code
-	message string
-	details []string
-	meta    http.Header
-}
-
-// grpcCall calls the unary procedure over gRPC (HTTP/2) with a v1 client —
-// what an old daemon or SDK is — and reports the status it read. The v1
-// client is the reader here on purpose: what must not change is what EXISTING
-// clients see.
-func grpcCall(t *testing.T, h http.Handler) grpcResult {
-	t.Helper()
-	srv := httptest.NewUnstartedServer(h)
-	srv.EnableHTTP2 = true
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	client := connect.NewClient[emptypb.Empty, emptypb.Empty](srv.Client(), srv.URL+unaryProcedure, connect.WithGRPC())
-	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
-	var ce *connect.Error
-	if !errors.As(err, &ce) {
-		t.Fatalf("gRPC call returned %T %v, want a *connect.Error", err, err)
+// The multiplicity the parity test compares is real: v1 sends a repeated
+// value twice and keeps a pre-set one beside it, so a v2 that collapsed
+// them could not agree with it.
+func TestWireParity_RepeatedMetadataIsSentAsV1SendsIt(t *testing.T) {
+	tc := parityCase{name: "repeated", v1: repeated, v2: repeated, preset: http.Header{"X-Value": {"same"}}}
+	want := []string{"same", "same", "same", "other"}
+	for name, srv := range map[string]http.Handler{
+		"v1":       parityServerV1(tc, false),
+		"v2":       parityServerV2(tc, svcerr.InterceptorV2()),
+		"v2 twice": parityServerV2(tc, svcerr.InterceptorV2(), svcerr.InterceptorV2()),
+	} {
+		got := rawCall(t, h2Server(t, srv), wireProtocols[0])
+		if v := got.header.Values("X-Value"); !slices.Equal(v, want) {
+			t.Errorf("%s: X-Value = %q, want %q", name, v, want)
+		}
 	}
-	out := grpcResult{code: ce.Code(), message: ce.Message(), meta: ce.Meta().Clone()}
-	for _, d := range ce.Details() {
-		out.details = append(out.details, d.Type()+"="+string(d.Bytes()))
-	}
-	// Transport framing that differs per response, not per server.
-	for _, k := range []string{"Date", "Content-Length"} {
-		out.meta.Del(k)
-	}
-	return out
 }

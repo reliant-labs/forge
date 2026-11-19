@@ -135,101 +135,95 @@ func TestCodeSourceWireOmitsWhatIsUnknown(t *testing.T) {
 	}
 }
 
-// A cut sends the release's commit, never whatever the checkout is at now.
-func TestCodeSourceForReleaseSendsOnlyTheReleasesCommit(t *testing.T) {
+// The source of a release — cut, recorded or deployed — is the release's own
+// tuple: its recorded repository and commit, never the checkout's HEAD, and
+// the checkout's directory and chat only when the release's provenance names
+// a shareable repository that is the checkout's own. A release whose
+// provenance does not establish that sends its commit alone (or nothing), so
+// a release recorded elsewhere is never attributed to this checkout.
+func TestCodeSourceForReleaseIsTheReleasesTuple(t *testing.T) {
 	t.Parallel()
-	checkout := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA}
-
-	got := checkout.forRelease(release.Release{Git: release.Git{Commit: sourceCommitB}})
-	if got.Commit != sourceCommitB || got.Subpath != "apps/web" || got.Remote != "github.com/acme/shop" {
-		t.Errorf("recorded commit: %+v", got)
+	clone := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+	elsewhere := codeSource{Remote: "github.com/acme/ops", Subpath: "deploy", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+	recorded := func(repo, commit string) release.Release {
+		return release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Repo: repo, Commit: commit}}
 	}
-	got = checkout.forRelease(release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Commit: sourceCommitB}})
-	if got.Commit != sourceCommitB {
-		t.Errorf("provenance commit should win: %+v", got)
-	}
-	// A captured HEAD and a release whose commit is unknown: the source's
-	// commit is unknown too, never the checkout's HEAD (false provenance
-	// for a `release record` from a checkout at another commit).
-	for name, r := range map[string]release.Release{
-		"no commit":                 {},
-		"invalid commit":            {Git: release.Git{Commit: "not-a-sha"}},
-		"short commit":              {Git: release.Git{Commit: "abc1234"}},
-		"invalid provenance commit": {Provenance: &release.Provenance{Commit: "zz"}},
-	} {
-		got := checkout.forRelease(r)
-		if got.Commit != "" {
-			t.Errorf("%s: commit = %q, want empty (never the checkout's HEAD)", name, got.Commit)
-		}
-		if got.Remote != "github.com/acme/shop" || got.Subpath != "apps/web" {
-			t.Errorf("%s: lost the repository: %+v", name, got)
-		}
-	}
-	// No checkout behind the ledger: the provenance's remote, still screened.
-	got = codeSource{}.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}})
-	if got.Remote != "github.com/acme/shop" || got.Commit != sourceCommitB {
-		t.Errorf("provenance fallback: %+v", got)
-	}
-	if got = (codeSource{}).forRelease(release.Release{Provenance: &release.Provenance{Repo: "/home/sean/shop"}}); got.Remote != "" {
-		t.Errorf("a path remote leaked: %+v", got)
-	}
-	// An old forge recorded a relative local remote canonicalized: it is
-	// not a repository, and the checkout's stands.
-	if got = checkout.forRelease(release.Release{Provenance: &release.Provenance{Repo: "sibling/repo"}}); got.Remote != "github.com/acme/shop" || got.Subpath != "apps/web" {
-		t.Errorf("a canonicalized local remote replaced the checkout's: %+v", got)
-	}
-	// A release whose provenance names another repository: one tuple, that
-	// repository's, without this checkout's directory or chat.
-	other := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
-	got = other.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/fork", Commit: sourceCommitB}})
-	if want := (codeSource{Remote: "github.com/acme/fork", Commit: sourceCommitB}); got != want {
-		t.Errorf("another repository's release: %+v, want %+v", got, want)
-	}
-	got = other.forRelease(release.Release{Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}})
-	if want := (codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"}); got != want {
-		t.Errorf("the checkout's own repository: %+v, want %+v", got, want)
-	}
-}
-
-// A deploy of an already-cut release sends that release's repository and
-// commit — never the deploying checkout's remote beside them — and the
-// checkout's directory and chat only when it is a clone of that repository.
-func TestCodeSourceForShippedIsTheReleasesTuple(t *testing.T) {
-	t.Parallel()
-	shipped := release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}}
 	cases := map[string]struct {
 		checkout codeSource
 		r        release.Release
 		want     codeSource
 	}{
 		"a clone of the release's repository at another HEAD": {
-			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
-			r:        shipped,
-			want:     codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"},
+			checkout: clone, r: recorded("github.com/acme/shop", sourceCommitB),
+			want: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"},
+		},
+		"the release's repository, recorded as a url": {
+			checkout: clone, r: recorded("https://github.com/acme/shop.git", sourceCommitB),
+			want: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitB, ReliantProjectID: "proj-1"},
 		},
 		"a checkout of another repository": {
-			checkout: codeSource{Remote: "github.com/acme/ops", Subpath: "deploy", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
-			r:        shipped,
-			want:     codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitB},
-		},
-		"no checkout": {
-			r:    shipped,
+			checkout: elsewhere, r: recorded("github.com/acme/shop", sourceCommitB),
 			want: codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitB},
 		},
-		"a release that recorded no repository": {
-			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"},
-			r:        release.Release{Git: release.Git{Commit: sourceCommitB}},
-			want:     codeSource{Commit: sourceCommitB},
+		"a fork's release from the upstream's checkout": {
+			checkout: clone, r: recorded("github.com/acme/fork", sourceCommitB),
+			want: codeSource{Remote: "github.com/acme/fork", Commit: sourceCommitB},
 		},
-		"a release that recorded a local remote": {
-			checkout: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web"},
-			r:        release.Release{Provenance: &release.Provenance{Repo: "sibling/repo", Commit: sourceCommitB}},
-			want:     codeSource{Commit: sourceCommitB},
+		"no checkout": {
+			r:    recorded("github.com/acme/shop", sourceCommitB),
+			want: codeSource{Remote: "github.com/acme/shop", Commit: sourceCommitB},
+		},
+		// Provenance that does not establish the release's repository:
+		// the commit alone, whatever the checkout is.
+		"no provenance (release record)": {
+			checkout: clone, r: release.Release{Git: release.Git{Commit: sourceCommitB}},
+			want: codeSource{Commit: sourceCommitB},
+		},
+		"provenance with an empty repository": {
+			checkout: clone, r: recorded("", sourceCommitB),
+			want: codeSource{Commit: sourceCommitB},
+		},
+		"provenance with an invalid repository": {
+			checkout: clone, r: recorded("github.com/acme/shop?token=abc", sourceCommitB),
+			want: codeSource{Commit: sourceCommitB},
+		},
+		"provenance with an absolute local path": {
+			checkout: clone, r: recorded("/home/sean/src/shop", sourceCommitB),
+			want: codeSource{Commit: sourceCommitB},
+		},
+		"provenance with a canonicalized relative local remote": {
+			checkout: clone, r: recorded("sibling/repo", sourceCommitB),
+			want: codeSource{Commit: sourceCommitB},
+		},
+		"provenance with a file url": {
+			checkout: clone, r: recorded("file:///home/sean/src/shop", sourceCommitB),
+			want: codeSource{Commit: sourceCommitB},
+		},
+		// Nothing known: nothing sent, and never the checkout's HEAD.
+		"no provenance and no commit": {
+			checkout: clone, r: release.Release{},
+			want: codeSource{},
+		},
+		"the release's repository but an invalid commit": {
+			checkout: clone, r: release.Release{Git: release.Git{Commit: "abc1234"}, Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: "zz"}},
+			want: codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", ReliantProjectID: "proj-1"},
 		},
 	}
 	for name, tc := range cases {
-		if got := tc.checkout.forShipped(tc.r); got != tc.want {
+		if got := tc.checkout.forRelease(tc.r); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", name, got, tc.want)
+		}
+	}
+	// The provenance commit wins over the legacy git record.
+	if got := (codeSource{}).forRelease(release.Release{Git: release.Git{Commit: sourceCommitA}, Provenance: &release.Provenance{Commit: sourceCommitB}}); got.Commit != sourceCommitB {
+		t.Errorf("provenance commit should win: %+v", got)
+	}
+	for name, r := range map[string]release.Release{
+		"invalid commit": {Git: release.Git{Commit: "not-a-sha"}},
+		"short commit":   {Git: release.Git{Commit: "abc1234"}},
+	} {
+		if got := clone.forRelease(r); got != (codeSource{}) {
+			t.Errorf("%s: %+v, want nothing (never the checkout's HEAD or repository)", name, got)
 		}
 	}
 }
@@ -239,19 +233,34 @@ func TestCodeSourceForShippedIsTheReleasesTuple(t *testing.T) {
 func TestCutSendsTheCodeSource(t *testing.T) {
 	t.Parallel()
 	src := codeSource{Remote: "github.com/acme/shop", Subpath: "apps/web", Commit: sourceCommitA, ReliantProjectID: "proj-1"}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
+	// A cut whose provenance names the checkout's repository: the whole
+	// tuple, with the release's commit.
 	legacy := &snapshotCaller{}
 	store := &hostedStore{client: legacy, project: "shop", source: fixedCodeSource(src)}
-	rec := release.Release{Version: "v1", Project: "shop", RecordOnly: true, Git: release.Git{Commit: sourceCommitB}, CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	if _, err := store.Cut(context.Background(), rec); err != nil {
+	cut := release.Release{Version: "v1", Project: "shop", RecordOnly: true, Git: release.Git{Commit: sourceCommitB}, CreatedAt: at,
+		Provenance: &release.Provenance{Repo: "github.com/acme/shop", Commit: sourceCommitB}}
+	if _, err := store.Cut(context.Background(), cut); err != nil {
 		t.Fatalf("legacy cut: %v", err)
 	}
 	want := map[string]any{"remote": "github.com/acme/shop", "subpath": "apps/web", "commit": sourceCommitB, "reliantProjectId": "proj-1"}
 	assertCodeSource(t, "legacy cut", legacy.cut, want)
 
+	// A recorded release (no provenance): nothing says this checkout's
+	// repository built it, so its commit alone.
+	recorded := &snapshotCaller{}
+	store = &hostedStore{client: recorded, project: "shop", source: fixedCodeSource(src)}
+	if _, err := store.Cut(context.Background(), release.Release{Version: "v2", Project: "shop", RecordOnly: true, Git: release.Git{Commit: sourceCommitB}, CreatedAt: at}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	assertCodeSource(t, "record", recorded.cut, map[string]any{"commit": sourceCommitB})
+
 	snap := &snapshotCaller{capable: true}
 	store = &hostedStore{client: snap, source: fixedCodeSource(src)}
-	if _, err := store.Cut(context.Background(), snapshotCatalogRelease(t)); err != nil {
+	catalog := snapshotCatalogRelease(t)
+	catalog.Provenance = &release.Provenance{Repo: "github.com/acme/shop"}
+	if _, err := store.Cut(context.Background(), catalog); err != nil {
 		t.Fatalf("snapshot cut: %v", err)
 	}
 	if snap.cut["snapshotRelease"] == nil {

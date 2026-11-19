@@ -39,7 +39,7 @@ package cli
 // ONE SOURCE IS ONE TUPLE. Remote, subpath and commit always describe the
 // same code: a deploy of a release cut elsewhere sends that release's
 // repository and commit, never the deploying checkout's remote beside the
-// release's commit (forShipped).
+// release's commit (forRelease).
 
 import (
 	"context"
@@ -87,42 +87,27 @@ func putNonEmptyAny(m map[string]any, key, value string) {
 	}
 }
 
-// forRelease is the source a cut of r sends: the release's own commit
-// (provenance, else `release record --commit` / CI's), and the checkout's
-// remote, else the one r's provenance recorded.
+// forRelease is the source of the release r — what a cut or record of r
+// sends, and what a deploy of an already-cut r sends: r's own repository and
+// commit, as r recorded them. It is the tuple of the release, not of the
+// checkout that happens to run the command, which may be another clone,
+// another branch, or another repository altogether.
+//
+// The checkout adds its directory and its chat ONLY when r's provenance names
+// a shareable repository and it is the checkout's own: then it is the same
+// app's code, and forge.yaml's directory in it is r's too. A release whose
+// provenance is absent, names no repository, or names one that is not
+// shareable (a local path) sends its commit alone, and nothing when it names
+// no commit either: pairing the checkout's remote, directory or chat with a
+// release nothing says this checkout built would be false evidence — a
+// `release record` in CI, or a release cut in another repository.
 //
 // NEVER THE CHECKOUT'S HEAD. A release names the commit it was built or
 // recorded from; a release that names none, or names an invalid one, has an
 // unknown commit, and sending the HEAD of whatever checkout ran the cut
 // would record false provenance — `release record` in CI runs from a
 // checkout that need not be at the recorded commit.
-//
-// ONE REPOSITORY PER SOURCE. A release whose provenance names a repository
-// other than the checkout's is sent as that repository, without the
-// checkout's directory or chat: they belong to another repository, and a
-// source is a tuple that must hold together.
 func (s codeSource) forRelease(r release.Release) codeSource {
-	s.Commit = releaseCommit(r)
-	if recorded := releaseRemote(r); recorded != "" && recorded != s.Remote {
-		if s.Remote != "" {
-			s.Subpath, s.ReliantProjectID = "", ""
-		}
-		s.Remote = recorded
-	}
-	return s
-}
-
-// forShipped is the source a deploy of the already-cut release r sends: r's
-// own repository and commit, as its ledger recorded them — the tuple of what
-// ships, not of the checkout that happens to run the deploy, which may be
-// another clone, another branch, or another repository altogether.
-//
-// The checkout adds its directory and its chat only when it is a checkout of
-// that same repository: then it is the same app's code, and forge.yaml's
-// directory in it is the release's too. A release that recorded no
-// shareable repository sends its commit alone; pairing it with the
-// checkout's remote would claim a repository nothing says built it.
-func (s codeSource) forShipped(r release.Release) codeSource {
 	out := codeSource{Remote: releaseRemote(r), Commit: releaseCommit(r)}
 	if out.Remote != "" && out.Remote == s.Remote {
 		out.Subpath, out.ReliantProjectID = s.Subpath, s.ReliantProjectID
@@ -134,7 +119,7 @@ func (s codeSource) forShipped(r release.Release) codeSource {
 // yet. The checkout's own source (HEAD included) only when the deploy ships
 // the checkout — no release named, no --from env — because then the release
 // it cuts is built from that HEAD. A deploy of an already-cut release sends
-// that release's tuple (forShipped). shipped is nil while that release is
+// that release's tuple (forRelease). shipped is nil while that release is
 // unknown — a --from deploy resolves it after the attempt opens, or the read
 // failed — and then nothing is known yet: the attempt sends no source rather
 // than a checkout's repository beside a release it did not build, and sends
@@ -146,7 +131,7 @@ func (s codeSource) forAttempt(shipsCheckout bool, shipped *release.Release) (co
 	if shipped == nil {
 		return codeSource{}, false
 	}
-	return s.forShipped(*shipped), true
+	return s.forRelease(*shipped), true
 }
 
 // releaseCommit is the commit r names: its provenance's, else its git

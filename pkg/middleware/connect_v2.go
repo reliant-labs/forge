@@ -2,6 +2,9 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"slices"
@@ -68,10 +71,19 @@ func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, si
 }
 
 // IdempotencyInterceptorV2 is [IdempotencyInterceptor] for connect-go v2:
-// a unary request carrying an Idempotency-Key header whose (procedure, key)
-// pair was answered within the TTL gets the cached answer without the
-// handler running again. Streaming calls pass through, as in v1. Returns nil
-// when opts.CacheSize <= 0.
+// a unary request carrying an Idempotency-Key header whose (caller,
+// procedure, key) triple was answered within the TTL gets the cached answer
+// without the handler running again. Streaming calls pass through, as in
+// v1. Returns nil when opts.CacheSize <= 0 or claimsFrom is nil.
+//
+// Unlike the v1 interceptor, which keys its cache by procedure and client
+// key alone, the v2 cache is scoped to the authenticated caller: claimsFrom
+// names the principal (claims.UserID) and its tenant (claims.OrgID), and
+// both are part of the key, so one caller can never be handed another's
+// answer by reusing their Idempotency-Key. A call with no identity —
+// claimsFrom reports none, or a claim with an empty UserID — is neither
+// cached nor replayed: the handler runs as if no key were sent. Put the
+// interceptor after authentication in the chain, so the claims are there.
 //
 // A v2 handler returns no response value — it sends its reply on the
 // stream — so the interceptor records what the handler sends, and with it
@@ -80,21 +92,41 @@ func AuditInterceptorWithSinkV2(logger *slog.Logger, claimsFrom ClaimsLookup, si
 // request's, such as its request id, and is never replayed over). A replay
 // re-applies that metadata and sends the recorded message, or returns the
 // recorded error.
-func IdempotencyInterceptorV2(opts IdempotencyOptions) connectv2.ServerInterceptor {
-	if opts.CacheSize <= 0 {
+func IdempotencyInterceptorV2(opts IdempotencyOptions, claimsFrom ClaimsLookup) connectv2.ServerInterceptor {
+	if opts.CacheSize <= 0 || claimsFrom == nil {
 		return nil
 	}
 	if opts.TTL <= 0 {
 		opts.TTL = time.Hour
 	}
-	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL}
+	i := &idempotencyInterceptorV2{cache: newLRUCache[*cachedRPCReply](opts.CacheSize), ttl: opts.TTL, claimsFrom: claimsFrom}
 	return i.wrap
 }
 
 type idempotencyInterceptorV2 struct {
-	mu    sync.Mutex
-	cache *lruCache[*cachedRPCReply]
-	ttl   time.Duration
+	mu         sync.Mutex
+	cache      *lruCache[*cachedRPCReply]
+	ttl        time.Duration
+	claimsFrom ClaimsLookup
+}
+
+// callerCacheKey is the cache key of one caller's (procedure, key) pair, or
+// "" when ctx carries no authenticated caller. Each part is length-prefixed
+// before hashing, so no choice of ids, procedure or client key can make two
+// different triples collide.
+func (i *idempotencyInterceptorV2) callerCacheKey(ctx context.Context, procedure, clientKey string) string {
+	claims, ok := i.claimsFrom(ctx)
+	if !ok || claims == nil || claims.UserID == "" {
+		return ""
+	}
+	h := sha256.New()
+	for _, part := range []string{claims.OrgID, claims.UserID, procedure, clientKey} {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
+		h.Write(n[:])
+		h.Write([]byte(part))
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // cachedRPCReply is one recorded v2 unary answer.
@@ -119,7 +151,10 @@ func (i *idempotencyInterceptorV2) wrap(next connectv2.ServerFunc) connectv2.Ser
 		if key == "" {
 			return next(ctx, spec, stream)
 		}
-		cacheKey := idempotencyCacheKey(spec.Procedure, key)
+		cacheKey := i.callerCacheKey(ctx, spec.Procedure, key)
+		if cacheKey == "" {
+			return next(ctx, spec, stream) // no caller to scope the answer to
+		}
 
 		i.mu.Lock()
 		if cached, ok := i.cache.get(cacheKey); ok && time.Now().Before(cached.expiresAt) {

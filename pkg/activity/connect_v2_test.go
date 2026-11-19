@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ type harnessV2 struct {
 	log    *bytes.Buffer
 }
 
-func newHarnessV2(t *testing.T, md protoreflect.MethodDescriptor, deps Deps, h handlerFunc) *harnessV2 {
+func newHarnessV2(t *testing.T, md protoreflect.MethodDescriptor, deps Deps, h handlerFunc, outer ...connectv2.ServerInterceptor) *harnessV2 {
 	t.Helper()
 	logs := &bytes.Buffer{}
 	if deps.Logger == nil {
@@ -64,7 +65,9 @@ func newHarnessV2(t *testing.T, md protoreflect.MethodDescriptor, deps Deps, h h
 			return next(ctx, spec, stream)
 		}
 	}
-	srv := connectv2.NewServer(claims, ic)
+	// outer interceptors run between the claims stash and the interceptor
+	// under test, where a chain's outer layers would.
+	srv := connectv2.NewServer(append(append([]connectv2.ServerInterceptor{claims}, outer...), ic)...)
 	srv.Register(connectv2.Method{Spec: spec, Handler: func(ctx context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
 		req := dynamicpb.NewMessage(md.Input())
 		if err := stream.Receive(req); err != nil {
@@ -190,34 +193,65 @@ func TestInterceptorV2_NoneAndUndeclaredPassThrough(t *testing.T) {
 
 // The response is held until the event is written, so a caller that has its
 // response can rely on the event existing — the v1 interceptor's ordering.
+// An outer interceptor marks the moment the response leaves for the client,
+// and the writer records whether that had already happened when it was
+// called: the order is observed directly, with no timing involved.
 func TestInterceptorV2_EventIsWrittenBeforeTheResponse(t *testing.T) {
-	w := &slowWriter{delay: 50 * time.Millisecond}
+	var sent atomic.Bool
+	w := &orderWriter{sent: &sent}
+	markSend := func(next connectv2.ServerFunc) connectv2.ServerFunc {
+		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+			return next(ctx, spec, &sendMarker{ServerStream: stream, sent: &sent})
+		}
+	}
 	md := fixtureRPC(t, fixtureMethod{name: "CreateWidget", in: "CreateWidgetRequest", out: "CreateWidgetResponse"})
 	h := newHarnessV2(t, md, Deps{Writer: w}, func(_ context.Context, req, resp *dynamicpb.Message) error {
 		wd := resp.Mutable(resp.Descriptor().Fields().ByName("widget")).Message()
 		wd.Set(wd.Descriptor().Fields().ByName("id"), protoreflect.ValueOfString("wid_1"))
 		wd.Set(wd.Descriptor().Fields().ByName("name"), req.Get(req.Descriptor().Fields().ByName("name")))
 		return nil
-	})
+	}, markSend)
 	if err := h.call(map[string]string{"name": "Gizmo"}, map[string]string{"X-Test-User": "sean"}); err != nil {
 		t.Fatal(err)
 	}
+	if !sent.Load() {
+		t.Fatal("the outer interceptor never saw the response leave")
+	}
+	if w.sentFirst.Load() {
+		t.Fatal("the response was sent before its event was written")
+	}
 	evs := w.got()
 	if len(evs) != 1 {
-		t.Fatalf("the call returned before its event was written (%d events)", len(evs))
+		t.Fatalf("wrote %d events, want 1", len(evs))
 	}
 	if evs[0].Verb != "create" || evs[0].Target != (Target{Kind: "widget", ID: "wid_1", Label: "Gizmo"}) {
 		t.Errorf("event = %+v; the response paths must be read from the message the handler sent", evs[0])
 	}
 }
 
-type slowWriter struct {
-	memWriter
-	delay time.Duration
+// sendMarker records that a response was sent on the stream it wraps.
+type sendMarker struct {
+	connectv2.ServerStream
+	sent *atomic.Bool
 }
 
-func (w *slowWriter) Write(ctx context.Context, ev Event) error {
-	time.Sleep(w.delay)
+func (s *sendMarker) Send(msg any) error {
+	s.sent.Store(true)
+	return s.ServerStream.Send(msg)
+}
+
+// orderWriter records whether the response had already been sent when an
+// event was written.
+type orderWriter struct {
+	memWriter
+	sent      *atomic.Bool
+	sentFirst atomic.Bool
+}
+
+func (w *orderWriter) Write(ctx context.Context, ev Event) error {
+	if w.sent.Load() {
+		w.sentFirst.Store(true)
+	}
 	return w.memWriter.Write(ctx, ev)
 }
 

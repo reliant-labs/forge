@@ -301,8 +301,11 @@ func TestErrorCode(t *testing.T) {
 }
 
 func TestIdempotencyInterceptorV2_Disabled(t *testing.T) {
-	if IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 0}) != nil || IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: -1}) != nil {
+	if IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 0}, rlClaimsFromContext) != nil || IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: -1}, rlClaimsFromContext) != nil {
 		t.Fatal("expected a nil interceptor when CacheSize <= 0")
+	}
+	if IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}, nil) != nil {
+		t.Fatal("expected a nil interceptor when there is no caller lookup")
 	}
 }
 
@@ -325,8 +328,8 @@ func TestIdempotencyInterceptorV2_ReplaysTheFirstAnswer(t *testing.T) {
 			return next(ctx, spec, stream)
 		}
 	}
-	c := serveV2(t, h, stampOuter, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}))
-	key := map[string]string{IdempotencyKeyHeader: "k1"}
+	c := serveV2(t, h, stampOuter, testContextV2, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}, rlClaimsFromContext))
+	key := map[string]string{IdempotencyKeyHeader: "k1", "X-Test-User": "alice"}
 
 	first := callV2(t, c, false, key)
 	second := callV2(t, c, false, key)
@@ -343,10 +346,10 @@ func TestIdempotencyInterceptorV2_ReplaysTheFirstAnswer(t *testing.T) {
 		t.Errorf("replay overwrote the current request's outer header: X-Outer %q, want call-2", second.header.Get("X-Outer"))
 	}
 
-	if r := callV2(t, c, false, map[string]string{IdempotencyKeyHeader: "k2"}); r.value != "answer-2" {
+	if r := callV2(t, c, false, map[string]string{IdempotencyKeyHeader: "k2", "X-Test-User": "alice"}); r.value != "answer-2" {
 		t.Errorf("a new key must run the handler, got %q", r.value)
 	}
-	if r := callV2(t, c, false, nil); r.value != "answer-3" {
+	if r := callV2(t, c, false, map[string]string{"X-Test-User": "alice"}); r.value != "answer-3" {
 		t.Errorf("no key must run the handler, got %q", r.value)
 	}
 	// Streams are not deduplicated: the same key on Watch runs again.
@@ -360,8 +363,8 @@ func TestIdempotencyInterceptorV2_ReplaysTheError(t *testing.T) {
 	c := serveV2(t, func(context.Context) (string, error) {
 		runs.Add(1)
 		return "", connectv2.NewError(connectv2.CodeAlreadyExists, "duplicate")
-	}, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10, TTL: time.Minute}))
-	key := map[string]string{IdempotencyKeyHeader: "k"}
+	}, testContextV2, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10, TTL: time.Minute}, rlClaimsFromContext))
+	key := map[string]string{IdempotencyKeyHeader: "k", "X-Test-User": "alice"}
 	e1, e2 := callV2(t, c, false, key).err, callV2(t, c, false, key).err
 	if runs.Load() != 1 {
 		t.Fatalf("handler ran %d times, want 1", runs.Load())
@@ -370,5 +373,73 @@ func TestIdempotencyInterceptorV2_ReplaysTheError(t *testing.T) {
 		if ce, ok := errors.AsType[*connectv2.Error](err); !ok || ce.Code() != connectv2.CodeAlreadyExists || ce.Message() != "duplicate" {
 			t.Errorf("call err = %v, want already_exists: duplicate", err)
 		}
+	}
+}
+
+// callerContextV2 stashes the caller named by X-Test-User in the tenant
+// named by X-Test-Org, as auth would.
+func callerContextV2(next connectv2.ServerFunc) connectv2.ServerFunc {
+	return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
+		if info, ok := connectv2.CallInfoForServerContext(ctx); ok && info.RequestHeader().Get("X-Test-User") != "" {
+			ctx = rlContextWithClaims(ctx, &auth.Claims{
+				UserID: info.RequestHeader().Get("X-Test-User"),
+				OrgID:  info.RequestHeader().Get("X-Test-Org"),
+			})
+		}
+		return next(ctx, spec, stream)
+	}
+}
+
+// The v2 cache is scoped to the caller: a principal — or the same user id in
+// another tenant — reusing someone else's (procedure, key) pair runs the
+// handler and gets its own answer, while each caller's repeat replays theirs.
+func TestIdempotencyInterceptorV2_ScopesTheCacheToTheCaller(t *testing.T) {
+	var runs atomic.Int32
+	h := func(ctx context.Context) (string, error) {
+		claims, _ := rlClaimsFromContext(ctx)
+		return claims.OrgID + "/" + claims.UserID + "#" + string(rune('0'+runs.Add(1))), nil
+	}
+	c := serveV2(t, h, callerContextV2, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}, rlClaimsFromContext))
+	as := func(org, user string) map[string]string {
+		return map[string]string{IdempotencyKeyHeader: "shared-key", "X-Test-Org": org, "X-Test-User": user}
+	}
+
+	for _, step := range []struct {
+		org, user, want string
+	}{
+		{"acme", "alice", "acme/alice#1"},
+		{"acme", "bob", "acme/bob#2"},         // another principal: not alice's answer
+		{"globex", "alice", "globex/alice#3"}, // same user id, another tenant
+		{"acme", "alice", "acme/alice#1"},     // alice's repeat replays hers
+		{"acme", "bob", "acme/bob#2"},         // and bob's replays his
+	} {
+		r := callV2(t, c, false, as(step.org, step.user))
+		if r.err != nil || r.value != step.want {
+			t.Errorf("%s/%s: got %q (%v), want %q", step.org, step.user, r.value, r.err, step.want)
+		}
+	}
+	if runs.Load() != 3 {
+		t.Errorf("handler ran %d times, want 3 (once per caller)", runs.Load())
+	}
+}
+
+// A call with no authenticated caller is never cached or replayed, so two
+// anonymous calls with one key both run the handler.
+func TestIdempotencyInterceptorV2_NoIdentityNoReplay(t *testing.T) {
+	var runs atomic.Int32
+	h := func(context.Context) (string, error) {
+		return "answer-" + string(rune('0'+runs.Add(1))), nil
+	}
+	c := serveV2(t, h, callerContextV2, IdempotencyInterceptorV2(IdempotencyOptions{CacheSize: 10}, rlClaimsFromContext))
+	key := map[string]string{IdempotencyKeyHeader: "k"}
+	for i, want := range []string{"answer-1", "answer-2"} {
+		if r := callV2(t, c, false, key); r.err != nil || r.value != want {
+			t.Errorf("anonymous call %d = %q (%v), want %q", i+1, r.value, r.err, want)
+		}
+	}
+	// An anonymous answer was not cached for a later authenticated caller.
+	key["X-Test-User"] = "alice"
+	if r := callV2(t, c, false, key); r.value != "answer-3" {
+		t.Errorf("first authenticated call = %q, want answer-3", r.value)
 	}
 }

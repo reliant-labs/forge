@@ -158,7 +158,9 @@ func TestConnectInterceptorV2_GoodTokenAttachesClaims(t *testing.T) {
 		}
 		return claims.UserID
 	}, v.ConnectInterceptorV2(InterceptorOptions{}, withClaims))
-	tok := signHS256(t, "shh", jwt.MapClaims{"sub": "streamer", "exp": time.Now().Add(time.Hour).Unix()})
+	// A fixed expiry far in the future: the token is valid whenever the test
+	// runs, with no reading of the clock near a boundary.
+	tok := signHS256(t, "shh", jwt.MapClaims{"sub": "streamer", "exp": time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC).Unix()})
 	for _, stream := range []bool{false, true} {
 		got, err := callEchoV2(t, c, stream, map[string]string{"Authorization": "Bearer " + tok})
 		if err != nil {

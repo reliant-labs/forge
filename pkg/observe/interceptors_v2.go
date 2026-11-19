@@ -285,7 +285,12 @@ func IdentitySpanInterceptorV2(caller CallerLookup) connectv2.ServerInterceptor 
 // server: one auth_signed_in {kind: resumed} per user per UTC day, shared with
 // every v1 heartbeat in the process.
 func AuthHeartbeatInterceptorV2(caller CallerLookup, provider string) connectv2.ServerInterceptor {
-	h := AuthHeartbeatInterceptor(caller, provider).(authHeartbeat)
+	return authHeartbeatV2(AuthHeartbeatInterceptor(caller, provider).(authHeartbeat))
+}
+
+// authHeartbeatV2 is h as a v2 server interceptor; a test hands it a
+// heartbeat with its own clock and memory.
+func authHeartbeatV2(h authHeartbeat) connectv2.ServerInterceptor {
 	return func(next connectv2.ServerFunc) connectv2.ServerFunc {
 		return func(ctx context.Context, spec connectv2.Spec, stream connectv2.ServerStream) error {
 			h.beat(ctx)

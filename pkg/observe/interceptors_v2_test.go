@@ -469,8 +469,10 @@ func TestEdgeContextInterceptorV2ReadsHeaders(t *testing.T) {
 }
 
 // Mirrors the heartbeat harness tests: one auth_signed_in {kind: resumed} per
-// user per day, none for an anonymous caller.
-func TestAuthHeartbeatInterceptorV2RecordsOncePerUser(t *testing.T) {
+// user per UTC day, none for an anonymous caller. The heartbeat gets its own
+// memory and a fixed clock, as the v1 harness's does, so neither another
+// test's callers nor a real midnight can move the count.
+func TestAuthHeartbeatInterceptorV2RecordsOncePerUserPerUTCDay(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	user := ""
@@ -483,24 +485,35 @@ func TestAuthHeartbeatInterceptorV2RecordsOncePerUser(t *testing.T) {
 			return next(ctx, spec, stream)
 		}
 	}
-	// A user id no other test uses, so the process-wide memory of who was
-	// recorded today cannot make this flaky.
-	uid := fmt.Sprintf("u-v2-heartbeat-%d", time.Now().UnixNano())
-	s := serveV2(t, v2Handlers{}, claims, AuthHeartbeatInterceptorV2(nil, "supabase"))
-	for _, u := range []string{"", uid, uid} {
+	now := time.Date(2026, 11, 10, 23, 59, 0, 0, time.UTC)
+	hb := AuthHeartbeatInterceptor(nil, "supabase").(authHeartbeat)
+	hb.seen = &resumedSet{}
+	hb.now = func() time.Time { return now }
+	s := serveV2(t, v2Handlers{}, claims, authHeartbeatV2(hb))
+	events := func() []map[string]any {
+		var out []map[string]any
+		for _, r := range jsonRecords(t, buf.String()) {
+			if r["product.provider"] != nil {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	for _, u := range []string{"", "u-1", "u-1"} {
 		user = u
 		if _, err := s.call(t.Context(), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var events []map[string]any
-	for _, r := range jsonRecords(t, buf.String()) {
-		if r["product.provider"] != nil {
-			events = append(events, r)
-		}
+	if evs := events(); len(evs) != 1 || evs[0]["product.provider"] != "supabase" {
+		t.Fatalf("events = %v, want one auth_signed_in for u-1 with provider supabase", evs)
 	}
-	if len(events) != 1 || events[0]["product.provider"] != "supabase" {
-		t.Fatalf("events = %v, want one auth_signed_in for %s with provider supabase", events, uid)
+	now = now.Add(2 * time.Minute) // past midnight UTC
+	if _, err := s.call(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if evs := events(); len(evs) != 2 {
+		t.Fatalf("events = %v, want a second auth_signed_in on the next UTC day", evs)
 	}
 }
 

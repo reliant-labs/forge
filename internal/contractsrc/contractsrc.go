@@ -25,6 +25,8 @@ package contractsrc
 import (
 	"bytes"
 	"go/ast"
+	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"os"
@@ -65,6 +67,10 @@ type MarkedType struct {
 	// Alias is true for `type x = y`, which declares no methods of its
 	// own: derivation refuses it.
 	Alias bool
+	// Constrained is true when the declaring file builds only under some
+	// targets (a //go:build line or a _GOOS/_GOARCH name): derivation
+	// refuses it, since contract_gen.go is built everywhere.
+	Constrained bool
 }
 
 // HandWritten is a hand-written contract interface found in a package: one
@@ -130,11 +136,12 @@ func MarkedTypes(dir string) []MarkedType {
 				return
 			}
 			out = append(out, MarkedType{
-				Name:    ts.Name.Name,
-				File:    name,
-				Line:    fset.Position(ts.Pos()).Line,
-				Generic: ts.TypeParams != nil && len(ts.TypeParams.List) > 0,
-				Alias:   ts.Assign.IsValid(),
+				Name:        ts.Name.Name,
+				File:        name,
+				Line:        fset.Position(ts.Pos()).Line,
+				Generic:     ts.TypeParams != nil && len(ts.TypeParams.List) > 0,
+				Alias:       ts.Assign.IsValid(),
+				Constrained: BuildConstrained(dir, name, file),
 			})
 		})
 	})
@@ -188,6 +195,37 @@ func hasDirective(directive string, gd *ast.GenDecl, ts *ast.TypeSpec) bool {
 		declDoc = gd.Doc
 	}
 	return HasDirectiveComment(directive, declDoc, ts.Doc, ts.Comment)
+}
+
+// anyTarget is a build context matching no real GOOS or GOARCH, so a file
+// it excludes by name (x_linux.go, x_arm64.go, or a name the go tool
+// ignores) is one some build leaves out.
+var anyTarget = func() build.Context {
+	c := build.Default
+	c.GOOS, c.GOARCH = "forgeanyos", "forgeanyarch"
+	c.CgoEnabled = true
+	return c
+}()
+
+// BuildConstrained reports whether the file name in dir, parsed as file
+// (with comments), is in some builds of its package and not others: it
+// carries a //go:build (or // +build) line, or its name has a GOOS/GOARCH
+// suffix. Discovery reads every file whatever the target, so a contract
+// type or method declared in such a file is refused rather than derived
+// into a contract_gen.go that builds everywhere.
+func BuildConstrained(dir, name string, file *ast.File) bool {
+	for _, cg := range file.Comments {
+		if cg.Pos() >= file.Package {
+			break
+		}
+		for _, c := range cg.List {
+			if constraint.IsGoBuild(c.Text) || constraint.IsPlusBuild(c.Text) {
+				return true
+			}
+		}
+	}
+	ok, err := anyTarget.MatchFile(dir, name)
+	return err == nil && !ok
 }
 
 // SourceFiles returns the base names of dir's non-test, non-generated .go

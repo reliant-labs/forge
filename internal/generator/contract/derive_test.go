@@ -170,6 +170,25 @@ func TestRenderDerivedContract_Refusals(t *testing.T) {
 			},
 			want: "alias one of the imports",
 		},
+		{
+			// contract_gen.go builds everywhere; the marked type must too.
+			name:  "marked type in a //go:build file",
+			files: map[string]string{"service.go": "//go:build linux\n\npackage p\n\n//forge:contract\ntype service struct{}\n\nfunc (s *service) Do() {}\n"},
+			want:  "build constraints leave out of some builds",
+		},
+		{
+			name:  "marked type in a _GOOS file",
+			files: map[string]string{"service_windows.go": "package p\n\n//forge:contract\ntype service struct{}\n\nfunc (s *service) Do() {}\n"},
+			want:  "build constraints leave out of some builds",
+		},
+		{
+			name: "exported method in a constrained file",
+			files: map[string]string{
+				"service.go":       "package p\n\n//forge:contract\ntype service struct{}\n\nfunc (s *service) Do() {}\n",
+				"service_linux.go": "package p\n\nfunc (s *service) Linux() {}\n",
+			},
+			want: "service.Linux is declared in a file build constraints leave out",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

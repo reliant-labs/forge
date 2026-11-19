@@ -192,6 +192,8 @@ func CheckMarkedContract(dir string) (contractsrc.MarkedType, error) {
 		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: //forge:contract is on the alias %s, which declares no methods of its own; put the marker on the defined type", filepath.Join(rel, m.File), m.Line, m.Name)
 	case m.Generic:
 		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: //forge:contract is on the generic type %s; a generic type cannot implement the non-generic Service interface by itself — mark a non-generic type, or hand-write the interface in contract.go", filepath.Join(rel, m.File), m.Line, m.Name)
+	case m.Constrained:
+		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: //forge:contract is on %s in %s, which build constraints leave out of some builds; %s is built in every one, so move the type to a file every target builds, or hand-write the interface in contract.go", filepath.Join(rel, m.File), m.Line, m.Name, m.File, contractsrc.DerivedFileName)
 	case m.Name == contractsrc.InterfaceName:
 		return contractsrc.MarkedType{}, fmt.Errorf("%s:%d: the //forge:contract type is named %s, the name of the interface forge derives from it; rename the type (conventionally the unexported `service`)", filepath.Join(rel, m.File), m.Line, m.Name)
 	}
@@ -292,6 +294,7 @@ func (c *deriveCollector) collectFile(name string) error {
 	}
 	fi := newFileImports(file)
 	c.perFile[name] = fi
+	constrained := contractsrc.BuildConstrained(c.dir, name, file)
 	for _, decl := range file.Decls {
 		switch dd := decl.(type) {
 		case *ast.GenDecl:
@@ -299,7 +302,7 @@ func (c *deriveCollector) collectFile(name string) error {
 				c.collectTypeDecl(dd)
 			}
 		case *ast.FuncDecl:
-			if err := c.collectMethod(name, path, fi, dd); err != nil {
+			if err := c.collectMethod(name, path, fi, dd, constrained); err != nil {
 				return err
 			}
 		}
@@ -328,13 +331,18 @@ func (c *deriveCollector) collectTypeDecl(gd *ast.GenDecl) {
 }
 
 // collectMethod records fn when it is an exported method declared on the
-// marked type, with every package qualifier its signature spells.
-func (c *deriveCollector) collectMethod(name, path string, fi *fileImports, fn *ast.FuncDecl) error {
+// marked type, with every package qualifier its signature spells. One in a
+// build-constrained file is refused: the derived interface would name a
+// method some builds of the type do not have.
+func (c *deriveCollector) collectMethod(name, path string, fi *fileImports, fn *ast.FuncDecl, constrained bool) error {
 	if fn.Recv == nil || len(fn.Recv.List) != 1 || !fn.Name.IsExported() {
 		return nil
 	}
 	if receiverTypeName(fn.Recv.List[0].Type) != c.marked.Name {
 		return nil
+	}
+	if constrained {
+		return fmt.Errorf("%s: %s.%s is declared in a file build constraints leave out of some builds; %s is built in every one, so declare the method in a file every target builds, or make it unexported", path, c.marked.Name, fn.Name.Name, contractsrc.DerivedFileName)
 	}
 	if fi.dot {
 		return fmt.Errorf("%s: %s.%s is declared in a file with a dot import; a derived contract cannot tell its package's types from the dot-imported ones — import that package by name", path, c.marked.Name, fn.Name.Name)

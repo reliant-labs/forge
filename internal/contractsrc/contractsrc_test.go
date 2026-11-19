@@ -90,6 +90,33 @@ func TestContractSource(t *testing.T) {
 	}
 }
 
+// TestMarkedTypes_Constrained: a marker is found whatever the build target
+// (so discovery agrees on every platform), and a file some build leaves
+// out is flagged for derivation to refuse.
+func TestMarkedTypes_Constrained(t *testing.T) {
+	mark := "package p\n\n//forge:contract\ntype service struct{}\n"
+	cases := map[string]bool{
+		"plain.go":             false,
+		"svc_linux.go":         true,
+		"svc_arm64.go":         true,
+		"svc_windows_amd64.go": true,
+		"svc_service.go":       false,
+	}
+	for name, want := range cases {
+		dir := writePkg(t, map[string]string{name: mark})
+		m := MarkedTypes(dir)
+		if len(m) != 1 || m[0].Constrained != want {
+			t.Errorf("%s: MarkedTypes = %+v, want one with Constrained=%v", name, m, want)
+		}
+	}
+	for _, header := range []string{"//go:build !windows\n\n", "// +build linux\n\n"} {
+		dir := writePkg(t, map[string]string{"svc.go": header + mark})
+		if m := MarkedTypes(dir); len(m) != 1 || !m[0].Constrained || !HasContract(dir) {
+			t.Errorf("%q: MarkedTypes = %+v, want one, constrained, and HasContract", header, m)
+		}
+	}
+}
+
 func TestMarkedTypes_GenericAndAlias(t *testing.T) {
 	dir := writePkg(t, map[string]string{
 		"a.go": "package p\n\n//forge:contract\ntype g[T any] struct{ v T }\n",

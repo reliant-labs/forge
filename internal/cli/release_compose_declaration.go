@@ -16,6 +16,11 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 	}
 	var out []release.Consumer
 	for _, w := range e.Workloads {
+		if w.Runtime.Type == RuntimeBuildOnly && w.Image == "" && len(w.Build.Outputs) > 0 {
+			// A files-only build-only workload (declared outputs, no image)
+			// has no image slot to bind.
+			continue
+		}
 		cluster := ""
 		switch w.Runtime.Type {
 		case RuntimeCluster:

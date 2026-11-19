@@ -1750,6 +1750,11 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
 	}
+	if opts.release == "" && !opts.plan {
+		// A --release build refuses a declared output that matched nothing
+		// (at the cut); a plain build says so and carries on.
+		warnMissingDeclaredOutputs(ctx, os.Stdout, projectDirForKCL(), entities)
+	}
 	if opts.release != "" {
 		// Before the cut: a dashboard that does not validate must not leave a
 		// release behind that has no bundle to carry it.
@@ -1830,7 +1835,8 @@ func buildBundlePins(projectDir, env string) release.BundlePins {
 //   - OCI images, from the build-state digests (harvestReleaseArtifacts);
 //   - npm packages, from what `npm pack` would publish;
 //   - Go modules, from the repo's own go.mod/go.sum pair;
-//   - files, from the build-only binaries this build emitted.
+//   - files, from the build-only binaries this build emitted and the
+//     outputs each build declares (harvestDeclaredOutputs).
 //
 // Images are merged FIRST and never overwritten (see mergeReleaseArtifacts), so
 // adding the other kinds cannot perturb the digests an env deploys.
@@ -1893,6 +1899,16 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
+	// The files each build's `outputs` declare. A declared output that
+	// matched nothing refuses the cut: the author said the release ships it.
+	declared, missing, err := harvestDeclaredOutputs(ctx, projectDir, entities)
+	if err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	if len(missing) > 0 {
+		return releaseCutOutcome{}, errMissingDeclaredOutputs(version, missing)
+	}
+	files += mergeReleaseArtifacts(artifacts, declared)
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships — keyed by the address under the platform's

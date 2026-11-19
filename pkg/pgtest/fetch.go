@@ -43,12 +43,15 @@ import (
 //   - when Maven Central still has not served the file — a 404 included —
 //     it asks an independent mirror of Maven Central before giving up (see
 //     mavenCentralMirrorURL for why a 404 is not taken at its word);
+//   - it hands the library an archive only after checking its sha256 against
+//     forge's pin or a published .sha256, and fails closed when there is
+//     neither (checksum.go) — the library alone would boot it unchecked;
 //   - it records the last upstream failure — URL, status, attempts — so a
 //     Start that still fails is reported as the fetch failure it was;
 //   - everything else stays the library's: it still computes the archive
-//     name for this OS/arch/version, verifies the published sha256, and
-//     writes its own cache. forge re-derives none of that, so nothing here
-//     drifts when the library changes its naming.
+//     name for this OS/arch/version and writes its own cache. forge
+//     re-derives none of that, so nothing here drifts when the library
+//     changes its naming.
 //
 // # Pre-warming the cache in CI
 //
@@ -82,9 +85,10 @@ const defaultBinaryRepositoryURL = "https://repo1.maven.org/maven2"
 // A 404 is the registry's "no such file", so retrying the same edge buys
 // nothing; a second repository on separate infrastructure (Cloud Storage, not
 // Maven Central's CDN) does. It mirrors the same artifacts byte for byte — the
-// 18.3.0 archive's .sha256 sidecar is identical on both — and the library
-// still checks the archive against that sidecar. Only a 404 from BOTH is
-// reported as "no published binary".
+// 18.3.0 archive's .sha256 sidecar is identical on both — and the relay
+// checks every archive, whichever repository served it, against forge's pin
+// or a published sidecar before the library sees it (checksum.go). Only a
+// 404 from BOTH is reported as "no published binary".
 const mavenCentralMirrorURL = "https://maven-central.storage-download.googleapis.com/maven2"
 
 // fetchPolicy bounds the retries. Package-level so a test can shrink the
@@ -125,62 +129,90 @@ type FetchError struct {
 	Status int
 	// Attempts is how many times forge tried.
 	Attempts int
-	// Err is the last transport error, when Status is 0.
+	// Err is the last transport error, when Status is 0. With Status 200 it
+	// is why the file served was not used: a read error, or a
+	// *ChecksumError when the archive could not be verified.
 	Err error
-	// also backs Also. A pointer, not a slice, so FetchError stays
-	// comparable: a slice field would make == on it a compile error for
-	// callers, an incompatible change to pkg/ at major 1.
-	also *[]*FetchError
+
+	// No field may be added here, exported or not: callers outside this
+	// package build FetchError positionally (FetchError{url, status,
+	// attempts, err}), and any new field breaks that literal — an
+	// incompatible change to pkg/ at major 1. compat_test.go holds it.
+	// What the other repositories answered travels in fetchFailures.
 }
 
-// Also is what the other repositories asked answered (forge tries Maven
-// Central, then a mirror of it), in the order they were asked. The fields of
-// e describe the most telling failure: a transient one when there was any,
-// so Status is 404 only when every repository answered 404.
-func (e *FetchError) Also() []*FetchError {
-	if e.also == nil {
-		return nil
-	}
-	return *e.also
-}
+// Also always returns nil.
+//
+// Deprecated: FetchError describes one repository's answer. When forge asked
+// several (Maven Central, then a mirror of it), StartEmbedded's error
+// describes every answer in its message, and errors.As on it still finds the
+// most telling *FetchError.
+func (e *FetchError) Also() []*FetchError { return nil }
 
 func (e *FetchError) Error() string {
+	var ce *ChecksumError
+	if errors.As(e.Err, &ce) {
+		// Not transient, and not worth a re-run's advice: the bytes arrived.
+		return "download postgres binary: " + ce.Error()
+	}
 	if e.Status == http.StatusNotFound {
-		// The one status that plausibly DOES mean "no such version" — and
-		// only when no repository said otherwise.
-		urls := []string{e.URL}
-		for _, o := range e.Also() {
+		// The one status that plausibly DOES mean "no such version".
+		return fmt.Sprintf("download postgres binary: %s returned 404 Not Found — this postgres "+
+			"version/platform has no published binary (not a transient failure)", e.URL)
+	}
+	return fmt.Sprintf("download postgres binary: fetch of %s failed after %d attempt(s), last: %s. "+
+		"This is a registry/network failure, possibly transient — the version exists; re-run. "+
+		"To take the registry off the critical path, cache the embedded-postgres archive directory "+
+		"(see pkg/pgtest/fetch.go)", e.URL, e.Attempts, e.lastAnswer())
+}
+
+// fetchFailures is one artifact fetch that every repository failed: lead is
+// the most telling answer, and also the others, in the order they were
+// asked. It unwraps to lead, so errors.As finds the *FetchError (and, through
+// it, a *ChecksumError).
+type fetchFailures struct {
+	lead *FetchError
+	also []*FetchError
+}
+
+func (f *fetchFailures) Error() string {
+	if f.lead.Status == http.StatusNotFound {
+		// lead is a 404 only when every repository answered 404 (see
+		// fetchFailure), and only then is "no published binary" true.
+		urls := []string{f.lead.URL}
+		for _, o := range f.also {
 			urls = append(urls, o.URL)
 		}
 		return fmt.Sprintf("download postgres binary: %s returned 404 Not Found — this postgres "+
 			"version/platform has no published binary (not a transient failure)", strings.Join(urls, " and "))
 	}
-	msg := fmt.Sprintf("download postgres binary: fetch of %s failed after %d attempt(s), last: %s. "+
-		"This is a registry/network failure, possibly transient — the version exists; re-run. "+
-		"To take the registry off the critical path, cache the embedded-postgres archive directory "+
-		"(see pkg/pgtest/fetch.go)", e.URL, e.Attempts, e.lastAnswer())
-	for _, o := range e.Also() {
+	msg := f.lead.Error()
+	for _, o := range f.also {
 		msg += fmt.Sprintf(". Also tried %s: %s", o.URL, o.lastAnswer())
 	}
 	return msg
 }
 
+func (f *fetchFailures) Unwrap() error { return f.lead }
+
 // lastAnswer is the final thing the repository said, in a few words.
 func (e *FetchError) lastAnswer() string {
 	switch {
-	case e.Status != 0:
+	case e.Status != 0 && e.Status != http.StatusOK:
 		return fmt.Sprintf("HTTP %d %s", e.Status, http.StatusText(e.Status))
 	case e.Err != nil:
 		return e.Err.Error()
+	case e.Status != 0:
+		return fmt.Sprintf("HTTP %d %s", e.Status, http.StatusText(e.Status))
 	default:
 		return "no response"
 	}
 }
 
 // fetchFailure folds each repository's failure, in the order they were
-// asked, into one FetchError led by the most telling: the first that was not
-// a 404, since one transient failure means the file may well exist.
-func fetchFailure(failures []*FetchError) *FetchError {
+// asked, into one fetchFailures led by the most telling: the first that was
+// not a 404, since one transient failure means the file may well exist.
+func fetchFailure(failures []*FetchError) *fetchFailures {
 	lead := 0
 	for i, f := range failures {
 		if f.Status != http.StatusNotFound {
@@ -188,18 +220,13 @@ func fetchFailure(failures []*FetchError) *FetchError {
 			break
 		}
 	}
-	fe := *failures[lead]
-	var also []*FetchError
+	ff := &fetchFailures{lead: failures[lead]}
 	for i, f := range failures {
 		if i != lead {
-			also = append(also, f)
+			ff.also = append(ff.also, f)
 		}
 	}
-	fe.also = nil
-	if len(also) > 0 {
-		fe.also = &also
-	}
-	return &fe
+	return ff
 }
 
 func (e *FetchError) Unwrap() error { return e.Err }
@@ -221,8 +248,9 @@ type fetchRelay struct {
 	srv          *http.Server
 	ln           net.Listener
 
-	mu      sync.Mutex
-	failure *FetchError // the last artifact GET that never succeeded
+	mu       sync.Mutex
+	failure  *fetchFailures    // the last artifact GET that never succeeded
+	verified map[string]string // archive URL path -> the sha256 it was verified against
 }
 
 func startFetchRelay(repositories ...string) (*fetchRelay, error) {
@@ -234,8 +262,9 @@ func startFetchRelay(repositories ...string) (*fetchRelay, error) {
 		return nil, fmt.Errorf("pgtest: start postgres download relay: %w", err)
 	}
 	r := &fetchRelay{
-		client: observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: fetchPolicy.perAttempt}),
-		ln:     ln,
+		client:   observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: fetchPolicy.perAttempt}),
+		ln:       ln,
+		verified: map[string]string{},
 	}
 	for _, repo := range repositories {
 		r.repositories = append(r.repositories, strings.TrimRight(repo, "/"))
@@ -256,7 +285,7 @@ func (r *fetchRelay) close() {
 }
 
 // lastFailure is the most recent artifact fetch that never succeeded, or nil.
-func (r *fetchRelay) lastFailure() *FetchError {
+func (r *fetchRelay) lastFailure() *fetchFailures {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.failure
@@ -267,14 +296,65 @@ func (r *fetchRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	ctx := req.Context()
+	sidecar := strings.HasSuffix(req.URL.Path, ".sha256")
+	if sidecar {
+		// The library re-checks the archive against its sidecar. Answer with
+		// the checksum the relay already verified it against (checksum.go),
+		// so the two checks cannot disagree and no repository is asked twice.
+		r.mu.Lock()
+		sum, ok := r.verified[strings.TrimSuffix(req.URL.Path, ".sha256")]
+		r.mu.Unlock()
+		if ok {
+			w.Header().Set("Content-Length", strconv.Itoa(len(sum)))
+			_, _ = io.WriteString(w, sum)
+			return
+		}
+	}
+
 	var failures []*FetchError
-	var resp *http.Response
+	var body []byte
+	var want, source string
+	var noChecksum *ChecksumError
+	lookedUp := false
 	for _, repo := range r.repositories {
 		target := repo + req.URL.Path
-		got, attempts, err := r.getWithRetry(req.Context(), target)
+		got, attempts, err := r.getWithRetry(ctx, target)
 		if err == nil && got.StatusCode == http.StatusOK {
-			resp = got
-			break
+			b, readErr := io.ReadAll(got.Body)
+			_ = got.Body.Close()
+			if readErr != nil {
+				failures = append(failures, &FetchError{URL: target, Status: http.StatusOK, Attempts: attempts, Err: readErr})
+				continue
+			}
+			if sidecar {
+				body = b
+				break
+			}
+			// An archive is handed on only once verified: fail closed.
+			if !lookedUp {
+				want, source, noChecksum = r.archiveChecksum(ctx, req.URL.Path)
+				lookedUp = true
+			}
+			gotSum := sha256Hex(b)
+			if noChecksum == nil && gotSum == want {
+				body = b
+				r.mu.Lock()
+				r.verified[req.URL.Path] = want
+				r.mu.Unlock()
+				break
+			}
+			ce := &ChecksumError{Archive: target, Want: want, Source: source, Got: gotSum}
+			if noChecksum != nil {
+				ce.Tried = noChecksum.Tried
+			}
+			failures = append(failures, &FetchError{URL: target, Status: http.StatusOK, Attempts: attempts, Err: ce})
+			if noChecksum != nil {
+				// Every repository was asked for the checksum already: the
+				// next one's archive is just as unverifiable.
+				break
+			}
+			continue // a corrupt copy here; another repository may hold a good one
 		}
 		fe := &FetchError{URL: target, Attempts: attempts, Err: err}
 		if got != nil {
@@ -282,32 +362,29 @@ func (r *fetchRelay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			_ = got.Body.Close()
 		}
 		failures = append(failures, fe)
-		if req.Context().Err() != nil {
+		if ctx.Err() != nil {
 			break // the library gave up; asking the next repository is moot
 		}
 	}
-	if resp == nil {
+	if body == nil {
 		fe := fetchFailure(failures)
-		// The .sha256 sidecar is optional to the library (it skips the check
-		// on a non-200), so only the archive itself is worth reporting.
-		if !strings.HasSuffix(req.URL.Path, ".sha256") {
+		// A sidecar the relay did not verify against is only passed through,
+		// so only the archive itself is worth reporting.
+		if !sidecar {
 			r.mu.Lock()
 			r.failure = fe
 			r.mu.Unlock()
 		}
-		status := fe.Status
-		if status == 0 {
+		status := fe.lead.Status
+		if status == 0 || status == http.StatusOK {
 			status = http.StatusBadGateway
 		}
 		http.Error(w, fe.Error(), status)
 		return
 	}
-	defer resp.Body.Close()
-	if resp.ContentLength >= 0 {
-		w.Header().Set("Content-Length", fmt.Sprint(resp.ContentLength))
-	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = w.Write(body)
 }
 
 // getWithRetry GETs target, retrying transient failures with jittered
@@ -375,8 +452,11 @@ func retryAfter(h http.Header, now time.Time) (wait time.Duration, ok bool) {
 
 // StartEmbedded builds and starts an embedded postgres from cfg, fetching
 // its binary (on a cold cache) through a retrying relay. A download failure
-// comes back as a *FetchError naming the URL and the upstream status, never
-// as the library's "no version found".
+// comes back as an error that errors.As finds a *FetchError in — the most
+// telling repository's answer, naming the URL and the upstream status (and a
+// *ChecksumError beneath it when the archive could not be verified) — whose
+// message names every repository asked; never the library's "no version
+// found".
 //
 // cfg must not set BinaryRepositoryURL: the relay takes that slot and
 // forwards to Maven Central, the library's default, then to a mirror of it.
@@ -419,7 +499,7 @@ func StartEmbedded(cfg embeddedpostgres.Config) (*Embedded, error) {
 		if fe := relay.lastFailure(); fe != nil {
 			// The library's own wording ("no version found matching …") is
 			// wrong for everything except a 404, so it is dropped rather
-			// than wrapped: the FetchError says what actually happened.
+			// than wrapped: the fetch failure says what actually happened.
 			return nil, fe
 		}
 		return nil, startErr

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -748,6 +749,10 @@ func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) er
 	printUpgradeSummary(os.Stderr, rep)
 	if werr := emitJSONDocument(rep); werr != nil {
 		return werr
+	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) && ec.code == exitNeedsHuman {
+		ec.msg = needsPersonMessage(len(rep.NeedsHuman), true)
 	}
 	return err
 }

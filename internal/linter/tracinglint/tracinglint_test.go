@@ -421,6 +421,51 @@ var client = &http.Client{}
 	assertHits(t, res, RuleRawHTTPClient+" internal/export/plain.go:5")
 }
 
+// A file that hand-encodes an OTLP/JSON payload (no OTel exporter linked) is
+// an exporter too: its client stays untraced, by struct tag or by map key. A
+// lookalike tag or a key in a comment is not OTLP, and is flagged.
+func TestRawHTTPClientHandEncodedOTLP(t *testing.T) {
+	tagged := `package export
+
+import "net/http"
+
+type payload struct {
+	ResourceLogs []any ` + "`json:\"resourceLogs,omitempty\"`" + `
+}
+
+var client = &http.Client{}
+`
+	mapped := `package export
+
+import "net/http"
+
+var body = map[string]any{"resourceSpans": nil}
+
+var client2 = &http.Client{}
+`
+	lookalike := `package export
+
+import "net/http"
+
+// resourceLogs is mentioned only here.
+type payload2 struct {
+	Logs []any ` + "`json:\"resourceLogsV2\"`" + `
+}
+
+var client3 = &http.Client{} // 10
+`
+	root := writeTree(t, map[string]string{
+		"internal/export/tagged.go":    tagged,
+		"internal/export/mapped.go":    mapped,
+		"internal/export/lookalike.go": lookalike,
+	})
+	res, err := Lint(root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHits(t, res, RuleRawHTTPClient+" internal/export/lookalike.go:10")
+}
+
 // LibraryOnly lints only what another module can import.
 func TestLibraryOnly(t *testing.T) {
 	bad := "package %s\n\nimport \"net/http\"\n\nvar c = &http.Client{}\n"

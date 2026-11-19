@@ -80,6 +80,12 @@ func (c *Client) encode(batch []record) ([]byte, error) {
 	return json.Marshal(otlpPayload{ResourceLogs: []otlpResourceLogs{rl}})
 }
 
+// defaultHTTPClient posts batches when Config.HTTPClient is nil. It has no
+// timeout of its own (Flush bounds it) and is untraced on purpose: this is a
+// telemetry exporter, and a span per export would be telemetry about its own
+// telemetry.
+func defaultHTTPClient() *http.Client { return &http.Client{} }
+
 // post sends the batch and reports whether the endpoint accepted it.
 func (c *Client) post(ctx context.Context, batch []record) bool {
 	body, err := c.encode(batch)

@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // Default per-statement limits of a session.
@@ -56,9 +58,11 @@ type Session struct {
 // Open connects to dsn and sets the session's timeouts. dsn must name a
 // disposable database: what a session runs is committed.
 func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error) {
-	db, err := sql.Open("pgx", dsn)
+	// dbtrace.Open parses dsn where sql.Open would leave it to the first
+	// connection, so its error is that connection's.
+	db, err := dbtrace.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open target: %w", err)
+		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)

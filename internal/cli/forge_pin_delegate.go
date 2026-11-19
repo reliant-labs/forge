@@ -187,8 +187,9 @@ func machineWideRun(rel string, flags *pflag.FlagSet) bool {
 var (
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			Log:     w,
-			Version: forgedelegate.RunVersion,
+			Log:            w,
+			Version:        forgedelegate.RunVersion,
+			CommandVersion: forgedelegate.RunCommandVersion,
 			Same: func(want, got string) bool {
 				skewed, ok := pinSkew(want, got, "")
 				return ok && !skewed

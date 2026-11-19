@@ -111,36 +111,33 @@ func ResolvePinnedForgePath(ctx context.Context, dir string, log io.Writer) (Pin
 		}
 	}
 
+	r := pinDelegateResolver(log)
 	t, other := delegateTargetFor(projectRoot)
 	if !other {
-		return selfPinnedForge(pin, checkout)
+		return selfPinnedForge(ctx, r, cfgPath, pin, checkout)
 	}
 	res, err := resolveTarget(ctx, log, projectRoot, t)
 	if err != nil {
 		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, err)
 	}
-	pf := PinnedForge{
-		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
-		Source: res.Kind, Pin: pin, Checkout: t.checkout,
-	}
-	r := pinDelegateResolver(log)
-	if r.Version == nil {
-		return pf, nil
-	}
-	got, err := r.Version(ctx, res.Path)
-	if err != nil {
-		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, fmt.Errorf("%s does not run: %w", res.Path, err))
-	}
-	pf.Version = strings.TrimSpace(got)
 	// A checkout has no version to hold it to: its build is the forge.
-	if t.checkout == "" && r.Same != nil && !r.Same(t.pin, pf.Version) {
-		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, fmt.Errorf("%s reports forge %s, not the pinned %s", res.Path, pf.Version, t.pin))
+	version, err := probePinnedVersion(ctx, r, res.Path, nil, pinIfNoCheckout(t.pin, t.checkout))
+	if err != nil {
+		return PinnedForge{}, pinnedUnobtainable(cfgPath, t, err)
 	}
-	return pf, nil
+	return PinnedForge{
+		Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(),
+		Source: res.Kind, Version: version, Pin: pin, Checkout: t.checkout,
+	}, nil
 }
 
-// selfPinnedForge is this forge as the project's forge.
-func selfPinnedForge(pin, checkout string) (PinnedForge, error) {
+// selfPinnedForge is this forge as the project's forge. The executable it
+// names is probed like any pinned forge, never vouched for by this process's
+// own build metadata: an embedded forge's Path is its HOST, reached through
+// Args, and the file at os.Executable() may have been replaced since this
+// process started (an upgraded host, a rebuilt binary). What it reports must
+// be the pin, or nothing is answered.
+func selfPinnedForge(ctx context.Context, r probeResolver, cfgPath, pin, checkout string) (PinnedForge, error) {
 	command, err := forgeExecCommand()
 	if err != nil {
 		return PinnedForge{}, err
@@ -149,11 +146,55 @@ func selfPinnedForge(pin, checkout string) (PinnedForge, error) {
 	if checkout != "" {
 		want = "the checkout " + checkout + " this project is linked to"
 	}
-	version := buildinfo.Version()
+	path, args := command[0], command[1:]
+	version, err := probePinnedVersion(ctx, r, path, args, pinIfNoCheckout(pin, checkout))
+	if err != nil {
+		return PinnedForge{}, fmt.Errorf("%s wants %s, which this forge (%s) takes itself to be, but its executable does not confirm it:\n    %s\n"+
+			"  Nothing is answered rather than a forge that may not be the pin: run the command again with the forge you mean to ask (a host replaced on disk since it started?)",
+			cfgPath, want, buildinfo.Version(), err)
+	}
 	return PinnedForge{
-		Path: command[0], Args: command[1:], Key: selfKey(version, command[0]), Want: want,
+		Path: path, Args: args, Key: selfKey(version, path), Want: want,
 		Source: PinnedSourceSelf, Version: version, Pin: pin, Checkout: checkout,
 	}, nil
+}
+
+// probeResolver is what probePinnedVersion needs of forgedelegate's Resolver.
+type probeResolver interface {
+	VersionOf(ctx context.Context, path string, args []string) (string, error)
+}
+
+// pinIfNoCheckout is the version a resolved forge must report: the pin, or
+// "" (anything) for a project linked to a checkout, whose build is the forge.
+func pinIfNoCheckout(pin, checkout string) string {
+	if checkout != "" {
+		return ""
+	}
+	return pin
+}
+
+// probePinnedVersion runs `path args... version` through the resolver's
+// version probe — the one the hand-off uses to recognise a pinned forge — and
+// returns what it reports, refusing a forge that is not pin (when pin is set).
+func probePinnedVersion(ctx context.Context, r probeResolver, path string, args []string, pin string) (string, error) {
+	command := strings.Join(append([]string{path}, args...), " ")
+	got, err := r.VersionOf(ctx, path, args)
+	if err != nil {
+		return "", fmt.Errorf("%s does not run: %w", command, err)
+	}
+	got = strings.TrimSpace(got)
+	if pin == "" {
+		return got, nil
+	}
+	if skewed, ok := pinSkew(pin, got, ""); !ok || skewed {
+		return "", fmt.Errorf("%s reports forge %s, not the pinned %s", command, got, pin)
+	}
+	// A +dirty pin names a working tree, matched only by its exact spelling
+	// (forgedelegate.LocalPinned).
+	if forgecompat.DirtyVersion(pin) && got != pin {
+		return "", fmt.Errorf("%s reports forge %s, not the pinned %s", command, got, pin)
+	}
+	return got, nil
 }
 
 // selfKey is PinnedForge.Key for this forge: the version it reports and the

@@ -25,12 +25,26 @@ import (
 // stand-in when buildable, and fails the test otherwise.
 func pinnedResolver(t *testing.T, version string, buildable bool) (*handoff, *[]string) {
 	t.Helper()
+	return pinnedResolverProbing(t, func(string, []string) string { return version }, buildable, nil)
+}
+
+// pinnedResolverProbing is pinnedResolver with the version each probed
+// command reports decided by versionOf; probed, when set, records each
+// command (`path args...`) the resolver was asked to run.
+func pinnedResolverProbing(t *testing.T, versionOf func(path string, args []string) string, buildable bool, probed *[]string) (*handoff, *[]string) {
+	t.Helper()
 	t.Setenv(forgedelegate.MarkerEnv, "")
 	h, installs := armDelegation(t)
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
 			Log:     w,
-			Version: func(context.Context, string) (string, error) { return version, nil },
+			Version: func(_ context.Context, path string) (string, error) { return versionOf(path, nil), nil },
+			CommandVersion: func(_ context.Context, path string, args []string) (string, error) {
+				if probed != nil {
+					*probed = append(*probed, strings.Join(append([]string{path}, args...), " "))
+				}
+				return versionOf(path, args), nil
+			},
 			Same: func(want, got string) bool {
 				skewed, ok := pinSkew(want, got, "")
 				return ok && !skewed
@@ -85,7 +99,8 @@ func cachedPinnedForge(t *testing.T) string {
 func TestVersionPinned_TheRunningForgeIsThePinIsSelf(t *testing.T) {
 	skewedProject(t)
 	buildinfo.Set(skewTestPin, "", "377b61532c0e")
-	h, installs := pinnedResolver(t, "unused", false)
+	var probed []string
+	h, installs := pinnedResolverProbing(t, func(string, []string) string { return skewTestPin }, false, &probed)
 
 	doc, out, err := versionPinned(t, "version", "--pinned", "--json")
 	if err != nil {
@@ -101,14 +116,16 @@ func TestVersionPinned_TheRunningForgeIsThePinIsSelf(t *testing.T) {
 	if h.path != "" || len(*installs) != 0 {
 		t.Errorf("exec'd %q / built %v for the forge already running", h.path, *installs)
 	}
+	// The executable is asked, not this process's build metadata.
+	if !slices.Equal(probed, []string{exe}) {
+		t.Errorf("probed %v, want [%s]: the executable it names must confirm the pin", probed, exe)
+	}
 }
 
-// An embedded forge that is the pin names its host, and the route into forge.
-func TestVersionPinned_AnEmbeddedSelfCarriesItsRoute(t *testing.T) {
-	skewedProject(t)
-	buildinfo.Set(skewTestPin, "", "377b61532c0e")
-	pinnedResolver(t, "unused", false)
-
+// embeddedVersionPinned runs `reliant forge version --pinned --json` through
+// a host root that mounts forge.
+func embeddedVersionPinned(t *testing.T) (pinnedForgeDocument, error) {
+	t.Helper()
 	host := &cobra.Command{Use: "reliant"}
 	host.AddCommand(newTestRootCmd(t))
 	var out bytes.Buffer
@@ -116,15 +133,58 @@ func TestVersionPinned_AnEmbeddedSelfCarriesItsRoute(t *testing.T) {
 	host.SetErr(io.Discard)
 	host.SetArgs([]string{"forge", "version", "--pinned", "--json"})
 	if err := host.Execute(); err != nil {
-		t.Fatalf("reliant forge version --pinned: %v", err)
+		return pinnedForgeDocument{}, err
 	}
 	var doc pinnedForgeDocument
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatalf("%v:\n%s", err, out.String())
 	}
+	return doc, nil
+}
+
+// An embedded forge that is the pin names its host, and the route into forge
+// — and it is the host's `forge version` that is asked, not `<host> version`.
+func TestVersionPinned_AnEmbeddedSelfCarriesItsRoute(t *testing.T) {
+	skewedProject(t)
+	buildinfo.Set(skewTestPin, "", "377b61532c0e")
+	var probed []string
+	pinnedResolverProbing(t, func(string, []string) string { return skewTestPin }, false, &probed)
+
+	doc, err := embeddedVersionPinned(t)
+	if err != nil {
+		t.Fatalf("reliant forge version --pinned: %v", err)
+	}
 	exe, _ := os.Executable()
-	if !slices.Equal(doc.Command, []string{exe, "forge"}) || doc.Source != PinnedSourceSelf {
-		t.Errorf("command %v source %q, want [%s forge] self", doc.Command, doc.Source, exe)
+	if !slices.Equal(doc.Command, []string{exe, "forge"}) || doc.Source != PinnedSourceSelf || doc.Version != skewTestPin {
+		t.Errorf("command %v source %q version %q, want [%s forge] self %s", doc.Command, doc.Source, doc.Version, exe, skewTestPin)
+	}
+	if !slices.Equal(probed, []string{exe + " forge"}) {
+		t.Errorf("probed %v, want [%s forge]", probed, exe)
+	}
+}
+
+// Review of #2401: an embedded host whose executable reports another forge
+// than this process's build metadata (a host replaced on disk since it
+// started, a host stamped differently) is not offered as the pin — on the
+// word of buildinfo — under a version it does not run.
+func TestVersionPinned_AnEmbeddedSelfThatReportsAnotherVersionIsRefused(t *testing.T) {
+	skewedProject(t)
+	buildinfo.Set(skewTestPin, "", "377b61532c0e")
+	pinnedResolverProbing(t, func(_ string, args []string) string {
+		if slices.Equal(args, []string{"forge"}) {
+			return skewTestBinary // what the host on disk actually runs
+		}
+		return skewTestPin
+	}, false, nil)
+
+	_, err := embeddedVersionPinned(t)
+	if err == nil {
+		t.Fatal("an embedded host reporting another forge was answered as the pin")
+	}
+	for _, want := range []string{"reports forge " + skewTestBinary, "not the pinned " + skewTestPin, "forge.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not say %q:\n%v", want, err)
+		}
 	}
 }
 

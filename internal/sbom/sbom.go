@@ -102,15 +102,17 @@ type Result struct {
 type Tool func(ctx context.Context) (path, version string, err error)
 
 // Generator produces SBOMs. The zero value with Tool set works: it execs
-// syft, caches nothing, and runs defaultConcurrency targets at once.
+// syft, caches nothing, and describes one target at a time with no deadline
+// but ctx's. The release cut runs DefaultConcurrency targets at once, each
+// bounded by DefaultTimeout.
 type Generator struct {
 	Tool   Tool
 	Runner Runner
 	// Cache, when set, is read before syft runs and written after.
 	Cache *Cache
-	// Concurrency bounds how many syft processes run at once (≤0: default).
+	// Concurrency bounds how many syft processes run at once (≤0: one).
 	Concurrency int
-	// Timeout bounds one target's syft run (≤0: default).
+	// Timeout bounds one target's syft run (≤0: only ctx bounds it).
 	Timeout time.Duration
 	// RegistryAuth, when set, supplies forge's own credential for a
 	// registry syft reads an image from (registry_auth.go). nil leaves every
@@ -119,10 +121,13 @@ type Generator struct {
 }
 
 const (
-	defaultConcurrency = 4
-	// defaultTimeout is generous: a registry read pulls the whole image
-	// (13.7 s for 115 MB measured), and a slow link multiplies that.
-	defaultTimeout = 10 * time.Minute
+	// DefaultConcurrency is how many syft processes the release cut runs at
+	// once.
+	DefaultConcurrency = 4
+	// DefaultTimeout bounds one target's syft run at the release cut. It is
+	// generous: a registry read pulls the whole image (13.7 s for 115 MB
+	// measured), and a slow link multiplies that.
+	DefaultTimeout = 10 * time.Minute
 )
 
 // Generate describes every target, at most Concurrency at once, and returns
@@ -148,10 +153,7 @@ func (g *Generator) Generate(ctx context.Context, targets []Target) []Result {
 	}
 	generator := GeneratorName(version)
 
-	n := g.Concurrency
-	if n <= 0 {
-		n = defaultConcurrency
-	}
+	n := max(g.Concurrency, 1)
 	sem := make(chan struct{}, n)
 	var wg sync.WaitGroup
 	for i, t := range targets {
@@ -201,12 +203,11 @@ func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Re
 		return okResult(t, generator, source, data, true)
 	}
 
-	timeout := g.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
+	if g.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, g.Timeout)
+		defer cancel()
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	data, source, err := g.scan(ctx, bin, t)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -140,6 +141,9 @@ func TestGenerate_FailuresAreUnavailableWithAReason(t *testing.T) {
 		{"no syft", &Generator{Tool: func(context.Context) (string, string, error) {
 			return "", "", errors.New("download syft: no network")
 		}}, Target{Name: "a", Kind: KindRegistry, Ref: "r/a@" + imageDigest, Subject: imageDigest}, "syft is unavailable: download syft: no network"},
+		{"untrusted tool cache", &Generator{Tool: func(context.Context) (string, string, error) {
+			return "", "", fmt.Errorf("syft: %w", toolfetch.ErrUntrustedCache)
+		}}, Target{Name: "a", Kind: KindRegistry, Ref: "r/a@" + imageDigest, Subject: imageDigest}, "syft is unavailable: syft: tool cache is writable by another user"},
 		{"no generator", &Generator{}, Target{Name: "a", Kind: KindRegistry, Ref: "r/a@" + imageDigest, Subject: imageDigest}, "no SBOM generator"},
 		{"registry denied", &Generator{Tool: pinnedTool, Runner: &fakeSyft{fail: map[string]error{"registry": errors.New("exit 1: 401 unauthorized")}}},
 			Target{Name: "a", Kind: KindRegistry, Ref: "r/a@" + imageDigest, Subject: imageDigest}, "401 unauthorized"},
@@ -266,6 +270,30 @@ func TestGenerate_BoundedConcurrencyKeepsOrder(t *testing.T) {
 		if r.Target.Name != fmt.Sprint(i) || !strings.Contains(string(r.Bytes), targets[i].Ref) {
 			t.Errorf("result %d is for %s", i, r.Target.Name)
 		}
+	}
+}
+
+// Timeout bounds one target's syft run: a hung syft makes that target
+// unavailable, saying why, while the next target is still described.
+func TestGenerate_TimeoutBoundsOneTarget(t *testing.T) {
+	t.Parallel()
+	runner := runnerFunc(func(ctx context.Context, _ string, args, _ []string) ([]byte, error) {
+		if strings.Contains(args[1], "hung") {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6"}`), nil
+	})
+	hung, ok := "sha256:"+strings.Repeat("1", 64), "sha256:"+strings.Repeat("2", 64)
+	results := (&Generator{Tool: pinnedTool, Runner: runner, Timeout: 20 * time.Millisecond}).Generate(context.Background(), []Target{
+		{Name: "hung", Kind: KindRegistry, Ref: "r/hung@" + hung, Subject: hung},
+		{Name: "ok", Kind: KindRegistry, Ref: "r/ok@" + ok, Subject: ok},
+	})
+	if r := results[0].Ref; r.Status != release.SBOMStatusUnavailable || !strings.Contains(r.Reason, context.DeadlineExceeded.Error()) {
+		t.Errorf("hung target: %+v, want unavailable with the deadline", r)
+	}
+	if !results[1].Ref.HasSBOM() {
+		t.Errorf("ok target: %+v, want an SBOM", results[1].Ref)
 	}
 }
 

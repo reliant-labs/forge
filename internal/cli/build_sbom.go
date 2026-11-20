@@ -174,7 +174,10 @@ func recordGeneratedSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 		}
 		return
 	}
-	gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.ProjectDir, in.Env, in.Entities)}
+	gen := &sbom.Generator{
+		Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.ProjectDir, in.Env, in.Entities),
+		Concurrency: sbom.DefaultConcurrency, Timeout: sbom.DefaultTimeout,
+	}
 	if dir := sbomCacheDir(); dir != "" {
 		gen.Cache = &sbom.Cache{Dir: dir}
 	}

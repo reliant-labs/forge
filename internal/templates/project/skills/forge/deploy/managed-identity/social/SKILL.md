@@ -44,4 +44,11 @@ The sign-in screen shows a button per provider (`GET /auth/options` lists them).
 | broker side | `LOGIN_POLICY` lists each provider with its issuer id; the broker mounts `POST /auth/social/start` and `POST /auth/social/callback` (`devidp.SignInRoutes`) and binds each sign-in to the browser that started it |
 | frontend | the sign-in screen's buttons and the `/auth/social/callback` page |
 
-Proven against the pinned Zitadel by `TestE2ESocialSignInGitHubAndGoogleAgainstZitadel` (forge's e2e corpus), up to the provider itself: a real round trip through github.com or Google needs a real OAuth app and a person.
+Proven against the pinned Zitadel by `TestE2ESocialSignInGitHubAndGoogleAgainstZitadel` (Forge's e2e corpus), up to the provider itself. The following real-provider check is separate from that automated test.
+
+## Verify real providers before promoting
+
+1. In an approved hosted canary environment, use its own GitHub and Google OAuth apps and dedicated test accounts. Verify an existing non-social sign-in works before enabling social sign-in; leave it enabled for recovery.
+2. After deploying and reconciling the canary, run `reliant forge cloud identity status <env> --check-social --app <app-url>`. Both providers must be `applied` and report the exact canary issuer callback. This checks authorization URL construction, not the code exchange.
+3. In a fresh browser session for each provider, complete consent at the real provider. Confirm the browser returns to the canary app, opens an authenticated page, and is signed in as the intended canary user. With signup enabled, the first sign-in should create one account and a second sign-in should return to that same account. To check linking, use a separate existing canary account whose verified email matches the provider's verified email; confirm the sign-in keeps the existing account ID and does not create a duplicate. Record only the provider and outcome, never OAuth codes, cookies, or credentials.
+4. If either provider fails, stop promotion. Remove the failing provider from `ManagedIdentity.social` in the affected environment's declaration and reconcile it, or revert the canary's social declaration if both fail. The issuer unlinks the provider from the login policy without deleting user links. Confirm its button is no longer offered and verify the pre-existing non-social sign-in still works. Correct the issuer callback or credential setup before reenabling and repeating the check.

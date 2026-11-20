@@ -30,9 +30,9 @@ type fakeZitadel struct {
 	intents  map[string]*fakeIntent
 	// intentURLs is the urls object of the last intent started.
 	intentURLs map[string]any
-	mails    []fakeMail // what the issuer "sent"
-	calls    []string   // "METHOD /path", every call
-	grants   []string   // "userID:role"
+	mails      []fakeMail // what the issuer "sent"
+	calls      []string   // "METHOD /path", every call
+	grants     []string   // "userID:role"
 
 	// refusedPassword is a password the issuer's policy refuses although it
 	// meets every rule the broker can see (DOMAIN-ZDLwA, "no symbol").

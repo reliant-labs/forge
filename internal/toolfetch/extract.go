@@ -20,13 +20,21 @@ import (
 // hostile one; the copy is still bounded by the entry's declared size and by
 // maxArchiveBytes.
 func extractMember(archivePath, assetName, member, dest string) error {
-	if strings.HasSuffix(assetName, ".zip") {
-		return extractZip(archivePath, assetName, member, dest)
-	}
-	return extractTarGz(archivePath, assetName, member, dest)
+	return readMember(archivePath, assetName, member, func(src io.Reader, size int64) error {
+		return writeExecutable(src, size, member, dest)
+	})
 }
 
-func extractZip(archivePath, assetName, member, dest string) error {
+// readMember also lets cache validation hash the pinned archive's member
+// without extracting another executable to disk.
+func readMember(archivePath, assetName, member string, consume func(io.Reader, int64) error) error {
+	if strings.HasSuffix(assetName, ".zip") {
+		return extractZip(archivePath, assetName, member, consume)
+	}
+	return extractTarGz(archivePath, assetName, member, consume)
+}
+
+func extractZip(archivePath, assetName, member string, consume func(io.Reader, int64) error) error {
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", assetName, err)
@@ -40,14 +48,14 @@ func extractZip(archivePath, assetName, member, dest string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", assetName, err)
 		}
-		err = writeExecutable(rc, int64(f.UncompressedSize64), member, dest) // #nosec G115 -- a size from a checksum-verified archive
+		err = consume(rc, int64(f.UncompressedSize64)) // #nosec G115 -- a size from a checksum-verified archive
 		_ = rc.Close()
 		return err
 	}
 	return fmt.Errorf("archive %s contains no %s executable", assetName, member)
 }
 
-func extractTarGz(archivePath, assetName, member, dest string) error {
+func extractTarGz(archivePath, assetName, member string, consume func(io.Reader, int64) error) error {
 	f, err := os.Open(archivePath) // #nosec G304 -- forge's own staged download
 	if err != nil {
 		return err
@@ -70,7 +78,7 @@ func extractTarGz(archivePath, assetName, member, dest string) error {
 		if hdr.Typeflag != tar.TypeReg || path.Base(hdr.Name) != member {
 			continue
 		}
-		return writeExecutable(tr, hdr.Size, member, dest)
+		return consume(tr, hdr.Size)
 	}
 	return fmt.Errorf("archive %s contains no %s executable", assetName, member)
 }

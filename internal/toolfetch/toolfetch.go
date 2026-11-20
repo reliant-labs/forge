@@ -12,8 +12,11 @@
 //	}
 //	cmd := exec.CommandContext(ctx, path, "scan", ...)
 //
-// Ensure is idempotent and cheap after the first call: a verified entry in
-// the cache is a hit with no network. The first call downloads the archive
+// Ensure is idempotent after the first call: a verified entry in
+// the cache is a hit with no network. Release cache hits rehash the retained
+// archive against its pin and compare its member to the executable. The
+// cache must still be protected from concurrent writes between validation
+// and execution; returning a path cannot prevent that race. The first call downloads the archive
 // for this GOOS/GOARCH (tens of MB), prints one line to stderr saying so,
 // verifies it and installs the binary. version is always the pinned release
 // (templates.SyftVersion / templates.GrypeVersion), the string a scan record
@@ -328,6 +331,9 @@ func (f *Fetcher) key(t Tool) string {
 
 // Find reports t when its entry is installed and usable. No network.
 func (f *Fetcher) Find(t Tool) (Installed, bool) {
+	if f.validate(t) != nil {
+		return Installed{}, false
+	}
 	dir, err := f.cacheDir()
 	if err != nil {
 		return Installed{}, false
@@ -335,11 +341,11 @@ func (f *Fetcher) Find(t Tool) (Installed, bool) {
 	return f.ready(t, filepath.Join(dir, f.key(t)))
 }
 
-// ready decides whether the entry at dir is a usable t: the manifest names
-// t at its version on this platform, a release entry carries exactly the
-// pinned checksum, and the binary is an executable regular file. The entry
-// is published by rename only after verification, so presence of a
-// matching manifest means the bytes beside it were verified.
+// ready never treats a mutable manifest as proof of release integrity:
+// it verifies the retained archive against the caller's pin and compares
+// the executable's hash to that archive's member on every cache hit.
+// Go builds have no reproducible binary pin and rely on the local cache's
+// filesystem permissions; they cannot substitute for a pinned release.
 func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 	data, err := os.ReadFile(filepath.Join(dir, manifestName)) // #nosec G304 -- forge's own cache entry
 	if err != nil {
@@ -355,23 +361,78 @@ func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 			return Installed{}, false
 		}
 	case SourceGoInstall:
+		if _, _, ok := t.checksum(f.goos(), f.goarch()); ok || in.GoPackage != t.GoPackage+"@"+t.Version || t.GoPackage == "" {
+			return Installed{}, false
+		}
 	default:
 		return Installed{}, false
 	}
 	bin := filepath.Join(dir, t.Binary(f.goos()))
-	info, err := os.Stat(bin)
+	info, err := os.Lstat(bin)
 	if err != nil || !info.Mode().IsRegular() || (f.goos() != "windows" && info.Mode().Perm()&0o111 == 0) {
 		return Installed{}, false
+	}
+	if in.Source == SourceRelease {
+		asset, want, _ := t.checksum(f.goos(), f.goarch())
+		archive := filepath.Join(dir, asset)
+		if got, err := hashFile(archive); err != nil || got != want {
+			return Installed{}, false
+		}
+		memberHash := sha256.New()
+		err := readMember(archive, asset, t.Binary(f.goos()), func(src io.Reader, size int64) error {
+			if size < 0 || size > maxArchiveBytes {
+				return fmt.Errorf("invalid member size %d", size)
+			}
+			_, err := io.CopyN(memberHash, src, size)
+			return err
+		})
+		got, hashErr := hashFile(bin)
+		if err != nil || hashErr != nil || got != hex.EncodeToString(memberHash.Sum(nil)) {
+			return Installed{}, false
+		}
 	}
 	in.Path = bin
 	return in, true
 }
 
+func hashFile(path string) (string, error) {
+	file, err := os.Open(path) // #nosec G304 -- a validated cache entry path
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(file, maxArchiveBytes+1))
+	if err != nil || n > maxArchiveBytes {
+		return "", fmt.Errorf("cannot hash cache file %s: size %d: %v", path, n, err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// validate rejects unsafe path and URL components before any cache access.
+func (f *Fetcher) validate(t Tool) error {
+	for _, value := range []string{t.Name, t.Version, f.goos(), f.goarch(), t.Asset(f.goos(), f.goarch())} {
+		if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\\:?#%<>|"*`+"\x00\r\n\t") || strings.TrimSpace(value) != value || strings.HasSuffix(value, ".") {
+			return fmt.Errorf("toolfetch: unsafe path component %q", value)
+		}
+	}
+	for asset, checksum := range t.Checksums {
+		if asset == "." || asset == ".." || asset == "" || strings.ContainsAny(asset, `/\\:?#%`+"\x00") || strings.TrimSpace(asset) != asset || strings.HasSuffix(asset, ".") {
+			return fmt.Errorf("toolfetch: unsafe asset %q", asset)
+		}
+		decoded, err := hex.DecodeString(checksum)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("toolfetch: invalid checksum for %q", asset)
+		}
+	}
+	return nil
+}
+
 // Ensure returns a usable t, installing it when its entry is missing or
 // unusable. See the package doc for the error contract.
 func (f *Fetcher) Ensure(ctx context.Context, t Tool) (Installed, error) {
-	if t.Name == "" || t.Version == "" {
-		return Installed{}, fmt.Errorf("toolfetch: tool needs a name and a version, got %q@%q", t.Name, t.Version)
+	if err := f.validate(t); err != nil {
+		return Installed{}, err
 	}
 	kindDir, err := f.cacheDir()
 	if err != nil {
@@ -427,9 +488,8 @@ func (f *Fetcher) installRelease(ctx context.Context, t Tool, stage string) erro
 	if err := extractMember(archive, asset, bin, filepath.Join(stage, bin)); err != nil {
 		return fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
 	}
-	if err := os.Remove(archive); err != nil {
-		return err
-	}
+	// Keep the archive: its compiled-in pin is the independent trust root
+	// for validating the extracted executable on subsequent cache hits.
 	return writeManifest(stage, Installed{
 		Name: t.Name, Version: t.Version, Source: SourceRelease, Platform: f.platform(),
 		URL: url, ArchiveSHA256: want,

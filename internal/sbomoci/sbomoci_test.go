@@ -23,12 +23,17 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// testRegistry reaches an ocitest.Registry: no credential, and no retrying
-// transport (a refused request must fail at once, not back off).
+// TestMain gives every registry client in these tests a transport that does
+// not retry: a refused request must fail at once, not back off.
+func TestMain(m *testing.M) {
+	registryHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	os.Exit(m.Run())
+}
+
+// testRegistry reaches an ocitest.Registry with no credential.
 func testRegistry() RegistryOptions {
 	return RegistryOptions{
 		Credential: func(context.Context, string) (auth.Credential, error) { return auth.EmptyCredential, nil },
-		HTTPClient: &http.Client{Timeout: 10 * time.Second},
 	}
 }
 

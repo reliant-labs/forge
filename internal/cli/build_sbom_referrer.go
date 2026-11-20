@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/hostedimage"
 	"github.com/reliant-labs/forge/internal/sbomoci"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -40,14 +42,19 @@ func attachSBOMReferrer(ctx context.Context, in sbomGenerated) (release.SBOMRef,
 	if !config.ReadVulnConfig(in.ProjectDir).AttachSBOMEnabled() {
 		return ref, nil
 	}
-	subject := in.Name + "@" + digest
-	if !sbomSubjectPushedByProject(in) {
+	repository := sbomSubjectRepository(in.Name, in.Artifact, in.Entities)
+	if repository == "" {
+		ref.Reason = "referrer not attached: the release records no registry repository for " + in.Name
+		return ref, nil
+	}
+	subject := repository + "@" + digest
+	if !sbomSubjectPushedByProject(in, repository) {
 		// A third-party image the project pins (postgres, a vendor image):
 		// not ours to write beside, and not worth a warning on every cut.
 		ref.Reason = "referrer not attached: " + subject + " is not pushed by this project"
 		return ref, nil
 	}
-	host, _, _ := strings.Cut(in.Name, "/")
+	host, _, _ := strings.Cut(repository, "/")
 	credential, err := sbomRegistryCredential(in.ProjectDir, in.Env, in.Entities, host)
 	if err != nil {
 		return ref, fmt.Errorf("not attached beside the image (the machine ledger keeps it): %w", err)
@@ -69,8 +76,58 @@ func attachSBOMReferrer(ctx context.Context, in sbomGenerated) (release.SBOMRef,
 	return ref, nil
 }
 
+// sbomSubjectRepository is the registry repository an OCI artifact was
+// pushed to — the subject's repository, never assumed to be the hook's Name,
+// because callers key artifacts differently:
+//
+//   - `forge release record` keys by WORKLOAD and keeps the pushed reference
+//     in URI (`ghcr.io/acme/api:v1`): the repository is URI, its tag or
+//     digest stripped.
+//   - The cut keys every OCI artifact by its repository and records no URI
+//     for a built image or a hosted static site (the key IS the address:
+//     harvestReleaseArtifacts). A hosted backend's URI is its repository's
+//     NAMESPACE (harvestHostedBackendArtifacts): a strict path prefix of the
+//     key when the key is under the push base, and, in an env with no push
+//     base, the namespace of a key that is the bare artifact name.
+//
+// URI is part of an artifact's identity, so the cut cannot start recording a
+// different one. The two namespace shapes are therefore recognised here: a
+// URI that is a path prefix of a host-bearing key defers to the key, and a
+// URI that with a bare key spells the repository a hosted workload of e
+// declares (deploytarget.HostedImageRepository) is joined with it.
+//
+// "" when nothing names a registry repository.
+func sbomSubjectRepository(name string, art release.Artifact, e *KCLEntities) string {
+	uri := strings.TrimSuffix(hostedimage.Repository(strings.TrimSpace(art.URI)), "/")
+	keyIsRepository := hostedimage.HasRegistryHost(name)
+	switch {
+	case uri == "" || !hostedimage.HasRegistryHost(uri):
+		if keyIsRepository {
+			return name
+		}
+		return ""
+	case keyIsRepository && strings.HasPrefix(name, uri+"/"):
+		return name
+	case !keyIsRepository && hostedNamespaceOf(e, name, uri):
+		return uri + "/" + name
+	}
+	return uri
+}
+
+// hostedNamespaceOf reports whether uri is the namespace of the hosted
+// workload whose release key is the bare name: the cut recorded that
+// artifact as (name, namespace).
+func hostedNamespaceOf(e *KCLEntities, name, uri string) bool {
+	for _, w := range e.WorkloadsOn(RuntimeHosted) {
+		if hostedArtifactKey(e, w) == name && deploytarget.HostedImageRepository(w.Spec.Image) == uri+"/"+name {
+			return true
+		}
+	}
+	return false
+}
+
 // sbomSubjectPushedByProject reports whether this project pushed the
-// artifact to the repository its release key names, so writing a referrer
+// artifact to repository (its sbomSubjectRepository), so writing a referrer
 // beside it is ours to do:
 //
 //   - this cut's build state recorded it (built, or carried from an earlier
@@ -83,7 +140,7 @@ func attachSBOMReferrer(ctx context.Context, in sbomGenerated) (release.SBOMRef,
 //     third-party image, which is never ours.
 //
 // Everything else — a pinned postgres, a vendor image — is not.
-func sbomSubjectPushedByProject(in sbomGenerated) bool {
+func sbomSubjectPushedByProject(in sbomGenerated, repository string) bool {
 	if in.Built {
 		return true
 	}
@@ -91,14 +148,14 @@ func sbomSubjectPushedByProject(in sbomGenerated) bool {
 	if e == nil {
 		return false
 	}
-	if base := platformPushBase(e); base != "" && (in.Name == base || strings.HasPrefix(in.Name, base+"/")) {
+	if base := platformPushBase(e); base != "" && (repository == base || strings.HasPrefix(repository, base+"/")) {
 		return true
 	}
 	for _, w := range e.Workloads {
 		if w.Image == "" {
 			continue
 		}
-		if imageRepository(w.Spec.Image) == in.Name || (w.Runtime.Type == RuntimeHosted && hostedArtifactKey(e, w) == in.Name) {
+		if imageRepository(w.Spec.Image) == repository || (w.Runtime.Type == RuntimeHosted && hostedArtifactKey(e, w) == repository) {
 			return true
 		}
 	}

@@ -3,7 +3,6 @@ package sbomoci
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 
@@ -27,12 +26,12 @@ type RegistryOptions struct {
 	// Credential overrides the docker credential store, e.g. with the
 	// control-plane identity a bundle push presents to the platform registry.
 	Credential auth.CredentialFunc
-	// PlainHTTP forces plain HTTP for a registry that is not on loopback.
-	PlainHTTP bool
-	// HTTPClient is the transport under the auth client; nil is oras-go's
-	// retrying default.
-	HTTPClient *http.Client
 }
+
+// registryHTTPClient is the transport under every registry client: oras-go's
+// retrying default. A var so the package's tests can swap in one that fails
+// a refused request at once instead of backing off.
+var registryHTTPClient = retry.DefaultClient
 
 // openRepository opens repository with SkipReferrersGC set: see the package
 // doc for why every attach must never delete the previous fallback index.
@@ -41,7 +40,7 @@ func openRepository(repository string, opts RegistryOptions) (*remote.Repository
 	if err != nil {
 		return nil, fmt.Errorf("repository %q: %w", repository, err)
 	}
-	repo.PlainHTTP = opts.PlainHTTP || loopbackRegistry(repo.Reference.Registry)
+	repo.PlainHTTP = loopbackRegistry(repo.Reference.Registry)
 	repo.SkipReferrersGC = true
 	credential := opts.Credential
 	if credential == nil {
@@ -50,11 +49,7 @@ func openRepository(repository string, opts RegistryOptions) (*remote.Repository
 			return nil, fmt.Errorf("read docker credentials: %w", err)
 		}
 	}
-	client := opts.HTTPClient
-	if client == nil {
-		client = retry.DefaultClient
-	}
-	repo.Client = &auth.Client{Client: client, Cache: auth.NewCache(), Credential: credential}
+	repo.Client = &auth.Client{Client: registryHTTPClient, Cache: auth.NewCache(), Credential: credential}
 	return repo, nil
 }
 

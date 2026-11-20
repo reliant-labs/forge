@@ -235,6 +235,112 @@ func TestAttachSBOMReferrer_OnlyWhereTheProjectPushed(t *testing.T) {
 	}
 }
 
+// The subject's repository comes from what each caller records, and the
+// cut's three OCI kinds keep the repository they had.
+func TestSBOMSubjectRepository(t *testing.T) {
+	t.Parallel()
+	oci := func(uri string) release.Artifact {
+		return release.Artifact{Kind: release.KindOCI, Mode: release.ModeShared, URI: uri, Digests: map[string]string{release.SharedVariant: sha("a")}}
+	}
+	for _, tc := range []struct {
+		label, name string
+		art         release.Artifact
+		want        string
+	}{
+		{"cut: a built image (key is the repository, no URI)", "ghcr.io/acme/api", oci(""), "ghcr.io/acme/api"},
+		{"cut: a hosted static site (key is the repository, no URI)", "registry.reliantapi.com/org-1/shop/web/static.v1", oci(""), "registry.reliantapi.com/org-1/shop/web/static.v1"},
+		{"cut: a hosted backend (URI is its push-base namespace)", "registry.reliantapi.com/org-1/shop/api", oci("registry.reliantapi.com/org-1/shop"), "registry.reliantapi.com/org-1/shop/api"},
+		{"cut: a mirrored backend (URI is the namespace)", "registry.reliantapi.com/org-1/shop/mirror/docker.io/library/redis", oci("registry.reliantapi.com/org-1/shop/mirror/docker.io/library"), "registry.reliantapi.com/org-1/shop/mirror/docker.io/library/redis"},
+		{"record: workload key, URI with a tag", "api", oci("ghcr.io/acme/api:v1"), "ghcr.io/acme/api"},
+		{"record: workload key, bare URI", "api", oci("us-docker.pkg.dev/p/r/api"), "us-docker.pkg.dev/p/r/api"},
+		{"record: workload key, URI with a digest", "api", oci("localhost:5000/api@" + sha("b")), "localhost:5000/api"},
+		{"record: workload key, URI on a port with a tag", "api", oci("localhost:5000/acme/api:v1"), "localhost:5000/acme/api"},
+		{"no repository anywhere", "api", oci(""), ""},
+		{"a URI with no registry host", "api", oci("acme/api:v1"), ""},
+	} {
+		if got := sbomSubjectRepository(tc.name, tc.art, nil); got != tc.want {
+			t.Errorf("%s: sbomSubjectRepository(%q, URI %q) = %q, want %q", tc.label, tc.name, tc.art.URI, got, tc.want)
+		}
+	}
+}
+
+// The cut's hosted backend in an env with no push base: keyed by its bare
+// artifact name, with its namespace as URI. A record of a workload of the same
+// name keeps its URI whole.
+func TestSBOMSubjectRepository_HostedBackendWithoutAPushBase(t *testing.T) {
+	t.Parallel()
+	w := WorkloadEntity{Name: "api", Runtime: RuntimeEntity{Type: RuntimeHosted}}
+	w.Spec.Image = "ghcr.io/acme/api:v3"
+	e := &KCLEntities{Workloads: []WorkloadEntity{w}}
+	if key := hostedArtifactKey(e, w); key != "api" {
+		t.Fatalf("hostedArtifactKey = %q; the fixture no longer models a no-push-base env", key)
+	}
+	art := release.Artifact{Kind: release.KindOCI, Mode: release.ModeShared, URI: "ghcr.io/acme", Digests: map[string]string{release.SharedVariant: sha("a")}}
+	if got := sbomSubjectRepository("api", art, e); got != "ghcr.io/acme/api" {
+		t.Errorf("cut hosted backend: %q, want ghcr.io/acme/api", got)
+	}
+	art.URI = "ghcr.io/acme/api:v3"
+	if got := sbomSubjectRepository("api", art, e); got != "ghcr.io/acme/api" {
+		t.Errorf("record of the same workload: %q, want ghcr.io/acme/api", got)
+	}
+}
+
+// A record keys its artifact by workload: the subject, the referrer and the
+// owned-subject filter all follow URI, never the workload name.
+func TestAttachSBOMReferrer_NameIsNotTheRepository(t *testing.T) {
+	calls := useReferrerRegistry(t)
+	f := ocitest.New(t, nil)
+	data := []byte(`{"bomFormat":"CycloneDX"}`)
+	repo, digest := splitSubject(f.PutSubject("acme/api", "v1"))
+	art := sbomTestImage(digest)
+	art.URI = repo + ":v1"
+
+	// Pushed by this pipeline.
+	in := generatedFor(t.TempDir(), "api", art, data)
+	ref, err := attachSBOMReferrer(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ref.Referrer, repo+"@sha256:") {
+		t.Fatalf("ref = %+v, want a referrer in %s", ref, repo)
+	}
+	if c := (*calls)[len(*calls)-1]; c.subject != repo+"@"+digest {
+		t.Errorf("attached to %s, want %s", c.subject, repo+"@"+digest)
+	}
+
+	// Not built here, but the repository a workload this env builds resolves
+	// to: owned by its URI repository, though the name matches nothing.
+	w := WorkloadEntity{Name: "api", Image: "api"}
+	w.Spec.Image = repo + ":v2"
+	in.Built, in.Entities = false, &KCLEntities{Workloads: []WorkloadEntity{w}}
+	before := len(*calls)
+	if _, err := attachSBOMReferrer(context.Background(), in); err != nil || len(*calls) != before+1 {
+		t.Errorf("a workload-built repository under another name: err %v, attach attempted %v", err, len(*calls) > before)
+	}
+
+	// A pinned third-party image under a workload name: the reason names
+	// the URI repository.
+	pgRepo, pgDigest := splitSubject(f.PutSubject("library/postgres", "16"))
+	pg := sbomTestImage(pgDigest)
+	pg.URI = pgRepo + ":16"
+	db := generatedFor(t.TempDir(), "db", pg, data)
+	db.Built, db.Entities = false, in.Entities
+	before = len(*calls)
+	ref, err = attachSBOMReferrer(context.Background(), db)
+	if err != nil || len(*calls) != before || ref.Referrer != "" ||
+		ref.Reason != "referrer not attached: "+pgRepo+"@"+pgDigest+" is not pushed by this project" {
+		t.Errorf("third-party image under a workload name: (%+v, %v)", ref, err)
+	}
+
+	// No repository recorded at all: said, not attempted.
+	bare := generatedFor(t.TempDir(), "api", sbomTestImage(digest), data)
+	before = len(*calls)
+	if ref, err := attachSBOMReferrer(context.Background(), bare); err != nil || len(*calls) != before ||
+		!strings.Contains(ref.Reason, "no registry repository") {
+		t.Errorf("no repository: (%+v, %v)", ref, err)
+	}
+}
+
 func TestRegistryCredentialFor_PlatformHostTakesTheControlPlaneIdentity(t *testing.T) {
 	const host = "registry.example.test"
 	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{RegistryHost: host}}

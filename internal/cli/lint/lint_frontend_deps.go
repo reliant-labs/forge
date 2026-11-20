@@ -190,9 +190,13 @@ func (p frontendDepsPolicy) check(ctx context.Context, name, dir, root, tool str
 	// workspace-root lockfile change.
 	nmDir, installed := nearestNodeModulesDir(dir, root)
 	stale := installed && frontenddeps.Stale(nmDir)
+	installDir := dir
+	if !installed {
+		installDir = frontenddeps.WorkspaceInstallDir(dir, root)
+	}
 	switch {
 	case p.install && (!installed || stale):
-		target := dir
+		target := installDir
 		if stale {
 			target = nmDir
 		}
@@ -201,7 +205,7 @@ func (p frontendDepsPolicy) check(ctx context.Context, name, dir, root, tool str
 				return frontendDepsState{
 					missing: true,
 					reason:  fmt.Sprintf("dependencies are not installed and installing them (--install) failed — %s did NOT run: %v", tool, err),
-					fix:     npmInstallFix(dir),
+					fix:     npmInstallFix(target),
 				}
 			}
 			return frontendDepsState{note: fmt.Sprintf("%s: refreshing the stale node_modules in %s (--install) failed, so %s ran against the installed tree: %v",
@@ -230,7 +234,7 @@ func (p frontendDepsPolicy) check(ctx context.Context, name, dir, root, tool str
 			missing: true,
 			reason: fmt.Sprintf("dependencies are not installed (node_modules not found in %s or any parent directory) — %s did NOT run; forge lint does not install them",
 				filepath.ToSlash(dir), tool),
-			fix: depsNotInstalledFix(dir),
+			fix: depsNotInstalledFix(installDir),
 		}
 	}
 	if stale {

@@ -193,6 +193,46 @@ func TestFrontendDepsHoistedToWorkspaceRootRuns(t *testing.T) {
 	}
 }
 
+func TestFrontendDepsInstallsMissingWorkspaceAtTheRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+	}{
+		{"npm", map[string]string{"package.json": `{"private":true,"workspaces":["frontends/*"]}`, "package-lock.json": "{}"}},
+		{"yarn", map[string]string{"package.json": `{"private":true,"workspaces":["frontends/*"]}`, "yarn.lock": ""}},
+		{"pnpm", map[string]string{"package.json": `{"private":true}`, "pnpm-workspace.yaml": "packages:\n  - 'frontends/*'\n", "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := fakeInstaller(t, nil)
+			root := t.TempDir()
+			for name, body := range tc.files {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir := filepath.Join(root, "frontends", "web")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"web"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			check := func(policy frontendDepsPolicy) frontendDepsState {
+				return policy.check(context.Background(), "web", dir, root, "typecheck")
+			}
+			if got := check(frontendDepsPolicy{}); !got.missing || len(*calls) != 0 || !strings.Contains(got.fix, tc.name+" ") {
+				t.Fatalf("without opt-in: got %+v, installs %v", got, *calls)
+			}
+			if got := check(frontendDepsPolicy{install: true}); got.missing || len(*calls) != 1 || (*calls)[0] != root {
+				t.Fatalf("with opt-in: got %+v, want only a root install, got %v", got, *calls)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
+				t.Fatalf("unexpected member node_modules: %v", err)
+			}
+		})
+	}
+}
+
 // Older than its lockfile: the lane runs against what is installed (an mtime
 // heuristic never fails a gate), with a note naming the fix. --install
 // refreshes it instead.

@@ -191,6 +191,35 @@ The deploy continues and the workloads run; their declared telemetry is collecte
 	}
 }
 
+// A target forge rendered on its own (telemetry.OriginDefault, a
+// ManagedDatabase's default) is recorded in the shape, with its origin, and
+// withheld from a reader that does not decode shape-telemetry like any other;
+// but the warning names only what the project declared, and says nothing when
+// every withheld target is a default.
+func TestTelemetryWarningSkipsDefaultTargets(t *testing.T) {
+	db := hostedTarget("db-postgres")
+	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
+	db.OTLP = nil
+
+	defaults := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{db})}
+	if len(defaults.Telemetry) != 1 || defaults.Telemetry[0].Origin != telemetry.OriginDefault {
+		t.Fatalf("the shape did not record the default target with its origin: %+v", defaults.Telemetry)
+	}
+	old := &BundleReader{}
+	if got := old.LimitShape(defaults); got.Telemetry != nil {
+		t.Errorf("a reader without %s was sent the default target: %+v", BundleFeatureTelemetry, got.Telemetry)
+	}
+	if msg := old.TelemetryWarning("prod", defaults); msg != "" {
+		t.Errorf("warned about a default target nobody declared:\n%s", msg)
+	}
+
+	mixed := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{db, hostedTarget("api")})}
+	msg := old.TelemetryWarning("prod", mixed)
+	if !strings.Contains(msg, "  - api (workload:api)") || strings.Contains(msg, "db-postgres") {
+		t.Errorf("the warning must name the declared target and only it:\n%s", msg)
+	}
+}
+
 func problemFields(ps []telemetry.Problem) []string {
 	out := make([]string, len(ps))
 	for i, p := range ps {

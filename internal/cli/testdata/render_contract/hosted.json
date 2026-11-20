@@ -670,6 +670,7 @@
           }
         ],
         "namespaces": [],
+        "origin": "default",
         "otlp": null,
         "ports": {
           "metrics": 9187,

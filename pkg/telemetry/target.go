@@ -58,6 +58,25 @@ const (
 	AttachManagedDatabase Attachment = "manageddatabase"
 )
 
+// Origin is who declared a target.
+type Origin string
+
+const (
+	// OriginDeclared is a target the project declared: a forge.Telemetry on
+	// a Workload, HostInfra, Manifests group, Observability, or a
+	// ManagedDatabase's own telemetry (an extended default included). It is
+	// the zero value and is never written.
+	OriginDeclared Origin = ""
+	// OriginDefault is a target forge rendered on its own, with no line of
+	// the project's: a forge.ManagedDatabase's default telemetry and the
+	// CloudNativePG operator target that comes with it. It is collected
+	// like any other; what changes is what forge SAYS about it: a person
+	// deploying is not warned that a default goes uncollected where the
+	// control plane does not collect hosted telemetry yet, because they
+	// asked for nothing.
+	OriginDefault Origin = "default"
+)
+
 // Runtime is where the target runs, and so which collector reaches it.
 type Runtime string
 
@@ -115,7 +134,10 @@ type Target struct {
 	// CloudNativePG operator target.
 	Source     string     `json:"source"`
 	Attachment Attachment `json:"attachment"`
-	Runtime    Runtime    `json:"runtime"`
+	// Origin is OriginDefault for a target forge rendered with no
+	// declaration of the project's; empty (OriginDeclared) otherwise.
+	Origin  Origin  `json:"origin,omitempty"`
+	Runtime Runtime `json:"runtime"`
 	// Cluster is the kubectl context whose collector reaches the target, on
 	// RuntimeCluster. Empty elsewhere.
 	Cluster string `json:"cluster,omitempty"`
@@ -164,9 +186,10 @@ type Target struct {
 	Dashboard SystemDashboard `json:"dashboard"`
 	// Dashboards are the system's own dashboards, each one forge.dashboards/v1
 	// object exactly as a dashboard file carries it (pkg/dashspec). Validate
-	// runs each through dashspec.ParseDashboard, the validator a release cut
-	// runs; they are kept raw so that validator, with its line and column, is
-	// the one judge of them.
+	// runs each through Options.ValidateDashboard (forge passes
+	// dashspec.ParseDashboard, the validator a release cut runs); they are
+	// kept raw so that validator, with its line and column, is the one judge
+	// of them.
 	Dashboards []json.RawMessage `json:"dashboards"`
 	// DefaultAlerts arms <Service>TargetDown and <Service>CheckFailing.
 	DefaultAlerts bool `json:"default_alerts"`

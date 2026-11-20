@@ -77,6 +77,12 @@ func TestRenderContract_ManagedDatabaseTelemetryByDefault(t *testing.T) {
 				}
 			}
 			for _, tg := range e.Telemetry {
+				// forge rendered every one with no line of the project's, so
+				// a deploy to a control plane that does not collect hosted
+				// telemetry withholds them without a warning.
+				if tg.Origin != telemetry.OriginDefault {
+					t.Errorf("%s: origin %q, want %q", tg.ServiceName, tg.Origin, telemetry.OriginDefault)
+				}
 				assertDashboardsWithinAllowList(t, tg)
 			}
 

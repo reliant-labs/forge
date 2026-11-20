@@ -181,3 +181,27 @@ func TestRenderContract_HostedTelemetryReachesTheShape(t *testing.T) {
 		t.Errorf("a literal OTLP env value reached the shape:\n%s", enc)
 	}
 }
+
+// A hosted env whose only telemetry is forge's own default (a ManagedDatabase's)
+// deploys to a control plane that does not collect hosted telemetry without a
+// word: the default is withheld silently. A declared target beside it is still
+// named, alone.
+func TestCheckBundleTelemetryIsQuietAboutDefaults(t *testing.T) {
+	db := hostedTelemetryTarget("db-postgres")
+	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
+	old := &release.BundleReader{Features: []string{release.BundleFeatureStorage}}
+
+	var out bytes.Buffer
+	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db})}
+	if err := checkBundleTelemetry(&out, "prod-default-only", shape, old); err != nil || out.Len() != 0 {
+		t.Errorf("default-only telemetry: err %v, output %q; want silence", err, out.String())
+	}
+
+	shape.Telemetry = release.ShapeTelemetryOf([]telemetry.Target{db, hostedTelemetryTarget("api")})
+	if err := checkBundleTelemetry(&out, "prod-default-mixed", shape, old); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "[bundle]     - api (workload:api): metrics\n") || strings.Contains(got, "db-postgres") {
+		t.Errorf("the warning must name the declared target and only it:\n%s", got)
+	}
+}

@@ -56,7 +56,7 @@ Without a destination there is no agent, and a cluster Telemetry that nothing co
 
 ## Reliant hosted (`forge.OnHosted`)
 
-The platform collects what a hosted workload declares, **once the control plane advertises `shape-telemetry`**. Until it does, `forge env deploy` warns (`declares telemetry this control plane does not collect yet`) and the declaration is withheld from the shape; nothing breaks. Rules, applied at `forge env render` and `env deploy`:
+The platform collects what a hosted workload declares, **once the control plane advertises `shape-telemetry`**. Until it does, `forge env deploy` warns (`declares telemetry this control plane does not collect yet`), naming each target you declared, and the declaration is withheld from the shape; nothing breaks. A ManagedDatabase's default telemetry (rendered with `origin: "default"`, since you declared nothing) is withheld the same way without a warning. Rules, applied at `forge env render` and `env deploy`:
 
 | Rule | Why |
 |---|---|

@@ -1465,8 +1465,6 @@ jobs:
     permissions:
       contents: read
       actions: read
-      # The main-red override reads the pull request's labels.
-      pull-requests: read
       # The merge queue's budget report keeps one rolling pipeline:slo issue.
       issues: write
     steps:
@@ -1484,13 +1482,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci-queue-budget.sh || true
-      # A red run passes only through the main-red override: a pull request
-      # labelled `ci:main-red` whose every failure also fails on main's latest
-      # run (scripts/ci-main-red.sh says exactly what is matched, and refuses
-      # Dependabot). It is the one way past this gate: no account bypasses
-      # the main ruleset. After labelling, re-run this job alone
-      # (`gh run rerun <run> --job <gate job id>`); the other jobs keep their
-      # results.
+      # A red run never passes. No label, account or override turns this gate
+      # green (owner, 2026-11-20: approval is a check result, never a label;
+      # the `ci:main-red` label override is gone), and no account bypasses the
+      # main ruleset. A pull request that inherits main's red waits for the fix
+      # on main, or is the fix.
       - name: Every job passed
         env:
           RESULTS: ${{ toJSON(needs) }}
@@ -1515,9 +1511,5 @@ jobs:
           fi
           echo "not every job passed:"
           echo "$red"
-          if scripts/ci-main-red.sh; then
-            echo "::warning::CI gate passed over main's reds (ci:main-red); see the run summary"
-            exit 0
-          fi
           echo "::error::not every job passed"
           exit 1

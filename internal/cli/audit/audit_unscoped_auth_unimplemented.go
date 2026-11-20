@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"strconv"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // An rpc whose handler only answers CodeUnimplemented reads no caller
@@ -19,8 +21,9 @@ import (
 // The recognized bodies are exactly one return statement of:
 //
 //   - the embedded Connect handler: `return s.Unimplemented<Svc>Handler.<Rpc>(…)`,
-//     where the method called is the handler's own name (the shape a
-//     project keeps when it hand-writes a method only to say "not yet");
+//     where the receiver directly embeds this service's generated Connect
+//     type (resolved through its declaration's imports), and the method
+//     called is the handler's own name;
 //   - `return nil, svcerr.Unimplemented(…)` (or `return svcerr.Unimplemented(…)`
 //     for a streaming rpc), svcerr being forge/pkg/svcerr in that file,
 //     optionally wrapped in svcerr.ToConnect;
@@ -60,7 +63,7 @@ func importIdents(f *ast.File) map[string]string {
 
 // bodyServesUnimplemented reports whether fn's body is exactly one return
 // of one of the Unimplemented shapes above.
-func bodyServesUnimplemented(fn *ast.FuncDecl, imports map[string]string) bool {
+func bodyServesUnimplemented(fn *ast.FuncDecl, imports map[string]string, embeddedReceivers map[string]bool, service string) bool {
 	if fn.Body == nil || len(fn.Body.List) != 1 {
 		return false
 	}
@@ -73,7 +76,7 @@ func bodyServesUnimplemented(fn *ast.FuncDecl, imports map[string]string) bool {
 		// A streaming rpc returns only an error; a unary one may return the
 		// embedded handler's (response, error) pair as one call.
 		return isUnimplementedError(ret.Results[0], imports) ||
-			isEmbeddedUnimplementedCall(ret.Results[0], fn)
+			isEmbeddedUnimplementedCall(ret.Results[0], fn, embeddedReceivers, service)
 	case 2:
 		nilIdent, ok := ret.Results[0].(*ast.Ident)
 		return ok && nilIdent.Name == "nil" && isUnimplementedError(ret.Results[1], imports)
@@ -81,9 +84,52 @@ func bodyServesUnimplemented(fn *ast.FuncDecl, imports map[string]string) bool {
 	return false
 }
 
-// isEmbeddedUnimplementedCall matches `<recv>.Unimplemented…Handler.<Name>(…)`
-// where <recv> is fn's receiver and <Name> is fn's own name.
-func isEmbeddedUnimplementedCall(e ast.Expr, fn *ast.FuncDecl) bool {
+// embeddedUnimplementedReceivers proves the field's identity from the receiver
+// declaration and that file's imports, not from the spelling at the call site.
+// Only direct anonymous embeddings of this service's generated Connect type
+// qualify; aliases and named fields are deliberately left for normal auditing.
+func embeddedUnimplementedReceivers(files []*ast.File, svc codegen.ServiceDef) map[string]bool {
+	out := map[string]bool{}
+	if svc.GoPackage == "" || svc.PkgName == "" {
+		return out
+	}
+	importPath := svc.GoPackage + "/" + svc.PkgName + "connect"
+	for _, f := range files {
+		pkg := importIdents(f)[importPath]
+		if pkg == "" {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				typ, ok := spec.(*ast.TypeSpec)
+				if !ok || typ.Assign.IsValid() {
+					continue
+				}
+				st, ok := typ.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range st.Fields.List {
+					if len(field.Names) == 0 && isQualified(field.Type, pkg, "Unimplemented"+svc.Name+"Handler") {
+						out[typ.Name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// isEmbeddedUnimplementedCall requires the exact generated embedding on fn's
+// receiver, and a call to this RPC's own method.
+func isEmbeddedUnimplementedCall(e ast.Expr, fn *ast.FuncDecl, embeddedReceivers map[string]bool, service string) bool {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 || !embeddedReceivers[receiverTypeName(fn.Recv.List[0].Type)] {
+		return false
+	}
 	call, ok := e.(*ast.CallExpr)
 	if !ok {
 		return false
@@ -93,7 +139,7 @@ func isEmbeddedUnimplementedCall(e ast.Expr, fn *ast.FuncDecl) bool {
 		return false
 	}
 	field, ok := method.X.(*ast.SelectorExpr)
-	if !ok || !strings.HasPrefix(field.Sel.Name, "Unimplemented") || !strings.HasSuffix(field.Sel.Name, "Handler") {
+	if !ok || field.Sel.Name != "Unimplemented"+service+"Handler" {
 		return false
 	}
 	recv, ok := field.X.(*ast.Ident)

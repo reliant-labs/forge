@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +10,39 @@ import (
 )
 
 const unimplementedHeader = "package shop\n\nimport (\n\t\"context\"\n\t\"connectrpc.com/connect\"\n\t\"github.com/reliant-labs/forge/pkg/svcerr\"\n)\n\n"
+
+func writeUnimplementedReceiver(t *testing.T, dir, imp, field string) {
+	t.Helper()
+	src := "package shop\nimport " + imp + "\ntype Service struct { " + field + " }\n"
+	if err := os.WriteFile(filepath.Join(dir, "internal", "handlers", "shop", "service.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnscopedAuth_EmbeddedStubIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, imp, field string
+	}{
+		{"fake package", `wire "example.com/app/internal/fake"`, "wire.UnimplementedShopServiceHandler"},
+		{"named fake field", `wire "example.com/app/internal/fake"`, "UnimplementedShopServiceHandler wire.Fake"},
+		{"wrong service", `wire "example.com/app/gen/services/shop/v1/shopv1connect"`, "wire.UnimplementedOtherServiceHandler"},
+		{"renamed other service", `wire "example.com/app/gen/services/shop/v1/shopv1connect"`, "UnimplementedShopServiceHandler wire.UnimplementedOtherServiceHandler"},
+		{"local fake type", `_ "example.com/app/gen/services/shop/v1/shopv1connect"`, "UnimplementedShopServiceHandler"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := unimplementedHeader + "func (s *Service) Later(ctx context.Context, req *connect.Request[pb.LaterRequest]) (*connect.Response[pb.LaterResponse], error) { return s.UnimplementedShopServiceHandler.Later(ctx, req) }\n"
+			dir := writeProject(t, "ShopService", map[string]bool{"Later": true}, src)
+			writeUnimplementedReceiver(t, dir, tc.imp, tc.field)
+			cat := auditUnscopedAuth(nil, dir)
+			if got := strings.Join(unscopedMethods(t, cat), ","); got != "Later" {
+				t.Fatalf("unscoped = %q, want Later", got)
+			}
+			if got := unimplementedMethods(t, cat); len(got) != 0 {
+				t.Fatalf("unimplemented = %v, want none", got)
+			}
+		})
+	}
+}
 
 func unimplementedMethods(t *testing.T, cat audittype.Category) []string {
 	t.Helper()
@@ -40,6 +75,7 @@ func TestUnscopedAuth_UnimplementedHandlersAreNotFindings(t *testing.T) {
 		"Embedded": true, "Svcerr": true, "Stream": true, "Connect": true, "GetOrder": true,
 	}, src)
 
+	writeUnimplementedReceiver(t, dir, "wire \"example.com/app/gen/services/shop/v1/shopv1connect\"", "wire.UnimplementedShopServiceHandler")
 	cat := auditUnscopedAuth(nil, dir)
 
 	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
@@ -66,6 +102,7 @@ func TestUnscopedAuth_UnimplementedExemptionIsExact(t *testing.T) {
 		"\treturn nil, svcerr.Unimplemented(\"not forge's svcerr\")\n}\n"
 	dir := writeProject(t, "ShopService", map[string]bool{"Work": true, "Other": true, "Fake": true}, src)
 
+	writeUnimplementedReceiver(t, dir, "wire \"example.com/app/gen/services/shop/v1/shopv1connect\"", "wire.UnimplementedShopServiceHandler")
 	cat := auditUnscopedAuth(nil, dir)
 
 	if got := strings.Join(unscopedMethods(t, cat), ","); got != "Fake,Other,Work" {
@@ -84,6 +121,7 @@ func TestUnscopedAuth_OnlyUnimplementedLeftIsOK(t *testing.T) {
 		"\treturn s.UnimplementedShopServiceHandler.Later(ctx, req)\n}\n"
 	dir := writeProject(t, "ShopService", map[string]bool{"ListMyOrders": true, "Later": true}, src)
 
+	writeUnimplementedReceiver(t, dir, "wire \"example.com/app/gen/services/shop/v1/shopv1connect\"", "wire.UnimplementedShopServiceHandler")
 	cat := auditUnscopedAuth(nil, dir)
 
 	if cat.Status != audittype.StatusOK {

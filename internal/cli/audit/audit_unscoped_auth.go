@@ -346,7 +346,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			continue
 		}
 
-		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)))
+		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)), svc)
 		if herr != nil {
 			unresolvedSvcs = append(unresolvedSvcs, svc.Name)
 			continue
@@ -857,7 +857,7 @@ type handlerAuthUse struct {
 // that package, up to maxWrapperHops packages deep — a package-level
 // function is unique in its package, so the import names it exactly (see
 // audit_unscoped_auth_module.go).
-func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handlerAuthUse, error) {
+func scanHandlerAuthUse(dir string, callers packageCallerSeam, svc codegen.ServiceDef) (map[string]handlerAuthUse, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -920,6 +920,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 		astFiles = append(astFiles, pf.file)
 	}
 	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
+	embeddedReceivers := embeddedUnimplementedReceivers(astFiles, svc)
 
 	out := map[string]handlerAuthUse{}
 	rank := map[string]int{}
@@ -938,7 +939,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 				Delegating: bodyIsCRUDDelegation(fn.Body),
 				AckReason:  ackReason(fn.Doc),
 			}
-			use.Unimplemented = bodyServesUnimplemented(fn, imports)
+			use.Unimplemented = bodyServesUnimplemented(fn, imports, embeddedReceivers, svc.Name)
 			use.ReadsCaller = reachesDirectly(fn) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
 			use.SQL = sqlByName[fn.Name.Name]

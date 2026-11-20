@@ -275,7 +275,6 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 // transaction timestamps: PostgreSQL 11+ avoids rewriting the table for
 // non-volatile ADD COLUMN defaults.
 var (
-	statementSplitRe  = regexp.MustCompile(`;`)
 	addColumnRe       = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+[^;]*`)
 	updateRe          = regexp.MustCompile(`(?is)^\s*update\s+(?:"[^"]+"|[a-zA-Z_][\w$.]*)\s+set\s+([^;]+)\bwhere\b[^;]+`)
 	columnSetRe       = regexp.MustCompile(`(?is)(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s*=`)
@@ -305,8 +304,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// allow-destructive a silent exemption from the NOT NULL checks too.
 	allowUnsafeNotNull := hasAllowUnsafeNotNullPragma(content)
 
-	clean := stripSQLComments(content)
-	statements := splitStatements(clean)
+	statements := migrationStatements(content)
 	backfilledColumns := map[string]bool{}
 	// generatedColumns records every column this migration adds as
 	// GENERATED ALWAYS AS (...) STORED, so a later SET NOT NULL on one is
@@ -381,26 +379,6 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 type statement struct {
 	Text string
 	Line int
-}
-
-// splitStatements splits content on `;` and records the line each
-// statement's TEXT starts on — the line a finding should point at.
-//
-// A part begins right after the previous `;`, so it usually opens with that
-// line's newline and any blank or comment lines (comments are already blanked
-// to newlines). Counting from the part's first byte put every finding on the
-// line of the PREVIOUS statement's semicolon — and a migration's first
-// statement, under the header `forge db migration new` writes, on line 1.
-func splitStatements(content string) []statement {
-	parts := statementSplitRe.Split(content, -1)
-	statements := make([]statement, 0, len(parts))
-	line := 1
-	for _, part := range parts {
-		lead := part[:len(part)-len(strings.TrimLeft(part, " \t\r\n"))]
-		statements = append(statements, statement{Text: part, Line: line + strings.Count(lead, "\n")})
-		line += strings.Count(part, "\n")
-	}
-	return statements
 }
 
 func stripSQLComments(content string) string {

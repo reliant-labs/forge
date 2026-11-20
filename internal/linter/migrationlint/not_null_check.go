@@ -63,7 +63,7 @@ func dropCheckProvenSetNotNull(files []compatFile, findings []Finding) []Finding
 	}
 	proven := map[key]bool{}
 	for _, f := range files {
-		for _, stmt := range splitStatements(stripSQLComments(f.content)) {
+		for _, stmt := range migrationStatements(f.content) {
 			m := alterTableNameRe.FindStringSubmatch(stmt.Text)
 			if m == nil {
 				checks.forgetStatement(stmt.Text)
@@ -224,17 +224,21 @@ func setNotNullFindingColumn(message string) string {
 	return col
 }
 
-// splitAlterClauses splits an ALTER TABLE's action list on the commas
-// between actions, ignoring commas inside parentheses (a CHECK expression,
-// a column type's precision).
+// splitAlterClauses splits on commas at the top level of an ALTER action
+// list. PostgreSQL quotes, comments and bracketed expressions are not syntax
+// at this level; the same quote lexers also split the containing statements.
 func splitAlterClauses(actions string) []string {
 	var clauses []string
 	depth, start := 0, 0
-	for i, r := range actions {
-		switch r {
-		case '(':
+	for i := 0; i < len(actions); i++ {
+		if end, _ := migrationQuotedOrCommentEnd(actions, i); end > i {
+			i = end - 1
+			continue
+		}
+		switch actions[i] {
+		case '(', '[':
 			depth++
-		case ')':
+		case ')', ']':
 			if depth > 0 {
 				depth--
 			}

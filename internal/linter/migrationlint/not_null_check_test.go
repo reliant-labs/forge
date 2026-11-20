@@ -65,6 +65,20 @@ func TestSetNotNull_ProvenByValidatedCheck(t *testing.T) {
 		{"two columns differing in case on the same line need separate proofs", []compatFile{
 			{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
 			{"2.up.sql", `ALTER TABLE users ALTER COLUMN email SET NOT NULL, ALTER COLUMN "EMAIL" SET NOT NULL;`}}, 1},
+		{"parenthesis in a default must not hide the next SET NOT NULL", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text DEFAULT '(', ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"doubled quote in a default keeps the parenthesis literal", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text DEFAULT 'we''re (', ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"escape string default must not hide the next SET NOT NULL", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text DEFAULT E'\'x(', ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"dollar quote default must not hide the next SET NOT NULL", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text DEFAULT $text$(,;)$text$ || $text$($text$, ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"quoted identifier parentheses must not hide the next SET NOT NULL", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN "x(," text, ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"literal SQL text is not a SET NOT NULL clause", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text DEFAULT 'body , ALTER COLUMN email SET NOT NULL , text';`}}, 0},
+		{"nested block comments are not ALTER clause syntax", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text /* outer ( /* inner */ outer , */, ALTER COLUMN email SET NOT NULL;`}}, 1},
 		{"a search path change invalidates unqualified proofs", []compatFile{add, validate,
 			{"3.up.sql", `SET search_path TO other, public;`}, {"4.up.sql", set.content}}, 1},
 

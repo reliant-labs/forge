@@ -104,7 +104,7 @@ assert_targets_are_the_render = targets == _out.telemetry
 assert_reached_only = sorted([p for p in fragment.pipelines]) == ["metrics/telemetry_bus", "metrics/telemetry_engine"]
 assert_engine_pipeline = _pipelines["metrics/telemetry_engine"] == {
     receivers = ["prometheus/telemetry_engine"]
-    processors = ["memory_limiter", "transform/telemetry_engine", "batch"]
+    processors = ["memory_limiter", "transform/telemetry_target/engine", "batch"]
     exporters = ["otlphttp/platform"]
 }
 assert_isolated_exporter = _pipelines["metrics/telemetry_bus"].exporters == ["otlphttp/selfmon"] and fragment.exporters["otlphttp/selfmon"].sending_queue.queue_size == 200

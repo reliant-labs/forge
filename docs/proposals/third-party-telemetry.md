@@ -915,3 +915,49 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - Validate's hosted rules: every scrape sets `allow`; no `address`, no bearer token, no
   profiles; a numeric port must be one the workload declares. A target on `forge.OnExternal` or
   `forge.BuildOnly` is refused (nothing forge reaches runs it).
+
+**F5 (dashboards, default alerts, `forge obs telemetry`):**
+
+- `Telemetry.dashboards: [dashspec.Dashboard] = []` (`kcl/telemetry.k` imports `.dashspec`;
+  projects write `import forge.dashspec as ds`). Each renders through `dashspec.dashboard_json`
+  into `Target.Dashboards []json.RawMessage`, kept raw so `dashspec.ParseDashboard` (in
+  `telemetry.Validate` and again in obsdash) is the one judge, with line and column. Ids are
+  unique within a Telemetry (KCL) and within an env (Validate). The `dash_*` re-exports of §2
+  were not added: the F2 helpers (`ds.rate`, `ds.quantile`, `ds.gauge`, `ds.ratio`) are the one
+  spelling.
+- `obsdash.TelemetrySystemsOf([]EnvTelemetry)` merges every env's targets into one
+  `TelemetrySystem` per service (signals union; scope, system-dashboard title and a declared
+  dashboard's content must agree across envs, else an error naming both envs). `Input.Telemetry`
+  carries them. Each system's dashboards are their own spec part,
+  `deploy/observability/spec/telemetry-<service>_gen.json` (`TelemetryPart`), not
+  `project_gen.json`, so two branches that declare different systems touch different files;
+  `ReadSpec` appends them after the project's dashboards.
+- The system dashboard `telemetry-<service>` (`BuildSystemDashboard`) draws: collection health
+  from the Prometheus receiver's `up`, `scrape_samples_scraped`,
+  `scrape_samples_post_metric_relabeling` and `scrape_duration_seconds` (per
+  `service.instance.id`); CPU, memory and restarts from the node agent (only on a cluster or
+  hosted runtime; keyed by `k8s.workload.name` for a Workload attachment, by `service.name`
+  otherwise); log volume by severity, error lines and recent lines; span rate, error ratio, p95
+  and a RED table by span name (only with OTLP traces); tcpcheck / httpcheck status and latency
+  (only with checks); and a text panel naming `forge obs profile --service <svc>` (only with
+  profiles). Scope `platform` makes it dashspec scope platform with no env filter; group
+  `platform`. A declared dashboard with no scope takes the system's.
+- Locally, a declared dashboard's HyperDX file keeps only what HyperDX can draw
+  (`localDrawable`: a summary quantile or a sql panel is the console's); the bundle ships it
+  whole. A declared id that collides with a generated dashboard's is a generate error.
+- The release bundle of an env carries the telemetry dashboards of the systems THAT env declares
+  (`dashboardSpecForEntities`), after the process-less cut.
+- Default alerts are two catalog defaults, tuned by id in `forge.Alerts.defaults`:
+  `telemetry-target-down` (`<Service>TargetDown`, newest `up` of an endpoint is 0, `for` 5m) and
+  `telemetry-check-failing` (`<Service>CheckFailing`, no successful tcpcheck / 2xx httpcheck probe
+  in the window, `for` 5m), severity warning, labelled `service`. Each expands to one rule per
+  system with `default_alerts` (`TelemetryAlertName`: UpperCamelCase of the service). They are
+  env-scoped like the uptime defaults (`AlertInput.TelemetryTargets`, never written to the
+  generated file), so a project with no telemetry writes a byte-identical catalog, and a static
+  site still records them. A rule of the env's own that takes one's name is refused at shape
+  time, naming `default_alerts = False` as the way to replace it.
+- `forge obs telemetry [env]` (`forge.obs.telemetry/v1`) lists the env's targets and, from the
+  local ClickStack, per signal the newest row and row count (`obsquery.TelemetryArrival`) and
+  per scraped endpoint its newest `up` and samples (`obsquery.TelemetryScrapes`). Platform
+  systems are read without the env predicate. A table the store lacks costs only its signal;
+  an unreachable store or the cloud backend lists the targets with arrival `unknown`.

@@ -279,6 +279,32 @@ func (m *MockUserActivityReader) UserActivity(ctx context.Context, req UserActiv
 // Compile-time check.
 var _ UserActivityReader = (*MockUserActivityReader)(nil)
 
+// forge:section MockTelemetryArrivalReader
+// forge:hash=019b09df52026c5d18beb6e38271abd7a99d60234f1a84f599f83a7299d41d4e
+
+// MockTelemetryArrivalReader is a test mock for the TelemetryArrivalReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments. Set XxxFunc fields to
+// override per-method behaviour; unset methods return the canonical
+// "MockTelemetryArrivalReader.<Method>Func not set" error.
+type MockTelemetryArrivalReader struct {
+	contractkit.Recorder
+	TelemetryArrivalFunc func(context.Context, TelemetryArrivalRequest) (TelemetryArrivalResult, error)
+}
+
+// TelemetryArrival records the call and delegates to TelemetryArrivalFunc when set.
+func (m *MockTelemetryArrivalReader) TelemetryArrival(ctx context.Context, req TelemetryArrivalRequest) (TelemetryArrivalResult, error) {
+	m.Recorder.Record("TelemetryArrival", ctx, req)
+	if m.TelemetryArrivalFunc != nil {
+		return m.TelemetryArrivalFunc(ctx, req)
+	}
+	return TelemetryArrivalResult{}, contractkit.MockNotSet("MockTelemetryArrivalReader", "TelemetryArrival")
+}
+
+// Compile-time check.
+var _ TelemetryArrivalReader = (*MockTelemetryArrivalReader)(nil)
+
 // forge:section MockHealthReader
 // forge:hash=a800afb4b55c4883d596d1b42b98f8848ba9d26c6551f0aedc2f9efd1956c7b9
 

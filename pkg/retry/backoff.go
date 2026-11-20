@@ -13,8 +13,8 @@ type Backoff struct {
 	Initial time.Duration
 
 	// Multiplier grows the wait between retries: retry n waits
-	// Initial·Multiplier^(n-1). Zero means 2 (doubling); 1 is a constant
-	// wait; values below 1 are treated as 1.
+	// Initial·Multiplier^(n-1). Zero or NaN means 2 (doubling); 1 is a
+	// constant wait; other values below 1 are treated as 1.
 	Multiplier float64
 
 	// Max caps one wait before jitter is applied. Zero means no cap.
@@ -57,14 +57,14 @@ func (b Backoff) Base(n int) time.Duration {
 
 func (b Backoff) exponential(n int) time.Duration {
 	m := b.Multiplier
-	if m == 0 {
+	if m == 0 || math.IsNaN(m) {
 		m = 2
 	}
-	if m <= 1 || b.Initial <= 0 {
+	if n == 1 || m <= 1 || b.Initial <= 0 {
 		return b.Initial
 	}
 	f := float64(b.Initial) * math.Pow(m, float64(n-1))
-	if math.IsInf(f, 1) || f >= float64(math.MaxInt64) {
+	if f >= float64(math.MaxInt64) {
 		return time.Duration(math.MaxInt64)
 	}
 	return time.Duration(f)
@@ -140,51 +140,79 @@ func FullJitter() Jitter { return Jitter{kind: jitterFull} }
 // than half the computed wait.
 func EqualJitter() Jitter { return Jitter{kind: jitterEqual} }
 
-// ProportionalJitter waits a uniform random time in [d - f·d, d + f·d): f
-// either side of the computed wait. f of 0.25 is ±25%; f is clamped to [0, 1].
+// ProportionalJitter waits a uniform random time in [d - f·d, d + f·d)
+// within the range of time.Duration. f of 0.25 is ±25%; f is clamped to
+// [0, 1], with NaN treated as zero.
 func ProportionalJitter(f float64) Jitter {
-	return Jitter{kind: jitterProportional, fraction: min(max(f, 0), 1)}
+	return Jitter{kind: jitterProportional, fraction: min(jitterFraction(f), 1)}
 }
 
 // UpwardJitter waits d plus a uniform random time in [0, f·d]: never less
-// than the computed wait. f of 0.2 adds up to 20%; a negative f is 0.
-func UpwardJitter(f float64) Jitter { return Jitter{kind: jitterUpward, fraction: max(f, 0)} }
+// than the computed wait. f of 0.2 adds up to 20%. Negative or NaN values
+// are treated as zero; the resulting range is limited to time.Duration.
+func UpwardJitter(f float64) Jitter { return Jitter{kind: jitterUpward, fraction: jitterFraction(f)} }
 
-// FixedJitter waits exactly d + f·d. It is not random; it exists so a
-// schedule that pads every wait by a constant fraction can be expressed
-// exactly.
-func FixedJitter(f float64) Jitter { return Jitter{kind: jitterFixed, fraction: max(f, 0)} }
+// FixedJitter waits d + f·d, saturating at the largest time.Duration.
+// Negative or NaN fractions are treated as zero.
+func FixedJitter(f float64) Jitter { return Jitter{kind: jitterFixed, fraction: jitterFraction(f)} }
+
+func jitterFraction(f float64) float64 {
+	if math.IsNaN(f) || f <= 0 {
+		return 0
+	}
+	return f
+}
 
 func (j Jitter) apply(d time.Duration, randN func(int64) int64) time.Duration {
 	if d <= 0 {
 		return d
 	}
-	span := time.Duration(float64(d) * j.fraction)
-	var out time.Duration
 	switch j.kind {
 	case jitterFull:
-		out = time.Duration(randInclusive(randN, int64(d)))
+		return time.Duration(randInclusive(randN, int64(d)))
 	case jitterEqual:
-		out = d - d/2 + time.Duration(randInclusive(randN, int64(d/2)))
+		return d - d/2 + time.Duration(randInclusive(randN, int64(d/2)))
 	case jitterProportional:
-		out = d - span + time.Duration(randN(int64(2*span)))
+		span := jitterSpan(d, j.fraction, d)
+		if span == 0 {
+			return d
+		}
+		lo := d - span
+		// The original upper endpoint is exclusive. Work with the
+		// inclusive integer endpoint so we can cap it without d+span
+		// (or the original 2*span width) overflowing.
+		hi := d + min(span-1, math.MaxInt64-d)
+		return lo + time.Duration(randInclusive(randN, int64(hi-lo)))
 	case jitterUpward:
-		out = d + time.Duration(randInclusive(randN, int64(span)))
+		span := jitterSpan(d, j.fraction, math.MaxInt64-d)
+		return d + time.Duration(randInclusive(randN, int64(span)))
 	case jitterFixed:
-		out = d + span
+		return d + jitterSpan(d, j.fraction, math.MaxInt64-d)
 	default:
 		return d
 	}
-	if out < 0 {
-		return time.Duration(math.MaxInt64) // overflowed
+}
+
+// jitterSpan multiplies a positive delay by a normalized fraction and caps
+// the result before converting it back to a duration. The final minimum
+// also covers float64 rounding the integer limit upward.
+func jitterSpan(d time.Duration, f float64, limit time.Duration) time.Duration {
+	span := float64(d) * f
+	if span >= float64(limit) {
+		return limit
 	}
-	return out
+	return min(time.Duration(span), limit)
 }
 
 // randInclusive returns a uniform integer in [0, x].
 func randInclusive(randN func(int64) int64, x int64) int64 {
+	if x == 0 {
+		return 0
+	}
 	if x == math.MaxInt64 {
-		return randN(x)
+		// Two independent draws of 62 and 1 bits cover the full signed
+		// nonnegative range without requiring an unrepresentable bound.
+		return randN(1<<62)<<1 | randN(2)
 	}
 	return randN(x + 1)
 }

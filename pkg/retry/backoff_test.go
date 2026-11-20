@@ -25,6 +25,8 @@ func TestBaseSchedules(t *testing.T) {
 		{"multiplier 3", Backoff{Initial: time.Second, Multiplier: 3}, secs(1, 3, 9, 27)},
 		{"multiplier 1 is constant", Backoff{Initial: time.Second, Multiplier: 1}, secs(1, 1, 1)},
 		{"multiplier below 1 is constant", Backoff{Initial: time.Second, Multiplier: 0.5}, secs(1, 1, 1)},
+		{"NaN multiplier uses default", Backoff{Initial: time.Second, Multiplier: math.NaN()}, secs(1, 2, 4)},
+		{"first delay is exact", Backoff{Initial: math.MaxInt64 - 20}, []time.Duration{math.MaxInt64 - 20}},
 		{"steps repeat the last", Backoff{Steps: secs(10, 20, 30, 60)}, secs(10, 20, 30, 60, 60, 60)},
 		{"max caps a step", Backoff{Steps: secs(1, 10), Max: 5 * time.Second}, secs(1, 5, 5)},
 		{"zero value retries at once", Backoff{}, secs(0, 0)},
@@ -90,11 +92,38 @@ func TestJitterRanges(t *testing.T) {
 
 func TestJitterNeverOverflows(t *testing.T) {
 	t.Parallel()
-	for _, j := range []Jitter{FullJitter(), EqualJitter(), ProportionalJitter(1), UpwardJitter(1), FixedJitter(1)} {
-		b := Backoff{Initial: time.Second, Jitter: j, Rand: randHigh}
-		if got := b.Delay(500); got < 0 {
-			t.Errorf("Delay(500) with %+v = %v, want a non-negative wait", j, got)
-		}
+	const limit = time.Duration(math.MaxInt64)
+	for _, tc := range []struct {
+		name      string
+		d         time.Duration
+		j         Jitter
+		low, high time.Duration
+	}{
+		{"full at limit", limit, FullJitter(), 0, limit},
+		{"equal at limit", limit, EqualJitter(), limit - limit/2, limit},
+		{"proportional at limit", limit, ProportionalJitter(1), 0, limit},
+		{"proportional upper bound overflow", limit - 20, ProportionalJitter(0.5), limit - 20 - (1 << 62), limit},
+		{"proportional positive infinity", 10, ProportionalJitter(math.Inf(1)), 0, 19},
+		{"proportional NaN", 10, ProportionalJitter(math.NaN()), 10, 10},
+		{"upward at limit", limit, UpwardJitter(1), limit, limit},
+		{"upward positive infinity", 10, UpwardJitter(math.Inf(1)), 10, limit},
+		{"upward finite fraction overflowing float64", time.Second, UpwardJitter(math.MaxFloat64), time.Second, limit},
+		{"upward NaN", 10, UpwardJitter(math.NaN()), 10, 10},
+		{"fixed at limit", limit, FixedJitter(1), limit, limit},
+		{"fixed positive infinity", 10, FixedJitter(math.Inf(1)), limit, limit},
+		{"fixed negative infinity", 10, FixedJitter(math.Inf(-1)), 10, 10},
+		{"fixed NaN", 10, FixedJitter(math.NaN()), 10, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := Backoff{Initial: tc.d, Jitter: tc.j, Rand: randLow}
+			low := b.Delay(1)
+			b.Rand = randHigh
+			high := b.Delay(1)
+			if low != tc.low || high != tc.high {
+				t.Errorf("Delay range = [%v, %v], want [%v, %v]", low, high, tc.low, tc.high)
+			}
+		})
 	}
 }
 

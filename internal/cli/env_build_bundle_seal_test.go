@@ -111,6 +111,10 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "uploads", RuntimeKind: release.BucketRuntimeHosted, PublicRead: true},
 		},
 		Preview: &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
+		Changes: map[string]release.ShapeChange{"new-checkout": {
+			Type: release.ChangeTypeBool, Default: "control", Description: "Shorter checkout flow",
+			Variants: map[string]json.RawMessage{"control": json.RawMessage(`false`), "treatment": json.RawMessage(`true`)},
+		}},
 	}
 }
 

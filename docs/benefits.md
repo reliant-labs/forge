@@ -3939,6 +3939,8 @@ _In progress · Reliant hosting_
 - library [`pkg/observe`](../pkg/observe)
 - source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
 - source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
+- source [`internal/changesdecl/changesdecl.go`](../internal/changesdecl/changesdecl.go)
+- source [`docs/changes.md`](../docs/changes.md)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>

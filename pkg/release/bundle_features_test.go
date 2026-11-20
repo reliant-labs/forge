@@ -40,6 +40,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeatureStorage:              {"shape.buckets", "shape.data_access.storage"},
 	BundleFeaturePromotionChecks:      {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
 	BundleFeaturePreview:              {"shape.preview"},
+	BundleFeatureChanges:              {"shape.changes"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -166,6 +167,7 @@ func fullBundleDoc() BundleDoc {
 			Identity:                 signInIdentity(),
 			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
 			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
+			Changes:                  map[string]ShapeChange{"new-checkout": checkoutChange()},
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		DeclaredEnvs: []DeclaredEnv{
@@ -201,6 +203,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
+	}
+	if !strayRoots["shape.changes"] {
+		t.Fatalf("the full document does not stray at shape.changes (strays %v): the fixture no longer exercises it", strays)
 	}
 	if !strayRoots["shape.buckets"] {
 		t.Fatalf("the full document does not stray at shape.buckets (strays %v): the fixture no longer exercises it", strays)
@@ -246,6 +251,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Workloads[0].Unit = ""
 	wantShape.Buckets = nil
 	wantShape.Preview = nil
+	wantShape.Changes = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil
 	wantShape.DeliveryPolicy = &gateless

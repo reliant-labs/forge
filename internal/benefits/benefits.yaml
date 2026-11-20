@@ -4533,6 +4533,8 @@ benefits:
       - library: pkg/observe
       - path: web-runtime/src/track.ts
       - path: web-runtime/src/exposure.ts
+      - path: internal/changesdecl/changesdecl.go
+      - path: docs/changes.md
       - skill: observability/product-analytics
 
   - id: builtin-ai-hub

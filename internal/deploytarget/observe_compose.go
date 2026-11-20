@@ -231,17 +231,21 @@ func parseComposePS(raw []byte) ([]composeContainer, error) {
 	if trimmed == "" {
 		return nil, nil
 	}
-	if strings.HasPrefix(trimmed, "[") {
-		var arr []composeContainer
-		if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
-			return nil, err
-		}
-		return arr, nil
-	}
 	var out []composeContainer
 	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		// Compose's own diagnostics (an unset ${VAR} warning) arrive on
+		// the captured stderr beside the JSON: neither an object nor an
+		// array, they describe no container (NS FG-17).
+		if line == "" || (line[0] != '{' && line[0] != '[') {
+			continue
+		}
+		if line[0] == '[' {
+			var arr []composeContainer
+			if err := json.Unmarshal([]byte(line), &arr); err != nil {
+				return nil, err
+			}
+			out = append(out, arr...)
 			continue
 		}
 		var c composeContainer

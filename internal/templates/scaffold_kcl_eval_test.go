@@ -18,10 +18,8 @@ import (
 // evaluates cleanly with empty HTTP_ROUTES/GRPC_ROUTES — every
 // commented-out template route stays commented.
 //
-// Module resolution needs no rewrite: the test binary is a dev build
-// (no stamped pkg version), so the scaffold is BORN with the embedded
-// forge KCL module vendored into `.forge-kcl/` and deploy/kcl/kcl.mod
-// pointing at it by relative path (internal/kclvendor).
+// Module resolution needs no rewrite: forge supplies `import forge` from
+// the rendering binary, so deploy/kcl/kcl.mod declares no forge dependency.
 //
 // It renders through kclrender — forge's OWN evaluation seam — rather
 // than by shelling out to the `kcl` binary, and that is a real part of
@@ -120,9 +118,6 @@ func scaffoldServiceForRender(t *testing.T) string {
 	}
 	if strings.Contains(string(kclMod), "forge =") {
 		t.Fatalf("dev scaffold kcl.mod declares the forge module — the binary supplies it:\n%s", kclMod)
-	}
-	if _, err := os.Stat(filepath.Join(tmp, ".forge-kcl")); !os.IsNotExist(err) {
-		t.Fatalf("dev scaffold materialized a project-local .forge-kcl/ (stat err %v)", err)
 	}
 
 	// Stub the pipeline-generated KCL-native config trio (`forge

@@ -68,6 +68,11 @@ func TestMain(m *testing.M) {
 	// readable" is the CI answer, so it is the hermetic default; a test that
 	// wants a describe sets one (cluster_connect_test.go).
 	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) { return gkeDescription{}, false }
+	// Nor does `forge project upgrade` read the developer's module cache
+	// for the pinned forge's templates (upgrade_drift_range.go): whether a
+	// fixture's rows are listed must not depend on which forge releases this
+	// machine has downloaded. A test of the range filter builds its own.
+	forgeModuleSource = func(string) (string, string) { return "", "unit tests do not read the module cache" }
 	// Nor does any test touch the host's k3d, kubectl, or docker. These
 	// were real shell-outs from -short unit tests, and this box is shared:
 	// `forge cluster up`'s test ran `kubectl config use-context

@@ -212,7 +212,7 @@ func TestDynamicSegment(t *testing.T) {
 		}))))
 	})
 
-	t.Run("a scaffold-born page names the CRUD-routes migration", func(t *testing.T) {
+	t.Run("a scaffold-born page names the static-routes fix", func(t *testing.T) {
 		header := "\"use client\";\n\n// yours: scaffolded once, never touched again — forge will not overwrite this file\n// %s page emitted by `forge scaffold page`. See `forge skill load frontend/pages` for canonical patterns.\n"
 		body := strings.TrimPrefix(clientDetailPage, "\"use client\";\n")
 		fs := check(t, frontendTree(t, withConfig(map[string]string{
@@ -227,7 +227,7 @@ func TestDynamicSegment(t *testing.T) {
 		assertScaffoldRemedy(t, fs[1], "frontends/web/src/app/jobs/view/page.tsx")
 	})
 
-	t.Run("a scaffold-born page since rewritten still names the migration", func(t *testing.T) {
+	t.Run("a scaffold-born page since rewritten still names the static-routes fix", func(t *testing.T) {
 		// The roofers shape: the banner survives, the template header does not.
 		page := "\"use client\";\n\n// yours: scaffolded once, never touched again — forge will not overwrite this file\n//\n// A crew and its calendar.\n" + strings.TrimPrefix(clientDetailPage, "\"use client\";\n")
 		fs := check(t, frontendTree(t, withConfig(map[string]string{
@@ -238,7 +238,7 @@ func TestDynamicSegment(t *testing.T) {
 			t.Fatalf("want both pages:\n%s", dump(fs))
 		}
 		assertScaffoldRemedy(t, fs[0], "frontends/web/src/app/jobs/view/page.tsx")
-		if strings.Contains(fs[1].Remediation, "migrations/v0.1.44") {
+		if strings.Contains(fs[1].Remediation, "useEntityIdParam()") {
 			t.Errorf("a page at no template path is not a scaffold page: %s", fs[1].Remediation)
 		}
 	})
@@ -248,7 +248,7 @@ func assertScaffoldRemedy(t *testing.T, f finding.Finding, newRoute string) {
 	t.Helper()
 	for _, s := range []string{
 		newRoute,
-		"forge skill load migrations/v0.1.44",
+		"forge skill load frontend/serving",
 		"rm -rf 'frontends/web/src/app/jobs/[id]' frontends/web/src/app/jobs/page.tsx frontends/web/src/app/jobs/new/page.tsx && forge project rescaffold frontends/web/src/app/jobs/page.tsx frontends/web/src/app/jobs/new/page.tsx",
 		"useEntityIdParam()",
 	} {

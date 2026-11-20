@@ -14,6 +14,10 @@ package mountkit
 // same mux, which works because connecthttp.Mount registers one pattern per
 // procedure plus a "/pkg.Svc/" subtree per service, and services are disjoint.
 //
+// Every mount goes through MountV2, which keeps connect-go v1's answer for an
+// unknown method of a mounted service: a plain HTTP 404, not v2's
+// unimplemented RPC error (see MountV2).
+//
 // Func values cannot be compared, so two mounts that pass the same per-mount
 // interceptor get two servers rather than sharing one. That costs nothing a
 // caller can see: each server serves only its own services, through exactly
@@ -195,7 +199,7 @@ func (m *MuxV2) Register(register func(*connectv2.Server), mountOpts ...Option) 
 		m.sharedSpecs = len(specs)
 		// Mount walks every procedure the shared server holds; the ones an
 		// earlier Register mounted are on the mux already.
-		connecthttp.Mount(newPatternsOnly{mux: m.mux, seen: m.sharedPatterns}, m.shared, m.httpOpts...)
+		MountV2(newPatternsOnly{mux: m.mux, seen: m.sharedPatterns}, m.shared, m.httpOpts...)
 		return serviceNames(added)
 	}
 	ints := make([]connectv2.ServerInterceptor, 0, len(m.interceptors)+len(r.Interceptors))
@@ -204,7 +208,7 @@ func (m *MuxV2) Register(register func(*connectv2.Server), mountOpts ...Option) 
 	register(server)
 	opts := make([]connecthttp.Option, 0, len(m.httpOpts)+len(r.HTTPOptions))
 	opts = append(append(opts, m.httpOpts...), r.HTTPOptions...)
-	connecthttp.Mount(m.mux, server, opts...)
+	MountV2(m.mux, server, opts...)
 	m.servers = append(m.servers, server)
 	return serviceNames(collectSpecs(server))
 }
@@ -239,6 +243,40 @@ func RegisterServiceV2(m *MuxV2, svc any, mountOpts ...Option) []string {
 		w.RegisterWebhookRoutes(m.mux, r.HTTPStack)
 	}
 	return names
+}
+
+// MountV2 is connecthttp.Mount with connect-go v1's answer for a request to
+// an unknown method of a mounted service: a plain HTTP 404 ("404 page not
+// found", text/plain), for every protocol and HTTP method, byte-identical to
+// the http.NotFound a v1 generated handler's path switch sent. It mounts the
+// same per-procedure handlers as connecthttp.Mount; only each service's
+// "/pkg.Svc/" subtree pattern is served by http.NotFoundHandler instead of
+// connecthttp's unknown-method handler, which answers an RPC-shaped POST with
+// an unimplemented error (Connect 501, gRPC grpc-status 12).
+//
+// The 404 is a contract, not a nicety: a client calling an rpc a live
+// service has since retired — an older build against a newer server — tells
+// version skew from a real failure by that 404 (connect-es maps it to
+// unimplemented too, but deployed clients route on the status). An unknown
+// SERVICE is unchanged: no pattern matches, and the mux answers 404 itself.
+//
+// MuxV2 mounts every server through it. Use it for any v2 server mounted by
+// hand.
+func MountV2(mux connecthttp.ServeMux, server *connectv2.Server, opts ...connecthttp.Option) {
+	connecthttp.Mount(v1UnknownMethod{mux: mux}, server, opts...)
+}
+
+// v1UnknownMethod is the connecthttp.ServeMux MountV2 mounts through: it
+// forwards each procedure pattern as it is and serves each service subtree
+// pattern (the one ending in "/"; a procedure never does) with
+// http.NotFoundHandler.
+type v1UnknownMethod struct{ mux connecthttp.ServeMux }
+
+func (v v1UnknownMethod) Handle(pattern string, handler http.Handler) {
+	if strings.HasSuffix(pattern, "/") {
+		handler = http.NotFoundHandler()
+	}
+	v.mux.Handle(pattern, handler)
 }
 
 // newPatternsOnly is the connecthttp.ServeMux a shared-server Mount writes

@@ -26,10 +26,17 @@ import (
 {{- if .MountMissing}}
 	"fmt"
 	"log/slog"
+{{- if not (connectV2 .)}}
 	"net/http"
+{{- end}}
 	"os"
+{{- if connectV2 .}}
+
+	"github.com/reliant-labs/forge/pkg/mountkit"
+{{- else}}
 
 	"connectrpc.com/connect"
+{{- end}}
 
 	"{{.Module}}/pkg/config"
 {{- end}}
@@ -48,8 +55,13 @@ import (
 // Add to internal/app (next to the other Mount<Svc> methods), then re-run
 // `forge generate` and this file names it directly:
 //
+{{- if connectV2 .}}
+//	func (c *Components) Mount{{.MountFieldName}}(m *mountkit.MuxV2, cfg *config.Config, logger *slog.Logger) []string
+var mount{{.FieldName}} app.MountFunc = func(*app.Components, *mountkit.MuxV2, *config.Config, *slog.Logger) []string {
+{{- else}}
 //	func (c *Components) Mount{{.MountFieldName}}(mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string
 var mount{{.FieldName}} app.MountFunc = func(*app.Components, *http.ServeMux, *config.Config, *slog.Logger, ...connect.HandlerOption) []string {
+{{- end}}
 	fmt.Fprintln(os.Stderr, "{{.Name}}: internal/app declares no (*Components).Mount{{.MountFieldName}} — add it to the owned mount surface (see {{.Name}}_mount_gen.go for the signature) and re-run `forge generate`")
 	os.Exit(2)
 	return nil

@@ -291,10 +291,8 @@ false`, a 401 or 403, and any answer naming nobody (another non-2xx, a
   replaces the stored ones (last touch); `attributionTouch: "first"` keeps the
   first for good, for a marketing site attributing acquisition.
 
-  `attribution` and `enableAttribution({ search })` (from `/telemetry`) are
-  deprecated spellings that keep working: passing `attribution` at all means
-  mode `full`, `true` also grants consent at start, and `enableAttribution()`
-  raises the default mode to `full` and grants. `search` is the landing URL's
+  `enableAttribution({ search })` (from `/telemetry`, deprecated) raises the
+  default mode to `full` and grants consent. `search` is the landing URL's
   query string kept from page load, for when a client-side navigation has
   dropped it since. `revokeAnalyticsConsent()` erases the stored ids on
   withdrawal; `getAttribution()` is the captured record, for a site that

@@ -61,8 +61,8 @@ Public Suffix List says about the two hostnames, and no CORS is involved.
 
 The frontend must be a static export (`output: static`, which the
 scaffold writes). A frontend scaffolded by forge ≤ v0.1.43 has no `output:`
-(it is standalone) and dynamic `[id]` pages: `forge skill load
-migrations/v0.1.44`.
+(it is standalone) and dynamic `[id]` pages: set `output: static` and convert
+the pages as `frontend/serving` shows.
 
 ## Shipping it: `forge env deploy prod`
 

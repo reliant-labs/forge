@@ -1853,8 +1853,24 @@ schema HostInfra:
     temporal_namespaces?: [str]
     # The Web UI's port. Unset => headless.
     temporal_ui_port?: int
+    # The Prometheus metrics port, passed as --metrics-port, so a Telemetry
+    # can scrape it (port name `metrics`). Unset => a free port the server
+    # picks.
+    temporal_metrics_port?: int
+
+    # How this engine is observed (see forge.Telemetry). The target IS this
+    # instance; its ports are named `server` (port), `monitor`
+    # (nats_monitor_port), `ui` (temporal_ui_port) and `metrics`
+    # (temporal_metrics_port).
+    telemetry?: Telemetry
 
     check:
+        not telemetry or _tel_targets_self(telemetry), \
+            "HostInfra '${name}': telemetry targets this instance itself, so selector, namespaces, cluster and address are refused"
+        engine == "temporal" or not temporal_metrics_port, \
+            "HostInfra.temporal_metrics_port is for engine 'temporal' only ('${name}' is '${engine}')"
+        not temporal_metrics_port or (temporal_metrics_port > 0 and temporal_metrics_port < 65536 and temporal_metrics_port != port and temporal_metrics_port != temporal_ui_port), \
+            "HostInfra.temporal_metrics_port must be 1..65535 and differ from port and temporal_ui_port"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
         engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
             "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
@@ -2205,7 +2221,7 @@ schema RenderedSecretKey:
         from != "literal" or value != Undefined, \
             "RenderedSecretKey(from='literal') requires `value`"
         from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
-            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='dotenv'"
+            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='file'"
 
 schema RenderedSecret:
     """A single k8s Secret forge renders + applies from declared
@@ -2312,7 +2328,7 @@ schema TestJWKS:
                         for one of them can be pointed at this JWKS).
                         `derive_jwk` refuses an alg the key cannot sign.
       * `private_key` — StoreRef to the ES256/RS256 private-key PEM in
-                        `.env.<env>`. Read at render time to derive the
+                        `secrets/<env>.yaml`. Read at render time to derive the
                         public JWK; never published.
     """
     name: str
@@ -3359,7 +3375,11 @@ schema ShellBuild(Build):
       * state/digest — on success forge captures the pushed image's
         content-addressed digest (best-effort) and writes the build-state
         file so a subsequent `forge env deploy <env>` pins the same
-        tag/digest, exactly as the project docker build does.
+        tag/digest, exactly as the project docker build does. A workload
+        bound to `forge.BuildOnly {}` that declares neither `image` nor
+        `output_name` builds no image: forge resolves no digest, records no
+        image for it, leaves the env's deploy-side build state alone, and a
+        release does not require an image of it.
       * source — the git checkout `cwd` is in (HEAD, dirty flag) is
         recorded with that state and in the release. A RELEASE refuses a
         checkout outside this project that is dirty, or whose HEAD is not
@@ -4467,8 +4487,8 @@ schema FrontendErrors:
 
 schema BrowserTelemetry:
     """What a frontend declares about its browser telemetry beyond the
-    environment's observability signals (Observability.signals.browser and
-    .replay still decide whether anything is collected at all).
+    environment's observability signals (Observability.signals.browser still
+    decides whether anything is collected at all).
 
         forge.Frontend {
             name = "web"
@@ -7080,15 +7100,12 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
-    # Session replay is OPT-IN (the only category that defaults off) and is
-    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
-    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
-    # The platform drops replay events (browser logs of instrumentation scope
-    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
-    # `telemetry.replay`. True here opts the env in without switching any
-    # frontend on (each still needs OTEL_REPLAY in its runtime config).
-    replay: bool = False
+    # (Session replay is not a signal here: it is OPT-IN, switched on per
+    # frontend with `forge.BrowserTelemetry {replay = True}`, which renders the
+    # frontend's OTEL_REPLAY = "true" and opts the env in. The platform drops
+    # replay events, browser logs of instrumentation scope `rum.rr-web`, unless
+    # some frontend of the env opted in. The render records the result as
+    # `signals.replay` and `policy.opt_in`.)
     # The product events forge emits on the app's behalf: every create, update
     # and delete that lands through a generated CRUD handler records
     # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
@@ -7522,8 +7539,26 @@ schema Observability:
     # The project's Events funnels and counts (forge.ProjectAnalytics), drawn
     # on the built-in Product dashboard. Unset: none beyond the frontends'.
     analytics?: ProjectAnalytics
+    # Telemetry for what forge never declares as objects: a HelmChart, an
+    # operator, a system outside this bundle (see forge.Telemetry). Each entry
+    # names its service_name and its pods (`selector` plus the `cluster` whose
+    # collector scrapes them) or a fixed `address`.
+    telemetry: [Telemetry] = []
+    # The collector that scrapes this env's Telemetry when it is not forge's
+    # node agent (a project that runs its own). Unset: forge's agent.
+    telemetry_collector?: TelemetryCollector
 
     check:
+        enabled or len(telemetry) == 0, \
+            "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
+        all t in telemetry { t.service_name }, \
+            "Observability.telemetry: each entry needs a service_name — there is no workload to default it from"
+        all t in telemetry { t.selector or t.address }, \
+            "Observability.telemetry: each entry needs a selector (or an address) naming what to observe"
+        all t in telemetry { not t.selector or t.cluster }, \
+            "Observability.telemetry: an entry with a selector needs the cluster whose collector scrapes it"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Observability.telemetry: ports must be numbers — there are no declared ports to resolve a name against"
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
         dev_telemetry in ["auto", "hosted", "local"], "Observability.dev_telemetry '${dev_telemetry}' must be auto, hosted or local"
@@ -7534,7 +7569,7 @@ schema Observability:
         (alertmanager_port == 0) == (alerts_port == 0), \
             "Observability: alertmanager_port and alerts_port go together (the local Alertmanager delivers its in-app alerts to the evaluator on alerts_port, and the evaluator posts to the Alertmanager). Set both or neither"
         not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
-            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (see migrations/v0.1.45), or leave signals.profiles unset"
+            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (a fresh `forge project new` scaffolds that service), or leave signals.profiles unset"
         not enabled or sampling.traces_ratio >= 1.0 or destination, \
             "Observability.sampling.traces_ratio < 1.0 needs a destination: sampling runs in the collector that forwards, and the local ClickStack stores everything"
 
@@ -7575,9 +7610,25 @@ schema Manifests:
     # Slot keys are exact container:NAME, init:NAME, input:NAME or build-only.
     release_inputs: {str: str} = {}
     release_dependencies?: {str: str}
+    # How the systems these objects run are observed (see forge.Telemetry).
+    # forge cannot see into raw objects, so each entry names its pods by
+    # `selector` (or a fixed `address`) and its ports by number. The cluster
+    # is the group's; `namespaces` defaults to [namespace]; `service_name`
+    # defaults to the group's name.
+    telemetry: [Telemetry] = []
 
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+        all t in telemetry { t.selector or t.address }, \
+            "Manifests.telemetry: each entry needs a selector (or an address) — forge cannot see into raw objects to find their pods"
+        all t in telemetry { not t.cluster }, \
+            "Manifests.telemetry: cluster is the group's (Manifests.cluster), not the entry's"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Manifests.telemetry: ports must be numbers — a raw group declares no named ports to resolve"
+        name or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry on a group with no name needs a service_name"
+        len(telemetry) <= 1 or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry: several entries in one group need a service_name each"
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "Manifests.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
 
 schema StatefulSetResize:
@@ -7911,12 +7962,6 @@ schema IdentitySeedUser:
 
     check:
         regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
-
-schema IdentitySocialProvider:
-    """Deprecated: declare `forge.IdentityGoogle` or `forge.IdentityGitHub` in
-    `ManagedIdentity.social`. This was the reserved placeholder; it was always
-    refused at render and `social` no longer accepts it."""
-    provider: str
 
 # A first-factor sign-in method (ManagedIdentity.methods).
 type IdentityMethod = "password" | "passkey" | "magic_link"

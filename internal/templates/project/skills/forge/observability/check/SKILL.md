@@ -31,7 +31,7 @@ release_health = forge.ReleaseHealth {
 |---|---|
 | 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |
 | 1 | FAIL: a `fail_on` finding fired |
-| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
+| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look (`reason_code` `permission_denied` or `unauthenticated` when the credential may not read release health: a CI token needs `obs:read`) |
 | 8 | check again later: `--wait` timed out (`--timeout`, default 30m) before the after window finished, or the control plane refused the read because a query allowance is spent (`reason_code` `quota_exhausted` or `rate_limited`) |
 
 **A refused read is exit 8, not 2:** nothing was judged. `--wait` waits it out until `--timeout`; the document has no `verdict`, and has `reason_code` and `retry_at` (rerun after it). Details, and how an unreachable control plane is retried: `observability/release-health`, A refused read.

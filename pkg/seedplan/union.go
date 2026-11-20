@@ -852,9 +852,41 @@ func (p *Plan) unionLiteral(table string, col schemadef.Column, i int) (string, 
 			return cell.lit, true
 		case cell.hasBound:
 			return unionBounded(p.valueLiteral(table, col, i), col, cell.bound), true
+		case cell.present:
+			if lit, ok := p.presentLiteral(table, col, i, cell.nonBlank); ok {
+				return lit, true
+			}
 		}
 	}
 	return "", false
+}
+
+// presentLiteral keeps a cell the branch requires PRESENT (and, for nonBlank,
+// non-blank) from taking a natural value that is not. Synthesis never yields
+// NULL, but the vocabulary overlay may: a project that pinned
+// `daemon_id: [null]` to dodge a biconditional forge could not place gets a
+// NULL on exactly the rows the placed biconditional now requires a daemon.
+// ok is false when the natural value already satisfies the cell, so the
+// caller's usual dispatch (ordering, the plain draw) carries on unchanged.
+// Otherwise the overlay's usable values are drawn from, and failing those the
+// schema's own value.
+func (p *Plan) presentLiteral(table string, col schemadef.Column, i int, nonBlank bool) (string, bool) {
+	usable := func(lit string) bool {
+		return lit != "NULL" && !(nonBlank && strings.TrimSpace(strings.Trim(lit, "'")) == "")
+	}
+	if usable(p.valueLiteral(table, col, i)) {
+		return "", false
+	}
+	var vals []string
+	for _, v := range p.vocab[table][col.Name] {
+		if usable(poolLiteral(col, v)) {
+			vals = append(vals, v)
+		}
+	}
+	if len(vals) > 0 {
+		return poolLiteral(col, vals[pick(p.cfg.EffectiveSalt(), table, col.Name, i, len(vals))]), true
+	}
+	return p.schemaValueLiteral(table, col, i), true
 }
 
 // unionForbidsEdge reports whether the union branch row i of table takes

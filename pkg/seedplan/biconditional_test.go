@@ -17,6 +17,8 @@
 package seedplan
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -274,6 +276,56 @@ func TestBiconditional_ConnectorGrantsShape(t *testing.T) {
 		if !minimal && (!kinds["workspace"] || !kinds["forge"]) {
 			t.Errorf("rows cover only %v; both kinds must appear", kinds)
 		}
+	}
+}
+
+// reliant's model_endpoints, found by the e2e seed: the project had pinned
+// `daemon_id: [null]` and `route: [direct]` in vocab.yaml to dodge the
+// refusal. Once forge places the biconditional, a via_daemon row must still
+// get a daemon_id — an overlay NULL on a cell the branch requires present is
+// replaced by a usable value, never written.
+func TestBiconditional_OverlayNullOnARequiredCell(t *testing.T) {
+	endpoints := schemadef.Table{
+		Name:   "model_endpoints",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(),
+			textCol("route"),
+			{Name: "daemon_id", DeclType: "TEXT", Type: schemadef.TypeString},
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("model_endpoints_route_check",
+				"CHECK ((route = ANY (ARRAY['direct'::text, 'via_daemon'::text])))", "route"),
+			check("model_endpoints_check",
+				"CHECK (((route = 'via_daemon'::text) = (daemon_id IS NOT NULL)))", "daemon_id", "route"),
+		},
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vocab.yaml")
+	if err := os.WriteFile(path, []byte("columns:\n  model_endpoints.route: [direct]\n  model_endpoints.daemon_id: [null]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := LoadVocab(path)
+	if err != nil {
+		t.Fatalf("LoadVocab: %v", err)
+	}
+	tables := []schemadef.Table{endpoints}
+	p, err := BuildPlan(tables, PoolsFromTables(tables), Config{Rows: 6, Salt: 1})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	p.ApplyVocab(v)
+	routes := map[string]bool{}
+	for i := 0; i < 6; i++ {
+		r := rowLits(t, p, "model_endpoints", i)
+		route := unquoted(r["route"])
+		routes[route] = true
+		if (route == "via_daemon") != (r["daemon_id"] != "NULL") {
+			t.Errorf("row %d: route=%s daemon_id=%s violates model_endpoints_check", i, route, r["daemon_id"])
+		}
+	}
+	if !routes["direct"] || !routes["via_daemon"] {
+		t.Errorf("rows cover only %v", routes)
 	}
 }
 

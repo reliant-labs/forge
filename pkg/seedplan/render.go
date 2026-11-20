@@ -160,6 +160,14 @@ func (p *Plan) valueLiteral(table string, col schemadef.Column, i int) string {
 	if vals := p.vocab[table][col.Name]; len(vals) > 0 {
 		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))])
 	}
+	return p.schemaValueLiteral(table, col, i)
+}
+
+// schemaValueLiteral is valueLiteral without the vocabulary overlay: what the
+// schema alone gives the cell. A union cell that requires a value falls back
+// to it when every overlay value it could draw is NULL (see presentLiteral).
+func (p *Plan) schemaValueLiteral(table string, col schemadef.Column, i int) string {
+	salt := p.cfg.EffectiveSalt()
 
 	// Enum / CHECK-constrained pool: draw from the allowed set, preferring
 	// real values over the proto zero-value sentinel (…_UNSPECIFIED). Seeding

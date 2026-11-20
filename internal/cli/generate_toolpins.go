@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/connectmajor"
@@ -256,12 +257,15 @@ func goModRequireVersion(projectDir, module string) string {
 	if err != nil {
 		return ""
 	}
+	// Go selects the highest required version, even when an untidy file
+	// repeats the module in separate require directives.
+	var version string
 	for _, r := range f.Require {
-		if r.Mod.Path == module {
-			return r.Mod.Version
+		if r.Mod.Path == module && semver.Compare(r.Mod.Version, version) > 0 {
+			version = r.Mod.Version
 		}
 	}
-	return ""
+	return version
 }
 
 // pinNotice reports which pinned build a codegen tool resolved to. It is

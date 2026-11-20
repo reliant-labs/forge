@@ -88,6 +88,9 @@ func TestUnresolvedToolPin_ConnectPluginNeverTheOtherMajor(t *testing.T) {
 		{"v1 project, unreadable build on PATH: pin go.mod's v1", v1Dir, v1, "/bin/script", true, "v1.21.1"},
 		{"v2 project, v1 build on PATH: pin go.mod's v2", v2Dir, v2, "/bin/v1", true, "v2.0.2"},
 		{"v2 project, v2 build on PATH: PATH's", v2Dir, v2, "/bin/v2", true, ""},
+		{"duplicate v1 requirements, higher last", connectPinGoMod(t, "module example.com/duplicate\nrequire connectrpc.com/connect v1.9.0\nrequire connectrpc.com/connect v1.21.1\n"), v1, "/bin/v2", true, "v1.21.1"},
+		{"duplicate v1 requirements, higher first", connectPinGoMod(t, "module example.com/duplicate\nrequire connectrpc.com/connect v1.21.1\nrequire connectrpc.com/connect v1.9.0\n"), v1, "/bin/v2", true, "v1.21.1"},
+		{"duplicate v2 requirements, stable after prerelease", connectPinGoMod(t, "module example.com/duplicate\nrequire connectrpc.com/connect/v2 v2.0.2-rc.1\nrequire connectrpc.com/connect/v2 v2.0.2\n"), v2, "/bin/v1", true, "v2.0.2"},
 		{"go.mod names no connect: nothing to pin to", noneDir, v1, "/bin/v2", true, ""},
 		{"no go.mod: nothing to pin to", t.TempDir(), v1, "/bin/v2", true, ""},
 	}

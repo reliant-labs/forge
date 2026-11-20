@@ -18,6 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -144,6 +145,13 @@ func tidyBridgedModuleWith(run goOffWorkspaceRunner, moduleDir, label string) er
 // render error) returns nil with a warning — the downstream step that
 // actually needed the module will surface a clearer error.
 func ensureGenGoMod(projectDir string) error {
+	return ensureGenGoModFor(projectDir, 0)
+}
+
+// ensureGenGoModFor is ensureGenGoMod for an explicit connect-go major (zero:
+// the root go.mod's): the gen module requires the connect-go runtime its
+// generated stubs import.
+func ensureGenGoModFor(projectDir string, major connectmajor.Major) error {
 	genDir := filepath.Join(projectDir, "gen")
 	goMod := filepath.Join(genDir, "go.mod")
 	if _, err := os.Stat(goMod); err == nil {
@@ -175,6 +183,9 @@ func ensureGenGoMod(projectDir string) error {
 	}
 
 	goVersion := goVersionFromProject(projectDir)
+	if major == 0 {
+		major = connectmajor.DetectOrDefault(projectDir)
+	}
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return fmt.Errorf("create gen/: %w", err)
 	}
@@ -187,10 +198,13 @@ func ensureGenGoMod(projectDir string) error {
 		// the line and `go mod tidy` resolves it if the generated code
 		// imports it).
 		ForgeVersion string
+		// ConnectV2 requires connectrpc.com/connect/v2 instead of v1.
+		ConnectV2 bool
 	}{
 		Module:       modulePath,
 		GoVersion:    goVersion,
 		ForgeVersion: rootForgeVersion(projectDir),
+		ConnectV2:    major.IsV2(),
 	}
 	if err := assets.WriteTemplateWithData("gen-go.mod.tmpl", goMod, data); err != nil {
 		return fmt.Errorf("render gen/go.mod: %w", err)

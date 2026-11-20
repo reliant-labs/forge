@@ -72,16 +72,32 @@ func (p *Plan) explainInsertFailure(tp tablePlan, err error) error {
 	for row := 0; row < 3 && row < tp.n; row++ {
 		cells := make([]string, 0, len(cols))
 		for _, c := range cols {
-			v, ok := p.SeedValue(table, c, row)
-			if !ok {
-				cells = append(cells, c+" = NULL")
-				continue
-			}
-			cells = append(cells, fmt.Sprintf("%s = %q", c, v))
+			cells = append(cells, c+" = "+p.plannedCell(tp, c, row))
 		}
 		fmt.Fprintf(&b, "    row %d: %s\n", row, strings.Join(cells, ", "))
 	}
 	return fmt.Errorf("%s", b.String())
+}
+
+// plannedCell is how the explanation spells one planned cell: a scalar as its
+// quoted value, any other literal (an ARRAY[...], a bytea) as the SQL forge
+// wrote. It used to print NULL for every cell SeedValue could not decode as a
+// scalar, which reported a two-element array that failed its CHECK as a NULL
+// in a NOT NULL column — sending the reader after the wrong defect.
+func (p *Plan) plannedCell(tp tablePlan, column string, row int) string {
+	if v, ok := p.SeedValue(tp.table.Name, column, row); ok {
+		return fmt.Sprintf("%q", v)
+	}
+	for _, cp := range tp.cols {
+		if cp.col.Name != column {
+			continue
+		}
+		if cp.omit {
+			return "(not written: the database default)"
+		}
+		return p.cellLiteral(tp, cp, row, 0)
+	}
+	return "(not planned)"
 }
 
 // constraintDef returns the introspected definition of a named constraint.

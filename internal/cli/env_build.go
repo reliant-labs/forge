@@ -29,8 +29,7 @@ import (
 //
 // So the env moves from an optional modifier to the command's subject, and the
 // two flags move with it. Top-level `forge build` keeps what genuinely needs
-// no env — compiling — and refuses the two flags with a pointer here (see
-// refuseBuildPublishFlag in build.go).
+// no env — compiling — and does not have the two flags.
 //
 // `forge release cut` folded into this command as `--release <v> --no-build`:
 // it was the cut WITHOUT the build, for the pipeline shape where build and
@@ -180,7 +179,7 @@ Examples:
 	cmd.Flags().StringArrayVarP(&selectors, "target", "t", nil, "Build target; repeatable for snapshot composition (default all)")
 	cmd.Flags().StringVar(&basePromotion, "base-promotion", "", "Compose from this exact desired promotion (or resolve current once before builds)")
 	cmd.Flags().BoolVar(&snapshotBootstrap, "snapshot-bootstrap", false, "Build a complete sealed snapshot selecting all consumers; never use legacy state as a partial base")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services (implied by --push and --release)")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -381,43 +380,4 @@ func runEnvBuildCutOnly(ctx context.Context, opts buildOptions) error {
 	// and the bundle can name the registry it pushed to.
 	opts.push = true
 	return writeBuildBundle(ctx, opts)
-}
-
-// refuseBuildPublishFlag is top-level `forge env build`'s refusal for --push and
-// --release, which moved to `forge env build <env>`.
-//
-// Top-level `forge build` is COMPILE-ONLY: a local check that the tree builds,
-// which is why its environment argument is optional. Publishing is not that.
-// Both flags always needed an env to resolve — a push destination comes from
-// the env's workload declarations, a release's artifact set from its render —
-// so on a command with an optional env they were a combination that could only
-// fail at runtime. The refusal names the replacement rather than the
-// constraint, because the user's next keystroke is the command, not an
-// explanation.
-func refuseBuildPublishFlag(flag, env string) error {
-	target := "<env>"
-	if env != "" {
-		target = env
-	}
-	return fmt.Errorf("`forge build` is compile-only and cannot %s — use `forge env build %s --%s`.\n"+
-		"  %s needs an environment to resolve: %s\n"+
-		"  Top-level `forge build` compiles the tree as a local check, which is why its environment argument is optional",
-		publishVerb(flag), target, flag, "--"+flag, publishWhy(flag))
-}
-
-// publishVerb and publishWhy keep the refusal specific to the flag the user
-// actually passed: a message that says "cannot push or release" makes the
-// reader work out which half applies to them.
-func publishVerb(flag string) string {
-	if flag == "release" {
-		return "record a release"
-	}
-	return "push images"
-}
-
-func publishWhy(flag string) string {
-	if flag == "release" {
-		return "the release's artifact SET (including the per-env external build_cmd images) is discovered from deploy/kcl/<env>/main.k"
-	}
-	return "each image's destination is declared on its own workload in the env's render"
 }

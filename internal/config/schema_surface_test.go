@@ -255,22 +255,20 @@ func TestSchemaSurface_KindIsNotAuthored(t *testing.T) {
 	}
 }
 
-// TestConfigWarnings_DedupAcrossLabelSpellings pins that the same retired key
-// in the same file warns ONCE per process even when callers spell the path
+// TestConfigWarnings_DedupAcrossLabelSpellings pins that the same warning
+// in the same file prints ONCE per process even when callers spell the path
 // differently. A single command loads forge.yaml through several call sites,
 // some passing an absolute path and some the bare filename; keying the dedup
 // set on the raw label made those look like two files and printed every
-// retired-key notice twice.
+// notice twice.
 func TestConfigWarnings_DedupAcrossLabelSpellings(t *testing.T) {
 	var sink strings.Builder
 	prev := SetConfigWarningSink(&sink)
 	defer SetConfigWarningSink(prev)
 
-	const in = "name: demo\nmodule_path: github.com/example/demo\nversion: 1.0.0\n"
+	warn := []validationIssue{{line: 3, column: 1, msg: `"version" is no longer run`, warning: true}}
 	for _, label := range []string{"forge.yaml", "/abs/path/to/forge.yaml", "./forge.yaml"} {
-		if _, err := LoadProject([]byte(in), label); err != nil {
-			t.Fatalf("retired key must not gate the load (%s): %v", label, err)
-		}
+		flushConfigWarnings(label, warn)
 	}
 
 	if got := strings.Count(sink.String(), `"version" is no longer`); got != 1 {

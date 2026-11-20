@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -117,6 +118,19 @@ type ProjectGenerator struct {
 	// forge control plane, so the CI scaffolded beside them is the hosted
 	// pipeline (generateCIFiles) without rendering a half-born project.
 	hostedEnvs []string
+
+	// ConnectMajor is the explicit choice for a new service scaffold, before
+	// its go.mod exists. Zero keeps the choice in the project's own go.mod.
+	ConnectMajor connectmajor.Major
+}
+
+// connectMajor uses the explicit scaffold choice when set; otherwise it
+// reads the adopted project's go.mod and falls back to v1 without one.
+func (g *ProjectGenerator) connectMajor() connectmajor.Major {
+	if g.ConnectMajor != 0 {
+		return g.ConnectMajor
+	}
+	return connectmajor.DetectOrDefault(g.treeDir())
 }
 
 // treeDir is the directory the scaffold reads project facts from — see

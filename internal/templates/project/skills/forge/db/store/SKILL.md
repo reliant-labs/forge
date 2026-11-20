@@ -61,12 +61,9 @@ anything, counting the tables that run births.
   AND every column the library reads and writes, so an app table that only
   shares the name keeps its store. One is projected anyway when a CRUD rpc
   names it or its comment says `forge:entity`. Generate prints a note for each
-  one it leaves off; `forge:no-entity` on the table silences it.
-  **Deprecated, kept until the next major:** a library table whose store the
-  project already generates (its `<entity>_orm_gen.go` names the table) keeps
-  that store. Every generate warns about it, naming the table. Opt out now with
-  a `COMMENT ON TABLE <table> IS 'forge:no-entity'` migration, or say
-  `forge:entity` to keep the store past the next major.
+  one it leaves off; `forge:no-entity` on the table silences it. A store
+  generated over one by an older forge is not kept: say `forge:entity` on the
+  table to keep it.
 - The whole data layer: `//forge:no-orm: <why>` in `internal/db`'s package doc
   (`db/orm-and-safety`).
 

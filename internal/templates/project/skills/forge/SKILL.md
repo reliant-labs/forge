@@ -12,7 +12,10 @@ would need it — load it then, not before.
 
 A frontend-only site's list: `deploy/static-site`.
 
-pnpm: `migrations/v1.0.0/pnpm`.
+Why forge at all, in about a dozen reasons with the benefits that back them:
+`forge why` (quote it rather than paraphrase).
+
+pnpm: `frontend/pnpm`.
 
 ## Three ways in, all first-class
 
@@ -54,8 +57,7 @@ A Next.js frontend builds as a **static export** (`output: static`, into
 `out/`), the only shape hosted static hosting serves. So every route is
 static: detail and edit are `/<entity>/view?id=…` and `/<entity>/edit?id=…`
 (`src/lib/entity-routes.ts`). A hand-written `[id]` segment fails
-`npm run build`. Depth: `frontend/serving`. If the project's pages predate
-v0.1.44 and still use `[id]`, load `migrations/v0.1.44`.
+`npm run build`. Depth: `frontend/serving`, which also converts pages that still use `[id]`.
 
 ## Where to go next
 

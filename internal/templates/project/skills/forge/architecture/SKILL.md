@@ -67,7 +67,7 @@ Config ownership follows the PROCESS: one project-global `AppConfig` by default,
 | `internal/handlers/<svc>/handlers_crud_ops_gen.go` | `internal/handlers/<svc>/handlers_crud.go` — CRUD delegations (access-control WHERE) |
 | `internal/app/graph_gen.go`, `routes_gen.go` (disown to hand-own) | `internal/app/providers.go`, `auth.go`, `roots.go` — providers, `SetupAuth`, roots; `compose.go` — yours, with only missing methods / Deps keys reconciled |
 | `internal/db/<entity>_orm.go` — entity struct + ORM (from schema) | `db/migrations/` — schema truth; `internal/db/<entity>_repo_ext.go` — custom queries |
-| `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks.ts`, `gen/forge_descriptor/` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
+| `pkg/config/`, `pkg/app/testing.go`, frontend `*-hooks_gen.ts`, `gen/forge_descriptor/` | `pkg/middleware/` — policy; `cmd/<binary>.go` — owned subcommands |
 
 **Rule of thumb:** `_gen` in the name or under `gen/` — regenerated; `pkg/` is a mix (table above).
 
@@ -85,10 +85,10 @@ db/migrations/*.up.sql (shadow-applied to a real ephemeral postgres, introspecte
 
 proto/<project>/config/v1/config.proto → forge generate → pkg/config/ + deploy/kcl/config_gen.k
 internal/<name>/service.go (//forge:contract struct) or contract.go (standalone domain packages) → forge generate → internal/<name>/contract_gen.go (derived Service) + mock_gen.go
-gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks.ts
+gen/ts/ → forge generate → frontends/<name>/src/hooks/*-hooks_gen.ts
 ```
 
-A generator forge does not own (a query generator kept during a port, your own codegen tool) runs as a **generate hook** declared in `forge.yaml`. Hooks run in order on the final tree, before `go mod tidy` and the validation build. A failing hook fails the generate and ends the report with its output tail (log: `.forge/generate-hooks/<name>.log`). Every full `forge generate` runs every hook; nothing skips them, because a skipped hook leaves stale output that still compiles. `FORGE_NO_GIT_HOOKS=1` (formerly `FORGE_NO_HOOKS`) is unrelated: it stops forge configuring git hooks in your clone. `writes:` puts the hook's output in generate's rollback journal:
+A generator forge does not own (a query generator kept during a port, your own codegen tool) runs as a **generate hook** declared in `forge.yaml`. Hooks run in order on the final tree, before `go mod tidy` and the validation build. A failing hook fails the generate and ends the report with its output tail (log: `.forge/generate-hooks/<name>.log`). Every full `forge generate` runs every hook; nothing skips them, because a skipped hook leaves stale output that still compiles. `FORGE_NO_GIT_HOOKS=1` is unrelated: it stops forge configuring git hooks in your clone. `writes:` puts the hook's output in generate's rollback journal:
 
 ```yaml
 generate:
@@ -154,7 +154,7 @@ Declaring a root named `server` keeps the `server` command; once any root is dec
 
 ## Files NOT to Edit
 
-Regenerated (changes overwritten): `gen/`, every `*_gen.go`, `internal/db/<entity>_orm.go`, `pkg/config/`, `pkg/app/`, `frontends/<name>/src/hooks/*-hooks.ts` + `src/lib/connect.ts`, and the three generated `internal/app` files until disowned. Your CRUD bodies live in the owned `handlers_crud.go`; the validator behind `auth.go` is yours to pick — see `auth`.
+Regenerated (changes overwritten): `gen/`, every `*_gen.go`, `internal/db/<entity>_orm.go`, `pkg/config/`, `pkg/app/`, `frontends/<name>/src/hooks/*-hooks_gen.ts` + `src/lib/connect.ts`, and the three generated `internal/app` files until disowned. Your CRUD bodies live in the owned `handlers_crud.go`; the validator behind `auth.go` is yours to pick — see `auth`.
 
 ## Naming conventions
 

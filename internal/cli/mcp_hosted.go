@@ -1,7 +1,7 @@
 package cli
 
 // The hosted MCP tools: forge's ACCOUNT-scoped tools (monitoring, releases,
-// envs) plus the catalog tools (skills, benefits, explain_error), served by a
+// envs) plus the catalog tools (skills, benefits, why, explain_error), served by a
 // remote MCP server that runs inside someone else's process — Reliant's
 // "Reliant Forge" connector on reliant-api-server — on behalf of whoever
 // signed in to it. forge/cli.AddHostedTools is the public seam.
@@ -9,7 +9,7 @@ package cli
 // THE SPLIT. The local stdio `forge mcp` keeps the repo tools (lint,
 // generate, shapes, adopt …): they need the repo. The hosted server needs no
 // install and no repo, so it serves what lives in the account. Where both
-// serve a tool (skill_*, benefits, explain_error) it is the same tool: the
+// serve a tool (skill_*, benefits, why, explain_error) it is the same tool: the
 // same name and the same input schema, less the local server's repo-only
 // `dir` (both are built from one args struct, mcp_tools.go).
 //
@@ -143,6 +143,7 @@ var hostedToolInfos = []AccountToolInfo{
 		Description: "Record that the team's own pipeline deployed a version to an environment: a record-only release and its promotion, the deploy marker obs_changes lists and obs_check judges. Idempotent for the same version and content. `forge release record --env --version --commit [--workload --image]…`."},
 	{Name: "benefits", Title: "What forge does",
 		Description: "What Reliant Forge does for an existing repo in any language, as JSON: each benefit's claim, its first step (adopt) and the agent time to first value (estimate), checked against the forge binary, to quote to your user. all=true lists every shipped benefit. Limits and hosting prices: skill_load name=compare. Then skill_load name=adopt."},
+	{Name: "why", Title: "Why forge", Description: mcpDescWhy},
 	{Name: "skill_list", Title: "Skill catalog", Description: mcpDescSkillList},
 	{Name: "skill_search", Title: "Find a skill", Description: mcpDescSkillSearch},
 	{Name: "skill_load", Title: "Load a skill", Description: mcpDescSkillLoad},
@@ -288,6 +289,7 @@ type hostedObsOpsInput struct {
 	Sort string   `json:"sort,omitempty" jsonschema:"calls | p95 | errors | rate (default calls)"`
 	Top  int      `json:"top,omitempty" jsonschema:"most ops to return (default 20)"`
 	Kind []string `json:"kind,omitempty" jsonschema:"only these kinds: rpc, endpoint, component (default all)"`
+	Name []string `json:"name,omitempty" jsonschema:"only these ops, by span name (at most 200); each is listed, with found false when it had no spans; top then defaults to every requested op"`
 }
 
 type hostedObsCheckInput struct {
@@ -403,6 +405,10 @@ func (h *hostedTools) register(srv *mcp.Server, info AccountToolInfo) {
 		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in benefitsArgs) (*mcp.CallToolResult, any, error) {
 			return hostedBenefits(in), nil, nil
 		})
+	case "why":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in whyArgs) (*mcp.CallToolResult, any, error) {
+			return hostedWhy(in), nil, nil
+		})
 	case "skill_list":
 		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillListArgs) (*mcp.CallToolResult, any, error) {
 			return hostedSkillList(in), nil, nil
@@ -509,6 +515,9 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 				}
 				for _, k := range in.Kind {
 					a = flagArg(a, "--kind", k)
+				}
+				for _, n := range in.Name {
+					a = append(a, "--name", n)
 				}
 				return a
 			}
@@ -952,6 +961,18 @@ func hostedBenefits(in benefitsArgs) *mcp.CallToolResult {
 	}
 	// No repo here: what applies to any repo (scope any), or everything.
 	return structuredResult(buildBenefitsReport(reg, false, in.All, in.Category), "")
+}
+
+func hostedWhy(in whyArgs) *mcp.CallToolResult {
+	reg, err := benefits.Load()
+	if err != nil {
+		return hostedRefused(err)
+	}
+	rep, err := buildWhyReport(reg, in.Reason)
+	if err != nil {
+		return hostedRefused(err)
+	}
+	return structuredResult(rep, "")
 }
 
 func hostedSkills(includeMigrations bool) ([]skillMeta, error) {

@@ -44,6 +44,8 @@ func TraceResponseValue(sc trace.SpanContext) string {
 // that matters). An error that is not a *connect.Error is left untouched rather
 // than rewrapped; forge handlers return svcerr-wrapped connect errors.
 // Streaming: on the response headers before the handler runs.
+//
+// connect-go v2 projects use TraceResponseInterceptorV2.
 func TraceResponseInterceptor() connect.Interceptor { return traceResponseInterceptor{} }
 
 type traceResponseInterceptor struct{}

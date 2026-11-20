@@ -5,10 +5,13 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 )
 
-// Registrar is the REQUIRED capability every mountable forge service
-// implements: it registers its Connect handler on the mux. The generated
+// Registrar is the REQUIRED capability every mountable connect-go v1 forge
+// service implements: it registers its Connect handler on the mux (a
+// connect-go v2 service implements RegistrarV2 instead). The generated
 // service.go's Register method (which calls the protoc-gen-connect-go
 // New<Svc>Handler and mux.Handle's the result) satisfies it directly.
 //
@@ -67,6 +70,22 @@ type Option func(*options)
 type options struct {
 	stack       func(http.Handler) http.Handler
 	handlerOpts []connect.HandlerOption
+
+	// The connect-go v2 halves of handlerOpts (connect_v2.go). A v1 mount
+	// refuses them, and a v2 mount refuses handlerOpts.
+	interceptorsV2 []connectv2.ServerInterceptor
+	httpOptsV2     []connecthttp.Option
+}
+
+// applyOptions applies mountOpts, skipping nil ones.
+func applyOptions(mountOpts []Option) options {
+	cfg := options{}
+	for _, o := range mountOpts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
+	return cfg
 }
 
 // WithHandlerOptions adds Connect handler options to this one mount, AFTER
@@ -80,6 +99,7 @@ type options struct {
 // a machine-wake interceptor to two of its services this way; the other
 // services' chains are untouched, because the shared slice is never appended
 // to in place.
+// A connect-go v2 mount takes WithInterceptorsV2 and WithHTTPOptionsV2 instead.
 func WithHandlerOptions(opts ...connect.HandlerOption) Option {
 	return func(o *options) { o.handlerOpts = append(o.handlerOpts, opts...) }
 }
@@ -98,12 +118,14 @@ type Resolved struct {
 // defaultStack when none was given. RegisterService resolves with it, and the
 // generated mounts, which register through the service's own methods, call
 // it to honour the same options.
+//
+// It panics when mountOpts carry WithInterceptorsV2 or WithHTTPOptionsV2:
+// they configure a connect-go v2 mount (ResolveV2), and dropping them here —
+// an interceptor that authenticates, say — would be silent.
 func Resolve(shared []connect.HandlerOption, defaultStack func(http.Handler) http.Handler, mountOpts ...Option) Resolved {
-	cfg := options{}
-	for _, o := range mountOpts {
-		if o != nil {
-			o(&cfg)
-		}
+	cfg := applyOptions(mountOpts)
+	if len(cfg.interceptorsV2) > 0 || len(cfg.httpOptsV2) > 0 {
+		panic(v2MountOptionsError)
 	}
 	handlerOpts := make([]connect.HandlerOption, 0, len(shared)+len(cfg.handlerOpts))
 	handlerOpts = append(append(handlerOpts, shared...), cfg.handlerOpts...)
@@ -144,6 +166,8 @@ func identityStack(next http.Handler) http.Handler { return next }
 // any the value implements, passing the stack from WithHTTPStack (or an
 // identity stack when none was supplied). A service implementing only
 // Registrar mounts exactly its Connect handler and nothing else.
+//
+// connect-go v2 services mount with RegisterServiceV2.
 func RegisterService(mux *http.ServeMux, svc any, opts []connect.HandlerOption, mountOpts ...Option) {
 	if mux == nil {
 		panic("mountkit: RegisterService called with nil mux")

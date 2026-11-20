@@ -5,12 +5,10 @@ description: The project's lint dials — `lint.lanes` to switch a whole lane of
 
 # New lint rules warn before they gate
 
-A forge release that adds a lint rule or lane, or tightens one, must not turn
-your gate red the day you pin it. Every rule lint can grade declares two
-versions in forge (`internal/cli/lint/lint_rollout_table.go`): `introduced_in`,
-the release that shipped it, and `gates_from`, the release it starts to fail
-the gate in (always a later one). The `forge_version` in your `forge.yaml`
-decides:
+Every rule lint can grade declares the release that introduced it
+(`introduced_in`). A rule with a warning window also has a `gates_from` date,
+the later release where it starts to fail the gate. For rules with that window,
+the `forge_version` in your `forge.yaml` decides:
 
 | Your pin vs the rule             | A finding that would have failed the gate        |
 | -------------------------------- | ------------------------------------------------ |
@@ -62,9 +60,11 @@ extends the grace period for as long as you need, and `{rule: off}` drops the
 rule. The golangci-lint passes over files behind your build tags roll out the
 same way, under the key `golangci-build-tags`.
 
-Adding a rule to forge? Add it to `gradableRules` and to the rollout table with
-`introduced_in` = the release it ships in and `gates_from` = the one after;
-`TestEveryGradableRuleDeclaresItsRollout` fails until you do.
+Adding a rule to forge? Add it to `gradableRules` and declare its introduction
+release in the rollout table. The v1.9.0 warning window is opt-in for newly
+introduced rules: `Grace` names v1.10.0 as the first release that gates and
+records why the rule needs grace. Rules whose windows were closed in #2410
+stay closed. `TestRolloutRowsAreWellFormed` checks these restrictions.
 
 ## Switching a whole lane off: `lint.lanes`
 

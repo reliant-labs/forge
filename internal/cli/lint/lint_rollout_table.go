@@ -1,34 +1,27 @@
 // File: internal/cli/lint/lint_rollout_table.go
 //
 // The rollout declaration of every rule lint.rules grades — see
-// lint_rollout.go for what the three fields mean and how the project's pin
-// reads them.
+// lint_rollout.go for how the project's pin reads the declaration.
 //
 // TestEveryGradableRuleDeclaresItsRollout fails for a rule in gradableRules
 // with no row here, so a new lane cannot ship without choosing when it gates.
 //
 // ── Adding a rule ────────────────────────────────────────────────────────
 //
-// Add it to `newRules` below:
+// For a new rule introduced in NEXT_VERSION v1.9.0 that needs a warning
+// window, add an explicit, reasoned opt-in to `newRules`:
 //
-//	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
 //
-// IntroducedIn is the release the rule will ship in — the one NEXT_VERSION
-// names, never a guess at VERSION's patch+1 —, GatesFrom the release after
-// that (NEXT_VERSION's patch+1, which is what the release script writes into
-// NEXT_VERSION when it cuts; TestRolloutRowsNameTheNextRelease). Tightening an existing rule — raising a
-// warning to an error, or making it find what it used to miss — is the same
-// act: move its ID out of `shippedRules` into `newRules` with the release that
-// tightens it, and its findings warn for one release again.
-//
-// A rule the project must NOT be given a grace period for (it cannot be
-// softened without making the gate meaningless) is still declared; set
-// GatesFrom equal to IntroducedIn... which TestRolloutRowsAreWellFormed
-// refuses, on purpose: ask the owner first.
+// Until is exclusive: it becomes the effective GatesFrom used by lint and
+// upgrade reports. This exception is for v1.9.0 introductions only; it does
+// not reopen any window closed in #2410 or move with NEXT_VERSION.
 
 package lint
 
 import (
+	"strings"
+
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -36,9 +29,16 @@ import (
 // rolloutGroup is a set of rules that share a declaration.
 type rolloutGroup struct {
 	IntroducedIn string
-	GatesFrom    string
+	Grace        *rolloutGrace
 	Fix          string
 	Rules        []string
+}
+
+// rolloutGrace explicitly grants a warning window to newly introduced v1.9.0 rules.
+// Until is the first release that gates; Reason records why the rule needs grace.
+type rolloutGrace struct {
+	Until  string
+	Reason string
 }
 
 // shippedRules have gated since they shipped. The versions are the first
@@ -137,9 +137,8 @@ var shippedRules = []rolloutGroup{
 	}},
 
 	// The rules below joined `forge lint` (or were tightened) after warn-first
-	// existed, and each warned for a grace window. Every window closed at
-	// rolloutBaseline (owner, 2026-11-19: forge has no users outside the
-	// group that pins it), so they gate at any pin.
+	// existed, and each warned for a grace window. #2410 closed those
+	// windows, so these rows no longer soften findings at any pin.
 
 	// Tightened: a warning until v0.1.46, a gate since.
 	{IntroducedIn: "v1.0.0", Rules: []string{
@@ -256,20 +255,50 @@ var shippedRules = []rolloutGroup{
 	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
 }
 
-// newRules joined `forge lint`, or were tightened, after rolloutBaseline:
-// they warn in a project pinned below GatesFrom. Empty when every rule that
-// shipped gates; the next rule to join (or be tightened) goes here.
-var newRules = []rolloutGroup{}
+// newRules holds new v1.9.0 rules with explicit, owner-approved grace.
+var newRules = []rolloutGroup{
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
+		Fix:          "forge lint --install",
+		Rules:        []string{ruleFrontendNoInstall},
+	},
+}
+
+// rolloutLinkFixture is a grace row linked into a test build of the forge
+// binary, "<rule>@<introduced_in>@<grace_until>", so the warn-first path is
+// proven through the real binary on a rule whose window the test controls
+// (TestE2ENewRuleWarnsUntilPinReachesGatesFrom). Only the linker sets it
+// (-ldflags -X); no flag, env var or file reaches it, and it is empty in
+// every release build.
+var rolloutLinkFixture string
 
 // lintRollouts is the declaration of every rule, by ID.
-var lintRollouts = buildRollouts(shippedRules, newRules)
+var lintRollouts = buildRollouts(shippedRules, newRules, linkedFixtureRows(rolloutLinkFixture))
+
+// linkedFixtureRows is the grace row rolloutLinkFixture names, if any.
+func linkedFixtureRows(fixture string) []rolloutGroup {
+	parts := strings.Split(fixture, "@")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil
+	}
+	return []rolloutGroup{{
+		IntroducedIn: parts[1],
+		Grace:        &rolloutGrace{Until: parts[2], Reason: "linked e2e fixture"},
+		Rules:        []string{parts[0]},
+	}}
+}
 
 func buildRollouts(groups ...[]rolloutGroup) map[string]ruleRollout {
 	out := map[string]ruleRollout{}
 	for _, list := range groups {
 		for _, g := range list {
+			var gatesFrom string
+			if g.Grace != nil {
+				gatesFrom = g.Grace.Until
+			}
 			for _, r := range g.Rules {
-				out[r] = ruleRollout{IntroducedIn: g.IntroducedIn, GatesFrom: g.GatesFrom, Fix: g.Fix}
+				out[r] = ruleRollout{IntroducedIn: g.IntroducedIn, GatesFrom: gatesFrom, Fix: g.Fix}
 			}
 		}
 	}

@@ -85,9 +85,14 @@ jobs:
         # under CI and fails on any file a fixer would rewrite, printing the
         # diff), so the release is cut from the commit that was reviewed, not
         # from a checkout lint repaired on the way. No flag needed.
+        # --install: this fresh runner has no node_modules, and forge lint
+        # installs nothing unless asked (a frontend it cannot lint is a lane
+        # that could NOT run, which fails it). It installs each frontend with
+        # its own package manager, frozen to the lockfile — what the frontend
+        # tests in the next step run against too.
         run: |
           mkdir -p gates
-          forge lint --gate-json gates/lint.json
+          forge lint --install --gate-json gates/lint.json
       - name: Test
         # Through the Taskfile, the one definition of the suite — never a
         # second spelling of `go test` that could drift from it. `-json` is

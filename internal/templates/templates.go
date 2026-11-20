@@ -387,7 +387,7 @@ type CIWorkflowData struct {
 	// Environments (for KCL validation)
 	Environments []string
 
-	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
+	// Fields the other CI templates read (build-images, deploy, dependabot).
 	Module       string
 	FrontendName string // first frontend name for dependabot
 

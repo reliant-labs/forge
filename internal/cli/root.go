@@ -315,9 +315,6 @@ path from an empty directory to authored protos, in one call.`,
 	// ran the whole Go suite twice — untagged, then under -tags=integration,
 	// which ADDS files rather than filtering them). Contrast `forge lint`, which
 	// stays because it orchestrates analyzers that exist only inside forge.
-	//
-	// newTestRemovedCmd below is a signpost, not a command: it only errors.
-	rootCmd.AddCommand(newTestRemovedCmd())
 	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).

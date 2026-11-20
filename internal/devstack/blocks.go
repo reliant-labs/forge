@@ -70,8 +70,8 @@ const registryRel = ".forge/blocks.json"
 // wrong moves ports on a live stack.
 //
 // An empty Origin means "tied to no worktree" and is therefore NEVER
-// reclaimable. That is the safe default, and it is what a legacy entry, a key
-// allocated from the primary checkout, and a genuinely standalone key like
+// reclaimable. That is the safe default, and it is what a pre-origin entry, a
+// key allocated from the primary checkout, and a genuinely standalone key like
 // "prod" all decode to.
 type entry struct {
 	Block int  `json:"block"`
@@ -168,38 +168,6 @@ func reconcileOrigin(key string, e entry) (entry, bool) {
 
 // registry is the decoded {key: entry} map.
 type registry map[string]entry
-
-// UnmarshalJSON reads BOTH the current object form and the historical bare-int
-// form (`{"wt-a": 1}`), which every registry written before the stack flag
-// existed is in.
-//
-// Migrating in place — rather than discarding and re-allocating — is the whole
-// point. A block index is not a cache: it is multiplied by 100 into host ports
-// that are pre-mapped in k3d's cluster config and baked into an issuer's `iss`
-// claim and registered redirect URIs. Re-assigning one silently breaks sign-in
-// and cluster ingress on a developer's machine. So a legacy entry keeps its
-// exact block and is simply read as a non-stack key; the next `forge env up`
-// from its worktree re-marks it as a stack (markStack), which is the same
-// moment forge would have learned that fact anyway.
-func (r *registry) UnmarshalJSON(data []byte) error {
-	// Try the current form first: {"key": {"block": N, "stack": bool}}.
-	var typed map[string]entry
-	if err := json.Unmarshal(data, &typed); err == nil {
-		*r = typed
-		return nil
-	}
-	// Fall back to the legacy form: {"key": N}.
-	var legacy map[string]int
-	if err := json.Unmarshal(data, &legacy); err != nil {
-		return err
-	}
-	out := make(registry, len(legacy))
-	for key, block := range legacy {
-		out[key] = entry{Block: block}
-	}
-	*r = out
-	return nil
-}
 
 // validateKey rejects a key that is not a canonical DNS-safe label — the
 // form Sanitize produces and the form every consumer of this registry
@@ -585,9 +553,9 @@ func AllocateBlock(projectDir, key string) (int, error) {
 		if existing, ok := reg[key]; ok {
 			block = existing.Block
 			// The block is settled and must never move. Only the LABELS
-			// move: the stack flag, which is how a legacy (bare-int) entry
-			// and any entry first seen through a non-devstack path get
-			// labelled the next time their own worktree brings the stack up,
+			// move: the stack flag, which is how an entry first seen
+			// through a non-devstack path gets labelled the next time its
+			// own worktree brings the stack up,
 			// and the origin, which migrates a pre-origin entry the same way
 			// (see reconcileOrigin).
 			changed := false
@@ -640,8 +608,7 @@ func registryPath(projectDir string) string {
 	return filepath.Join(RepoAnchor(projectDir), registryRel)
 }
 
-// readRegistry loads the {key: entry} map, accepting the legacy bare-int form
-// (see registry.UnmarshalJSON). A missing file is an empty registry (the
+// readRegistry loads the {key: entry} map. A missing file is an empty registry (the
 // first-ever named key). A corrupt file is an error — silently discarding it
 // would re-assign blocks already in use by a live stack, colliding ports.
 func readRegistry(projectDir string) (registry, error) {

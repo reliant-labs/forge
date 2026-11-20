@@ -95,11 +95,6 @@ import (
 // branches conflict here only over the same path.
 const ScaffoldedDir = ".forge/scaffolded"
 
-// LegacyScaffoldedFile is the one-file ledger ScaffoldedDir replaces. The
-// load still reads it, and the next save writes its entries out and deletes
-// it, so one `forge generate` migrates a project.
-const LegacyScaffoldedFile = ".forge/scaffolded.json"
-
 // scaffoldEntrySuffix ends every entry file's name.
 const scaffoldEntrySuffix = ".json"
 
@@ -195,15 +190,11 @@ func withoutLocalOnly(paths []string) []string {
 	return out
 }
 
-// PersistLedgerMigrations rewrites root's ledger when the copy on disk is
-// in a shape this forge no longer writes: the legacy one-file ledger
-// (LegacyScaffoldedFile), or entries IsLocalOnlyScaffold forbids. Every save
-// converges both, but a save happens only when a run records a birth, so a
-// project whose upgrade run scaffolded nothing kept its legacy ledger, and
-// the first pull request to scaffold anything afterwards carried the whole
-// migration. `forge generate` calls this on every successful run, so the
-// upgrade run itself migrates. A ledger already in the current shape is not
-// touched.
+// PersistLedgerMigrations rewrites root's ledger when the copy on disk
+// holds entries IsLocalOnlyScaffold forbids. Every save converges that, but
+// a save happens only when a run records a birth, so `forge generate` calls
+// this on every successful run. A ledger already in the current shape is
+// not touched.
 func PersistLedgerMigrations(root string) {
 	scaffoldMu.Lock()
 	defer scaffoldMu.Unlock()
@@ -213,9 +204,6 @@ func PersistLedgerMigrations(root string) {
 	}
 	led, reported, _ := readScaffoldLedger(abs)
 	dirty := len(withoutLocalOnly(reported)) != len(reported)
-	if _, serr := os.Stat(filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))); serr == nil {
-		dirty = true
-	}
 	for p := range led {
 		if IsLocalOnlyScaffold(p) {
 			dirty = true
@@ -226,25 +214,6 @@ func PersistLedgerMigrations(root string) {
 	}
 	loadScaffoldLedgerLocked(abs)
 	saveScaffoldLedgerLocked(abs)
-}
-
-// scaffoldedJSON is the legacy one-file shape (LegacyScaffoldedFile), read
-// until the next save migrates it.
-type scaffoldedJSON struct {
-	ForgeVersion string                   `json:"forge_version,omitempty"`
-	Files        map[string]ScaffoldEntry `json:"files"`
-	// AbsentReported is the absent set as of the last run that reported
-	// it. It is what turns the absent-scaffolds notice from a standing
-	// banner into an EVENT — see AbsentScaffoldsIfChanged.
-	//
-	// It lives here rather than in a sibling file because it is a fact
-	// about the same decisions this ledger already records, and because a
-	// second state file is a second thing to gitignore, migrate and
-	// explain. It is committed for the same reason the ledger is: the
-	// deletion belongs to the repository, so a teammate who clones after
-	// the notice was shown should not be shown it again for a set nobody
-	// changed.
-	AbsentReported []string `json:"absent_reported,omitempty"`
 }
 
 // scaffoldLedgers memoizes the per-root ledger for the life of the process,
@@ -312,11 +281,8 @@ func loadScaffoldLedgerLocked(root string) map[string]ScaffoldEntry {
 // Guarded by scaffoldMu.
 var scaffoldOnDisk = map[string]map[string][]byte{}
 
-// readScaffoldLedger reads abs's ledger from disk: the legacy one-file
-// ledger, if any, then every entry file under ScaffoldedDir (an entry file
-// is newer than the legacy file by construction — the save that wrote it
-// deleted the legacy file — so it wins). onDisk maps each entry file read to
-// its bytes. A missing or unparseable record yields no entry rather than an
+// readScaffoldLedger reads abs's ledger from disk: every entry file under
+// ScaffoldedDir. onDisk maps each entry file read to its bytes. A missing or unparseable record yields no entry rather than an
 // error: the ledger's only job is to suppress a re-write, so the failure
 // mode of an unreadable ledger must be forge's historical behavior (scaffold
 // it), never a refusal to scaffold a project that has no ledger.
@@ -324,17 +290,6 @@ func readScaffoldLedger(abs string) (led map[string]ScaffoldEntry, reported []st
 	led = map[string]ScaffoldEntry{}
 	onDisk = map[string][]byte{}
 	reportedSet := map[string]bool{}
-	if data, rerr := os.ReadFile(filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))); rerr == nil {
-		var s scaffoldedJSON
-		if json.Unmarshal(data, &s) == nil {
-			for p, e := range s.Files {
-				led[slashKey(p)] = e
-			}
-			for _, p := range s.AbsentReported {
-				reportedSet[slashKey(p)] = true
-			}
-		}
-	}
 	dir := filepath.Join(abs, filepath.FromSlash(ScaffoldedDir))
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -373,8 +328,8 @@ func readScaffoldLedger(abs string) (led map[string]ScaffoldEntry, reported []st
 
 // saveScaffoldLedger persists root's ledger: it makes ScaffoldedDir hold
 // exactly one entry file per recorded path, rewriting only the entries that
-// changed, removing those of paths no longer recorded (and the directories
-// that empties), and deleting the legacy one-file ledger. An empty ledger
+// changed, and removing those of paths no longer recorded (and the
+// directories that empties). An empty ledger
 // leaves no files at all (the same no-bookkeeping-churn rule Save applies
 // to the other state). Best-effort by the same discipline as the load: a
 // ledger we cannot write must not abort a write that already succeeded.
@@ -440,14 +395,6 @@ func saveScaffoldLedgerLocked(root string) {
 		}
 	}
 	scaffoldOnDisk[abs] = onDisk
-	legacy := filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))
-	if _, serr := os.Stat(legacy); serr == nil {
-		RecordPreWriteAbs(legacy)
-		_ = os.Remove(legacy)
-		if len(want) > 0 {
-			migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/")
-		}
-	}
 }
 
 // scaffoldDeferred counts the open DeferScaffoldLedger batches per root, and

@@ -16,9 +16,7 @@ import (
 //   - disowned entries (.forge/disowned.json — including ones the
 //     legacy-manifest migration converted from `forked: true`) show up
 //     under codegen.details.disowned_files with path / since / reason;
-//   - the legacy forked_files key still exists but is ALWAYS an empty
-//     array, with a deprecation note field (additive-extension
-//     contract: keys are never repurposed);
+//   - the removed fork state's forked_files key is gone;
 //   - the summary counts disowned files but the status stays OK —
 //     disowning is a legitimate end state, not a warning;
 //   - disowned files are excluded from user_edited_gen_files even when
@@ -91,17 +89,9 @@ func TestAuditCodegen_DisownedFiles(t *testing.T) {
 		t.Errorf("disowned_hint detail missing")
 	}
 
-	// Legacy key contract: always present, always empty, with a note.
-	legacy, ok := cat.Details["forked_files"].([]auditDisownedFile)
-	if !ok {
-		t.Fatalf("legacy forked_files key missing or wrong shape: %#v", cat.Details["forked_files"])
-	}
-	if len(legacy) != 0 {
-		t.Errorf("legacy forked_files must always be empty; got %+v", legacy)
-	}
-	note, _ := cat.Details["forked_files_note"].(string)
-	if !strings.Contains(note, "deprecated") || !strings.Contains(note, "disowned_files") {
-		t.Errorf("forked_files_note = %q, want a deprecation note pointing at disowned_files", note)
+	// The fork state is gone, and so is its key.
+	if _, ok := cat.Details["forked_files"]; ok {
+		t.Errorf("the removed forked_files key is still emitted: %#v", cat.Details["forked_files"])
 	}
 
 	// Post-disown edits are not "drift".
@@ -110,9 +100,7 @@ func TestAuditCodegen_DisownedFiles(t *testing.T) {
 	}
 }
 
-// TestAuditCodegen_NoDisowned pins the empty-state shape: the legacy
-// forked_files key + note are still emitted (consumers can rely on
-// them unconditionally for the deprecation window) and no disowned
+// TestAuditCodegen_NoDisowned pins the empty-state shape: no disowned
 // keys appear. The steady state has NO .forge state files at all — the
 // manifest-era empty checksums.json is gone.
 func TestAuditCodegen_NoDisowned(t *testing.T) {
@@ -121,10 +109,6 @@ func TestAuditCodegen_NoDisowned(t *testing.T) {
 	cat := auditCodegen(testFactory(auditAPIConfig{}), nil, dir)
 	if cat.Status != audittype.StatusOK {
 		t.Errorf("status = %s, want ok", cat.Status)
-	}
-	legacy, ok := cat.Details["forked_files"].([]auditDisownedFile)
-	if !ok || len(legacy) != 0 {
-		t.Errorf("legacy forked_files must be an empty array even with no disowned files; got %#v", cat.Details["forked_files"])
 	}
 	if _, ok := cat.Details["disowned_files"]; ok {
 		t.Errorf("disowned_files should be omitted when nothing is disowned")

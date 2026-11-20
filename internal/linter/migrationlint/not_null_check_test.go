@@ -46,6 +46,27 @@ func TestSetNotNull_ProvenByValidatedCheck(t *testing.T) {
 		{"SET NOT NULL before the validation", []compatFile{add, {"2_set.up.sql", set.content}, {"3_validate.up.sql", validate.content}}, 1},
 		{"a CHECK that is not IS NOT NULL", []compatFile{{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT len CHECK (length(email) > 0);`}, set}, 1},
 		{"quoted identifiers", []compatFile{{"1.up.sql", `ALTER TABLE "users" ADD CONSTRAINT "nn" CHECK ("email" IS NOT NULL);`}, set}, 0},
+		{"unqualified drop invalidates a possibly matching qualified proof", []compatFile{
+			{"1.up.sql", `ALTER TABLE public.users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE users DROP CONSTRAINT nn;`},
+			{"3.up.sql", `ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"unqualified check cannot prove a different qualified name", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE other.users ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"a dot inside a table name is not a schema separator", []compatFile{
+			{"1.up.sql", `ALTER TABLE "public.users" ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"quoted uppercase column is not an unquoted lower-case column", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE users ALTER COLUMN "EMAIL" SET NOT NULL;`}}, 1},
+		{"matching quoted uppercase column remains provable", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT nn CHECK ("EMAIL" IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE users ALTER COLUMN "EMAIL" SET NOT NULL;`}}, 0},
+		{"two columns differing in case on the same line need separate proofs", []compatFile{
+			{"1.up.sql", `ALTER TABLE users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", `ALTER TABLE users ALTER COLUMN email SET NOT NULL, ALTER COLUMN "EMAIL" SET NOT NULL;`}}, 1},
+		{"a search path change invalidates unqualified proofs", []compatFile{add, validate,
+			{"3.up.sql", `SET search_path TO other, public;`}, {"4.up.sql", set.content}}, 1},
 
 		// The whole expression must be the proof: another predicate admits
 		// NULLs (review B1 of #2533).

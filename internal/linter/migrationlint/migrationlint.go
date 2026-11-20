@@ -277,7 +277,6 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 var (
 	statementSplitRe  = regexp.MustCompile(`;`)
 	addColumnRe       = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+[^;]*`)
-	setNotNullRe      = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\balter\s+column\s+(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+set\s+not\s+null\b`)
 	updateRe          = regexp.MustCompile(`(?is)^\s*update\s+(?:"[^"]+"|[a-zA-Z_][\w$.]*)\s+set\s+([^;]+)\bwhere\b[^;]+`)
 	columnSetRe       = regexp.MustCompile(`(?is)(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s*=`)
 	destructiveRe     = regexp.MustCompile(`(?is)\b(drop\s+table|drop\s+schema|drop\s+column|truncate\s+table|alter\s+column\s+[^;]+\s+type\b|rename\s+column|rename\s+to)\b`)
@@ -335,10 +334,10 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 		}
 
 		for _, column := range updatedColumns(text) {
-			backfilledColumns[strings.ToLower(column)] = true
+			backfilledColumns[column] = true
 		}
 		for _, column := range addedGeneratedStoredColumns(text) {
-			generatedColumns[strings.ToLower(column)] = true
+			generatedColumns[column] = true
 		}
 
 		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull &&
@@ -364,8 +363,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 
 		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull {
 			for _, column := range setNotNullColumns(text) {
-				key := strings.ToLower(column)
-				if !backfilledColumns[key] && !generatedColumns[key] {
+				if !backfilledColumns[column] && !generatedColumns[column] {
 					findings = append(findings, Finding{
 						File:     file,
 						Line:     stmt.Line,
@@ -461,9 +459,16 @@ func addedGeneratedStoredColumns(statement string) []string {
 	matches := addGeneratedStoredRe.FindAllStringSubmatch(statement, -1)
 	columns := make([]string, 0, len(matches))
 	for _, match := range matches {
-		columns = append(columns, firstNonEmpty(match[1], match[2]))
+		columns = append(columns, normalizedColumnCapture(match[1], match[2]))
 	}
 	return columns
+}
+
+func normalizedColumnCapture(quoted, unquoted string) string {
+	if quoted != "" {
+		return quoted // the regex captured inside the SQL quotes
+	}
+	return strings.ToLower(unquoted)
 }
 
 func hasDefault(statement string) bool {
@@ -471,10 +476,15 @@ func hasDefault(statement string) bool {
 }
 
 func setNotNullColumns(statement string) []string {
-	matches := setNotNullRe.FindAllStringSubmatch(statement, -1)
-	columns := make([]string, 0, len(matches))
-	for _, match := range matches {
-		columns = append(columns, firstNonEmpty(match[1], match[2]))
+	table := alterTableNameRe.FindStringSubmatch(statement)
+	if table == nil {
+		return nil
+	}
+	var columns []string
+	for _, clause := range splitAlterClauses(statement[len(table[0]):]) {
+		if m := setNotNullClauseRe.FindStringSubmatch(clause); len(m) >= 2 {
+			columns = append(columns, normalizeSQLIdentifier(m[1]))
+		}
 	}
 	return columns
 }
@@ -488,7 +498,7 @@ func updatedColumns(statement string) []string {
 	matches := columnSetRe.FindAllStringSubmatch(setClause, -1)
 	columns := make([]string, 0, len(matches))
 	for _, m := range matches {
-		columns = append(columns, firstNonEmpty(m[1], m[2]))
+		columns = append(columns, normalizedColumnCapture(m[1], m[2]))
 	}
 	return columns
 }

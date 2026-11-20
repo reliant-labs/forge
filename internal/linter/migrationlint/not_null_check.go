@@ -2,6 +2,7 @@ package migrationlint
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -32,7 +33,8 @@ var (
 	addNotNullCheckRe    = regexp.MustCompile(`(?is)^\s*add\s+constraint\s+("[^"]+"|[a-zA-Z_][\w$]*)\s+check\s*\(\s*(?:\(\s*("[^"]+"|[a-zA-Z_][\w$]*)\s+is\s+not\s+null\s*\)|("[^"]+"|[a-zA-Z_][\w$]*)\s+is\s+not\s+null)\s*\)\s*(not\s+valid)?\s*$`)
 	validateConstraintRe = regexp.MustCompile(`(?is)^\s*validate\s+constraint\s+("[^"]+"|[a-zA-Z_][\w$]*)\s*$`)
 	dropConstraintRe     = regexp.MustCompile(`(?is)^\s*drop\s+constraint\s+(?:if\s+exists\s+)?("[^"]+"|[a-zA-Z_][\w$]*)`)
-	setNotNullClauseRe   = regexp.MustCompile(`(?is)^\s*alter\s+(?:column\s+)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+set\s+not\s+null\s*$`)
+	setNotNullClauseRe   = regexp.MustCompile(`(?is)^\s*alter\s+(?:column\s+)?("[^"]+"|[a-zA-Z_][\w$]*)\s+set\s+not\s+null\s*$`)
+	searchPathChangeRe   = regexp.MustCompile(`(?is)^\s*(?:(?:set\s+(?:(?:local|session)\s+)?|reset\s+)search_path\b|reset\s+all\b|discard\s+all\b)`)
 	// tableReplacedRe is an ALTER TABLE clause after which the table's
 	// proofs name the wrong table: a rename or a move to another schema.
 	tableReplacedRe = regexp.MustCompile(`(?is)^\s*(?:rename\s+to|set\s+schema)\b`)
@@ -78,20 +80,18 @@ func dropCheckProvenSetNotNull(files []compatFile, findings []Finding) []Finding
 					if checks[table] == nil {
 						checks[table] = map[string]*notNullCheck{}
 					}
-					checks[table][normalizeSQLName(a[1])] = &notNullCheck{column: normalizeSQLName(firstNonEmpty(a[2], a[3])), valid: a[4] == ""}
+					checks[table][normalizeSQLIdentifier(a[1])] = &notNullCheck{column: normalizeSQLIdentifier(firstNonEmpty(a[2], a[3])), valid: a[4] == ""}
 				case validateConstraintRe.MatchString(clause):
-					if c := checks[table][normalizeSQLName(validateConstraintRe.FindStringSubmatch(clause)[1])]; c != nil {
+					if c := checks[table][normalizeSQLIdentifier(validateConstraintRe.FindStringSubmatch(clause)[1])]; c != nil {
 						c.valid = true
 					}
 				case dropConstraintRe.MatchString(clause):
-					delete(checks[table], normalizeSQLName(dropConstraintRe.FindStringSubmatch(clause)[1]))
+					checks.forgetConstraint(table, normalizeSQLIdentifier(dropConstraintRe.FindStringSubmatch(clause)[1]))
 				case setNotNullClauseRe.MatchString(clause):
-					for _, column := range setNotNullColumns("alter table t " + clause) {
-						col := normalizeSQLName(column)
-						for _, c := range checks[table] {
-							if c.valid && c.column == col {
-								proven[key{f.path, stmt.Line, strings.ToLower(col)}] = true
-							}
+					col := normalizeSQLIdentifier(setNotNullClauseRe.FindStringSubmatch(clause)[1])
+					for _, c := range checks[table] {
+						if c.valid && c.column == col {
+							proven[key{f.path, stmt.Line, col}] = true
 						}
 					}
 				case tableReplacedRe.MatchString(clause):
@@ -127,6 +127,14 @@ func (p notNullProofs) forgetStatement(text string) {
 	if len(p) == 0 {
 		return
 	}
+	if searchPathChangeRe.MatchString(text) {
+		for table := range p {
+			if table == unqualified(table) {
+				delete(p, table)
+			}
+		}
+		return
+	}
 	w := leadingWordsRe.FindStringSubmatch(text)
 	if w == nil {
 		return
@@ -143,6 +151,17 @@ func (p notNullProofs) forgetStatement(text string) {
 	for table := range p {
 		if namesIdent(text, unqualified(table)) {
 			delete(p, table)
+		}
+	}
+}
+
+// An unqualified name may resolve to any schema with that table name. Use
+// possible aliases only to invalidate proofs, never to establish a proof.
+func (p notNullProofs) forgetConstraint(table, constraint string) {
+	for other, byName := range p {
+		if table == other || (unqualified(table) == unqualified(other) &&
+			(table == unqualified(table) || other == unqualified(other))) {
+			delete(byName, constraint)
 		}
 	}
 }
@@ -171,10 +190,14 @@ func (p notNullProofs) forgetColumnsNamedIn(table, clause string) {
 	}
 }
 
-// unqualified is a normalized table name without its schema.
+// Normalized qualified names use a NUL separator so a dot inside a quoted
+// identifier cannot alias a real schema separator. SQL identifiers cannot
+// contain NUL.
+const schemaSeparator = "\x00"
+
 func unqualified(table string) string {
-	if i := strings.LastIndex(table, "."); i >= 0 {
-		return table[i+1:]
+	if _, name, ok := strings.Cut(table, schemaSeparator); ok {
+		return name
 	}
 	return table
 }
@@ -193,12 +216,12 @@ func setNotNullFindingColumn(message string) string {
 	if start < 0 {
 		return ""
 	}
-	rest := message[start+len(`column "`):]
-	end := strings.Index(rest, `"`)
-	if end < 0 {
+	quoted, err := strconv.QuotedPrefix(message[start+len("column "):])
+	if err != nil {
 		return ""
 	}
-	return strings.ToLower(rest[:end])
+	col, _ := strconv.Unquote(quoted)
+	return col
 }
 
 // splitAlterClauses splits an ALTER TABLE's action list on the commas
@@ -229,14 +252,22 @@ func splitAlterClauses(actions string) []string {
 // keeps its case (quotes dropped), an unquoted one is lower-cased. A
 // schema-qualified table keeps its schema.
 func normalizeSQLName(name string) string {
-	parts := strings.Split(name, ".")
-	for i, p := range parts {
-		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, `"`) && strings.HasSuffix(p, `"`) && len(p) >= 2 {
-			parts[i] = p[1 : len(p)-1]
-		} else {
-			parts[i] = strings.ToLower(p)
+	inQuote := false
+	for i, r := range name {
+		if r == '"' {
+			inQuote = !inQuote
+		}
+		if r == '.' && !inQuote {
+			return normalizeSQLIdentifier(name[:i]) + schemaSeparator + normalizeSQLIdentifier(name[i+1:])
 		}
 	}
-	return strings.Join(parts, ".")
+	return normalizeSQLIdentifier(name)
+}
+
+func normalizeSQLIdentifier(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
+		return name[1 : len(name)-1]
+	}
+	return strings.ToLower(name)
 }

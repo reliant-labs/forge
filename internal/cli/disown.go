@@ -167,7 +167,7 @@ func runDisown(args []string, reason string, dryRun bool) error {
 		// gen/'s uncertified aggregates (the service catalog) carry neither
 		// by design, and are still forge's Tier-1 output.
 		if !hasMarker && !hasFallback && !checksums.Uncertified(path) && !isVendoredProtoPath(path) && !isHooksBarrelRelPath(path) &&
-			!isFrontendManifestRelPath(root, path) {
+			!isFrontendManifestRelPath(root, path) && !isAgentsGuideRelPath(path) {
 			unknown = append(unknown, path)
 			continue
 		}

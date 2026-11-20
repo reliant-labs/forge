@@ -304,6 +304,12 @@ output.
 **Stop here when** the app runs on staging and prod and you can redeploy any
 release: that is the whole hosting story, with no app change.
 
+**More than one Dockerfile's worth?** A second image, a build script, a
+binary or installer you publish rather than run: each is one more
+`fw.Workload` with a generic build (`forge.DockerBuild`, `forge.ShellBuild`)
+and runtime (`forge.BuildOnly {}` for built-never-run). The table is in
+`deploy` ("Code forge has no kind for").
+
 ## Tier 2: See it
 
 **You get:** request rates, error rates and latency per endpoint, traces, logs

@@ -1452,16 +1452,19 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
 #
-# A FILES-ONLY workload builds no image at all: a forge.BuildOnly workload
-# with no `image` whose GoBuild / ShellBuild declares `outputs` (a CLI
-# archive, an installer, a desktop bundle). Its artifact is those files, which
-# the release ledger records by hash, so it renders no artifact name and
-# nothing pushes or resolves an image for it. Any other unset image still
-# derives the name, exactly as before.
+# A build-only ShellBuild with neither an image nor an output_name never
+# invents a placeholder image, even with no declared file outputs. A build-only
+# GoBuild/ShellBuild can instead declare file outputs; those are recorded by
+# hash and need no image when the workload declares none.
 _artifact = lambda w: any -> str {
-    "" if _files_only(w) else \
+    "" if _shell_builds_no_image(w) or _files_only(w) else \
     ((img_lib.repository(w.image) if w.image \
         else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
+}
+
+_shell_builds_no_image = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
 }
 
 _files_only = lambda w: any -> bool {

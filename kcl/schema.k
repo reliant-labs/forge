@@ -3411,7 +3411,11 @@ schema ShellBuild(Build):
       * state/digest — on success forge captures the pushed image's
         content-addressed digest (best-effort) and writes the build-state
         file so a subsequent `forge env deploy <env>` pins the same
-        tag/digest, exactly as the project docker build does.
+        tag/digest, exactly as the project docker build does. A workload
+        bound to `forge.BuildOnly {}` that declares neither `image` nor
+        `output_name` builds no image: forge resolves no digest, records no
+        image for it, leaves the env's deploy-side build state alone, and a
+        release does not require an image of it.
       * source — the git checkout `cwd` is in (HEAD, dirty flag) is
         recorded with that state and in the release. A RELEASE refuses a
         checkout outside this project that is dirty, or whose HEAD is not

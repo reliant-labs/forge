@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-var update = flag.Bool("update", false, "rewrite docs/benefits.md and the README.md benefits block from benefits.yaml")
+var update = flag.Bool("update", false, "rewrite docs/benefits.md, docs/why-forge.md and the README.md benefits and reasons blocks from benefits.yaml")
 
 // repoRoot is the forge checkout, relative to this package's directory (the
 // working directory of `go test`).
@@ -461,6 +461,10 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 		if !found {
 			t.Fatalf("%s has no %s … %s block; the README benefits table renders there", ReadmePath, ReadmeStart, ReadmeEnd)
 		}
+		want, found = SpliceReadmeReasons(want, r)
+		if !found {
+			t.Fatalf("%s has no %s … %s block; the README's reasons render there", ReadmePath, ReasonsStart, ReasonsEnd)
+		}
 		if bytes.Equal(readme, want) {
 			return
 		}
@@ -470,7 +474,26 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 			}
 			return
 		}
-		t.Errorf("the benefits block of %s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", ReadmePath)
+		t.Errorf("the benefits or reasons block of %s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", ReadmePath)
+	})
+
+	t.Run("docs/why-forge.md", func(t *testing.T) {
+		path := filepath.Join(repoRoot, WhyPath)
+		want := RenderWhy(r)
+		got, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if bytes.Equal(got, want) {
+			return
+		}
+		if *update {
+			if err := os.WriteFile(path, want, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		t.Errorf("%s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", WhyPath)
 	})
 
 	t.Run("docs/benefits.md", func(t *testing.T) {

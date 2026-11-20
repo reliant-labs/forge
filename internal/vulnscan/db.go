@@ -96,19 +96,26 @@ func DefaultDir() (string, error) {
 	return filepath.Join(base, "forge", "vulndb"), nil
 }
 
+// DefaultBaseURL is the database distribution: $FORGE_VULN_DB_URL, else
+// DefaultURL.
+func DefaultBaseURL() string {
+	if u := strings.TrimSpace(os.Getenv(EnvURL)); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	return DefaultURL
+}
+
 // DB is the machine's shared grype database. The zero value is not usable:
-// set Dir and Grype (Open does both from the environment).
+// set Dir and Grype (Open does both, and URL, from the environment).
 type DB struct {
 	// Dir is the database's directory (DefaultDir).
 	Dir string
-	// URL is the distribution base: "" is $FORGE_VULN_DB_URL, else DefaultURL.
+	// URL is the distribution base (DefaultBaseURL); "" is DefaultBaseURL.
 	URL string
 	// Grype resolves the scanner binary.
 	Grype ToolFunc
 	// Run runs grype; nil runs the real binary.
 	Run Runner
-	// Client reads the listing; nil is a client with a timeout.
-	Client *http.Client
 	// Now is the clock; nil is time.Now.
 	Now func() time.Time
 	// Log receives progress lines (a download, a wait for another
@@ -122,7 +129,7 @@ func Open(tool ToolFunc) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DB{Dir: dir, Grype: tool}, nil
+	return &DB{Dir: dir, URL: DefaultBaseURL(), Grype: tool}, nil
 }
 
 func (d *DB) now() time.Time {
@@ -151,10 +158,7 @@ func (d *DB) BaseURL() string {
 	if d.URL != "" {
 		return strings.TrimRight(d.URL, "/")
 	}
-	if u := strings.TrimSpace(os.Getenv(EnvURL)); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return DefaultURL
+	return DefaultBaseURL()
 }
 
 // ListingURL is the listing a refresh reads.
@@ -373,11 +377,7 @@ func (d *DB) Latest(ctx context.Context) (Listing, error) {
 	if err != nil {
 		return l, err
 	}
-	client := d.Client
-	if client == nil {
-		client = &http.Client{Timeout: listingTimeout}
-	}
-	resp, err := client.Do(req)
+	resp, err := (&http.Client{Timeout: listingTimeout}).Do(req)
 	if err != nil {
 		return l, fmt.Errorf("read the vulnerability database listing %s: %w", d.ListingURL(), err)
 	}

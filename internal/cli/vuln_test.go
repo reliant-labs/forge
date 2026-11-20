@@ -68,7 +68,7 @@ func newVulnHarness(t *testing.T) *vulnHarness {
 	h.deps = vulnDeps{
 		tool:          h.tool,
 		dbDir:         func() (string, error) { return dbDir, nil },
-		dbURL:         listing.URL,
+		dbURL:         func() string { return listing.URL },
 		run:           h.run,
 		resolveEnv:    func(context.Context, string, string) (vulnEnv, error) { return h.env, nil },
 		machineLedger: func(string) (*ledgerfile.Store, error) { return h.store, nil },

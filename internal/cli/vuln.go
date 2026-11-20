@@ -53,9 +53,8 @@ type vulnDeps struct {
 	tool func(ctx context.Context, t toolfetch.Tool, install bool) (path, version string, err error)
 	// dbDir is the shared database directory.
 	dbDir func() (string, error)
-	// dbURL is the database distribution; "" is $FORGE_VULN_DB_URL or
-	// grype's own.
-	dbURL string
+	// dbURL is the database distribution: $FORGE_VULN_DB_URL or grype's own.
+	dbURL func() string
 	// run runs grype (and syft); nil runs the binary.
 	run vulnscan.Runner
 	// resolveEnv reads an env's ledger kind and vuln_gate.
@@ -71,6 +70,7 @@ func defaultVulnDeps() vulnDeps {
 	return vulnDeps{
 		tool:          resolveVulnTool,
 		dbDir:         vulnscan.DefaultDir,
+		dbURL:         vulnscan.DefaultBaseURL,
 		resolveEnv:    resolveVulnEnv,
 		machineLedger: openMachineLedger,
 		projectDir:    projectDirForKCL,
@@ -98,7 +98,7 @@ func (d vulnDeps) openDB(log io.Writer, install bool) (*vulnscan.DB, error) {
 	}
 	return &vulnscan.DB{
 		Dir: dir,
-		URL: d.dbURL,
+		URL: d.dbURL(),
 		Grype: func(ctx context.Context) (string, string, error) {
 			return d.tool(ctx, toolfetch.Grype, install)
 		},

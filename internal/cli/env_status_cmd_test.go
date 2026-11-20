@@ -496,14 +496,14 @@ func TestEnvStatusJSON_CarriesTheF0Envelope(t *testing.T) {
 	if clean.Release != "v1" || !clean.Bound {
 		t.Errorf("the document must name the bound release, got bound=%v release=%q", clean.Bound, clean.Release)
 	}
-	// The release fields are FLAT, because `forge gate record --from`
+	// The release fields are FLAT, because `forge release gate record --from`
 	// recognises this document by top-level `bound` + `images`. Nesting
 	// them would make every recorded deploy-verification gate fall through
 	// to the generic reading and silently lose the unbound-is-SKIPPED
 	// distinction. Asserted on the raw bytes, which is what gate record
 	// actually parses.
 	if !strings.Contains(cleanRaw, `"bound"`) || !strings.Contains(cleanRaw, `"images"`) {
-		t.Errorf("`forge gate record` recognises this document by top-level bound+images:\n%s", cleanRaw)
+		t.Errorf("`forge release gate record` recognises this document by top-level bound+images:\n%s", cleanRaw)
 	}
 
 	drifted, _ := run([]cluster.WorkloadImage{runningImage("ghcr.io/acme/api", sha("9"))})
@@ -577,7 +577,7 @@ func TestEnvStatusJSON_EmitsExactlyOneDocument(t *testing.T) {
 		t.Errorf("runtime.workloads serialised as null — the cluster's state would again be reachable only by parsing prose")
 	}
 	if len(first.Runtime.Checks) == 0 {
-		t.Error("runtime.checks is empty — the checks that moved here from `forge doctor` are gone")
+		t.Error("runtime.checks is empty — the checks that moved here from `forge project doctor` are gone")
 	}
 }
 
@@ -685,13 +685,13 @@ func TestEnvStatus_RuntimeHalfNeverFailsTheCommand(t *testing.T) {
 	}
 }
 
-// The --signal arms survive on the merged command: `forge doctor` redirects
+// The --signal arms survive on the merged command: `forge project doctor` redirects
 // here for the runtime question, and that redirect must not dangle.
 func TestEnvStatus_CarriesTheRuntimeSignals(t *testing.T) {
 	cmd := newEnvStatusCmd()
 	flag := cmd.Flags().Lookup("signal")
 	if flag == nil {
-		t.Fatal("`forge env status` has no --signal flag, but `forge doctor` redirects to it")
+		t.Fatal("`forge env status` has no --signal flag, but `forge project doctor` redirects to it")
 	}
 	for _, sig := range []string{"app", "metrics", "traces", "logs", "profiles"} {
 		if !strings.Contains(flag.Usage, sig) {

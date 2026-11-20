@@ -241,7 +241,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 	// pre-created record. Each must first require the address verified
 	// (devidp.Client.FindUserByID(ctx, claims.Subject) → User.EmailVerified),
 	// or registering someone else's address claims whatever was waiting for
-	// them. `forge skill load auth/authorization` has the check.
+	// them. `forge agent skill load auth/authorization` has the check.
 	//
 	// `forge lint` warns about a broker that mounts RegisterPath without a
 	// condition. GET /auth/options tells the sign-in screen whether to offer
@@ -263,7 +263,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 	// the account (`forge cloud identity invite`), give the person a code
 	// from devidp.MintPasswordResetCode and send them
 	// <your app>/auth/reset?userID=<id>&code=<code> by a channel you control.
-	// `forge skill load deploy/managed-identity` has the sketch.
+	// `forge agent skill load deploy/managed-identity` has the sketch.
 	if broker.selfSignup {
 		mux.Handle(RegisterPath, http.HandlerFunc(broker.handleRegister))
 	}
@@ -1303,7 +1303,7 @@ func (l *attemptLimiter) forget(key string) {
 // errLoginNotConfigured names what is missing, and how to get it.
 var errLoginNotConfigured = errors.New(
 	"native sign-in needs idp_broker_token (or idp_broker_token_file) and oidc_client_id; " +
-		"declare a forge.ManagedIdentity in deploy/kcl/<env>/main.k and run `forge env up` to converge it (see `forge skill load deploy/managed-identity`)")
+		"declare a forge.ManagedIdentity in deploy/kcl/<env>/main.k and run `forge env up` to converge it (see `forge agent skill load deploy/managed-identity`)")
 
 // LoginBrokerConfigured reports whether this deployment can serve sign-in.
 // Check it at boot: an app that renders its own login form but cannot reach

@@ -141,7 +141,7 @@ func TestDecideDevTelemetryMatrix(t *testing.T) {
 		{"telemetry off", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) { f.TelemetryOn = false }, false, "observability is off"},
 		{"no control plane", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) { f.ControlPlane = false }, false, "no control_plane"},
 		{"no credential", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) {
-			f.CredentialErr = errors.New("not signed in\nrun forge login")
+			f.CredentialErr = errors.New("not signed in\nrun forge cloud login")
 		}, false, "no Reliant credential (not signed in)"},
 		{"no session", func(f *devTelemetryFacts, _ *fakeMintCaller, _ *fakeSessionReporter) {
 			f.Session, f.SessionSkip = nil, "FORGE_LEDGER=machine"

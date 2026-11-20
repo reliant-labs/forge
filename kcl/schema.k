@@ -238,7 +238,7 @@ schema ConfigMap:
 # Bundle.
 #
 # The GatewayClass resource is cluster-scoped and NOT rendered here —
-# `forge cluster up` applies it (and any provider install YAML,
+# `forge dev cluster up` applies it (and any provider install YAML,
 # e.g. pinned Traefik) once per cluster. Each Gateway references the
 # GatewayClass by `gateway_class_name`.
 #
@@ -322,7 +322,7 @@ schema GatewayTLS:
         cluster-scoped ClusterIssuer. secret_name is required.
 
       * mode = "mkcert" — Secret is populated host-side by
-        `forge cluster up`, which shells out to mkcert (host-trusted CA in the
+        `forge dev cluster up`, which shells out to mkcert (host-trusted CA in the
         OS keychain → browser-trusted certs without `-k` / warnings).
         No Certificate resource is emitted; cert_issuer is unused and
         should be left empty. secret_name is required.
@@ -456,7 +456,7 @@ schema Gateway:
     so one controller covers every forge ingress shape — there is no
     reason for an env to silently pick a second controller.
 
-    `forge cluster up` / `forge env up <env>` install the SAME Envoy
+    `forge dev cluster up` / `forge env up <env>` install the SAME Envoy
     Gateway helm chart into the local k3d cluster that the cloud envs
     run, so the default `eg` is correct EVERYWHERE — no per-env pin, no
     local-dev exception. (Earlier forge installed Traefik for local dev,
@@ -899,7 +899,7 @@ schema ClusterTarget:
     """
     cluster: str
     namespace: str
-    # The CONNECTED CLUSTER this target is, by the name `forge cluster
+    # The CONNECTED CLUSTER this target is, by the name `forge cloud cluster
     # connect` registered — what makes a control-plane-backed env able to
     # deploy here.
     #
@@ -965,7 +965,7 @@ schema DatabaseDashboards:
     it. Disabled, the role is rendered present but `login: false` with its
     password disabled (never `ensure: absent`: CNPG's DROP ROLE is refused
     once the role holds a grant); its grants stay in place, unusable until
-    it can log in again. See `forge skill load db/dashboards`.
+    it can log in again. See `forge agent skill load db/dashboards`.
 
     The limits are enforced by whatever queries as the role:
 
@@ -1061,7 +1061,7 @@ schema DatabaseMigrations:
         when the database is fully migrated. They override a built-in
         driver's; `custom` requires `apply`; `forge` takes none.
 
-    See `forge skill load db/own-migration-tool`.
+    See `forge agent skill load db/own-migration-tool`.
     """
     dir: str = "db/migrations"
     driver: str = "forge"
@@ -1150,7 +1150,7 @@ schema Database:
     reads the union of every env's declarations. The database named
     `default` (else the only one) is the project's primary: the one `forge
     db` acts on without `--db`, and the one the services' generated CRUD
-    wiring uses. See `forge skill load db`.
+    wiring uses. See `forge agent skill load db`.
     """
     name: str
     dialect: str = "postgres"
@@ -1197,7 +1197,7 @@ schema API:
         external_databases or schema_only_databases).
 
     GROUNDWORK: an API is validated and listed (`forge project audit --json`);
-    nothing is generated or served from an OpenAPI spec yet. See `forge skill
+    nothing is generated or served from an OpenAPI spec yet. See `forge agent skill
     load api-openapi`.
     """
     name: str
@@ -1632,7 +1632,7 @@ schema LLMEndpoint:
         not openai_base_url or regex.match(openai_base_url, _LLM_URL_PATTERN), \
             "LLMEndpoint.openai_base_url '${openai_base_url}' must be a URL like https://host[:port]/v1, with no user info, query or trailing slash"
         typeof(api_key) != "str" or (base_url.startswith("http://") and _llm_url_host(base_url) in _LLM_LOCAL_LITERAL_HOSTS), \
-            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine that ignores it, an http:// URL whose host is exactly one of ${_LLM_LOCAL_LITERAL_HOSTS}"
+            "LLMEndpoint.api_key is a literal: a key in a committed file is a leaked key. Use forge.ManagedSecret {name = ...} (`forge env secret set --env <env> <NAME>`); a literal is accepted only for an endpoint on this machine that ignores it, an http:// URL whose host is exactly one of ${_LLM_LOCAL_LITERAL_HOSTS}"
 
 # An LLMEndpoint URL: scheme, a host that is a DNS name, an IPv4 address or
 # a bracketed IPv6 literal (no user info, which would let `localhost@evil`
@@ -1887,7 +1887,7 @@ schema GeneratedSecret:
     The default kind, "random", is `prefix` + `bytes` of crypto-random data in
     `encoding` ("base64" standard, or "hex"). A generated value is written
     ONCE and never overwritten: it is durable, and rotating it is a
-    deliberate, operator-driven act (`forge secret set`, or a reviewed pin
+    deliberate, operator-driven act (`forge env secret set`, or a reviewed pin
     bump). Where a spec may appear decides who mints it:
 
       * `FileSecrets.generate` (a local env's file) — kind "random" only;
@@ -1978,14 +1978,14 @@ schema FileSecrets:
     nothing; envs named dev/e2e that predate `lifecycle` are still accepted.
     A real environment (no lifecycle) must use ExternalSecrets.
 
-    Populate with `forge secret set --env <env> <KEY>` (value on stdin, never
-    argv), or hand-edit the YAML. `forge secret ensure --env <env>` creates the
+    Populate with `forge env secret set --env <env> <KEY>` (value on stdin, never
+    argv), or hand-edit the YAML. `forge env secret ensure --env <env>` creates the
     file and lists every declared ref that has no value yet.
 
     `generate` names store keys that are pure random key material: when
-    one is absent, `forge secret ensure` and `forge env up` mint it (see
+    one is absent, `forge env secret ensure` and `forge env up` mint it (see
     GeneratedSecret) instead of asking every developer to run
-    `forge secret set` by hand. It never overwrites an existing value."""
+    `forge env secret set` by hand. It never overwrites an existing value."""
     type: str = "file"
     path: str = "secrets/dev.yaml"
     generate?: {str: GeneratedSecret}
@@ -2020,7 +2020,7 @@ schema HostedSecrets:
 
     forge NEVER sees a value, exactly as with ExternalSecrets: the control
     plane's secret API is write-only, so no laptop or CI runner ever holds
-    one. `forge secret set/list/unset <env>` write and list through that
+    one. `forge env secret set/list/unset <env>` write and list through that
     control plane (endpoint + credential from `control_plane`), scoped to
     the control-plane environment with this env's NAME.
 
@@ -2041,7 +2041,7 @@ schema HostedSecrets:
 # controlplane.v1.* RPCs (deploy, releases, secrets) and the CLI OAuth
 # endpoints (/oauth/authorize, /oauth/token).
 #
-# One fact, twice: internal/cloud.DefaultEndpoint is the Go copy `forge
+# One fact, twice: internal/cloud.DefaultEndpoint is the Go copy `forge cloud
 # login` uses outside a project, where there is no KCL to read. A test
 # renders this schema and fails if the two disagree
 # (TestControlPlaneDefault_KCLMatchesGo).
@@ -2171,7 +2171,7 @@ schema ControlPlane:
         # A declaration holding the credential itself would put it in git.
         # Reject the shape that invites it rather than documenting against it.
         not token_env.startswith("rlnt"), \
-            "ControlPlane.token_env is an env var NAME, not a token value — declare e.g. token_env = \"FORGE_CONTROL_PLANE_TOKEN\" and set that variable, or run `forge login`"
+            "ControlPlane.token_env is an env var NAME, not a token value — declare e.g. token_env = \"FORGE_CONTROL_PLANE_TOKEN\" and set that variable, or run `forge cloud login`"
 
 schema RenderedSecretKey:
     """One key within a RenderedSecrets Secret.
@@ -4693,8 +4693,8 @@ schema Frontend:
     # control-plane resource, created once for the org and BOUND to one
     # environment's frontend:
     #
-    #     forge domain add hounders.club      # prints the DNS to set
-    #     forge domain bind hounders.club --env prod --target web
+    #     forge cloud domain add hounders.club      # prints the DNS to set
+    #     forge cloud domain bind hounders.club --env prod --target web
     #
     # Three reasons the field was deleted rather than kept and refused.
     # A name you bring needs an action at YOUR registrar, ownership
@@ -4956,7 +4956,7 @@ schema HelmChart:
     admit a stale writer. Failed/cancelled applies retain the lock because
     an API request may still be in flight. Crash recovery requires explicitly
     terminating/fencing the former writer and its kubectl children, resolving
-    outstanding requests, then `forge cluster recover-chart-lock` with the
+    outstanding requests, then `forge dev cluster recover-chart-lock` with the
     inspected UID, resourceVersion and holder confirmation. See deploy/flux.
     This trades automatic crash recovery for safe security-object deletion.
     The applier needs ConfigMap get/create/update/delete in kube-system.
@@ -5211,7 +5211,7 @@ _CRON_RE: str = r"^\S+( \S+){4}$"
 schema HostedStore:
     """The secret store the env's hosted control plane runs (Reliant's, or a
     self-run control plane's). Values are written through the control plane's
-    write-only secret API (`forge secret set`, the console) and delivered by
+    write-only secret API (`forge env secret set`, the console) and delivered by
     ESO's vault provider over a projected service-account token.
 
         source = forge.StoreSource {store = forge.HostedStore {}, ...}
@@ -5904,7 +5904,7 @@ schema OpenBaoRetiredAuthMount:
             "OpenBaoRetiredAuthMount '${name}' states no reason. Disabling a mount revokes every token it issued: set reason to the evidence that it is unused"
 
 schema OpenBaoSAWriter:
-    """How a person writes values to a SELF-RUN store, the default: `forge
+    """How a person writes values to a SELF-RUN store, the default: `forge env
     secret set` mints a 10-minute service-account token for `service_account`
     (a ServiceAccount forge renders, bound by a JWT role to a write-only policy
     on this env's paths) using the operator's own kube context. It needs
@@ -6061,7 +6061,7 @@ schema ESOAdmission:
                         (garbage collection, namespace deletion) are always
                         allowed. Name your apply identity here: a GKE binding's
                         Google service account email, or the ServiceAccount
-                        `forge cluster connect` minted
+                        `forge cloud cluster connect` minted
                         (`system:serviceaccount:<ns>:forge-connect-<cluster>-<env>`).
         eso-store-pin   a SecretStore may use only a `vault` provider that
                         dials one of `servers` with JWT auth on one of
@@ -6212,7 +6212,7 @@ schema ControlPlaneSecret:
 
     REQUIRES A CONNECTED CLUSTER. The control plane can only write into a
     cluster it holds a credential for, so `cluster` must name a connected
-    cluster (`forge cluster connect`), by `ClusterTarget.connected_cluster` or
+    cluster (`forge cloud cluster connect`), by `ClusterTarget.connected_cluster` or
     `Bundle.connected_clusters`. An unbound one is refused at render, naming the
     fix. There is no k3d exemption: delivery needs the control plane to reach
     the cluster, which a developer's k3d cluster is not unless it is connected.
@@ -6998,7 +6998,7 @@ schema ObservabilitySecretRef:
     On a cluster it names a Kubernetes Secret in the node agent's namespace
     (`Observability.agent.namespace`); the DaemonSet reads `key` through a
     secretKeyRef. On a developer machine it names the entry in the env's
-    gitignored secret store (`forge secret set --env <env> <key>`), which
+    gitignored secret store (`forge env secret set --env <env> <key>`), which
     `forge env up` hands to the local forwarder. Never an inline value.
 
     The VALUE is a JSON object of header names to header values, e.g.
@@ -7354,7 +7354,7 @@ schema AlertReceiver:
         ]
 
     `secret` names a KEY in the env's secret store
-    (`forge secret set --env dev <KEY>`, value on stdin), never a value:
+    (`forge env secret set --env dev <KEY>`, value on stdin), never a value:
 
       * slack     — the incoming-webhook URL (required)
       * pagerduty — the routing key (required)
@@ -8366,7 +8366,7 @@ schema Bundle:
     # ConfigMaps, gateways and routes, rendered Secrets, RuntimeClasses)
     # land. Unset: the target of the first cluster-bound workload.
     cluster_target?: ClusterTarget
-    # CONNECTED CLUSTERS by kubectl context: `{"<context>": "<name forge
+    # CONNECTED CLUSTERS by kubectl context: `{"<context>": "<name forge cloud
     # cluster connect registered>"}`. The CLUSTER-LEVEL binding — declare it
     # once per cluster and every group placed there (forge.Manifests,
     # HelmChart, Generated, and any group kind added later) inherits it, so
@@ -8399,7 +8399,7 @@ schema Bundle:
     # at project level and per-env-overridden in
     # `deploy/kcl/<env>/ingress.k`. Routes attach to a Gateway+listener
     # by name. The GatewayClass is NOT in the Bundle — it's
-    # cluster-scoped and installed by `forge cluster up`.
+    # cluster-scoped and installed by `forge dev cluster up`.
     gateways: [Gateway] = []
     http_routes: [HTTPRoute] = []
     grpc_routes: [GRPCRoute] = []

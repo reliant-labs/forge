@@ -29,7 +29,7 @@ func LoginScopes() []string {
 	return []string{"deploy:read", "deploy:write", "secret:read", "secret:write", "domain:read", "domain:write"}
 }
 
-// BrowserLogin runs the interactive half of `forge login`: the OAuth 2.0
+// BrowserLogin runs the interactive half of `forge cloud login`: the OAuth 2.0
 // authorization-code flow with PKCE (RFC 7636) against the endpoint's
 // /oauth/authorize and /oauth/token, with a loopback redirect (RFC 8252).
 // It asks for a human identity (credential_kind=human): an org-less session
@@ -40,7 +40,7 @@ func LoginScopes() []string {
 // The mechanics are forge/pkg/oauth2.LoopbackLogin, which `reliant auth login`
 // also runs. forge depends on no reliant code, deliberately. A user deploying to
 // hosted infra without the reliant harness must never have to install reliant
-// first, so `forge login` stands alone.
+// first, so `forge cloud login` stands alone.
 type BrowserLogin struct {
 	// Endpoint is the control plane being logged in to.
 	Endpoint Endpoint
@@ -86,12 +86,12 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 			// it silently would hide that the server refused an identity.
 			return credentials.Credential{}, fmt.Errorf("%s refused forge's request for a human identity login (%s=%s): %s\n"+
 				"forge does not fall back to an organization-bound login.\n"+
-				"fix: upgrade forge if this control plane is newer than it, or use `forge login --token <token>` with a token minted in the web app",
+				"fix: upgrade forge if this control plane is newer than it, or use `forge cloud login --token <token>` with a token minted in the web app",
 				b.Endpoint.URL, CredentialKindParam, KindHuman, refused)
 		}
 		if strings.Contains(err.Error(), "timed out") {
 			return credentials.Credential{}, fmt.Errorf("%w\n"+
-				"fix: complete the flow in the browser, or use `forge login --token <token>` "+
+				"fix: complete the flow in the browser, or use `forge cloud login --token <token>` "+
 				"(also what CI uses, since a pipeline has no browser)", err)
 		}
 		return credentials.Credential{}, fmt.Errorf("login to %s failed: %w", b.Endpoint.URL, err)
@@ -104,7 +104,7 @@ func (b BrowserLogin) Run(ctx context.Context) (credentials.Credential, error) {
 		// the delegated path, so it is kept, but never without saying so.
 		if b.Out != nil {
 			fmt.Fprintf(b.Out, "note: %s issued an organization-bound login, not a human identity: it does not support %s=%s yet. "+
-				"Commands act in that one organization; run `forge login` again once it does.\n",
+				"Commands act in that one organization; run `forge cloud login` again once it does.\n",
 				b.Endpoint.URL, CredentialKindParam, KindHuman)
 		}
 	default:
@@ -149,7 +149,7 @@ func LoginSuccessHTML(webApp string) string {
 // delegated capability, never reclassified as an identity, so it takes the
 // delegated path (GetTenant, no ResolveHostedProject) that such a control
 // plane serves. Once the control plane issues human identities, the next
-// `forge login` stores one instead.
+// `forge cloud login` stores one instead.
 const (
 	KindHuman    = "human"
 	KindOrgLogin = "org-login"
@@ -222,7 +222,7 @@ func DeviceLabel() string {
 }
 
 // VerifyToken checks a credential against the endpoint before storing it, so
-// `forge login --token` fails at login rather than at the first real command.
+// `forge cloud login --token` fails at login rather than at the first real command.
 func VerifyToken(ctx context.Context, ep Endpoint, cred Credential) error {
 	client := NewClient(ep, cred)
 	var out json.RawMessage

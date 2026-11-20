@@ -1,6 +1,6 @@
 version: v2
 # Default: local plugins resolved from $PATH. Anonymous users can
-# `forge generate` without ever touching the BSR. Run `forge tools
+# `forge generate` without ever touching the BSR. Run `forge machine tools
 # install` (or `go install` the two binaries listed below) once to
 # put them on PATH.
 #

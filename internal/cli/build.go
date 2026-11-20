@@ -145,7 +145,7 @@ type buildOptions struct {
 	// release and the same source.
 	bundleEnvs string
 	// gateJSON is a FILE path: write this build's result as a gate
-	// document, for `forge gate record` / `forge env deploy --gate`. Not
+	// document, for `forge release gate record` / `forge env deploy --gate`. Not
 	// a stdout mode — the build log and the exit code are unchanged.
 	gateJSON string
 	// pushPlan is the RESOLVED set of destinations, written by
@@ -330,7 +330,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
-	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
+	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge release gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
 	cmd.AddCommand(newBuildReceiptCmd())
 
 	return cmd

@@ -1288,7 +1288,7 @@ jobs:
         with:
           tool: buf
       # buf.gen.yaml runs protoc-gen-go as a `local:` plugin, and generate
-      # formats its Go output with goimports. `forge tools install` puts both
+      # formats its Go output with goimports. `forge machine tools install` puts both
       # on PATH at the versions go.mod resolves, the versions the committed
       # files were generated with (protoc-gen-go writes its own version into
       # pkg/forgepb/forge.pb.go's header). --force: a runner image's own copy
@@ -1296,7 +1296,7 @@ jobs:
       # verify-generated job (internal/templates/ci/github/ci.yml.tmpl).
       - name: Install codegen tools
         if: ${{ !cancelled() }}
-        run: forge tools install --force
+        run: forge machine tools install --force
       - name: Verify generated code
         run: forge ci verify-generated
       # Validate KCL used to be a job of its own; it shares this job's forge
@@ -1317,7 +1317,7 @@ jobs:
       - name: Validate KCL manifests
         if: ${{ !cancelled() }}
         run: forge ci validate-kcl
-      # The go-imports hook shells out to a goimports BINARY. `forge tools
+      # The go-imports hook shells out to a goimports BINARY. `forge machine tools
       # install` above put one on PATH at the golang.org/x/tools version
       # go.mod resolves, which is the version the module builds against (it
       # used to be a separate `go install goimports@<pin>` kept equal to

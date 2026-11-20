@@ -168,7 +168,7 @@ type envRender struct {
 }
 
 // renderEnvsParallelism bounds how many env evaluations renderEnvsPure runs at once.
-// Each is a `forge kcl eval` child of a few CPU-seconds; a project has a
+// Each is a `forge env kcl eval` child of a few CPU-seconds; a project has a
 // handful of envs.
 const renderEnvsParallelism = 4
 

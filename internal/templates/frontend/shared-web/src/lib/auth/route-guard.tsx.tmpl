@@ -4,7 +4,7 @@
 // RouteGuard: a signed-out visitor is sent to sign in, not shown a wall of 401s. It asks this app's
 // API (GET /auth/session; the cookie is HttpOnly), so one component serves Next.js and Vite alike.
 // `auth_required: false` publishes an RPC, NOT a page: list public pages in publicExactPaths or
-// publicPaths below; links ask useCanVisit(). Depth: `forge skill load auth/public-pages`.
+// publicPaths below; links ask useCanVisit(). Depth: `forge agent skill load auth/public-pages`.
 
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 

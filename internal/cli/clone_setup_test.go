@@ -52,12 +52,12 @@ func cloneGitSetup(t *testing.T, repo string) map[string]string {
 // A command that only takes a heavy slot, or only reads the project, must
 // leave the clone's git configuration alone. Every forge command used to
 // point the merge driver at itself and activate the hooks as a side effect,
-// so `forge slot run` and `forge env list` rewrote .git/config — shared by
+// so `forge machine slot run` and `forge env list` rewrote .git/config — shared by
 // every linked worktree, and raced by every agent working in one.
 func TestReadOnlyCommandsLeaveTheCloneGitSetupAlone(t *testing.T) {
 	testkit.Slow(t, "execs git")
 	for _, args := range [][]string{
-		{"slot", "run", "--", "true"},
+		{"machine", "slot", "run", "--", "true"},
 		{"env", "list"},
 		{"generate", "--plan"},
 	} {
@@ -140,9 +140,7 @@ func TestConfiguresCloneCommandSet(t *testing.T) {
 		{path: "project disown", flags: map[string]string{"dry-run": "true"}, want: false},
 		{path: "project delete service", want: true},
 		{path: "project delete service", flags: map[string]string{"dry-run": "true"}, want: false},
-		{path: "package new", want: true},
-		{path: "package new", flags: map[string]string{"dry-run": "true"}, want: false},
-		{path: "slot run", want: false},
+		{path: "machine slot run", want: false},
 		{path: "env status", want: false},
 		{path: "env render", want: false},
 		{path: "env deploy", want: false},

@@ -14,7 +14,7 @@ control-plane first. Two Flux installs in one cluster collide on the same CRDs
 and the same `flux-system` namespace, and the collision is not a clean failure
 — whichever applied last owns the CRDs, and the other's Kustomizations
 reconcile against a controller that was replaced underneath them. So forge
-exports the declaration (`forge.flux_chart()`) and `forge cluster up`
+exports the declaration (`forge.flux_chart()`) and `forge dev cluster up`
 recognises it by CHART REFERENCE (`FLUX_CHART_OCI`), never by the chart's
 `name`, which is a `--target` selector the consumer picks freely.
 
@@ -118,7 +118,7 @@ import regex
 import yaml
 
 # The chart forge declares for Flux: the Flux Operator's. EXPORTED because it
-# is the SHARED-FLUX DETECTOR: `forge cluster up` compares every declared
+# is the SHARED-FLUX DETECTOR: `forge dev cluster up` compares every declared
 # HelmChart's `oci` against this string to decide whether a cluster already
 # has a Flux, and the Go side (pkg/flux.ChartOCI) holds the same spelling.
 FLUX_CHART_OCI = "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator"

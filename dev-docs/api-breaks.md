@@ -44,7 +44,7 @@ re-running the failed job is enough.
 **2. The same diff ships the remedy.** One of:
 
 - **a codemod**: a non-test Go file in `internal/codemod/` that registers a
-  `forge fix <name>` (`register(Codemod{Name: "<name>", ...})`). Mark it
+  `forge lint fix <name>` (`register(Codemod{Name: "<name>", ...})`). Mark it
   `Upgrade: true` when it is a pure rename or move, so `forge project upgrade`
   runs it for you. A codemod that is not a pure rename (it replaces files, or
   lists what it cannot decide) is named in that release's playbook frontmatter,

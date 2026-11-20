@@ -81,7 +81,7 @@ categories:
       lint-family entries below list every rule `lint.rules` can grade with the
       flag that runs it alone; every lane except the opt-in ones also runs in a
       bare `forge lint`. A rule new in a release warns before it gates. Related
-      checks outside `forge lint`: `forge doctor`, `forge ci verify-generated`,
+      checks outside `forge lint`: `forge project doctor`, `forge ci verify-generated`,
       `forge ci test-budget`, `forge ci vuln-scan` and `forge ci validate-kcl`.
   - id: security
     title: Security
@@ -302,7 +302,7 @@ benefits:
     evidence:
       - skill: api-openapi
       - skill: api-rest
-      - command: api curl
+      - command: dev curl
       - skill: api/http
 
   - id: bring-openapi-spec
@@ -1118,7 +1118,7 @@ benefits:
     availability: forge
     evidence:
       - library: pkg/kcleval
-      - command: kcl eval
+      - command: env kcl eval
 
   - id: env-up-dev
     category: dev
@@ -1240,7 +1240,7 @@ benefits:
     claim: >-
       `forge env config` prints what an environment hands each workload, `forge
       env exec` runs a command with it, `forge env options` lists the render
-      options and `forge doctor parity` diffs host mode against cluster mode.
+      options and `forge project doctor parity` diffs host mode against cluster mode.
     availability: forge
     evidence:
       - command: env config
@@ -1273,14 +1273,14 @@ benefits:
       (default min(CPUs/2, memory GiB/8)), so many agents or terminals on one
       machine never thrash it, and a crashed holder never strands a slot.
     availability: forge
-    use: "`forge slot run`, `forge slot status`, `FORGE_HEAVY_SLOTS`"
+    use: "`forge machine slot run`, `forge machine slot status`, `FORGE_HEAVY_SLOTS`"
     why: >-
       Measured on a 16 vCPU host, `go build ./...` took 36-50s beside 0-3 other
       heavy jobs and 101-155s beside 8 or more, and a full local gate went from
       about 40 minutes to about 2.3 hours when everything ran at once.
     evidence:
-      - command: slot run
-      - command: slot status
+      - command: machine slot run
+      - command: machine slot status
       - library: pkg/hostslot
       - skill: ci/slots
 
@@ -1288,87 +1288,87 @@ benefits:
     category: dev
     title: Disk kept in check
     claim: >-
-      `forge storage` reports host capacity, refuses a build below the
+      `forge machine storage` reports host capacity, refuses a build below the
       free-space reserve, trims Go build caches and removes idle, clean, pushed
       worktrees.
     availability: forge
     evidence:
-      - command: storage status
-      - command: storage gc
-      - command: storage worktrees
+      - command: machine storage status
+      - command: machine storage gc
+      - command: machine storage worktrees
 
   - id: debugger-cli
     category: dev
     title: Debugger from the command line
     claim: >-
-      `forge debug` drives Delve against a running service (breakpoints,
+      `forge dev debug` drives Delve against a running service (breakpoints,
       stepping, locals, goroutines) from a terminal or an agent.
     availability: forge
     evidence:
-      - command: debug start
-      - command: debug break
-      - command: debug goroutines
+      - command: dev debug start
+      - command: dev debug break
+      - command: dev debug goroutines
 
   - id: api-curl
     category: dev
     title: Call any rpc from the CLI
     claim: >-
-      `forge api curl` prints a copy-pasteable curl for any rpc of the project.
+      `forge dev curl` prints a copy-pasteable curl for any rpc of the project.
     availability: forge
     evidence:
-      - command: api curl
+      - command: dev curl
 
   - id: local-k3d-cluster
     category: dev
     title: Local Kubernetes when you need it
     claim: >-
-      `forge cluster up` gives a local k3d cluster with ingress URLs, logs and
+      `forge dev cluster up` gives a local k3d cluster with ingress URLs, logs and
       reload, and per-worktree namespaces share one cluster behind a
       kubectl-context pin.
     availability: forge
     evidence:
-      - command: cluster up
-      - command: cluster urls
-      - command: cluster logs
+      - command: dev cluster up
+      - command: dev cluster urls
+      - command: dev cluster logs
 
   - id: doctor
     category: dev
     title: Environment doctor
     claim: >-
-      `forge doctor` checks the toolchain, payload caps, probes, resource
-      requests and limits of every declared env with nothing running, and `forge
+      `forge project doctor` checks the toolchain, payload caps, probes, resource
+      requests and limits of every declared env with nothing running, and `forge project
       doctor parity` checks host mode against cluster mode.
     availability: forge
     evidence:
-      - command: doctor
-      - command: doctor parity
+      - command: project doctor
+      - command: project doctor parity
 
   - id: pinned-tools
     category: dev
     title: Pinned toolchain, auto-installed
     claim: >-
-      `forge tools install` installs exactly the tool versions the project pins,
+      `forge machine tools install` installs exactly the tool versions the project pins,
       so "works on my machine" stops being a variable.
     availability: forge
     evidence:
-      - command: tools install
-      - command: tools pins
+      - command: machine tools install
+      - command: machine tools pins
 
   - id: component-library
     category: dev
     title: A 70+ component library
     claim: >-
-      `forge component search` and `forge component install` add ready-made
+      `forge ui component search` and `forge ui component install` add ready-made
       frontend components, and scaffolded pages already carry enum-aware status
       badges and foreign-key pickers.
     availability: forge
-    use: "`forge component search|install|list`"
+    use: "`forge ui component search|install|list`"
     evidence:
-      - command: component search
-      - command: component install
+      - command: ui component search
+      - command: ui component install
       - skill: frontend/components
       - skill: frontend/design/verify
-      - command: component list
+      - command: ui component list
 
   - id: cloud-dev-machines
     category: dev
@@ -1432,7 +1432,7 @@ benefits:
       - path: internal/cigate
       - command: ci run
       - command: ci summarize
-      - command: gate record
+      - command: release gate record
       - skill: ci/gate
 
   - id: ci-workflow-opt-out
@@ -1535,22 +1535,22 @@ benefits:
     availability: forge
     evidence:
       - command: lint --fix
-      - command: fix
+      - command: lint fix
 
   - id: codemod-fixers
     category: guardrails
     title: Codemods for convention moves
     claim: >-
-      `forge fix` rewrites a project onto a new convention in one command
+      `forge lint fix` rewrites a project onto a new convention in one command
       (Connect errors, narrow Deps, the composition graph, operatorkit, the
       config proto package), and takes back a rewrite that fails.
     availability: forge
     evidence:
-      - command: fix connect-errors
-      - command: fix narrow-deps
-      - command: fix composition-graph
-      - command: fix operatorkit
-      - command: fix config-proto-package
+      - command: lint fix connect-errors
+      - command: lint fix narrow-deps
+      - command: lint fix composition-graph
+      - command: lint fix operatorkit
+      - command: lint fix config-proto-package
 
   - id: version-skew-guard
     category: guardrails
@@ -1561,7 +1561,7 @@ benefits:
     availability: forge
     evidence:
       - command: lint --allow-version-skew
-      - command: tools pins
+      - command: machine tools pins
 
   - id: unwritten-fields
     category: guardrails
@@ -1687,7 +1687,7 @@ benefits:
       component unit-tests against mocks.
     availability: forge
     use: >-
-      `forge fix narrow-deps` narrows a Deps interface to the methods the
+      `forge lint fix narrow-deps` narrows a Deps interface to the methods the
       package uses.
     evidence:
       - analyzer: --contract
@@ -1976,7 +1976,7 @@ benefits:
         lane: --conventions
         bug_class: >-
           A Deps interface declaring methods the package never uses: the
-          abstraction is wider than the need, so it leaks (autofix: `forge fix
+          abstraction is wider than the need, so it leaks (autofix: `forge lint fix
           narrow-deps`)
       - id: forgeconv-no-container-deps
         lane: --conventions
@@ -2077,7 +2077,7 @@ benefits:
         bug_class: >-
           `connect.NewError(code, err)` publishes `err.Error()` (a driver's SQL,
           a DSN, an internal host) to the caller and pins a guessed code over a
-          classified one (autofix: `forge fix connect-errors`)
+          classified one (autofix: `forge lint fix connect-errors`)
       - id: forgeconv-unwrapped-domain-error
         lane: --conventions
         bug_class: >-
@@ -2575,7 +2575,7 @@ benefits:
     headline: true
     use: >-
       `return nil, svcerr.Wrap(err)` from every rpc (`svcerr.WithReason`,
-      `svcerr.WithClass`); `forge fix connect-errors` rewrites hand-built
+      `svcerr.WithClass`); `forge lint fix connect-errors` rewrites hand-built
       Connect errors.
     why: >-
       `svcerr.Classify` sets each record's `error_class` (`server`, `user`,
@@ -2586,7 +2586,7 @@ benefits:
     estimate: "~30 min"
     evidence:
       - library: pkg/svcerr
-      - command: fix connect-errors
+      - command: lint fix connect-errors
       - analyzer: --conventions
       - path: pkg/svcerr/interceptor.go
       - skill: observability
@@ -2596,15 +2596,15 @@ benefits:
     title: Secrets never in git
     claim: >-
       A secret is declared once as a reference and bound per env to a provider,
-      so rendered KCL only ever carries references, and `forge secret set`
+      so rendered KCL only ever carries references, and `forge env secret set`
       requires the env so a value cannot land in the wrong one.
     availability: forge
     headline: true
     use: >-
-      A `sensitive` config field or `EnvVar.secret_ref`; `forge secret set --env
+      A `sensitive` config field or `EnvVar.secret_ref`; `forge env secret set --env
       <env> <KEY>`.
     evidence:
-      - command: secret set
+      - command: env secret set
       - library: pkg/secretaccess
       - skill: secrets
 
@@ -2819,15 +2819,15 @@ benefits:
     title: Security headers and request limits
     claim: >-
       Security headers, CORS, Connect payload caps and request-id middleware
-      ship in the chain, and `forge doctor` checks caps, probes and resource
+      ship in the chain, and `forge project doctor` checks caps, probes and resource
       limits of every env with nothing running.
     availability: forge
-    use: "`forge doctor`"
+    use: "`forge project doctor`"
     evidence:
       - path: pkg/middleware/security_headers.go
       - path: pkg/middleware/cors.go
       - path: pkg/middleware/httpstack.go
-      - command: doctor
+      - command: project doctor
 
   - id: middleware-hardening
     category: security
@@ -2870,8 +2870,8 @@ benefits:
       restart.
     availability: forge
     evidence:
-      - command: secret allow
-      - command: secret access
+      - command: env secret allow
+      - command: env secret access
       - path: pkg/deploy/openbao
       - path: pkg/deploy/eso
       - skill: secrets
@@ -2888,10 +2888,10 @@ benefits:
       grants.
     availability: hosted
     use: >-
-      `forge secret set --env <env> <KEY>`; `forge secret allow|deny|access`
+      `forge env secret set --env <env> <KEY>`; `forge env secret allow|deny|access`
     evidence:
-      - command: secret set
-      - command: secret allow
+      - command: env secret set
+      - command: env secret allow
       - external: control-plane:internal/tenantsecret
       - external: control-plane:internal/secretstore
       - external: control-plane:docs/openbao-secret-store.md
@@ -2948,12 +2948,12 @@ benefits:
     title: Credentials redacted on the way out
     claim: >-
       `pkg/redact` strips credential shapes and personal paths from text leaving
-      the process, and `forge report-bug --dry-run` shows exactly what would be
+      the process, and `forge agent report-bug --dry-run` shows exactly what would be
       sent.
     availability: forge
     evidence:
       - library: pkg/redact
-      - command: report-bug
+      - command: agent report-bug
       - path: docs/report-bug.md
 
   - id: guarded-db-query
@@ -3292,7 +3292,7 @@ benefits:
       [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check
       prod --release "$TAG" --wait`. Easy, about 15 minutes: the env document
       2 min, CI secret 5 min, the step 5 min, a first run 3 min. Recipes for
-      GitHub Actions, GitLab CI and Buildkite are in `forge skill load
+      GitHub Actions, GitLab CI and Buildkite are in `forge agent skill load
       deploy/record`.
     why: >-
       The release is record-only: it may name no artifacts (a version and a
@@ -3349,7 +3349,7 @@ benefits:
       `[forge_projects] infra = { repo = "github.com/acme/infra", ref =
       "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`;
       `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`;
-      `forge kcl imports [--refresh]`.
+      `forge env kcl imports [--refresh]`.
     why: >-
       A sibling path (`../billing`) builds whatever is checked out there and is
       absent in CI. A pin resolves to the same bytes on every machine through
@@ -3358,7 +3358,7 @@ benefits:
       `.forge/source-overrides.yaml` points a repo at a working copy while you
       develop both, and a release refuses to cut while one is in use.
     evidence:
-      - command: kcl imports --refresh
+      - command: env kcl imports --refresh
       - path: internal/kclprojects/gitimport.go
       - path: internal/cli/build_docker_source.go
       - path: docs/cross-repo-sources.md
@@ -3476,19 +3476,19 @@ benefits:
     category: ship
     title: Portable, verifiable release ledgers
     claim: >-
-      `forge ledger where|show|export|import` says which backend holds an env's
+      `forge release ledger where|show|export|import` says which backend holds an env's
       ledger and moves history between backends, `forge release verify` proves
       every artifact a release names exists and matches, and `forge release
       bundle` diffs a recorded bundle against the live clusters.
     availability: forge
     evidence:
-      - command: ledger where
-      - command: ledger export
+      - command: release ledger where
+      - command: release ledger export
       - command: release verify
       - command: release bundle
       - skill: deploy/offline-ledger
       - skill: deploy/release
-      - command: ledger import
+      - command: release ledger import
 
   - id: offline-breakglass
     category: ship
@@ -3679,14 +3679,14 @@ benefits:
     category: ship
     title: Check results attached to releases
     claim: >-
-      `forge gate record` attaches a lint, test, smoke or manual sign-off result
+      `forge release gate record` attaches a lint, test, smoke or manual sign-off result
       to the promotion it is about, with who and when, and `forge env deploy
       --gate` reads them; nothing refuses a promotion on a gate's status.
     status: recorded
     availability: forge
     evidence:
-      - command: gate record
-      - command: gate list
+      - command: release gate record
+      - command: release gate list
 
   - id: deploy-waits-for-health
     category: ship
@@ -3743,12 +3743,12 @@ benefits:
     category: ship
     title: Connect a cluster you run
     claim: >-
-      `forge cluster connect` registers a Kubernetes cluster you run as one
+      `forge cloud cluster connect` registers a Kubernetes cluster you run as one
       env's binding, with a ServiceAccount token scoped to exactly what the hub
       applies.
     availability: forge
     evidence:
-      - command: cluster connect
+      - command: cloud cluster connect
       - skill: deploy/cluster-connect
 
   - id: static-site-first-class
@@ -3850,14 +3850,14 @@ benefits:
       and rebind between envs and no spec edit.
     availability: hosted
     headline: true
-    use: "`forge domain add|bind|verify|ls|show|unbind|rm`"
+    use: "`forge cloud domain add|bind|verify|ls|show|unbind|rm`"
     evidence:
-      - command: domain add
-      - command: domain bind
+      - command: cloud domain add
+      - command: cloud domain bind
       - external: control-plane:internal/customdomain
       - external: control-plane:internal/domaincerts
       - external: control-plane:docs/custom-domains.md
-      - command: domain verify
+      - command: cloud domain verify
       - path: internal/deploytarget/hosted_domains.go
       - skill: deploy/domains
 
@@ -3993,7 +3993,7 @@ benefits:
       admits only your own images.
     availability: hosted
     evidence:
-      - command: registry login
+      - command: cloud registry login
       - command: lint
       - external: control-plane:internal/ociregistry
       - external: control-plane:internal/registryauth
@@ -4211,7 +4211,7 @@ benefits:
       - path: pkg/serverkit/serverkit.go
       - path: pkg/serverkit/pooler_drain.go
       - path: pkg/lifecyclekit/lifecyclekit.go
-      - command: doctor
+      - command: project doctor
       - library: pkg/serverkit
       - library: pkg/lifecyclekit
       - library: pkg/middleware
@@ -4600,8 +4600,8 @@ benefits:
       variables, and `forge obs` reads its issues, logs and release health.
     availability: hosted
     scope: any
-    use: "`forge login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables."
-    adopt: "`forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment"
+    use: "`forge cloud login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables."
+    adopt: "`forge cloud login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment"
     estimate: "~15 min"
     why: >-
       Adopting a platform usually starts with a rewrite. Monitoring needs none:
@@ -4689,19 +4689,19 @@ benefits:
     category: agents
     title: Skills that match your forge
     claim: >-
-      `forge skill list`, `load` and `search` serve 180+ skills built into the
+      `forge agent skill list`, `load` and `search` serve 180+ skills built into the
       forge you run, so an agent never reads guidance written for another
       version.
     availability: forge
     headline: true
-    use: "`forge skill load forge`"
+    use: "`forge agent skill load forge`"
     why: "A skill that disagrees with the project is reported as a forge bug."
     scope: any
-    adopt: "`forge skill load adopt`: what forge can do for this repo, with estimates to quote."
+    adopt: "`forge agent skill load adopt`: what forge can do for this repo, with estimates to quote."
     estimate: "~2 min"
     evidence:
-      - command: skill load
-      - command: skill search
+      - command: agent skill load
+      - command: agent skill search
       - path: internal/templates/project/skills
       - skill: forge
 
@@ -4709,15 +4709,15 @@ benefits:
     category: agents
     title: Built-in MCP server
     claim: >-
-      `forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and
+      `forge agent mcp` exposes forge on stdio to any MCP-capable harness, deploys and
       bug reports included, with no shell scraping.
     availability: forge
     headline: true
     scope: any
-    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool."
+    adopt: "`claude mcp add forge -- npx -y @reliantlabs/forge agent mcp` (or any MCP client); then call the `benefits` tool."
     estimate: "~2 min"
     evidence:
-      - command: mcp
+      - command: agent mcp
       - path: internal/cli/mcp_tools.go
       - path: internal/cli/mcp_deploy.go
 
@@ -4732,7 +4732,7 @@ benefits:
       names and inputs as the local server and a console link on every answer.
     availability: reliant
     scope: any
-    adopt: "Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client."
+    adopt: "Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge agent skill load connect` has the steps per client."
     estimate: "~2 min"
     evidence:
       - path: internal/cli/mcp_hosted.go
@@ -4809,15 +4809,15 @@ benefits:
     category: agents
     title: Agents report framework bugs
     claim: >-
-      `forge report-bug` sends a redacted defect report with evidence,
+      `forge agent report-bug` sends a redacted defect report with evidence,
       deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly
       what would go.
     availability: forge
     scope: any
-    adopt: "`forge report-bug --dry-run …` prints exactly what would be sent."
+    adopt: "`forge agent report-bug --dry-run …` prints exactly what would be sent."
     estimate: "~2 min"
     evidence:
-      - command: report-bug
+      - command: agent report-bug
       - path: internal/cli/report_bug.go
       - library: pkg/redact
       - path: docs/report-bug.md
@@ -4848,10 +4848,10 @@ benefits:
     title: Works in Claude Code, Cursor
     claim: >-
       Forge writes thin pointers for Claude Code and Cursor that route an agent
-      to `forge skill`, never copies of skill bodies that would go stale.
+      to `forge agent skill`, never copies of skill bodies that would go stale.
     availability: forge
     evidence:
-      - command: skill list
+      - command: agent skill list
 
   - id: harness-none
     category: agents
@@ -4962,7 +4962,7 @@ benefits:
 
 # The glance: what a project gets with no setup, in at most six lines per
 # audience (app: an app with an API; site: a frontend-only static site). The
-# entry skills and `forge start app` open with it (rendered when a skill
+# entry skills and `forge project start app` open with it (rendered when a skill
 # loads, from a `<!-- @benefits glance <audience> -->` directive), so an agent
 # meets the payoff before the procedure. Each fact digests the shipped
 # benefits it names and ends with the command that shows it; internal/cli's

@@ -36,7 +36,7 @@ func (r *resolver) locateGit(imp Import) (Resolved, error) {
 			"  A git-pinned import is read from the machine-local source cache and fetched only on a miss, so a render\n"+
 			"  offline works once the pin has been fetched here. To get past this:\n"+
 			"    - online: check the repo and ref exist and that git can reach the repo (credentials, ssh keys), then\n"+
-			"      fetch it with `forge kcl imports`;\n"+
+			"      fetch it with `forge env kcl imports`;\n"+
 			"    - developing the imported repo: map it to your working copy in %s:\n"+
 			"        sources:\n"+
 			"          %s: ../<checkout>",
@@ -84,7 +84,7 @@ func checkCommitLock(imp Import, res gitsource.Resolution) error {
 	}
 	if res.Commit == "" {
 		return fmt.Errorf("%s [%s] %s pins %s, but the resolved checkout records no commit, so the %s lock cannot be verified.\n"+
-			"  Drop the cache entry and fetch it again: forge kcl imports --refresh",
+			"  Drop the cache entry and fetch it again: forge env kcl imports --refresh",
 			imp.DeclaredIn, TableName, imp.Name, imp.Pin(), what)
 	}
 	if strings.HasPrefix(res.Commit, want) {
@@ -92,7 +92,7 @@ func checkCommitLock(imp Import, res gitsource.Resolution) error {
 	}
 	return fmt.Errorf("%s [%s] %s: pin mismatch — %s resolved to commit %s, but the import declares %s %s.\n"+
 		"  The ref moved (a re-pointed tag, an advanced branch), or this machine's cached copy of it is older than the lock.\n"+
-		"  If %s is the commit you mean to render, refetch the ref: forge kcl imports --refresh.\n"+
+		"  If %s is the commit you mean to render, refetch the ref: forge env kcl imports --refresh.\n"+
 		"  If the ref moved on purpose, review the change and set %s = %q in %s",
 		imp.DeclaredIn, TableName, imp.Name, imp.Repo+"@"+imp.Ref, res.Commit, what, want, want, what, res.Commit, imp.DeclaredIn)
 }

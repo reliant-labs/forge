@@ -50,7 +50,7 @@ func TestResolveNewAuthMode(t *testing.T) {
 	}
 }
 
-// The --auth-mode flag parses on the real command, so `forge start app` and
+// The --auth-mode flag parses on the real command, so `forge project start app` and
 // the skills can advertise it.
 func TestProjectNewHasAuthModeFlag(t *testing.T) {
 	t.Parallel()

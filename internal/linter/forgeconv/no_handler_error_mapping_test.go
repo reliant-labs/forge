@@ -65,7 +65,7 @@ func TestHandlerErrorMapping_CleanFixture(t *testing.T) {
 // forge/pkg/svcerr does not silence the rule. It used to, so one
 // svcerr.Wrap in a file — or a codemod adding the import — hid every
 // mapper beside it without fixing one (F-P7a-2a: reliant's 11 findings
-// would have gone quiet the moment `forge fix connect-errors` ran).
+// would have gone quiet the moment `forge lint fix connect-errors` ran).
 func TestHandlerErrorMapping_SvcerrImportDoesNotSuppress(t *testing.T) {
 	res, err := LintHandlerErrorMapping(filepath.Join("testdata", "handlers_uses_svcerr"))
 	if err != nil {

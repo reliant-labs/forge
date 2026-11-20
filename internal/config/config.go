@@ -1985,8 +1985,8 @@ func (f FeaturesConfig) BuildEnabled() bool { return f.resolve(FeatureBuild) }
 
 // IngressEnabled reports whether Gateway API ingress is wired
 // (`features.ingress`; derives to false). When off, forge skips ingress
-// codegen, `forge cluster up` skips the Envoy Gateway + GatewayClass
-// install, `forge cluster urls` returns nothing, and the audit ingress
+// codegen, `forge dev cluster up` skips the Envoy Gateway + GatewayClass
+// install, `forge dev cluster urls` returns nothing, and the audit ingress
 // category is suppressed.
 func (f FeaturesConfig) IngressEnabled() bool { return f.resolve(FeatureIngress) }
 

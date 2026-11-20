@@ -18,7 +18,7 @@ for static sites, the bucket, the CDN and the hostname):
   database   `_db`, a dedicated managed Postgres; workloads read its URL
              through `forge.DatabaseRef`, so nobody handles the password
   secrets    the control plane's write-only store:
-             `forge secret set --env staging <KEY>` (value on stdin)
+             `forge env secret set --env staging <KEY>` (value on stdin)
 
 Hosted workloads, the managed database and static sites all need billing on
 your Reliant organization (Reliant → Settings → Billing).
@@ -48,7 +48,7 @@ import .config as appcfg
 # The database. RETAIN (the default deletionPolicy): removing this
 # declaration never drops the data. Your own Postgres instead? Delete `_db`
 # and `databases`, pass "" for the database in `_hosted`, then
-# `forge secret set --env staging DATABASE_URL`.
+# `forge env secret set --env staging DATABASE_URL`.
 _db = forge.ManagedDatabase {
     name = "shop"
     runtime = forge.OnHosted {}
@@ -70,7 +70,7 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
 #
 #     _cluster = forge.ClusterTarget {
 #         cluster = "gke_acme_us-central1_staging"   # its kubectl context
-#         connected_cluster = "shop-staging"     # `forge cluster connect`
+#         connected_cluster = "shop-staging"     # `forge cloud cluster connect`
 #         namespace = "shop-" + option("env")
 #         platform = "amd64"                       # the nodes' arch
 #     }
@@ -136,7 +136,7 @@ _bundle = forge.Bundle {
     databases = [_db]
     # SECRET VALUES live in the control plane's store; forge never sees one.
     # A `sensitive` config field a hosted workload reads is a managedSecret
-    # of the same key: `forge secret set --env staging <KEY>`.
+    # of the same key: `forge env secret set --env staging <KEY>`.
     secret_provider = forge.HostedSecrets {}
     # Once workloads run on `_cluster`, it carries this env's support objects
     # too. Add, with `import .ingress as ing` above (deploy/kcl/staging/ingress.k):

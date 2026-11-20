@@ -40,7 +40,7 @@ a named refusal or warning here rather than a silent omission):
     is worse than none);
   * clusters other than the one the store runs on: the access document already
     carries any number of mounts, but their issuers are registered by
-    `forge cluster connect`, which the render does not read yet.
+    `forge cloud cluster connect`, which the render does not read yet.
 
 THE THREE PREREQUISITES live here, for every adopter:
   * TLS is on for every listener but a `transitional_reason` one, which warns
@@ -516,7 +516,7 @@ render = lambda ob: any, ctx: any -> any {
             "org": ctx.project
             "env": _env
             # The BootstrapSecrets the component declares, which a person may
-            # import (`forge secret import --to-bootstrap`): the seal key, the
+            # import (`forge env secret import --to-bootstrap`): the seal key, the
             # Postgres password, and the recovery escrow the converge Job
             # writes (SF7). The CLI reads this as a typo guard.
             "bootstrap_names": sorted([ob.seal.key.name, ob.recovery.escrow.name] + ([ob.storage.password.name] if ob.storage.type == "postgres" else []))

@@ -128,7 +128,7 @@ func refuseUnreadyHub(ctx context.Context, env string, ledger envLedger, bound b
 		return &exitCodeError{code: exitConflict, msg: fmt.Sprintf(
 			"env %q is converged by its control plane's hub and is bound to a release, but the hub has never "+
 				"reported reconciling it — its Kustomizations may not exist.\n"+
-				"NOTHING WAS RECORDED. Check the env's connected clusters (`forge cluster list`) and the hub, "+
+				"NOTHING WAS RECORDED. Check the env's connected clusters (`forge cloud cluster list`) and the hub, "+
 				"then re-run; --skip-hub-check records anyway.", env)}
 	}
 	return nil

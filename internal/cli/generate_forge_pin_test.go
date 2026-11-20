@@ -106,8 +106,8 @@ func TestReconcileForgePin_HopNeedingUpgradeIsLeftToUpgrade(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); string(got) != forgeYAML {
 		t.Errorf("generate moved the pin across a hop that needs `forge project upgrade`:\n%s", got)
 	}
-	if !strings.Contains(out, "project upgrade") || !strings.Contains(out, "forge fix operatorkit") {
-		t.Errorf("leaving the pin must name `forge project upgrade` and `forge fix operatorkit`, got:\n%s", out)
+	if !strings.Contains(out, "project upgrade") || !strings.Contains(out, "forge lint fix operatorkit") {
+		t.Errorf("leaving the pin must name `forge project upgrade` and `forge lint fix operatorkit`, got:\n%s", out)
 	}
 	if got, _ := os.ReadFile(lifecycle); string(got) != src {
 		t.Errorf("generate must not run the codemod itself:\n%s", got)

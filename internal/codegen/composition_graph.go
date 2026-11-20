@@ -21,7 +21,7 @@
 // A project is in GRAPH mode unless its internal/app still holds the legacy
 // composition — the owned `type Infra struct` / `func NewComponents` that
 // providers.go and compose.go were before the graph. Those projects keep the
-// legacy generators byte-for-byte until they migrate (`forge fix
+// legacy generators byte-for-byte until they migrate (`forge lint fix
 // composition-graph`, internal/codemod; the rest of the path is the
 // migrations/v1.0.0/composition-graph skill).
 
@@ -76,7 +76,7 @@ const rootAdoptOption = "adopt"
 
 // MixedComposeFile is the owned internal/app file holding the constructor
 // methods of a mixed project's adopted roots: compose.go is still the legacy
-// NewComponents. `forge fix composition-graph`, the last step of adoption,
+// NewComponents. `forge lint fix composition-graph`, the last step of adoption,
 // asks for its methods to move into compose.go.
 const MixedComposeFile = "graph_compose.go"
 

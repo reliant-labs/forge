@@ -6,7 +6,7 @@ description: Flux in forge — who applies a real env, the opt-in self-hosted de
 # Flux
 
 **forge installs Flux into a deploy target only when the env opts in with
-`applier = "flux"`** (below). Every other env is unaffected: `forge cluster up`
+`applier = "flux"`** (below). Every other env is unaffected: `forge dev cluster up`
 installs no Flux of its own, and `forge env deploy` writes no desired-state
 pointer at a cluster. Only an env that declares `applier = "flux"` is ever
 delivered that way.
@@ -15,7 +15,7 @@ delivered that way.
 
 | the env declares | applied by |
 |---|---|
-| `forge.ControlPlane` and clusters bound to connected clusters (`forge cluster connect`) | the control plane's hub Flux converges the recorded bundle; forge records and waits (`deploy/cluster-connect`) |
+| `forge.ControlPlane` and clusters bound to connected clusters (`forge cloud cluster connect`) | the control plane's hub Flux converges the recorded bundle; forge records and waits (`deploy/cluster-connect`) |
 | `hub_converges = [units]` | the hub converges **those delivery units** from the recorded bundle; forge applies the rest directly. This is how a real env moves onto Flux one unit at a time (`deploy/shape`) |
 | `applier = "forge"` | **forge**, directly, for now: no unit has moved to the hub yet. A transitional state, the same as `hub_converges = []`; every real env ends on the hub (`deploy/shape`) |
 | `applier = "flux"` (no control plane) | a Flux **forge installs in the env's own cluster**, reading the env's bundle; forge never applies the bundle itself (below) |
@@ -81,7 +81,7 @@ marks every CRD `fluxcd.controlplane.io/prune: disabled` and the FluxInstance
 `kustomize.toolkit.fluxcd.io/prune: disabled`; pause the operator with the
 annotation `fluxcd.controlplane.io/reconcile: disabled` instead.
 
-`forge cluster up <env>` installs the env's declared bootstrap charts (Flux
+`forge dev cluster up <env>` installs the env's declared bootstrap charts (Flux
 first, then charts that ship a CRD bundle, then the rest) into the env's
 forge-managed k3d clusters; `forge env deploy <env> --target <chart>` installs
 just that one.
@@ -339,7 +339,7 @@ an operator action, **never a deploy retry loop**:
    prove remote process termination):
 
    ```sh
-   forge cluster recover-chart-lock --context <explicit-context> \
+   forge dev cluster recover-chart-lock --context <explicit-context> \
      --owner <project.env> --chart <chart-name> \
      --uid <inspected-lock-uid> --resource-version <inspected-lock-rv> \
      --confirm-terminated 'terminated:<inspected-data.holder>'

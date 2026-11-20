@@ -16,7 +16,7 @@ package cli
 // landed, and it sits outside Flux, so it is allowed for any env. Two verbs
 // reach it, both through [installPlatformCharts]:
 //
-//   - `forge cluster up <env>` installs every bootstrap chart whose cluster is
+//   - `forge dev cluster up <env>` installs every bootstrap chart whose cluster is
 //     a forge-managed k3d cluster of the env;
 //   - `forge env deploy <env> <ver> --target <chart>` installs just that chart
 //     and applies nothing else.
@@ -123,7 +123,7 @@ func installPlatformCharts(ctx context.Context, entities *KCLEntities, installs 
 	return nil
 }
 
-// ensureEnvPlatformChartsInstalled is the `forge cluster up` half: bootstrap
+// ensureEnvPlatformChartsInstalled is the `forge dev cluster up` half: bootstrap
 // every declared platform chart that lands in one of the env's k3d clusters.
 // Silent no-op when the env declares none.
 func ensureEnvPlatformChartsInstalled(ctx context.Context, env, project string, entities *KCLEntities, clusters []ClusterEntity) error {

@@ -353,7 +353,7 @@ func TestScaffoldOnceBannerFilesAreLedgerGated(t *testing.T) {
 			continue
 		}
 		// Only GENERATE-TIME emitters can exhibit the defect. `forge
-		// package new`, `forge scaffold binary` and friends run once, at an
+		// scaffold package`, `forge scaffold binary` and friends run once, at an
 		// explicit user request, and write into a directory they just
 		// created — there is no later run to resurrect anything, and their
 		// re-run story is their own (they refuse or --force). The defect is
@@ -400,7 +400,7 @@ func TestScaffoldOnceBannerFilesAreLedgerGated(t *testing.T) {
 
 // isGenerateTimeEmitter reports whether a source file participates in the
 // `forge generate` pipeline, as opposed to being a one-shot `forge
-// package new` / `forge scaffold ...` / `forge new` command.
+// scaffold package` / `forge scaffold ...` / `forge new` command.
 //
 // The signal is the pipeline's own plumbing: generate-time emitters are
 // reached from the pipeline and thread its context or checksums state,

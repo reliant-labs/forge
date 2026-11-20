@@ -10,7 +10,7 @@ import (
 
 // TestUnloadableRuntimeIsAnErrorNotACrash: kcl-lang.io/lib panics when it
 // cannot extract libkcl. Before install recovered it, that panic crashed forge
-// from whichever goroutine touched KCL first (seen as `forge doctor` exiting 2
+// from whichever goroutine touched KCL first (seen as `forge project doctor` exiting 2
 // with a stack trace). The failure must come back as an error from every
 // entry point — Ready, Probe, and every later Serialized call, since the
 // library's Once is spent — and never as a panic or a nil-client crash.

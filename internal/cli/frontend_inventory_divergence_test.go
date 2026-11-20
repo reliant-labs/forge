@@ -46,7 +46,7 @@ func writeDerivedInventoryProject(t *testing.T) string {
 // project the same question through the two seams that disagreed:
 //
 //   - the generate pipeline's derivation step, and
-//   - a plain config load, which is all `forge lint`, `forge doctor` and
+//   - a plain config load, which is all `forge lint`, `forge project doctor` and
 //     `forge build` ever do.
 //
 // Before the fix the first saw 1 frontend and the second saw 0.

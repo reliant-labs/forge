@@ -14,7 +14,7 @@ import (
 // `forge env render` previews what an env renders, and an env's declared
 // option() values are part of that. It used to refuse `-D` outright ("unknown
 // shorthand flag: 'D'") while `forge env up` and `forge env build` took it, so
-// checking a render under an option meant dropping to `forge kcl eval`
+// checking a render under an option meant dropping to `forge env kcl eval`
 // (forge bug report e5700acd). One flag, one spelling, every env command that
 // renders the declaration.
 func TestEnvRenderTakesTheSameDAsEnvUpAndBuild(t *testing.T) {

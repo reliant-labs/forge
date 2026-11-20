@@ -51,6 +51,10 @@ func newProjectCmd() *cobra.Command {
 	// picker chooses a checkout first and the envs come from rendering it.
 	cmd.AddCommand(newProjectCheckoutsCmd())
 	cmd.AddCommand(newProjectMemoryCmd())
+	// `start` prints the router (and `start app` the greenfield brief);
+	// `doctor` checks the project and the machine it runs on.
+	cmd.AddCommand(newStartCmd())
+	cmd.AddCommand(newDoctorCmd())
 	// cmdutil.StrictGroup, not a bare group: cobra's default for a
 	// non-runnable parent is to print help and exit 0 for ANY unrecognised
 	// subcommand, which reports SUCCESS while doing nothing. Every group in

@@ -37,7 +37,7 @@ func TestCapabilities_EnumeratesTheRealTree(t *testing.T) {
 	for _, want := range []string{
 		"forge scaffold", "forge scaffold entity", "forge scaffold rpc", "forge scaffold worker",
 		"forge generate", "forge project annotations", "forge project capabilities",
-		"forge skill load", "forge db seed apply", "forge env up",
+		"forge agent skill load", "forge db seed apply", "forge env up",
 	} {
 		if _, ok := paths[want]; !ok {
 			t.Errorf("capabilities omit %q, which the command tree has", want)
@@ -148,7 +148,7 @@ func TestCapabilities_TextViewIsUsable(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"COMMANDS", "LINT ANALYZERS", "MARKERS",
-		"forge scaffold entity", "forge skill load <name>", "forge project annotations",
+		"forge scaffold entity", "forge agent skill load <name>", "forge project annotations",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("text view is missing %q", want)

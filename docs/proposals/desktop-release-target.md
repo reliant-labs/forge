@@ -408,7 +408,7 @@ GitHub, and no human credential can redeem a grant. This needs control-plane
 work (an OIDC trust config per org, plus a grant table), so it is scheduled
 last and nothing earlier depends on it.
 
-`forge secret list --env desktop-alpha` lists every declared signing and
+`forge env secret list --env desktop-alpha` lists every declared signing and
 publish name. `forge builder doctor desktop-alpha` dispatches a no-op job to
 each builder and reports, per builder, which names are present. For
 `ExternalSecrets` that is the only way to learn presence before a 30-minute
@@ -537,7 +537,7 @@ changes:
 - **Drift is observable.** Feeds are public. `forge env status desktop-latest`
   fetches each feed through `base_url`, shows the served version per OS next to
   the ledger's binding, and reports a hand-edited feed as `drift`.
-- **Gates.** `forge gate record desktop-alpha --from crash-rate.json` attaches
+- **Gates.** `forge release gate record desktop-alpha --from crash-rate.json` attaches
   soak evidence to the alpha promotion, and `--gate` freezes pre-promote
   evidence into the latest promotion. "Was this known before the button was
   pressed" gets an answer for desktop releases too.
@@ -891,7 +891,7 @@ forge env deploy desktop-latest desktop-1.7.17 --plan-only --json   # stage one 
 
 forge env status desktop-latest                    # bound release, served version per OS, drift
 forge release verify desktop-1.8.0-rc.1            # manifest exists at its digest
-forge secret list --env desktop-alpha              # signing + publish names and presence
+forge env secret list --env desktop-alpha              # signing + publish names and presence
 
 forge builder doctor desktop-alpha                 # no-op job per builder: reachable, forge version, secrets
 forge builder workflow --print                     # the generated shim, for a builder repo forge can't write

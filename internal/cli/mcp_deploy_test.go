@@ -348,7 +348,7 @@ func TestFindDirectLLMCalls(t *testing.T) {
 		t.Errorf("findDirectLLMCalls = %q, want %q", got, want)
 	}
 	note := directLLMNote(got)
-	for _, want := range []string{reliantLLMProviderDocURL, "no outbound internet", "never in a static site's browser bundle", "claim the deploy", "backend billing", "forge login", "managed secret", "without --claimable", "actual model request server-side", "do not assume an unclaimed gateway route is enabled", "disable the feature, not crash startup"} {
+	for _, want := range []string{reliantLLMProviderDocURL, "no outbound internet", "never in a static site's browser bundle", "claim the deploy", "backend billing", "forge cloud login", "managed secret", "without --claimable", "actual model request server-side", "do not assume an unclaimed gateway route is enabled", "disable the feature, not crash startup"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("recovery note lacks %q:\n%s", want, note)
 		}
@@ -453,7 +453,7 @@ func TestClaimableResultSaysLiveOnlyWhenVerified(t *testing.T) {
 		{"suspended though verified", "suspended", true,
 			[]string{"Offline:"}, []string{"OFFLINE"}, []string{"Live:"}, []string{"it is live at"}},
 		{"claimed", "claimed", false,
-			[]string{"State:      claimed"}, []string{"was claimed", "forge login"},
+			[]string{"State:      claimed"}, []string{"was claimed", "forge cloud login"},
 			[]string{"Live:", "Claim link:"}, []string{"it is live at", "Give them the claim link"}},
 		{"expired", "expired", false,
 			[]string{"State:      expired"}, []string{"was deleted", "--claimable"},

@@ -211,7 +211,7 @@ func TestOwnedClaimObserve_UnreadableClaimIsUnknownNotDegraded(t *testing.T) {
 }
 
 // TestOrdinaryClusterServiceReadsNoClaims pins the boundary from the
-// other side: adding claim observation must not make forge start
+// other side: adding claim observation must not make forge project start
 // reporting on PVCs it merely REFERENCES. A forge.Volume of type "pvc"
 // names a claim someone else provisioned, and forge has no standing to
 // grade it — nor any way to tell an intentionally-absent one from a

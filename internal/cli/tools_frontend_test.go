@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// `forge tools install` must never mutate a frontend's package.json or
+// `forge machine tools install` must never mutate a frontend's package.json or
 // lockfile. It used to run `npm install --save-dev @bufbuild/protoc-gen-es`
 // in every frontend on --force (which the scaffolded verify-generated job
 // passes), and in any frontend whose node_modules was not populated yet. On
@@ -105,7 +105,7 @@ func (f toolsInstallFixture) run(t *testing.T, args ...string) error {
 func (f toolsInstallFixture) assertUntouched(t *testing.T) {
 	t.Helper()
 	if log, err := os.ReadFile(f.npmLog); err == nil {
-		t.Errorf("forge tools install ran npm, which may rewrite a user-owned lockfile:\n  npm %s",
+		t.Errorf("forge machine tools install ran npm, which may rewrite a user-owned lockfile:\n  npm %s",
 			strings.ReplaceAll(strings.TrimSpace(string(log)), "\n", "\n  npm "))
 	}
 	for name, want := range map[string][]byte{
@@ -132,7 +132,7 @@ const declaredPackageJSON = `{
 
 func TestToolsInstall_DeclaredTSPluginNeverRunsNPM(t *testing.T) {
 	if testing.Short() {
-		t.Skip("runs forge tools install over stand-in toolchain scripts; runs in task test")
+		t.Skip("runs forge machine tools install over stand-in toolchain scripts; runs in task test")
 	}
 	for _, tc := range []struct {
 		name      string
@@ -153,7 +153,7 @@ func TestToolsInstall_DeclaredTSPluginNeverRunsNPM(t *testing.T) {
 				writeTSPluginBin(t, f.feDir)
 			}
 			if err := f.run(t, tc.args...); err != nil {
-				t.Fatalf("forge tools install failed over a frontend that declares the plugin: %v", err)
+				t.Fatalf("forge machine tools install failed over a frontend that declares the plugin: %v", err)
 			}
 			f.assertUntouched(t)
 		})
@@ -167,7 +167,7 @@ func TestToolsInstall_UndeclaredTSPluginFailsWithRunbook(t *testing.T) {
 	f := newToolsInstallFixture(t, "{\n  \"name\": \"web\",\n  \"devDependencies\": {}\n}\n")
 	err := f.run(t, "--force")
 	if err == nil {
-		t.Fatal("forge tools install succeeded although frontends/web declares no @bufbuild/protoc-gen-es")
+		t.Fatal("forge machine tools install succeeded although frontends/web declares no @bufbuild/protoc-gen-es")
 	}
 	for _, want := range []string{
 		"frontends/web/package.json",

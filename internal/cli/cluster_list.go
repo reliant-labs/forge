@@ -1,7 +1,7 @@
 package cli
 
-// `forge cluster list` / `forge cluster show <name>` — read what the control
-// plane holds for the clusters connected with `forge cluster connect`.
+// `forge cloud cluster list` / `forge cloud cluster show <name>` — read what the control
+// plane holds for the clusters connected with `forge cloud cluster connect`.
 //
 // Same client as connect and disconnect (clusterConnectClient), same two RPCs
 // (ListClusters, GetCluster). Read-only, and nothing credential-shaped is ever
@@ -84,12 +84,12 @@ func newClusterListCmd() *cobra.Command {
 name, id, state, auth, registered address and CA fingerprint, the secret-store
 issuer registration, the environments bound to it, and created/updated times.
 
-  forge cluster list --env prod
-  forge cluster list --env prod --json
+  forge cloud cluster list --env prod
+  forge cloud cluster list --env prod --json
 
 State is the control plane's own: CONNECTED (it holds usable connection
 material), WAITING (it holds nothing to try with) or STALE (the token's expiry
-has passed). Use it to verify a 'forge cluster connect'.
+has passed). Use it to verify a 'forge cloud cluster connect'.
 
 --json prints one document, schema ` + schemaClusterList + `. A member the control plane did not
 report is null. No token or certificate is ever printed.
@@ -110,11 +110,11 @@ func newClusterShowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <name>",
 		Short: "Show one connected cluster",
-		Long: `Show one connected cluster by exact name: the same fields as 'forge cluster list',
+		Long: `Show one connected cluster by exact name: the same fields as 'forge cloud cluster list',
 read through the control plane's GetCluster.
 
-  forge cluster show prod-us --env prod
-  forge cluster show prod-us --env prod --json
+  forge cloud cluster show prod-us --env prod
+  forge cloud cluster show prod-us --env prod --json
 
 --json prints one document, schema ` + schemaClusterShow + `. No token or certificate is ever printed.`,
 		Args: cobra.ExactArgs(1),
@@ -148,7 +148,7 @@ func runClusterList(ctx context.Context, envName, token string, asJSON bool, out
 		return writeClusterJSON(out, clusterListDoc{Schema: schemaClusterList, Env: envName, Clusters: views})
 	}
 	if len(views) == 0 {
-		fmt.Fprintln(out, "no connected clusters: connect one with `forge cluster connect <name> --context <ctx> --env "+envName+"`")
+		fmt.Fprintln(out, "no connected clusters: connect one with `forge cloud cluster connect <name> --context <ctx> --env "+envName+"`")
 		return nil
 	}
 	for i, v := range views {

@@ -347,7 +347,7 @@ func TestWorktreePushedToRemoteBranchIsRemovable(t *testing.T) {
 }
 
 // The GC layer removes only when BOTH hold: the policy opts in (worktree_reap)
-// and the pass is an explicit `forge storage gc --apply` (Explicit). The
+// and the pass is an explicit `forge machine storage gc --apply` (Explicit). The
 // installed schedule and `storage daemon` run the same layer with
 // Explicit false.
 func TestWorktreeLayerRemovesOnlyInAnExplicitOptedInPass(t *testing.T) {

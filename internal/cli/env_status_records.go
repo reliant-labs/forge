@@ -307,7 +307,7 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 // whole story there.
 //
 // It reuses F7's ledgerShow rather than walking the store again, so
-// `forge ledger show` and `forge env status` cannot come to disagree about
+// `forge release ledger show` and `forge env status` cannot come to disagree about
 // the same env's sessions.
 func readMachineEnvRecords(env, projectDir string, target sessionTarget, now time.Time) (envStatusRecords, error) {
 	store, err := openMachineLedger(projectDir)

@@ -1,6 +1,6 @@
 ---
 name: deploy/kcl-imports
-description: Import ANOTHER forge project's KCL (its workloads.k, config_gen.k, a shared infra repo's envs) — `[forge_projects]` in deploy/kcl/kcl.mod, either at the version go.mod already pins (replace dir, go.work use, module cache + go.sum) or by a git pin (repo + ref + commit lock, no go.mod), the forge-pin skew refusal, and `forge kcl imports`.
+description: Import ANOTHER forge project's KCL (its workloads.k, config_gen.k, a shared infra repo's envs) — `[forge_projects]` in deploy/kcl/kcl.mod, either at the version go.mod already pins (replace dir, go.work use, module cache + go.sum) or by a git pin (repo + ref + commit lock, no go.mod), the forge-pin skew refusal, and `forge env kcl imports`.
 ---
 
 # Importing another forge project's KCL
@@ -67,8 +67,8 @@ infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "8f2c1e0b9d4a
   a release refuses to cut while one is in use).
 - `commit` (optional, 7+ hex) is the lock: a ref that resolves elsewhere is a
   `pin mismatch`, naming both commits. A full-sha `ref` is its own lock.
-  `forge kcl imports` notes each unlocked pin with the commit to lock.
-- Offline: a cached pin renders with no network. `forge kcl imports` fetches
+  `forge env kcl imports` notes each unlocked pin with the commit to lock.
+- Offline: a cached pin renders with no network. `forge env kcl imports` fetches
   every pin (prepare a machine or a CI cache with it); `--refresh` re-fetches.
 - The imported repo's `forge.yaml` may be anywhere from `subdir` up to the
   repository root. No go.mod is needed on either side.
@@ -79,7 +79,7 @@ Polyrepo topologies, costs and the deploy-repo shape: `deploy/polyrepo`.
 ## Refusals (each names the fix)
 
 - **Pin mismatch** (git pin): the ref resolved to another commit than
-  `commit`. `forge kcl imports --refresh`, or update `commit` on purpose.
+  `commit`. `forge env kcl imports --refresh`, or update `commit` on purpose.
 - **Unresolvable pin**: offline on a cold cache, a wrong ref, or git cannot
   authenticate; the error names the pin and the override-file escape.
 
@@ -110,12 +110,12 @@ against ITS root, so both projects keeping a `config_gen.k` is fine. Its
 ## Seeing what was resolved
 
 ```bash
-forge kcl imports           # NAME MODULE|REPO VERSION VIA DIR (fetches git pins)
-forge kcl imports --refresh # re-fetch git pins (a moved branch or tag)
-forge kcl imports --json    # for scripts and tests
+forge env kcl imports           # NAME MODULE|REPO VERSION VIA DIR (fetches git pins)
+forge env kcl imports --refresh # re-fetch git pins (a moved branch or tag)
+forge env kcl imports --json    # for scripts and tests
 ```
 
 A Go test that renders through a forge CHILD process does not see the child's
 file reads in Go's test cache. If such a test runs under `-short`, it must stat
-the imported files itself: walk each `dir` from `forge kcl imports --json`
+the imported files itself: walk each `dir` from `forge env kcl imports --json`
 (or mark the test slow).

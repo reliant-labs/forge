@@ -24,7 +24,7 @@ Table policy: `COMMENT ON TABLE payments IS 'forge:append-only';` makes a
 ledger immutable in both stores and free-function delegates: no Update/Delete.
 The birth marker writes the trigger AND comment; on later generates, applied
 schema (not the marker) decides. Contradictory RPCs are refused. Correct a row
-by appending its reversal. Load `forge skill load db/append-only` for the
+by appending its reversal. Load `forge agent skill load db/append-only` for the
 compile-time surface and recognition of existing guard triggers.
 
 ## Two routes to the same parent

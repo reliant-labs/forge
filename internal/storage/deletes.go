@@ -16,7 +16,7 @@ import (
 
 // Deletion governor: every unlink a maintenance pass makes goes through one.
 //
-// The 2026-10-09 incident: one `forge storage gc --apply` unlinked 175,324 Go
+// The 2026-10-09 incident: one `forge machine storage gc --apply` unlinked 175,324 Go
 // build cache entries (53.6 GiB) in about 30 seconds, on a kata-containers
 // volume served over virtiofs, while builds were running. Every lookup pins a
 // file descriptor in the HOST's virtiofsd until the guest forgets the inode.

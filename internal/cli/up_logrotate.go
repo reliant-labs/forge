@@ -21,7 +21,7 @@ import (
 //
 // The rotated name is deliberately shaped to match the `rotatedLog` regexp in
 // internal/storage/logs.go (`<stream>.<YYYY-MM-DD>T<rest>.log`) so that
-// `forge storage gc` expires it under the existing log policy — keep the newest
+// `forge machine storage gc` expires it under the existing log policy — keep the newest
 // 5 per stream, drop anything older than 7 days or over the log budget. Change
 // the shape here and rotated files become immortal.
 

@@ -374,7 +374,7 @@ the rewrite alternative.
    On prod's first SPA-bearing release that has no StaticSite, so the guard skips by design. Its general fix
    comes from the §8.1 link: the guard's baseline for `(prod, reliant-web)` falls back to the same-named site in
    any env merged into prod. Until that lands, this step is the guard.
-5. **Rebind.** `forge domain bind app.reliantlabs.io --env prod --target reliant-web` updates the one binding
+5. **Rebind.** `forge cloud domain bind app.reliantlabs.io --env prod --target reliant-web` updates the one binding
    row. A rebind withdraws nothing. `domainconverge.publish` swaps the route only after the new binding has been
    evaluated (`edgeFresh`), and then `published_binding_at` advances. Until then the old prefix keeps serving.
    Both prefixes hold byte-identical builds, so a request served by either is correct. The edge certificate is

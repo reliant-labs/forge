@@ -13,7 +13,7 @@ import (
 
 // storageRotatedLog is a deliberate duplicate of `rotatedLog` in
 // internal/storage/logs.go. Rotated names produced here MUST match it or
-// `forge storage gc` will never expire them. Duplicated rather than exported so
+// `forge machine storage gc` will never expire them. Duplicated rather than exported so
 // the storage package keeps its surface small; if logs.go's pattern changes,
 // this test is the tripwire.
 var storageRotatedLog = regexp.MustCompile(`^(.+)\.[0-9]{4}-[0-9]{2}-[0-9]{2}T[^/]+\.log$`)

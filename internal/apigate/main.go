@@ -11,7 +11,7 @@
 //   - declared: the PR carries the `api-break` label, or a line
 //     `API-BREAK: [codemod=<name>] [playbook=migrations/<vX.Y.Z>]` appears in
 //     the PR body or a commit body;
-//   - shipped: the same diff adds a `forge fix <name>` codemod (a non-test file
+//   - shipped: the same diff adds a `forge lint fix <name>` codemod (a non-test file
 //     in internal/codemod registering that name) or touches a migration
 //     playbook (internal/templates/project/skills/forge/migrations/<version>/).
 //

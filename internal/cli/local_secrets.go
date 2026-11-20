@@ -43,7 +43,7 @@ var pullLocalSecretsFor = pullLocalSecrets
 //
 // An env the control plane has never seen has, by definition, no values: it
 // yields an empty map, and the declared-refs pre-flight then names every
-// missing key with the `forge secret set --env` fix (set creates the env).
+// missing key with the `forge env secret set --env` fix (set creates the env).
 // Every other failure is returned: starting services without their secrets
 // is the outcome this exists to prevent.
 func pullLocalSecrets(ctx context.Context, envName string, entities *KCLEntities) (map[string]string, error) {

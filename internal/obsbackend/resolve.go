@@ -136,7 +136,7 @@ func Resolve(f Facts, override string) (Decision, error) {
 	// undeclared block means off only for an env nothing hosted runs in.
 	if f.Declared && !f.Enabled {
 		return Decision{}, Undetermined("telemetry is off for %s: its observability is disabled", f.Env).
-			With("forge skill load observability")
+			With("forge agent skill load observability")
 	}
 	// `forge env up` sent this env's telemetry to the hosted store.
 	if r := hostedDevRecord(f); r != nil {
@@ -146,7 +146,7 @@ func Resolve(f Facts, override string) (Decision, error) {
 		return Decision{}, Undetermined("telemetry is off for %s: its observability is not declared; "+
 			"add `observability = forge.Observability {dev_telemetry = \"auto\"}` to the env, with a `control_plane` "+
 			"to send it to the hosted store (without one it goes to a local ClickStack), then run `forge env up %s`", f.Env, f.Env).
-			With("forge skill load observability")
+			With("forge agent skill load observability")
 	}
 	if d := f.Destination; d != nil && !d.TokenFromControlPlane {
 		return Decision{}, Undetermined("telemetry for %s goes to %s; forge can query the local ClickStack or the Reliant control plane only", f.Env, d.Endpoint)
@@ -171,11 +171,11 @@ func Resolve(f Facts, override string) (Decision, error) {
 	if f.HasCluster {
 		if f.HasLocal {
 			return Decision{}, Undetermined("env %s mixes local and cluster workloads but declares no telemetry destination; declare observability.destination so forge can query the whole env", f.Env).
-				With("forge skill load observability/destination")
+				With("forge agent skill load observability/destination")
 		}
 		if f.ControlPlane == "" {
 			return Decision{}, Undetermined("env %s runs on a cluster but declares no control_plane or telemetry destination forge can query", f.Env).
-				With("forge skill load observability/destination")
+				With("forge agent skill load observability/destination")
 		}
 		return Decision{Backend: BackendCloud, Reason: "cluster workloads: query the env's declared control plane"}, nil
 	}
@@ -195,15 +195,15 @@ func noLocalStore(f Facts) *Error {
 	if r := f.DevTelemetry; r != nil && r.Reason != "" {
 		why = " (" + r.Reason + ")"
 	}
-	hosted := "sign in to Reliant (`forge login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
+	hosted := "sign in to Reliant (`forge cloud login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
 	if f.ControlPlane == "" {
-		hosted = "declare a `control_plane = forge.ControlPlane {}` on the env, sign in to Reliant (`forge login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
+		hosted = "declare a `control_plane = forge.ControlPlane {}` on the env, sign in to Reliant (`forge cloud login`) and re-run `forge env up " + f.Env + "` to ship it to your org's hosted store"
 	}
 	return Undetermined("telemetry for %s is local%s, and this env has no local store: it runs no container, so no ClickStack holds it and nothing was collected. "+
 		"To read it, %s. Or opt into a local store where Docker runs: declare the scaffold's `clickstack` compose workload and set observability.local_port "+
-		"(`forge skill load observability`), then `forge env up %s` (with --telemetry=local to keep it local while signed in)",
+		"(`forge agent skill load observability`), then `forge env up %s` (with --telemetry=local to keep it local while signed in)",
 		f.Env, why, hosted, f.Env).
-		With(Cmd("forge", "login"), Cmd("forge", "env", "up", f.Env))
+		With(Cmd("forge", "cloud", "login"), Cmd("forge", "env", "up", f.Env))
 }
 
 // LocalScope is the scope of every local query: the project's own ClickStack

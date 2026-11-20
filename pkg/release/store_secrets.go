@@ -53,7 +53,7 @@ type ShapeStoreSecret struct {
 	// Cluster is the kube context the namespace lives in, the same key the
 	// shape's workloads and objects use.
 	Cluster string `json:"cluster"`
-	// ConnectedCluster is the name `forge cluster connect` registered, which
+	// ConnectedCluster is the name `forge cloud cluster connect` registered, which
 	// a control plane resolves to the cluster's auth mount. Empty for a
 	// cluster no control plane reaches (a self-run store's converge Job
 	// addresses the cluster by Cluster).

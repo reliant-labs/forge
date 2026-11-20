@@ -1,4 +1,4 @@
-// Package component holds the `forge component` command group — list, search,
+// Package component holds the `forge ui component` command group — list, search,
 // and install UI components from forge's built-in component library.
 //
 // It is the first dir-nested command group in forge's own CLI (the devspace
@@ -102,7 +102,7 @@ func detectComponentsDir() (string, error) {
 		// installing into whatever frontend-shaped directory cwd happens to be.
 		cfg, err := config.LoadProjectDir(root)
 		if err != nil {
-			return "", cliutil.WrapUserErr("forge component install",
+			return "", cliutil.WrapUserErr("forge ui component install",
 				"could not load the project to find its frontends",
 				filepath.Join(root, "forge.yaml"),
 				"fix forge.yaml, or pass the frontend directory: --dir <path/to/frontend>",
@@ -147,7 +147,7 @@ func detectComponentsDir() (string, error) {
 		if root != "" {
 			where = "the project at " + root + " has no web frontend under frontends/"
 		}
-		return "", cliutil.UserErr("forge component install",
+		return "", cliutil.UserErr("forge ui component install",
 			"could not find a frontend to install into: "+where,
 			"",
 			"pass the frontend directory: --dir <path/to/frontend> (components go in its src/components/ui/)")
@@ -160,7 +160,7 @@ func detectComponentsDir() (string, error) {
 			}
 			lines = append(lines, "  --dir "+filepath.ToSlash(rel))
 		}
-		return "", cliutil.UserErr("forge component install",
+		return "", cliutil.UserErr("forge ui component install",
 			fmt.Sprintf("this project has %d frontends; pick one", len(frontends)),
 			"",
 			"re-run with one of:\n"+strings.Join(lines, "\n"))

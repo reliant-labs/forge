@@ -6,7 +6,7 @@ the SAME `helm_charts` bucket every other platform dep flows through.
 WHAT THIS PINS, AND WHY EACH ONE IS HERE RATHER THAN IN A DOCSTRING:
 
   * THE CHART REFERENCE AND VERSION. `FLUX_CHART_OCI` is the shared-Flux
-    detector — `forge cluster up` compares a consumer's declared chart
+    detector — `forge dev cluster up` compares a consumer's declared chart
     against it to decide whether a cluster already has a Flux — and
     pkg/flux holds the same strings Go-side. If they diverged, forge would
     install a SECOND Flux into a cluster that already has one.

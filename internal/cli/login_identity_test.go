@@ -10,7 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 )
 
-// `forge login --token` reports the stored credential by its display prefix
+// `forge cloud login --token` reports the stored credential by its display prefix
 // and never echoes the token it was handed.
 func TestLoginOne_ReportsThePrefixNotTheToken(t *testing.T) {
 	const secret = "rlat_EXAMPLE2NOTAREALTOKENxxxxxxxxxx"

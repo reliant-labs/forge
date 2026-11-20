@@ -280,7 +280,7 @@ func unconstructibleError(found []unconstructibleComponent) error {
 		b.WriteString("  - the server does not have it (the CLI, a daemon or another binary builds it, or it is a catalogue of\n")
 		b.WriteString("    interfaces nothing constructs): mark it `//forge:not-a-component: <why>`. It keeps contract.go and its mock.\n")
 		b.WriteString("  - it is not a component at all: mark it `//forge:exclude-contract: <why>`, which also drops its generated mock.\n")
-		b.WriteString("  (`forge skill load contracts/package-markers`)\n")
+		b.WriteString("  (`forge agent skill load contracts/package-markers`)\n")
 	}
 	if anyRole {
 		b.WriteString("\nA handler, worker or operator is always composed: restore the constructor its scaffold wrote\n")

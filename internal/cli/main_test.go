@@ -70,7 +70,7 @@ func TestMain(m *testing.M) {
 	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) { return gkeDescription{}, false }
 	// Nor does any test touch the host's k3d, kubectl, or docker. These
 	// were real shell-outs from -short unit tests, and this box is shared:
-	// `forge cluster up`'s test ran `kubectl config use-context
+	// `forge dev cluster up`'s test ran `kubectl config use-context
 	// k3d-control-plane` against the developer's own kubeconfig, switching
 	// the context under every other process using it; another read the
 	// host's live `k3d cluster list`; three asked a remote registry for a
@@ -282,7 +282,7 @@ func requireProtoToolchain(t *testing.T) {
 	t.Helper()
 	for _, bin := range []string{"buf", "protoc-gen-go", "protoc-gen-connect-go"} {
 		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not on PATH — install the proto toolchain (`forge tools install`) to run the full generate pipeline", bin)
+			t.Skipf("%s not on PATH — install the proto toolchain (`forge machine tools install`) to run the full generate pipeline", bin)
 		}
 	}
 }

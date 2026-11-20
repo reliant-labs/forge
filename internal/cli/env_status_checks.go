@@ -2,7 +2,7 @@ package cli
 
 // env_status_checks.go — the ENV-RUNTIME half of the doctor split.
 //
-// `forge doctor` used to answer "is some environment running?" alongside "is
+// `forge project doctor` used to answer "is some environment running?" alongside "is
 // this project well-formed", and it answered the first one badly: it guessed
 // the app was on :8080, missed a project serving on :3091, and rendered the
 // miss as a gray dash that looked exactly like "not applicable". The whole

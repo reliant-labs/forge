@@ -30,7 +30,7 @@ forge version
 [Install](../README.md#install), and CI pinning, release verification and building from a clone in [install.md](install.md). From a clone: `task install && forge version`.)
 
 Forge installs the proto plugins it needs on first use. If you want to check
-your toolchain up front, `forge doctor` will tell you what is missing and how
+your toolchain up front, `forge project doctor` will tell you what is missing and how
 to get it.
 
 ## 1. Create the project
@@ -54,8 +54,8 @@ _override_ a default.
 
 **Your project already knows its own conventions.** The forge binary
 ships over a hundred skills covering architecture, proto, db, api, testing, deploy and
-more (`forge skill list`). Reliant reads them automatically; other agents can
-be told to run `forge skill search <query>`. Nothing is written into your tree
+more (`forge agent skill list`). Reliant reads them automatically; other agents can
+be told to run `forge agent skill search <query>`. Nothing is written into your tree
 — see [Working with an agent](#7-working-with-an-agent).
 
 ## 2. Add a service
@@ -271,10 +271,10 @@ gate locally.
 If an LLM is writing most of this code, the following are the parts that keep
 it honest over months rather than minutes.
 
-**Point it at the skills.** `forge skill list` names them; `forge skill load
+**Point it at the skills.** `forge agent skill list` names them; `forge agent skill load
 <name>` prints one. They are embedded in the binary, so they always match the
 version you are running. A copy on disk can be older — when they disagree,
-`forge skill load` wins.
+`forge agent skill load` wins.
 
 **Let it ask the binary instead of guessing.** Four commands enumerate
 Forge's whole surface from its own command tree and descriptors, so they
@@ -357,13 +357,13 @@ program.
 ## Where to go next
 
 ```bash
-forge skill load architecture   # the deep version of the layer map
-forge skill load db             # migrations, projections, CRUD overrides
-forge skill load api            # handler patterns, error handling, testing
-forge skill load auth           # the auth seam and the dev-loop IdP
-forge skill load deploy         # environments, releases, plans, promotion
-forge skill load testing        # the test pyramid and the harness patterns
+forge agent skill load architecture   # the deep version of the layer map
+forge agent skill load db             # migrations, projections, CRUD overrides
+forge agent skill load api            # handler patterns, error handling, testing
+forge agent skill load auth           # the auth seam and the dev-loop IdP
+forge agent skill load deploy         # environments, releases, plans, promotion
+forge agent skill load testing        # the test pyramid and the harness patterns
 ```
 
 If you are migrating an existing codebase rather than starting fresh, start
-with `forge skill load migration`.
+with `forge agent skill load migration`.

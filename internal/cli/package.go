@@ -18,7 +18,6 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/naming"
-	"github.com/reliant-labs/forge/internal/protofmt"
 	"github.com/reliant-labs/forge/internal/scaffold"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -46,119 +45,10 @@ var validPackageKinds = map[string]bool{
 //   - adapter: the same shape, plus the `// forge:outbound-io` marker,
 //     which asserts the package calls OUT and serves nothing inbound. The
 //     marker is the difference — it is what lint and the observe heuristic
-//     read. See `forge skill load adapter`.
+//     read. See `forge agent skill load adapter`.
 var validPackageTypes = map[string]bool{
 	"service": true,
 	"adapter": true,
-}
-
-// packageTypeHelp is the long-form help text shown under `--type`.
-const packageTypeHelp = `package shape: service|adapter (default service)
-
-  service     Standard internal/<name>/ with Service/Deps/New — wired into
-              the composition, callable by handlers. The default, and the
-              right answer for a use-case orchestrator too: an orchestrator
-              is a service whose Deps are other services' interfaces.
-  adapter     The same shape plus '// forge:outbound-io', which asserts the
-              package calls OUT to a third-party system and serves nothing
-              inbound. Lint keeps RPC handlers out of it and the observe
-              heuristic treats it as doing I/O.
-              See: forge skill load adapter`
-
-func newPackageCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "package",
-		Short: "Manage internal packages",
-		Long: `Manage internal packages with Go interface contracts.
-
-Internal packages live under internal/<name>/ and define their boundary
-through a Go interface, Service. Unlike proto API services, internal
-package contracts use native Go interfaces — supporting channels, complex
-types, factories, and other constructs that proto cannot express.
-
-Subcommands:
-  forge package new <name>   Create a new internal package`,
-	}
-
-	packageNewCmd := &cobra.Command{
-		Use:   "new <name>",
-		Short: "Create a new internal package with contract interface",
-		Long: `Create a new internal package under internal/<name>/ with:
-  - service.go       — Deps, New, and the unexported service type marked
-                       //forge:contract: its exported methods ARE the contract
-  - contract_gen.go  — the Service interface, derived from that type
-  - deps.go          — the package's dependency interfaces (mocked too)
-
-It ends with a 'forge generate' run, which writes mock_gen.go and
-middleware_gen.go and wires the package into internal/app/compose.go, so
-the project lints clean straight away (--no-generate skips it). After you
-add methods to the service type, run 'forge generate' again.
-(--type adapter and --kind keep a hand-written contract.go.)
-
-` + packageTypeHelp + `
-
-Example:
-  forge package new cache
-  forge package new notifications
-  forge package new events --kind eventbus
-  forge package new stripe-adapter --type adapter --base-url
-  forge package new pubsub --type adapter --dry-run`,
-		Args: cobra.ExactArgs(1),
-		RunE: runPackageNewThenGenerate,
-	}
-
-	packageNewCmd.Flags().String("kind", "", "package kind template (e.g. eventbus, client)")
-	packageNewCmd.Flags().String("type", "service", "package shape: service|adapter (see --help for details)")
-	packageNewCmd.Flags().Bool("no-generate", false, "skip the post-scaffold 'forge generate' run (scaffold-only mode for parallel-agent rounds); run 'forge generate' before 'forge lint'")
-	cmdutil.AddPackageScaffoldFlags(packageNewCmd)
-
-	cmd.AddCommand(cmdutil.ConfiguresClone(packageNewCmd))
-
-	return cmdutil.StrictGroup(cmd)
-}
-
-// runPackageNewThenGenerate is `forge package new`: the same scaffold as
-// `forge scaffold package`, ending the same way — with a generate run under
-// the project lock, so the new package's middleware_gen.go, mock and
-// compose.go wiring exist before the next `forge lint` (without them the
-// owned observe_chain.go seam is unreferenced, and an adapter's
-// config.<Name>Config does not exist yet). The scaffold group runs the same
-// tail through its own lock wrapper; see scaffold.syncDerivedFiles.
-func runPackageNewThenGenerate(cmd *cobra.Command, args []string) error {
-	root, err := projectRoot()
-	if err != nil {
-		return runPackageNew(cmd, args) // reports the missing project itself
-	}
-	if cmdutil.IsDryRun(cmd) {
-		// The plan alone: no lock file, no generate.
-		release, err := observeGenerateLock(root)
-		if err != nil {
-			return err
-		}
-		defer release()
-		return runPackageNew(cmd, args)
-	}
-	return withGenerateLock(root, func() error {
-		// An adapter's --base-url edits the config proto: it ends as `buf
-		// format` writes it (internal/protofmt).
-		defer protofmt.Begin(root, os.Stderr)()
-		if err := runPackageNew(cmd, args); err != nil {
-			return err
-		}
-		if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-			return nil
-		}
-		if noGenerate, _ := cmd.Flags().GetBool("no-generate"); noGenerate {
-			fmt.Printf("\n⏩ --no-generate: skipping the post-scaffold `forge generate` run.\n")
-			fmt.Printf("   Package %q is written, but the files forge derives from it are not yet: run `forge generate` before `forge lint`.\n", args[0])
-			return nil
-		}
-		fmt.Println("\n🔧 Running generation pipeline...")
-		if err := runGeneratePipeline(root, false); err != nil {
-			return fmt.Errorf("package %q was written and kept, but the post-scaffold `forge generate` failed: %w; fix it, then re-run `forge generate`", args[0], err)
-		}
-		return nil
-	})
 }
 
 // packageTypeForCommand applies the service default even for callers without

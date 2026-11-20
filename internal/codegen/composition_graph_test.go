@@ -354,7 +354,7 @@ func (g *Graph) newAlpha() (*alpha.Service, error) {
 	}
 }
 
-// forge#2276, the graph's half: `forge fix composition-graph` drops a
+// forge#2276, the graph's half: `forge lint fix composition-graph` drops a
 // legacy placeholder key (LegacyComposePlaceholder) instead of carrying its
 // nil, and this is why that is enough and necessary. A key compose.go lacks
 // is resolved to the provider that exists, so the gate it feeds is on; a

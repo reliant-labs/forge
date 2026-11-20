@@ -4,7 +4,7 @@
 // ── WHY THIS EXISTS: THE DEPENDENCY IS INVERTED ───────────────────────
 //
 // A user signed in to an application that embeds or launches forge (Reliant)
-// must not have to run `forge login` as well. The obvious way to get that —
+// must not have to run `forge cloud login` as well. The obvious way to get that —
 // teach forge to go and find that application's credential — is the one thing
 // forge must never do: internal/cloud's package header forbids importing
 // control-plane or reliant, because a user deploying to hosted infra without
@@ -384,7 +384,7 @@ const legacyHostClientID = "host-app"
 // longer reads them, so they are dead weight at best and a second copy of a
 // bearer secret at worst. A host that used to deposit calls this (best-effort)
 // when it next signs in or starts. Entries any other client wrote — including
-// a human's `forge login` — are untouched. A missing file removes nothing.
+// a human's `forge cloud login` — are untouched. A missing file removes nothing.
 func RemoveLegacyHostDeposits(path string) (int, error) {
 	removed := 0
 	err := credentials.Update(path, func(f *credentials.File) error {

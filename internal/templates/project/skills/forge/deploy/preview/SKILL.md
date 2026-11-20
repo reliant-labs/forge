@@ -27,7 +27,7 @@ it should deploy in `forge.yaml` `deploy.environments`.
 - **Hosted** (`forge.OnHosted`): nothing else is needed. Each instance becomes
   its own control-plane environment, with its own URL, database and secrets.
   Secrets are per env: give the template's secrets to each instance with
-  `forge secret set --env <instance>`, or keep previews on config that needs no
+  `forge env secret set --env <instance>`, or keep previews on config that needs no
   secrets.
 - **A cluster you operate**: give each preview its own namespace by deriving
   it from the env name, which forge binds on every render:

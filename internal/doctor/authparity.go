@@ -46,7 +46,7 @@ import (
 // hands the process. That is the authoritative artefact — it IS the variable
 // the validator reads — and doctor already computes and memoises it for the
 // deploy checks (see deployRenders / envRender in deploy.go), so this costs
-// nothing extra in a `forge doctor` run. Issuer variables are recognised by
+// nothing extra in a `forge project doctor` run. Issuer variables are recognised by
 // SHAPE (a name ending in _ISSUER / _ISSUERS carrying an absolute http(s)
 // URL), not by one scaffold-specific spelling, so no project can be reported
 // issuer-less merely for naming its field something forge did not invent.
@@ -88,7 +88,7 @@ import (
 func CheckAuthParity(_ context.Context, env *Environment) CheckResult {
 	res := CheckResult{Name: "Auth issuer parity (backend ↔ frontend)"}
 
-	// Env is "" for the project-health set (`forge doctor`), which spans
+	// Env is "" for the project-health set (`forge project doctor`), which spans
 	// every environment — and an issuer typo in prod is the same incident as
 	// one in dev, on the environment where it costs most. `forge env up`
 	// passes a single env and gets a single-env answer.
@@ -294,7 +294,7 @@ func compareIssuers(backend, frontend issuerSide) parityVerdict {
 			"\n\nNote the two-hostname case: a containerised IdP is reached at localhost:<port> by the\n" +
 			"browser and at <service>:<port> from inside the network. That split is EXPECTED for the\n" +
 			"JWKS URL (fetched in-network), but the ISSUER must match the browser-facing URL the token\n" +
-			"is minted under. See: forge skill load auth/dev-loop",
+			"is minted under. See: forge agent skill load auth/dev-loop",
 	}
 }
 
@@ -566,7 +566,7 @@ func isIssuerURL(s string) bool {
 }
 
 // orDev is the environment a source-only scan looks at when nothing named
-// one. `forge doctor` runs unscoped and dev is where the halves are wired
+// one. `forge project doctor` runs unscoped and dev is where the halves are wired
 // first, so it is the only defensible default.
 func orDev(env string) string {
 	if env == "" {

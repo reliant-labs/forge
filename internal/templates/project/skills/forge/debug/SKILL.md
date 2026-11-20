@@ -59,13 +59,13 @@ On top of the generic triage above, common forge-shaped bug classes:
 
 ```
 forge project introspect handlers      # every RPC path the binary registers — localize the fault
-forge api curl <svc.method>    # build a copy-pasteable Connect curl from the shell
-forge cluster logs --service X # kubectl-backed log tail for one service (single cluster)
-forge debug start <svc>        # debug-build <svc>, run it under Delve with env dev's config
-forge debug start --attach PID --run # attach Delve to a live process; --run keeps it running
-forge debug connect <addr>     # drive a dlv you started (e.g. the delve runner: 127.0.0.1:2345)
-forge debug break/continue/eval# breakpoints, wait for a hit (continue --timeout 60s), evaluate
-forge debug stop               # kills only what start launched; detaches/releases everything else
+forge dev curl <svc.method>    # build a copy-pasteable Connect curl from the shell
+forge dev cluster logs --service X # kubectl-backed log tail for one service (single cluster)
+forge dev debug start <svc>        # debug-build <svc>, run it under Delve with env dev's config
+forge dev debug start --attach PID --run # attach Delve to a live process; --run keeps it running
+forge dev debug connect <addr>     # drive a dlv you started (e.g. the delve runner: 127.0.0.1:2345)
+forge dev debug break/continue/eval# breakpoints, wait for a hit (continue --timeout 60s), evaluate
+forge dev debug stop               # kills only what start launched; detaches/releases everything else
 task test -- -v ./internal/handlers/<name>/... # verbose isolated test runs
 task test:e2e                 # full-stack reproduction
 task test              # run tests with race detector
@@ -75,8 +75,8 @@ forge generate                 # regenerate code (use when stale gen is suspecte
 ### Ask the running system before reading code
 
 Start with `forge obs status <env> --json`, then follow the failing request,
-not a broad production scan. Load `forge skill load observability/query` for
-the full verb/JSON reference and `forge skill load db/query` for application
+not a broad production scan. Load `forge agent skill load observability/query` for
+the full verb/JSON reference and `forge agent skill load db/query` for application
 rows. Each step should narrow the hypothesis:
 
 | Evidence needed | Read-only command |
@@ -121,7 +121,7 @@ it is not a connectivity or authorization test.
 
 Cloud reads require the credential's role-bound `obs:read`; release reads may
 also need `deploy:read`, and hosted database reads need `db:query`. Under
-Reliant use the credential helper, not an interactive `forge login`. Elsewhere
+Reliant use the credential helper, not an interactive `forge cloud login`. Elsewhere
 use the project's documented login. HTTP 403/missing scope on a valid token
 is an authorization blocker, not evidence of an app outage. Report it to the
 owner/admin; do not mint broader tokens, read secret values or bypass policy.
@@ -200,11 +200,11 @@ that app records or schema are correct. Full transport/policy rules: `db/query`.
 Run `forge obs dashboards audit <env>` to replay the console's panels. Empty
 panels are probed to distinguish absent data from data outside the window,
 environment or filters; failed probes are not evidence of absence. Load
-`forge skill load debug/dashboards` for verdicts, failure classes and remedies.
+`forge agent skill load debug/dashboards` for verdicts, failure classes and remedies.
 
 #### Tool API versus CLI
 
-Forge's stdio MCP server is `forge mcp` (embedded: `reliant forge mcp`).
+Forge's stdio MCP server is `forge agent mcp` (embedded: `reliant forge agent mcp`).
 Register the entrypoint your installed binary actually exposes; load `debug`
 with `skill_load` using `name: "debug"` and `dir: "<project-root>"` to select
 the project. Its current catalog exposes project/skill/lint/generate tools,
@@ -218,37 +218,37 @@ check `--help` before registering.
 - **`forge project introspect handlers` to localize.** Prints every RPC path the assembled
   binary serves. If the failing RPC isn't there, the fault is a downstream/remote
   hop, not this binary — that one check collapses the search space.
-- **`forge api curl <service.method>` to exercise an endpoint.** Builds and runs a
+- **`forge dev curl <service.method>` to exercise an endpoint.** Builds and runs a
   Connect request from the shell, but it **stops at the auth interceptor** — it
   does not mint a token. Use it for shape/connectivity; supply your own credential
   for an authed call.
-- **`forge cluster logs --service <name>` for the symptom.** kubectl-backed, no
+- **`forge dev cluster logs --service <name>` for the symptom.** kubectl-backed, no
   file-grepping — but it tails only the **owner cluster** (the one cluster name in
   config). For a multi-cluster app, set the context and run
   `kubectl --context <other> -n <ns> logs <pod>` for the other half.
-- **`forge debug` (Delve): pass `--run` so the target keeps running.** `start <svc>` builds
+- **`forge dev debug` (Delve): pass `--run` so the target keeps running.** `start <svc>` builds
   `-gcflags=all=-N -l`, launches it with the workload's configuration from
   `--env` (default `dev`, resolved like `forge env exec`), and writes its output to
   `.forge/logs/<env>/debug_<svc>.log`. When `forge env up` already serves the
   workload's PORT, either pass `--app-port <free>` or attach to the running
   process: `start --attach <pid>` (`forge env status <env> --json` reports each
   host service's `pid`). The loop that never blocks an agent:
-  `forge debug break <Rpc>` (a short handler method name, `file.go:42`, or a full
+  `forge dev debug break <Rpc>` (a short handler method name, `file.go:42`, or a full
   Delve function name), trigger the request in the background, then
-  `forge debug continue --timeout 60s` — it returns the hit (or exits non-zero
+  `forge dev debug continue --timeout 60s` — it returns the hit (or exits non-zero
   with the target still running). `eval`/`locals`/`stack` inspect;
   `continue --no-wait` resumes without waiting. `stop` kills only a process
   `start` launched: an attached process is detached with its breakpoints
   removed and keeps serving, and a `connect`ed dlv keeps running with the
   session's breakpoints cleared. A workload on the delve runner
   (`forge.OnHost {runner = "delve"}`) already runs under dlv on
-  127.0.0.1:2345 (`delve_port`): `forge debug connect 127.0.0.1:2345`.
+  127.0.0.1:2345 (`delve_port`): `forge dev debug connect 127.0.0.1:2345`.
   Without `--run`, `start` leaves the target halted at entry (or where attach
   found it) until the first `continue`.
 
 **Smoke/status are NOT app-flow proofs.** A green `forge env smoke` / `forge env status <env>`
 checks listeners, local compose, and telemetry — never app-flow invariants. They
-(and `forge cluster status`, green whenever pods are `Running`) can all be green
+(and `forge dev cluster status`, green whenever pods are `Running`) can all be green
 while the actual flow is broken. The **only** things that prove an app-flow fix:
 
 1. a declarative, exit-coded app-health assertion (model: a project `doctor:<flow>`
@@ -350,7 +350,7 @@ The three investigation tracks above each have a dedicated forge sub-skill with 
 - `investigate` — hypothesis formation and code tracing.
 - `multi-cluster-e2e` — a workload stuck `Pending` / not-ready, or a flow that fails only in a k3d multi-cluster e2e env: read the pod status before the network, hold the pod up on failure, and the nested-cluster image-pull / host-gateway-DNS / path-MTU gotchas.
 
-For local ClickStack endpoints and live pprof, load `forge skill load debug/telemetry`.
-Continuous profiles: `forge skill load observability/profiles`.
+For local ClickStack endpoints and live pprof, load `forge agent skill load debug/telemetry`.
+Continuous profiles: `forge agent skill load observability/profiles`.
 
 <!-- @forge-only:end -->

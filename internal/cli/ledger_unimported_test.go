@@ -134,7 +134,7 @@ func TestRefusesWhenCheckoutHoldsAnUnimportedLedger(t *testing.T) {
 	if !strings.Contains(msg, "3 releases") {
 		t.Errorf("the refusal must name the M releases prod's promotions bind, got: %s", msg)
 	}
-	if !strings.Contains(msg, "forge ledger import --from-git") {
+	if !strings.Contains(msg, "forge release ledger import --from-git") {
 		t.Errorf("the refusal must name the remedy, got: %s", msg)
 	}
 	if !strings.Contains(msg, "prod") {
@@ -168,7 +168,7 @@ func TestRefusalGoesQuietAfterImport(t *testing.T) {
 		t.Fatalf("precondition: must refuse before the import, got %v", err)
 	}
 
-	// Simulate what `forge ledger import --from-git` does: record the same
+	// Simulate what `forge release ledger import --from-git` does: record the same
 	// records, with their ids preserved, in the selected ledger. Opened
 	// through selectLedger — the seam that skips the check — which is the
 	// seam the real import needs for exactly this reason.

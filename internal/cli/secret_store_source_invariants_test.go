@@ -247,7 +247,7 @@ func TestInvariant_NoStoreSourceCommandTakesAValueAsAnArgument(t *testing.T) {
 	root := newTestRootCmd(t)
 	// Every command that can carry a store-source value.
 	targets := [][]string{
-		{"secret", "set"}, {"secret", "import"}, {"secret", "list"},
+		{"env", "secret", "set"}, {"env", "secret", "import"}, {"env", "secret", "list"},
 		{"env", "secrets", "verify"}, {"env", "secrets", "adopt"},
 	}
 	for _, path := range targets {
@@ -282,7 +282,7 @@ func TestInvariant_NoStoreSourceCommandTakesAValueAsAnArgument(t *testing.T) {
 	// The positional arguments: set takes a NAME, import takes a NAME,
 	// verify/adopt take an env and a Secret name. A value-length positional
 	// check would be meaningless, so the contract is the arity and the Use line.
-	for path, maxArgs := range map[string]int{"secret set": 1, "secret import": 1, "env secrets verify": 2, "env secrets adopt": 2} {
+	for path, maxArgs := range map[string]int{"env secret set": 1, "env secret import": 1, "env secrets verify": 2, "env secrets adopt": 2} {
 		cmd, _, _ := root.Find(strings.Fields(path))
 		for n := maxArgs + 1; n <= maxArgs+2; n++ {
 			args := make([]string, n)
@@ -304,7 +304,7 @@ func TestInvariant_SetRejectsAValueGivenAsASecondArgument(t *testing.T) {
 	var out, errOut bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&errOut)
-	root.SetArgs([]string{"secret", "set", "--env", "prod", "GITHUB_APP_PRIVATE_KEY", canary})
+	root.SetArgs([]string{"env", "secret", "set", "--env", "prod", "GITHUB_APP_PRIVATE_KEY", canary})
 	err := root.Execute()
 	if err == nil {
 		t.Fatal("set accepted a value as an argument")
@@ -320,12 +320,12 @@ func TestInvariant_SetRejectsAValueGivenAsASecondArgument(t *testing.T) {
 // come from, and none may suggest an argument.
 func TestInvariant_HelpNeverShowsAValueOnTheCommandLine(t *testing.T) {
 	root := newTestRootCmd(t)
-	for _, path := range [][]string{{"secret", "set"}, {"secret", "import"}, {"env", "secrets", "verify"}, {"env", "secrets", "adopt"}} {
+	for _, path := range [][]string{{"env", "secret", "set"}, {"env", "secret", "import"}, {"env", "secrets", "verify"}, {"env", "secrets", "adopt"}} {
 		cmd, _, _ := root.Find(path)
 		help := cmd.Long + "\n" + cmd.Example + "\n" + cmd.UseLine()
 		for _, line := range strings.Split(help, "\n") {
 			l := strings.TrimSpace(line)
-			if strings.HasPrefix(l, "forge secret set") || strings.HasPrefix(l, "forge secret import") {
+			if strings.HasPrefix(l, "forge env secret set") || strings.HasPrefix(l, "forge env secret import") {
 				// An example that names a value inline would train people to
 				// paste one. The only inline forms are pipes and --from-file.
 				if strings.Contains(l, "--value") || strings.Contains(l, "sk_") {

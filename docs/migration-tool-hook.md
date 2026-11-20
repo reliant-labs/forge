@@ -52,4 +52,4 @@ holds the tool **and** the migrations (a two-line Dockerfile `FROM <tool image>`
 - `COPY <dir> /migrations`), or, on the host runtime,
   `command = ["forge", "db", "migrate", "up"]`.
 
-Per-tool examples and the details: `forge skill load db/own-migration-tool`.
+Per-tool examples and the details: `forge agent skill load db/own-migration-tool`.

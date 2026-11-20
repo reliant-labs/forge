@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# `forge mcp` (stdio) as a container, for MCP catalogs that build from source
+# `forge agent mcp` (stdio) as a container, for MCP catalogs that build from source
 # (docker/mcp-registry, Glama). Build from the repo root:
 #   docker build -f Dockerfile.mcp -t forge:mcp .
 #   docker run -i --rm -v "$PWD:/workspace" forge:mcp
@@ -29,4 +29,4 @@ RUN apk add --no-cache git ca-certificates \
 COPY --from=build /out/forge /usr/local/bin/forge
 USER forge
 WORKDIR /workspace
-ENTRYPOINT ["forge","mcp"]
+ENTRYPOINT ["forge","agent","mcp"]

@@ -159,7 +159,7 @@ func TestOrphanedClusterSilentWhenEveryObjectIsRendered(t *testing.T) {
 
 // The false positive that would have made this check unreadable, measured on
 // the real cluster: forge stamps `managed-by=forge` on the Envoy Gateway
-// chart it installs via `forge cluster up` (internal/cluster.stampDocAppLabel)
+// chart it installs via `forge dev cluster up` (internal/cluster.stampDocAppLabel)
 // and on the pinned Gateway API CRDs. Those are PLATFORM objects — no env's
 // manifest render contains them and none ever will — so a managed-by-only
 // rule reports them forever, and the yellow is permanent and unfixable.
@@ -236,7 +236,7 @@ func TestOrphanedClusterSaysAListedObjectMayStillBeServing(t *testing.T) {
 
 // It must never FAIL. A deliberate orphan is legitimate (an env being
 // retired, a rename mid-migration), forge cannot tell intent from accident,
-// and a red `forge doctor` over an object that may be load-bearing pushes
+// and a red `forge project doctor` over an object that may be load-bearing pushes
 // people toward exactly the deletion that causes the outage.
 func TestOrphanedClusterNeverFails(t *testing.T) {
 	env := envWithRender([]envRender{
@@ -570,5 +570,5 @@ func TestOrphanedClusterIsRegistered(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("%q is not in projectChecks() — it would never run under `forge doctor`", orphanedClusterCheckName)
+	t.Fatalf("%q is not in projectChecks() — it would never run under `forge project doctor`", orphanedClusterCheckName)
 }

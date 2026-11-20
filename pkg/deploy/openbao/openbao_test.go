@@ -267,7 +267,7 @@ func TestAccessAdminHasNoSecretCapability(t *testing.T) {
 func TestBuildAccess_Refusals(t *testing.T) {
 	s := accessSpec()
 	s.Access.Clusters[1].OIDCDiscoveryURL = ""
-	if _, err := BuildAccess(s); err == nil || !strings.Contains(err.Error(), "forge cluster connect") {
+	if _, err := BuildAccess(s); err == nil || !strings.Contains(err.Error(), "forge cloud cluster connect") {
 		t.Fatalf("a remote cluster with no issuer must be refused naming the escape, got %v", err)
 	}
 	s = accessSpec()

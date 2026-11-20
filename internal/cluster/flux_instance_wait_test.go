@@ -10,7 +10,7 @@ import (
 )
 
 // TestRidingFluxInstancesNamesEachInstance: the FluxInstance riding the Flux
-// Operator chart is what `forge cluster up` waits on before calling the chart
+// Operator chart is what `forge dev cluster up` waits on before calling the chart
 // installed. The operator installs Flux's controllers from it after the apply
 // returns; forge used to return first, and an env that declared
 // `forge.flux_chart()` came up with flux-system holding only the operator

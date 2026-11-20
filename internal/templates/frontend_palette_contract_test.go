@@ -256,7 +256,7 @@ func undeclaredPaletteTokens(src string, declared map[string]bool) []string {
 // "Each", not "either": the frontend trees and the component library ship
 // byte-identical into both kinds, so a token one theme lacks is a component
 // that renders transparent in that kind of frontend. The shipped surface is
-// both scaffold trees AND every pkg/components entry — `forge component
+// both scaffold trees AND every pkg/components entry — `forge ui component
 // install` copies those into a project verbatim, so a library component is
 // as much a theme consumer as anything the scaffold writes. Missing the
 // library is how `confirmation_dialog`'s `hover:bg-warning-hover` shipped

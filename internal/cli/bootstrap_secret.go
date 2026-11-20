@@ -86,10 +86,10 @@ func (m bootstrapMinter) mintOne(ctx context.Context, name string, g release.Ren
 	if exists && version > 0 {
 		// A version exists but is disabled or destroyed. Adding another would
 		// quietly replace a value somebody deliberately took out of service.
-		return res, fmt.Errorf("bootstrap secret %s has version %d, which is disabled or destroyed, and no usable version. forge will not mint over it: enable the version, or add a replacement yourself with `forge secret import --to-bootstrap`", name, version)
+		return res, fmt.Errorf("bootstrap secret %s has version %d, which is disabled or destroyed, and no usable version. forge will not mint over it: enable the version, or add a replacement yourself with `forge env secret import --to-bootstrap`", name, version)
 	}
 	if !exists {
-		return res, fmt.Errorf("bootstrap secret %s does not exist in project %s. Create the container first: it holds no value until forge or `forge secret import --to-bootstrap` adds one, and the identity that reads it is granted on the container, so forge does not create one", name, m.project)
+		return res, fmt.Errorf("bootstrap secret %s does not exist in project %s. Create the container first: it holds no value until forge or `forge env secret import --to-bootstrap` adds one, and the identity that reads it is granted on the container, so forge does not create one", name, m.project)
 	}
 
 	spec := secretgen.Spec{
@@ -171,7 +171,7 @@ func ensureBootstrapSecrets(ctx context.Context, e *KCLEntities, dryRun bool, ou
 	}
 	api, err := newGSMAPI(ctx)
 	if err != nil {
-		return fmt.Errorf("bootstrap secrets: %w\nThe seal key and database password are minted into Google Secret Manager with the deployer's own credentials; or provide them yourself with `forge secret import --to-bootstrap` and drop `generate` from the BootstrapSecret", err)
+		return fmt.Errorf("bootstrap secrets: %w\nThe seal key and database password are minted into Google Secret Manager with the deployer's own credentials; or provide them yourself with `forge env secret import --to-bootstrap` and drop `generate` from the BootstrapSecret", err)
 	}
 	m := bootstrapMinter{api: api, project: project, out: out}
 	if dryRun {

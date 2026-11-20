@@ -8,7 +8,7 @@ import (
 )
 
 // The MCP registry listing (npm/server.json) and the Smithery config
-// (npm/smithery.yaml) describe the npm shim run as `forge mcp`. The registry
+// (npm/smithery.yaml) describe the npm shim run as `forge agent mcp`. The registry
 // verifies an npm package by the package.json `mcpName` matching the
 // listing's name, and serves the package version the listing names, so those
 // are held equal here; scripts/release-forge.sh moves both versions together.
@@ -60,15 +60,16 @@ func TestMCPRegistryListingMatchesTheNpmPackage(t *testing.T) {
 		p.Version != pkg.Version || p.Transport.Type != "stdio" {
 		t.Errorf("package = %+v, want npm %s@%s over stdio", p, pkg.Name, pkg.Version)
 	}
-	if len(p.PackageArguments) != 1 || p.PackageArguments[0].Type != "positional" || p.PackageArguments[0].Value != "mcp" {
-		t.Errorf("packageArguments = %+v, want the one positional `mcp`", p.PackageArguments)
+	if len(p.PackageArguments) != 2 || p.PackageArguments[0].Type != "positional" || p.PackageArguments[0].Value != "agent" ||
+		p.PackageArguments[1].Type != "positional" || p.PackageArguments[1].Value != "mcp" {
+		t.Errorf("packageArguments = %+v, want the positionals `agent` `mcp`", p.PackageArguments)
 	}
 
 	smithery, err := os.ReadFile(repoFile(t, "npm/smithery.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(smithery), "type: stdio") || !strings.Contains(string(smithery), "args: ['-y', '"+pkg.Name+"', 'mcp']") {
-		t.Errorf("npm/smithery.yaml does not start `npx -y %s mcp` over stdio:\n%s", pkg.Name, smithery)
+	if !strings.Contains(string(smithery), "type: stdio") || !strings.Contains(string(smithery), "args: ['-y', '"+pkg.Name+"', 'agent', 'mcp']") {
+		t.Errorf("npm/smithery.yaml does not start `npx -y %s agent mcp` over stdio:\n%s", pkg.Name, smithery)
 	}
 }

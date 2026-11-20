@@ -157,7 +157,7 @@ func TestFrontendSkillPointsAtComponentLibraryAtDecisionPoint(t *testing.T) {
 	}
 
 	// The library is opt-in beyond the core set: an agent that never runs
-	// `forge component install` gets only what the scaffold auto-installed.
+	// `forge ui component install` gets only what the scaffold auto-installed.
 	// The skill must say that the installed set is NOT the catalog.
 	if !strings.Contains(skill, "components/ui/` is not the catalog") {
 		t.Error("frontend SKILL.md does not warn that src/components/ui/ is only the " +

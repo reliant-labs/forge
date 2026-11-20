@@ -4,7 +4,7 @@
 // same key its migration skill (skills/forge/migrations/<version>) carries —
 // and is reachable two ways:
 //
-//   - `forge fix <name>` runs one on request (`--dry-run` lists what it would
+//   - `forge lint fix <name>` runs one on request (`--dry-run` lists what it would
 //     rewrite);
 //   - `forge project upgrade` runs every codemod marked Upgrade whose release
 //     the project's baseline predates, before it touches a template.
@@ -57,13 +57,13 @@ func (r Report) Changed() bool { return len(r.Rewrites) > 0 }
 
 // Codemod is one deterministic rewrite.
 type Codemod struct {
-	// Name is the `forge fix <name>` subcommand.
+	// Name is the `forge lint fix <name>` subcommand.
 	Name string
 	// Version is the release that broke the shape this rewrites. It names
 	// the migration skill that tells the rest of the story
 	// (skills/forge/migrations/<Version>).
 	Version string
-	// Short is the one-line summary `forge fix --help` prints.
+	// Short is the one-line summary `forge lint fix --help` prints.
 	Short string
 	// Long is the subcommand's help body.
 	Long string
@@ -73,15 +73,15 @@ type Codemod struct {
 	// restructuring is run on request, after the person running it has read
 	// what it does.
 	Upgrade bool
-	// CleanTree marks a codemod that replaces files wholesale: `forge fix`
+	// CleanTree marks a codemod that replaces files wholesale: `forge lint fix`
 	// refuses to run it over uncommitted changes (unless --allow-dirty), so
 	// `git diff` is the review and `git checkout .` the undo.
 	CleanTree bool
-	// Scoped marks a codemod that honours Options.Scope: `forge fix <name>
+	// Scoped marks a codemod that honours Options.Scope: `forge lint fix <name>
 	// --scope <path>` rewrites only the files under the paths named, while
 	// whatever it analyses to decide a rewrite still reads the whole
 	// project. A codemod whose rewrite is one decision over the whole tree
-	// (a restructuring) leaves it false, and `forge fix` offers no --scope.
+	// (a restructuring) leaves it false, and `forge lint fix` offers no --scope.
 	Scoped bool
 	// Run rewrites the project at dir, as opts asks.
 	Run func(dir string, opts Options) (Report, error)

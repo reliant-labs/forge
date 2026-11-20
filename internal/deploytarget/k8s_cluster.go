@@ -11,7 +11,7 @@ import (
 // K8sClusterProvider is the full Go implementation for the
 // K8sCluster deploy target. It wraps internal/cluster.Apply — the
 // existing render-KCL → kubectl-apply → wait-rollouts pipeline that
-// `forge env deploy` / `forge cluster reload` / `forge env up` share.
+// `forge env deploy` / `forge dev cluster reload` / `forge env up` share.
 //
 // The provider takes the env-wide knobs off the ServiceGroup (which
 // got them from the first K8sCluster ref in the group). The per-

@@ -55,7 +55,7 @@ func DeniedHint(reference string) string {
 		"  forge composed that address from the organization your credential acts for, so the "+
 		"likely causes are a credential that has expired, or one that carries deploy:read but not "+
 		"deploy:write (a push needs both the organization's subtree and write access).\n"+
-		"  fix: re-run `forge registry login <env>`, and check the token's scopes with `forge cloud status <env>` or in the web app (Settings → API tokens)", reference)
+		"  fix: re-run `forge cloud registry login <env>`, and check the token's scopes with `forge cloud status <env>` or in the web app (Settings → API tokens)", reference)
 }
 
 // PushError is a push to Repository that failed. Its text is the cause's,
@@ -92,6 +92,6 @@ func ClaimableDeniedHint(reference string) string {
 		"  This is an anonymous (--claimable) deploy: forge pushed with the deploy's own credential, for this run only, "+
 		"so no login or API token of yours is involved. That credential stops working once the deploy is claimed, "+
 		"taken down or expires; `forge env status <env> --claimable` says which.\n"+
-		"  fix: if it was claimed, sign in as the account that claimed it (`forge login`) and deploy without --claimable. "+
-		"If it is still live, the refusal is a forge defect: report it with `forge report-bug`", reference)
+		"  fix: if it was claimed, sign in as the account that claimed it (`forge cloud login`) and deploy without --claimable. "+
+		"If it is still live, the refusal is a forge defect: report it with `forge agent report-bug`", reference)
 }

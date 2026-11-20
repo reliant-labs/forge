@@ -7,7 +7,7 @@ type ScopeDeclarer interface {
 }
 
 // DeclareCloudScopes tells c the scope each procedure the cloud backend calls
-// needs of a machine credential, so a narrow `forge login` or helper token is
+// needs of a machine credential, so a narrow `forge cloud login` or helper token is
 // elevated for it before the first read instead of after a refusal. Every
 // read needs obs:read; changing an issue needs obs:triage, which obs:read does
 // not imply. The deploy procedures the backend also calls (environments,

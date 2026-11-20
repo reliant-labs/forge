@@ -70,7 +70,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
             PUBLIC FRONTEND (--auth-mode none): no route guard. Every page
             renders for every visitor. To gate it later, declare users and
             wrap this in the RouteGuard from @/lib/auth/route-guard — see
-            `forge skill load auth/frontend`.
+            `forge agent skill load auth/frontend`.
           */}
           <RuntimeLayer>{children}</RuntimeLayer>
 {{- else}}

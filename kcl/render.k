@@ -220,7 +220,7 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
 #      head of the run;
 #   2. its context follows k3d's own `k3d-<name>` convention — the
 #      `deploy/k3d.yaml` path the scaffolded dev env uses, where the cluster
-#      is created by `forge cluster up` and so is never a Bundle.clusters
+#      is created by `forge dev cluster up` and so is never a Bundle.clusters
 #      entry. kcl/lib/gateway.k's _is_local_cluster already treats this
 #      prefix as the local-cluster signal; using a second, stricter rule
 #      here would refuse the env forge itself scaffolds.
@@ -393,7 +393,7 @@ _bucket_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
         "${where}: forge.BucketRef '${v.name}' is on forge.OnHosted, whose credential only exists in the control plane's namespace, so a workload on the ${rt.type} runtime cannot read it. Run the referrer on forge.OnHosted {}, or bind the bucket to forge.BucketOnS3 in this env"
     _val = v if _b.runtime.type == "hosted" else (_bucket_minio_values(_b, _bucket_minio_endpoint(_b, v.name, where, rt, bundle)) if _b.runtime.type == "minio" else _bucket_s3_values(_b))[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
-        "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge secret set --env <env> <NAME>`)"
+        "${where}: forge.BucketRef '${v.name}' ${v.key} is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} on the bucket's forge.BucketOnS3 (the env's secret store: `forge env secret set --env <env> <NAME>`)"
     _val
 }
 
@@ -433,7 +433,7 @@ _llm_resolve = lambda name: str, v: any, where: str, rt: any, bundle: Bundle -> 
         "${where}: forge.LLMEndpoint ${_plaintext} is plaintext http://, and a hosted workload sends the endpoint's key in every request, so anyone on the path could read it. Point the endpoint at an https:// URL, or use forge.OnHosted {} for Reliant's gateway"
     _val = "" if _hosted_llm else _llm_endpoint_values(_l.runtime)[v.key]
     assert not (rt.type == "hosted" and typeof(_val) == "SecretRef"), \
-        "${where}: forge.LLMEndpoint.api_key is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} (the env's secret store: `forge secret set --env <env> <NAME>`), or forge.OnHosted {} for Reliant's gateway"
+        "${where}: forge.LLMEndpoint.api_key is a forge.SecretRef, a Kubernetes Secret a hosted workload cannot read. Use forge.ManagedSecret {name = ...} (the env's secret store: `forge env secret set --env <env> <NAME>`), or forge.OnHosted {} for Reliant's gateway"
     _val
 }
 
@@ -787,7 +787,7 @@ _cps_unbound = lambda workloads: [any], o: any, declared: [ControlPlaneSecret], 
 _cps_unbound_msg = lambda workloads: [any], o: any, declared: [ControlPlaneSecret], cluster_target: any, connected_clusters: {str:str} -> str {
     _bad = _cps_unbound(workloads, o, declared, cluster_target, connected_clusters)
     _ctxs = sorted({s.cluster.cluster: 0 for s in _bad})
-    "Bundle.control_plane_secrets ${[s.name for s in _bad]} target cluster ${_ctxs}, which names no connected cluster. The control plane can only write a Secret into a cluster it holds a credential for, so there is nothing to deliver it with. Register the cluster once with `forge cluster connect <name> --context ${_ctxs[0] if len(_ctxs) > 0 else '<context>'} --env ${option('env') or '<env>'}`, then name it on the target (`forge.ClusterTarget {connected_cluster = \"<name>\"}`) or at cluster level (`connected_clusters = {\"${_ctxs[0] if len(_ctxs) > 0 else '<context>'}\": \"<name>\"}` on the Bundle). A k3d cluster is not exempt: delivery needs the control plane to reach the cluster"
+    "Bundle.control_plane_secrets ${[s.name for s in _bad]} target cluster ${_ctxs}, which names no connected cluster. The control plane can only write a Secret into a cluster it holds a credential for, so there is nothing to deliver it with. Register the cluster once with `forge cloud cluster connect <name> --context ${_ctxs[0] if len(_ctxs) > 0 else '<context>'} --env ${option('env') or '<env>'}`, then name it on the target (`forge.ClusterTarget {connected_cluster = \"<name>\"}`) or at cluster level (`connected_clusters = {\"${_ctxs[0] if len(_ctxs) > 0 else '<context>'}\": \"<name>\"}` on the Bundle). A k3d cluster is not exempt: delivery needs the control plane to reach the cluster"
 }
 
 _cps_duplicates = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [str] {
@@ -1697,7 +1697,7 @@ _check_config_secrets = lambda workloads: [any] -> bool {
         + "config_secrets only SELECTS which sensitive fields forge's generated config projection puts in env, " \
         + "so without one the process starts without the value and falls back to whatever default it has. " \
         + "Deliver each in the workload's env from the env's secret store, e.g. " \
-        + "`env.JWT_SECRET = forge.ManagedSecret {name = \"JWT_SECRET\"}` (set it with `forge secret set --env <env> JWT_SECRET`), " \
+        + "`env.JWT_SECRET = forge.ManagedSecret {name = \"JWT_SECRET\"}` (set it with `forge env secret set --env <env> JWT_SECRET`), " \
         + "or, in a forge Go project, project the env with `config_gen.<x>ConfigEnvMap(cfg, w.config_secrets) | w.env`; " \
         + "or drop the name from config_secrets if the workload does not read it."
     True
@@ -1796,7 +1796,7 @@ _set = lambda w: any, f: str -> bool {
 # Gateway/HTTPRoute serves `domains[0]` (kcl/lib/workload_url.k).
 _hosted_domain_violations = lambda w: any -> [str] {
     _d = [d for p in (w.ports or []) for d in (p.domains or [])]
-    ["domains ${_d}: a hosted custom hostname is a control-plane resource, not spec — it needs DNS at your registrar, ownership verification and a certificate, and it binds to ONE environment while this file renders to many. Create it once and bind it: `forge domain add ${_d[0]}`, then `forge domain bind ${_d[0]} --env <env> --target ${w.name}`. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)"] if _d else []
+    ["domains ${_d}: a hosted custom hostname is a control-plane resource, not spec — it needs DNS at your registrar, ownership verification and a certificate, and it binds to ONE environment while this file renders to many. Create it once and bind it: `forge cloud domain add ${_d[0]}`, then `forge cloud domain bind ${_d[0]} --env <env> --target ${w.name}`. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)"] if _d else []
 }
 
 _mask_violations = lambda w: any, rt: any -> [str] {
@@ -2655,7 +2655,7 @@ render = lambda bundle: Bundle -> any {
         "required_dns": [_render_dns_record(r) for r in bundle.required_dns]
         "external_secrets_operators": [_render_eso(e) for e in bundle.external_secrets_operators]
         # Where the values the store needs to start live (forge.GCPSecretManager
-        # or forge.OutOfBand). A declaration; `forge secret import --to-bootstrap`
+        # or forge.OutOfBand). A declaration; `forge env secret import --to-bootstrap`
         # reads it for the project.
         if bundle.bootstrap_source:
             "bootstrap_source": _render_bootstrap_source(bundle.bootstrap_source)
@@ -3689,7 +3689,7 @@ _render_generated = lambda g: GeneratedSecret -> any {
 }
 
 # The ESO installs, as the shape records them. `connected_cluster` is the name
-# `forge cluster connect` registered, when the cluster has one.
+# `forge cloud cluster connect` registered, when the cluster has one.
 _render_bootstrap_source = lambda src: any -> any {
     {"type": src.type, if src.type == "gcpsm": "project": src.project}
 }
@@ -3774,7 +3774,7 @@ crd = crd_lib.crd
 #
 # Declared by a consumer that needs Flux for its OWN reasons — a control
 # plane's hub, or a self-hosted cluster that pulls its desired state — so that
-# `forge cluster up` sees a chart already providing Flux and installs no second
+# `forge dev cluster up` sees a chart already providing Flux and installs no second
 # one. Two Flux installs in one cluster collide on the same CRDs and the same
 # `flux-system`.
 flux_chart = flux_lib.flux_chart

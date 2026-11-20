@@ -51,7 +51,7 @@ var ErrStillRunning = errors.New("target still running")
 var dlvReadyTimeout = 30 * time.Second
 
 // rpcTimeout bounds the lifecycle RPCs (halt, detach) so a wedged dlv cannot
-// hang `forge debug stop` forever; the caller falls back to signals.
+// hang `forge dev debug stop` forever; the caller falls back to signals.
 var rpcTimeout = 15 * time.Second
 
 // LaunchOptions configures Launch.
@@ -172,7 +172,7 @@ func (d *DelveDebugger) Attach(ctx context.Context, opts AttachOptions) error {
 }
 
 // dlvServerArgs is the argv (after `dlv`) of a headless, multi-client API v2
-// server on addr. Multi-client is what lets each `forge debug` invocation
+// server on addr. Multi-client is what lets each `forge dev debug` invocation
 // connect, act and leave without ending the session. The target starts
 // halted; afterSpawn resumes it.
 func dlvServerArgs(verb, addr, target string) []string {
@@ -192,7 +192,7 @@ func listenPortOrFree(ctx context.Context, port int) (int, error) {
 
 // spawn starts dlv detached (own session, IO not tied to forge) so it
 // survives forge's exit, waits for it to listen on addr, and releases the
-// handle. Later `forge debug` invocations reconnect to it by address.
+// handle. Later `forge dev debug` invocations reconnect to it by address.
 func (d *DelveDebugger) spawn(ctx context.Context, dlvArgs, env []string, outputPath, addr string) error {
 	// Not CommandContext: the server must outlive this command's context.
 	cmd := exec.Command("dlv", dlvArgs...) // #nosec G204 -- argv is built by forge, not a shell
@@ -282,7 +282,7 @@ func ptraceScopeHint() string {
 		return ""
 	}
 	return fmt.Sprintf("kernel.yama.ptrace_scope is %s, so dlv may trace only processes it started. "+
-		"Allow the attach with `sudo sysctl -w kernel.yama.ptrace_scope=0`, or debug a build forge starts itself (`forge debug start <workload>`).", scope)
+		"Allow the attach with `sudo sysctl -w kernel.yama.ptrace_scope=0`, or debug a build forge starts itself (`forge dev debug start <workload>`).", scope)
 }
 
 // Connect connects to an already-running Delve instance at addr.
@@ -468,7 +468,7 @@ func (d *DelveDebugger) Continue() (*StopState, error) { return d.ContinueFor(0)
 
 // stopSettle is how long ContinueFor waits after a stop with no breakpoint
 // before deciding the target really stopped: another client's halt-act-resume
-// (a `forge debug break` against a running target) halts it only for the
+// (a `forge dev debug break` against a running target) halts it only for the
 // length of one RPC. A var so tests can shrink it.
 var stopSettle = 300 * time.Millisecond
 
@@ -724,7 +724,7 @@ func (d *DelveDebugger) Stacktrace(depth int) ([]StackFrame, error) {
 func (d *DelveDebugger) Goroutines() ([]GoroutineInfo, error) {
 	// ListGoroutines walks runtime.allgs in target memory, which is only
 	// readable when the target is HALTED. Against a running target (the normal
-	// state right after `forge debug start --attach`, before any breakpoint is
+	// state right after `forge dev debug start --attach`, before any breakpoint is
 	// hit) the call either blocks forever or fails with Delve's
 	// "could not find goroutine array" — the goroutine cache hasn't been
 	// primed because the process never stopped. Halt first, exactly as dlv's
@@ -830,7 +830,7 @@ func (d *DelveDebugger) Disconnect() {
 }
 
 // haltIfRunning bounds every RPC it makes, the state read included: a dlv
-// that accepts connections but never answers must not hang `forge debug
+// that accepts connections but never answers must not hang `forge dev debug
 // stop` short of its signal fallback.
 func (d *DelveDebugger) haltIfRunning() error {
 	st, err := d.client.stateNonBlockingTimeout(rpcTimeout)

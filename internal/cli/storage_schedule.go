@@ -56,7 +56,7 @@ func storageScheduleInstalled() bool {
 
 func installStorageSchedule(ctx context.Context, out io.Writer, path string, p storage.Policy) error {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-		return fmt.Errorf("on %s schedule 'forge storage daemon --policy %s' with your service manager", runtime.GOOS, path)
+		return fmt.Errorf("on %s schedule 'forge machine storage daemon --policy %s' with your service manager", runtime.GOOS, path)
 	}
 	r := storage.Runner{Policy: p}
 	if err := r.Local(ctx); err != nil {
@@ -120,7 +120,7 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 	// overlap, and it never touches the registry.
 	hourly := []string{executable}
 	hourly = append(hourly, tokens[1:]...)
-	hourly = append(hourly, "storage", "auto-gc", "--policy", path)
+	hourly = append(hourly, "machine", "storage", "auto-gc", "--policy", path)
 	switch runtime.GOOS {
 	case "darwin":
 		err = installLaunchAgent(ctx, args, home, dailyLaunchdSchedule)
@@ -151,7 +151,7 @@ func installStorageSchedule(ctx context.Context, out io.Writer, path string, p s
 // someone deciding that an idle-looking worktree is abandoned.
 func dailyStorageArgs(executable string, prefix []string, policyPath string) []string {
 	args := append([]string{executable}, prefix...)
-	return append(args, "storage", "gc", "--policy", policyPath, "--apply", "--scheduled")
+	return append(args, "machine", "storage", "gc", "--policy", policyPath, "--apply", "--scheduled")
 }
 
 // schedule is one installed job: launchd label / systemd unit stem plus when it fires.

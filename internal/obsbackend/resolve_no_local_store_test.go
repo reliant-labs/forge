@@ -28,7 +28,7 @@ func TestResolveContainerFreeLocalEnvHasNoStore(t *testing.T) {
 	for _, want := range []string{
 		"telemetry for dev is local (dev_telemetry=auto (default): not signed in to Reliant)",
 		"this env has no local store",
-		"forge login",
+		"forge cloud login",
 		"forge env up dev",
 		"clickstack",
 		"observability.local_port",

@@ -340,7 +340,7 @@ func TestPlan_OldScaffoldShape(t *testing.T) {
 	testkit.Slow(t, typeChecks)
 	root, dir := writePkg(t, map[string]string{
 		"contract.go": `// yours: scaffolded once, never touched again — forge will not overwrite this file
-// Package contract; canonical pattern lives in ` + "`forge skill load contracts`" + `.
+// Package contract; canonical pattern lives in ` + "`forge agent skill load contracts`" + `.
 package billing
 
 import "context"
@@ -359,7 +359,7 @@ type Service interface {
 //forge:outbound-io: calls the payment provider
 `,
 		"service.go": `// yours: scaffolded once, never touched again — forge will not overwrite this file
-// Service implementation; canonical pattern in ` + "`forge skill load service-layer`" + `.
+// Service implementation; canonical pattern in ` + "`forge agent skill load service-layer`" + `.
 package billing
 
 import "context"
@@ -381,7 +381,7 @@ func (s *service) Run(ctx context.Context) error { return nil }
 		t.Errorf("no dependency interface moved, so no deps.go")
 	}
 	s := read(t, filepath.Join(dir, "service.go"))
-	want := "// yours: scaffolded once, never touched again — forge will not overwrite this file\n// Service implementation; canonical pattern in `forge skill load service-layer`.\npackage billing\n"
+	want := "// yours: scaffolded once, never touched again — forge will not overwrite this file\n// Service implementation; canonical pattern in `forge agent skill load service-layer`.\npackage billing\n"
 	if !strings.HasPrefix(s, want) {
 		t.Errorf("service.go header changed:\n%s", s)
 	}

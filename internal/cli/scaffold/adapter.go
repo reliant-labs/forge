@@ -74,7 +74,7 @@ config edits it would make and writes nothing.
 This is equivalent to 'forge scaffold package --type adapter <name>'; that
 form stays wired for existing scripts. Use whichever is shorter for you.
 
-Skill: forge skill load adapter
+Skill: forge agent skill load adapter
 
 Example:
   forge scaffold adapter stripe --base-url

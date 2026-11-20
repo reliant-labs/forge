@@ -1307,7 +1307,7 @@ const seedVocabTemplate = `# db/seeds/vocab.yaml — yours: what your columns ME
 # fixtures. The schema gives types and constraints, never meaning, so an undescribed column seeds
 # ` + "`sample_<column>_<row>`" + `. Values are validated against the schema; PK/FK columns are never
 # overridable. After editing, run ` + "`forge generate`" + ` (mock fixtures cache this file).
-# Depth: ` + "`forge skill load db/seeding`" + `.
+# Depth: ` + "`forge agent skill load db/seeding`" + `.
 #
 # Schema (uncomment and adapt):
 #

@@ -198,7 +198,7 @@ spec:
 
 // TestSecretDeclarations_IncludeRenderedSecretStoreKeys: a `from = "file"`
 // key of a Bundle-level rendered Secret is a declared store key, so
-// `forge secret ensure` lists it when it has no value and `forge secret
+// `forge env secret ensure` lists it when it has no value and `forge env secret
 // list` attributes it to its Secret rather than calling it inert.
 func TestSecretDeclarations_IncludeRenderedSecretStoreKeys(t *testing.T) {
 	e := openbaoDevEntities()

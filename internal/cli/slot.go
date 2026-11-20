@@ -20,7 +20,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
-// newSlotCmd builds `forge slot`: the host-wide heavy-job semaphore
+// newSlotCmd builds `forge machine slot`: the host-wide heavy-job semaphore
 // (pkg/hostslot) as a command, so a Taskfile line or a shell queues its heavy
 // work behind the same slots `forge generate`, `forge lint` and `forge ci
 // gate` take.
@@ -40,7 +40,7 @@ func newSlotCmd() *cobra.Command {
 			"waiters go before bulk ones, and the top R slots are reserved for them (bulk holders never\n" +
 			"lock those), so a one-minute command never waits behind hour-long jobs. R defaults to\n" +
 			"max(1, N/4) (none when N is 1); FORGE_HEAVY_EXPRESS_SLOTS=<r> overrides it, at most N-1.\n" +
-			"FORGE_SLOT_LANE=express (or `forge slot run --lane express`) picks the express lane.\n\n" +
+			"FORGE_SLOT_LANE=express (or `forge machine slot run --lane express`) picks the express lane.\n\n" +
 			"`forge generate`, `forge lint` and the heavy checks of `forge ci gate` take a slot on\n" +
 			"their own. Anything running inside a slot passes it to its children (FORGE_SLOT_HELD),\n" +
 			"so a nested heavy command never waits on its own parent.",
@@ -61,16 +61,16 @@ func newSlotRunCmd() *cobra.Command {
 		Long: "Runs <command> once a slot of --class is free, holding the slot until the command\n" +
 			"exits, and exits with the command's status. While it waits it prints who holds the\n" +
 			"slots, and repeats that every 30s. Ctrl-C while waiting gives up (exit 130).\n\n" +
-			"Already inside a slot of the class — a parent ran under `forge slot run`, or a gate\n" +
+			"Already inside a slot of the class — a parent ran under `forge machine slot run`, or a gate\n" +
 			"check — it runs the command at once: a child never queues behind its own parent.\n\n" +
 			"--lane express is for a command bounded to minutes (the tests or lint of named\n" +
 			"packages): it waits apart from bulk work, ahead of it, and may use the slots reserved\n" +
 			"for express. Nothing enforces the bound; long work in the express lane takes slots\n" +
 			"from bulk jobs that queued first. The default lane is FORGE_SLOT_LANE, else bulk.",
-		Example: "  forge slot run -- go test -race ./...\n" +
-			"  forge slot run --class heavy -- npm run build\n" +
-			"  forge slot run --class heavy --lane express -- go test -short ./internal/billing/\n" +
-			"  FORGE_HEAVY_SLOTS=2 forge slot run -- task test",
+		Example: "  forge machine slot run -- go test -race ./...\n" +
+			"  forge machine slot run --class heavy -- npm run build\n" +
+			"  forge machine slot run --class heavy --lane express -- go test -short ./internal/billing/\n" +
+			"  FORGE_HEAVY_SLOTS=2 forge machine slot run -- task test",
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -85,7 +85,7 @@ func newSlotRunCmd() *cobra.Command {
 	return cmd
 }
 
-// runInSlot is `forge slot run`. The command runs as a child, not via exec
+// runInSlot is `forge machine slot run`. The command runs as a child, not via exec
 // into it: the slot's lock is close-on-exec, so it is held by THIS process,
 // and a background process the command leaves behind cannot keep the slot
 // after the command itself has finished.

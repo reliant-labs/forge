@@ -494,7 +494,7 @@ func TestClaimableDeploy_ThrottleExits4WithTheRetryBlockAndNeverRetries(t *testi
 		"(platform-wide limit). Nothing was created.",
 		"retry after  14m  (at 2026-10-26T14:16:00Z)",
 		"env deploy hosted --claimable",
-		"forge login, then",
+		"forge cloud login, then",
 		"(exit 4: throttled, not a failure of your project)",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -598,7 +598,7 @@ func TestClaimableDeploy_ClaimedDeployExits4(t *testing.T) {
 	if err == nil || exitCodeForError(err) != exitRefused {
 		t.Fatalf("a claimed deploy must exit 4; err=%v\n%s", err, out)
 	}
-	if !strings.Contains(err.Error(), "this deploy was claimed") || !strings.Contains(err.Error(), "run forge login and deploy without --claimable") {
+	if !strings.Contains(err.Error(), "this deploy was claimed") || !strings.Contains(err.Error(), "run forge cloud login and deploy without --claimable") {
 		t.Errorf("claimed text:\n%s", err)
 	}
 	if doc := decodeClaimDoc(t, out); doc["error_reason"] != "claimable_claimed" || doc["exit_code"] != float64(4) {
@@ -667,7 +667,7 @@ func TestClaimableIneligibility(t *testing.T) {
 		}
 	}
 	err := claimableIneligibleError("prod", deploy.ClaimableLimitsFallback(), []string{"worker \"w\" (only one service may run)"})
-	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "deploy it to your own account instead: forge login") {
+	if exitCodeForError(err) != exitRefused || !strings.Contains(err.Error(), "deploy it to your own account instead: forge cloud login") {
 		t.Errorf("ineligible error: code=%d %s", exitCodeForError(err), err)
 	}
 }
@@ -814,7 +814,7 @@ func TestClaimableUnavailableError_NamesEachCause(t *testing.T) {
 		"disabled by operator:",
 		"unavailable dependency (content_scan_web_risk):",
 		"not supported yet:",
-		"alternative: deploy to your own account instead: forge login",
+		"alternative: deploy to your own account instead: forge cloud login",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q:\n%s", want, err)

@@ -65,6 +65,18 @@ func TestV190Migration_Detection(t *testing.T) {
 		"analytics: full":    {[]file{{"src/lib/monitoring.ts", "initBrowserTelemetry({ analytics: \"full\" });\n"}}, false},
 		// Section 9: ledger formats.
 		"a .forge/scaffolded.json ledger": {[]file{{".forge/scaffolded.json", "{}\n"}}, true},
+		// Section 10: old command spellings.
+		"forge skill load in a Taskfile":     {[]file{{"Taskfile.yml", "  docs:\n    cmds:\n      - forge skill load forge\n"}}, true},
+		"reliant forge slot run in a script": {[]file{{"scripts/test.sh", "exec reliant forge slot run -- go test ./...\n"}}, true},
+		"forge secret set in a workflow":     {[]file{{".github/workflows/ci.yml", "      - run: forge secret set --env prod KEY\n"}}, true},
+		"forge cluster up in a Makefile":     {[]file{{"Makefile", "up:\n\tforge cluster up\n"}}, true},
+		"forge doctor at a line end":         {[]file{{"scripts/check.sh", "forge doctor\n"}}, true},
+		".mcp.json on the old mcp args":      {[]file{{".mcp.json", `{"mcpServers": {"forge": {"command": "forge", "args": ["mcp"]}}}` + "\n"}}, true},
+		".mcp.json under reliant, old args":  {[]file{{".mcp.json", `{"mcpServers": {"forge": {"command": "reliant", "args": ["forge", "mcp"]}}}` + "\n"}}, true},
+		"the new spellings":                  {[]file{{"Taskfile.yml", "      - forge agent skill load forge\n      - reliant forge machine slot run -- go test\n      - forge env secret set --env prod KEY\n      - forge dev cluster up\n      - forge cloud cluster list --env prod\n      - forge project doctor\n"}}, false},
+		".mcp.json on the new mcp args":      {[]file{{".mcp.json", `{"mcpServers": {"forge": {"command": "reliant", "args": ["forge", "agent", "mcp"]}}}` + "\n"}}, false},
+		"prose that is not a command":        {[]file{{"scripts/notes.sh", "# the forge skills directory, and forge storage-gc.log\n"}}, false},
+		"an old spelling in Go code only":    {[]file{{"internal/x/x.go", "// see `forge skill load db`\n"}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

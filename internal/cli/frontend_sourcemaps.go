@@ -27,7 +27,7 @@ import (
 //	forge env build    OnHosted frontends: built and pushed as a release
 //	                   artifact; maps filed before the site is pushed, and the
 //	                   release cut records them as `<frontend>.sourcemaps`
-//	forge frontend sourcemaps push
+//	forge ui sourcemaps push
 //	                   a dist directory some other build produced (the Electron
 //	                   renderer, built by CI)
 //
@@ -74,7 +74,7 @@ func sourcemapPublisherFor(projectDir, env string, e *KCLEntities) deploytarget.
 
 // sourcemapPublisherForProject is sourcemapPublisherFor filing under the
 // registry subtree of project instead of this checkout's own (forge.yaml's
-// name, when project is empty): `forge frontend sourcemaps push --project`.
+// name, when project is empty): `forge ui sourcemaps push --project`.
 // The symbolicator looks maps up under the project of the env the bundle
 // reports into, which for a bundle another project serves (the Electron
 // renderer, built by the app repo but reporting into the platform's env) is
@@ -183,16 +183,7 @@ func harvestSourcemapsArtifacts(projectDir, env string, e *KCLEntities, out map[
 	return n
 }
 
-// ─── forge frontend sourcemaps push ──────────────────────────────────────────
-
-func newFrontendGroupCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "frontend",
-		Short: "Operate on built frontends",
-	}
-	cmd.AddCommand(newFrontendSourcemapsCmd())
-	return cmdutil.StrictGroup(cmd)
-}
+// ─── forge ui sourcemaps push ──────────────────────────────────────────
 
 func newFrontendSourcemapsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -250,9 +241,9 @@ extracted: a build that was meant to emit maps and did not is a failure here,
 not a no-op.
 
 Examples:
-  forge frontend sourcemaps push web/dist --frontend desktop --build-id 3f9c0e1a2b4d --env prod
-  forge frontend sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --dry-run
-  forge frontend sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --org "$ORG_ID"`,
+  forge ui sourcemaps push web/dist --frontend desktop --build-id 3f9c0e1a2b4d --env prod
+  forge ui sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --dry-run
+  forge ui sourcemaps push web/dist --frontend desktop --build-id "$VERSION" --env prod --org "$ORG_ID"`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -1,5 +1,5 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// Binary entry point; canonical pattern in `forge skill load binaries`.
+// Binary entry point; canonical pattern in `forge agent skill load binaries`.
 //
 // Thin standalone main for the {{.Name}} binary, in its OWN cmd/{{.Package}}/
 // tree (devspace idiom — each binary gets its own cmd/<bin>/). The primary
@@ -14,7 +14,7 @@
 // The wiring is intentionally thin: if your binary grows past ~50 LOC of glue
 // here, push it into internal/{{.Package}}/ and keep this file as the adapter.
 //
-// See the binaries skill (`forge skill load binaries`) for when to use
+// See the binaries skill (`forge agent skill load binaries`) for when to use
 // `forge scaffold binary` vs `forge scaffold worker` vs `forge scaffold service`.
 package main
 

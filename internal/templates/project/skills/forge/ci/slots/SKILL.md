@@ -1,6 +1,6 @@
 ---
 name: ci/slots
-description: Host-wide heavy slots — why heavy work (test lanes, builds, codegen, full lints, gate checks) queues on a shared machine, the express lane for commands bounded to minutes (FORGE_SLOT_LANE=express), `forge slot run` / `forge slot status`, FORGE_HEAVY_SLOTS / FORGE_HEAVY_EXPRESS_SLOTS / FORGE_SLOTS_DIR / FORGE_SLOT_HELD, which forge commands take a slot on their own, and how nesting avoids deadlock. Use when a command prints "waiting for a heavy slot", when sizing a shared machine, or when wrapping your own heavy task.
+description: Host-wide heavy slots — why heavy work (test lanes, builds, codegen, full lints, gate checks) queues on a shared machine, the express lane for commands bounded to minutes (FORGE_SLOT_LANE=express), `forge machine slot run` / `forge machine slot status`, FORGE_HEAVY_SLOTS / FORGE_HEAVY_EXPRESS_SLOTS / FORGE_SLOTS_DIR / FORGE_SLOT_HELD, which forge commands take a slot on their own, and how nesting avoids deadlock. Use when a command prints "waiting for a heavy slot", when sizing a shared machine, or when wrapping your own heavy task.
 ---
 
 # Host-wide heavy slots
@@ -39,12 +39,12 @@ reserves none; clamped to N−1 so bulk work always keeps a slot). The lanes
 divide N, they do not add to it.
 
 Pick the lane with `FORGE_SLOT_LANE=express` in the command's environment, or
-`forge slot run --class heavy --lane express -- <cmd>`. A forge that predates
+`forge machine slot run --class heavy --lane express -- <cmd>`. A forge that predates
 lanes ignores the variable. Express is a **declaration, not something forge
 measures**: nothing stops long work from running express, and it then takes
 slots from bulk jobs that queued first. Use it only for commands scoped to
 named packages; never for `./...`, `task test`, `task ci` or `forge generate`.
-`forge slot status` flags an express holder older than 15 minutes.
+`forge machine slot status` flags an express holder older than 15 minutes.
 
 ## Who takes a slot
 
@@ -63,8 +63,8 @@ wait behind someone's gate.
 
 | | |
 | --- | --- |
-| `forge slot run --class heavy -- <cmd>` | run `<cmd>` holding a slot, exit with its status. Ctrl-C while waiting gives up (130). `--lane express` for a command bounded to minutes |
-| `forge slot status [--json]` | the count, where it came from, how many are reserved for express, each holder's and waiter's lane, the queue (express first) |
+| `forge machine slot run --class heavy -- <cmd>` | run `<cmd>` holding a slot, exit with its status. Ctrl-C while waiting gives up (130). `--lane express` for a command bounded to minutes |
+| `forge machine slot status [--json]` | the count, where it came from, how many are reserved for express, each holder's and waiter's lane, the queue (express first) |
 | `FORGE_SLOT_LANE=express` | wait in the express lane (any other value, or none, is bulk) |
 | `FORGE_HEAVY_EXPRESS_SLOTS=<r>` | slots reserved for express. Default max(1, N/4), none when N is 1; at most N−1 |
 | `FORGE_HEAVY_SLOTS=<n>` | override the count. Default min(CPUs / 2, memory GiB / 8), read from the cgroup v2 limit when there is one (inside a VM sandbox or container that is the truth, not nproc / MemTotal), at least 1 |
@@ -72,7 +72,7 @@ wait behind someone's gate.
 | `FORGE_SLOTS_DIR` | relocate the slot files (default: the user cache dir, so one user's processes share them; point every user of a multi-user host at one mode-1777 directory to share across users) |
 
 Spell `--class heavy` in scripts and Taskfiles: a forge that predates the verb
-rejects the flag, where a bare `forge slot run -- <cmd>` could be read as a
+rejects the flag, where a bare `forge machine slot run -- <cmd>` could be read as a
 request for help and exit 0 without running `<cmd>`.
 
 ## Nesting never deadlocks
@@ -85,11 +85,11 @@ mark a process as inside a slot:
 - `FORGE_SLOT_HELD` in its environment — the holder passes it to its children.
   It names the slot and a nonce; a token whose slot was since released or
   reassigned is ignored, so a copied or stale value grants nothing.
-- an ANCESTOR holding a slot as a wrapper (`forge slot run`, the gate), read
+- an ANCESTOR holding a slot as a wrapper (`forge machine slot run`, the gate), read
   from the kernel's parent links — this covers a child whose environment was
   scrubbed on the way down.
 
-So never wrap `forge ci gate` (or `task ci`) in `forge slot run`: every check
+So never wrap `forge ci gate` (or `task ci`) in `forge machine slot run`: every check
 inside it would count as inside that one slot and skip the queue.
 
 ## Using it from Go

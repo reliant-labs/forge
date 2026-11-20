@@ -199,7 +199,7 @@ func storeExpectations(e *KCLEntities, targets []string, owner string) []cluster
 	return out
 }
 
-// storePresence answers StoreProbe.Presence through the same seam `forge secret
+// storePresence answers StoreProbe.Presence through the same seam `forge env secret
 // list` uses, so a name is "present" by exactly the rule the CLI reports.
 func storePresence(envName string, e *KCLEntities) func(ctx context.Context, kctx string, read cluster.StoreRead) (map[string]bool, error) {
 	return func(ctx context.Context, kctx string, read cluster.StoreRead) (map[string]bool, error) {
@@ -207,7 +207,7 @@ func storePresence(envName string, e *KCLEntities) func(ctx context.Context, kct
 		src, err := openStoreSource(ctx, envName, e, ref, storeOptions{KubeContext: kctx}, false)
 		if errors.Is(err, errHostedEnvNotFound) {
 			// An env the control plane has not seen holds no secrets: every name
-			// is missing, the same answer `forge secret list` gives.
+			// is missing, the same answer `forge env secret list` gives.
 			return map[string]bool{}, nil
 		}
 		if err != nil {
@@ -231,7 +231,7 @@ func storeOwner(project, env string) string {
 }
 
 // liveStoreProbe is the probe a real deploy uses: kubectl for the cluster, and
-// the store clients `forge secret` uses for the names. nil when the env has no
+// the store clients `forge env secret` uses for the names. nil when the env has no
 // store-backed Secret and runs no OpenBao, so every other deploy is
 // byte-identical. An env that declares forge.OpenBao is probed even before any
 // Secret reads from it: that is the deploy that may be ADOPTING a live store,

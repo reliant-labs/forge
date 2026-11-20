@@ -3,7 +3,7 @@
 
 This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands. It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.
 
-This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge skill load <name>` away, named where you need it.
+This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge agent skill load <name>` away, named where you need it.
 
 ## Engineering disposition
 
@@ -18,7 +18,7 @@ An app forge did not write — a server in any language, with its own Dockerfile
 - **Never move existing code into forge's layout** — `internal/handlers/`, `proto/`, `cmd/`, `db/migrations/` — and never rename, restructure or "forge-ify" it, unless the user asks.
 - forge's Go-service rules — handlers, proto as the API, the generated ORM, `forge generate` — describe projects forge built, not this one. Do not add a `go.mod`, a `proto/` or a `Taskfile.yml` to "make forge work": it already does.
 - Keep the app's existing deploy YAML, Helm charts, compose files and CI as they are. Translating them into KCL is the user's decision, never a cleanup; forge can deploy hand-written manifests and charts where they stand (`deploy/byo-yaml`).
-- **The next pieces are a menu, not a migration.** `forge skill load adopt` lists what forge can take on next — deploys, environments, releases, secrets, migrations, monitoring — each on its own, in any order, with what it takes. Offer one when it would help; start it only when the user asks.
+- **The next pieces are a menu, not a migration.** `forge agent skill load adopt` lists what forge can take on next — deploys, environments, releases, secrets, migrations, monitoring — each on its own, in any order, with what it takes. Offer one when it would help; start it only when the user asks.
 
 ```
 <the app>, as it was               ← yours, in its own language; forge never rewrites it
@@ -30,9 +30,9 @@ deploy/kcl/<env>/main.k            ← where it runs, one per env: dev, prod, st
 
 ## Ask forge before guessing
 
-- `forge skill list` is the catalog, `forge skill load <name>` prints one (`adopt` first), and `forge skill search <word>` finds one. Skills come from the binary and are never written to disk.
+- `forge agent skill list` is the catalog, `forge agent skill load <name>` prints one (`adopt` first), and `forge agent skill search <word>` finds one. Skills come from the binary and are never written to disk.
 - `forge project capabilities` lists every verb forge has: check it before concluding forge cannot do something.
-- Debugging: `forge skill load debug` names the evidence forge keeps; every process `forge env up` runs is teed to `.forge/logs/<env>/<name>.log`, so grep there before guessing.
+- Debugging: `forge agent skill load debug` names the evidence forge keeps; every process `forge env up` runs is teed to `.forge/logs/<env>/<name>.log`, so grep there before guessing.
 
 ## Environments and deploys
 
@@ -50,7 +50,7 @@ The dev command is the `command` in `deploy/kcl/dev/main.k`: replace it with you
 
 A hosted deploy needs billing on the Reliant organization; until it is set up `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry.
 
-- The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `forge secret set --env <env> KEY` (stdin). forge never sees a secret's value.
+- The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `forge env secret set --env <env> KEY` (stdin). forge never sees a secret's value.
 - A managed database (if declared) reaches the app as `DATABASE_URL` through `forge.DatabaseRef`.
 - `forge obs logs <env>` and `forge obs workloads <env>` (restarts, crash loops, failed jobs) work for any app. Request rates, error rates and traces exist only if the app exports OpenTelemetry (OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`, which hosting sets on every workload): until it does, `forge obs check` is INCONCLUSIVE with `reason_code: no_request_telemetry` — not proven good — while restarts, alerts and issues still count. Load `observability/query` for the details.
 
@@ -76,7 +76,7 @@ A run expected to take more than ~2 minutes goes in the background (`run_in_back
 
 If forge emits something wrong — bad codegen, a lint false positive, a scaffold quirk, a missing capability — fix it in forge when you can; never paper over it or hand-edit generated output, which the next `forge generate` overwrites. forge is semver at major 1: a fix keeps the old flag, field or default working beside the new one, marked deprecated. When you cannot fix it here, report it and carry on:
 
-    forge report-bug --severity high --title "<one line naming the defect>" \
+    forge agent report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
 
 Only for defects in forge itself (a command, codegen, lint, skill or doc), not this project's code or tests. Never put credentials or file contents in a report; `--dry-run` shows exactly what would be sent.

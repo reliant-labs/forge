@@ -1,6 +1,6 @@
-// Package cli — `forge api` command surface.
+// Package cli — `forge dev curl`.
 //
-// `forge api curl <service.method>` prints a copy-pasteable curl invocation
+// `forge dev curl <service.method>` prints a copy-pasteable curl invocation
 // for a Connect RPC endpoint. Connect handlers already speak plain HTTP/1.1
 // POST with application/json — no gRPC tooling needed — but the URL shape
 // and Content-Type rules are undocumented in most projects. This command
@@ -24,31 +24,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// newAPICmd is the parent for `forge api ...` verbs. Today the only verb is
-// `curl`; future verbs (e.g. `forge api list`, `forge api schema`) hang off
-// the same parent so the namespace stays cohesive.
-func newAPICmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "api",
-		Short: "Inspect and exercise Connect RPC endpoints over plain HTTP+JSON",
-		// What an agent types looking for a way to call the API as a user:
-		// `forge auth` and friends answer "Did you mean this? api".
-		SuggestFor: []string{"auth", "call", "rpc", "request"},
-		Long: `Connect handlers accept plain HTTP/1.1 POST requests with
-Content-Type: application/json — no gRPC tooling required.
-
-Sub-commands surface that capability for ad-hoc debugging from the shell.`,
-	}
-	cmd.AddCommand(newAPICurlCmd())
-	return cmdutil.StrictGroup(cmd)
-}
-
-// newAPICurlCmd implements `forge api curl <service.method>`. The command is
+// newAPICurlCmd implements `forge dev curl <service.method>`. The command is
 // read-only and side-effect free: it never executes the curl, only prints it.
 func newAPICurlCmd() *cobra.Command {
 	var (
@@ -71,9 +51,9 @@ Arguments:
                      service of that name across all proto packages.
 
 Examples:
-  forge api curl users.v1.UserService.GetUser
-  forge api curl UserService.GetUser --port 9090
-  forge api curl users.v1.UserService.CreateUser --body '{"name":"alice"}'
+  forge dev curl users.v1.UserService.GetUser
+  forge dev curl UserService.GetUser --port 9090
+  forge dev curl users.v1.UserService.CreateUser --body '{"name":"alice"}'
 
 The command never executes — it only prints. Pipe to ` + "`sh`" + ` if you want to run it,
 or paste into a debugger / Postman / HTTPie session.`,
@@ -81,7 +61,7 @@ or paste into a debugger / Postman / HTTPie session.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectDir, err := findProjectRoot()
 			if err != nil || projectDir == "" {
-				return cliutil.UserErr("forge api curl",
+				return cliutil.UserErr("forge dev curl",
 					"could not find forge.yaml in current directory or any parent",
 					"",
 					"run from inside a forge project, or `cd` to one first")
@@ -127,13 +107,13 @@ type curlOptions struct {
 func buildCurlCommand(projectDir, target string, opts curlOptions) (string, error) {
 	desc, err := loadForgeDescriptor(projectDir)
 	if err != nil {
-		return "", cliutil.UserErr("forge api curl",
+		return "", cliutil.UserErr("forge dev curl",
 			fmt.Sprintf("could not read the forge descriptor: %v", err),
 			codegen.DescriptorDir+"/",
 			"run `forge generate` to produce the proto descriptor, then retry")
 	}
 	if desc == nil || len(desc.Services) == 0 {
-		return "", cliutil.UserErr("forge api curl",
+		return "", cliutil.UserErr("forge dev curl",
 			"no services found in the forge descriptor",
 			codegen.DescriptorDir+"/",
 			"run `forge generate` after declaring at least one service in proto/")
@@ -180,7 +160,7 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 		authHeader = fmt.Sprintf("\n  -H 'Authorization: Bearer %s' \\", opts.authToken)
 	case method.AuthRequired:
 		authHeader = "\n  -H \"Authorization: Bearer $TOKEN\" \\"
-		authNote = "\n# This RPC requires authentication (auth_required). Set $TOKEN first —\n# `forge skill load auth/dev-loop` covers minting one locally, or pass --auth-token."
+		authNote = "\n# This RPC requires authentication (auth_required). Set $TOKEN first —\n# `forge agent skill load auth/dev-loop` covers minting one locally, or pass --auth-token."
 	}
 
 	// Single-line-per-segment, copy-pasteable. Keep the body inline (the
@@ -220,10 +200,10 @@ func buildCurlCommand(projectDir, target string, opts curlOptions) (string, erro
 func resolveServiceMethod(services []codegen.ServiceDef, target string) (codegen.ServiceDef, codegen.Method, error) {
 	parts := strings.Split(target, ".")
 	if len(parts) < 2 {
-		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge api curl",
+		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge dev curl",
 			fmt.Sprintf("invalid target %q (need at least Service.Method)", target),
 			"",
-			"call as `forge api curl <pkg>.<Service>.<Method>` or `forge api curl <Service>.<Method>`")
+			"call as `forge dev curl <pkg>.<Service>.<Method>` or `forge dev curl <Service>.<Method>`")
 	}
 
 	methodName := parts[len(parts)-1]
@@ -243,7 +223,7 @@ func resolveServiceMethod(services []codegen.ServiceDef, target string) (codegen
 	}
 
 	if len(candidates) == 0 {
-		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge api curl",
+		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge dev curl",
 			fmt.Sprintf("no service %q found in proto descriptors", serviceName),
 			"",
 			fmt.Sprintf("available services: %s", availableServicesHint(services)))
@@ -257,10 +237,10 @@ func resolveServiceMethod(services []codegen.ServiceDef, target string) (codegen
 			qualified = append(qualified, s.Package+"."+s.Name)
 		}
 		sort.Strings(qualified)
-		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge api curl",
+		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge dev curl",
 			fmt.Sprintf("service name %q is ambiguous — declared in %d packages", serviceName, len(candidates)),
 			"",
-			fmt.Sprintf("qualify the package, e.g. `forge api curl %s.%s`", qualified[0], methodName))
+			fmt.Sprintf("qualify the package, e.g. `forge dev curl %s.%s`", qualified[0], methodName))
 	}
 
 	svc := candidates[0]
@@ -276,12 +256,12 @@ func resolveServiceMethod(services []codegen.ServiceDef, target string) (codegen
 	}
 	sort.Strings(available)
 	if len(available) == 0 {
-		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge api curl",
+		return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge dev curl",
 			fmt.Sprintf("method %q not found on %s.%s (service has no methods)", methodName, svc.Package, svc.Name),
 			"",
 			"declare an rpc in the .proto file and run `forge generate`")
 	}
-	return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge api curl",
+	return codegen.ServiceDef{}, codegen.Method{}, cliutil.UserErr("forge dev curl",
 		fmt.Sprintf("method %q not found on %s.%s", methodName, svc.Package, svc.Name),
 		"",
 		fmt.Sprintf("available methods: %s", strings.Join(available, ", ")))

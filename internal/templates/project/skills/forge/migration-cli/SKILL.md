@@ -56,7 +56,7 @@ For an admin / inspector CLI that hosts its own child subcommands (e.g. `<binary
 
 ## Pure-utility packages — three options
 
-For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge package new` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
+For packages like `naming`, `validate`, format helpers — pure functions on no state — `forge scaffold package` is overkill. The contract+mock generation has no test seam to mock when the package has no I/O, no time, no randomness, no external state.
 
 Three honest options:
 
@@ -135,7 +135,7 @@ $(go env GOPATH)/bin/<name>-next --help    # smoke
 - App code lives under `internal/`. `pkg/` is only for code with real external importers.
 - `contract.go` is optional for a trivial CLI; the config/logger/shutdown paved path is not.
 - Use `forge scaffold binary <name>` for second binaries (real owned Cobra subcommands; see `binaries`). The scaffolded command also hosts child subcommands via `<name>Cmd.AddCommand(...)`.
-- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge package new`.
+- For pure-utility packages, pick option (A), (B), or (C) explicitly. Don't blanket-apply `forge scaffold package`.
 - `pkg/` sub-module: workspace `use` OR `replace`, not both.
 
 ## When this skill is not enough

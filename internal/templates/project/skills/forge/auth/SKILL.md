@@ -34,7 +34,7 @@ A project with a frontend declares its users once, in `deploy/kcl/identity.k` (`
 
 Authentication is CODE, not a `forge.yaml` provider enum. Each service scaffolds one editable file, `internal/app/auth.go`, whose `SetupAuth` returns the `*auth.Authenticator` `cmd serve.go` mounts — a JWT validator wrapped so API keys can join it later (`auth/api-keys`). Picking a validator is a wiring choice; WHERE this deployment's issuer lives is per-environment DATA on the typed config (declared in `proto/<project>/config/v1/config.proto`, pinned in `deploy/kcl/<env>/config.k`). **`SetupAuth` reads no environment variable** — the app has one configuration channel.
 
-`SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
+`SetupAuth(cfg *config.Config)` is unaffected by per-binary config (`forge agent skill load binaries`, "Config"): `config.Config` is always a real type, whether it aliases a single project-global `AppConfig` or — in an all-binary-annotated project — the config message bound to the primary server binary. `SetupAuth` never needs to know which.
 
 ```go
 // internal/app/auth.go — YOURS (scaffolded once, never regenerated). Abridged.
@@ -145,7 +145,7 @@ Wired in every scaffold, disabled until you supply a key validator. A key arrive
 
 ## Dev mode
 
-Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge env up` brings up as a host process and converges (`identity` on the dev Bundle) for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge env up` reproduces it, credential included.
+Dev relaxes only NON-security ergonomics (permissive CORS, verbose errors) — **authentication is enforced in every mode**, and no environment variable turns it off. A local call to a protected RPC needs a real token: mint one against an HS256 `jwt_secret` in the env's secret store (`forge env secret set --env dev JWT_SECRET`), or use the dev IdP, which `forge env up` brings up as a host process and converges (`identity` on the dev Bundle) for any project that declares a frontend. It is Zitadel, and its instance is DECLARED in `idp-steps.yaml` — `forge env up` reproduces it, credential included.
 
 Load `auth/dev-loop` before debugging a local 401: it covers the traps that are not your wiring — the dev IdP answers to ONE hostname (`localhost`, which is why its dev loop is `forge env up`, not a containerized app), and an OIDC app registered with the default token type mints OPAQUE access tokens no JWKS can validate.
 

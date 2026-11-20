@@ -254,7 +254,7 @@ func TestScanProjectDir(t *testing.T) {
 	}
 }
 
-// Review of #1536: forge mcp serves every tool call for its own project, in
+// Review of #1536: forge agent mcp serves every tool call for its own project, in
 // process. Handed at start-up to the forge its starting directory pins, the
 // server was a delegate for good, and a delegate skips the pin check — so a
 // generate for a project pinned to another forge ran under the wrong one.
@@ -273,8 +273,8 @@ func TestMCP_EachRequestIsCheckedAgainstItsOwnProjectsPin(t *testing.T) {
 
 	// The server is never handed to A's forge.
 	h, installs := armDelegation(t)
-	if handed, _, err := handOffForTest(t, "mcp"); handed || err != nil || h.path != "" || len(*installs) != 0 {
-		t.Fatalf("forge mcp was handed off: handed %v, err %v, built %v", handed, err, *installs)
+	if handed, _, err := handOffForTest(t, "agent", "mcp"); handed || err != nil || h.path != "" || len(*installs) != 0 {
+		t.Fatalf("forge agent mcp was handed off: handed %v, err %v, built %v", handed, err, *installs)
 	}
 
 	// And a server that is a delegate anyway checks each request.

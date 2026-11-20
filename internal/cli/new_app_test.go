@@ -249,7 +249,7 @@ func TestAppNextStepsArePasteable(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := appNextSteps(det, false)
-	want := map[string]bool{"env render": false, "env up": false, "env deploy": false, "secret set": false, "obs check": false, "skill load": false, "project new": false}
+	want := map[string]bool{"env render": false, "env up": false, "env deploy": false, "env secret set": false, "obs check": false, "agent skill load": false, "project new": false}
 	for _, line := range lines {
 		for _, args := range pasteableInvocations(line, Name()) {
 			if path := resolvePasteable(t, args); path != "" {

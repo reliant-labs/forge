@@ -163,7 +163,7 @@ const (
 	// k3sPublicIssuer is the service-account issuer forge gives every k3d
 	// cluster it creates. Stock k3s signs with
 	// https://kubernetes.default.svc.cluster.local, a `.local` host the control
-	// plane refuses when `forge cluster connect` registers the issuer.
+	// plane refuses when `forge cloud cluster connect` registers the issuer.
 	k3sPublicIssuer = "https://kubernetes.default.svc"
 	// k3sLegacyIssuer is k3s's own default issuer. It stays accepted so tokens
 	// minted by components that still name it keep validating.
@@ -321,7 +321,7 @@ func ensureDeclaredCluster(ctx context.Context, c ClusterEntity, declared []Clus
 		// When this cluster hosts a Gateway — declared as a forge.HelmChart
 		// platform dep with `host_ports = True` — merge the generated
 		// deploy/k3d-ports.yaml listener host-port fragment into the config the
-		// SAME way the dev `forge cluster up` path does. The
+		// SAME way the dev `forge dev cluster up` path does. The
 		// Gateway's listeners (e.g. grpc :29190 for daemon dial-out) need host
 		// ports mapped through the k3d loadbalancer at CREATE time, or
 		// in-cluster→host→cluster traffic (host.k3d.internal:<port>) finds

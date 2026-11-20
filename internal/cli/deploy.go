@@ -5156,7 +5156,7 @@ func declaredContextExistsVerdict(envName, declared string, available []string) 
 	// not exist.
 	createIt := ""
 	if strings.HasPrefix(declared, "k3d-") {
-		createIt = fmt.Sprintf("  - create the local cluster: `forge cluster up` (it creates %q from deploy/k3d.yaml)\n", declared)
+		createIt = fmt.Sprintf("  - create the local cluster: `forge dev cluster up` (it creates %q from deploy/k3d.yaml)\n", declared)
 	}
 	return fmt.Errorf(
 		"env %q declares cluster %q but no such kubectl context exists.\n"+
@@ -5597,7 +5597,7 @@ func declaredSecretNamesList(list []secrets.DeclaredSecret) string {
 // declaredSecretEntities is every declared Secret the env renders itself —
 // Bundle.rendered_secrets plus a RenderedSecrets provider's list — for the
 // consumers that ask "what does this env declare?" rather than "where does
-// it land?": the preflight supply set and `forge secret list/ensure`.
+// it land?": the preflight supply set and `forge env secret list/ensure`.
 func declaredSecretEntities(entities *KCLEntities) []RenderedSecretEntity {
 	if entities == nil {
 		return nil

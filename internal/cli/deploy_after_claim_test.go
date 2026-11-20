@@ -30,7 +30,7 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 		"Its releases, logs and dashboards: https://forge.reliantlabs.io/forge/p/shop?env=prod (signed in)",
 		"The free plan includes one static site; a backend or database needs billing on their account.",
 		"revokes this machine's claimable credential",
-		Name() + " login, then " + Name() + " env deploy prod",
+		Name() + " cloud login, then " + Name() + " env deploy prod",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("claim block lacks %q:\n%s", want, text)
@@ -52,7 +52,7 @@ func TestClaimBlockSaysWhatTheClaimerGets(t *testing.T) {
 		URL:      "https://amber-quokka.reliantpreview.dev",
 		ClaimURL: "https://app.reliant.dev/claim#x", ExpiresAt: now.Add(72 * time.Hour), PurgeAfter: now.Add(240 * time.Hour),
 	}}, now, false)
-	for _, want := range []string{"Once claimed it is theirs", "free plan includes one static site", Name() + " login, then " + Name() + " env deploy prod"} {
+	for _, want := range []string{"Once claimed it is theirs", "free plan includes one static site", Name() + " cloud login, then " + Name() + " env deploy prod"} {
 		if !strings.Contains(doc.AgentInstructions, want) {
 			t.Errorf("agent_instructions lacks %q:\n%s", want, doc.AgentInstructions)
 		}

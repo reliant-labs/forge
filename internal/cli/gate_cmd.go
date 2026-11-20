@@ -1,6 +1,6 @@
 package cli
 
-// `forge gate record` / `forge gate list` — post-promote check evidence
+// `forge release gate record` / `forge release gate list` — post-promote check evidence
 // (control-plane docs/design/hosted-deploy-primitives.md §3.3).
 //
 // THE GAP THIS CLOSES. Gates could only ever attach AT promote time, but the
@@ -45,7 +45,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// newGateCmd is `forge gate`.
+// newGateCmd is `forge release gate`.
 func newGateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gate",
@@ -63,7 +63,7 @@ Two attachment points, because they answer different questions:
   forge env deploy … --gate lint.json     what had passed BEFORE the
                                           environment moved (frozen into
                                           the promotion entry)
-  forge gate record prod --from wait.json what was learned AFTER (appended
+  forge release gate record prod --from wait.json what was learned AFTER (appended
                                           to an append-only child record)
 
 "Was this known before the button was pressed?" is the first question
@@ -75,12 +75,12 @@ move production.`,
 	}
 	cmd.AddCommand(newGateRecordCmd())
 	cmd.AddCommand(newGateListCmd())
-	// Without this, cobra accepts `forge gate <typo>` and exits 0 — a
+	// Without this, cobra accepts `forge release gate <typo>` and exits 0 — a
 	// pipeline step that records nothing and reports success.
 	return cmdutil.StrictGroup(cmd)
 }
 
-// gateRecordOptions are the flags of `forge gate record`.
+// gateRecordOptions are the flags of `forge release gate record`.
 type gateRecordOptions struct {
 	// Which promotion. --promotion names one exactly; --release asserts
 	// which one is current; neither means "the env's current promotion".
@@ -157,18 +157,18 @@ func newGateRecordCmd() *cobra.Command {
 
 The gate comes from a document, or is stated inline:
 
-  forge gate record prod --from wait.json
-  forge gate record prod --from smoke.json
-  forge gate record prod --name qa-signoff --status passed --summary "checked by sean"
+  forge release gate record prod --from wait.json
+  forge release gate record prod --from smoke.json
+  forge release gate record prod --name qa-signoff --status passed --summary "checked by sean"
 
 --from reads a gate-shaped JSON document (what --gate-json writes) OR any
 forge --json document, deriving the check's name, verdict and summary from
 it. So every forge verb that can judge something is recordable with no glue
 script:
 
-  forge env status prod --wait --json  > wait.json   && forge gate record prod --from wait.json
-  forge env smoke prod --json > smoke.json  && forge gate record prod --from smoke.json
-  forge lint --gate-json lint.json          && forge gate record prod --from lint.json
+  forge env status prod --wait --json  > wait.json   && forge release gate record prod --from wait.json
+  forge env smoke prod --json > smoke.json  && forge release gate record prod --from smoke.json
+  forge lint --gate-json lint.json          && forge release gate record prod --from lint.json
 
 By default the gate attaches to the environment's CURRENT promotion. Name a
 specific one with --promotion, or assert which release you believe is current
@@ -205,7 +205,7 @@ step already failed the job.`,
 	return cmd
 }
 
-// gateRecordReport is `forge gate record --json`.
+// gateRecordReport is `forge release gate record --json`.
 type gateRecordReport struct {
 	jsonEnvelope
 	Env         string `json:"env"`
@@ -237,7 +237,7 @@ func runGateRecord(ctx context.Context, env string, opts gateRecordOptions, out 
 	if !report.Created {
 		verb = "already recorded"
 	}
-	fmt.Fprintf(out, "forge gate record %s\n", env)
+	fmt.Fprintf(out, "forge release gate record %s\n", env)
 	fmt.Fprintf(out, "  promotion %s%s\n", report.PromotionID, releaseSuffix(report.Release))
 	fmt.Fprintf(out, "  %s:\n", verb)
 	fmt.Fprint(out, renderGateTable([]release.Gate{*report.Gate}))
@@ -476,7 +476,7 @@ Defaults to the environment's current promotion.`,
 	return cmd
 }
 
-// gateListReport is `forge gate list --json`.
+// gateListReport is `forge release gate list --json`.
 type gateListReport struct {
 	jsonEnvelope
 	Env         string `json:"env"`
@@ -502,7 +502,7 @@ func runGateList(ctx context.Context, env string, opts gateListOptions, out io.W
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "forge gate list %s\n", env)
+	fmt.Fprintf(out, "forge release gate list %s\n", env)
 	fmt.Fprintf(out, "  promotion %s%s\n", report.PromotionID, releaseSuffix(report.Release))
 	fmt.Fprint(out, renderGateTable(report.Gates))
 	return nil

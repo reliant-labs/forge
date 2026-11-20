@@ -120,9 +120,9 @@ func TestCloudToken_PersonSessionRequiredPointsAtTheWebApp(t *testing.T) {
 			}
 			msg := err.Error()
 			for _, want := range []string{
-				"does not let a CLI login (`forge login`) " + action + " access tokens",
+				"does not let a CLI login (`forge cloud login`) " + action + " access tokens",
 				action + " tokens in the web app: https://forge.reliantlabs.io/settings/tokens (Settings → API tokens)",
-				"signing in again with `forge login` does not help",
+				"signing in again with `forge cloud login` does not help",
 				"server said: Managing access tokens",
 				"reason: person_session_required",
 			} {
@@ -161,7 +161,7 @@ func TestCloudToken_OtherRefusalsAreUnchanged(t *testing.T) {
 }
 
 // The scaffolded release workflow and the skills send a person to the web app
-// to mint the CI token, not to `forge cloud token create` under `forge login`,
+// to mint the CI token, not to `forge cloud token create` under `forge cloud login`,
 // which a control plane may refuse (control-plane#2636).
 func TestCITokenMintingTextPointsAtTheWebApp(t *testing.T) {
 	t.Parallel()

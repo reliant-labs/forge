@@ -33,10 +33,10 @@ package cli
 // plane as SELF_MANAGED (forge keeps its ledger, the team's pipeline deploys
 // it). Where the record goes:
 //
-//   - signed in (forge login, FORGE_CONTROL_PLANE_TOKEN, a credential
+//   - signed in (forge cloud login, FORGE_CONTROL_PLANE_TOKEN, a credential
 //     helper), and FORGE_LEDGER is not machine: Reliant cloud;
 //   - otherwise: this machine's ledger, with a note saying monitoring cannot
-//     see it until it is recorded signed in (`forge ledger import`).
+//     see it until it is recorded signed in (`forge release ledger import`).
 //
 // IDEMPOTENT. A CI retry of the same step re-cuts an identical release
 // (created=false) and re-promotes the env's current release (a no-op), so it
@@ -137,7 +137,7 @@ pairs to record the digests your pipeline shipped.
 Where it records: an env declared by deploy/kcl or an env document records
 only when every workload in it is bound to the external runtime, on the
 control plane it declares.
-Otherwise, signed in (forge login, or a CI token with deploy:write in
+Otherwise, signed in (forge cloud login, or a CI token with deploy:write in
 FORGE_CONTROL_PLANE_TOKEN, minted in the web app's Settings → API tokens) it records on Reliant cloud;
 not signed in, on this machine's ledger, which monitoring cannot see.
 
@@ -222,8 +222,8 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 		l, err := machineLedger(projectDir)
 		return recordLedger{ledger: l, note: fmt.Sprintf(
 			"note: not signed in to %s (%v), so this is recorded on this machine only and monitoring cannot see it. "+
-				"Sign in with `%s login`, or set %s to a token with deploy:write minted in the web app (%s), "+
-				"then re-run, or move this machine's records with `%s ledger import --from-file-ledger`.",
+				"Sign in with `%s cloud login`, or set %s to a token with deploy:write minted in the web app (%s), "+
+				"then re-run, or move this machine's records with `%s release ledger import --from-file-ledger`.",
 			ep.URL, cerr, Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL), Name())}, err
 	}
 	return recordLedger{

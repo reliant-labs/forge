@@ -175,7 +175,7 @@ func localAlertInput(env string, alertsPort int, decl []AlertReceiverEntity, rou
 		if d.Secret != "" {
 			v, ok := store[d.Secret]
 			if !ok || v == "" {
-				skipped = append(skipped, fmt.Sprintf("receiver %q: secret %s is not in the %s secret store (forge secret set --env %s %s)", d.Name, d.Secret, env, env, d.Secret))
+				skipped = append(skipped, fmt.Sprintf("receiver %q: secret %s is not in the %s secret store (forge env secret set --env %s %s)", d.Name, d.Secret, env, env, d.Secret))
 				continue
 			}
 			rc.SecretRef = org + "." + d.Name

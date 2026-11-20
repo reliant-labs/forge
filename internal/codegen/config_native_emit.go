@@ -511,7 +511,7 @@ func generateEnvSecretsBody(sensitive []ConfigField, projectName, envName string
 	b.WriteString("# A value only reaches a service that DECLARES it via `EnvVar.secret_ref` —\n")
 	b.WriteString("# which is why this is YAML and not a dotenv: the removed dotenv provider\n")
 	b.WriteString("# injected the whole file into every service. Set values with\n")
-	b.WriteString("# `forge secret set --env " + envName + " <KEY>` (value on stdin, never argv).\n")
+	b.WriteString("# `forge env secret set --env " + envName + " <KEY>` (value on stdin, never argv).\n")
 	b.WriteString("#\n")
 	b.WriteString("# Cloud environments do NOT read this: they declare\n")
 	b.WriteString("# `forge.ExternalSecrets {}` and the Secret is provisioned out of band.\n")
@@ -534,7 +534,7 @@ func generateEnvSecretsBody(sensitive []ConfigField, projectName, envName string
 	b.WriteString("# state -- a real password, an API token -- which is the case where\n")
 	b.WriteString("# nothing above it competes.\n\n")
 	// Every slot is scaffolded EMPTY — the store lists each declared
-	// sensitive ref by NAME so `forge secret ensure --env <env>` and a human
+	// sensitive ref by NAME so `forge env secret ensure --env <env>` and a human
 	// reading the file both see what wants a value; supplying it is the
 	// developer's job.
 	//

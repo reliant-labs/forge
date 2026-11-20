@@ -67,7 +67,7 @@ const domainPendingJSON = `{"domain":{"id":"dom_01","hostname":"hounders.club",
     {"type":"A","name":"hounders.club","value":"34.63.203.181"},
     {"type":"TXT","name":"_reliant-challenge.hounders.club","value":"tok-123"}]}}`
 
-// `forge domain add` prints the records to publish as a copyable table.
+// `forge cloud domain add` prints the records to publish as a copyable table.
 // THAT TABLE IS THE POINT: until the author pastes it into their registrar
 // nothing converges, and forge cannot do it for them.
 //
@@ -88,7 +88,7 @@ func TestRunDomainAdd_PrintsTheDNSToPublish(t *testing.T) {
 		"TYPE", "NAME", "VALUE",
 		"A", "hounders.club", "34.63.203.181",
 		"TXT", "_reliant-challenge.hounders.club", "tok-123",
-		"forge domain verify hounders.club",
+		"forge cloud domain verify hounders.club",
 		"serves nothing until you bind it",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -236,7 +236,7 @@ func TestRunDomainList_EmptyIsNotAnError(t *testing.T) {
 	if err := runDomainList(context.Background(), domainTestClient(t, f), false, &out); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(out.String(), "forge domain add") {
+	if !strings.Contains(out.String(), "forge cloud domain add") {
 		t.Errorf("the empty state should name the command that fixes it; got %q", out.String())
 	}
 }
@@ -386,8 +386,8 @@ func TestDomainBind_RefusesTargetAndRedirectTogether(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"both", []string{"domain", "bind", "hounders.club", "--env", "prod", "--target", "web", "--redirect-to", "x.club"}},
-		{"neither", []string{"domain", "bind", "hounders.club", "--env", "prod"}},
+		{"both", []string{"cloud", "domain", "bind", "hounders.club", "--env", "prod", "--target", "web", "--redirect-to", "x.club"}},
+		{"neither", []string{"cloud", "domain", "bind", "hounders.club", "--env", "prod"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newTestRootCmd(t)
@@ -462,7 +462,7 @@ func TestRunDomainRemove_SaysTheHostnameIsFreed(t *testing.T) {
 	}
 }
 
-// Every domain command authenticates the way `forge secret` and
+// Every domain command authenticates the way `forge env secret` and
 // `forge cloud` do, and addresses the real DomainService procedure paths.
 func TestDomainCommands_AuthenticateAndUseTheDomainServicePaths(t *testing.T) {
 	var gotAuth string
@@ -527,7 +527,7 @@ const domainMixedVerdictJSON = `{"domain":{"id":"dom_01","hostname":"hounders.cl
 // THE REGRESSION TEST. forge re-encodes the control plane's response into
 // its own local struct, so a field it does not declare is a field it drops —
 // silently, and from `--json` as well as the table. The verdicts were being
-// dropped exactly that way, which left `forge domain show` on a stuck domain
+// dropped exactly that way, which left `forge cloud domain show` on a stuck domain
 // saying only "not verified yet" while the control plane knew precisely
 // which record was wrong and why.
 //

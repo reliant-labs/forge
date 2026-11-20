@@ -21,10 +21,10 @@
 //     scaffolded default; see fileProvider for why it replaced the dotenv.
 //   - "dotenv": REMOVED. It injected the whole file into every host
 //     service, so values never had to be declared. NewProvider returns a
-//     hard error naming `forge secret migrate`.
+//     hard error naming `forge env secret migrate`.
 //   - "hosted": values live in the env's hosted control plane (write-only
 //     API) and are materialized in-cluster by it. forge never sees them;
-//     `forge secret set/list/unset` write/list through the control plane.
+//     `forge env secret set/list/unset` write/list through the control plane.
 //   - "external" (prod/staging): forge never sees values. k8s references
 //     pre-existing Secrets (External Secrets Operator / sealed); host &
 //     external runtimes obtain secrets via workload identity / ambient
@@ -83,7 +83,7 @@ type ProviderConfig struct {
 // file: loads the store now; a MISSING file is a non-fatal
 // file: loads the store now; a MISSING file is a non-fatal empty
 // provider (so validation, not load, reports the missing keys with the
-// `forge secret set` fix) — BUT an unreadable/invalid store is an error.
+// `forge env secret set` fix) — BUT an unreadable/invalid store is an error.
 func NewProvider(cfg *ProviderConfig) (Provider, error) {
 	if cfg == nil {
 		return noopProvider{}, nil
@@ -117,7 +117,7 @@ func NewProvider(cfg *ProviderConfig) (Provider, error) {
 		// later, somewhere less obvious.
 		return nil, fmt.Errorf(
 			"secret_provider 'dotenv' has been removed\n"+
-				"fix: forge secret migrate --env <env>   (converts %s to secrets/<env>.yaml)\n"+
+				"fix: forge env secret migrate --env <env>   (converts %s to secrets/<env>.yaml)\n"+
 				"     then declare `secret_provider = forge.FileSecrets {path = \"secrets/<env>.yaml\"}`",
 			cfg.Path)
 	default:
@@ -147,7 +147,7 @@ func (externalProvider) All() map[string]string        { return nil }
 // It resolves NOTHING, exactly like externalProvider, and that is the design
 // rather than an unfinished feature: the store's API is write-only (no RPC
 // returns a value), so no forge process — a developer laptop, a CI runner —
-// ever holds a hosted value. Writes (`forge secret set --env <hosted-env>`) go through
+// ever holds a hosted value. Writes (`forge env secret set --env <hosted-env>`) go through
 // a separate writer the CLI declares at its call site; this type is only the
 // resolve half, and it must stay value-free.
 type hostedProvider struct{}
@@ -257,14 +257,14 @@ func readStoreAllowingMissing(path string) (map[string]string, error) {
 // every new worktree begins with no store at all and forge fail-fasts on
 // every declared secret_ref. The developer has already set those values;
 // they are simply in the other checkout. That made a new worktree unusable
-// until ~30 `forge secret set` calls had been replayed by hand, which is
+// until ~30 `forge env secret set` calls had been replayed by hand, which is
 // the same class of bug the port-block registry hit and fixed by anchoring
 // on the primary checkout (see devstack.RepoAnchor).
 //
 // WHY PER-KEY MERGE, NOT WHOLE-FILE FALLBACK. A worktree that wants its
 // own Stripe test account should be able to override THAT ONE KEY and keep
 // inheriting the other twenty-seven. Under whole-file fallback the first
-// `forge secret set` in a worktree creates a one-key file that shadows the
+// `forge env secret set` in a worktree creates a one-key file that shadows the
 // shared store entirely, and the remaining secrets break in a way that
 // looks nothing like its cause. Merging makes the override granular and
 // makes `set` safe by construction.
@@ -379,7 +379,7 @@ func ReadSecretFile(path string) (map[string]string, error) {
 }
 
 // ValidSecretKey reports whether name is usable as an env-var name:
-// [A-Za-z_][A-Za-z0-9_]*. Shared with the CLI so `forge secret set`
+// [A-Za-z_][A-Za-z0-9_]*. Shared with the CLI so `forge env secret set`
 // rejects the same names the loader would.
 func ValidSecretKey(name string) bool {
 	if name == "" {
@@ -409,9 +409,9 @@ func WriteSecretFile(path string, values map[string]string) error {
 
 	var b strings.Builder
 	b.WriteString("# forge secret store — GITIGNORED, never commit.\n")
-	b.WriteString("# Managed by `forge secret set/unset`; hand-edits are fine too.\n")
+	b.WriteString("# Managed by `forge env secret set/unset`; hand-edits are fine too.\n")
 	b.WriteString("# Keys must match an EnvVar.secret_ref declared in KCL, or the value\n")
-	b.WriteString("# reaches nothing (`forge secret list --env <env>` reports unused keys).\n")
+	b.WriteString("# reaches nothing (`forge env secret list --env <env>` reports unused keys).\n")
 	for _, k := range keys {
 		out, err := yaml.Marshal(map[string]string{k: values[k]})
 		if err != nil {
@@ -496,7 +496,7 @@ func MissingDeclaredRefs(p Provider, refs []SecretRef) []SecretRef {
 	// project with ten missing secrets reported "28 missing value(s)" and
 	// listed GITHUB_CLIENT_SECRET three times, which reads as a much
 	// bigger problem than it is. The unit a developer acts on is the KEY:
-	// one `forge secret set` fixes every service that declares it.
+	// one `forge env secret set` fixes every service that declares it.
 	var missing []SecretRef
 	seen := map[string]bool{}
 	for _, r := range refs {
@@ -538,7 +538,7 @@ func MissingRefsError(p Provider, missing []SecretRef, storePath string) error {
 	// The fix line names the command — the whole point of the store is that
 	// adding a secret is a forge command, not a hand-edit of a file that
 	// gets injected everywhere.
-	fmt.Fprintf(&b, "fix: forge secret set --env <env> <KEY>   (writes into %s)\n", storePath)
+	fmt.Fprintf(&b, "fix: forge env secret set --env <env> <KEY>   (writes into %s)\n", storePath)
 	// An env that may run without the value (a feature's off-switch) says so
 	// on the declaration. Without this line the refusal offered only "set it"
 	// or "remove it", and authors dropped an optional credential from
@@ -546,7 +546,7 @@ func MissingRefsError(p Provider, missing []SecretRef, storePath string) error {
 	fmt.Fprint(&b, "     …or, if this env may run without it, declare it optional: `optional: true` in the sensitive field's\n"+
 		"     (forge.v1.config) annotation, or `optional = True` on a hand-written forge.SecretRef\n"+
 		"     (`secret_optional = True` on a forge.EnvVar). The workload then starts with the var unset and reads\n"+
-		"     the value once the store has it (forge skill load secrets).\n")
+		"     the value once the store has it (forge agent skill load secrets).\n")
 	fmt.Fprint(&b, "     …or remove the secret_ref from the EnvVar if it is no longer needed.")
 	return errors.New(b.String())
 }

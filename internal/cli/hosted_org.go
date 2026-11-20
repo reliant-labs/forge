@@ -18,7 +18,7 @@ import (
 // Two ways to read it, because the surfaces differ:
 //
 //   - strict (organization, requireOrg): the authenticated entry points — a
-//     build that pushes, a deploy, a release cut, `forge registry login`. They
+//     build that pushes, a deploy, a release cut, `forge cloud registry login`. They
 //     already need the credential, so a failure to resolve the org is a
 //     failure, said once, at the top, naming what to do.
 //   - best-effort (declaredPushBase): render, plan, diff and lint. These run

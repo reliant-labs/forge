@@ -1,5 +1,5 @@
 // Package things is a handler package holding every connect.NewError shape
-// `forge fix connect-errors` meets: the ones it rewrites (category A, D and
+// `forge lint fix connect-errors` meets: the ones it rewrites (category A, D and
 // the fixed-text C branches of reliant's P7a census) and the ones it must
 // leave alone (B, E-nil, computed text or code). Sites maps a name to each,
 // with fixed inputs, so wire_test.go can print what a client reads.

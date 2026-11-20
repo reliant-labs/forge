@@ -1,4 +1,4 @@
-// Package cli — `forge doctor` ingress checks (Phase 4 of the Gateway
+// Package cli — `forge project doctor` ingress checks (Phase 4 of the Gateway
 // API ingress refactor).
 //
 // Two new check categories layered on top of the standard doctor
@@ -182,16 +182,16 @@ func collectIngressInputsFromKCL(ctx context.Context, projectDir string) (classe
 
 // installHintForGatewayClass returns the install-action hint to surface
 // when a GatewayClass is missing. The class name is the source of
-// truth: forge ships "eg" (Envoy Gateway) via `forge cluster up` — the
+// truth: forge ships "eg" (Envoy Gateway) via `forge dev cluster up` — the
 // SINGLE controller every forge env uses (local k3d AND cloud); other
 // production classes ("gke-gateway", "aws-gateway", "istio", ...) need an
 // out-of-band controller install.
 func installHintForGatewayClass(className string) string {
 	switch strings.ToLower(strings.TrimSpace(className)) {
 	case "eg", "envoy-gateway":
-		return "run `forge cluster up` to install Envoy Gateway + the eg GatewayClass"
+		return "run `forge dev cluster up` to install Envoy Gateway + the eg GatewayClass"
 	case "traefik":
-		return "Traefik is no longer the forge dev controller — re-render with gateway_class_name = \"eg\" (the default) and run `forge cluster up`"
+		return "Traefik is no longer the forge dev controller — re-render with gateway_class_name = \"eg\" (the default) and run `forge dev cluster up`"
 	case "gke-gateway", "gke-l7-global-external-managed",
 		"gke-l7-regional-external-managed", "gke-l7-cross-regional":
 		return "install the GKE Gateway controller (gcloud container clusters update --gateway-api=standard)"

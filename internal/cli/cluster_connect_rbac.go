@@ -313,7 +313,7 @@ func writeGrantSummary(out io.Writer, r connectRBAC) {
 	fmt.Fprintf(out, "\nNo cloud IAM grant is needed: this binding authenticates with its own scoped\n"+
 		"ServiceAccount token (%s/%s), and forge applied its RBAC through\n"+
 		"context %q. The token was sent write-only and is never printed or stored locally.\n"+
-		"Revoke it with `forge cluster disconnect`; rotate it by re-running connect.\n%s\n",
+		"Revoke it with `forge cloud cluster disconnect`; rotate it by re-running connect.\n%s\n",
 		r.TokenNamespace, r.tokenServiceAccount(), r.KubeContext, r.grantSummary())
 }
 

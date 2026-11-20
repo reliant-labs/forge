@@ -28,7 +28,7 @@ import (
 // pre-1.0 and ships its breaking changes in patches, so a registry keyed by
 // minor hop (as this once was) could only ever hold codemods nobody needed.
 // A codemod that restructures rather than renames is not an Upgrade codemod:
-// it runs only as `forge fix <name>`, which its migration skill names.
+// it runs only as `forge lint fix <name>`, which its migration skill names.
 //
 // The intent-bearing half of an upgrade lives in the per-release migration
 // skill (upgrade_migrations.go): prose an agent reads, not a report a codemod

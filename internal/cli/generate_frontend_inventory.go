@@ -112,7 +112,7 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 // evaluating a module fires any file.write in it, and a write that lands
 // on a tracked file makes `forge generate` non-reproducible. An
 // environment that fails to render contributes nothing and is skipped
-// silently — the deploy checks in `forge doctor` are what report an
+// silently — the deploy checks in `forge project doctor` are what report an
 // unrenderable environment, and duplicating that here would put a KCL
 // stack trace in front of every generate on a project mid-edit.
 func renderedFrontends(projectDir string) []renderedEnvFrontend {

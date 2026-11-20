@@ -5,12 +5,12 @@ description: Connect a Kubernetes cluster you operate to the control plane so en
 
 # Connecting a cluster you operate
 
-`forge cluster connect` registers a cluster **by address**. Nothing is
+`forge cloud cluster connect` registers a cluster **by address**. Nothing is
 installed in it beyond a dedicated ServiceAccount and the RBAC the platform's
 apply needs, and the cluster keeps existing after you disconnect.
 
 ```bash
-forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
+forge cloud cluster connect prod-us --context gke_acme_us-central1_prod --env prod
 ```
 
 forge reads the API server address and CA (from your kubectl context, or `--address` /
@@ -108,8 +108,8 @@ impersonation of any ServiceAccount.
 ### Review before you widen: `--dry-run`
 
 ```bash
-forge cluster connect prod-us --context ... --env prod --apply-scope cluster --dry-run
-forge cluster connect prod-us --context ... --env prod --dry-run --live-from live.yaml   # offline
+forge cloud cluster connect prod-us --context ... --env prod --apply-scope cluster --dry-run
+forge cloud cluster connect prod-us --context ... --env prod --dry-run --live-from live.yaml   # offline
 ```
 
 `--dry-run` contacts no control plane and writes nothing. It renders the env,
@@ -142,7 +142,7 @@ deploying. Its blast radius is the grant above.
   (`kubectl -n forge-system delete secret forge-connect-<cluster>-<env>-token`) and
   re-running `connect`: it recreates the Secret, reads the freshly minted token and
   uploads it. A plain re-run re-uploads the existing token.
-- **Revoke** with `forge cluster disconnect` (below), which deregisters the cluster and
+- **Revoke** with `forge cloud cluster disconnect` (below), which deregisters the cluster and
   deletes the ServiceAccount and Secret, killing the token.
 
 ## Secret delivery: opt-in, named, least privilege
@@ -152,7 +152,7 @@ control plane (a `forge.ControlPlaneSecret`). Connect grants write access to
 exactly those and nothing else, only when you name them:
 
 ```bash
-forge cluster connect prod-us --context ... --env prod \
+forge cloud cluster connect prod-us --context ... --env prod \
   --delivery-secret control-plane-prod/reliant-otel-auth \
   [--delivery-subject user:delivery@acme.iam.gserviceaccount.com]
 ```
@@ -180,8 +180,8 @@ service-account issuer with the control plane (secrets design §2.2). Nothing is
 stored in your cluster and the store never calls back into it.
 
 ```bash
-forge cluster connect prod-us --context ... --env prod                    # --issuer auto
-forge cluster connect k3d-dev --context k3d-dev --env dev --issuer upload  # a cluster the store cannot reach
+forge cloud cluster connect prod-us --context ... --env prod                    # --issuer auto
+forge cloud cluster connect k3d-dev --context k3d-dev --env dev --issuer upload  # a cluster the store cannot reach
 ```
 
 | `--issuer` | What happens |
@@ -234,7 +234,7 @@ targeting a real cluster needs both.
 
 forge sends these as `cluster_bindings` on `EnsureEnvironment`, resolving each
 name to its id. **Unset on a non-k3d cluster in an env that declares a control
-plane is refused at render**, naming `forge cluster connect` — because the
+plane is refused at render**, naming `forge cloud cluster connect` — because the
 alternative is a deploy that is accepted and never lands, surfacing later as a
 Flux credential error two layers from the missing field.
 
@@ -247,9 +247,9 @@ plane never dials it.
 it back — the same client and `--env` as `connect`, read-only:
 
 ```bash
-forge cluster list --env prod              # every connected cluster of the org
-forge cluster show prod-us --env prod      # one, by exact name (GetCluster)
-forge cluster show prod-us --env prod --json
+forge cloud cluster list --env prod              # every connected cluster of the org
+forge cloud cluster show prod-us --env prod      # one, by exact name (GetCluster)
+forge cloud cluster show prod-us --env prod --json
 ```
 
 Per cluster: name, id, **state** (`CONNECTED` — the control plane holds usable
@@ -273,7 +273,7 @@ output field that could carry one.
 ## Disconnect
 
 ```bash
-forge cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
+forge cloud cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
 ```
 
 Two halves, in this order: the control plane revokes the credential first (its
@@ -306,7 +306,7 @@ to remove by hand.
 | `the env's render does not fit namespace scope` | The render has cluster-scoped kinds or objects outside your namespaces. Widen the list, or choose `--apply-scope cluster`. |
 | `uses generateName` | An RBAC object in the render has no fixed name, so `escalate`/`bind` cannot be pinned to it. Give it a `metadata.name`. |
 | `applies nothing to this cluster` | The env's KCL does not bind this context at all. Set `ClusterTarget.cluster` / `connected_cluster` first. (An env that binds it but applies it with forge is **not** this error: it registers with an empty apply grant.) |
-| `resolve the credential's organization` | forge checks the credential against the control plane before it writes anything to your cluster. Authenticate (signed in to Reliant: nothing to do — `reliant forge` / an agent shell uses your session; standalone: `forge login`; CI: the env's `token_env`) and re-run; the token needs `deploy:read`. |
+| `resolve the credential's organization` | forge checks the credential against the control plane before it writes anything to your cluster. Authenticate (signed in to Reliant: nothing to do — `reliant forge` / an agent shell uses your session; standalone: `forge cloud login`; CI: the env's `token_env`) and re-run; the token needs `deploy:read`. |
 | the control plane refuses the address (private / metadata range) | See "The address the control plane dials". |
 
 A Secret the control plane writes and renews INTO a connected cluster (the OTLP ingest token) is declared with `forge.ControlPlaneSecret`: `deploy/control-plane-secret`.

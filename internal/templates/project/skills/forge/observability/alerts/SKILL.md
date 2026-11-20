@@ -100,7 +100,7 @@ alerts = forge.Alerts {
 }
 ```
 
-- **`secret` names a key in the env's secret store**, never a value: `forge secret set --env dev SLACK_WEBHOOK_URL` (the value is read from stdin).
+- **`secret` names a key in the env's secret store**, never a value: `forge env secret set --env dev SLACK_WEBHOOK_URL` (the value is read from stdin).
   - forge writes the value as a file that the config references through `*_file`. The value never enters KCL or the config.
   - A key that is missing leaves its receiver out, and `forge env up` names the key and the fix.
 - **Localhost URLs are rewritten for the container.** forge rewrites `localhost` / `127.0.0.1` to `host.docker.internal`, because Alertmanager runs in a container. A receiver on your machine must therefore listen on `0.0.0.0`.

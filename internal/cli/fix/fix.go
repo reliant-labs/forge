@@ -1,15 +1,15 @@
-// Package fix holds the `forge fix` command group: codemods that rewrite the
+// Package fix holds the `forge lint fix` command group: codemods that rewrite the
 // project's own code to what a lint asks for, run on request. Each is
 // deliberate — never part of `forge generate` — because it edits files that
 // are the user's.
 //
-//	forge fix narrow-deps <pkg>   retype a component's wide foreign Deps
+//	forge lint fix narrow-deps <pkg>   retype a component's wide foreign Deps
 //	                              interfaces to the calls it makes
 //	                              (forgeconv-deps-surface)
-//	forge fix derive-contract <pkg>
+//	forge lint fix derive-contract <pkg>
 //	                              replace a hand-written Service with
 //	                              //forge:contract on its one implementation
-//	forge fix <codemod>           one release codemod (internal/codemod):
+//	forge lint fix <codemod>           one release codemod (internal/codemod):
 //	                              the mechanical half of a migration skill
 package fix
 
@@ -49,7 +49,7 @@ func newCmd(f *factory.Factory) *cobra.Command {
 	return cmdutil.StrictGroup(cmd)
 }
 
-// newCodemodCmd is `forge fix <name>` for one release codemod
+// newCodemodCmd is `forge lint fix <name>` for one release codemod
 // (internal/codemod): run it over the project, or with --dry-run list what
 // it would rewrite.
 func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
@@ -67,12 +67,12 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 			}
 			scope, err := codemod.ParseScope(root, rawScope)
 			if err != nil {
-				return cliutil.UserErr("forge fix "+c.Name+" --scope", err.Error(), "",
+				return cliutil.UserErr("forge lint fix "+c.Name+" --scope", err.Error(), "",
 					"pass paths inside the project, relative to its root, e.g. --scope internal/handlers/jobs")
 			}
 			if c.CleanTree && !dryRun && !allowDirty {
 				if dirty := uncommitted(root, scope); dirty != "" {
-					return cliutil.UserErr("forge fix "+c.Name,
+					return cliutil.UserErr("forge lint fix "+c.Name,
 						"the project has uncommitted changes:\n"+dirty,
 						"",
 						"commit or stash them first: this codemod replaces files you own, and `git diff` is how you review it (or pass --allow-dirty)")
@@ -84,7 +84,7 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 			}
 			printCodemodReport(f.Out, c, rep, dryRun, scope)
 			if len(rep.Blocked) > 0 {
-				return cliutil.UserErr("forge fix "+c.Name,
+				return cliutil.UserErr("forge lint fix "+c.Name,
 					fmt.Sprintf("%d shape(s) the codemod cannot convert without deciding for you; nothing was written", len(rep.Blocked)),
 					"",
 					"clear each item listed above, then re-run"+manualPathClause(c.Version))
@@ -183,7 +183,7 @@ reasoned //nolint:interfacebloat rather than split into embedded roles to fit:
 the lint counts an embedded interface as one entry, so a split would pass the
 count with the dependency exactly as wide. The interface is what the package
 calls; to shrink it, split the package.`,
-		Example: "  forge fix narrow-deps internal/handlers/tools_daemon",
+		Example: "  forge lint fix narrow-deps internal/handlers/tools_daemon",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cwd, err := os.Getwd()
@@ -238,7 +238,7 @@ func migrationSkillSentence(version string) string {
 	if !migrationSkillShipped(version) {
 		return ""
 	}
-	return "\n\nThe rest of the " + version + " story is the migration skill: `forge skill load migrations/" + version + "`."
+	return "\n\nThe rest of the " + version + " story is the migration skill: `forge agent skill load migrations/" + version + "`."
 }
 
 // manualPathClause names the migration skill as the manual path, when forge
@@ -247,5 +247,5 @@ func manualPathClause(version string) string {
 	if !migrationSkillShipped(version) {
 		return ""
 	}
-	return "; `forge skill load migrations/" + version + "` is the manual path"
+	return "; `forge agent skill load migrations/" + version + "` is the manual path"
 }

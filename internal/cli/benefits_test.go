@@ -198,7 +198,7 @@ func TestResolveCommandEvidence(t *testing.T) {
 		"env no-such-verb":          false,
 		"lint --scope --quiet":      false,
 		"project capabilities --x":  false,
-		"skill load":                true,
+		"agent skill load":          true,
 		"project capabilities":      true,
 		"no-such-command --verbose": false,
 	} {

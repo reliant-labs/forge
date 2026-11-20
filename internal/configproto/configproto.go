@@ -59,7 +59,7 @@ const LegacyDir = "proto/config/v1"
 // LegacyPackage is the proto package every forge project's config shared.
 const LegacyPackage = "config.v1"
 
-// LegacyCodemod is the `forge fix` codemod that moves a project off the
+// LegacyCodemod is the `forge lint fix` codemod that moves a project off the
 // legacy layout.
 const LegacyCodemod = "config-proto-package"
 

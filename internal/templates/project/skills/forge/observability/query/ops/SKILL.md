@@ -93,4 +93,4 @@ The mapping needs only the checkout: with no env it is the whole answer. A
 telemetry read that fails degrades the document to `telemetry.status =
 unavailable` with the reason and still exits 0; it never hides the mapping.
 Schema `forge.obs.blast_radius/v1`. It reads the repository, so it runs in the
-CLI and in the local `forge mcp` (`blast_radius`).
+CLI and in the local `forge agent mcp` (`blast_radius`).

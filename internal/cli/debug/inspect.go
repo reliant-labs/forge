@@ -19,8 +19,8 @@ func newEvalCmd(_ *factory.Factory) *cobra.Command {
 		Long: `Evaluate a Go expression in the debugger's current scope.
 
 Examples:
-  forge debug eval "req.UserID"
-  forge debug eval "len(items)"`,
+  forge dev debug eval "req.UserID"
+  forge dev debug eval "len(items)"`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dbg, err := connectToSession()

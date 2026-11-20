@@ -18,7 +18,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
-// `forge registry` is what a CI job needs to work from an env's DECLARATIONS
+// `forge cloud registry` is what a CI job needs to work from an env's DECLARATIONS
 // alone: log docker in to the registries the env's workloads name, and read
 // back the digest-pinned refs of what `forge env build <env> --push` pushed there.
 //
@@ -118,12 +118,12 @@ two registries logs in to both, in one command.
 THE PLATFORM REGISTRY NEEDS NO CREDENTIAL FROM YOU. For the host named by an
 env's forge.ControlPlane registry_host (Reliant's registry by default),
 forge presents the SAME control-plane credential it reaches the control plane
-with — ` + "`--token`" + `, then the env's declared token_env, then what ` + "`forge login`" + `
+with — ` + "`--token`" + `, then the env's declared token_env, then what ` + "`forge cloud login`" + `
 stored, then the credential helper $` + cloudcred.HelperEnv + ` (a host application's
 session — Reliant sets it). One token, so there is nothing to mint and nothing
 to rotate:
 
-  forge registry login prod
+  forge cloud registry login prod
 
 ` + "`forge env build <env> --push`" + ` and ` + "`forge env deploy <env>`" + ` do this for
 themselves before their first push, so a hosted pipeline usually needs no login
@@ -132,13 +132,13 @@ step at all.
 FOR ANYBODY ELSE'S REGISTRY the credential is the only thing you pass, and it is
 not a registry pointer:
 
-  echo "$GITHUB_TOKEN" | forge registry login prod --username "$GITHUB_ACTOR" --password-stdin
+  echo "$GITHUB_TOKEN" | forge cloud registry login prod --username "$GITHUB_ACTOR" --password-stdin
 
 or name the environment variable holding it, the way forge.ControlPlane names
 its token_env — so a CI config states a variable NAME (non-sensitive, belongs in
 git) rather than piping a secret through a shell:
 
-  forge registry login prod --username "$GITHUB_ACTOR" --password-env GITHUB_TOKEN
+  forge cloud registry login prod --username "$GITHUB_ACTOR" --password-env GITHUB_TOKEN
 
 One credential is used for every foreign host. That is correct for the
 overwhelmingly common case (one org, one registry, one token) and honest about
@@ -159,7 +159,7 @@ skipped.`,
 				return err
 			}
 			if passwordStdin && passwordEnv != "" {
-				return cliutil.UserErr("forge registry login", "--password-stdin and --password-env both given", "",
+				return cliutil.UserErr("forge cloud registry login", "--password-stdin and --password-env both given", "",
 					"pass the credential exactly one way")
 			}
 
@@ -167,7 +167,7 @@ skipped.`,
 			if err != nil {
 				return err
 			}
-			hosts, err := declaredRegistryHostsOf(cmd.Context(), "forge registry login "+env, env)
+			hosts, err := declaredRegistryHostsOf(cmd.Context(), "forge cloud registry login "+env, env)
 			if err != nil {
 				return err
 			}
@@ -199,9 +199,9 @@ skipped.`,
 				if ours {
 					return errForeignRegistryNeedsFlags(env, foreign)
 				}
-				return cliutil.UserErr("forge registry login", "no credential was given", "",
-					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
-						"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
+				return cliutil.UserErr("forge cloud registry login", "no credential was given", "",
+					fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge cloud registry login %s --username <user> --password-stdin\n"+
+						"  or name the variable holding it: forge cloud registry login %s --username <user> --password-env TOKEN", env, env))
 			}
 
 			loggedIn := 0
@@ -233,7 +233,7 @@ skipped.`,
 	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry user the credential belongs to, for a registry that is NOT the platform's (e.g. $GITHUB_ACTOR, _json_key, oauth2accesstoken, AWS)")
 	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read a foreign registry's credential from stdin (a credential never belongs on the command line)")
 	cmd.Flags().StringVar(&passwordEnv, "password-env", "", "Name of the environment variable holding a foreign registry's credential (the forge.ControlPlane token_env convention: the NAME is in git, the VALUE never is)")
-	cmd.Flags().StringVar(&token, "token", "", "Control-plane credential to present to the PLATFORM registry, overriding the env's token_env and the stored 'forge login' (one-off / debugging)")
+	cmd.Flags().StringVar(&token, "token", "", "Control-plane credential to present to the PLATFORM registry, overriding the env's token_env and the stored 'forge cloud login' (one-off / debugging)")
 	return cmd
 }
 
@@ -244,7 +244,7 @@ skipped.`,
 // whose workloads name two foreign registries authenticates both with it.
 func foreignRegistryCredential(cmd *cobra.Command, env, username string, passwordStdin bool, passwordEnv string) (string, error) {
 	if username == "" {
-		return "", cliutil.UserErr("forge registry login", "--username is required for a registry that is not the platform's", "",
+		return "", cliutil.UserErr("forge cloud registry login", "--username is required for a registry that is not the platform's", "",
 			"pass the registry user the credential belongs to")
 	}
 	if passwordStdin {
@@ -255,13 +255,13 @@ func foreignRegistryCredential(cmd *cobra.Command, env, username string, passwor
 		return string(b), nil
 	}
 	if passwordEnv == "" {
-		return "", cliutil.UserErr("forge registry login", "no credential was given", "",
-			fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
-				"  or name the variable holding it: forge registry login %s --username <user> --password-env TOKEN", env, env))
+		return "", cliutil.UserErr("forge cloud registry login", "no credential was given", "",
+			fmt.Sprintf("pipe it in: echo \"$TOKEN\" | forge cloud registry login %s --username <user> --password-stdin\n"+
+				"  or name the variable holding it: forge cloud registry login %s --username <user> --password-env TOKEN", env, env))
 	}
 	v := os.Getenv(passwordEnv)
 	if v == "" {
-		return "", cliutil.UserErr("forge registry login",
+		return "", cliutil.UserErr("forge cloud registry login",
 			fmt.Sprintf("$%s is empty or unset, so there is no credential to log in with", passwordEnv), "",
 			fmt.Sprintf("set %s in the environment (a CI secret), or pipe the credential in with --password-stdin", passwordEnv))
 	}
@@ -324,7 +324,7 @@ prefixed form as well, so a later step can address a specific one.`,
 // (resolvePushPlan). A BARE hosted image is legitimate since ADR-0003 F1 — it
 // resolves to `<registry_host>/<org>/<project>/<name>` — and
 // enumerating destinations with no base leaves every such image hostless,
-// which this function then reads as "nothing to push". So `forge registry
+// which this function then reads as "nothing to push". So `forge cloud registry
 // login prod` on a fully correct hosted project reported that no workload
 // declared a pushable image, which is the exact shape ADR-0003 makes the
 // DEFAULT for a hosted env.
@@ -427,7 +427,7 @@ func pushedImageRefs(ctx context.Context, projectDir, env, only string) ([]image
 }
 
 func notPushedError(env, what string) error {
-	return cliutil.UserErr("forge registry ref "+env,
+	return cliutil.UserErr("forge cloud registry ref "+env,
 		fmt.Sprintf("%s with a pushed digest recorded for env %q", what, env), "",
 		fmt.Sprintf("run forge env build %s --push first — it records the digest of what it pushed to each image's declared reference", env))
 }
@@ -456,7 +456,7 @@ func readAllImageBuildStates(projectDir, env string) []buildtarget.State {
 func appendGitHubOutput(refs []imageRef) error {
 	path := os.Getenv("GITHUB_OUTPUT")
 	if path == "" {
-		return cliutil.UserErr("forge registry ref --github-output", "$GITHUB_OUTPUT is not set", "",
+		return cliutil.UserErr("forge cloud registry ref --github-output", "$GITHUB_OUTPUT is not set", "",
 			"run it inside a GitHub Actions step, or drop --github-output and read the refs from stdout")
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

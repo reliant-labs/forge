@@ -164,8 +164,8 @@ func TestResolveDeclarationOrg_NoCredentialSaysSoAndNamesTheFix(t *testing.T) {
 	isolatedCredentials(t)
 	_, err := resolveDeclarationOrg(context.Background(), "prod",
 		&cloud.Declaration{Endpoint: "https://nobody.example", TokenEnv: "ORG_LOOKUP_UNSET_TOKEN"})
-	if err == nil || !strings.Contains(err.Error(), "forge login") {
-		t.Fatalf("want a credential error naming `forge login`, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "forge cloud login") {
+		t.Fatalf("want a credential error naming `forge cloud login`, got %v", err)
 	}
 }
 

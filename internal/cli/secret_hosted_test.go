@@ -206,7 +206,7 @@ func hostedFixture(t *testing.T, envs []cloudEnvironment) (*fakeControlPlane, st
 	return fake, token
 }
 
-// TestHostedSecretSetSpeaksSecretStoreService: `forge secret set` on a hosted
+// TestHostedSecretSetSpeaksSecretStoreService: `forge env secret set` on a hosted
 // env resolves the env NAME to its id via DeployService/ListEnvironments and
 // writes via SecretStoreService/SetSecret — right procedures, bearer token,
 // proto3-JSON field names — and never echoes the value.
@@ -221,7 +221,7 @@ func TestHostedSecretSetSpeaksSecretStoreService(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 	if strings.Contains(out.String(), value) {
-		t.Fatal("forge secret set echoed the value")
+		t.Fatal("forge env secret set echoed the value")
 	}
 
 	// set is a WRITE: it ensures the env by name (exact — never the
@@ -286,7 +286,7 @@ func TestHostedSecretListIsNamesOnly(t *testing.T) {
 // TestHostedSecretListCountsManagedSecrets: a SimpleBackend's managedSecret
 // env vars ARE the hosted env's secret declarations — the control plane
 // materializes exactly those names into forge-managed-secrets, all or nothing,
-// so one without a value stalls the backend's reconcile. `forge secret list`
+// so one without a value stalls the backend's reconcile. `forge env secret list`
 // must report each as declared (set or missing) and must not call a stored
 // one inert. Before this, list read only secret_ref channels, so a hosted env
 // printed "no secrets declared" while its api could not start.
@@ -306,7 +306,7 @@ func TestHostedSecretListCountsManagedSecrets(t *testing.T) {
 				{Name: "STRIPE_SECRET_KEY", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_SECRET_KEY"}},
 				// The env var and the store name differ: the STORE name
 				// is what gets declared, because that is what `forge
-				// secret set` writes and the control plane resolves.
+				// env secret set` writes and the control plane resolves.
 				{Name: "WEBHOOK_SECRET", ManagedSecret: &deployv1alpha1.ManagedSecretRef{Name: "STRIPE_WEBHOOK_SECRET"}},
 				{Name: "DATABASE_URL", DatabaseRef: &deployv1alpha1.DatabaseRef{Name: "db"}},
 			}
@@ -343,8 +343,8 @@ func TestHostedSecretListCountsManagedSecrets(t *testing.T) {
 // only the KCL render is), so the credential comes from
 // FORGE_CONTROL_PLANE_TOKEN exactly as it would in CI:
 //
-//	printf v | forge secret set prod API_KEY
-//	forge secret list prod --json
+//	printf v | forge env secret set prod API_KEY
+//	forge env secret list prod --json
 //
 // It asserts the UX contract end to end: list shows the name with provider
 // "hosted", the value never appears on stdout/stderr of either command, and
@@ -377,10 +377,10 @@ func TestHostedSecretCLIEndToEnd(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		if err := cmd.ExecuteContext(context.Background()); err != nil {
-			t.Fatalf("forge secret %v: %v\n%s", args, err, out.String())
+			t.Fatalf("forge env secret %v: %v\n%s", args, err, out.String())
 		}
 		if strings.Contains(out.String(), value) {
-			t.Fatalf("forge secret %v printed the value", args)
+			t.Fatalf("forge env secret %v printed the value", args)
 		}
 		return out.String()
 	}

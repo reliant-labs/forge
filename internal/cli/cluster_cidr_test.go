@@ -321,7 +321,7 @@ func containsArg(args []string, want string) bool {
 
 // A forge-created k3d cluster must sign service-account tokens with an issuer
 // the control plane accepts: stock k3s signs with a `.local` host, which
-// `forge cluster connect` cannot register. k3s keeps the legacy issuer as a
+// `forge cloud cluster connect` cannot register. k3s keeps the legacy issuer as a
 // second accepted one.
 func TestClusterCreateFlags_PublicServiceAccountIssuer(t *testing.T) {
 	joined := strings.Join(clusterCreateFlags(ClusterEntity{Name: "cp", Image: "img", Servers: 1}), " ")

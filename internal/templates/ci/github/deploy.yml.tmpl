@@ -160,7 +160,7 @@ jobs:
         # token with --username AWS — from a repository or environment SECRET.
         env:
           LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "${{"{{"}} matrix.env {{"}}"}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
+        run: printf '%s' "$LOGIN_TOKEN" | forge cloud registry login "${{"{{"}} matrix.env {{"}}"}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 
       - name: Set kubeconfig
         # Only an env with forge.OnCluster workloads needs one; a hosted env deploys through

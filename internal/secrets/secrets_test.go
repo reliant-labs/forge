@@ -109,7 +109,7 @@ func TestNewProvider_DotenvRemoved_IsHardError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for the removed dotenv provider, got nil")
 	}
-	if !strings.Contains(err.Error(), "forge secret migrate") {
+	if !strings.Contains(err.Error(), "forge env secret migrate") {
 		t.Fatalf("error must name the migration command, got: %v", err)
 	}
 }
@@ -180,10 +180,10 @@ func TestValidateDeclaredRefs_NamesTheOptionalExemption(t *testing.T) {
 		t.Fatal("expected a refusal for the missing ref")
 	}
 	for _, want := range []string{
-		"optional: true",           // the sensitive config field's annotation
-		"(forge.v1.config)",        // where that annotation goes
-		"optional = True",          // a hand-written forge.SecretRef
-		"forge skill load secrets", // where the rule is explained
+		"optional: true",                 // the sensitive config field's annotation
+		"(forge.v1.config)",              // where that annotation goes
+		"optional = True",                // a hand-written forge.SecretRef
+		"forge agent skill load secrets", // where the rule is explained
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q:\n%s", want, err)

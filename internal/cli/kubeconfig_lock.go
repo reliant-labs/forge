@@ -16,7 +16,7 @@ import (
 // computed from a file that did not have the first one yet. The loser then
 // fails a moment later on `context "k3d-<name>" does not exist`, for a cluster
 // that is running fine (TestE2EDirectApplySecretsLandAndStayOutOfTheBundle hit
-// it with three parallel `forge cluster up`s; a shared box running several
+// it with three parallel `forge dev cluster up`s; a shared box running several
 // agents hits it the same way).
 //
 // So every kubeconfig write forge makes goes through withKubeconfigLock, and

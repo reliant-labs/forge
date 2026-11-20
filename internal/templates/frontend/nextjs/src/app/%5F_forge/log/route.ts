@@ -2,7 +2,7 @@
 // Dev-server receiver for installDevLogging(): prints the browser's console lines and uncaught errors
 // to stdout, which `forge env up` tees to .forge/logs/<env>/frontend_<name>.log. 404 in production.
 // The folder is `%5F_forge` because Next treats `_`-prefixed folders as private (a silent 404): keep it.
-// POST only, so a static export leaves it out. Depth: `forge skill load debug`.
+// POST only, so a static export leaves it out. Depth: `forge agent skill load debug`.
 
 /** Cap a single log line so a runaway loop cannot fill the disk. */
 const MAX_LINE = 8_000;

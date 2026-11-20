@@ -11,7 +11,7 @@
 # It does nothing until you enable it (Workflows -> Library -> review ->
 # Enable, with No machine). Require "demo/review" in the branch ruleset only if
 # a review must pass before merging; it posts on merge-queue groups too, so a
-# required review never stalls the queue. `forge skill load ci/reliant`.
+# required review never stalls the queue. `forge agent skill load ci/reliant`.
 name: review
 title: demo/review
 description: >-

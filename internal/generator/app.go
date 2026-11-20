@@ -151,7 +151,7 @@ func RenderAppScaffold(spec AppSpec, harness Harness) ([]AppFile, error) {
 	header := "# Forge project manifest — see https://github.com/reliant-labs/forge.\n" +
 		"# An adopted app: it builds from its own Dockerfile, and deploy/kcl/\n" +
 		"# declares what it runs (workloads.k) and where (<env>/main.k). There is\n" +
-		"# no Go module, so there is no module_path. `forge skill load adopt/deploy`.\n\n"
+		"# no Go module, so there is no module_path. `forge agent skill load adopt/deploy`.\n\n"
 	kclMod, err := templates.DeployTemplates().Render("kcl/kcl.mod.tmpl", struct{ ProjectName string }{spec.ProjectName})
 	if err != nil {
 		return nil, fmt.Errorf("render kcl.mod template: %w", err)
@@ -207,7 +207,7 @@ func appWorkloadsK(spec AppSpec) string {
 	fmt.Fprintf(&b, "\"\"\"What %s runs, declared once. Each env's main.k binds it.\n\n", spec.ProjectName)
 	b.WriteString("Written by `forge project new --in-place --kind app` from what it found in\n" +
 		"this repo, and yours from here: forge never rewrites it. A `# check:` line is\n" +
-		"something it assumed; read each one. `forge skill load adopt/deploy` explains every\n" +
+		"something it assumed; read each one. `forge agent skill load adopt/deploy` explains every\n" +
 		"field (Tier 1), and what to add next.\n\"\"\"\n")
 	b.WriteString("import forge\nimport forge.workloads as fw\nimport forge.tiers\n")
 	for _, w := range spec.Workloads {
@@ -457,7 +457,7 @@ func appHostedMainK(spec AppSpec, env string, claimable bool) string {
 	b.WriteString(".\n\n")
 	b.WriteString("Each workload in workloads.k runs on the platform (forge.OnHosted), built\n" +
 		"once and promoted between envs by digest. Credentials come from the\n" +
-		"platform's write-only store: `forge secret set --env " + env + " <NAME>` (the\n" +
+		"platform's write-only store: `forge env secret set --env " + env + " <NAME>` (the\n" +
 		"value on stdin). Hosted workloads and databases need billing on your\n" +
 		"organization; `forge env deploy` prints the link when it is missing.\n")
 	if claimable {

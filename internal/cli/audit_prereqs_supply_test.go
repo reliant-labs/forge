@@ -90,7 +90,7 @@ var auditDevHostOnly = auditDevFixtureTargeting(`forge.OnHost {listen_ports = [8
 // The same workload placed IN the cluster, with FileSecrets declared: the
 // provider renders "acme-secrets" from its store at deploy time, so the mount
 // is declared. That holds whether or not this checkout's store exists — the
-// DECLARATION is what the audit checks; a missing value is `forge secret
+// DECLARATION is what the audit checks; a missing value is `forge env secret
 // ensure`'s job, reported by deploy/up when it actually needs one.
 var auditDevClusterPlacedFileSecrets = auditDevFixture(`forge.OnCluster {target = _cluster}`, `forge.FileSecrets {path = "secrets/dev.yaml"}`)
 

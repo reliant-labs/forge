@@ -114,7 +114,7 @@ type migrationMeta struct {
 	// migration belongs to (e.g. "v0.5.0") — the stable identifier used
 	// by `forge project upgrade apply <id>` and in the applied-state JSON.
 	ID string `json:"id"`
-	// SkillPath is the path you'd pass to `forge skill load` to read
+	// SkillPath is the path you'd pass to `forge agent skill load` to read
 	// the migration's body (e.g. "migrations/v0.5.0").
 	SkillPath string `json:"skill_path"`
 	// Title is a human-readable name from frontmatter `name:`. Falls
@@ -132,7 +132,7 @@ type migrationMeta struct {
 	Detection string `json:"detection,omitempty"`
 	// Automation lists the playbook's mechanical steps `forge project
 	// upgrade` runs itself, from frontmatter `automation:` (comma-separated).
-	// Each is `fix:<codemod>`: run `forge fix <codemod>` when the playbook
+	// Each is `fix:<codemod>`: run `forge lint fix <codemod>` when the playbook
 	// applies. Everything else in the playbook stays prose for a person.
 	Automation []string `json:"automation,omitempty"`
 }
@@ -172,7 +172,7 @@ yet and whose detection script matches the project's current shape.
 Migrations are LLM-readable playbooks under skills/forge/migrations/,
 one per release that introduced a breaking change. This command does NOT
 apply them — it surfaces the worklist so the user (or an agent) can load
-each skill via 'forge skill load' and execute the steps. Use
+each skill via 'forge agent skill load' and execute the steps. Use
 'forge project upgrade apply <id>' to record a migration as applied once
 you've finished its steps.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -647,7 +647,7 @@ func runUpgradeApply(out io.Writer, id string) error {
 //	  [ ] v0.5.0
 //	      Title:       Deploy target moved into KCL
 //	      Release:     v0.5.0
-//	      To load:     forge skill load migrations/v0.5.0
+//	      To load:     forge agent skill load migrations/v0.5.0
 //	      Once done:   forge project upgrade apply v0.5.0
 //
 // The two empty cases are told apart on purpose. "This binary ships no
@@ -687,7 +687,7 @@ func writePendingMigrationsHuman(out io.Writer, pending []pendingMigration, ship
 			_, _ = fmt.Fprintf(out, "      Applied:     %s\n", p.AppliedAt)
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "      To load:     %s skill load %s\n", cliName, p.Meta.SkillPath)
+		_, _ = fmt.Fprintf(out, "      To load:     %s agent skill load %s\n", cliName, p.Meta.SkillPath)
 		_, _ = fmt.Fprintf(out, "      Once done:   %s project upgrade apply %s\n", cliName, p.Meta.ID)
 	}
 	_, _ = fmt.Fprintln(out)

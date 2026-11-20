@@ -94,7 +94,7 @@ func (c *Client) upfrontScope(procedure string) (string, bool) {
 }
 
 // carries reports whether the base credential holds scope, as far as forge
-// knows: the scopes its issuer reported, else the ones `forge login` and the
+// knows: the scopes its issuer reported, else the ones `forge cloud login` and the
 // credential helper ask for.
 func (c *Client) carries(scope string) bool {
 	held := c.credential().Scopes
@@ -166,7 +166,7 @@ func (c *Client) elevatable() bool {
 // "which credential did that command use" unanswerable, and an org automation
 // token acts as nobody, so there is no role to elevate from anyway.
 //
-// WHY ELEVATE AT ALL. The stored `forge login` credential (and a Reliant
+// WHY ELEVATE AT ALL. The stored `forge cloud login` credential (and a Reliant
 // session's token) is deliberately narrow — daemon tokens live on remote
 // machines. The person behind it may hold more (an org owner holds
 // cluster:manage). The control plane re-reads that role at exchange time, so
@@ -324,7 +324,7 @@ func annotateElevation(original error, scope string, elevErr error) error {
 	return apiErr
 }
 
-// loginLacksScope names the way out when a stored `forge login` credential
+// loginLacksScope names the way out when a stored `forge cloud login` credential
 // lacks scope, could not be elevated, and a credential helper is configured.
 //
 // The file credential outranks the helper by design (ResolveCredential: a
@@ -332,7 +332,7 @@ func annotateElevation(original error, scope string, elevErr error) error {
 // does not switch identity on its own. But a login made before a scope
 // existed is then a permanent 403 even though the helper — the Reliant
 // session on this machine — could authorize the call. That was every agent's
-// `forge obs` against prod on 2026-10-25: the error said "re-run forge login",
+// `forge obs` against prod on 2026-10-25: the error said "re-run forge cloud login",
 // which an agent cannot do, and never mentioned the helper. Say both options.
 func (c *Client) loginLacksScope(err error, scope string) error {
 	cred := c.credential()
@@ -344,7 +344,7 @@ func (c *Client) loginLacksScope(err error, scope string) error {
 		return err
 	}
 	apiErr.message = strings.TrimRight(apiErr.Error(), "\n") + fmt.Sprintf(
-		"\n  remedy: your `forge login` credential (%s, for %s) lacks %s; run `forge logout --endpoint %s` to use the Reliant credential helper ($%s), or `forge login` again",
+		"\n  remedy: your `forge cloud login` credential (%s, for %s) lacks %s; run `forge cloud logout --endpoint %s` to use the Reliant credential helper ($%s), or `forge cloud login` again",
 		cred.From, c.Endpoint.URL, scope, c.Endpoint.URL, cloudcred.HelperEnv)
 	return apiErr
 }

@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger export --dir D` — write the selected ledger out in
+// `forge release ledger export --dir D` — write the selected ledger out in
 // file-ledger format.
 //
 // IT EXISTS ONLY TO VERIFY AN IMPORT (owner decision O-1, doc §7.2, §11.1
@@ -64,7 +64,7 @@ var exportNormalizations = []string{
 	"a promotion's id and promoted_at are preserved verbatim, so the ORDER of each env's log is unchanged",
 }
 
-// newLedgerExportCmd is `forge ledger export`.
+// newLedgerExportCmd is `forge release ledger export`.
 func newLedgerExportCmd() *cobra.Command {
 	var (
 		dir    string

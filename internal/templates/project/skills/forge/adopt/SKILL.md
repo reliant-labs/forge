@@ -36,7 +36,7 @@ survey; the MCP server's `benefits` tool returns the same list.
 Every command in this skill and the sub-skills it names runs on the forge you
 have; there is no "coming soon" item to avoid. You act on a skill literally, so
 if a command here disagrees with `forge <command> --help`, trust the binary and
-report the skill with `forge report-bug`.
+report the skill with `forge agent report-bug`.
 
 ## Why it is worth the user's time
 
@@ -100,7 +100,7 @@ to trust, and the user can stop after any of them.
 
 ```bash
 forge project benefits                                   # what applies to this repo, with estimates
-forge login && forge obs init prod staging               # hosted monitoring (`obs init [env…]`: one or more envs): writes each env's
+forge cloud login && forge obs init prod staging               # hosted monitoring (`obs init [env…]`: one or more envs): writes each env's
                                                          #   document (deploy/envs/<env>.yaml; commit it), registers the env,
                                                          #   mints a token per env, prints its OTEL_* variables: endpoint,
                                                          #   headers (the token, shown once), attributes
@@ -154,7 +154,7 @@ Record each answer; they feed the rubric.
 7. **Secrets today.** CI secrets, Vault, a cloud secret manager, `.env`.
 8. **Environments.** Which exist and how they differ.
 9. **Test command**, and whether it is fast. forge never replaces it.
-10. **Who must click.** Which steps need a human: `forge login`, a CI secret,
+10. **Who must click.** Which steps need a human: `forge cloud login`, a CI secret,
     a DNS record, a billing link.
 
 ## The estimate rubric
@@ -230,10 +230,10 @@ then offer the next piece.
 ## Playbooks: forge's skills and MCP server in any repo
 
 ```bash
-forge skill list                     # in a repo with no forge.yaml, APPLIES TO YOUR REPO comes first
-forge skill search migration         # find by keyword; matches bodies too
-forge skill load debug               # print one; it always matches the binary you run
-claude mcp add forge -- npx -y @reliantlabs/forge mcp   # MCP tools, no install
+forge agent skill list                     # in a repo with no forge.yaml, APPLIES TO YOUR REPO comes first
+forge agent skill search migration         # find by keyword; matches bodies too
+forge agent skill load debug               # print one; it always matches the binary you run
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp   # MCP tools, no install
 ```
 
 Monitoring and releases from any chat app, with no install: the hosted Reliant
@@ -262,7 +262,7 @@ Trust is part of the pitch. Say these, with the commands:
   binding leaves that tool exactly as it was.
 - **Kubernetes YAML**: `forge env render <env>` prints every object as plain
   YAML and contacts no cluster.
-- **Deploy history**: `forge ledger where` names the backend, `forge ledger
+- **Deploy history**: `forge release ledger where` names the backend, `forge release ledger
   export` writes it as files, `forge release verify` proves each artifact still
   exists.
 - **Code**: `forge project disown <file>` makes a generated file yours for good.
@@ -280,11 +280,11 @@ Trust is part of the pitch. Say these, with the commands:
 3. **One entry point at a time.** Finish, verify, show what they gained, then
    offer the next. Never bundle pieces into one PR.
 4. **Say the estimate, the split and the undo** before you start.
-5. **The user signs in and places credentials.** `forge login`, the ingest
+5. **The user signs in and places credentials.** `forge cloud login`, the ingest
    token `obs init` prints once, the CI token: you run nothing that writes to
    their account before they say yes.
 6. **Never print, log or commit a secret.** The user places tokens and values.
 7. **Report forge's defects** (a command that fails, a skill that disagrees
-   with the binary) with `forge report-bug`; never the user's own bugs.
+   with the binary) with `forge agent report-bug`; never the user's own bugs.
 8. **Ask forge before guessing:** `forge project capabilities` lists every
    verb, `forge project libraries <pkg>` prints a package's API.

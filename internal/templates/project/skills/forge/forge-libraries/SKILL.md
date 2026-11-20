@@ -60,7 +60,7 @@ With no arguments it prints one line per subpackage, plus the absolute directory
 
 A project compiles forge from a local checkout only when someone asked for it: `forge project new --link-forge` (bridges to the checkout the running forge was built from), or `go work use <forge-checkout>` by hand. Both leave a gitignored `go.work` line, and that line is the whole record — `forge project libraries` then reports `resolved: <checkout> (go.work override)`, and the web-runtime twin (`.forge-link/`) follows the same checkout. Undo with `go work edit -dropuse=<checkout>`.
 
-A bridge has two halves that must be the same source: the **binary** writes the generated code, the **checkout** supplies the library it calls. When they drift — the checkout pulled or edited after the binary was built, or a host binary that embeds forge from a workspace and records no forge commit at all — `forge generate` and `forge lint` print a one-line skew warning (it starts with ⚠️) naming both sides and the fix, and `forge doctor` reports it as the `Forge Bridge` check. Treat it as real: rebuild the binary from that checkout (or drop the bridge) before chasing a compile error in generated code.
+A bridge has two halves that must be the same source: the **binary** writes the generated code, the **checkout** supplies the library it calls. When they drift — the checkout pulled or edited after the binary was built, or a host binary that embeds forge from a workspace and records no forge commit at all — `forge generate` and `forge lint` print a one-line skew warning (it starts with ⚠️) naming both sides and the fix, and `forge project doctor` reports it as the `Forge Bridge` check. Treat it as real: rebuild the binary from that checkout (or drop the bridge) before chasing a compile error in generated code.
 
 **Name a package and it prints the answer** — every func with its parameters, every struct with its fields, every interface and type with its methods, parsed from that same resolved source with the doc prose stripped. Several packages in one call; `all` for everything (large).
 
@@ -108,7 +108,7 @@ Each row's full API is one call away: `forge project libraries <name>`.
 - **HTTP / Connect transport plumbing** — `connectrpc.com/connect` itself, not forge. Forge doesn't wrap Connect; it embraces it.
 - **Database driver** — `jackc/pgx`. Forge is postgres-pinned and doesn't ship its own driver; `forge/pkg/orm` builds on top.
 - **OTel SDK init** — `forge/pkg/serverkit` owns it. serverkit calls `observe.Setup` internally from `serverkit.Config.OTLPEndpoint` + `ServiceName` (projected from the project's typed config in the generated `cmd serve.go`); there is no per-project `cmd/otel.go` shim. `forge/pkg/observe` is the *interceptor* layer; serverkit drives the SDK bootstrap. To customize sampling / resource attrs, configure it through serverkit's config rather than a hand-rolled `cmd/otel.go`.
-- **Stripe / Twilio / NATS clients** — owned adapter code you write over the vendor SDK (`forge skill load adapter`), not `forge/pkg/*` libraries. Forge ships no packs or bundled third-party integrations.
+- **Stripe / Twilio / NATS clients** — owned adapter code you write over the vendor SDK (`forge agent skill load adapter`), not `forge/pkg/*` libraries. Forge ships no packs or bundled third-party integrations.
 
 ## When this skill is not enough
 

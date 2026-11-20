@@ -1,6 +1,6 @@
 package cli
 
-// `forge cluster connect` registers the cluster's service-account ISSUER with
+// `forge cloud cluster connect` registers the cluster's service-account ISSUER with
 // the control plane, so the secret store can verify the projected tokens an
 // External Secrets Operator in that cluster logs in with (secrets design §2.2:
 // one JWT auth mount per cluster, verified against the cluster's OWN keys; no
@@ -339,7 +339,7 @@ func reportConnectIssuer(out io.Writer, name, env string, plan connectIssuerPlan
 		if plan.Note != "" {
 			fmt.Fprintf(out, "\nWARNING: this cluster's issuer was NOT registered with the secret store: %s\n"+
 				"  Deploys are unaffected. Store-backed Secrets (forge.StoreSource) on this cluster cannot log in until it is:\n"+
-				"  fix it, then re-run `forge cluster connect` (--issuer upload or discover makes a failure an error).\n", plan.Note)
+				"  fix it, then re-run `forge cloud cluster connect` (--issuer upload or discover makes a failure an error).\n", plan.Note)
 		}
 		return
 	case got == nil || got.StoreClusterID == "":

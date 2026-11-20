@@ -108,7 +108,7 @@ func runCloudFakeHelper(mode string, args []string) int {
 }
 
 // TestResolveCredential_HelperIsTheLastSource is the feature: with no flag, no
-// env var and no `forge login`, a configured helper — a host application the
+// env var and no `forge cloud login`, a configured helper — a host application the
 // user is signed in to — supplies the credential. Before the helper existed
 // this was ErrNoCredential, and the user had to log in a second time.
 func TestResolveCredential_HelperIsTheLastSource(t *testing.T) {
@@ -151,7 +151,7 @@ func TestResolveCredential_HelperIsAskedForTheEndpointAndForgeScopes(t *testing.
 }
 
 // TestResolveCredential_FullPrecedence has all four sources present at once:
-// flag > env > `forge login` > helper. A human's deliberate login must beat a
+// flag > env > `forge cloud login` > helper. A human's deliberate login must beat a
 // host signed in as someone else, and CI's variable must beat both.
 func TestResolveCredential_FullPrecedence(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
@@ -186,7 +186,7 @@ func TestResolveCredential_FullPrecedence(t *testing.T) {
 }
 
 // TestResolveCredential_ExpiredLoginFallsThroughToHelper: an expired `forge
-// login` used to be a hard stop ("log in again"). With the user signed in to
+// cloud login` used to be a hard stop ("log in again"). With the user signed in to
 // the host, that is a second login for nothing — the helper answers instead.
 func TestResolveCredential_ExpiredLoginFallsThroughToHelper(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
@@ -207,7 +207,7 @@ func TestResolveCredential_ExpiredLoginFallsThroughToHelper(t *testing.T) {
 
 // TestResolveCredential_HelperRefusalIsTheHostsAdvice: when the host has no
 // session that fits, its own message ("sign in to …") is the remedy. Under a
-// host, `forge login` is the wrong advice and must not appear; CI's route
+// host, `forge cloud login` is the wrong advice and must not appear; CI's route
 // (the env var) still must.
 func TestResolveCredential_HelperRefusalIsTheHostsAdvice(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
@@ -230,8 +230,8 @@ func TestResolveCredential_HelperRefusalIsTheHostsAdvice(t *testing.T) {
 			t.Errorf("message must contain %q; got:\n%s", want, msg)
 		}
 	}
-	if strings.Contains(msg, "forge login") {
-		t.Errorf("under a host, the remedy is the host's sign-in, never `forge login`; got:\n%s", msg)
+	if strings.Contains(msg, "forge cloud login") {
+		t.Errorf("under a host, the remedy is the host's sign-in, never `forge cloud login`; got:\n%s", msg)
 	}
 }
 
@@ -328,7 +328,7 @@ func TestResolveCredential_MalformedHelperValue(t *testing.T) {
 
 // TestCall_HelperCredentialRejectionNeverSaysForgeLogin: a helper-minted token
 // the control plane refuses is the host session's problem, so the remedy is
-// the host — not a `forge login` the user was promised they would not need.
+// the host — not a `forge cloud login` the user was promised they would not need.
 func TestCall_HelperCredentialRejectionNeverSaysForgeLogin(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -350,8 +350,8 @@ func TestCall_HelperCredentialRejectionNeverSaysForgeLogin(t *testing.T) {
 			if !strings.Contains(got, tc.want) || !strings.Contains(got, "ACME_TOKEN") {
 				t.Errorf("hint missing %q / the CI variable:\n%s", tc.want, got)
 			}
-			if strings.Contains(got, "forge login") {
-				t.Errorf("a helper-minted credential must never be told to `forge login`:\n%s", got)
+			if strings.Contains(got, "forge cloud login") {
+				t.Errorf("a helper-minted credential must never be told to `forge cloud login`:\n%s", got)
 			}
 		})
 	}

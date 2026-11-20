@@ -608,7 +608,7 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 		return err
 	}
 	if err := p("Adopt before porting: if a package covers the surface, use it; if it covers\n" +
-		"most of it, extend it project-side rather than forking it. `forge skill load\n" +
+		"most of it, extend it project-side rather than forking it. `forge agent skill load\n" +
 		"forge-libraries` has the when-to-adopt guidance.\n"); err != nil {
 		return err
 	}

@@ -210,7 +210,7 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{lint: `{"findings":[
 	  {"severity":"error","rule":"forgeconv-example","file":"internal/x.go","line":7,"message":"bad","fix_hint":"do the thing"},
-	  {"severity":"warning","rule":"forge-frontend-lock-drift","message":"drift","grace":{"introduced_in":"v1.0.0","gates_from":"v1.0.1","fix":"forge fix lock"}},
+	  {"severity":"warning","rule":"forge-frontend-lock-drift","message":"drift","grace":{"introduced_in":"v1.0.0","gates_from":"v1.0.1","fix":"forge lint fix lock"}},
 	  {"severity":"warning","rule":"plain-warning","message":"ignore me"}
 	],"summary":{"errors":1,"warnings":2,"infos":0,"total":3},"ok":false}`}
 
@@ -240,7 +240,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	rep := newUpgradeReport(upgradeOptions{})
 	rep.To = "v1.6.0"
 	rep.StartsGating = append(rep.StartsGating,
-		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Fix: "forge fix waits"},
+		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Fix: "forge lint fix waits"},
 		upgradeStartsGating{Rule: "forgeconv-product-event-pii", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"},
 	)
 	countStartsGating(rep.StartsGating, []lintDocFinding{
@@ -259,7 +259,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	printUpgradeSummary(&out, rep)
 	for _, want := range []string{
 		"Starts gating at v1.6.0",
-		"testwait-fixed-sleep (new in v1.5.0, gates from v1.5.1): 2 findings now gate; fix with `forge fix waits`",
+		"testwait-fixed-sleep (new in v1.5.0, gates from v1.5.1): 2 findings now gate; fix with `forge lint fix waits`",
 		"forgeconv-product-event-pii (new in v1.5.0, gates from v1.5.1): 0 findings now gate",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -271,7 +271,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(doc), `"starts_gating":[{"rule":"testwait-fixed-sleep","introduced_in":"v1.5.0","gates_from":"v1.5.1","fix":"forge fix waits","findings":2}`) {
+	if !strings.Contains(string(doc), `"starts_gating":[{"rule":"testwait-fixed-sleep","introduced_in":"v1.5.0","gates_from":"v1.5.1","fix":"forge lint fix waits","findings":2}`) {
 		t.Errorf("--json lacks starts_gating: %s", doc)
 	}
 	if empty, _ := json.Marshal(newUpgradeReport(upgradeOptions{})); !strings.Contains(string(empty), `"starts_gating":[]`) {
@@ -445,7 +445,7 @@ func TestUpgradeConverge_SkipCodemodsNamesWhatItLeftForYou(t *testing.T) {
 			detail = p.Detail
 		}
 	}
-	if !strings.Contains(detail, "forge fix operatorkit") && !strings.Contains(detail, " fix operatorkit") {
+	if !strings.Contains(detail, "forge lint fix operatorkit") && !strings.Contains(detail, " fix operatorkit") {
 		t.Errorf("the skipped phase does not name the codemod to run yourself: %q", detail)
 	}
 	if y, _ := os.ReadFile(filepath.Join(dir, "forge.yaml")); !strings.Contains(string(y), "forge_version: v1.0.0") {
@@ -532,7 +532,7 @@ func TestUpgradeConverge_PlaybookAutomationRunsCodemodsAndReportsWhatRemains(t *
 		t.Fatalf("a playbook still matching its detection is for a human: %v", err)
 	}
 	if len(rep.NeedsHuman) != 1 || rep.NeedsHuman[0].Kind != "playbook" || rep.NeedsHuman[0].ID != "v0.1.46" ||
-		!strings.Contains(rep.NeedsHuman[0].Fix, "forge skill load migrations/v0.1.46") ||
+		!strings.Contains(rep.NeedsHuman[0].Fix, "forge agent skill load migrations/v0.1.46") ||
 		!strings.Contains(rep.NeedsHuman[0].Fix, "project upgrade apply v0.1.46") {
 		t.Errorf("needs_human = %+v", rep.NeedsHuman)
 	}
@@ -558,7 +558,7 @@ func TestUpgradeConverge_ABlockedAutomationStepIsReportedWithItsReasons(t *testi
 			blocked = &rep.NeedsHuman[i]
 		}
 	}
-	if blocked == nil || blocked.ID != "blocker" || !strings.Contains(blocked.Message, "a ServeSpec knob") || !strings.Contains(blocked.Fix, "forge fix blocker") {
+	if blocked == nil || blocked.ID != "blocker" || !strings.Contains(blocked.Message, "a ServeSpec knob") || !strings.Contains(blocked.Fix, "forge lint fix blocker") {
 		t.Errorf("needs_human = %+v", rep.NeedsHuman)
 	}
 }

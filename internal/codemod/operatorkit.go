@@ -13,7 +13,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// operatorkit.go — `forge fix operatorkit`, the v0.1.46 operator-bridge move
+// operatorkit.go — `forge lint fix operatorkit`, the v0.1.46 operator-bridge move
 // (#918): lifecyclekit re-exported operatorkit's Run, Controller and Options,
 // so every binary importing lifecyclekit for Supervise or WrapWorker linked
 // controller-runtime. The three names now live only in operatorkit. The

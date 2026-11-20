@@ -81,7 +81,7 @@ func joinWindowsArgs(args []string) string {
 // user's profile), so unlike launchd/systemd no PATH is baked in: Task
 // Scheduler has no per-task env block and a `cmd /c set PATH=...` wrapper
 // would add a quoting layer for no gain. Output is not captured either, and
-// forge storage gc keeps no log file of its own.
+// forge machine storage gc keeps no log file of its own.
 func windowsTaskXML(command string, args []string, start time.Time) []byte {
 	return windowsTaskXMLFor(command, args, start, false)
 }

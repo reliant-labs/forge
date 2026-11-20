@@ -117,7 +117,7 @@ func TestPinnedConnectPluginNeverCrossesMajors(t *testing.T) {
 		t.Errorf("v2 build reads %q, %v; want v2.0.2", got, ok)
 	}
 
-	// `forge tools install` must not call the other major's binary installed.
+	// `forge machine tools install` must not call the other major's binary installed.
 	if m, ok := otherConnectMajorIn(v1Info, v2); !ok || m != connectmajor.V1 {
 		t.Errorf("v1 binary for a v2 project: got %s, %v; want v1, true", m, ok)
 	}

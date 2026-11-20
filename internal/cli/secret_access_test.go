@@ -173,7 +173,7 @@ func TestSecretAccessEmptyAndUnseenEnv(t *testing.T) {
 		t.Errorf("empty report must carry an empty array, got:\n%s", out)
 	}
 	out, err = runSecretCLI(t, "access", "--env", "prod", "K")
-	if err != nil || !strings.Contains(out, "no workflow may use it") || !strings.Contains(out, "forge secret allow") {
+	if err != nil || !strings.Contains(out, "no workflow may use it") || !strings.Contains(out, "forge env secret allow") {
 		t.Errorf("empty text output (err %v):\n%s", err, out)
 	}
 }
@@ -257,7 +257,7 @@ func TestSecretAccessErrorsSurfaceVerbatim(t *testing.T) {
 	} {
 		_, err := runSecretCLI(t, args...)
 		if err == nil || !strings.Contains(err.Error(), msg) {
-			t.Errorf("forge secret %s: err = %v, want the control plane's message verbatim", args[0], err)
+			t.Errorf("forge env secret %s: err = %v, want the control plane's message verbatim", args[0], err)
 		}
 	}
 }
@@ -298,7 +298,7 @@ func TestSecretAccessRefusesNonHostedEnv(t *testing.T) {
 	} {
 		_, err := runSecretCLI(t, args...)
 		if err == nil || !strings.Contains(err.Error(), "access lists are a control-plane feature") {
-			t.Errorf("forge secret %s on a FileSecrets env: err = %v", args[0], err)
+			t.Errorf("forge env secret %s on a FileSecrets env: err = %v", args[0], err)
 		}
 	}
 }
@@ -322,7 +322,7 @@ func externalProviderFixture(t *testing.T, envs []cloudEnvironment) *fakeControl
 
 // Access lists belong to the env's control-plane environment, not to its
 // secret_provider (forge bug report 0557bd68: control-plane/prod's external
-// OpenBao provider made `forge secret allow` refuse, though the env's
+// OpenBao provider made `forge env secret allow` refuse, though the env's
 // workflow secrets live on the control plane).
 func TestSecretAccessWorksForAnExternalProviderEnvWithAControlPlane(t *testing.T) {
 	fake := externalProviderFixture(t, []cloudEnvironment{{ID: "env-1", Name: "prod"}})
@@ -353,7 +353,7 @@ func TestSecretAllowDoesNotCreateAnExternalProviderEnv(t *testing.T) {
 // a bundle declaring `secret_provider = forge.ExternalSecrets {}` beside
 // `control_plane = forge.ControlPlane {...}` — control-plane/prod's shape
 // (deploy/kcl/prod/main.k) — renders to the entities the access-list gate
-// reads, and `forge secret allow` then reaches AllowSecretUse on that env's
+// reads, and `forge env secret allow` then reaches AllowSecretUse on that env's
 // control-plane environment.
 func TestSecretAllowOnARenderedExternalProviderEnv(t *testing.T) {
 	testkit.Slow(t, "renders KCL")

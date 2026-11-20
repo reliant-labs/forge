@@ -18,7 +18,7 @@ import (
 // listener as the redirect, receives the code, and redeems it at the token
 // endpoint with the verifier.
 //
-// This is the ONE implementation of a CLI's browser login: `forge login` and
+// This is the ONE implementation of a CLI's browser login: `forge cloud login` and
 // `reliant auth login` both run it, so the two cannot drift on the security
 // properties that matter (state, S256, exact redirect).
 //

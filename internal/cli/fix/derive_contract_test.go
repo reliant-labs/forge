@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// `forge fix derive-contract <dir>`: --dry-run reports and writes nothing; a
+// `forge lint fix derive-contract <dir>`: --dry-run reports and writes nothing; a
 // run rewrites the package and writes contract_gen.go at once; a package
 // that cannot derive its contract is refused with the reason.
 func TestFix_DeriveContract(t *testing.T) {

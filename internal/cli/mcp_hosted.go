@@ -6,7 +6,7 @@ package cli
 // "Reliant Forge" connector on reliant-api-server — on behalf of whoever
 // signed in to it. forge/cli.AddHostedTools is the public seam.
 //
-// THE SPLIT. The local stdio `forge mcp` keeps the repo tools (lint,
+// THE SPLIT. The local stdio `forge agent mcp` keeps the repo tools (lint,
 // generate, shapes, adopt …): they need the repo. The hosted server needs no
 // install and no repo, so it serves what lives in the account. Where both
 // serve a tool (skill_*, benefits, explain_error) it is the same tool: the
@@ -998,7 +998,7 @@ func hostedSkillSearch(in skillSearchArgs) *mcp.CallToolResult {
 }
 
 // hostedSkillLoad is RenderSkillContentAt for the forge-shipped scope alone:
-// the same body `forge skill load` prints outside a project.
+// the same body `forge agent skill load` prints outside a project.
 func hostedSkillLoad(in skillLoadArgs) *mcp.CallToolResult {
 	name := strings.TrimPrefix(strings.TrimSpace(in.Name), "forge/")
 	skills, err := listForgeShippedSkills()

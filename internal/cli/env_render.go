@@ -6,7 +6,7 @@
 // The question this answers is "what does this environment actually own",
 // and until now forge had no way to ask it. `kcl run` on a real project
 // fails, because a forge project's KCL calls kcl_plugin.forge.* and only
-// forge registers that namespace. `forge doctor` renders every environment
+// forge registers that namespace. `forge project doctor` renders every environment
 // internally and then reports a COUNT ("5 env(s), 341 manifest(s)") — the
 // objects it read never leave the check. `forge env deploy --dry-run` does
 // print manifests, but it is the deploy command: it resolves a kubectl
@@ -36,7 +36,7 @@
 // KCL's `file.write` runs during evaluation, so a project whose deploy KCL
 // generates a file (control-plane's dev main.k calls `nats.write_conf`,
 // which materialises deploy/nats/nats.conf) writes it every time anything
-// renders — `forge doctor` and this command included. forge has no hook to
+// renders — `forge project doctor` and this command included. forge has no hook to
 // suppress a project's own writes: the write happens inside the embedded KCL
 // runtime, which offers no read-only mode, and the alternatives (rendering
 // from a copy of the tree, sandboxing the process) are neither portable nor
@@ -83,7 +83,7 @@ import (
 // than on an infra service) is applied to EVERY cluster the env deploys to —
 // ScopeManifestsToGroup keeps it for every group rather than guessing a
 // primary. Printing such a document once, with both clusters named, keeps
-// the object count equal to the render's own count (what `forge doctor`
+// the object count equal to the render's own count (what `forge project doctor`
 // reports) while still saying where it goes. `--cluster` then narrows to
 // exactly the stream one cluster receives.
 type renderedObject struct {

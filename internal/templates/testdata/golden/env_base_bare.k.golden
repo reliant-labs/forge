@@ -58,7 +58,7 @@ hosted = lambda w: fw.Workload, app_config: any, db_name: str -> fw.Workload {
 #     }
 #
 # A hosted env's deploys go through the control plane, so it must reach the
-# cluster too: register it once with `forge cluster connect shop-<env>
+# cluster too: register it once with `forge cloud cluster connect shop-<env>
 # --context <kubectl context> --env <env>`. Until `_cluster` is declared, a
 # workload bound here fails the render, naming itself. A cluster workload
 # pulls the image workloads.k declares (`forge env build <env> --push`), gets

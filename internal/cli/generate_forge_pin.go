@@ -158,8 +158,8 @@ func pinHopNeedsUpgrade(projectDir, from, to string) string {
 			hop, supportedUpgradeWindowMinors)
 	}
 	if names := pendingUpgradeCodemods(projectDir, from, to); len(names) > 0 {
-		return fmt.Sprintf("codemod %s still has to rewrite this project (or run `forge fix %s` yourself)",
-			strings.Join(names, ", "), strings.Join(names, "` / `forge fix "))
+		return fmt.Sprintf("codemod %s still has to rewrite this project (or run `forge lint fix %s` yourself)",
+			strings.Join(names, ", "), strings.Join(names, "` / `forge lint fix "))
 	}
 	metas, err := loadMigrationMetas()
 	if err != nil {

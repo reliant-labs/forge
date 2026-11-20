@@ -12,15 +12,15 @@ For local-dev-against-a-cluster workflows. For local-go-only (no k8s) see the
 
 | Command | What it does |
 |---|---|
-| `forge cluster up [--wait]` | Create k3d cluster from `deploy/k3d.yaml`. Idempotent — no-op if already up. |
-| `forge cluster down` | Delete the cluster. Idempotent — no-op if not present. |
-| `forge cluster reset` | Down then up (default `--wait=true`). |
-| `forge cluster reload` | Re-render `deploy/kcl/dev/` + kubectl apply + wait rollout. The inner-loop reload after editing code or KCL. |
-| `forge cluster status [--json]` | Cluster up/down + kubectl context + config path + pods in the dev namespace + ingress URLs + sibling dev namespaces. |
-| `forge cluster logs [--service x] [--tail N]` | Stream `kubectl logs -f` for one or all forge-managed pods in the dev namespace. |
-| `forge cluster info` | Diagnostic dump — cluster, context, namespace, declared images, the component list (every server answers on the binary's one mux, `PORT`, default 8080) and declared frontend ports. |
-| `forge cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
-| `forge cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
+| `forge dev cluster up [--wait]` | Create k3d cluster from `deploy/k3d.yaml`. Idempotent — no-op if already up. |
+| `forge dev cluster down` | Delete the cluster. Idempotent — no-op if not present. |
+| `forge dev cluster reset` | Down then up (default `--wait=true`). |
+| `forge dev cluster reload` | Re-render `deploy/kcl/dev/` + kubectl apply + wait rollout. The inner-loop reload after editing code or KCL. |
+| `forge dev cluster status [--json]` | Cluster up/down + kubectl context + config path + pods in the dev namespace + ingress URLs + sibling dev namespaces. |
+| `forge dev cluster logs [--service x] [--tail N]` | Stream `kubectl logs -f` for one or all forge-managed pods in the dev namespace. |
+| `forge dev cluster info` | Diagnostic dump — cluster, context, namespace, declared images, the component list (every server answers on the binary's one mux, `PORT`, default 8080) and declared frontend ports. |
+| `forge dev cluster urls [--json]` | Print the ingress URL table for the dev env (one row per HTTP/GRPC route). |
+| `forge dev cluster instances [--json]` | List every forge-managed dev namespace across every reachable k3d cluster (multi-worktree). |
 | `forge env up <env> --target <workload> [--background]` | Single-workload runner: scopes the WHOLE run — build, deploy, host and frontend phases — to the named workload. A workload bound to `forge.OnHost` launches as a host process, dispatching on its `runner` (`go-run` / `air` / `binary` / `delve`). |
 | `forge env options <env> [--json]` | List the `-D` render options that env's KCL declares (see below). |
 | `forge env config <env> [--json] [--workload <name>]` | Print the resolved configuration `deploy/kcl/<env>/` hands each workload — the values `forge env up` passes to each process (see below). |
@@ -118,7 +118,7 @@ For fine-grained control:
 # Terminal 1: long-running infra + cluster-bound workloads
 # (only once something in dev is bound to the cluster — `_on_k3d(...)`;
 # the scaffolded dev env runs everything on the host and needs neither)
-forge cluster up --wait
+forge dev cluster up --wait
 forge env deploy dev
 
 # Terminal 2: the API (every service; air reloads it as you edit)
@@ -245,7 +245,7 @@ After the host + frontend phases start, `up` prints a summary box listing each
 process, its URL and its log path. Host-service URLs are derived from each
 service's KCL `PORT` env var; a service that declares no `PORT` is listed
 without one. Cluster service routes (Gateway API) are not host-local — list
-them with `forge cluster urls`.
+them with `forge dev cluster urls`.
 
 ## Where `forge env up` spent its time
 
@@ -301,7 +301,7 @@ tasks:
   dev:
     desc: Bring up the cluster + its workloads, run host workloads locally
     cmds:
-      - forge cluster up --wait
+      - forge dev cluster up --wait
       - forge env deploy dev --prune       # cluster-bound workloads only
       - forge env up dev --target api --background
 
@@ -312,9 +312,9 @@ tasks:
 
 ## Safety: kubectl context pinning
 
-Every `forge cluster` command runs against `k3d-<cluster-name>` (resolved from
+Every `forge dev cluster` command runs against `k3d-<cluster-name>` (resolved from
 `deploy/k3d.yaml` metadata.name, falling back to forge.yaml `name`), so you
-cannot accidentally `forge cluster reload` into staging or prod.
+cannot accidentally `forge dev cluster reload` into staging or prod.
 
 `forge env deploy <env>` is DECLARATIVE-ONLY for cluster selection: the target
 kubectl context comes SOLELY from the `cluster` of the `forge.ClusterTarget` a
@@ -366,13 +366,13 @@ guard.
 For per-worktree namespacing — each worktree its own namespace, one shared
 cluster — set the `namespace` field on each worktree's `forge.ClusterTarget`
 in `deploy/kcl/dev/main.k` (or via the `FORGE_DEV_NAMESPACE` env override if
-your bootstrap supports it). `forge cluster instances` then lists every dev
+your bootstrap supports it). `forge dev cluster instances` then lists every dev
 namespace on the host with its pod count.
 
 ## What forge does NOT own
 
 Forge owns the universal cluster + ingress + status mechanics. These stay in
-`scripts/`, called from `Taskfile.yml` and composed with the `forge cluster`
+`scripts/`, called from `Taskfile.yml` and composed with the `forge dev cluster`
 primitives above:
 
 - Sibling-repo deploys (project-specific helm installs, manifest applies)

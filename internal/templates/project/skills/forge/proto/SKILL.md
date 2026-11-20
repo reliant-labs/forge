@@ -203,7 +203,7 @@ Create or direct API writes; add `forge:read-only` on the entity field when the
 API must refuse writes too. Pages are owned and never regenerated: run
 `forge lint --guarded-fields` after adding guards. Misspelled markers are inert
 comments; `forge lint --proto-markers` warns about them. Full examples and
-limitations: `forge skill load proto/guards`.
+limitations: `forge agent skill load proto/guards`.
 
 ### Getting annotation syntax right: run `forge generate`
 
@@ -257,7 +257,7 @@ an rpc whose remainder IS another entity's name — `UpdateJobNote` where
 
 **The generated frontend hooks** — which rpcs become `useQuery` vs `useMutation`,
 `// forge:query-scope`, paged `use<Rpc>Infinite`, and `<svc>Queries` /
-`<svc>Mutations` for code outside React: `forge skill load proto/hooks`.
+`<svc>Mutations` for code outside React: `forge agent skill load proto/hooks`.
 
 The generated conversions map the **intersection** of wire fields and
 columns by name: a wire-only field never reaches the DB, a column-only
@@ -324,7 +324,7 @@ the table's declared-column allowlist (`<Entity>Columns`); an undeclared
 column returns `InvalidArgument`, not a silent no-op.
 
 A range (`published_after`, `week_start_from`) or a key prefix is declared
-on the field, not hand-written: `forge skill load proto/list-filters`.
+on the field, not hand-written: `forge agent skill load proto/list-filters`.
 
 **The request's fields ARE the filter surface.** To filter or scope a list by
 anything else — an enum `status`, a foreign key, an owner `<owner>_id` — add

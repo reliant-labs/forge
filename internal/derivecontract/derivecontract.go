@@ -1,5 +1,5 @@
 // Package derivecontract migrates one package from a hand-written contract
-// to a derived one: `forge fix derive-contract <package-dir>`.
+// to a derived one: `forge lint fix derive-contract <package-dir>`.
 //
 // Before, the package states its API twice — `type Service interface` in
 // contract.go, and the same methods on the one type that implements it.
@@ -750,7 +750,7 @@ func markType(p *pkgSrc, ed edits, svc *serviceDecl, t *typeDecl) {
 // carried).
 //
 // contract.go is removed when nothing but dependency interfaces (or nothing
-// at all) is left in it: those move to deps.go, the file `forge fix
+// at all) is left in it: those move to deps.go, the file `forge lint fix
 // narrow-deps` and `forge scaffold package` declare them in, which `forge
 // generate` mocks beside the derived Service. When it still holds anything
 // else — the Deps struct, constants, functions — it stays, as a companion

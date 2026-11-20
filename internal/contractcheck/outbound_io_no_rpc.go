@@ -187,7 +187,7 @@ func lintOutboundIOPkg(pkgDir, rootDir string, projectV2 bool) ([]forgeconv.Find
 			Message: fmt.Sprintf(
 				"package marked `// forge:outbound-io` registers Connect RPC handler %q; the marker asserts the package only calls OUT — an inbound RPC handler contradicts it",
 				hit.calleeName),
-			Remediation: "either drop the `// forge:outbound-io` marker (this package serves inbound traffic, so it is a service) or move the RPC handler to internal/handlers/<svc>/ and have it depend on this package's Service. Skill: forge skill load adapter",
+			Remediation: "either drop the `// forge:outbound-io` marker (this package serves inbound traffic, so it is a service) or move the RPC handler to internal/handlers/<svc>/ and have it depend on this package's Service. Skill: forge agent skill load adapter",
 		})
 	}
 	return findings, nil

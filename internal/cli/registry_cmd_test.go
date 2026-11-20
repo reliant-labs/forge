@@ -11,8 +11,8 @@ import (
 )
 
 // The registry a CI job logs in to and scans/signs is the one the env's KCL
-// declares — never a value the workflow names. These pin `forge registry
-// login <env>` and `forge registry ref <env>`, the two commands that let a
+// declares — never a value the workflow names. These pin `forge cloud registry
+// login <env>` and `forge cloud registry ref <env>`, the two commands that let a
 // workflow work from the declaration alone.
 
 // stubDockerLogin replaces the docker-login seam for one test and records
@@ -68,7 +68,7 @@ func TestRegistryLogin_LogsInToTheDeclaredRegistryHost(t *testing.T) {
 	calls := stubDockerLogin(t)
 
 	if _, err := runRegistryCommand(t, "s3cret\n", "login", "prod", "--username", "ci-bot", "--password-stdin"); err != nil {
-		t.Fatalf("forge registry login prod: %v", err)
+		t.Fatalf("forge cloud registry login prod: %v", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("docker login calls = %v, want exactly one", *calls)
@@ -85,7 +85,7 @@ func TestRegistryLogin_HostedEnvUsesTheControlPlaneRegistry(t *testing.T) {
 	planProject(t, hostedPushFixture("us-docker.pkg.dev/acme/org-7"))
 	calls := stubDockerLogin(t)
 	if _, err := runRegistryCommand(t, "tok", "login", "prod", "--username", "oauth2accesstoken", "--password-stdin"); err != nil {
-		t.Fatalf("forge registry login prod (hosted): %v", err)
+		t.Fatalf("forge cloud registry login prod (hosted): %v", err)
 	}
 	if len(*calls) != 1 || (*calls)[0].host != "us-docker.pkg.dev" {
 		t.Errorf("docker login calls = %+v, want one to us-docker.pkg.dev", *calls)
@@ -105,7 +105,7 @@ func TestRegistryLogin_TakesNoRegistry(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := runRegistryCommand(t, "x", args...); err == nil {
-				t.Errorf("forge registry %s: want a usage error — the registry comes from the env's KCL only", strings.Join(args, " "))
+				t.Errorf("forge cloud registry %s: want a usage error — the registry comes from the env's KCL only", strings.Join(args, " "))
 			}
 		})
 	}
@@ -115,7 +115,7 @@ func TestRegistryLogin_TakesNoRegistry(t *testing.T) {
 	cmd := newRegistryLoginCmd()
 	for _, name := range []string{"registry", "host", "server"} {
 		if cmd.Flags().Lookup(name) != nil {
-			t.Errorf("forge registry login has a --%s flag; the registry is declared in KCL, never passed", name)
+			t.Errorf("forge cloud registry login has a --%s flag; the registry is declared in KCL, never passed", name)
 		}
 	}
 }
@@ -124,10 +124,10 @@ func TestRegistryLogin_TakesNoRegistry(t *testing.T) {
 // has no host until the org is known.
 func TestRegistryLogin_BareImageFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
-	stubControlPlaneOrgError(t, errors.New("no control-plane credential\nfix: run `forge login`"))
+	stubControlPlaneOrgError(t, errors.New("no control-plane credential\nfix: run `forge cloud login`"))
 	calls := stubDockerLogin(t)
 	_, err := runRegistryCommand(t, "x", "login", "prod", "--username", "u", "--password-stdin")
-	if err == nil || !strings.Contains(err.Error(), "forge login") {
+	if err == nil || !strings.Contains(err.Error(), "forge cloud login") {
 		t.Fatalf("login with no resolvable org: want the credential remedy, got %v", err)
 	}
 	if len(*calls) != 0 {
@@ -158,7 +158,7 @@ func TestRegistryLogin_LocalRegistryNeedsNoLogin(t *testing.T) {
 // A reference with no host segment returns "" rather than guessing Docker Hub.
 // That is the point: with the registry declared on the image, a hostless
 // reference is an INCOMPLETE declaration, and the render refuses it by name.
-// Defaulting it here would have `forge registry login` ask for docker.io
+// Defaulting it here would have `forge cloud registry login` ask for docker.io
 // credentials on behalf of an image that was never going to be pushed there.
 func TestRegistryHost(t *testing.T) {
 	for in, want := range map[string]string{
@@ -189,7 +189,7 @@ func TestRegistryRef_PrintsThePushedDigestRef(t *testing.T) {
 	}
 	out, err := runRegistryCommand(t, "", "ref", "prod")
 	if err != nil {
-		t.Fatalf("forge registry ref prod: %v", err)
+		t.Fatalf("forge cloud registry ref prod: %v", err)
 	}
 	if strings.TrimSpace(out) != "registry.example/prod/pt@"+refDigest {
 		t.Errorf("ref = %q, want registry.example/prod/pt@%s", strings.TrimSpace(out), refDigest)
@@ -207,7 +207,7 @@ func TestRegistryRef_WritesGitHubOutput(t *testing.T) {
 	outFile := filepath.Join(t.TempDir(), "gh_output")
 	t.Setenv("GITHUB_OUTPUT", outFile)
 	if _, err := runRegistryCommand(t, "", "ref", "prod", "--github-output"); err != nil {
-		t.Fatalf("forge registry ref prod --github-output: %v", err)
+		t.Fatalf("forge cloud registry ref prod --github-output: %v", err)
 	}
 	b, _ := os.ReadFile(outFile)
 	for _, want := range []string{
@@ -244,7 +244,7 @@ func TestRegistryRef_NamedImage(t *testing.T) {
 		[]buildResult{{kind: "docker", image: "web", tag: "t1", digest: refDigest}})
 	out, err := runRegistryCommand(t, "", "ref", "prod", "--image", "web")
 	if err != nil {
-		t.Fatalf("forge registry ref prod --image web: %v", err)
+		t.Fatalf("forge cloud registry ref prod --image web: %v", err)
 	}
 	if strings.TrimSpace(out) != "registry.example/prod/web@"+refDigest {
 		t.Errorf("ref = %q, want registry.example/prod/web@%s", strings.TrimSpace(out), refDigest)

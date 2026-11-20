@@ -293,13 +293,13 @@ func TestBuildCmd_HostedEnvPushesToTheWorkloadReference(t *testing.T) {
 // host would restate a value forge composes.
 func TestBuildCmd_HostedBareImageWithNoOrgFails(t *testing.T) {
 	planProject(t, hostedPushFixture(""))
-	stubControlPlaneOrgError(t, errors.New("no control-plane credential for http://127.0.0.1:1\nfix: run `forge login`"))
+	stubControlPlaneOrgError(t, errors.New("no control-plane credential for http://127.0.0.1:1\nfix: run `forge cloud login`"))
 
 	_, err := runBuildCommand(t, "prod", "--push", "--no-generate", "--tag", "t1")
 	if err == nil {
 		t.Fatal("--push with a bare hosted image and no resolvable org: want an error, got nil")
 	}
-	for _, want := range []string{"forge login"} {
+	for _, want := range []string{"forge cloud login"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should name %q; got: %v", want, err)
 		}
@@ -373,7 +373,7 @@ func TestResolvePushPlan_NoPushIsANoOp(t *testing.T) {
 // TestDeclaredImageDestinations_TwoWorkloadsTwoRegistries is the case an
 // env-wide registry could not express at all: two workloads in ONE env, each
 // pushing to its own registry. Both are destinations, each labelled with the
-// workload that declared it, and `forge registry login` derives both hosts.
+// workload that declared it, and `forge cloud registry login` derives both hosts.
 func TestDeclaredImageDestinations_TwoWorkloadsTwoRegistries(t *testing.T) {
 	ents := &KCLEntities{Workloads: []WorkloadEntity{
 		clusterWL("admin", "c", "n", func(w *WorkloadEntity) {
@@ -385,7 +385,7 @@ func TestDeclaredImageDestinations_TwoWorkloadsTwoRegistries(t *testing.T) {
 			w.Build.Type = "docker"
 		}),
 		// A third-party image is PULLED, never pushed: including it would make
-		// `forge registry login` demand docker.io credentials nothing needs.
+		// `forge cloud registry login` demand docker.io credentials nothing needs.
 		clusterWL("nats", "c", "n", func(w *WorkloadEntity) {
 			w.Image = "docker.io/library/nats:2.10"
 			w.Build = BuildConfigEntity{} // forge builds nothing for it

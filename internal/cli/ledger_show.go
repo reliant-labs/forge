@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger show [<env>] --json` — the machine ledger's records, for the
+// `forge release ledger show [<env>] --json` — the machine ledger's records, for the
 // daemon.
 //
 // THIS IS THE ONE DELIBERATE EXCEPTION TO "LIVE NEVER NEEDS THE DAEMON"
@@ -95,7 +95,7 @@ type ledgerShowSession struct {
 	Stale bool `json:"stale"`
 }
 
-// newLedgerShowCmd is `forge ledger show`.
+// newLedgerShowCmd is `forge release ledger show`.
 func newLedgerShowCmd() *cobra.Command {
 	var asJSON bool
 

@@ -18,7 +18,7 @@ for static sites, the bucket, the CDN and the hostname):
   database   `_db`, a dedicated managed Postgres; workloads read its URL
              through `forge.DatabaseRef`, so nobody handles the password
   secrets    the control plane's write-only store:
-             `forge secret set --env {{.EnvName}} <KEY>` (value on stdin)
+             `forge env secret set --env {{.EnvName}} <KEY>` (value on stdin)
 {{- if .HasFrontend}}
   frontend   the static export, on the platform's static hosting
 {{- end}}
@@ -76,7 +76,7 @@ import .config as appcfg
 # The database. RETAIN (the default deletionPolicy): removing this
 # declaration never drops the data. Your own Postgres instead? Delete `_db`
 # and `databases`, pass "" for the database in `_hosted`, then
-# `forge secret set --env {{.EnvName}} DATABASE_URL`.
+# `forge env secret set --env {{.EnvName}} DATABASE_URL`.
 {{if not .DatabaseDisabled}}_db = forge.ManagedDatabase {
     name = "{{.DatabaseName}}"
     runtime = forge.OnHosted {}
@@ -127,7 +127,7 @@ _hosted = lambda w: fw.Workload -> fw.Workload {
 #
 #     _cluster = forge.ClusterTarget {
 #         cluster = "gke_acme_us-central1_{{.EnvName}}"   # its kubectl context
-#         connected_cluster = "{{.ProjectName}}-{{.EnvName}}"     # `forge cluster connect`
+#         connected_cluster = "{{.ProjectName}}-{{.EnvName}}"     # `forge cloud cluster connect`
 #         namespace = "{{.ProjectName}}-" + option("env")
 #         platform = "amd64"                       # the nodes' arch
 #     }
@@ -224,7 +224,7 @@ _bundle = forge.Bundle {
 {{- end}}
     # SECRET VALUES live in the control plane's store; forge never sees one.
     # A `sensitive` config field a hosted workload reads is a managedSecret
-    # of the same key: `forge secret set --env {{.EnvName}} <KEY>`.
+    # of the same key: `forge env secret set --env {{.EnvName}} <KEY>`.
     secret_provider = forge.HostedSecrets {}
     # Once workloads run on `_cluster`, it carries this env's support objects
     # too. Add, with `import .ingress as ing` above (deploy/kcl/{{.EnvName}}/ingress.k):

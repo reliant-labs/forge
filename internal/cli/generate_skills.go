@@ -1,7 +1,7 @@
 // `forge generate` step: retire previously delivered agent skills.
 //
 // Forge never writes skills into a project. Reliant reads forge's skills
-// straight from the binary (`forge skill list|search|load`), and an on-disk
+// straight from the binary (`forge agent skill list|search|load`), and an on-disk
 // render is a second, staler copy that can shadow the live catalog. Older
 // forge versions did render `.claude/skills/<flat>/SKILL.md`; this step
 // removes those forge-owned copies on the next generate. It never deletes a

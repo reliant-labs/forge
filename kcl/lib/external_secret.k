@@ -106,7 +106,7 @@ _context = lambda src: any, pt: any -> str {
     src.cluster if src.cluster else (pt.cluster if pt else "")
 }
 
-# The id a cluster is registered under in the store: the name `forge cluster
+# The id a cluster is registered under in the store: the name `forge cloud cluster
 # connect` recorded, else the context. Same precedence as pkg/release
 # (ShapeStoreSecret.ConnectedCluster, then Cluster).
 _cluster_id = lambda b: any, pt: any, ctx: str -> str {

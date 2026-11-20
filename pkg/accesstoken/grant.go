@@ -106,7 +106,7 @@ var scopeResourceRules = map[Scope]struct {
 // A managed daemon runs forge on the user's behalf: the reliant UI's Deploy
 // button re-execs the daemon, and that subprocess inherits the daemon's
 // credential and nothing else. Without this, forge inside a managed daemon
-// cannot authenticate at all — the only way in would be `forge login` in a
+// cannot authenticate at all — the only way in would be `forge cloud login` in a
 // daemon shell, which needs a browser loopback a remote pod does not have.
 //
 // The binding is what makes this SAFE rather than a widening. The token acts

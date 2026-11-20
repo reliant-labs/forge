@@ -14,7 +14,7 @@ func lookupCredential(path, endpoint string) (credentials.Credential, error) {
 	human, err := credentials.Lookup(path, endpoint, HumanClientID)
 	if err == nil {
 		if human.Kind != "human" {
-			return credentials.Credential{}, errors.New("human credential entry contains a delegated capability; run forge login")
+			return credentials.Credential{}, errors.New("human credential entry contains a delegated capability; run forge cloud login")
 		}
 		return human, nil
 	}

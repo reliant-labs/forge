@@ -50,11 +50,16 @@ func newEnvCmd() *cobra.Command {
 	cmd.AddCommand(newSmokeCmd())
 	cmd.AddCommand(newSecretsCmd())
 	cmd.AddCommand(newDevStackCmd())
+	// `kcl` evaluates ONE KCL file of the project (kcl_eval.go); `secret`
+	// edits an env's secret store (secret_store_cmd.go).
+	cmd.AddCommand(newKCLCmd())
+	cmd.AddCommand(newSecretCmd())
+	groupEnvCommands(cmd)
 	return cmdutil.StrictGroup(cmd)
 }
 
 // envCommandGroups sorts `forge env --help` into four sections: with build,
-// kcl and secret under it (deprecated_aliases.go) env has some thirty
+// kcl and secret under it env has some thirty
 // subcommands, and one alphabetical list of them hid the lifecycle verbs
 // people come for. A subcommand missing here is listed under "Additional
 // Commands"; TestEnvHelpGroupsEverySubcommand keeps that from happening.
@@ -68,9 +73,7 @@ var envCommandGroups = []struct {
 	{"secrets", "Secrets:", []string{"secrets", "secret"}},
 }
 
-// groupEnvCommands assigns env's subcommands to envCommandGroups. It runs
-// once the whole tree is assembled, because kcl and secret are mounted
-// under env after newEnvCmd returns.
+// groupEnvCommands assigns env's subcommands to envCommandGroups.
 func groupEnvCommands(env *cobra.Command) {
 	byName := map[string]string{}
 	for _, g := range envCommandGroups {

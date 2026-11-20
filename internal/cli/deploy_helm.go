@@ -11,7 +11,7 @@
 //
 // The CRD-fetch REUSES the existing pinned-CRD machinery
 // (dev_cluster_ingress.go: ingressPinnedVersions + the cached fetch) that
-// the k3d `forge cluster up` path already owns — keeping internal/cluster
+// the k3d `forge dev cluster up` path already owns — keeping internal/cluster
 // free of the templates/cache dependency (cli imports cluster, not the
 // reverse).
 package cli

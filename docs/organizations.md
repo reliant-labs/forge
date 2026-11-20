@@ -7,7 +7,7 @@ was a legacy design, not a requirement of OAuth or multi-organization accounts.
 It confused authentication (who signed in) with authorization (what that person
 may do to a particular target).
 
-`forge login` now authenticates the person once per endpoint. Its revocable
+`forge cloud login` now authenticates the person once per endpoint. Its revocable
 human credential is stored separately from delegated automation and claimable
 capabilities. It carries no selected organization and no snapshot of org grants.
 There is no `forge org use`, and login/logout take no organization selector.
@@ -15,7 +15,7 @@ There is no `forge org use`, and login/logout take no organization selector.
 ## First deployment
 
 ```sh
-forge login
+forge cloud login
 forge env deploy prod --org <owner-org-id>
 ```
 
@@ -41,7 +41,7 @@ Browser login uses the `forge-cli-human` credential namespace. Explicit
 replace the human entry. Claimable credentials retain their separate project/env
 namespace. They never become human sessions or gain cross-org authority.
 
-`forge logout` revokes the current device's human session across all orgs at the
+`forge cloud logout` revokes the current device's human session across all orgs at the
 selected endpoint, then removes it locally. It does not revoke automation or
 claimable tokens. Other endpoints and devices are unaffected. A failed revocation
 retains the local entry so it can be retried; an already revoked/expired session
@@ -56,10 +56,10 @@ login.
 A control plane that predates human identities ignores the parameter and
 answers with an org-bound token and no `credential_kind`. forge stores that as
 a delegated `org-login` entry (client `forge-cli`), never as an identity, and
-`forge login` prints a note saying it got an organization-bound login. Every
+`forge cloud login` prints a note saying it got an organization-bound login. Every
 command then takes the delegated path that control plane serves (`GetTenant`,
-no `ResolveHostedProject`), and `forge logout` forgets it locally. Once the
-control plane issues human identities, the next `forge login` stores one
+no `ResolveHostedProject`), and `forge cloud logout` forgets it locally. Once the
+control plane issues human identities, the next `forge cloud login` stores one
 instead; no forge upgrade is needed. Any other unknown `credential_kind` is
 refused.
 Automation keeps its existing restricted path. No persistent org-use state or

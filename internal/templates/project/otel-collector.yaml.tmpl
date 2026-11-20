@@ -26,7 +26,7 @@
 # OTLP with the session and trace it belongs to. Tailing the file too would
 # store every console line twice, under two service names. The SDK is the one
 # browser path, in dev and in production alike, so the frontend_*.log files are
-# excluded here. They stay on disk, and stay what `forge skill load debug`
+# excluded here. They stay on disk, and stay what `forge agent skill load debug`
 # points at; they are only not shipped.
 receivers:
   filelog/forge:

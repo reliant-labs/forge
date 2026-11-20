@@ -579,7 +579,7 @@ type siteRef struct {
 //
 // Resolution follows a single assignment through a variable, which is the case
 // the original matcher missed: a project declares `_registry = "…"` once at the
-// top of the file — because `forge build` and `forge registry login` read that
+// top of the file — because `forge build` and `forge cloud registry login` read that
 // one line — and writes `registry = _registry` on the target. Matching only a
 // literal saw no registry at all in such a file.
 func scanRegistrySites(t *kclTree) ([]siteRef, []Unaccounted) {

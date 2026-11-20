@@ -2,7 +2,7 @@
 //
 // `forge lint --json` — machine-readable lint output for sub-agents
 // and CI, following the same conventions as `forge project audit --json` and
-// `forge doctor --json` (flag name `--json`, indented json.Encoder to
+// `forge project doctor --json` (flag name `--json`, indented json.Encoder to
 // stdout, non-zero exit via a sentinel error after the report prints).
 //
 // Output contract (stable; extensions are additive, same policy as the

@@ -21,14 +21,14 @@ func newStopCmd(_ *factory.Factory) *cobra.Command {
 		Short: "Stop the debug session (detaches from attached processes; kills only what forge launched)",
 		Long: `Stop the debug session.
 
-For sessions forge launched (forge debug start <service> / --docker), stop
+For sessions forge launched (forge dev debug start <service> / --docker), stop
 kills the debugged process and reaps the dlv server.
 
-For an ATTACH session (forge debug start --attach <pid>), stop DETACHES the
+For an ATTACH session (forge dev debug start --attach <pid>), stop DETACHES the
 debugger: Delve removes every breakpoint it inserted and the target keeps
 running. forge never kills a process it did not launch.
 
-For a CONNECTED session (forge debug connect <addr>), stop clears the
+For a CONNECTED session (forge dev debug connect <addr>), stop clears the
 session's breakpoints, resumes the target and disconnects; the dlv server and
 its target keep running.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -83,7 +83,7 @@ func stopActionFor(s *dbgsvc.SessionInfo) stopAction {
 func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 	action := stopActionFor(session)
 	// A debugged process can be the one running this command (a server under
-	// `forge debug start` that hosts the shell typing `forge debug stop`).
+	// `forge dev debug start` that hosts the shell typing `forge dev debug stop`).
 	// Killing it would end that session, so it is detached instead — the
 	// same lineage rule every forge stop path follows (see procguard).
 	if action == actionKillTarget && procguard.Self().Contains(session.PID) {
@@ -106,7 +106,7 @@ func runStop(ctx context.Context, session *dbgsvc.SessionInfo) error {
 			}
 		case actionRelease:
 			if err := dbg.Release(session.BreakpointIDs); err != nil {
-				return fmt.Errorf("releasing the dlv server at %s (session kept; retry 'forge debug stop'): %w", session.Addr, err)
+				return fmt.Errorf("releasing the dlv server at %s (session kept; retry 'forge dev debug stop'): %w", session.Addr, err)
 			}
 		default: // actionDetach
 			// Detach — never just close the connection: Delve must remove

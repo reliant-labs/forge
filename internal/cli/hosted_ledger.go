@@ -323,7 +323,7 @@ type wirePromotion struct {
 	PlanDigest           string   `json:"planDigest,omitempty"`
 	ApprovedBy           string   `json:"approvedBy,omitempty"`
 	AcknowledgedFindings []string `json:"acknowledgedFindings,omitempty"`
-	// ImportedFrom is set on a promotion that came from `forge ledger
+	// ImportedFrom is set on a promotion that came from `forge release ledger
 	// import` (§11): the git path it was read from. Its presence is what
 	// labels the row as history rather than something that happened here.
 	ImportedFrom string `json:"importedFrom,omitempty"`

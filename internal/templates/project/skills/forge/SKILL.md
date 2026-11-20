@@ -84,7 +84,7 @@ Add `--json` to any of them to query rather than read.
 Start recon with `forge project shapes --grep <Name>`: one symbol across proto,
 schema, handlers, hooks and stores with `file:line`. Use `--unimplemented` for
 missing handlers and `--service <Name>` to narrow it. Full recipes:
-`forge skill load shapes`.
+`forge agent skill load shapes`.
 
 For forge's OWN APIs, use `forge project libraries <pkg>` — every signature,
 without hunting generator source. For your generated stores,
@@ -101,7 +101,7 @@ hand-wrote and then deleted.
 | add a **service** | `forge scaffold service <name>` — proto stub, `internal/handlers/<svc>/`, its compose.go entry (the `server` root runs it — no per-service subcommand or workload), and a test-harness entry | `services` |
 | add a **custom rpc** | declare it in the proto, then `forge scaffold rpc <svc> <Name>` — a correctly-signed pb-through method plus a self-destructing test row. Never hand-write the stub | `api` |
 | write a **query the generated CRUD can't express** | `internal/db/<entity>_repo_ext.go` is already there, with the repo delegates, the `db.Bun()` raw-SQL handle and `orm.Context` documented in its header | `db`, `db/crud-overrides` |
-| build a **UI control** | check `src/components/` and `forge component search <thing>` first. A status badge, an enum select, and the foreign-key picker/name pair are already scaffolded and enum-aware; the library ships 70+ more | `frontend`, `frontend/pages` |
+| build a **UI control** | check `src/components/` and `forge ui component search <thing>` first. A status badge, an enum select, and the foreign-key picker/name pair are already scaffolded and enum-aware; the library ships 70+ more | `frontend`, `frontend/pages` |
 | write a **table-driven test** | `forge/pkg/tdd` + the scaffolded per-rpc `handlers_scaffold_<rpc>_test.go`; contract packages get a `mock_gen.go` you configure by field | `testing/patterns` |
 | **port a utility** (errors, auth, middleware, test harness, money, retries) | `forge project libraries` lists every `forge/pkg/*` package with its purpose and source path. Adopt before porting — `forge/pkg/svcerr` is the most re-implemented thing in forge's history | `forge-libraries` |
 | **read a forge library's API** | `forge project libraries <pkg>` prints every signature in one call — never `find`, never `grep`, and not `go doc <pkg>`, which shows no methods | `forge-libraries` |
@@ -126,20 +126,20 @@ set — check there before hand-rolling.
 
 ## Skills come from the binary
 
-`forge skill load <name>` always matches the forge you are running. Forge never
+`forge agent skill load <name>` always matches the forge you are running. Forge never
 writes skill bodies into a project. Non-reliant harnesses get a thin pointer
 (`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`) that only tells the
-agent to run `forge skill search <query>` / `forge skill load <name>`.
+agent to run `forge agent skill search <query>` / `forge agent skill load <name>`.
 
 ```bash
-forge skill list              # the catalog: every skill, scope, one-line description
-forge skill load db           # print one, authoritative
-forge skill search migration  # find one by keyword
+forge agent skill list              # the catalog: every skill, scope, one-line description
+forge agent skill load db           # print one, authoritative
+forge agent skill search migration  # find one by keyword
 ```
 
 ## Rules
 
-- Load the skill before guessing — with `forge skill load`, not from a copy on disk.
+- Load the skill before guessing — with `forge agent skill load`, not from a copy on disk.
 - Check `forge project capabilities` before concluding forge has no verb for this.
 - Check `forge project libraries` before writing a utility, and `go doc` to read one.
 - Never hand-edit `gen/` or any `*_gen.go`. `internal/app/providers.go` and `internal/app/compose.go` are both yours to wire — forge reconciles compose.go's component set and Deps keys and leaves your value expressions alone (`forge project disown` to opt out).
@@ -147,7 +147,7 @@ forge skill search migration  # find one by keyword
 - Parallel agents in one checkout may each run `forge generate` and `forge scaffold`. Every run takes the project's lock (`.forge/forge.lock`); a second run prints one `waiting for pid N` line and starts when the first finishes. The OS releases the lock when its holder exits, so never delete the file.
 - Declare schema in migrations, never in proto; the ORM follows the schema.
 - Use `forge scaffold` to scaffold — never copy-paste an existing directory.
-- Hit a defect in forge itself — a command that fails, hangs or generates something wrong, or a wrong lint, skill or doc? Report it: `forge report-bug --severity <low|medium|high|critical> --title "<one line>" --actual "<exact error>" --evidence "<commands, output, paths>"` (or the `report_bug` tool of `forge mcp`). Not for bugs in the user's own code, their failing tests, or your own mistakes; never put credentials or file contents in it. It is the only way forge sends anything (`--dry-run` shows exactly what).
+- Hit a defect in forge itself — a command that fails, hangs or generates something wrong, or a wrong lint, skill or doc? Report it: `forge agent report-bug --severity <low|medium|high|critical> --title "<one line>" --actual "<exact error>" --evidence "<commands, output, paths>"` (or the `report_bug` tool of `forge agent mcp`). Not for bugs in the user's own code, their failing tests, or your own mistakes; never put credentials or file contents in it. It is the only way forge sends anything (`--dry-run` shows exactly what).
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test` (what CI runs), not raw `go test`; iterate on `task test:short -- ./internal/<pkg>/...`.

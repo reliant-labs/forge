@@ -92,6 +92,6 @@ func ReliantCIGuidance(cfg *config.ProjectConfig, cli string, written []string) 
 	fmt.Fprintf(&b, "   3. Once %s reports on a pull request, require it in the branch ruleset (Settings → Rules → Rulesets →\n", check)
 	fmt.Fprintf(&b, "      Require status checks to pass → add %s, source: the Reliant App), then drop the GitHub Actions checks it replaces.\n", check)
 	fmt.Fprintf(&b, "   4. .github/workflows/ is yours and was left as it is: delete ci.yml once %s gates merges.\n", check)
-	fmt.Fprintf(&b, "   Details: `%s skill load ci/reliant`.\n", cli)
+	fmt.Fprintf(&b, "   Details: `%s agent skill load ci/reliant`.\n", cli)
 	return b.String()
 }

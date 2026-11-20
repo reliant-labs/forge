@@ -36,7 +36,7 @@ func skillListBody(t *testing.T, out string) string {
 }
 
 // TestSkillListDefaultFitsOnOneScreen is the whole point of the grouped view.
-// The measured failure was an agent running `forge skill list` TWICE (head -60,
+// The measured failure was an agent running `forge agent skill list` TWICE (head -60,
 // then tail -30) because the flat table is 84 lines. A catalog you cannot read
 // in one tool call is a catalog that competes with the skills themselves for
 // context.

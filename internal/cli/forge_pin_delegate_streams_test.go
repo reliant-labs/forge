@@ -24,11 +24,11 @@ import (
 const handOffStreamsHelperEnv = "FORGE_TEST_HANDOFF_STREAMS"
 
 // handOffChildStdout is everything the stand-in pinned forge prints on stdout:
-// a JSON document, as `forge kcl eval --format json` would.
+// a JSON document, as `forge env kcl eval --format json` would.
 const handOffChildStdout = `{"kind":"Deployment","metadata":{"name":"exact-owner"}}` + "\n"
 
 // Forge report 2186e95b: control-plane's TestRawRuntimeExplicitSlotProjection
-// parsed `forge kcl eval … --format json` and found the hand-off notice
+// parsed `forge env kcl eval … --format json` and found the hand-off notice
 // ("forge: this forge is vX, but the project wants forge_version vY — running
 // the project's .tools/bin/forge instead") in front of the document. The
 // notice, and every other line forge prints before it hands a command over,
@@ -108,7 +108,7 @@ func TestHandOffStreamsHelper(t *testing.T) {
 	}
 	pinDelegationDisabled = false
 	buildinfo.Set(skewTestBinary, "", "6c0c3edb1322")
-	args := []string{"kcl", "eval", "deploy/kcl/release_runtime_test.k", "-S", "output", "--format", "json"}
+	args := []string{"env", "kcl", "eval", "deploy/kcl/release_runtime_test.k", "-S", "output", "--format", "json"}
 	os.Args = append([]string{"forge"}, args...)
 	var err error
 	switch mode {

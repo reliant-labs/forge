@@ -12,10 +12,10 @@ The Go framework for AI-generated code, with an MCP server that deploys your app
 npx -y @reliantlabs/forge@latest env deploy prod --claimable
 
 # Use from your agent: an MCP server to deploy your app (Claude Code; Cursor, Codex and Gemini below)
-claude mcp add forge -- npx -y @reliantlabs/forge mcp
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp
 
-# Not sure where to start? forge start prints the one next command for this directory
-forge start
+# Not sure where to start? forge project start prints the one next command for this directory
+forge project start
 ```
 
 Install `forge`, and the other ways to run it: [Install](#install).
@@ -135,13 +135,13 @@ a shell command can drive it: Claude Code, Codex, Cursor, Copilot, Gemini CLI,
 Aider, a harness you wrote, or a CI job. A person at a terminal uses the same
 commands, so there is nothing an agent can do that you can't check by hand.
 
-- **Skills live in the binary.** `forge skill search <topic>` and
-  `forge skill load <name>` print the playbook for an area, about 150 of them,
+- **Skills live in the binary.** `forge agent skill search <topic>` and
+  `forge agent skill load <name>` print the playbook for an area, about 150 of them,
   matched to the installed version. Nothing to paste into a prompt, nothing to
   drift.
-- **It explains itself.** `forge start` prints the one command for the
+- **It explains itself.** `forge project start` prints the one command for the
   directory you are in (deploy the app already there, or create one), and
-  `forge start app` the path from an empty directory to authored protos. `forge project capabilities --json` lists every verb, lint
+  `forge project start app` the path from an empty directory to authored protos. `forge project capabilities --json` lists every verb, lint
   analyzer and marker, enumerated from the binary, so it can't go stale.
 - **Scaffolding and lints are guardrails against AI slop.** `forge scaffold`
   lands each service, rpc, worker or entity in the right place, already wired.
@@ -155,15 +155,15 @@ commands, so there is nothing an agent can do that you can't check by hand.
   UNDETERMINED, never green, never skipped.
 - **The project tells the agent all of this.** `forge project new` writes
   `AGENTS.md` and a pointer for the agent it detects (Claude Code, Cursor,
-  Copilot). Any MCP-capable harness can run `forge mcp` instead: see
+  Copilot). Any MCP-capable harness can run `forge agent mcp` instead: see
   [Use as an MCP server](#use-as-an-mcp-server).
 
 To use Forge from any agent, put this in the prompt or its instructions file:
 
 ```text
 Use Forge (github.com/reliant-labs/forge) for this project.
-Run `forge start` first and follow it. Load depth with
-`forge skill search <topic>` and `forge skill load <name>`.
+Run `forge project start` first and follow it. Load depth with
+`forge agent skill search <topic>` and `forge agent skill load <name>`.
 A change is done when `forge lint`, `go build ./...` and `task test` pass.
 ```
 
@@ -172,12 +172,12 @@ A change is done when `forge lint`, `go build ./...` and `task test` pass.
 <a href="https://cursor.com/en/install-mcp?name=forge&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkByZWxpYW50bGFicy9mb3JnZSIsIm1jcCJdfQ=="><img alt="Add forge to Cursor" src="https://cursor.com/deeplink/mcp-install-dark.svg" height="32" /></a>
 <a href="https://insiders.vscode.dev/redirect/mcp/install?name=forge&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40reliantlabs%2Fforge%22%2C%22mcp%22%5D%7D"><img alt="Install forge in VS Code" src="https://img.shields.io/badge/VS_Code-Install_forge-0098FF?logo=visualstudiocode&logoColor=white" height="32" /></a>
 
-`forge mcp` serves forge over the Model Context Protocol on stdio. It is in the
+`forge agent mcp` serves forge over the Model Context Protocol on stdio. It is in the
 official MCP registry as `io.github.reliant-labs/forge`, and `npx` runs it with
 nothing to install, no API key and no config. For Claude Code:
 
 ```bash
-claude mcp add forge -- npx -y @reliantlabs/forge mcp
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp
 ```
 
 Or commit a `.mcp.json` to the project (Cursor reads the same shape from
@@ -188,7 +188,7 @@ Or commit a `.mcp.json` to the project (Cursor reads the same shape from
   "mcpServers": {
     "forge": {
       "command": "npx",
-      "args": ["-y", "@reliantlabs/forge", "mcp"]
+      "args": ["-y", "@reliantlabs/forge", "agent", "mcp"]
     }
   }
 }
@@ -197,7 +197,7 @@ Or commit a `.mcp.json` to the project (Cursor reads the same shape from
 For Codex (CLI, IDE extension and desktop app share the config):
 
 ```bash
-codex mcp add forge -- npx -y @reliantlabs/forge mcp
+codex mcp add forge -- npx -y @reliantlabs/forge agent mcp
 ```
 
 or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
@@ -205,7 +205,7 @@ or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
 ```toml
 [mcp_servers.forge]
 command = "npx"
-args = ["-y", "@reliantlabs/forge", "mcp"]
+args = ["-y", "@reliantlabs/forge", "agent", "mcp"]
 ```
 
 For Gemini CLI, this repository is an extension (`gemini-extension.json`):
@@ -298,7 +298,7 @@ clone: [docs/install.md](docs/install.md).
 - [docs/getting-started.md](docs/getting-started.md): the first journey from a checkout, and which files are yours
 - [docs/concepts.md](docs/concepts.md): why Forge is shaped this way
 - [docs/benefits.md](docs/benefits.md): every benefit, how to use it and the code that backs it
-- [docs/mcp.md](docs/mcp.md): `forge mcp` for Claude Code, Codex and Cursor
+- [docs/mcp.md](docs/mcp.md): `forge agent mcp` for Claude Code, Codex and Cursor
 - [CONTRIBUTING.md](CONTRIBUTING.md): the dev loop, pre-commit hooks and PR process
 
 ## License

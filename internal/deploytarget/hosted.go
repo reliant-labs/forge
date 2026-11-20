@@ -344,7 +344,7 @@ type HostedEnvRef struct {
 	//
 	// NIL MEANS "I DID NOT RENDER", NOT "THE ENV DECLARES NOTHING". An
 	// absent shape leaves the stored one untouched server-side, so the
-	// ensures that run without a render — `forge secret set`, a promote —
+	// ensures that run without a render — `forge env secret set`, a promote —
 	// cannot erase a declaration that a build recorded. Only a path that
 	// actually rendered the env may set it.
 	Shape *release.Shape
@@ -1209,7 +1209,7 @@ const (
 
 // PreflightHosted answers "would the control plane admit this env's
 // workloads?" WITHOUT a release, a credential or a control plane — the
-// question CI asks of a checkout (`forge ci validate-kcl`, `forge doctor`)
+// question CI asks of a checkout (`forge ci validate-kcl`, `forge project doctor`)
 // before anything is built, pushed or promoted.
 //
 // It is planHostedWith, not a re-statement of it: every artifact the plan
@@ -1958,7 +1958,7 @@ func printHostedPlan(group ServiceGroup, plan []hostedPlanItem) {
 	// deploy produces, so it names the same spec-carried domains and says
 	// they are refused.
 	if claims := hostedDomainClaims(plan); len(claims) > 0 {
-		fmt.Println("  [dry-run] custom domains carried in spec (a real deploy REFUSES these; use `forge domain add` + `forge domain bind`):")
+		fmt.Println("  [dry-run] custom domains carried in spec (a real deploy REFUSES these; use `forge cloud domain add` + `forge cloud domain bind`):")
 		for _, c := range claims {
 			fmt.Printf("    %s (%s): %s\n", c.Workload, c.Tier, strings.Join(c.Domains, ", "))
 		}

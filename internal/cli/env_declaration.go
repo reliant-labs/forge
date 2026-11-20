@@ -117,7 +117,7 @@ func declareEnv(projectDir string, cfg *config.ProjectConfig, env string) (envDe
 	case kcl && yamlEnv && cfg.Monitoring != nil:
 		return d, fmt.Errorf("%w: env %q's monitoring is declared in both forge.yaml (envs: + monitoring:) and deploy/kcl/%s/main.k\n"+
 			"fix: KCL is the long-term home of an env: drop %q from forge.yaml `envs:` and declare its observability in deploy/kcl/%s/main.k "+
-			"(forge skill load observability), or delete deploy/kcl/%s/ if this env is monitoring-only",
+			"(forge agent skill load observability), or delete deploy/kcl/%s/ if this env is monitoring-only",
 			errEnvDeclaredTwice, env, env, env, env, env)
 	case kcl:
 		d.Source = envDeclKCL

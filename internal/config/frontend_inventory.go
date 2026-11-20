@@ -28,7 +28,7 @@ import (
 //     files as stale — including config_gen.ts, so the app kept declaring
 //     a config field the proto no longer had.
 //
-//   - `forge doctor`'s drift check read cfg.Frontends as though it were
+//   - `forge project doctor`'s drift check read cfg.Frontends as though it were
 //     the deploy inventory and reported every KCL-declared frontend
 //     missing from it, including ones forge must never generate into.
 
@@ -159,7 +159,7 @@ func (k KCLFrontend) asConfig() FrontendConfig {
 // Only the CHEAP half lives here, and deliberately so. The marker-gated
 // directory scan costs one readdir; deriving from KCL costs a full render
 // per environment (measured at 1.6-2.2s each, four environments on
-// control-plane) and would put ~7s on every `forge lint`, `forge doctor`
+// control-plane) and would put ~7s on every `forge lint`, `forge project doctor`
 // and shell completion. The render-based half therefore stays with the
 // commands that already render — see cli.stepDeriveFrontendInventory,
 // which now supplements this rather than replacing it.

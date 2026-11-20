@@ -3,7 +3,7 @@ package kcleval_test
 // kcleval_eval_test.go exercises the WHOLE path: a real project on disk, a
 // real KCL evaluation through the embedded runtime, a real selection.
 //
-// These tests deliberately do not stub the render. The defect `forge kcl eval`
+// These tests deliberately do not stub the render. The defect `forge env kcl eval`
 // exists to remove is that consumers reconstructed forge's render setup from
 // outside and it drifted; a test that mocked the evaluation would pass with
 // the module unresolvable, which is exactly the failure it must catch. Every

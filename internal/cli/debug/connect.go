@@ -25,13 +25,13 @@ debug session, so break / continue / eval / ... drive it.
 Use it for a dlv someone else started: a workload declared with
 forge.OnHost { runner = "delve" } (dlv on 127.0.0.1:<delve_port>, default
 2345), the scaffolded .air-debug.toml (127.0.0.1:2345), or one you launched by
-hand. forge owns neither that server nor its target: 'forge debug stop' clears
+hand. forge owns neither that server nor its target: 'forge dev debug stop' clears
 the breakpoints this session set, resumes the target and disconnects, and both
 keep running.
 
 Examples:
-  forge debug connect 127.0.0.1:2345
-  forge debug connect :2345`,
+  forge dev debug connect 127.0.0.1:2345
+  forge dev debug connect :2345`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runConnect(args[0], jsonOutput)
@@ -56,7 +56,7 @@ func runConnect(addr string, jsonOutput bool) error {
 	addr = normalizeAddr(addr)
 	existing, _ := debugSvc().LoadSession(".")
 	if existing != nil && (!existing.Connected || existing.Addr != addr) {
-		return fmt.Errorf("a debug session is already active (dlv at %s); run 'forge debug stop' first", existing.Addr)
+		return fmt.Errorf("a debug session is already active (dlv at %s); run 'forge dev debug stop' first", existing.Addr)
 	}
 	d := dbgsvc.NewDelveDebugger()
 	if err := d.Connect(addr); err != nil {

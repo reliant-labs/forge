@@ -243,7 +243,7 @@ func TestShippedGuidanceMakesNoRetiredClaim(t *testing.T) {
 	}
 	sort.Slice(hits, func(i, j int) bool { return hits[i].where < hits[j].where })
 	for _, h := range hits {
-		t.Errorf("%s repeats retired claim %q:\n  %s\n\n  The truth: %s.\n  Depth: `forge skill load %s`.",
+		t.Errorf("%s repeats retired claim %q:\n  %s\n\n  The truth: %s.\n  Depth: `forge agent skill load %s`.",
 			h.where, h.id, h.line, h.truth, strings.TrimPrefix(h.see, "forge/"))
 	}
 }

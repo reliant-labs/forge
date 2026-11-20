@@ -336,7 +336,7 @@ func TestObsCheckOtherFailuresKeepTheirExit(t *testing.T) {
 	}
 }
 
-// A refused check is an error gate for `forge gate record`, never a pass.
+// A refused check is an error gate for `forge release gate record`, never a pass.
 func TestObsCheckRefusedGateIsAnError(t *testing.T) {
 	path := t.TempDir() + "/check.json"
 	caller := &healthRefuser{n: -1, err: quotaRefusal(2*time.Minute, time.Time{}), next: passingCaller()}

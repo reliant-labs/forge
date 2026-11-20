@@ -78,7 +78,7 @@ func TestHandOff_AnEmbeddedPseudoVersionAgainstATagPinIsHandedOver(t *testing.T)
 
 	t.Run("module build", func(t *testing.T) {
 		localBuild(t, false)
-		for _, args := range [][]string{{"generate"}, {"skill", "load", "forge"}} {
+		for _, args := range [][]string{{"generate"}, {"agent", "skill", "load", "forge"}} {
 			h, installs := armDelegation(t)
 			handed, _, err := handOffForTest(t, args...)
 			if err != nil || !handed || h.path == "" {
@@ -159,7 +159,7 @@ func TestHandOffToPinned_NoPinRunsThisForge(t *testing.T) {
 			h, installs := armDelegation(t)
 
 			embeddedIn(t, "reliant", "v1.0.5")
-			handed, out, err := handOffForTest(t, "skill", "list")
+			handed, out, err := handOffForTest(t, "agent", "skill", "list")
 			if err != nil || handed || h.path != "" || len(*installs) != 0 {
 				t.Fatalf("handed %v, err %v, built %v", handed, err, *installs)
 			}
@@ -171,7 +171,7 @@ func TestHandOffToPinned_NoPinRunsThisForge(t *testing.T) {
 			}
 
 			embeddedIn(t, "", "")
-			if _, out, _ := handOffForTest(t, "skill", "list"); out != "" {
+			if _, out, _ := handOffForTest(t, "agent", "skill", "list"); out != "" {
 				t.Errorf("a standalone forge printed:\n%q", out)
 			}
 		})
@@ -186,7 +186,7 @@ func TestHandOffToPinned_AnUnobtainablePinErrors(t *testing.T) {
 	h, _ := armDelegation(t)
 	unobtainablePin(t)
 
-	handed, _, err := handOffForTest(t, "skill", "load", "forge")
+	handed, _, err := handOffForTest(t, "agent", "skill", "load", "forge")
 	if err == nil || handed || h.path != "" {
 		t.Fatalf("handed %v, err %v: a command ran without the forge its project pins", handed, err)
 	}
@@ -197,7 +197,7 @@ func TestHandOffToPinned_AnUnobtainablePinErrors(t *testing.T) {
 	}
 
 	// The commands that must work offline still run here.
-	for _, args := range [][]string{{"version"}, {"project", "upgrade"}, {"report-bug"}, {"env", "down"}} {
+	for _, args := range [][]string{{"version"}, {"project", "upgrade"}, {"agent", "report-bug"}, {"env", "down"}} {
 		if handed, _, err := handOffForTest(t, args...); err != nil || handed {
 			t.Errorf("forge %v: handed %v, err %v", args, handed, err)
 		}
@@ -238,7 +238,7 @@ func TestResolvePinnedForge(t *testing.T) {
 	root, _ := os.Getwd()
 	h, installs := armDelegation(t)
 
-	got, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard)
+	got, ok, err := ResolvePinnedForge(context.Background(), root, "agent skill load", io.Discard)
 	if err != nil || !ok || got.Path == "" {
 		t.Fatalf("got %+v, ok %v, err %v", got, ok, err)
 	}
@@ -249,7 +249,7 @@ func TestResolvePinnedForge(t *testing.T) {
 		t.Errorf("built %v, exec'd %q: resolve must build, never exec", *installs, h.path)
 	}
 
-	if _, ok, err := ResolvePinnedForge(context.Background(), t.TempDir(), "skill load", io.Discard); ok || err != nil {
+	if _, ok, err := ResolvePinnedForge(context.Background(), t.TempDir(), "agent skill load", io.Discard); ok || err != nil {
 		t.Errorf("outside a project: ok %v, err %v", ok, err)
 	}
 	if _, ok, _ := ResolvePinnedForge(context.Background(), root, "version", io.Discard); ok {
@@ -257,7 +257,7 @@ func TestResolvePinnedForge(t *testing.T) {
 	}
 	unobtainablePin(t)
 	t.Setenv(forgedelegate.CacheDirEnv, t.TempDir())
-	if _, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard); ok || err == nil || !strings.Contains(err.Error(), "could not be obtained") {
+	if _, ok, err := ResolvePinnedForge(context.Background(), root, "agent skill load", io.Discard); ok || err == nil || !strings.Contains(err.Error(), "could not be obtained") {
 		t.Errorf("unobtainable pin: ok %v, err %v", ok, err)
 	}
 }

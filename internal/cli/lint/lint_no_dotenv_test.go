@@ -70,10 +70,10 @@ func TestNoDotenvLint_MessageGivesTheFix(t *testing.T) {
 		t.Fatalf("expected one finding, got %+v", fs)
 	}
 	msg := fs[0].Message + " " + fs[0].FixHint
-	if !strings.Contains(msg, "forge secret migrate") {
-		t.Fatalf("a *.secrets file should point at `forge secret migrate`, got: %v", msg)
+	if !strings.Contains(msg, "forge env secret migrate") {
+		t.Fatalf("a *.secrets file should point at `forge env secret migrate`, got: %v", msg)
 	}
-	if !strings.Contains(msg, "forge secret set") {
+	if !strings.Contains(msg, "forge env secret set") {
 		t.Fatalf("message should name the command that stores a value, got: %v", msg)
 	}
 }

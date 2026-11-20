@@ -389,7 +389,7 @@ func golangciMissingError(pin, toolchain, modLang string, cause error) error {
 	}
 	return fmt.Errorf("golangci-lint is not on PATH, so the golangci-lint lane cannot run — and a gating lane that did not run cannot pass. "+
 		"forge could not build its pinned golangci-lint %s: %v. "+
-		"Fix: run `forge tools install golangci-lint` (it installs golangci-lint %s), or `%s` with its GOBIN on PATH, then re-run `forge lint`",
+		"Fix: run `forge machine tools install golangci-lint` (it installs golangci-lint %s), or `%s` with its GOBIN on PATH, then re-run `forge lint`",
 		pin, cause, pin, install)
 }
 
@@ -727,7 +727,7 @@ func golangciUnresolvedFinding(err error, rule string) lintJSONFinding {
 
 // golangciUnresolvedFix is the remediation for a golangci-lint that cannot
 // analyze this module.
-const golangciUnresolvedFix = "run `forge tools install golangci-lint`, or install a golangci-lint that can analyze this module " +
+const golangciUnresolvedFix = "run `forge machine tools install golangci-lint`, or install a golangci-lint that can analyze this module " +
 	"and put it first on PATH (the message names the binary, the Go versions and the command)"
 
 // ruleGolangciUnavailable tags the gating golangci-lint lane when no

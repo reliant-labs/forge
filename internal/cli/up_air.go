@@ -14,7 +14,7 @@ import (
 
 // airPinnedVersion is the air release forge provisions when `forge env up`
 // needs the hot-reload runner and none is on PATH. It is above the floor
-// `forge doctor` enforces (airToolCheck).
+// `forge project doctor` enforces (airToolCheck).
 const airPinnedVersion = "v1.67.4"
 
 var airTool = protoTool{
@@ -86,7 +86,7 @@ var airVersionFn = func(ctx context.Context, path string) string {
 }
 
 // preferPinnedAirOverOld checks the air on PATH against the floor `forge
-// doctor` enforces (airToolCheck). An older air cannot run a config that
+// project doctor` enforces (airToolCheck). An older air cannot run a config that
 // names its binary with `entrypoint`, so the run would get as far as the
 // readiness wait and fail there. Below the floor, forge provisions its
 // pinned air and launches that for this run, saying so; when it cannot, it

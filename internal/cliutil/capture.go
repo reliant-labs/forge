@@ -16,7 +16,7 @@ import (
 //
 // It is process-wide, as the output is. The commands that use it hold the
 // terminal for their whole run, and an in-process embedding that runs forge
-// commands (`forge mcp`) swaps the same variables and runs one at a time.
+// commands (`forge agent mcp`) swaps the same variables and runs one at a time.
 func redirectOutput(f *os.File) (restore func()) {
 	prevOut, prevErr, prevLog := os.Stdout, os.Stderr, log.Writer()
 	os.Stdout, os.Stderr = f, f

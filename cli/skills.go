@@ -139,7 +139,7 @@ func LoadSkillForAudience(projectRoot, skillPath, audience string) ([]byte, erro
 }
 
 // RenderSkillOptions tunes [RenderSkill]. The zero value renders exactly what
-// `forge skill load` prints from THIS process.
+// `forge agent skill load` prints from THIS process.
 type RenderSkillOptions struct {
 	// Audience filters the body the same way as [LoadSkillForAudience]:
 	// "general" strips `@forge-only` blocks, "forge" or "" keeps the full

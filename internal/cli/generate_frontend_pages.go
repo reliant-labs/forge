@@ -57,7 +57,7 @@ func ensureFrontendComponents(cfg *config.ProjectConfig, projectDir string) erro
 			// purpose and collided with its own Button.tsx / Modal.tsx.
 			// Components arrive one at a time, by request.
 			fmt.Printf("  ℹ️  frontend %s was not scaffolded by forge — its starter components are not installed; "+
-				"`%s component install <name> --dir %s` adds one to %s\n",
+				"`%s ui component install <name> --dir %s` adds one to %s\n",
 				fe.Name, Name(), feDir, fe.ComponentsDirRel())
 			continue
 		}
@@ -252,7 +252,7 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 		if pageCount > 0 && formDialect.Zod3 {
 			// Said when it matters — a page was just written for zod 3 —
 			// rather than on every generate of a frontend nobody is touching.
-			fmt.Printf("  ⚠️  frontend %s declares zod 3, so its new pages were written for zod 3; zod below 4.6.6 has a high advisory (GHSA-mrhx-c7xc-m3w5) — `%s skill load %s`\n",
+			fmt.Printf("  ⚠️  frontend %s declares zod 3, so its new pages were written for zod 3; zod below 4.6.6 has a high advisory (GHSA-mrhx-c7xc-m3w5) — `%s agent skill load %s`\n",
 				fe.Name, Name(), zod4MigrationSkill)
 		}
 		if pageCount > 0 {
@@ -343,10 +343,10 @@ func reportDynamicIDRoutes(fe config.FrontendConfig, feDir string, slugs []strin
 		for _, d := range dirs {
 			fmt.Fprintf(os.Stderr, "  - %s/\n", d)
 		}
-		fmt.Fprintf(os.Stderr, "  forge adds no static view/edit pages beside them. Convert them: %s (`%s skill load %s`).\n", staticRoutesFix, Name(), staticRoutesSkill)
+		fmt.Fprintf(os.Stderr, "  forge adds no static view/edit pages beside them. Convert them: %s (`%s agent skill load %s`).\n", staticRoutesFix, Name(), staticRoutesSkill)
 		return
 	}
-	routinef("  ℹ️  frontend %s: %d %s keep dynamic [id] detail/edit routes (%s); static view/edit pages are scaffolded once those are removed — %s (`%s skill load %s`)\n",
+	routinef("  ℹ️  frontend %s: %d %s keep dynamic [id] detail/edit routes (%s); static view/edit pages are scaffolded once those are removed — %s (`%s agent skill load %s`)\n",
 		fe.Name, len(slugs), entities, strings.Join(dirs, ", "), staticRoutesFix, Name(), staticRoutesSkill)
 }
 

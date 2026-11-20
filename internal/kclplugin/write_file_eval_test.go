@@ -12,7 +12,7 @@ import (
 )
 
 // fp.write_file is consumed from KCL, so these tests evaluate real modules
-// through kclrender.Run — the seam `forge ci validate-kcl`, `forge doctor`,
+// through kclrender.Run — the seam `forge ci validate-kcl`, `forge project doctor`,
 // `forge generate`'s KCL queries and every env command render through.
 //
 // What they guard: control-plane's dev KCL generated its TRACKED

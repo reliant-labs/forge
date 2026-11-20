@@ -75,7 +75,7 @@ var envPair = []ClusterEntity{
 	{Name: "cp-daemon-v2", Network: "k3d-control-plane-v2", RegistryInherit: true, ClusterCIDR: "10.62.0.0/16"},
 }
 
-// `forge cluster up <env>` must hand the env's DECLARED clusters — CIDRs and
+// `forge dev cluster up <env>` must hand the env's DECLARED clusters — CIDRs and
 // all — to the same reconcile `forge env up` runs, not create from a k3d YAML.
 //
 // MUTATION VERIFIED RED: making the env RunE branch call
@@ -95,7 +95,7 @@ func TestClusterUpEnv_ReconcilesTheDeclaredClusters(t *testing.T) {
 	}
 }
 
-// `forge cluster down <env>` deletes the secondary BEFORE its owner — k3d
+// `forge dev cluster down <env>` deletes the secondary BEFORE its owner — k3d
 // cannot remove a network a secondary is still attached to — and skips a
 // cluster that does not exist.
 //
@@ -158,7 +158,7 @@ func TestClusterUpEnv_RejectsConfigToo(t *testing.T) {
 	}
 }
 
-// `forge cluster down --config <owner's file>` deletes the clusters nested on
+// `forge dev cluster down --config <owner's file>` deletes the clusters nested on
 // the owner's network FIRST. They have no config file, so --config can never
 // name them, and deleting the owner alone strands them on a dead network.
 //

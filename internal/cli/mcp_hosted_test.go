@@ -175,7 +175,7 @@ func TestHostedSharedToolSchemasMatchLocal(t *testing.T) {
 	}
 }
 
-// skill_load serves the body `forge skill load` prints outside a project:
+// skill_load serves the body `forge agent skill load` prints outside a project:
 // the renderer the local skill_load (and `skill load`) runs, with commands
 // written for `forge`.
 func TestHostedSkillLoadMatchesLocal(t *testing.T) {
@@ -192,7 +192,7 @@ func TestHostedSkillLoadMatchesLocal(t *testing.T) {
 			t.Fatalf("%s: hosted error: %s", name, got)
 		}
 		if strings.TrimSpace(got) != strings.TrimSpace(string(want)) {
-			t.Errorf("%s: hosted skill_load is not `forge skill load %s` (%d vs %d bytes)", name, name, len(got), len(want))
+			t.Errorf("%s: hosted skill_load is not `forge agent skill load %s` (%d vs %d bytes)", name, name, len(got), len(want))
 		}
 	}
 	if _, isErr := callMCP(t, hosted, "skill_load", map[string]any{"name": "no-such-skill"}); !isErr {

@@ -1,8 +1,8 @@
 ---
 name: v1.9.0
-description: Upgrade a project to forge v1.9.0, the release that deletes what earlier releases deprecated. Removed forge/pkg APIs (the pkg/approval package, the root pkg/appkit aliases, devidp's ProofLocker family, observe.ForensicIDName/ForensicSecretIDName, obsquery.IssueEventFilterSQL/ActiveEvidence/ServerCulprit, release.ShapeDiff.KindChanged, contractkit's LogCall/TraceStart/Metrics helpers, the forgepb entity/field annotation types); the retired (forge.v1.entity)/(forge.v1.field) proto options no longer compile; removed CLI flags (lint --crud-fixtures, build --push/--release, scaffold entity --from-schema, storage worktrees --reliant-managed), the hidden forge test stub and the FORGE_NO_HOOKS alias; retired forge.yaml keys now fail the load; KCL ObservabilitySignals.replay, the OTEL_REPLAY build-variable carry and IdentitySocialProvider are gone; root_gen.go is no longer generated; every lint rule's grace window ended (forge-proto-format, forgeconv-unproven-signup gate now); the web runtime's `attribution` option is gone; the tx-isolation and harness-mocks codemods and the old .forge/hashes.json and .forge/scaffolded.json ledgers are no longer read. Use when Go code, a script, forge.yaml, deploy/kcl or a frontend still names one of them.
+description: Upgrade a project to forge v1.9.0, the release that deletes what earlier releases deprecated. Removed forge/pkg APIs (the pkg/approval package, the root pkg/appkit aliases, devidp's ProofLocker family, observe.ForensicIDName/ForensicSecretIDName, obsquery.IssueEventFilterSQL/ActiveEvidence/ServerCulprit, release.ShapeDiff.KindChanged, contractkit's LogCall/TraceStart/Metrics helpers, the forgepb entity/field annotation types); the retired (forge.v1.entity)/(forge.v1.field) proto options no longer compile; removed CLI flags (lint --crud-fixtures, build --push/--release, scaffold entity --from-schema, storage worktrees --reliant-managed), the hidden forge test stub and the FORGE_NO_HOOKS alias; retired forge.yaml keys now fail the load; KCL ObservabilitySignals.replay, the OTEL_REPLAY build-variable carry and IdentitySocialProvider are gone; root_gen.go is no longer generated; every lint rule's grace window ended (forge-proto-format, forgeconv-unproven-signup gate now); the web runtime's `attribution` option is gone; the tx-isolation and harness-mocks codemods and the old .forge/hashes.json and .forge/scaffolded.json ledgers are no longer read. The old top-level command spellings (forge skill, slot, storage, secret, kcl, fix, doctor, login, domain, registry, cluster, debug, component, mcp, report-bug, …) are removed in favour of their nouns (forge agent skill, machine slot, env secret, …). Use when Go code, a script, a Taskfile, a workflow, .mcp.json, forge.yaml, deploy/kcl or a frontend still names one of them.
 version: v1.9.0
-detection: grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '"github.com/reliant-labs/forge/pkg/(approval|appkit)"|^[^/]*\b(contractkit\.(LogCall|LogCallErr|TraceStart|RecordSpanError|NewMetrics|Metrics)|devidp\.(ProofLocker|UnavailableProofLocker|NewPostgresProofLocker|PostgresProofLocker|PostgresProofLockerOptions|ErrProofLockBusy|DefaultProofLockWait|DefaultProofLockHold|MetaProofLock|MetaProofWindowPrefix)|observe\.Forensic(Secret)?IDName|obsquery\.(IssueEventFilterSQL|ActiveEvidence|ServerCulprit)|release\.KindChange|forgepb\.(EntityOptions|FieldOptions|IndexDef|StoreAs|ValidationRules|E_Entity|E_Field))\b|\bProofLocker:|\.KindChanged\b' . && exit 0; grep -rqsE --include='*.proto' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '\(forge\.v1\.(entity|field)\)' proto && exit 0; grep -rqsE --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules --exclude-dir=.git -- '--crud-fixtures|--reliant-managed|--from-schema|\bFORGE_NO_HOOKS\b|forge build[^\n]*--(push|release)\b' Taskfile.yml Makefile scripts .github cmd internal && exit 0; grep -qsE '^(environments|auth|version|hot_reload|packs|pack_overrides|kind|components|services|packages|binaries|test|docs):' forge.yaml && exit 0; grep -rqsE --include='*.k' '(ObservabilitySignals|signals[^=\n]*\|)[[:space:]]*\{[^}\n]*\breplay[[:space:]]*=|IdentitySocialProvider|(NEXT_PUBLIC_|VITE_)OTEL_REPLAY' deploy/kcl && exit 0; for f in cmd/*/cmd/root.go; do test -f "$f" && grep -qs 'generatedCommands(' "$f" && exit 0; done; grep -rqsE --include='*.ts' --include='*.tsx' --exclude-dir=node_modules '\battribution:[[:space:]]*(true|false)\b' frontends src && exit 0; test -f .forge/hashes.json && exit 0; test -f .forge/scaffolded.json && exit 0; exit 1
+detection: grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '"github.com/reliant-labs/forge/pkg/(approval|appkit)"|^[^/]*\b(contractkit\.(LogCall|LogCallErr|TraceStart|RecordSpanError|NewMetrics|Metrics)|devidp\.(ProofLocker|UnavailableProofLocker|NewPostgresProofLocker|PostgresProofLocker|PostgresProofLockerOptions|ErrProofLockBusy|DefaultProofLockWait|DefaultProofLockHold|MetaProofLock|MetaProofWindowPrefix)|observe\.Forensic(Secret)?IDName|obsquery\.(IssueEventFilterSQL|ActiveEvidence|ServerCulprit)|release\.KindChange|forgepb\.(EntityOptions|FieldOptions|IndexDef|StoreAs|ValidationRules|E_Entity|E_Field))\b|\bProofLocker:|\.KindChanged\b' . && exit 0; grep -rqsE --include='*.proto' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '\(forge\.v1\.(entity|field)\)' proto && exit 0; grep -rqsE --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules --exclude-dir=.git -- '--crud-fixtures|--reliant-managed|--from-schema|\bFORGE_NO_HOOKS\b|forge build[^\n]*--(push|release)\b' Taskfile.yml Makefile scripts .github cmd internal && exit 0; grep -qsE '^(environments|auth|version|hot_reload|packs|pack_overrides|kind|components|services|packages|binaries|test|docs):' forge.yaml && exit 0; grep -rqsE --include='*.k' '(ObservabilitySignals|signals[^=\n]*\|)[[:space:]]*\{[^}\n]*\breplay[[:space:]]*=|IdentitySocialProvider|(NEXT_PUBLIC_|VITE_)OTEL_REPLAY' deploy/kcl && exit 0; for f in cmd/*/cmd/root.go; do test -f "$f" && grep -qs 'generatedCommands(' "$f" && exit 0; done; grep -rqsE --include='*.ts' --include='*.tsx' --exclude-dir=node_modules '\battribution:[[:space:]]*(true|false)\b' frontends src && exit 0; test -f .forge/hashes.json && exit 0; test -f .forge/scaffolded.json && exit 0; grep -rqsE '(^|[^[:alnum:]_/.-])forge (skill|slot|storage|tools|mcp|report-bug|component|secret|kcl|fix|doctor|start|domain|login|logout|registry|ledger|gate|debug|cluster|api curl|frontend sourcemaps|package new)([^[:alnum:]_-]|$)' Taskfile.yml Makefile scripts .github && exit 0; grep -qsE '"args":[[:space:]]*\[[[:space:]]*("forge",[[:space:]]*)?"mcp"' .mcp.json && exit 0; exit 1
 ---
 
 # Upgrading to v1.9.0
@@ -59,7 +59,7 @@ from `db/migrations`. Their extensions are now gone from `forge/v1/forge.proto`
 
 Delete each `option (forge.v1.entity) = {…};` and each
 `[(forge.v1.field) = {…}]`. A column, an index, a default or a check you meant
-by one belongs in a migration (`forge skill load db`).
+by one belongs in a migration (`forge agent skill load db`).
 
 ## 3. Removed CLI flags, commands and environment variables
 
@@ -70,10 +70,10 @@ by one belongs in a migration (`forge skill load db`).
 | `--crud-fixtures` (on `forge lint`) | `forge lint --fixture-drift` |
 | `--push` / `--release` (on `forge build`, which only refused them) | `forge env build <env> --push` / `forge env build <env> --release <v>` |
 | `--from-schema` (on `forge scaffold entity`, which only refused it) | proto-first birth: `// forge:entity` on the message, then `forge scaffold` |
-| `--reliant-managed` (on `forge storage worktrees`, accepted and ignored) | drop the flag |
+| `--reliant-managed` (on `forge machine storage worktrees`, accepted and ignored) | drop the flag |
 | the hidden `test` command (it only said "use task test") | `task test` |
 | `FORGE_NO_HOOKS=1` | `FORGE_NO_GIT_HOOKS=1` |
-| `--port` on `forge debug start` setting the service's `PORT` too | `--port` is Delve's port only; `--app-port` sets the service's |
+| `--port` on `forge dev debug start` setting the service's `PORT` too | `--port` is Delve's port only; `--app-port` sets the service's |
 | `mode=orm` for protoc-gen-forge | nothing: the ORM is generated from the applied schema by `forge generate` |
 | `forge project audit --json`: `codegen.forked_files`, `forked_files_note`; the `FORGE_CRUD_SHAPE_MISMATCH` marker | `codegen.disowned_files`; `// forge:custom-read-shape:` in `handlers_crud.go` |
 
@@ -199,8 +199,8 @@ consents. `enableAttribution({ search })` is unchanged.
 
 ## 9. Removed codemods and ledger formats
 
-**Use when** a runbook calls `forge fix tx-isolation` or
-`forge fix harness-mocks`, or the project still has `.forge/hashes.json` or
+**Use when** a runbook calls `forge lint fix tx-isolation` or
+`forge lint fix harness-mocks`, or the project still has `.forge/hashes.json` or
 `.forge/scaffolded.json`.
 
 ### What changed
@@ -219,3 +219,57 @@ consents. `enableAttribution({ search })` is unchanged.
   upgrade through v1.8.0 first (its `forge generate` migrates them), then to
   v1.9.0. A project that has both the file and the directory can delete the
   file.
+
+## 10. Old command spellings removed
+
+**Use when** a Taskfile, Makefile, script, CI workflow, runbook, `.mcp.json`
+or Go exec site still types a top-level command that v1.4.0 moved under a
+noun (`forge skill load`, `forge slot run`, `forge secret set`, …).
+
+### What changed
+
+v1.4.0 grouped forge's commands under 14 nouns and kept the old spellings
+working beside the new ones. v1.9.0 removes the old ones: they now fail with
+"unknown command".
+
+| Old | New |
+|---|---|
+| `forge doctor`, `forge start` | `forge project doctor`, `forge project start` |
+| `forge package new <name>` | `forge scaffold package <name>` |
+| `forge fix <codemod>` | `forge lint fix <codemod>` |
+| `forge kcl …`, `forge secret …` | `forge env kcl …`, `forge env secret …` |
+| `forge ledger …`, `forge gate …` | `forge release ledger …`, `forge release gate …` |
+| `forge login`, `forge logout`, `forge registry …`, `forge domain …` | `forge cloud login`, `forge cloud logout`, `forge cloud registry …`, `forge cloud domain …` |
+| `forge cluster connect\|disconnect\|list\|show` | `forge cloud cluster …` |
+| `forge cluster up\|down\|reset\|reload\|status\|recover-chart-lock\|logs\|info\|urls\|instances` | `forge dev cluster …` |
+| `forge debug …`, `forge api curl` | `forge dev debug …`, `forge dev curl` |
+| `forge component …`, `forge frontend sourcemaps …` | `forge ui component …`, `forge ui sourcemaps …` |
+| `forge slot …`, `forge storage …`, `forge tools …` | `forge machine slot …`, `forge machine storage …`, `forge machine tools …` |
+| `forge skill …`, `forge mcp`, `forge report-bug` | `forge agent skill …`, `forge agent mcp`, `forge agent report-bug` |
+
+`forge env releases list|show|at|backfill-migrations|interrupted` is NOT
+removed: it stays beside `forge release list|…` for good.
+
+Still accepted for now, hidden from `--help`: `forge doctor`,
+`forge cluster up`, `forge fix`, `forge package new`, `forge tools` and
+`forge skill`. Some of forge's own messages still print them; they go in a
+later release. Move to the new spelling now anyway.
+
+### What to do
+
+1. Rewrite each call site. From the project root (review the diff after):
+
+   ```bash
+   files=$(git grep -lE 'forge (doctor|start|package new|fix|kcl|secret|ledger|gate|login|logout|registry|domain|cluster|debug|api curl|component|frontend sourcemaps|slot|storage|tools|skill|mcp|report-bug)\b' -- Taskfile.yml Makefile scripts .github docs '*.md')
+   perl -pi -e 's/\bforge (doctor|start)(?![\w-])/forge project $1/g; s/\bforge package new\b/forge scaffold package/g; s/\bforge fix\b/forge lint fix/g; s/\bforge (kcl|secret)\b/forge env $1/g; s/\bforge (ledger|gate)\b/forge release $1/g; s/\bforge (login|logout|registry|domain)\b/forge cloud $1/g; s/\bforge cluster (connect|disconnect|list|show)\b/forge cloud cluster $1/g; s/\bforge cluster\b/forge dev cluster/g; s/\bforge debug\b/forge dev debug/g; s/\bforge api curl\b/forge dev curl/g; s/\bforge component\b/forge ui component/g; s/\bforge frontend sourcemaps\b/forge ui sourcemaps/g; s/\bforge (slot|storage|tools)\b/forge machine $1/g; s/\bforge (skill|mcp|report-bug)\b/forge agent $1/g' $files
+   ```
+
+   The one-liner also rewrites prose that happens to read "forge tools" or
+   "forge component"; put those back.
+2. A Go exec site passes the words separately (`[]string{"skill", "load", …}`):
+   put the noun first (`[]string{"agent", "skill", "load", …}`).
+3. `.mcp.json`: the forge server's `args` are `["agent", "mcp"]` (`["forge",
+   "agent", "mcp"]` under `reliant`), not `["mcp"]`.
+4. An installed storage schedule (`forge machine storage install`) keeps
+   working: it runs its own copy of the forge that installed it. Re-run
+   `forge machine storage install` once to move it to this release.

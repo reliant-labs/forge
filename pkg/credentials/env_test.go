@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// DirsFromEnv is how `forge login` locates the file, so every precedence step
+// DirsFromEnv is how `forge cloud login` locates the file, so every precedence step
 // Dirs.Path documents must be reachable from the environment alone.
 func TestDirsFromEnv_Precedence(t *testing.T) {
 	home := t.TempDir()

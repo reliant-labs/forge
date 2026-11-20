@@ -56,12 +56,11 @@ var pinGatedCommands = map[string][]string{
 	// Commands that rewrite the project's files from this binary's templates.
 	// `lint` is deliberately absent: its auto-fix pass runs gofmt, golangci,
 	// prettier and eslint, whose output does not depend on forge's templates.
-	"generate":           {"dry-run", "check"},
-	"package new":        {"dry-run"},
-	"component install":  nil,
-	"env new":            {"check"},
-	"project rescaffold": nil,
-	"project disown":     {"dry-run"},
+	"generate":             {"dry-run", "check"},
+	"ui component install": nil,
+	"env new":              {"check"},
+	"project rescaffold":   nil,
+	"project disown":       {"dry-run"},
 }
 
 // pinBuildCommands are the gated commands whose product is an artifact, not
@@ -106,17 +105,17 @@ func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
 // (never handed to the pinned forge) and never pin-gated
 // (TestPinIndependentCommandsRunHere holds both).
 //
-//   - slot: machine-level coordination. Every forge shares one slot directory
+//   - machine slot: machine-level coordination. Every forge shares one slot directory
 //     (FORGE_SLOTS_DIR, else <user cache dir>/forge/slots/<class>), takes a
 //     slot by flock on slot-<i>.lock, and queues by locked ticket files, so a
 //     slot taken by one forge is held against every other. Nothing it does
 //     reads forge.yaml. reliant's `task test` runs through `slot run`, and
 //     printed the warning on every run (forge bug report afa50061).
 //
-// `storage` is deliberately absent: it runs THIS forge's cache-trimming rules
+// `machine storage` is deliberately absent: it runs THIS forge's cache-trimming rules
 // (handOffExempt says why), and those differ between forges, so which forge
 // trimmed the cache is worth saying.
-var pinIndependentCommands = []string{"slot"}
+var pinIndependentCommands = []string{"machine slot"}
 
 // pinIndependent reports whether rel (relative to forge's root) is, or is
 // under, a pinIndependentCommands group.

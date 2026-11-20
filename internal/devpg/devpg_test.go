@@ -60,7 +60,7 @@ func TestReconcileCatchesDisagreement(t *testing.T) {
 	}
 	// The error must be a runbook: both values and the literal fix.
 	msg := err.Error()
-	for _, want := range []string{"5434", "15433", "pt", "forge secret set", PortEnv} {
+	for _, want := range []string{"5434", "15433", "pt", "forge env secret set", PortEnv} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message must name %q; got:\n%s", want, msg)
 		}

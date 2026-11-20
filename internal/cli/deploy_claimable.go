@@ -114,9 +114,9 @@ func refuseClaimableEnvSignedIn(env string, e *KCLEntities, cred cloud.Credentia
 			"but you are signed in (%s: %s).\n"+
 			"  to deploy it to your organization: in deploy/kcl/%s/main.k remove `claimable = True` and the anonymous-plan "+
 			"`resources` of its hosted workloads (the default 250m / 1 GiB is on the hosted shape band), then %s env deploy %s\n"+
-			"  to deploy it anonymously instead: sign out (forge logout), then %s env deploy %s --claimable",
+			"  to deploy it anonymously instead: sign out (forge cloud logout), then %s env deploy %s --claimable",
 			env, cred.Source, cred.From, env, Name(), env, Name(), env),
-		next: []string{fmt.Sprintf("%s env deploy %s", Name(), env), fmt.Sprintf("forge logout && %s env deploy %s --claimable", Name(), env)},
+		next: []string{fmt.Sprintf("%s env deploy %s", Name(), env), fmt.Sprintf("forge cloud logout && %s env deploy %s --claimable", Name(), env)},
 	}
 }
 
@@ -183,7 +183,7 @@ type deployClaimJSON struct {
 func afterClaimNote(env string) string {
 	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): the free plan "+
 		"includes one static site, and a backend or database needs billing on their account. "+
-		"This machine's claimable credential stops working at the claim; to redeploy as them: %s login, then %s env deploy %s",
+		"This machine's claimable credential stops working at the claim; to redeploy as them: %s cloud login, then %s env deploy %s",
 		Name(), Name(), env)
 }
 
@@ -293,7 +293,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if envAppliesLocally(entities) {
 			return fmt.Errorf("env %q applies part of itself from this machine (a cluster, compose, host or forge.OnExternal part), "+
 				"which an anonymous deploy cannot do. --claimable publishes only hosted workloads.\n"+
-				"  deploy it to your own account instead: forge login, then %s env deploy %s", envName, Name(), envName)
+				"  deploy it to your own account instead: forge cloud login, then %s env deploy %s", envName, Name(), envName)
 		}
 		ep, err := cloud.ResolveEndpoint(envName, declarationFromEntities(entities))
 		if err != nil {
@@ -695,7 +695,7 @@ func claimableIneligibleError(env string, caps deploy.ClaimableLimits, reasons [
 		fmt.Fprintf(&b, "\n  - %s", strings.ReplaceAll(r, "<env>", env))
 	}
 	fmt.Fprintf(&b, "\nfix those, then re-run: %s env deploy %s --claimable", Name(), env)
-	fmt.Fprintf(&b, "\nor deploy it to your own account instead: forge login, then %s env deploy %s", Name(), env)
+	fmt.Fprintf(&b, "\nor deploy it to your own account instead: forge cloud login, then %s env deploy %s", Name(), env)
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, msg: b.String(),
 		next: []string{fmt.Sprintf("%s env deploy %s --claimable", Name(), env), loginThenDeploy(env)},
@@ -793,7 +793,7 @@ func claimableUnavailableError(env string, ep cloud.Endpoint, causes []cloud.Cla
 		b.WriteString("\n  This is the platform's configuration, not your project: retry once it is fixed.")
 		next = append(next, fmt.Sprintf("%s env deploy %s --claimable", Name(), env))
 	}
-	fmt.Fprintf(&b, "\n  alternative: deploy to your own account instead: forge login, then %s env deploy %s", Name(), env)
+	fmt.Fprintf(&b, "\n  alternative: deploy to your own account instead: forge cloud login, then %s env deploy %s", Name(), env)
 	first := causes[0]
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeUnavailable, reason: cloud.ReasonClaimableUnavailable,
@@ -901,7 +901,7 @@ func claimableClaimedError(env string) error {
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableClaimed,
 		msg: fmt.Sprintf("this deploy was claimed: someone opened its claim link and it now belongs to their account.\n"+
-			"  run forge login and deploy without --claimable: forge login, then %s env deploy %s", Name(), env),
+			"  run forge cloud login and deploy without --claimable: forge cloud login, then %s env deploy %s", Name(), env),
 		next: []string{loginThenDeploy(env)},
 	}
 }
@@ -917,7 +917,7 @@ func claimableDeployError(env string, err error) error {
 		return &claimableRefusal{
 			exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: reasonClaimableIneligible, emitted: true,
 			msg: fmt.Sprintf("the control plane held this anonymous deploy on %s, which an unclaimed deploy cannot resolve.\n"+
-				"sign up for the rest: forge login, then %s env deploy %s", queuedLabel(q.Holds), Name(), env),
+				"sign up for the rest: forge cloud login, then %s env deploy %s", queuedLabel(q.Holds), Name(), env),
 			next: []string{loginThenDeploy(env)},
 		}
 	}
@@ -949,12 +949,12 @@ func claimableStartError(ep cloud.Endpoint, env string, err error) error {
 			// Neither comes back anonymously: the platform took it down, or
 			// its window closed. The deploy can go on under an account.
 			return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, next: []string{loginThenDeploy(env)},
-				msg: fmt.Sprintf("%s\n  (reason: %s)\n  deploy it to your own account instead: forge login, then %s env deploy %s",
+				msg: fmt.Sprintf("%s\n  (reason: %s)\n  deploy it to your own account instead: forge cloud login, then %s env deploy %s",
 					ce.Message, ce.Reason, Name(), env)}
 		case ce.HasCode(cloud.CodeInvalidArgument), ce.HasCode(cloud.CodeFailedPrecondition):
 			if ce.Reason != "" {
 				return &claimableRefusal{exit: exitRefused, code: ce.Code, reason: ce.Reason, next: []string{loginThenDeploy(env)},
-					msg: fmt.Sprintf("%s\n  (reason: %s)\n  or deploy it to your own account instead: forge login, then %s env deploy %s",
+					msg: fmt.Sprintf("%s\n  (reason: %s)\n  or deploy it to your own account instead: forge cloud login, then %s env deploy %s",
 						ce.Message, ce.Reason, Name(), env)}
 			}
 		}
@@ -984,7 +984,7 @@ func newClaimableThrottle(env string, th cloud.ClaimableThrottle) error {
 		fmt.Fprintf(&b, "  retry after  %s  (at %s)\n", formatRetryAfter(th.RetryAfter), at.Format(time.RFC3339))
 	}
 	fmt.Fprintf(&b, "  then         %s env deploy %s --claimable\n", Name(), env)
-	fmt.Fprintf(&b, "  or now       forge login, then %s env deploy %s (your own free account; this limit does not apply)", Name(), env)
+	fmt.Fprintf(&b, "  or now       forge cloud login, then %s env deploy %s (your own free account; this limit does not apply)", Name(), env)
 	return &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeResourceExhausted, reason: cloud.ReasonClaimableThrottled,
 		msg: b.String(), throttle: facts,
@@ -995,7 +995,7 @@ func newClaimableThrottle(env string, th cloud.ClaimableThrottle) error {
 // loginThenDeploy is the one command line that leaves the anonymous path: sign
 // in, then deploy env to the account.
 func loginThenDeploy(env string) string {
-	return fmt.Sprintf("forge login && %s env deploy %s", Name(), env)
+	return fmt.Sprintf("forge cloud login && %s env deploy %s", Name(), env)
 }
 
 // formatRetryAfter renders a wait the way an agent can act on: "45s", "14m",
@@ -1210,7 +1210,7 @@ func printAfterClaim(w io.Writer, env, consoleURL string) {
 	}
 	fmt.Fprintf(w, "  The free plan includes one static site; a backend or database needs billing on their account.\n")
 	fmt.Fprintf(w, "  The claim revokes this machine's claimable credential. To redeploy as them:\n")
-	fmt.Fprintf(w, "  %s login, then %s env deploy %s\n", Name(), Name(), env)
+	fmt.Fprintf(w, "  %s cloud login, then %s env deploy %s\n", Name(), Name(), env)
 }
 
 // formatLifetime renders a span as hours (72h, 41h) up to three days, days
@@ -1276,7 +1276,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 	}
 	if doc.State == "claimed" {
 		fmt.Printf("This deploy was claimed: it belongs to someone's account now.\n"+
-			"  run forge login and deploy without --claimable: forge login, then %s env deploy %s\n", Name(), env)
+			"  run forge cloud login and deploy without --claimable: forge cloud login, then %s env deploy %s\n", Name(), env)
 		return nil
 	}
 	if doc.State == "expired" {

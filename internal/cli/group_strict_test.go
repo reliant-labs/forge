@@ -27,8 +27,8 @@ import (
 // permissive AND when a command inside it has been fixed, so the list can
 // only shrink.
 // EMPTY, and that is the goal state: every parent in the tree rejects an
-// unknown subcommand. `forge doctor` was the last entry — it was runnable
-// with a RunE that ignored positionals, so `forge doctor bogus` ran the full
+// unknown subcommand. `forge project doctor` was the last entry — it was runnable
+// with a RunE that ignored positionals, so `forge project doctor bogus` ran the full
 // diagnostic and exited on the diagnostic's result. It now declares
 // cobra.NoArgs. Add an entry here only with a reason and an owner, and delete
 // it the moment the command is fixed; the test enforces both directions.
@@ -87,7 +87,7 @@ func TestUnknownSubcommandExitsNonZero(t *testing.T) {
 		{[]string{"db", "bogus"}, "bogus"},
 		{[]string{"db", "migrate", "bogus"}, "bogus"},
 		{[]string{"env", "bogus"}, "bogus"},
-		{[]string{"debug", "bogus"}, "bogus"},
+		{[]string{"dev", "debug", "bogus"}, "bogus"},
 		{[]string{"project", "bogus"}, "bogus"},
 		// The RETIRED verb, deliberately spelled out: `add` is gone, and a
 		// project scaffolded by an older forge (or an agent working from a

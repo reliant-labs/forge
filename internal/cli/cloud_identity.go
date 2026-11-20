@@ -33,7 +33,7 @@ func newCloudIdentityCmd() *cobra.Command {
 
 Reads (status, users) need identity:read; every verb that changes a user
 (invite, set-roles, reset, lock, unlock, delete, revoke-sessions) and export
-need identity:manage and an org admin. Under Reliant, or after forge login, nothing
+need identity:manage and an org admin. Under Reliant, or after forge cloud login, nothing
 extra is needed: forge trades the credential for the scope a verb needs before
 calling it (an hour, and only while the person behind the session holds the
 grant), as obs does for obs:read.

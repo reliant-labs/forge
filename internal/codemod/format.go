@@ -25,7 +25,7 @@ import (
 // project's gate; every other codemod kept its own printer.
 //
 // register wraps each codemod's Run with formatAfter, so the guarantee holds for
-// every codemod there is and every one added later, and `forge fix <name>`,
+// every codemod there is and every one added later, and `forge lint fix <name>`,
 // upgrade's codemod phase and a playbook's automation step all get it: none of
 // them can reach a Run that skips it.
 //

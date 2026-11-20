@@ -15,7 +15,7 @@ import (
 // inlined secret in a throwaway environment and refuse it everywhere else.
 // Rendering with no `-D env=<name>` leaves the option Undefined, so that
 // check fails for EVERY environment including the two it explicitly permits,
-// and `forge doctor` / `forge ci validate-kcl` report a project as
+// and `forge project doctor` / `forge ci validate-kcl` report a project as
 // non-applyable over a conditional that would have been satisfied.
 //
 // renderKCLRaw (internal/cli) has always passed `env=<env>`. This pins the

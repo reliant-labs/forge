@@ -98,7 +98,7 @@ func resetPlatformLogins(t *testing.T) {
 }
 
 // isolatedCredentials points forge's credentials file and the declared token
-// env at this test's own state, so a developer's real `forge login` neither
+// env at this test's own state, so a developer's real `forge cloud login` neither
 // leaks into an assertion nor is read by one.
 func isolatedCredentials(t *testing.T) string {
 	t.Helper()
@@ -116,7 +116,7 @@ func isolatedCredentials(t *testing.T) string {
 // our host takes username `forge` and the control-plane `rlat_` on stdin, from
 // EVERY source cloud.ResolveCredential honours — including the credential
 // helper, which is how a Reliant session (laptop or managed daemon) reaches a
-// push with no `forge login` and no CI secret (gap G7).
+// push with no `forge cloud login` and no CI secret (gap G7).
 func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -138,7 +138,7 @@ func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 			arrange: func(t *testing.T, _ string) { t.Setenv("FORGE_CONTROL_PLANE_TOKEN", "rlat_fromenv") },
 		},
 		{
-			name:  "the forge login credentials file",
+			name:  "the forge cloud login credentials file",
 			token: "rlat_fromlogin",
 			arrange: func(t *testing.T, credPath string) {
 				if err := credentials.Store(credPath, "https://cp.example.com", cloud.ClientID,
@@ -152,7 +152,7 @@ func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 			// user is signed in to the host, which names a credential helper;
 			// it has no way to be handed a registry password, so the helper's
 			// token resolving here is what makes a push work with no `forge
-			// login` and no CI secret.
+			// cloud login` and no CI secret.
 			name:  "a host application's session via the credential helper",
 			token: "rlat_fromhelper",
 			arrange: func(t *testing.T, _ string) {
@@ -168,7 +168,7 @@ func TestRegistryLogin_PlatformHostUsesTheControlPlaneCredential(t *testing.T) {
 
 			args := append([]string{"login", "prod"}, tc.args...)
 			if _, err := runRegistryCommand(t, "", args...); err != nil {
-				t.Fatalf("forge registry login prod: %v", err)
+				t.Fatalf("forge cloud registry login prod: %v", err)
 			}
 			if len(*calls) != 1 {
 				t.Fatalf("docker login calls = %+v, want exactly one to the platform registry", *calls)
@@ -203,7 +203,7 @@ func TestRegistryLogin_TokenNeverReachesArgv(t *testing.T) {
 	calls := stubDockerLoginArgs(t)
 
 	if _, err := runRegistryCommand(t, "", "login", "prod"); err != nil {
-		t.Fatalf("forge registry login prod: %v", err)
+		t.Fatalf("forge cloud registry login prod: %v", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("docker login calls = %+v, want one", *calls)
@@ -240,7 +240,7 @@ func TestRegistryLogin_PlatformHostRefusesExplicitFlags(t *testing.T) {
 
 			_, err := runRegistryCommand(t, "whatever", args...)
 			if err == nil {
-				t.Fatalf("forge registry %s: want a refusal — our registry takes the control-plane credential", strings.Join(args, " "))
+				t.Fatalf("forge cloud registry %s: want a refusal — our registry takes the control-plane credential", strings.Join(args, " "))
 			}
 			if !strings.Contains(err.Error(), "control-plane credential") || !strings.Contains(err.Error(), platformHost) {
 				t.Errorf("the refusal must name the host and say what it takes instead; got:\n%v", err)
@@ -290,7 +290,7 @@ func TestRegistryLogin_MixedEnvLogsInToBoth(t *testing.T) {
 	calls := stubDockerLoginArgs(t)
 
 	if _, err := runRegistryCommand(t, "ghcr-pat", "login", "prod", "--username", "ci-bot", "--password-stdin"); err != nil {
-		t.Fatalf("forge registry login prod (mixed): %v", err)
+		t.Fatalf("forge cloud registry login prod (mixed): %v", err)
 	}
 	if len(*calls) != 2 {
 		t.Fatalf("docker login calls = %+v, want two — one per host", *calls)

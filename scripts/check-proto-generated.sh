@@ -38,7 +38,7 @@ fi
 
 for tool in buf protoc-gen-go; do
   if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "$tool is not on PATH, so $pb cannot be checked against $src. Install it with \`forge tools install\`." >&2
+    echo "$tool is not on PATH, so $pb cannot be checked against $src. Install it with \`forge machine tools install\`." >&2
     exit 1
   fi
 done

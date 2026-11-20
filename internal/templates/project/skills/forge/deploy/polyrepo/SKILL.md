@@ -121,9 +121,9 @@ output = forge.render(forge.Bundle {
   of 7+ hex digits is enough). Without it a re-pointed tag would render
   different KCL on a machine that fetched later. A `ref` that is a full sha is
   its own lock. Recommended: a tag for readability plus `commit`.
-- `forge kcl imports` lists every import with the commit it resolved to, and
+- `forge env kcl imports` lists every import with the commit it resolved to, and
   fetches every pin not yet cached: run it once to prepare a machine (or a CI
-  cache) for offline renders. `forge kcl imports --refresh` re-fetches (a
+  cache) for offline renders. `forge env kcl imports --refresh` re-fetches (a
   moved branch), and a lock mismatch then says which commit the ref moved to.
 - **Forge versions must agree.** The imported KCL's `import forge` is the
   rendering forge's, so a skewed `forge_version` is refused with both pins and
@@ -185,7 +185,7 @@ Which Dockerfile:
   with the directory it sends.
 - A release records each image's `built_from` (repo + commit), and refuses to
   cut while a pin is overridden to a working copy.
-- `forge doctor --verbose` lists every pin across envs without fetching.
+- `forge project doctor --verbose` lists every pin across envs without fetching.
 - To ship a new app version: bump its `ref` in one PR. That PR is the change
   log of what the deploy repo ships.
 
@@ -205,7 +205,7 @@ pin is independent; the override file covers all of them by repo.
 
 - **`pin mismatch`**: the ref resolved to another commit than `commit` (or
   the sha `ref`). The ref moved, or this machine cached an older one. Run
-  `forge kcl imports --refresh`, and if the new commit is intended, update
+  `forge env kcl imports --refresh`, and if the new commit is intended, update
   `commit` in kcl.mod in a reviewed PR.
 - **`could not be resolved`** / **`fetch …`**: offline on a cold cache, a typo
   in `repo`/`ref`, or git cannot authenticate. Fix git's access, or override to

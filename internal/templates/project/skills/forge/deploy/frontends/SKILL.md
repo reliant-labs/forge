@@ -60,7 +60,7 @@ A site with no backend is a whole project: `deploy/static-site`.
 ### Custom domains
 
 Every hosted site and exposed hosted port already answers on a hostname the
-platform allocates. To ALSO serve your own, use the `forge domain` commands —
+platform allocates. To ALSO serve your own, use the `forge cloud domain` commands —
 **a hosted domain is NOT spec**, and a hosted frontend or port carrying
 `domains` is refused at render. `forge.OnCluster` keeps `Port.domains`.
 Domains: `deploy/domains`. Hosted `forge env stop|start|delete`:

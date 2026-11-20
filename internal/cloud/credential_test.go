@@ -81,10 +81,10 @@ func TestResolveCredential_FileIsKeyedByEndpoint(t *testing.T) {
 	if !errors.Is(err, ErrNoCredential) {
 		t.Fatalf("an endpoint with no entry must be ErrNoCredential; got %v", err)
 	}
-	// Login takes no env: the hint is the bare `forge login` (it logs into
-	// every control plane the project declares), never `forge login dev`.
-	if !strings.Contains(err.Error(), "forge login ") || strings.Contains(err.Error(), "forge login dev") || !strings.Contains(err.Error(), other.URL) {
-		t.Errorf("the hint must name the endpoint and an env-free `forge login`; got:\n%s", err)
+	// Login takes no env: the hint is the bare `forge cloud login` (it logs into
+	// every control plane the project declares), never `forge cloud login dev`.
+	if !strings.Contains(err.Error(), "forge cloud login ") || strings.Contains(err.Error(), "forge cloud login dev") || !strings.Contains(err.Error(), other.URL) {
+		t.Errorf("the hint must name the endpoint and an env-free `forge cloud login`; got:\n%s", err)
 	}
 }
 
@@ -119,10 +119,10 @@ func TestResolveCredential_MissingNamesLoginAndEnvVar(t *testing.T) {
 	if !errors.Is(err, ErrNoCredential) {
 		t.Fatalf("want ErrNoCredential; got %v", err)
 	}
-	if strings.Contains(err.Error(), "forge login prod") {
-		t.Errorf("login takes no env; the hint must not say `forge login prod`:\n%s", err)
+	if strings.Contains(err.Error(), "forge cloud login prod") {
+		t.Errorf("login takes no env; the hint must not say `forge cloud login prod`:\n%s", err)
 	}
-	for _, want := range []string{"forge login", tokenEnv} {
+	for _, want := range []string{"forge cloud login", tokenEnv} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message must name %q; got:\n%s", want, err)
 		}

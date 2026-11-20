@@ -10,12 +10,12 @@ the credential you already have. There is no registry password to mint, no
 second CI secret, and nothing to rotate.
 
 ```
-forge registry login <env>        # no --username, no --password-*
+forge cloud registry login <env>        # no --username, no --password-*
 ```
 
 forge resolves the same `rlat_` it reaches the control plane with — `--token`,
 then the env's declared `token_env` (default `$FORGE_CONTROL_PLANE_TOKEN`), then
-what `forge login` stored, then the credential helper `$FORGE_CREDENTIAL_HELPER`
+what `forge cloud login` stored, then the credential helper `$FORGE_CREDENTIAL_HELPER`
 (Reliant's session — set for `reliant forge …` and Reliant agents' shells). It
 presents that on **stdin** as username `forge`;
 the realm authenticates on the credential alone, so the username is a label in
@@ -133,7 +133,7 @@ forge composes the push address from the org your credential acts for, so a
 denial is never a mis-declared org. In order:
 
 1. **The credential expired or was revoked.** Under Reliant, sign in to Reliant
-   again (`reliant auth login` / the app); standalone, `forge login` again; in
+   again (`reliant auth login` / the app); standalone, `forge cloud login` again; in
    CI, refresh the secret.
 2. **The token holds `deploy:read` but not `deploy:write`.** A push needs both
    the org's subtree and write access; check the token's scopes in the web
@@ -145,7 +145,7 @@ reached the keychain.
 
 ## When forge cannot learn your org
 
-A build, deploy, release cut or `forge registry login` for a hosted env asks the
+A build, deploy, release cut or `forge cloud registry login` for a hosted env asks the
 control plane which organization the credential acts for (one call per
 command). With no credential it stops at the top and says so — authenticate and
 re-run. `forge env render` and `forge lint` need no credential: with none they

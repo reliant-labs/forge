@@ -307,7 +307,7 @@ func TestAuthParity_NoEnvironmentsSkips(t *testing.T) {
 	}
 }
 
-// With no Env set (the `forge doctor` project-health set) every declared
+// With no Env set (the `forge project doctor` project-health set) every declared
 // environment is checked, and the most serious verdict wins — an issuer typo
 // in prod is the same incident as one in dev, on the environment where it
 // costs most.

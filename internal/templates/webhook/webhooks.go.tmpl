@@ -131,7 +131,7 @@ func (s *Service) mark{{.Name | pascalCase}}WebhookProcessed(_ context.Context, 
 // TODO: source this from config instead of a literal. Declare the secret in
 // proto/<project>/config/v1/config.proto with the (forge.v1.config) annotation, run
 // `forge generate`, and read it off s.deps.Config — that gets you per-env
-// values and secret-manager wiring for free. See `forge skill load secrets`.
+// values and secret-manager wiring for free. See `forge agent skill load secrets`.
 var {{.Name | camelCase}}WebhookSecret = ""
 
 // verify{{.Name | pascalCase}}Signature checks that the delivery really came

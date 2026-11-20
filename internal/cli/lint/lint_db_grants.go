@@ -74,7 +74,7 @@ func (f dbGrantsFinding) fixHint() string {
 	}
 	return fmt.Sprintf("in a new migration, declare one: COMMENT ON COLUMN %s IS 'forge:secret'; (a credential: stays hidden) "+
 		"or COMMENT ON COLUMN %s IS 'forge:readable <why it is not a credential>'; (granted to forge_ro).%s "+
-		"A proto field marked `// forge:secret` also counts. See `forge skill load db/query`.", target, target, prior)
+		"A proto field marked `// forge:secret` also counts. See `forge agent skill load db/query`.", target, target, prior)
 }
 
 // dbGrantsReport is everything one run found. Unverified is non-empty when the

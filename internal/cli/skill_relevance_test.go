@@ -174,7 +174,7 @@ func TestListSkillsAtExposesMigrationVersion(t *testing.T) {
 }
 
 // TestMigrationSkillStillLoadableByPath pins the on-demand escape hatch:
-// `forge skill load migrations/<id>` (and forge project upgrade list's
+// `forge agent skill load migrations/<id>` (and forge project upgrade list's
 // "To load" hint) must keep working even though listings hide migration
 // skills. That hint is the only way an agent reaches a migration, so the
 // path resolving is load-bearing.

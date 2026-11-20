@@ -41,9 +41,9 @@ Declaring the same Secret as an `ExternalSecret` or a `rendered_secrets` entry t
 The control plane can only write into a cluster it holds a credential for. Both are refused at render, with the fix:
 
 - `control_plane = forge.ControlPlane {}` must be on the Bundle.
-- The cluster must name a connected cluster (`forge cluster connect <name> --context <ctx> --env <env>`), by `ClusterTarget.connected_cluster` or `Bundle.connected_clusters`. **There is no k3d exemption** (unlike `refuseUnboundClusterTargets`): delivery is the control plane dialing the cluster, so a k3d cluster qualifies only once connected.
+- The cluster must name a connected cluster (`forge cloud cluster connect <name> --context <ctx> --env <env>`), by `ClusterTarget.connected_cluster` or `Bundle.connected_clusters`. **There is no k3d exemption** (unlike `refuseUnboundClusterTargets`): delivery is the control plane dialing the cluster, so a k3d cluster qualifies only once connected.
 
-The connect grant that lets the control plane write exactly these Secrets is installed by `forge cluster connect` (see `deploy/cluster-connect`).
+The connect grant that lets the control plane write exactly these Secrets is installed by `forge cloud cluster connect` (see `deploy/cluster-connect`).
 
 ## Kinds
 

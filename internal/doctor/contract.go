@@ -4,7 +4,7 @@
 //   - PROJECT HEALTH — "is this project well-formed?" Deployability of the
 //     rendered manifests, payload caps, disowned files, toolchain. These
 //     read the project's own emitted artefacts, span every declared
-//     environment, and need nothing running. `forge doctor` is exactly this
+//     environment, and need nothing running. `forge project doctor` is exactly this
 //     set, which is why it takes no `--env`: it never asks about one.
 //
 //   - ENV RUNTIME — "is the stack for environment X up and reachable?" The
@@ -211,7 +211,7 @@ type RuntimeInput struct {
 // probe cannot reach.
 const composeCheckName = "Compose Infra"
 
-// projectChecks is the PROJECT-HEALTH set — the whole of `forge doctor`.
+// projectChecks is the PROJECT-HEALTH set — the whole of `forge project doctor`.
 // Every entry answers a question about the project's own artefacts, so all
 // of them are answerable in CI on a bare checkout with nothing running.
 func projectChecks() []namedCheck {
@@ -221,7 +221,7 @@ func projectChecks() []namedCheck {
 		{"Auth Issuer Parity", CheckAuthParity},
 		// Deliberately NOT in deployabilityChecks: that set is contracted
 		// to answer on a bare checkout with nothing running, and this one
-		// reads a live cluster. It still belongs to `forge doctor`, because
+		// reads a live cluster. It still belongs to `forge project doctor`, because
 		// the question it answers — "what did forge leave behind that no
 		// env will ever reclaim?" — is a project-ownership question, and
 		// nothing else in forge asks it. On a machine whose kubeconfig does
@@ -230,7 +230,7 @@ func projectChecks() []namedCheck {
 		{orphanedClusterCheckName, CheckOrphanedClusterObjects},
 		// Also deliberately NOT in deployabilityChecks: it reads this
 		// MACHINE, not the project's artefacts, so it has no business in
-		// the CI gate. It belongs to `forge doctor` because nothing in
+		// the CI gate. It belongs to `forge project doctor` because nothing in
 		// forge reported disk at all — the machine this was written on
 		// went from 70 GiB free to a failed build with no warning at any
 		// point, while the storage policy that would have reclaimed the
@@ -317,7 +317,7 @@ func (s *svc) RunFiltered(ctx context.Context, projectName, projectDir, signal s
 		}
 	case "deploy":
 		// Deployability only: no docker, no running stack. This is the arm
-		// CI calls — `forge doctor --signal deploy --json` answers "would
+		// CI calls — `forge project doctor --signal deploy --json` answers "would
 		// this deploy" on a checkout, before an image exists.
 		for _, c := range deployabilityChecks() {
 			d.register(c.name, c.fn)

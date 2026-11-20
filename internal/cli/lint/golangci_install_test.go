@@ -26,7 +26,7 @@ func fakeGolangciOnPath(t *testing.T, ver, goVersion string) {
 	t.Setenv("PATH", bin)
 }
 
-// TestGolangciLintOnPath is what `forge tools install golangci-lint` decides
+// TestGolangciLintOnPath is what `forge machine tools install golangci-lint` decides
 // on: keep PATH's golangci-lint only when it is forge's pin built with a Go
 // that can analyze the module.
 func TestGolangciLintOnPath(t *testing.T) {

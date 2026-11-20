@@ -103,7 +103,7 @@ func TestMissingToolFailsTheRunNamingTheLane(t *testing.T) {
 		if err == nil {
 			t.Fatal("forge lint passed with a gating lane (buf lint) that could NOT run")
 		}
-		for _, want := range []string{"could NOT run", "buf lint", "buf is not on PATH", "forge tools install buf", "--allow-skip 'buf-lint=<why>'"} {
+		for _, want := range []string{"could NOT run", "buf lint", "buf is not on PATH", "forge machine tools install buf", "--allow-skip 'buf-lint=<why>'"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("verdict does not say %q:\n%v", want, err)
 			}
@@ -118,7 +118,7 @@ func TestMissingToolFailsTheRunNamingTheLane(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "could NOT run: buf lint") {
 			t.Fatalf("--quiet verdict = %v; want a failure naming buf lint\n%s", err, out.String())
 		}
-		if !strings.Contains(out.String(), "forge tools install buf") {
+		if !strings.Contains(out.String(), "forge machine tools install buf") {
 			t.Errorf("--quiet does not print the fix:\n%s", out.String())
 		}
 		fs, gated := flattenLintOutcomes(outcomes)

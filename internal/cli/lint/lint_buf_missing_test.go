@@ -30,7 +30,7 @@ func TestBufLaneFailsWithoutBuf(t *testing.T) {
 	if cerr != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError {
 		t.Fatalf("want one gating error finding, got gated=%v err=%v %+v", gated, cerr, fs)
 	}
-	if !strings.Contains(fs[0].Message, "buf lint lane cannot run") || !strings.Contains(fs[0].FixHint, "forge tools install buf") {
+	if !strings.Contains(fs[0].Message, "buf lint lane cannot run") || !strings.Contains(fs[0].FixHint, "forge machine tools install buf") {
 		t.Errorf("want the reason and the fix, got %+v", fs[0])
 	}
 }

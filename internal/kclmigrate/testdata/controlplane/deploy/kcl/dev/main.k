@@ -15,7 +15,7 @@ _namespace = "control-plane-dev"
 
 # The image registry this env pushes to and pulls from: the local k3d
 # registry. DECLARED here and nowhere else — `forge env build dev --push` and
-# `forge registry login dev` read it from this line; no flag, env var or
+# `forge cloud registry login dev` read it from this line; no flag, env var or
 # forge.yaml key names it.
 _registry = "localhost:5051"
 

@@ -127,9 +127,9 @@ fix.
   workload to the kubectl context its `forge.OnCluster` target declares; `task test:e2e` runs the suite
   against the live multi-cluster stack. See the `forge/testing/e2e` skill.
 - **The pod is still up after a failure** — `forge env up` leaves the stack running, so
-  you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance. `forge debug`
+  you can `kubectl exec` in without the `E2E_HOLD_ON_FAIL` dance. `forge dev debug`
   does not attach to a pod: it debugs host processes (`start`, `--attach <pid>`)
-  and dlv servers it can reach (`forge debug connect <addr>`). To use Delve on an
+  and dlv servers it can reach (`forge dev debug connect <addr>`). To use Delve on an
   in-cluster workload, run it OnHost in a debugging env, or run dlv in the pod
   and `kubectl port-forward` to it before `connect`. The hold-on-fail flag still earns its keep
   when the suite itself owns short-lived per-test pods it would otherwise reap.
@@ -145,7 +145,7 @@ gateway logs a `write envelope: EOF` reconnect loop, and callers see
 one stops short.
 
 1. **Read pod status across BOTH clusters — directly with kubectl.**
-   `forge cluster status` / `forge cluster instances` resolve a **single**
+   `forge dev cluster status` / `forge dev cluster instances` resolve a **single**
    cluster name from config; they will never enumerate the secondary cluster's
    pods. For a multi-cluster app, query each context yourself:
    ```bash
@@ -157,12 +157,12 @@ one stops short.
    `deploy/kcl/<env>/main.k` (the `cluster` field IS the context).
 
 2. **Pull the symptom from the gateway's own logs.**
-   `forge cluster logs --service <gateway>` is kubectl-backed (no file-grepping),
+   `forge dev cluster logs --service <gateway>` is kubectl-backed (no file-grepping),
    but it only tails the pod in the cluster whose name is in config — the
    **owner-cluster half**. Set the right context first; for the peer half, run
    `kubectl --context <secondary> -n <ns> logs <peer-pod>` directly.
    ```bash
-   forge cluster logs --service <gateway> --follow=false --tail 200   # owner half
+   forge dev cluster logs --service <gateway> --follow=false --tail 200   # owner half
    ```
 
 3. **Localize with `forge project introspect handlers`.**
@@ -173,7 +173,7 @@ one stops short.
 4. **ASSERT the app-flow invariant with a declarative, exit-coded health check.**
    A green `forge env smoke` / `forge env status <env>` does **NOT** mean the app flow works:
    they check listeners, local compose, and telemetry — never app-flow
-   invariants. The same is true of `forge cluster status`, which is green when
+   invariants. The same is true of `forge dev cluster status`, which is green when
    every pod is `Running` regardless of whether the cross-cluster dial succeeds.
    Prove the fix with a declarative check that fails non-zero when the invariant
    is violated. Model to copy: a project `doctor:<flow>` task (e.g. the

@@ -400,7 +400,7 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 				"the marker requires a reason", p.PkgPath),
 			FixHint: "write why forge should not manage this package: `//forge:exclude-contract: <why>`, once, in the " +
 				"package's doc.go (pure functions, test-only support, API/CRD types, a strategy registry). If none of those is true, " +
-				"the package wants a contract.go instead — see `forge skill load contracts/package-markers`",
+				"the package wants a contract.go instead — see `forge agent skill load contracts/package-markers`",
 		})
 	}
 	if isTestSupportPackage(p) || isStructurallyExemptKind(p) {
@@ -409,7 +409,7 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 	if hit, ok := firstOutboundIOCall(p); ok {
 		hint := "remove `//forge:exclude-contract` and make this an adapter: a contract.go carrying " +
 			"`// forge:outbound-io` with a narrow Service interface in domain types, and `// forge:constructor` " +
-			"on `func New(Deps)` — see `forge skill load adapter`"
+			"on `func New(Deps)` — see `forge agent skill load adapter`"
 		if hit.dynamicTarget {
 			hint += ". If this call only ever reaches LOOPBACK (a local dev server, a sidecar on 127.0.0.1), " +
 				"it is not an outbound boundary: write the host as a constant — `net.JoinHostPort(\"127.0.0.1\", port)`, " +
@@ -436,7 +436,7 @@ func checkOnePackage(p *packages.Package, marker codegen.ReasonedMarker, candida
 				"cannot opt out of the contract system: an interface with interchangeable implementations IS the contract",
 				p.PkgPath, iface, len(impls), strings.Join(impls, ", ")),
 			FixHint: fmt.Sprintf("remove `//forge:exclude-contract` and move %s into a contract.go (mark it "+
-				"`//forge:contract` if it is not named Service) — see `forge skill load contracts/package-markers`. A strategy "+
+				"`//forge:contract` if it is not named Service) — see `forge agent skill load contracts/package-markers`. A strategy "+
 				"registry is exempt when it exposes a `Register…(%s)` func", iface, iface),
 		})
 	}

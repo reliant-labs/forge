@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Register is the MANUAL escape hatch (`forge storage register`): it DISCOVERS
+// Register is the MANUAL escape hatch (`forge machine storage register`): it DISCOVERS
 // the registry facts from live k3d/docker metadata instead of being told them,
 // then applies them through exactly the same merge rule Converge uses
 // (upsertFacts) — one definition of "upsert, never remove, complete-or-nothing"

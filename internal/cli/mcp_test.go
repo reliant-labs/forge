@@ -303,7 +303,7 @@ func TestTruncateMCPOutputKeepsTheVerdict(t *testing.T) {
 }
 
 // A client that writes initialize, initialized and tools/list and closes stdin
-// (a registry's build check, `printf ... | forge mcp`) must still get both
+// (a registry's build check, `printf ... | forge agent mcp`) must still get both
 // responses: EOF ends input, it does not abort the calls already read.
 func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 	resetCmdRoute(t)

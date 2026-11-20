@@ -1,4 +1,4 @@
-// Package cli — `forge cluster status` command.
+// Package cli — `forge dev cluster status` command.
 //
 // Renders a human- or machine-readable snapshot of the dev cluster,
 // running pods, and ingress URLs derived from rendered KCL. Replaces a
@@ -35,11 +35,11 @@ the dev namespace, what ingress URLs are exposed by the dev env's
 KCL gateways, what sibling dev namespaces exist on this cluster.
 
 For static config (declared cluster name, expected context, declared
-service/frontend ports) run ` + "`forge cluster info`" + `.
+service/frontend ports) run ` + "`forge dev cluster info`" + `.
 
 Examples:
-  forge cluster status
-  forge cluster status --json    # machine-readable for scripts/dashboards`,
+  forge dev cluster status
+  forge dev cluster status --json    # machine-readable for scripts/dashboards`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevStatus(cmd.Context(), configPath, jsonOut)
 		},
@@ -136,7 +136,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 
 	// Dynamic state: is the cluster up, what's the current kubectl
 	// context, what namespace are we reading from. Declared values
-	// (expected cluster name, expected context) live in `forge cluster info`.
+	// (expected cluster name, expected context) live in `forge dev cluster info`.
 	fmt.Printf("Cluster %s: %s\n", cluster.Name, boolUpDown(cluster.Exists))
 	current := currentKubectlContext(ctx)
 	switch current {
@@ -155,8 +155,8 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 	fmt.Printf("Namespace: %s\n", ns)
 	fmt.Println()
 	if !exists {
-		fmt.Println("Cluster is down — run `forge cluster up` to start.")
-		fmt.Println("Run `forge cluster info` for the declared config.")
+		fmt.Println("Cluster is down — run `forge dev cluster up` to start.")
+		fmt.Println("Run `forge dev cluster info` for the declared config.")
 		return nil
 	}
 
@@ -181,7 +181,7 @@ func runDevStatus(ctx context.Context, configPath string, jsonOut bool) error {
 		}
 	}
 	fmt.Println()
-	fmt.Println("For declared port mappings, run `forge cluster info`.")
+	fmt.Println("For declared port mappings, run `forge dev cluster info`.")
 	return nil
 }
 

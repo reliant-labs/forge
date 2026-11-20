@@ -267,7 +267,7 @@ rendered by two forge versions is two different artifacts. The worktree PATH
 is stripped before anything leaves the machine; it names a person's home
 directory.
 
-An ensure that has NOT rendered the env — `forge secret set`, a promote —
+An ensure that has NOT rendered the env — `forge env secret set`, a promote —
 sends no shape at all, and an absent shape leaves the stored one untouched.
 That is load-bearing rather than tidy: an inferred shape from a command that
 could not render would erase the declaration a build recorded.

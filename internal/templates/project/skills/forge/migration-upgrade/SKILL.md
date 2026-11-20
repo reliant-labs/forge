@@ -99,7 +99,7 @@ knows for the range the pin crosses, in this order:
 
 1. **modules** — `go get` / `go mod tidy` the forge requirement of every
    module that has one.
-2. **codemods** — the `forge fix <name>` codemods keyed to the releases the
+2. **codemods** — the `forge lint fix <name>` codemods keyed to the releases the
    range crosses (the ones marked to run on every crossing). A pin to a
    pre-release of a release (a Go pseudo-version of main) crosses that
    release's codemods too.
@@ -136,7 +136,7 @@ lint; it still names each codemod rewrite and lockfile it would touch.
 `--skip <phase>` (repeatable) omits `codemods`, `playbooks`, `vendored-contracts`,
 `generate`, `locks` or `lint`; `modules`, `templates` and `pin` always run. It is how
 a big rewrite goes into its own PR: `--skip playbooks` leaves the codemods a playbook
-automates (`connect-errors`, `composition-graph`) for `forge fix <name>` on a branch
+automates (`connect-errors`, `composition-graph`) for `forge lint fix <name>` on a branch
 of their own, and `--skip codemods` does the same for the registry codemods the range
 crosses. The pin moves in the same run, so a skipped codemod is not picked up by the
 next upgrade: the skipped phase's `detail` in `--json` names each to run yourself.
@@ -259,7 +259,7 @@ goes stale the release after it is written. Ask the forge you are upgrading to:
 
 ```bash
 forge project upgrade list                   # the ones THIS project still needs, in order
-forge skill list --include-migrations        # every playbook this binary ships
+forge agent skill list --include-migrations        # every playbook this binary ships
 ```
 
 An empty worklist is the normal steady state, not a gap. `forge project
@@ -296,7 +296,7 @@ release broke — do not create a directory per individual change.
 ### A breaking change registers its codemod, and upgrade runs it
 
 A PR that breaks a consumer (the API-diff gate names it with `API-BREAK:
-codemod=<name>`) ships the `forge fix <name>` codemod in `internal/codemod`.
+codemod=<name>`) ships the `forge lint fix <name>` codemod in `internal/codemod`.
 `forge project upgrade` then runs it when the range crosses the release, by
 one of two declarations — the registration is incomplete without one, and
 `TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise:
@@ -328,7 +328,7 @@ detection: grep -q '^dev_target:' forge.yaml
 | `description` | yes | One line; this is what the worklist prints. |
 | `relevance` | no | `migration` — defaulted from the directory, declare it anyway. |
 | `version` | yes | The release that introduced the break. **Must equal the directory name** (a test pins this). |
-| `automation` | no | Comma-separated mechanical steps `forge project upgrade` runs when the playbook applies. Each is `fix:<codemod>` (a registered `forge fix` name). A playbook that still matches its detection afterwards is reported as needing a person. |
+| `automation` | no | Comma-separated mechanical steps `forge project upgrade` runs when the playbook applies. Each is `fix:<codemod>` (a registered `forge lint fix` name). A playbook that still matches its detection afterwards is reported as needing a person. |
 | `detection` | yes | POSIX shell snippet, run in the project root by forge's in-process interpreter (identical on every OS, no `sh` needed). Exit 0 means the project still has the old shape. |
 
 A migration applies when **both** hold: the project's pinned

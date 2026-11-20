@@ -34,7 +34,7 @@ func TestSolvePoW_MeetsTheServersRule(t *testing.T) {
 func TestSolvePoW_RefusesAnAbsurdDifficulty(t *testing.T) {
 	t.Parallel()
 	_, err := SolvePoW(context.Background(), ClaimableChallenge{Challenge: "x", DifficultyBits: 60})
-	if err == nil || !strings.Contains(err.Error(), "forge login") {
+	if err == nil || !strings.Contains(err.Error(), "forge cloud login") {
 		t.Fatalf("a 60-bit puzzle must be refused with the sign-up remedy; got %v", err)
 	}
 }
@@ -91,7 +91,7 @@ func TestClaimableCredentialNeverResolvesAsALogin(t *testing.T) {
 	if _, err := LoadClaimable(ep, "acme", "prod", now.Add(11*24*time.Hour)); !errors.Is(err, credentials.ErrNotFound) {
 		t.Fatalf("an entry past purge_after must read as absent: %v", err)
 	}
-	// forge logout / a login entry are untouched by forgetting it.
+	// forge cloud logout / a login entry are untouched by forgetting it.
 	if err := ForgetClaimable(ep, "acme", "prod"); err != nil {
 		t.Fatal(err)
 	}

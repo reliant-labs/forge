@@ -230,7 +230,7 @@ const slimDepth = 4
 //
 // It is deliberately a package-level function over a root rather than a
 // Resolver method: the caller that needs it is machine-wide maintenance
-// (forge storage gc), which has no project and no override file, and
+// (forge machine storage gc), which has no project and no override file, and
 // making it a method would force that caller to construct a Resolver
 // whose other fields are meaningless to it.
 //

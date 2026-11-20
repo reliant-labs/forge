@@ -53,7 +53,7 @@ The warning says what to do:
 The last line is the verdict, and it counts them, so a green run never hides
 that a pin bump will turn red. `forge lint --json` puts the same facts on the
 finding as `"grace": {"introduced_in", "gates_from", "fix"}`, and `fix` names
-the `forge fix` codemod when one exists.
+the `forge lint fix` codemod when one exists.
 
 `lint.rules` always wins over the rollout, in both directions: `{rule: error}`
 opts a project in to gating early (do this once you have cleaned the findings,

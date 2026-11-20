@@ -63,7 +63,7 @@ package doctor
 // call something an orphan, and treating it as sufficient is how this check
 // would have earned a permanent yellow on a correct project. forge stamps
 // that label on PLATFORM objects too — the Envoy Gateway chart it installs
-// via `forge cluster up` (internal/cluster.stampDocAppLabel), the pinned
+// via `forge dev cluster up` (internal/cluster.stampDocAppLabel), the pinned
 // Gateway API CRDs, the `eg` GatewayClass. Those are cluster infrastructure
 // every env expects to exist; no env's manifest render contains them and
 // none ever will. Measured on the same cluster: a managed-by-only rule

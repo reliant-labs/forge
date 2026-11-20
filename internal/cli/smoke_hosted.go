@@ -30,7 +30,7 @@ package cli
 // or the certificate is still being issued — so probing it would FAIL on a
 // state that is both expected and outside the release's control. A domain
 // that is live and does not serve is a real finding; one that is not live yet
-// is a different command's business (`forge domain`).
+// is a different command's business (`forge cloud domain`).
 
 import (
 	"context"

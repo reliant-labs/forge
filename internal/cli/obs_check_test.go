@@ -391,7 +391,7 @@ func TestObsCheckWithoutWaitReportsAnOpenWindowAsInconclusive(t *testing.T) {
 	}
 }
 
-// --gate-json writes the document `forge gate record --from` reads: the round
+// --gate-json writes the document `forge release gate record --from` reads: the round
 // trip goes through the real reader.
 func TestObsCheckGateJSONRoundTrip(t *testing.T) {
 	tests := []struct {

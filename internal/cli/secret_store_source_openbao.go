@@ -22,7 +22,7 @@ import (
 
 // The self-run OpenBaoStore writer (design decision N2, option a).
 //
-// `forge secret set` against an env that runs its own OpenBao needs a
+// `forge env secret set` against an env that runs its own OpenBao needs a
 // credential that can write the env's values and nothing else, from a person
 // who holds only a kubeconfig. The path:
 //
@@ -78,7 +78,7 @@ type OpenBaoEntity struct {
 	ReleaseOwner  string            `json:"release_owner,omitempty"`
 	ReleaseInputs map[string]string `json:"release_inputs,omitempty"`
 	// Cluster is the kube context the store runs in; ConnectedCluster is the
-	// name `forge cluster connect` registered.
+	// name `forge cloud cluster connect` registered.
 	Cluster          string `json:"cluster,omitempty"`
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
 	// ServerURL is the in-cluster address (https://<name>.<ns>.svc:<port>).
@@ -352,7 +352,7 @@ func (s *baoStoreSource) signIn(ctx context.Context) error {
 	}
 	if status != http.StatusOK {
 		return fmt.Errorf("sign in to OpenBao as the writer role %q failed (HTTP %d%s)\n"+
-			"fix: the role is created by the OpenBao component's converge Job; check it ran for this env, and that this cluster is registered (forge cluster connect)",
+			"fix: the role is created by the OpenBao component's converge Job; check it ran for this env, and that this cluster is registered (forge cloud cluster connect)",
 			s.login.Role, status, baoErrors(body))
 	}
 	tok := dig(body, "auth", "client_token")

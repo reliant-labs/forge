@@ -7,7 +7,7 @@ package cli
 // recording if producing it is cheaper than not bothering. Every forge verb
 // that can judge something already emits a `--json` document carrying the
 // verdict, so the gate is a PROJECTION of a document the pipeline already
-// has — `forge gate record prod --from wait.json` with no jq in between.
+// has — `forge release gate record prod --from wait.json` with no jq in between.
 // The alternative, a shell snippet per verb mapping fields to --name/--status,
 // is where the evidence trail quietly stops being written: each snippet is
 // one more thing to get wrong, and a wrong one reports a pass.
@@ -200,7 +200,7 @@ var errNoGateInDocument = fmt.Errorf("%w: the document states no verdict", relea
 // gateFromDocument parses one JSON document into the gate it attests to.
 //
 // nameHint names the gate when the document does not name itself and its
-// shape is not recognised — `--name` on `forge gate record`. It is a HINT,
+// shape is not recognised — `--name` on `forge release gate record`. It is a HINT,
 // not an override: a document that names itself wins, because the producer
 // knows what it ran better than the person recording it.
 func gateFromDocument(data []byte, nameHint string) (release.Gate, error) {
@@ -678,7 +678,7 @@ func statusForFindings(gating, checked int) release.GateStatus {
 	}
 }
 
-// renderGateTable renders gates as the human table `forge gate list` prints.
+// renderGateTable renders gates as the human table `forge release gate list` prints.
 // Shared with `gate record`'s text output so one gate and a list of them are
 // rendered by the same code.
 func renderGateTable(gates []release.Gate) string {

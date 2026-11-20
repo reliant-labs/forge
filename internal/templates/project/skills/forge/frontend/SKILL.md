@@ -30,16 +30,16 @@ prefix; hand-built URLs then go through `joinBasePath`. Both are in
 **Search it before you hand-write any UI.** 74 components ship across layouts, charts, diagrams, deck, and ui:
 
 ```bash
-forge component search card      # by keyword — try the noun you were about to build
-forge component list             # the whole catalog, grouped by category
-forge component install card_grid
+forge ui component search card      # by keyword — try the noun you were about to build
+forge ui component list             # the whole catalog, grouped by category
+forge ui component install card_grid
 ```
 
 **What is already in `src/components/ui/` is not the catalog** — it is the 31 the scaffold auto-installs. Search the catalog; never conclude from the directory.
 
 **Every component already uses this project's theme tokens** (`ink`, `surface`, `border`, `accent`, `danger`, `success`, `warning` and their `-surface`/`-border`/`-ink` variants), so installing one never means re-theming it. A raw palette class (`bg-blue-600`) in one is a forge bug to report, not a reason to hand-write your own.
 
-**✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge component install` away:
+**✓ already ships in `src/components/ui/`** — import it, do not rebuild it; the rest are one `forge ui component install` away:
 
 | About to build | Use |
 |---|---|
@@ -151,7 +151,7 @@ Load **adopt** (generating into an app forge did not scaffold; the package.json 
 
 - Never hand-edit generated files; run `forge generate` after every `.proto` change.
 - Always `create(Schema, {...})` for protobuf messages, never `new Message()`.
-- `forge component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
+- `forge ui component search <noun>` before hand-writing any UI. Recharts for dashboard charts.
 - Money, dates, enum labels, status colors: `@/lib/format-utils`; money/rate inputs: `parseMinorUnits` / `parseBasisPoints`.
 - React Query hooks for server data, Zustand for client state only (subscribe to slices), event bus for imperative actions — never as a source of truth.
 - Keep forms in react-hook-form + Zod.

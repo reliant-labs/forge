@@ -159,7 +159,7 @@ func TestValidateDeclaredRefs_NamesTheFixCommand(t *testing.T) {
 	if !strings.Contains(msg, "ABSENT") || strings.Contains(msg, "PRESENT") {
 		t.Fatalf("error should name only the missing key, got: %v", msg)
 	}
-	if !strings.Contains(msg, "forge secret set") {
+	if !strings.Contains(msg, "forge env secret set") {
 		t.Fatalf("error should give the fix command, got: %v", msg)
 	}
 }

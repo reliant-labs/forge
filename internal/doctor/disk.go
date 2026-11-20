@@ -39,7 +39,7 @@ package doctor
 // WHY ACTIVATION IS PART OF A DISK CHECK
 //
 // forge already ships the whole reclaim mechanism: budgets in the machine
-// policy, `forge storage gc`, and a daily schedule. On the machine that ran
+// policy, `forge machine storage gc`, and a daily schedule. On the machine that ran
 // out of disk, the policy file existed with no registries registered and no
 // schedule installed, so none of it had ever run. A protection that must be
 // switched on by hand is a protection that is off, and nothing reported
@@ -82,7 +82,7 @@ const (
 	// diskWarnFreeGiB is the free-space floor below which this check
 	// warns, above the policy's own hard reserve. The reserve is where
 	// forge REFUSES a build; by then the user is already stuck. The gap
-	// between the two is the only window in which `forge storage gc` is a
+	// between the two is the only window in which `forge machine storage gc` is a
 	// chore rather than an emergency, and this machine crossed 70 GiB free
 	// to failure with nothing said at any point.
 	diskWarnFreeGiB = 50
@@ -295,12 +295,12 @@ func (f diskFacts) tightest() (hostSpace, bool) {
 
 // The two literal fix commands. They are constants because the contract is
 // that every non-PASS message ENDS with one of them: a reader who sees only
-// the one-line summary — which is all `forge doctor` prints without -v —
+// the one-line summary — which is all `forge project doctor` prints without -v —
 // must be handed the next command rather than a diagnosis.
 const (
-	diskFixGC      = "forge storage gc --dry-run"
-	diskFixInstall = "forge storage install"
-	diskFixFullGC  = "forge storage gc --apply"
+	diskFixGC      = "forge machine storage gc --dry-run"
+	diskFixInstall = "forge machine storage install"
+	diskFixFullGC  = "forge machine storage gc --apply"
 )
 
 // summariseDisk applies the status rules: FAIL below the policy's host
@@ -560,7 +560,7 @@ func dockerRawStat(ctx context.Context, path string) (dockerRawUsage, bool, erro
 }
 
 // storageScheduleInstalled reports whether the daily GC schedule exists, by
-// looking for the file `forge storage install` writes.
+// looking for the file `forge machine storage install` writes.
 //
 // It reads the filesystem rather than asking launchctl or systemctl. A
 // `launchctl print` against a loaded-but-wedged domain can block, and this
@@ -578,7 +578,7 @@ func storageScheduleInstalled() (bool, string) {
 	case "linux":
 		path = filepath.Join(home, ".config", "systemd", "user", "forge-storage.timer")
 	default:
-		return false, fmt.Sprintf("no schedule artefact on %s (schedule `forge storage gc --apply` with your service manager)", runtime.GOOS)
+		return false, fmt.Sprintf("no schedule artefact on %s (schedule `forge machine storage gc --apply` with your service manager)", runtime.GOOS)
 	}
 	_, serr := os.Stat(path)
 	return serr == nil, path

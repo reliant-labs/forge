@@ -8,8 +8,8 @@ import (
 
 // TestV100Migration_Detection runs the SHIPPED v1.0.0 detection against the
 // shapes its two remaining sections have to tell apart: the legacy
-// Infra/NewComponents composition (section 1, `forge fix composition-graph`)
-// and a hand-built Connect error in a handler (section 2, `forge fix
+// Infra/NewComponents composition (section 1, `forge lint fix composition-graph`)
+// and a hand-built Connect error in a handler (section 2, `forge lint fix
 // connect-errors`). Everything else v1.0.0 changed aged out of the upgrade
 // window, so a project showing only those older shapes is not offered it.
 func TestV100Migration_Detection(t *testing.T) {

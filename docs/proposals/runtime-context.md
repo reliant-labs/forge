@@ -56,7 +56,7 @@ interfaces stay hand-declared, consumer-side, in `deps.go` (the existing
   the right form for multi-implementation (strategy) interfaces, where the
   interface IS the abstraction. Nothing is removed: forge is semver at major 1.
 - New scaffolds (`forge scaffold package`) use the marker form.
-- `forge fix` offers the migration for a single-implementation package.
+- `forge lint fix` offers the migration for a single-implementation package.
 - Everything that today keys on the literal file `contract.go` (instrument
   decision, contract-gap lint, component discovery, retire, explain, binaries)
   accepts a marked struct as the same thing.

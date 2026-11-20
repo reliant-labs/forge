@@ -109,7 +109,7 @@ The recovery escrow refuses `generate`: it is written by the converge Job.
 value.
 
 An external value (a password you chose) omits `generate` and is provided with
-`forge secret import --env <env> --to-bootstrap <NAME> ...` (create-only).
+`forge env secret import --env <env> --to-bootstrap <NAME> ...` (create-only).
 
 ### The recovery escrow
 
@@ -189,4 +189,4 @@ defaults follow the name; set the fields explicitly to keep an existing binding.
 | `projects/.../secrets/... does not exist: create the container first` | the escrow container was never created | create it empty |
 | `<name>-unseal` never appears | the reader is not bound, or `reader_gsa` lacks `secretAccessor` on the seal key | check the binding for `<ns>/<reader_service_account>` and the grant |
 | `bootstrap secret ... disabled or destroyed` | the container's only version was taken out of service | enable it, or import a replacement |
-| a deploy fails with `no Google Application Default Credentials` | the deployer cannot mint | `gcloud auth application-default login`, or provide the values with `forge secret import --to-bootstrap` and drop `generate` |
+| a deploy fails with `no Google Application Default Credentials` | the deployer cannot mint | `gcloud auth application-default login`, or provide the values with `forge env secret import --to-bootstrap` and drop `generate` |

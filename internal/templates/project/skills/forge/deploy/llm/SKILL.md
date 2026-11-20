@@ -45,7 +45,7 @@ bundle = forge.Bundle {
 For dev, create a personal access token with the `llm:invoke` scope on the
 Reliant console's access-token page (an `rlat_` token; `reliant auth token
 create` mints `reliant:api` only, which the gateway refuses) and store it:
-`forge secret set --env dev RELIANT_LLM_API_KEY`. It is billed to you. A local
+`forge env secret set --env dev RELIANT_LLM_API_KEY`. It is billed to you. A local
 model works too: `forge.LLMEndpoint {base_url = "http://localhost:11434",
 api_key = "ollama"}` (Ollama; a literal key is accepted only for an endpoint on
 this machine, and `openai_base_url` overrides the derived `<base_url>/v1`).
@@ -88,7 +88,7 @@ way it fills the OTLP variables. So:
 reaches the workload the way its runtime delivers that reference: a hosted or
 cluster pod reads a `forge.ManagedSecret` from the env's store (a cluster pod
 can also read a `forge.SecretRef`), and `forge env up` hands a host process
-the store's value under each key variable (one `forge secret set --env dev
+the store's value under each key variable (one `forge env secret set --env dev
 RELIANT_LLM_API_KEY` feeds all three). A **compose** container's environment
 is the compose file's, and the compose process env forge passes it holds
 literals, so a referenced key is refused for a compose workload: give it the
@@ -170,7 +170,7 @@ message, or the feature hidden), never a crash at startup. A claimed deploy
 gets its key on the normal hosted network.
 
 For a direct third-party provider key, ask the user to claim the deploy and
-arrange backend billing first, then `forge login`, store the key as a managed
+arrange backend billing first, then `forge cloud login`, store the key as a managed
 secret and redeploy without `--claimable`. Keep the key on a backend, never in
 a browser bundle. Verify an actual server-side model response: a successful
 render or healthy rollout alone does not prove model access. The public

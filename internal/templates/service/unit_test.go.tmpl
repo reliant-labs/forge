@@ -5,15 +5,15 @@
 {{- if and $m.ClientStreaming $m.ServerStreaming}}
 // {{$m.Name | goName}} is a BIDIRECTIONAL stream, so no case is scaffolded: connect-go carries it only over HTTP/2.
 // Serve svc.Register from httptest.NewUnstartedServer with EnableHTTP2 and StartTLS, dial its Client(), and
-// build svc with {{.ServicePackage}}.NewTest{{.TestHelperName}}(t) (helpers_gen_test.go). Depth: `forge skill load testing/patterns`.
+// build svc with {{.ServicePackage}}.NewTest{{.TestHelperName}}(t) (helpers_gen_test.go). Depth: `forge agent skill load testing/patterns`.
 {{- else if or $m.ClientStreaming $m.ServerStreaming}}
 // Test{{$m.Name | goName}}_Generated drives the stream through {{.ServicePackage}}.NewTest{{.TestHelperName}}Server's real Connect
 // client. Its case is SELF-DESTRUCTING: it matches only forge's stub sentinel (not a bare CodeUnimplemented),
-// so it fails once you implement {{$m.Name | goName}} — replace it then. Depth: `forge skill load testing/patterns`.
+// so it fails once you implement {{$m.Name | goName}} — replace it then. Depth: `forge agent skill load testing/patterns`.
 {{- else}}
 // Test{{$m.Name | goName}}_Generated: rows for `tdd.RunRPCCases`. The scaffold row is SELF-DESTRUCTING: it matches only
 // forge's stub sentinel (not a bare CodeUnimplemented), so it fails once you implement {{$m.Name | goName}} —
-// replace it then with Check / WantErr rows. Depth: `forge skill load testing/patterns`.
+// replace it then with Check / WantErr rows. Depth: `forge agent skill load testing/patterns`.
 {{- end}}
 package {{.ServicePackage}}_test
 {{- if and $m.ClientStreaming $m.ServerStreaming}}

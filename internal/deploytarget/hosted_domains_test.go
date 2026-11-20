@@ -62,8 +62,8 @@ func TestHostedDeployRefusesDomainsInSpec(t *testing.T) {
 		"refusing to publish anything", "a domain is not spec",
 		// The worked example uses the first claim, so the author can
 		// copy a line that runs rather than a placeholder.
-		"forge domain add api.hounders.club",
-		"forge domain bind api.hounders.club --env prod --target membership",
+		"forge cloud domain add api.hounders.club",
+		"forge cloud domain bind api.hounders.club --env prod --target membership",
 		"forge.OnCluster keeps `Port.domains`",
 	} {
 		if !strings.Contains(err.Error(), want) {

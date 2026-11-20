@@ -59,7 +59,7 @@ func TestClaimableDeploy_OutputIsQuietAndLeavesDockerConfigAlone(t *testing.T) {
 
 	for _, bad := range []string{
 		"Login Succeeded", "stored unencrypted", "credential-store", "[warn]", "no recorded config", "drift",
-		"upgrade the control plane", "predates", "rollback floor", "forge login", "ask an admin", "org admin",
+		"upgrade the control plane", "predates", "rollback floor", "forge cloud login", "ask an admin", "org admin",
 		"records no migrations", "records no snapshot", "forge env status", "plan digest",
 	} {
 		if strings.Contains(all, bad) {

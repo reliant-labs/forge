@@ -69,7 +69,7 @@ const BufVersion = "1.50.0"
 // KCLVersion is the one KCL release forge renders with and installs: the
 // kcl-lang.io/kcl-go, kpm and lib modules in go.mod (the runtime forge
 // embeds), the KCL CLI forge's own CI and scripts/bootstrap.sh install for
-// the tests that shell out to `kcl`, and the version `forge doctor`'s install
+// the tests that shell out to `kcl`, and the version `forge project doctor`'s install
 // hint names. KCL releases all five repositories in lockstep, so one tag
 // covers them. Scaffolded projects install no KCL at all: forge renders
 // through the embedded runtime. TestKCLVersionIsPinnedEverywhere

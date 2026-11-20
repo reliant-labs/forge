@@ -54,7 +54,7 @@ block appended to `.gitignore`. It refuses in a directory that already has a
 | the compose service's published port, else `EXPOSE`, else a `--port` / `-b` in the start command, else `ENV PORT` | its port, `PORT` in its env, a tcp probe |
 | a compose service on a Postgres image, or a Postgres driver in the app's dependencies | a managed Postgres on staging and prod, `DATABASE_URL` (or the variable the compose file put its URL in) from it |
 | a compose service that migrates, a `migrate` script, prisma / knex / sequelize-cli / drizzle-kit, `alembic.ini`, Django's `manage.py`, Rails' `db/migrate` | a `migrate` job from the app's image, before every rollout |
-| compose env: literals, and credentials (`*_SECRET`, `*_TOKEN`, `*PASSWORD*`, `*_KEY`, `${…}`) | literals in workloads.k; each credential a `forge.ManagedSecret` on staging and prod, set with `forge secret set` |
+| compose env: literals, and credentials (`*_SECRET`, `*_TOKEN`, `*PASSWORD*`, `*_KEY`, `${…}`) | literals in workloads.k; each credential a `forge.ManagedSecret` on staging and prod, set with `forge env secret set` |
 | a compose file with a built service | dev runs that compose file (`forge.OnCompose`), exactly as `docker compose up` did |
 | no compose file | dev runs each workload's dev command (`package.json` `dev`/`start`, the Procfile's `web`, else the Dockerfile's `CMD`) on the host, beside a forge host-native Postgres |
 | Redis / Valkey / Memcached in compose | a hosted workload of that image; dev tools (adminer, mailpit) and other services stay dev-only |
@@ -248,7 +248,7 @@ secrets/
 
 **Credentials.** The app reads them from env vars, so deliver each one in its
 `env`, as `JWT_SECRET` above (`forge.ManagedSecret`), and set the value once per
-env: `forge secret set --env staging JWT_SECRET` (the value on stdin). Dev
+env: `forge env secret set --env staging JWT_SECRET` (the value on stdin). Dev
 delivers the same names from the gitignored `secrets/dev.yaml`
 (`JWT_SECRET: dev-only`). `config_secrets`
 delivers nothing to an app forge did not write; a name listed there that `env`
@@ -271,7 +271,7 @@ forge env up dev                       # Postgres → migrations → the app; ou
 forge env status dev                   # App Health: "accepts connections (its declared tcp probe)"
 forge lint                             # the verdict is the LAST line
 forge env render staging               # the hosted spec, with the image under your org's registry
-forge secret set --env staging JWT_SECRET < secret.txt
+forge env secret set --env staging JWT_SECRET < secret.txt
 forge env deploy staging --plan-only   # builds, pushes, cuts a release, prints the plan; promotes NOTHING
 forge env deploy staging --yes         # publish: managed DB, migrate job, rollout
 forge env status staging               # its URL

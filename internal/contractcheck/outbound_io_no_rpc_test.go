@@ -37,7 +37,7 @@ func TestLintOutboundIONoRPC_Fires(t *testing.T) {
 	if !strings.Contains(f.Message, "NewBillingHandler") {
 		t.Errorf("message should name the offending Connect handler; got: %s", f.Message)
 	}
-	if !strings.Contains(f.Remediation, "forge skill load adapter") {
+	if !strings.Contains(f.Remediation, "forge agent skill load adapter") {
 		t.Errorf("remediation should point at the adapter skill; got: %s", f.Remediation)
 	}
 	// Warnings must not gate the build.

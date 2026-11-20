@@ -424,7 +424,7 @@ func printDSNSquashNextSteps(w io.Writer, upPath string, goose *gooseHistory) {
 		_, _ = fmt.Fprintf(w, "     that goose applied exactly these %d versions, records the baseline as applied, and runs none\n", len(goose.Versions))
 		_, _ = fmt.Fprintln(w, "     of its SQL. One behind or ahead of this history is refused, versions named, and nothing changes.")
 		_, _ = fmt.Fprintln(w, "  4. Prove it before shipping: `forge db migrate up --dsn <a copy of a goose database>` adopts it;")
-		_, _ = fmt.Fprintln(w, "     a fresh database applies it; `pg_dump --schema-only` both and diff (forge skill")
+		_, _ = fmt.Fprintln(w, "     a fresh database applies it; `pg_dump --schema-only` both and diff (forge agent skill")
 		_, _ = fmt.Fprintln(w, "     db/deploy-migrations). `forge db migrate status --dsn <dsn>` previews any database.")
 	}
 	_, _ = fmt.Fprintln(w, "     Never `forge db migrate force` the baseline onto a database: force records it as applied")

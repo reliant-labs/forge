@@ -415,7 +415,7 @@ func TestWorkloadEnvVars_ProjectsSecretOptional(t *testing.T) {
 
 // A managedSecret decodes to its {name, optional} object and is NOT a store
 // Secret ref (the provider materializes it into forge-managed-secrets), so
-// EnvVars leaves it out. An OPTIONAL one is also not a value `forge secret
+// EnvVars leaves it out. An OPTIONAL one is also not a value `forge env secret
 // ensure` demands; a required one is.
 func TestWorkloadEnvVars_ManagedSecretIsNotAStoreRef(t *testing.T) {
 	e, _ := loadContract(t, "hosted")

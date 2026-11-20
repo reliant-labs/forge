@@ -35,7 +35,7 @@ func CheckEnv(extra ...string) []string {
 // # Not for everything
 //
 // A binary someone runs or debugs keeps its paths: delve needs absolute ones
-// (forge debug passes -trimpath=false), and the dev loop's stack traces stay
+// (forge dev debug passes -trimpath=false), and the dev loop's stack traces stay
 // clickable. So this is opt-in per call site, for checks only.
 func WithTrimpath(env []string) []string {
 	return withTrimpath(env, goEnvFileFlags)

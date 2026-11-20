@@ -43,7 +43,7 @@ hosting. "Reliant harness" means it needs the Reliant agent harness.
 **Scope.** "Works in any repo" means the benefit needs no forge.yaml:
 it works in an existing app in any language, and the entry says how to
 start and how long an agent takes to first value. Everything else needs a
-forge project; `forge skill load adopt` is how an existing app becomes one.
+forge project; `forge agent skill load adopt` is how an existing app becomes one.
 
 ## Contents
 
@@ -89,13 +89,13 @@ prints this list for the directory you run it in.
 | [Record deploys from existing CI](#record-deploys)            | List your deployed workloads as `runtime: {type: external}` in deploy/envs/prod.yaml (from `forge obs init prod`), then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set. | ~15 min    |
 | [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                                                                                                                                  | ~10 min    |
 | [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                                                                                                                                 | ~15 min    |
-| [Monitoring for any app](#monitoring-any-language)            | `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                                                                                                                                     | ~15 min    |
-| [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                                                              | ~2 min     |
-| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                                                                      | ~2 min     |
-| [Hosted MCP connector](#hosted-mcp)                           | Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client.                                                                                                                                               | ~2 min     |
+| [Monitoring for any app](#monitoring-any-language)            | `forge cloud login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment                                                                                                                                                               | ~15 min    |
+| [Skills that match your forge](#skills-in-the-binary)         | `forge agent skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                                                        | ~2 min     |
+| [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge agent mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                                                                | ~2 min     |
+| [Hosted MCP connector](#hosted-mcp)                           | Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge agent skill load connect` has the steps per client.                                                                                                                                         | ~2 min     |
 | [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                                                                                                                                   | ~2 min     |
 | [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                                                                                                                                   | ~2 min     |
-| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                                                                | ~2 min     |
+| [Agents report framework bugs](#report-bug)                   | `forge agent report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                                                          | ~2 min     |
 
 ---
 
@@ -119,9 +119,9 @@ _Enforced · Forge, on any infrastructure_
 
 - marker `// forge:entity`
 - command `forge scaffold`
-- skill `db/birth` (`forge skill load db/birth`)
+- skill `db/birth` (`forge agent skill load db/birth`)
 - command `forge scaffold entity`
-- skill `db` (`forge skill load db`)
+- skill `db` (`forge agent skill load db`)
 
 <a id="proto-to-everything"></a>
 
@@ -190,7 +190,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- skill `forge/migration/ownership` (`forge agent skill load forge/migration/ownership`)
 - source [`internal/checksums/exclude.go`](../internal/checksums/exclude.go)
 - source [`internal/cli/generate_exclude.go`](../internal/cli/generate_exclude.go)
 
@@ -205,7 +205,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge project prune`
-- skill `forge/migration/ownership` (`forge skill load forge/migration/ownership`)
+- skill `forge/migration/ownership` (`forge agent skill load forge/migration/ownership`)
 - source [`internal/cli/generate_orphans.go`](../internal/cli/generate_orphans.go)
 
 <a id="project-upgrade"></a>
@@ -240,11 +240,11 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/generator/app.go`](../internal/generator/app.go)
 - source [`internal/cli/new_app_test.go`](../internal/cli/new_app_test.go)
 - command `forge project migrate import`
-- skill `adopt` (`forge skill load adopt`)
-- skill `migration` (`forge skill load migration`)
-- skill `migration-service` (`forge skill load migration-service`)
-- skill `migration-cli` (`forge skill load migration-cli`)
-- skill `migration-upgrade` (`forge skill load migration-upgrade`)
+- skill `adopt` (`forge agent skill load adopt`)
+- skill `migration` (`forge agent skill load migration`)
+- skill `migration-service` (`forge agent skill load migration-service`)
+- skill `migration-cli` (`forge agent skill load migration-cli`)
+- skill `migration-upgrade` (`forge agent skill load migration-upgrade`)
 
 <a id="adopt-frontend"></a>
 
@@ -256,9 +256,9 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `frontend-workspaces` (`forge skill load frontend-workspaces`)
+- skill `frontend-workspaces` (`forge agent skill load frontend-workspaces`)
 - command `forge project new`
-- skill `frontend/adopt` (`forge skill load frontend/adopt`)
+- skill `frontend/adopt` (`forge agent skill load frontend/adopt`)
 
 <a id="rest-openapi"></a>
 
@@ -270,10 +270,10 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `api-openapi` (`forge skill load api-openapi`)
-- skill `api-rest` (`forge skill load api-rest`)
-- command `forge api curl`
-- skill `api/http` (`forge skill load api/http`)
+- skill `api-openapi` (`forge agent skill load api-openapi`)
+- skill `api-rest` (`forge agent skill load api-rest`)
+- command `forge dev curl`
+- skill `api/http` (`forge agent skill load api/http`)
 
 <a id="bring-openapi-spec"></a>
 
@@ -293,7 +293,7 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/api_declarations.go`](../internal/cli/api_declarations.go)
 - command `forge project audit`
-- skill `api-openapi` (`forge skill load api-openapi`)
+- skill `api-openapi` (`forge agent skill load api-openapi`)
 
 <a id="service-catalog"></a>
 
@@ -343,9 +343,9 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - source [`web-runtime`](../web-runtime)
-- skill `frontend-runtime` (`forge skill load frontend-runtime`)
-- skill `frontend-runtime/transport` (`forge skill load frontend-runtime/transport`)
-- skill `frontend-runtime/resource` (`forge skill load frontend-runtime/resource`)
+- skill `frontend-runtime` (`forge agent skill load frontend-runtime`)
+- skill `frontend-runtime/transport` (`forge agent skill load frontend-runtime/transport`)
+- skill `frontend-runtime/resource` (`forge agent skill load frontend-runtime/resource`)
 
 <a id="frontend-runtime-config"></a>
 
@@ -360,8 +360,8 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - lint lane `forge lint --conventions`
-- skill `frontend/runtime-config` (`forge skill load frontend/runtime-config`)
-- skill `frontend-runtime/config` (`forge skill load frontend-runtime/config`)
+- skill `frontend/runtime-config` (`forge agent skill load frontend/runtime-config`)
+- skill `frontend-runtime/config` (`forge agent skill load frontend-runtime/config`)
 
 <a id="workers-lifecycle"></a>
 
@@ -392,7 +392,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/cronkit`](../pkg/cronkit)
 - library [`pkg/lease`](../pkg/lease)
-- skill `workers` (`forge skill load workers`)
+- skill `workers` (`forge agent skill load workers`)
 
 <a id="operators-crds"></a>
 
@@ -410,8 +410,8 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/stsresize`](../pkg/stsresize)
 - library [`pkg/cmdkit`](../pkg/cmdkit)
 - command `forge scaffold crd`
-- skill `binaries` (`forge skill load binaries`)
-- skill `deploy/statefulset-volumes` (`forge skill load deploy/statefulset-volumes`)
+- skill `binaries` (`forge agent skill load binaries`)
+- skill `deploy/statefulset-volumes` (`forge agent skill load deploy/statefulset-volumes`)
 
 <a id="cli-library-kinds"></a>
 
@@ -425,9 +425,9 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge project new`
 - library [`pkg/cmdkit`](../pkg/cmdkit)
-- skill `binaries` (`forge skill load binaries`)
-- skill `binaries/config-files` (`forge skill load binaries/config-files`)
-- skill `binaries/subtrees` (`forge skill load binaries/subtrees`)
+- skill `binaries` (`forge agent skill load binaries`)
+- skill `binaries/config-files` (`forge agent skill load binaries/config-files`)
+- skill `binaries/subtrees` (`forge agent skill load binaries/subtrees`)
 
 <a id="adapters"></a>
 
@@ -455,7 +455,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge scaffold frontend`
-- skill `ui-native-package` (`forge skill load ui-native-package`)
+- skill `ui-native-package` (`forge agent skill load ui-native-package`)
 
 <a id="lib-money"></a>
 
@@ -494,9 +494,9 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/schemadef`](../pkg/schemadef)
 - library [`pkg/orm`](../pkg/orm)
 - command `forge db introspect`
-- skill `db/generated-orm` (`forge skill load db/generated-orm`)
-- skill `db/store` (`forge skill load db/store`)
-- skill `db` (`forge skill load db`)
+- skill `db/generated-orm` (`forge agent skill load db/generated-orm`)
+- skill `db/store` (`forge agent skill load db/store`)
+- skill `db` (`forge agent skill load db`)
 
 <a id="orm-opt-out"></a>
 
@@ -510,7 +510,7 @@ _Enforced · Forge, on any infrastructure_
 
 - marker `// forge:no-orm`
 - command `forge project features`
-- skill `db/orm-and-safety` (`forge skill load db/orm-and-safety`)
+- skill `db/orm-and-safety` (`forge agent skill load db/orm-and-safety`)
 
 <a id="migration-safety"></a>
 
@@ -532,7 +532,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge ci migration-safety`
 - lint lane `forge lint --migration-safety`
 - source [`internal/linter/migrationlint`](../internal/linter/migrationlint)
-- skill `db` (`forge skill load db`)
+- skill `db` (`forge agent skill load db`)
 - source [`internal/linter/migrationlint/compat_declaration.go`](../internal/linter/migrationlint/compat_declaration.go)
 - source [`internal/linter/migrationlint/add_column.go`](../internal/linter/migrationlint/add_column.go)
 - source [`internal/linter/migrationlint/transaction_block.go`](../internal/linter/migrationlint/transaction_block.go)
@@ -574,7 +574,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge db analyze`
 - source [`pkg/dbanalyze`](../pkg/dbanalyze)
 - source [`internal/cli/db_analyze.go`](../internal/cli/db_analyze.go)
-- skill `db/analyze` (`forge skill load db/analyze`)
+- skill `db/analyze` (`forge agent skill load db/analyze`)
 
 | Rule                               | Bug class it prevents                                                                                                     | Lane               |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------ |
@@ -604,7 +604,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/shadowdb/hook.go`](../internal/shadowdb/hook.go)
 - source [`internal/linter/migrationlint/tools.go`](../internal/linter/migrationlint/tools.go)
 - command `forge db migrate up`
-- skill `db/own-migration-tool` (`forge skill load db/own-migration-tool`)
+- skill `db/own-migration-tool` (`forge agent skill load db/own-migration-tool`)
 
 <a id="several-databases"></a>
 
@@ -624,7 +624,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/database_declarations.go`](../internal/cli/database_declarations.go)
 - lint lane `forge lint --migration-safety`
 - command `forge db migrate up`
-- skill `db` (`forge skill load db`)
+- skill `db` (`forge agent skill load db`)
 
 <a id="managed-postgres-backups"></a>
 
@@ -675,7 +675,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge project annotations`
 - lint lane `forge lint --read-only-fields`
-- skill `db/write-policy` (`forge skill load db/write-policy`)
+- skill `db/write-policy` (`forge agent skill load db/write-policy`)
 
 <a id="append-only-ledgers"></a>
 
@@ -687,7 +687,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `db/append-only` (`forge skill load db/append-only`)
+- skill `db/append-only` (`forge agent skill load db/append-only`)
 
 <a id="tx-after-commit"></a>
 
@@ -701,7 +701,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/orm`](../pkg/orm)
 - lint lane `forge lint --conventions`
-- skill `service-layer/transactions` (`forge skill load service-layer/transactions`)
+- skill `service-layer/transactions` (`forge agent skill load service-layer/transactions`)
 
 <a id="never-waiting-migrations"></a>
 
@@ -717,8 +717,8 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge db migrate up`
 - library [`pkg/migratekit`](../pkg/migratekit)
-- skill `db/migration-timeouts` (`forge skill load db/migration-timeouts`)
-- skill `db/deploy-migrations` (`forge skill load db/deploy-migrations`)
+- skill `db/migration-timeouts` (`forge agent skill load db/migration-timeouts`)
+- skill `db/deploy-migrations` (`forge agent skill load db/deploy-migrations`)
 
 <a id="migration-tooling"></a>
 
@@ -735,7 +735,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge db migrate status`
 - command `forge db squash`
 - library [`pkg/migratekit`](../pkg/migratekit)
-- skill `db/versioning` (`forge skill load db/versioning`)
+- skill `db/versioning` (`forge agent skill load db/versioning`)
 
 <a id="seed-data"></a>
 
@@ -752,7 +752,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge db seed apply`
 - command `forge db seed reset`
 - library [`pkg/seedplan`](../pkg/seedplan)
-- skill `db/seeding` (`forge skill load db/seeding`)
+- skill `db/seeding` (`forge agent skill load db/seeding`)
 - command `forge db seed status`
 
 <a id="dev-db-recovery"></a>
@@ -767,7 +767,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge db migrate force`
 - command `forge db reset`
-- skill `db/recovery` (`forge skill load db/recovery`)
+- skill `db/recovery` (`forge agent skill load db/recovery`)
 
 <a id="db-dashboards-privileges"></a>
 
@@ -781,7 +781,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/dbbrowse`](../pkg/dbbrowse)
 - library [`pkg/dbgrants`](../pkg/dbgrants)
-- skill `db/dashboards` (`forge skill load db/dashboards`)
+- skill `db/dashboards` (`forge agent skill load db/dashboards`)
 
 <a id="object-storage-bucket"></a>
 
@@ -794,7 +794,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - library [`pkg/blobstore`](../pkg/blobstore)
-- skill `storage/blobstore` (`forge skill load storage/blobstore`)
+- skill `storage/blobstore` (`forge agent skill load storage/blobstore`)
 
 <a id="managed-buckets"></a>
 
@@ -847,7 +847,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/pgtest`](../pkg/pgtest)
 - library [`pkg/testkit`](../pkg/testkit)
-- skill `testing` (`forge skill load testing`)
+- skill `testing` (`forge agent skill load testing`)
 
 <a id="generated-mocks"></a>
 
@@ -863,7 +863,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/contractkit`](../pkg/contractkit)
 - source [`internal/generator/contract`](../internal/generator/contract)
-- skill `contracts` (`forge skill load contracts`)
+- skill `contracts` (`forge agent skill load contracts`)
 
 <a id="test-tiers"></a>
 
@@ -877,7 +877,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `testing` (`forge skill load testing`)
+- skill `testing` (`forge agent skill load testing`)
 
 <a id="slow-test-enforcement"></a>
 
@@ -913,7 +913,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --slow-tests`
 - library [`pkg/testkit`](../pkg/testkit)
-- skill `testing` (`forge skill load testing`)
+- skill `testing` (`forge agent skill load testing`)
 
 <a id="test-budget"></a>
 
@@ -960,8 +960,8 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/tdd/e2e.go`](../pkg/tdd/e2e.go)
 - command `forge project migrate tdd`
 - lint lane `forge lint --tests`
-- skill `testing/patterns` (`forge skill load testing/patterns`)
-- skill `testing/flow` (`forge skill load testing/flow`)
+- skill `testing/patterns` (`forge agent skill load testing/patterns`)
+- skill `testing/flow` (`forge agent skill load testing/flow`)
 
 <a id="entity-lifecycle-tests"></a>
 
@@ -987,7 +987,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - library [`pkg/seedplan`](../pkg/seedplan)
-- skill `testing/flow` (`forge skill load testing/flow`)
+- skill `testing/flow` (`forge agent skill load testing/flow`)
 
 <a id="frontend-hook-tests"></a>
 
@@ -1014,7 +1014,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - library [`pkg/kcleval`](../pkg/kcleval)
-- command `forge kcl eval`
+- command `forge env kcl eval`
 
 ---
 
@@ -1038,7 +1038,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge env up`
 - command `forge env up --target`
-- skill `dev` (`forge skill load dev`)
+- skill `dev` (`forge agent skill load dev`)
 - command `forge env status`
 - command `forge env down`
 
@@ -1062,7 +1062,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/devstack.go`](../internal/cli/devstack.go)
 - lint lane `forge lint --conventions`
 - source [`internal/config/config.go`](../internal/config/config.go)
-- skill `dev` (`forge skill load dev`)
+- skill `dev` (`forge agent skill load dev`)
 
 <a id="browser-logs-on-disk"></a>
 
@@ -1079,8 +1079,8 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - source [`internal/templates/frontend/vite-spa/src/lib/devlog-plugin.ts`](../internal/templates/frontend/vite-spa/src/lib/devlog-plugin.ts)
-- skill `debug` (`forge skill load debug`)
-- skill `frontend-runtime/telemetry` (`forge skill load frontend-runtime/telemetry`)
+- skill `debug` (`forge agent skill load debug`)
+- skill `frontend-runtime/telemetry` (`forge agent skill load frontend-runtime/telemetry`)
 - source [`internal/templates/frontend/nextjs/src/app/%5F_forge/log/route.ts`](../internal/templates/frontend/nextjs/src/app/%5F_forge/log/route.ts)
 
 <a id="mock-mode"></a>
@@ -1099,7 +1099,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge scaffold scenario`
 - source [`internal/templates/frontend/mocks/fixture-freshness.test.ts.tmpl`](../internal/templates/frontend/mocks/fixture-freshness.test.ts.tmpl)
 - source [`internal/templates/frontend/mocks/scenarios`](../internal/templates/frontend/mocks/scenarios)
-- skill `frontend/mock-mode` (`forge skill load frontend/mock-mode`)
+- skill `frontend/mock-mode` (`forge agent skill load frontend/mock-mode`)
 
 <a id="hot-reload"></a>
 
@@ -1143,7 +1143,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Inspect and exec into envs
 
-`forge env config` prints what an environment hands each workload, `forge env exec` runs a command with it, `forge env options` lists the render options and `forge doctor parity` diffs host mode against cluster mode.
+`forge env config` prints what an environment hands each workload, `forge env exec` runs a command with it, `forge env options` lists the render options and `forge project doctor parity` diffs host mode against cluster mode.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -1169,7 +1169,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge generate`
 - source [`internal/cli/generate_cache.go`](../internal/cli/generate_cache.go)
-- skill `forge` (`forge skill load forge`)
+- skill `forge` (`forge agent skill load forge`)
 
 <a id="heavy-slot-scheduler"></a>
 
@@ -1179,114 +1179,114 @@ Builds, test lanes, codegen and full lints queue for a host-wide slot (default m
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge slot run`, `forge slot status`, `FORGE_HEAVY_SLOTS`
+**Use:** `forge machine slot run`, `forge machine slot status`, `FORGE_HEAVY_SLOTS`
 
 **Why:** Measured on a 16 vCPU host, `go build ./...` took 36-50s beside 0-3 other heavy jobs and 101-155s beside 8 or more, and a full local gate went from about 40 minutes to about 2.3 hours when everything ran at once.
 
 **Evidence:**
 
-- command `forge slot run`
-- command `forge slot status`
+- command `forge machine slot run`
+- command `forge machine slot status`
 - library [`pkg/hostslot`](../pkg/hostslot)
-- skill `ci/slots` (`forge skill load ci/slots`)
+- skill `ci/slots` (`forge agent skill load ci/slots`)
 
 <a id="storage-gc"></a>
 
 ### Disk kept in check
 
-`forge storage` reports host capacity, refuses a build below the free-space reserve, trims Go build caches and removes idle, clean, pushed worktrees.
+`forge machine storage` reports host capacity, refuses a build below the free-space reserve, trims Go build caches and removes idle, clean, pushed worktrees.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge storage status`
-- command `forge storage gc`
-- command `forge storage worktrees`
+- command `forge machine storage status`
+- command `forge machine storage gc`
+- command `forge machine storage worktrees`
 
 <a id="debugger-cli"></a>
 
 ### Debugger from the command line
 
-`forge debug` drives Delve against a running service (breakpoints, stepping, locals, goroutines) from a terminal or an agent.
+`forge dev debug` drives Delve against a running service (breakpoints, stepping, locals, goroutines) from a terminal or an agent.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge debug start`
-- command `forge debug break`
-- command `forge debug goroutines`
+- command `forge dev debug start`
+- command `forge dev debug break`
+- command `forge dev debug goroutines`
 
 <a id="api-curl"></a>
 
 ### Call any rpc from the CLI
 
-`forge api curl` prints a copy-pasteable curl for any rpc of the project.
+`forge dev curl` prints a copy-pasteable curl for any rpc of the project.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge api curl`
+- command `forge dev curl`
 
 <a id="local-k3d-cluster"></a>
 
 ### Local Kubernetes when you need it
 
-`forge cluster up` gives a local k3d cluster with ingress URLs, logs and reload, and per-worktree namespaces share one cluster behind a kubectl-context pin.
+`forge dev cluster up` gives a local k3d cluster with ingress URLs, logs and reload, and per-worktree namespaces share one cluster behind a kubectl-context pin.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge cluster up`
-- command `forge cluster urls`
-- command `forge cluster logs`
+- command `forge dev cluster up`
+- command `forge dev cluster urls`
+- command `forge dev cluster logs`
 
 <a id="doctor"></a>
 
 ### Environment doctor
 
-`forge doctor` checks the toolchain, payload caps, probes, resource requests and limits of every declared env with nothing running, and `forge doctor parity` checks host mode against cluster mode.
+`forge project doctor` checks the toolchain, payload caps, probes, resource requests and limits of every declared env with nothing running, and `forge project doctor parity` checks host mode against cluster mode.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge doctor`
-- command `forge doctor parity`
+- command `forge project doctor`
+- command `forge project doctor parity`
 
 <a id="pinned-tools"></a>
 
 ### Pinned toolchain, auto-installed
 
-`forge tools install` installs exactly the tool versions the project pins, so "works on my machine" stops being a variable.
+`forge machine tools install` installs exactly the tool versions the project pins, so "works on my machine" stops being a variable.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge tools install`
-- command `forge tools pins`
+- command `forge machine tools install`
+- command `forge machine tools pins`
 
 <a id="component-library"></a>
 
 ### A 70+ component library
 
-`forge component search` and `forge component install` add ready-made frontend components, and scaffolded pages already carry enum-aware status badges and foreign-key pickers.
+`forge ui component search` and `forge ui component install` add ready-made frontend components, and scaffolded pages already carry enum-aware status badges and foreign-key pickers.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge component search|install|list`
+**Use:** `forge ui component search|install|list`
 
 **Evidence:**
 
-- command `forge component search`
-- command `forge component install`
-- skill `frontend/components` (`forge skill load frontend/components`)
-- skill `frontend/design/verify` (`forge skill load frontend/design/verify`)
-- command `forge component list`
+- command `forge ui component search`
+- command `forge ui component install`
+- skill `frontend/components` (`forge agent skill load frontend/components`)
+- skill `frontend/design/verify` (`forge agent skill load frontend/design/verify`)
+- command `forge ui component list`
 
 <a id="cloud-dev-machines"></a>
 
@@ -1307,7 +1307,7 @@ _Enforced · Reliant harness_
 
 ## Guardrails
 
-`forge lint` is one report-only gate over forge's own analyzers and the standard linters, with one verdict: it writes nothing unless `--fix`, and every fixer's rewrite is type-checked and taken back if it breaks its package. Each forge rule names the bug class it prevents, and the lint-family entries below list every rule `lint.rules` can grade with the flag that runs it alone; every lane except the opt-in ones also runs in a bare `forge lint`. A rule new in a release warns before it gates. Related checks outside `forge lint`: `forge doctor`, `forge ci verify-generated`, `forge ci test-budget`, `forge ci vuln-scan` and `forge ci validate-kcl`.
+`forge lint` is one report-only gate over forge's own analyzers and the standard linters, with one verdict: it writes nothing unless `--fix`, and every fixer's rewrite is type-checked and taken back if it breaks its package. Each forge rule names the bug class it prevents, and the lint-family entries below list every rule `lint.rules` can grade with the flag that runs it alone; every lane except the opt-in ones also runs in a bare `forge lint`. A rule new in a release warns before it gates. Related checks outside `forge lint`: `forge project doctor`, `forge ci verify-generated`, `forge ci test-budget`, `forge ci vuln-scan` and `forge ci validate-kcl`.
 
 <a id="one-lint-gate"></a>
 
@@ -1347,8 +1347,8 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cigate`](../internal/cigate)
 - command `forge ci run`
 - command `forge ci summarize`
-- command `forge gate record`
-- skill `ci/gate` (`forge skill load ci/gate`)
+- command `forge release gate record`
+- skill `ci/gate` (`forge agent skill load ci/gate`)
 
 <a id="ci-workflow-opt-out"></a>
 
@@ -1360,7 +1360,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `ci/extending` (`forge skill load ci/extending`)
+- skill `ci/extending` (`forge agent skill load ci/extending`)
 - source [`internal/config/ci_workflows.go`](../internal/config/ci_workflows.go)
 - source [`internal/generator/ci_workflows.go`](../internal/generator/ci_workflows.go)
 
@@ -1392,7 +1392,7 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/lint/lint_rollout_table.go`](../internal/cli/lint/lint_rollout_table.go)
 - source [`internal/cli/lint/lint_rollout.go`](../internal/cli/lint/lint_rollout.go)
-- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- skill `ci/lint-rollout` (`forge agent skill load ci/lint-rollout`)
 
 <a id="suppression-ledger"></a>
 
@@ -1436,7 +1436,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `ci/lint-rollout` (`forge skill load ci/lint-rollout`)
+- skill `ci/lint-rollout` (`forge agent skill load ci/lint-rollout`)
 - source [`internal/cli/lint/lint_lanes.go`](../internal/cli/lint/lint_lanes.go)
 
 <a id="lint-autofix"></a>
@@ -1450,23 +1450,23 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge lint --fix`
-- command `forge fix`
+- command `forge lint fix`
 
 <a id="codemod-fixers"></a>
 
 ### Codemods for convention moves
 
-`forge fix` rewrites a project onto a new convention in one command (Connect errors, narrow Deps, the composition graph, operatorkit, the config proto package), and takes back a rewrite that fails.
+`forge lint fix` rewrites a project onto a new convention in one command (Connect errors, narrow Deps, the composition graph, operatorkit, the config proto package), and takes back a rewrite that fails.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge fix connect-errors`
-- command `forge fix narrow-deps`
-- command `forge fix composition-graph`
-- command `forge fix operatorkit`
-- command `forge fix config-proto-package`
+- command `forge lint fix connect-errors`
+- command `forge lint fix narrow-deps`
+- command `forge lint fix composition-graph`
+- command `forge lint fix operatorkit`
+- command `forge lint fix config-proto-package`
 
 <a id="version-skew-guard"></a>
 
@@ -1479,7 +1479,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge lint --allow-version-skew`
-- command `forge tools pins`
+- command `forge machine tools pins`
 
 <a id="unwritten-fields"></a>
 
@@ -1574,7 +1574,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge lint --time-bucketing`
-- skill `db/time-buckets` (`forge skill load db/time-buckets`)
+- skill `db/time-buckets` (`forge agent skill load db/time-buckets`)
 
 <a id="bun-placeholder-lints"></a>
 
@@ -1622,7 +1622,7 @@ Lint keeps Deps interface-typed and narrow, forbids downcasts and container-styl
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge fix narrow-deps` narrows a Deps interface to the methods the package uses.
+**Use:** `forge lint fix narrow-deps` narrows a Deps interface to the methods the package uses.
 
 **Evidence:**
 
@@ -1685,7 +1685,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge lint --proto-markers`
 - command `forge lint --column-markers`
 - command `forge lint --proto-options`
-- skill `proto` (`forge skill load proto`)
+- skill `proto` (`forge agent skill load proto`)
 - command `forge project capabilities`
 
 <a id="vendored-proto-drift"></a>
@@ -1710,7 +1710,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `proto-breaking` (`forge skill load proto-breaking`)
+- skill `proto-breaking` (`forge agent skill load proto-breaking`)
 
 <a id="open-signup-lint"></a>
 
@@ -1748,7 +1748,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge lint --static-export`
 - source [`internal/linter/staticexport`](../internal/linter/staticexport)
-- skill `frontend/serving` (`forge skill load frontend/serving`)
+- skill `frontend/serving` (`forge agent skill load frontend/serving`)
 
 <a id="frontend-convention-lints"></a>
 
@@ -1816,7 +1816,7 @@ _Enforced · Forge, on any infrastructure_
 | `forgeconv-internal-package-missing-contract` | A component built by hand without `contract.go` is invisible to wiring, mocks, the observability decorator and every reporter                                                                                                          | `--contract`            |
 | `forgeconv-deps-are-interfaces`               | A concrete Deps field defeats the all-mock unit-test surface `New(Deps)` exists for                                                                                                                                                    | `--contract`            |
 | `forgeconv-outbound-io-no-rpc`                | A package marked `// forge:outbound-io` that also serves an inbound handler contradicts its own marker                                                                                                                                 | `--contract`            |
-| `forgeconv-deps-surface`                      | A Deps interface declaring methods the package never uses: the abstraction is wider than the need, so it leaks (autofix: `forge fix narrow-deps`)                                                                                      | `--conventions`         |
+| `forgeconv-deps-surface`                      | A Deps interface declaring methods the package never uses: the abstraction is wider than the need, so it leaks (autofix: `forge lint fix narrow-deps`)                                                                                 | `--conventions`         |
 | `forgeconv-no-container-deps`                 | A Deps field that is a container (the composition root's types, a locator, `any`): the dependency graph hides in a bag                                                                                                                 | `--conventions`         |
 | `forgeconv-deps-no-downcast`                  | A type assertion turning a Deps field back into a concrete type                                                                                                                                                                        | `--conventions`         |
 | `forgeconv-no-getenv`                         | A component reading the process environment itself instead of its typed config                                                                                                                                                         | `--conventions`         |
@@ -1849,7 +1849,7 @@ _Enforced · Forge, on any infrastructure_
 
 | Rule                                 | Bug class it prevents                                                                                                                                                                                                                     | Lane                |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `forgeconv-handler-connect-error`    | `connect.NewError(code, err)` publishes `err.Error()` (a driver's SQL, a DSN, an internal host) to the caller and pins a guessed code over a classified one (autofix: `forge fix connect-errors`)                                         | `--conventions`     |
+| `forgeconv-handler-connect-error`    | `connect.NewError(code, err)` publishes `err.Error()` (a driver's SQL, a DSN, an internal host) to the caller and pins a guessed code over a classified one (autofix: `forge lint fix connect-errors`)                                    | `--conventions`     |
 | `forgeconv-unwrapped-domain-error`   | A handler returning a collaborator's error unwrapped puts a domain error on the wire as `500 unknown` and drops the reason header                                                                                                         | `--conventions`     |
 | `forgeconv-no-handler-error-mapping` | A hand-rolled `toConnectError` switch re-created per service                                                                                                                                                                              | `--conventions`     |
 | `forgeconv-one-service-per-file`     | A multi-service proto file                                                                                                                                                                                                                | `--conventions`     |
@@ -1881,7 +1881,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 - command `forge lint --tracing`
 - source [`internal/linter/tracinglint`](../internal/linter/tracinglint)
-- skill `observability/tracing-lint` (`forge skill load observability/tracing-lint`)
+- skill `observability/tracing-lint` (`forge agent skill load observability/tracing-lint`)
 
 | Rule                                    | Bug class it prevents                                                                                                                                                            | Lane        |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
@@ -2052,7 +2052,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/authn/authn.go`](../pkg/authn/authn.go)
 - source [`internal/assets/proto/forge/v1/forge.proto`](../internal/assets/proto/forge/v1/forge.proto)
 - command `forge project audit`
-- skill `auth` (`forge skill load auth`)
+- skill `auth` (`forge agent skill load auth`)
 
 <a id="svcerr-redaction"></a>
 
@@ -2064,33 +2064,33 @@ _Enforced · Forge, on any infrastructure_
 
 **Works in any repo** (no forge.yaml). **Start:** In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers. **Agent time:** ~30 min.
 
-**Use:** `return nil, svcerr.Wrap(err)` from every rpc (`svcerr.WithReason`, `svcerr.WithClass`); `forge fix connect-errors` rewrites hand-built Connect errors.
+**Use:** `return nil, svcerr.Wrap(err)` from every rpc (`svcerr.WithReason`, `svcerr.WithClass`); `forge lint fix connect-errors` rewrites hand-built Connect errors.
 
 **Why:** `svcerr.Classify` sets each record's `error_class` (`server`, `user`, `canceled`), so ERROR means "we must act" and alerts, forwarders and post-deploy checks can trust it.
 
 **Evidence:**
 
 - library [`pkg/svcerr`](../pkg/svcerr)
-- command `forge fix connect-errors`
+- command `forge lint fix connect-errors`
 - lint lane `forge lint --conventions`
 - source [`pkg/svcerr/interceptor.go`](../pkg/svcerr/interceptor.go)
-- skill `observability` (`forge skill load observability`)
+- skill `observability` (`forge agent skill load observability`)
 
 <a id="secrets-model"></a>
 
 ### Secrets never in git
 
-A secret is declared once as a reference and bound per env to a provider, so rendered KCL only ever carries references, and `forge secret set` requires the env so a value cannot land in the wrong one.
+A secret is declared once as a reference and bound per env to a provider, so rendered KCL only ever carries references, and `forge env secret set` requires the env so a value cannot land in the wrong one.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** A `sensitive` config field or `EnvVar.secret_ref`; `forge secret set --env <env> <KEY>`.
+**Use:** A `sensitive` config field or `EnvVar.secret_ref`; `forge env secret set --env <env> <KEY>`.
 
 **Evidence:**
 
-- command `forge secret set`
+- command `forge env secret set`
 - library [`pkg/secretaccess`](../pkg/secretaccess)
-- skill `secrets` (`forge skill load secrets`)
+- skill `secrets` (`forge agent skill load secrets`)
 
 <a id="vuln-scan"></a>
 
@@ -2137,8 +2137,8 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/templates/deploy/kcl/identity.k.tmpl`](../internal/templates/deploy/kcl/identity.k.tmpl)
 - library [`pkg/auth`](../pkg/auth)
 - library [`pkg/identity`](../pkg/identity)
-- skill `auth` (`forge skill load auth`)
-- skill `deploy/managed-identity` (`forge skill load deploy/managed-identity`)
+- skill `auth` (`forge agent skill load auth`)
+- skill `deploy/managed-identity` (`forge agent skill load deploy/managed-identity`)
 
 <a id="local-dev-idp"></a>
 
@@ -2156,7 +2156,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge env up`
 - library [`pkg/devidp`](../pkg/devidp)
-- skill `auth/dev-loop` (`forge skill load auth/dev-loop`)
+- skill `auth/dev-loop` (`forge agent skill load auth/dev-loop`)
 
 <a id="login-broker-methods"></a>
 
@@ -2174,7 +2174,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/devidp/password_policy.go`](../pkg/devidp/password_policy.go)
 - source [`internal/cli/lint/lint_identity_methods.go`](../internal/cli/lint/lint_identity_methods.go)
 - source [`internal/cli/lint/lint_open_signup.go`](../internal/cli/lint/lint_open_signup.go)
-- skill `auth/frontend` (`forge skill load auth/frontend`)
+- skill `auth/frontend` (`forge agent skill load auth/frontend`)
 
 <a id="hosted-identity-admin"></a>
 
@@ -2221,7 +2221,7 @@ _Enforced · Forge, on any infrastructure_
 
 - marker `// forge:audience`
 - command `forge lint --graph`
-- skill `architecture/graph-checks` (`forge skill load architecture/graph-checks`)
+- skill `architecture/graph-checks` (`forge agent skill load architecture/graph-checks`)
 
 <a id="principal-chokepoint"></a>
 
@@ -2237,7 +2237,7 @@ _Enforced · Forge, on any infrastructure_
 
 - marker `// forge:owner`
 - lint lane `forge lint --conventions`
-- skill `auth/authorization` (`forge skill load auth/authorization`)
+- skill `auth/authorization` (`forge agent skill load auth/authorization`)
 
 <a id="api-keys"></a>
 
@@ -2256,7 +2256,7 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/auth`](../pkg/auth)
 - library [`pkg/authn`](../pkg/authn)
 - library [`pkg/oauth2`](../pkg/oauth2)
-- skill `auth/api-keys` (`forge skill load auth/api-keys`)
+- skill `auth/api-keys` (`forge agent skill load auth/api-keys`)
 
 <a id="machine-tokens"></a>
 
@@ -2284,7 +2284,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - source [`pkg/auth/jwks_snapshot.go`](../pkg/auth/jwks_snapshot.go)
-- skill `auth/shared-issuer` (`forge skill load auth/shared-issuer`)
+- skill `auth/shared-issuer` (`forge agent skill load auth/shared-issuer`)
 
 <a id="byo-issuer"></a>
 
@@ -2303,18 +2303,18 @@ _Enforced · Forge, on any infrastructure_
 
 ### Security headers and request limits
 
-Security headers, CORS, Connect payload caps and request-id middleware ship in the chain, and `forge doctor` checks caps, probes and resource limits of every env with nothing running.
+Security headers, CORS, Connect payload caps and request-id middleware ship in the chain, and `forge project doctor` checks caps, probes and resource limits of every env with nothing running.
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge doctor`
+**Use:** `forge project doctor`
 
 **Evidence:**
 
 - source [`pkg/middleware/security_headers.go`](../pkg/middleware/security_headers.go)
 - source [`pkg/middleware/cors.go`](../pkg/middleware/cors.go)
 - source [`pkg/middleware/httpstack.go`](../pkg/middleware/httpstack.go)
-- command `forge doctor`
+- command `forge project doctor`
 
 <a id="middleware-hardening"></a>
 
@@ -2358,14 +2358,14 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge secret allow`
-- command `forge secret access`
+- command `forge env secret allow`
+- command `forge env secret access`
 - source [`pkg/deploy/openbao`](../pkg/deploy/openbao)
 - source [`pkg/deploy/eso`](../pkg/deploy/eso)
-- skill `secrets` (`forge skill load secrets`)
-- skill `deploy/external-secrets` (`forge skill load deploy/external-secrets`)
-- skill `deploy/openbao` (`forge skill load deploy/openbao`)
-- skill `deploy/control-plane-secret` (`forge skill load deploy/control-plane-secret`)
+- skill `secrets` (`forge agent skill load secrets`)
+- skill `deploy/external-secrets` (`forge agent skill load deploy/external-secrets`)
+- skill `deploy/openbao` (`forge agent skill load deploy/openbao`)
+- skill `deploy/control-plane-secret` (`forge agent skill load deploy/control-plane-secret`)
 
 <a id="hosted-secrets"></a>
 
@@ -2375,12 +2375,12 @@ Hosted secrets are stored in an OpenBao-backed store, write-only (set once, neve
 
 _Enforced · Reliant hosting_
 
-**Use:** `forge secret set --env <env> <KEY>`; `forge secret allow|deny|access`
+**Use:** `forge env secret set --env <env> <KEY>`; `forge env secret allow|deny|access`
 
 **Evidence:**
 
-- command `forge secret set`
-- command `forge secret allow`
+- command `forge env secret set`
+- command `forge env secret allow`
 - `internal/tenantsecret` in the control-plane repo
 - `internal/secretstore` in the control-plane repo
 - `docs/openbao-secret-store.md` in the control-plane repo
@@ -2413,7 +2413,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env secrets verify`
 - command `forge env secrets adopt`
 - command `forge lint --secrets`
-- skill `deploy/shape` (`forge skill load deploy/shape`)
+- skill `deploy/shape` (`forge agent skill load deploy/shape`)
 
 <a id="secretgen"></a>
 
@@ -2443,14 +2443,14 @@ _Enforced · Forge, on any infrastructure_
 
 ### Credentials redacted on the way out
 
-`pkg/redact` strips credential shapes and personal paths from text leaving the process, and `forge report-bug --dry-run` shows exactly what would be sent.
+`pkg/redact` strips credential shapes and personal paths from text leaving the process, and `forge agent report-bug --dry-run` shows exactly what would be sent.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
 - library [`pkg/redact`](../pkg/redact)
-- command `forge report-bug`
+- command `forge agent report-bug`
 - source [`docs/report-bug.md`](../docs/report-bug.md)
 
 <a id="guarded-db-query"></a>
@@ -2473,7 +2473,7 @@ _Enforced · Forge, on any infrastructure_
 - marker `// forge:secret`
 - library [`pkg/dbgrants`](../pkg/dbgrants)
 - library [`pkg/dbbrowse`](../pkg/dbbrowse)
-- skill `db/query` (`forge skill load db/query`)
+- skill `db/query` (`forge agent skill load db/query`)
 
 <a id="go-license-check"></a>
 
@@ -2593,10 +2593,10 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env build --release`
 - command `forge env deploy --from`
 - library [`pkg/release`](../pkg/release)
-- skill `deploy/release` (`forge skill load deploy/release`)
+- skill `deploy/release` (`forge agent skill load deploy/release`)
 - command `forge env build`
 - command `forge env deploy`
-- skill `deploy/build` (`forge skill load deploy/build`)
+- skill `deploy/build` (`forge agent skill load deploy/build`)
 
 <a id="workload-once-bind-per-env"></a>
 
@@ -2614,7 +2614,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/deploytarget/compose.go`](../internal/deploytarget/compose.go)
 - source [`internal/deploytarget/hosted.go`](../internal/deploytarget/hosted.go)
 - source [`internal/deploytarget/firebase.go`](../internal/deploytarget/firebase.go)
-- skill `deploy/model` (`forge skill load deploy/model`)
+- skill `deploy/model` (`forge agent skill load deploy/model`)
 - command `forge env render`
 
 <a id="external-deploy-tooling"></a>
@@ -2636,7 +2636,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/hosted_env_resolver.go`](../internal/cli/hosted_env_resolver.go)
 - command `forge env deploy`
 - command `forge env status`
-- skill `deploy/external` (`forge skill load deploy/external`)
+- skill `deploy/external` (`forge agent skill load deploy/external`)
 
 <a id="env-document"></a>
 
@@ -2658,7 +2658,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`schema/env.v1.schema.json`](../schema/env.v1.schema.json)
 - source [`internal/envdoc`](../internal/envdoc)
 - source [`docs/design/env-document.md`](../docs/design/env-document.md)
-- skill `deploy` (`forge skill load deploy`)
+- skill `deploy` (`forge agent skill load deploy`)
 
 <a id="env-verify-parity"></a>
 
@@ -2679,7 +2679,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env verify`
 - command `forge env verify --image`
 - source [`internal/cli/env_verify_cmd.go`](../internal/cli/env_verify_cmd.go)
-- skill `deploy/external` (`forge skill load deploy/external`)
+- skill `deploy/external` (`forge agent skill load deploy/external`)
 
 <a id="prod-from-day-0"></a>
 
@@ -2747,7 +2747,7 @@ _Enforced · Forge, on any infrastructure_
 
 - library [`pkg/topology`](../pkg/topology)
 - command `forge env status`
-- skill `deploy/shape` (`forge skill load deploy/shape`)
+- skill `deploy/shape` (`forge agent skill load deploy/shape`)
 - source [`internal/bundle/declared_envs_test.go`](../internal/bundle/declared_envs_test.go)
 
 <a id="release-ledger"></a>
@@ -2766,7 +2766,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env releases show`
 - command `forge env releases at`
 - command `forge release where`
-- skill `observability/query` (`forge skill load observability/query`)
+- skill `observability/query` (`forge agent skill load observability/query`)
 - library [`pkg/release`](../pkg/release)
 
 <a id="record-deploys"></a>
@@ -2779,14 +2779,14 @@ _Enforced · Forge, on any infrastructure_
 
 **Works in any repo** (no forge.yaml). **Start:** List your deployed workloads as `runtime: {type: external}` in deploy/envs/prod.yaml (from `forge obs init prod`), then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set. **Agent time:** ~15 min.
 
-**Use:** Works in any repo, with no forge.yaml: list the workloads your pipeline deploys as `runtime: {type: external}` in the env's document (`deploy/envs/prod.yaml`, which `forge obs init` writes; it names the project), store a token with deploy:write, minted in the web app (Settings → API tokens), as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: the env document 2 min, CI secret 5 min, the step 5 min, a first run 3 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge skill load deploy/record`.
+**Use:** Works in any repo, with no forge.yaml: list the workloads your pipeline deploys as `runtime: {type: external}` in the env's document (`deploy/envs/prod.yaml`, which `forge obs init` writes; it names the project), store a token with deploy:write, minted in the web app (Settings → API tokens), as `FORGE_CONTROL_PLANE_TOKEN`, then after the deploy step run `forge release record --env prod --version "$TAG" [--workload api --image ghcr.io/acme/api@sha256:…]` and `forge obs check prod --release "$TAG" --wait`. Easy, about 15 minutes: the env document 2 min, CI secret 5 min, the step 5 min, a first run 3 min. Recipes for GitHub Actions, GitLab CI and Buildkite are in `forge agent skill load deploy/record`.
 
 **Why:** The release is record-only: it may name no artifacts (a version and a commit), it is labelled "recorded by CI" in `forge obs changes` and the console, and the control plane refuses to bind one to an env forge itself deploys, so a record never poses as forge's own deploy. A retried CI step records once, and the same version with other digests is a conflict, not an overwrite. Not signed in, it records on this machine's ledger.
 
 **Evidence:**
 
 - command `forge release record`
-- skill `deploy/record` (`forge skill load deploy/record`)
+- skill `deploy/record` (`forge agent skill load deploy/record`)
 - source [`internal/cli/release_record.go`](../internal/cli/release_record.go)
 - library [`pkg/release`](../pkg/release)
 
@@ -2807,7 +2807,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge env deploy`
 - source [`internal/cli/deploy_plan_gate.go`](../internal/cli/deploy_plan_gate.go)
 - source [`internal/cli/deploy_confirm.go`](../internal/cli/deploy_confirm.go)
-- skill `deploy/plan` (`forge skill load deploy/plan`)
+- skill `deploy/plan` (`forge agent skill load deploy/plan`)
 
 <a id="polyrepo-pinned-sources"></a>
 
@@ -2817,18 +2817,18 @@ Teams outside a monorepo, in any language, share an infra repo's KCL by a git pi
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge kcl imports [--refresh]`.
+**Use:** `[forge_projects] infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "<sha>" }` in `deploy/kcl/kcl.mod`; `forge.DockerBuild {context = forge.GitSource {repo = …, ref = …}}`; `forge env kcl imports [--refresh]`.
 
 **Why:** A sibling path (`../billing`) builds whatever is checked out there and is absent in CI. A pin resolves to the same bytes on every machine through one shared cache, renders offline once fetched, and a `commit` lock refuses a moved tag as a pin mismatch. A gitignored `.forge/source-overrides.yaml` points a repo at a working copy while you develop both, and a release refuses to cut while one is in use.
 
 **Evidence:**
 
-- command `forge kcl imports --refresh`
+- command `forge env kcl imports --refresh`
 - source [`internal/kclprojects/gitimport.go`](../internal/kclprojects/gitimport.go)
 - source [`internal/cli/build_docker_source.go`](../internal/cli/build_docker_source.go)
 - source [`docs/cross-repo-sources.md`](../docs/cross-repo-sources.md)
-- skill `deploy/polyrepo` (`forge skill load deploy/polyrepo`)
-- skill `deploy/kcl-imports` (`forge skill load deploy/kcl-imports`)
+- skill `deploy/polyrepo` (`forge agent skill load deploy/polyrepo`)
+- skill `deploy/kcl-imports` (`forge agent skill load deploy/kcl-imports`)
 
 <a id="hosted-deploy-plan"></a>
 
@@ -2909,7 +2909,7 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/migratekit/runlock.go`](../pkg/migratekit/runlock.go)
 - source [`pkg/deploy/workload_render.go`](../pkg/deploy/workload_render.go)
 - command `forge ci migration-safety`
-- skill `db/deploy-migrations` (`forge skill load db/deploy-migrations`)
+- skill `db/deploy-migrations` (`forge agent skill load db/deploy-migrations`)
 
 <a id="migration-release-guard"></a>
 
@@ -2927,7 +2927,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge env releases backfill-migrations`
 - command `forge env build`
-- skill `db/release-guard` (`forge skill load db/release-guard`)
+- skill `db/release-guard` (`forge agent skill load db/release-guard`)
 
 <a id="interrupted-cut-resume"></a>
 
@@ -2942,25 +2942,25 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge env releases interrupted`
-- skill `deploy/interrupted-cut` (`forge skill load deploy/interrupted-cut`)
+- skill `deploy/interrupted-cut` (`forge agent skill load deploy/interrupted-cut`)
 
 <a id="ledger-portability"></a>
 
 ### Portable, verifiable release ledgers
 
-`forge ledger where|show|export|import` says which backend holds an env's ledger and moves history between backends, `forge release verify` proves every artifact a release names exists and matches, and `forge release bundle` diffs a recorded bundle against the live clusters.
+`forge release ledger where|show|export|import` says which backend holds an env's ledger and moves history between backends, `forge release verify` proves every artifact a release names exists and matches, and `forge release bundle` diffs a recorded bundle against the live clusters.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge ledger where`
-- command `forge ledger export`
+- command `forge release ledger where`
+- command `forge release ledger export`
 - command `forge release verify`
 - command `forge release bundle`
-- skill `deploy/offline-ledger` (`forge skill load deploy/offline-ledger`)
-- skill `deploy/release` (`forge skill load deploy/release`)
-- command `forge ledger import`
+- skill `deploy/offline-ledger` (`forge agent skill load deploy/offline-ledger`)
+- skill `deploy/release` (`forge agent skill load deploy/release`)
+- command `forge release ledger import`
 
 <a id="offline-breakglass"></a>
 
@@ -2974,7 +2974,7 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/offline_ledger.go`](../internal/cli/offline_ledger.go)
 - command `forge env deploy --offline-ledger`
-- skill `deploy/offline-ledger` (`forge skill load deploy/offline-ledger`)
+- skill `deploy/offline-ledger` (`forge agent skill load deploy/offline-ledger`)
 
 <a id="roll-forward"></a>
 
@@ -3008,7 +3008,7 @@ _Enforced · Reliant hosting_
 **Evidence:**
 
 - library [`pkg/releasehealth`](../pkg/releasehealth)
-- skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
+- skill `deploy/delivery-policy` (`forge agent skill load deploy/delivery-policy`)
 
 <a id="preview-environments"></a>
 
@@ -3026,7 +3026,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge env preview create`
 - command `forge env gc`
-- skill `deploy/preview` (`forge skill load deploy/preview`)
+- skill `deploy/preview` (`forge agent skill load deploy/preview`)
 - library [`pkg/release`](../pkg/release)
 
 <a id="promotion-required-gates-approval-hook"></a>
@@ -3043,7 +3043,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
+- skill `deploy/delivery-policy` (`forge agent skill load deploy/delivery-policy`)
 - source [`internal/cli/promote_policy_checks.go`](../internal/cli/promote_policy_checks.go)
 - source [`pkg/release/promotion_checks.go`](../pkg/release/promotion_checks.go)
 
@@ -3063,7 +3063,7 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/templates/deploy/kcl/base/env.k.tmpl`](../internal/templates/deploy/kcl/base/env.k.tmpl)
 - command `forge env new`
-- skill `deploy/model` (`forge skill load deploy/model`)
+- skill `deploy/model` (`forge agent skill load deploy/model`)
 
 <a id="release-health-policy"></a>
 
@@ -3096,20 +3096,20 @@ _Recorded · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `deploy/delivery-policy` (`forge skill load deploy/delivery-policy`)
+- skill `deploy/delivery-policy` (`forge agent skill load deploy/delivery-policy`)
 
 <a id="gate-evidence"></a>
 
 ### Check results attached to releases
 
-`forge gate record` attaches a lint, test, smoke or manual sign-off result to the promotion it is about, with who and when, and `forge env deploy --gate` reads them; nothing refuses a promotion on a gate's status.
+`forge release gate record` attaches a lint, test, smoke or manual sign-off result to the promotion it is about, with who and when, and `forge env deploy --gate` reads them; nothing refuses a promotion on a gate's status.
 
 _Recorded · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge gate record`
-- command `forge gate list`
+- command `forge release gate record`
+- command `forge release gate list`
 
 <a id="deploy-waits-for-health"></a>
 
@@ -3137,7 +3137,7 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge env build`
-- skill `deploy/config-check` (`forge skill load deploy/config-check`)
+- skill `deploy/config-check` (`forge agent skill load deploy/config-check`)
 
 <a id="flux-safe"></a>
 
@@ -3150,8 +3150,8 @@ _Enforced · Forge, on any infrastructure_
 **Evidence:**
 
 - command `forge lint`
-- skill `deploy/flux-safe` (`forge skill load deploy/flux-safe`)
-- skill `deploy/flux` (`forge skill load deploy/flux`)
+- skill `deploy/flux-safe` (`forge agent skill load deploy/flux-safe`)
+- skill `deploy/flux` (`forge agent skill load deploy/flux`)
 
 <a id="overrides-byo-yaml"></a>
 
@@ -3163,22 +3163,22 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `deploy` (`forge skill load deploy`)
-- skill `deploy/overrides` (`forge skill load deploy/overrides`)
-- skill `deploy/byo-yaml` (`forge skill load deploy/byo-yaml`)
+- skill `deploy` (`forge agent skill load deploy`)
+- skill `deploy/overrides` (`forge agent skill load deploy/overrides`)
+- skill `deploy/byo-yaml` (`forge agent skill load deploy/byo-yaml`)
 
 <a id="cluster-connect"></a>
 
 ### Connect a cluster you run
 
-`forge cluster connect` registers a Kubernetes cluster you run as one env's binding, with a ServiceAccount token scoped to exactly what the hub applies.
+`forge cloud cluster connect` registers a Kubernetes cluster you run as one env's binding, with a ServiceAccount token scoped to exactly what the hub applies.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge cluster connect`
-- skill `deploy/cluster-connect` (`forge skill load deploy/cluster-connect`)
+- command `forge cloud cluster connect`
+- skill `deploy/cluster-connect` (`forge agent skill load deploy/cluster-connect`)
 
 <a id="static-site-first-class"></a>
 
@@ -3197,7 +3197,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge project new`
 - source [`internal/codegen/frontend_config_ts.go`](../internal/codegen/frontend_config_ts.go)
 - source [`internal/linter/staticexport/nextconfig.go`](../internal/linter/staticexport/nextconfig.go)
-- skill `deploy/static-site` (`forge skill load deploy/static-site`)
+- skill `deploy/static-site` (`forge agent skill load deploy/static-site`)
 
 <a id="generated-ci-workflows"></a>
 
@@ -3216,8 +3216,8 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/templates/ci/github/deploy.yml.tmpl`](../internal/templates/ci/github/deploy.yml.tmpl)
 - source [`internal/templates/ci/github/proto-breaking.yml.tmpl`](../internal/templates/ci/github/proto-breaking.yml.tmpl)
 - source [`internal/templates/ci/github/forge-deploy-action.yml.tmpl`](../internal/templates/ci/github/forge-deploy-action.yml.tmpl)
-- skill `ci` (`forge skill load ci`)
-- skill `ci/extending` (`forge skill load ci/extending`)
+- skill `ci` (`forge agent skill load ci`)
+- skill `ci/extending` (`forge agent skill load ci/extending`)
 
 <a id="ci-evidence-tools"></a>
 
@@ -3255,7 +3255,7 @@ _Enforced · Reliant hosting_
 **Evidence:**
 
 - `internal/operators/manageddatabase` in the control-plane repo
-- skill `deploy/hosting` (`forge skill load deploy/hosting`)
+- skill `deploy/hosting` (`forge agent skill load deploy/hosting`)
 - source [`pkg/deploy/v1alpha1/manageddatabase_types.go`](../pkg/deploy/v1alpha1/manageddatabase_types.go)
 - source [`kcl/tiers/tiers_gen.k`](../kcl/tiers/tiers_gen.k)
 - `internal/operators/manageddatabase/doc.go` in the control-plane repo
@@ -3284,18 +3284,18 @@ Claim a hostname, publish the DNS records forge prints, and the platform verifie
 
 _Enforced · Reliant hosting_
 
-**Use:** `forge domain add|bind|verify|ls|show|unbind|rm`
+**Use:** `forge cloud domain add|bind|verify|ls|show|unbind|rm`
 
 **Evidence:**
 
-- command `forge domain add`
-- command `forge domain bind`
+- command `forge cloud domain add`
+- command `forge cloud domain bind`
 - `internal/customdomain` in the control-plane repo
 - `internal/domaincerts` in the control-plane repo
 - `docs/custom-domains.md` in the control-plane repo
-- command `forge domain verify`
+- command `forge cloud domain verify`
 - source [`internal/deploytarget/hosted_domains.go`](../internal/deploytarget/hosted_domains.go)
-- skill `deploy/domains` (`forge skill load deploy/domains`)
+- skill `deploy/domains` (`forge agent skill load deploy/domains`)
 
 <a id="hosted-by-default"></a>
 
@@ -3313,7 +3313,7 @@ _Enforced · Reliant hosting_
 - `internal/operators/workload` in the control-plane repo
 - `internal/operators/staticsite` in the control-plane repo
 - `internal/operators/manageddatabase` in the control-plane repo
-- skill `deploy/hosting` (`forge skill load deploy/hosting`)
+- skill `deploy/hosting` (`forge agent skill load deploy/hosting`)
 
 <a id="claimable-deploys"></a>
 
@@ -3422,7 +3422,7 @@ _Enforced · Reliant hosting_
 
 **Evidence:**
 
-- command `forge registry login`
+- command `forge cloud registry login`
 - command `forge lint`
 - `internal/ociregistry` in the control-plane repo
 - `internal/registryauth` in the control-plane repo
@@ -3456,7 +3456,7 @@ _Enforced · Reliant hosting_
 - source [`internal/cli/deploy_queued.go`](../internal/cli/deploy_queued.go)
 - source [`internal/cli/env_wait.go`](../internal/cli/env_wait.go)
 - `internal/deployhold` in the control-plane repo
-- skill `deploy/hosted-capacity` (`forge skill load deploy/hosted-capacity`)
+- skill `deploy/hosted-capacity` (`forge agent skill load deploy/hosted-capacity`)
 
 <a id="hosted-env-lifecycle"></a>
 
@@ -3473,7 +3473,7 @@ _Enforced · Reliant hosting_
 - command `forge env stop`
 - command `forge env delete`
 - command `forge env list`
-- skill `deploy/lifecycle` (`forge skill load deploy/lifecycle`)
+- skill `deploy/lifecycle` (`forge agent skill load deploy/lifecycle`)
 
 <a id="llm-no-key"></a>
 
@@ -3487,10 +3487,10 @@ _Enforced · Reliant hosting_
 
 **Evidence:**
 
-- skill `llm` (`forge skill load llm`)
+- skill `llm` (`forge agent skill load llm`)
 - `internal/operators/workload/llminject.go` in the control-plane repo
 - `internal/llmgateway` in the control-plane repo
-- skill `deploy/llm` (`forge skill load deploy/llm`)
+- skill `deploy/llm` (`forge agent skill load deploy/llm`)
 
 <a id="managed-postgres-placement"></a>
 
@@ -3589,7 +3589,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge obs check`
 - library [`pkg/releasehealth`](../pkg/releasehealth)
-- skill `observability/query` (`forge skill load observability/query`)
+- skill `observability/query` (`forge agent skill load observability/query`)
 
 <a id="edge-telemetry"></a>
 
@@ -3608,7 +3608,7 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/observe`](../pkg/observe)
 - library [`pkg/serverkit`](../pkg/serverkit)
 - marker `// forge:no-observe`
-- skill `observability/component-chain` (`forge skill load observability/component-chain`)
+- skill `observability/component-chain` (`forge agent skill load observability/component-chain`)
 - library [`pkg/orm`](../pkg/orm)
 
 <a id="one-log-path"></a>
@@ -3623,7 +3623,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `observability` (`forge skill load observability`)
+- skill `observability` (`forge agent skill load observability`)
 - library [`pkg/observe`](../pkg/observe)
 
 <a id="probes-graceful-shutdown"></a>
@@ -3641,11 +3641,11 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/serverkit/serverkit.go`](../pkg/serverkit/serverkit.go)
 - source [`pkg/serverkit/pooler_drain.go`](../pkg/serverkit/pooler_drain.go)
 - source [`pkg/lifecyclekit/lifecyclekit.go`](../pkg/lifecyclekit/lifecyclekit.go)
-- command `forge doctor`
+- command `forge project doctor`
 - library [`pkg/serverkit`](../pkg/serverkit)
 - library [`pkg/lifecyclekit`](../pkg/lifecyclekit)
 - library [`pkg/middleware`](../pkg/middleware)
-- skill `deploy/model` (`forge skill load deploy/model`)
+- skill `deploy/model` (`forge agent skill load deploy/model`)
 
 <a id="telemetry-proven"></a>
 
@@ -3680,7 +3680,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs trace`
 - command `forge obs query`
 - command `forge obs metrics query`
-- skill `observability/query` (`forge skill load observability/query`)
+- skill `observability/query` (`forge agent skill load observability/query`)
 
 <a id="obs-status-changes"></a>
 
@@ -3723,7 +3723,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge obs issues`
 - library [`pkg/svcerr`](../pkg/svcerr)
-- skill `observability/error-stacks` (`forge skill load observability/error-stacks`)
+- skill `observability/error-stacks` (`forge agent skill load observability/error-stacks`)
 
 <a id="issues-triage"></a>
 
@@ -3744,7 +3744,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs issue resolve`
 - command `forge obs issue ignore`
 - command `forge obs issue assign`
-- skill `observability/query` (`forge skill load observability/query`)
+- skill `observability/query` (`forge agent skill load observability/query`)
 
 <a id="issues-symbolication"></a>
 
@@ -3789,7 +3789,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs profile`
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
 - library [`pkg/profilequery`](../pkg/profilequery)
-- skill `observability/profiles` (`forge skill load observability/profiles`)
+- skill `observability/profiles` (`forge agent skill load observability/profiles`)
 
 <a id="profile-guided-builds"></a>
 
@@ -3808,7 +3808,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge pgo pull`
 - command `forge pgo status`
 - library [`pkg/profilequery`](../pkg/profilequery)
-- skill `observability/profiles` (`forge skill load observability/profiles`)
+- skill `observability/profiles` (`forge agent skill load observability/profiles`)
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
 - `internal/handlers/observability/rpc_export_pgo_profile.go` in the control-plane repo
 
@@ -3827,7 +3827,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs alerts check`
 - command `forge obs alerts run`
 - source [`pkg/alerting/alertmanager.go`](../pkg/alerting/alertmanager.go)
-- skill `observability/alerts` (`forge skill load observability/alerts`)
+- skill `observability/alerts` (`forge agent skill load observability/alerts`)
 
 <a id="release-regressed-alert"></a>
 
@@ -3844,7 +3844,7 @@ _Enforced · Reliant hosting_
 - command `forge obs check`
 - `internal/releasehealth` in the control-plane repo
 - `docs/observability/builtin-alerts.md` in the control-plane repo
-- skill `observability/alerts` (`forge skill load observability/alerts`)
+- skill `observability/alerts` (`forge agent skill load observability/alerts`)
 
 <a id="uptime-cert-probes"></a>
 
@@ -3861,7 +3861,7 @@ _Enforced · Reliant hosting_
 - `internal/uptimeprobe` in the control-plane repo
 - `docs/observability/uptime-prober.md` in the control-plane repo
 - source [`internal/obsdash/alerts.go`](../internal/obsdash/alerts.go)
-- skill `observability/uptime` (`forge skill load observability/uptime`)
+- skill `observability/uptime` (`forge agent skill load observability/uptime`)
 
 <a id="generated-dashboards"></a>
 
@@ -3880,8 +3880,8 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs dashboards add-panel`
 - source [`internal/obsdash/bundleset.go`](../internal/obsdash/bundleset.go)
 - library [`pkg/dashspec`](../pkg/dashspec)
-- skill `observability/dashboards` (`forge skill load observability/dashboards`)
-- skill `debug/dashboards` (`forge skill load debug/dashboards`)
+- skill `observability/dashboards` (`forge agent skill load observability/dashboards`)
+- skill `debug/dashboards` (`forge agent skill load debug/dashboards`)
 
 <a id="builtin-product-analytics"></a>
 
@@ -3899,7 +3899,7 @@ _In progress · Reliant hosting_
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
-- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+- skill `observability/product-analytics` (`forge agent skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>
 
@@ -3918,7 +3918,7 @@ _In progress · Reliant hosting_
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - library [`pkg/observe/genai`](../pkg/observe/genai)
 - source [`pkg/obsbuiltin/ai_clickhouse_test.go`](../pkg/obsbuiltin/ai_clickhouse_test.go)
-- skill `observability/ai` (`forge skill load observability/ai`)
+- skill `observability/ai` (`forge agent skill load observability/ai`)
 
 <a id="release-markers"></a>
 
@@ -3948,7 +3948,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge obs session`
 - source [`pkg/obsquery/rum_sessions.go`](../pkg/obsquery/rum_sessions.go)
 - source [`pkg/obsquery/rum_replay.go`](../pkg/obsquery/rum_replay.go)
-- skill `frontend-runtime/telemetry` (`forge skill load frontend-runtime/telemetry`)
+- skill `frontend-runtime/telemetry` (`forge agent skill load frontend-runtime/telemetry`)
 
 <a id="telemetry-anywhere"></a>
 
@@ -3962,7 +3962,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `observability/destination` (`forge skill load observability/destination`)
+- skill `observability/destination` (`forge agent skill load observability/destination`)
 - source [`kcl/schema.k`](../kcl/schema.k)
 - library [`pkg/observe`](../pkg/observe)
 
@@ -3993,7 +3993,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `observability` (`forge skill load observability`)
+- skill `observability` (`forge agent skill load observability`)
 - source [`kcl/schema.k`](../kcl/schema.k)
 
 <a id="hosted-otel-injection"></a>
@@ -4017,9 +4017,9 @@ An app forge never built — any language, any CI, any infrastructure — sends 
 
 _Enforced · Reliant hosting_
 
-**Works in any repo** (no forge.yaml). **Start:** `forge login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment. **Agent time:** ~15 min.
+**Works in any repo** (no forge.yaml). **Start:** `forge cloud login`, then `forge obs init prod`, and set the `OTEL_*` variables it prints in the app's environment. **Agent time:** ~15 min.
 
-**Use:** `forge login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables.
+**Use:** `forge cloud login`, then `forge obs init prod`: it declares the env in `deploy/envs/prod.yaml` (no forge.yaml needed), registers it, mints an ingest token and prints the `OTEL_*` variables.
 
 **Why:** Adopting a platform usually starts with a rewrite. Monitoring needs none: one command, three environment variables, and the app's errors and deploy regressions are in front of the team and its agents.
 
@@ -4028,7 +4028,7 @@ _Enforced · Reliant hosting_
 - command `forge obs init`
 - command `forge obs tokens`
 - command `forge obs receivers`
-- skill `observability/monitoring-only` (`forge skill load observability/monitoring-only`)
+- skill `observability/monitoring-only` (`forge agent skill load observability/monitoring-only`)
 - source [`internal/cli/env_declaration.go`](../internal/cli/env_declaration.go)
 - `proto/services/telemetry_token/v1/telemetry_token.proto` in the control-plane repo
 - `internal/releasehealth/infer.go` in the control-plane repo
@@ -4091,8 +4091,8 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/activity/interceptor.go`](../pkg/activity/interceptor.go)
 - lint lane `forge lint --conventions`
 - library [`pkg/activity`](../pkg/activity)
-- skill `observability/audit-log` (`forge skill load observability/audit-log`)
-- skill `activity` (`forge skill load activity`)
+- skill `observability/audit-log` (`forge agent skill load observability/audit-log`)
+- skill `activity` (`forge agent skill load activity`)
 
 <a id="dora-metrics"></a>
 
@@ -4119,36 +4119,36 @@ Forge is built to make an LLM agent effective in a project, and several features
 
 ### Skills that match your forge
 
-`forge skill list`, `load` and `search` serve 180+ skills built into the forge you run, so an agent never reads guidance written for another version.
+`forge agent skill list`, `load` and `search` serve 180+ skills built into the forge you run, so an agent never reads guidance written for another version.
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** `forge skill load adopt`: what forge can do for this repo, with estimates to quote. **Agent time:** ~2 min.
+**Works in any repo** (no forge.yaml). **Start:** `forge agent skill load adopt`: what forge can do for this repo, with estimates to quote. **Agent time:** ~2 min.
 
-**Use:** `forge skill load forge`
+**Use:** `forge agent skill load forge`
 
 **Why:** A skill that disagrees with the project is reported as a forge bug.
 
 **Evidence:**
 
-- command `forge skill load`
-- command `forge skill search`
+- command `forge agent skill load`
+- command `forge agent skill search`
 - source [`internal/templates/project/skills`](../internal/templates/project/skills)
-- skill `forge` (`forge skill load forge`)
+- skill `forge` (`forge agent skill load forge`)
 
 <a id="mcp-server"></a>
 
 ### Built-in MCP server
 
-`forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and bug reports included, with no shell scraping.
+`forge agent mcp` exposes forge on stdio to any MCP-capable harness, deploys and bug reports included, with no shell scraping.
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool. **Agent time:** ~2 min.
+**Works in any repo** (no forge.yaml). **Start:** `claude mcp add forge -- npx -y @reliantlabs/forge agent mcp` (or any MCP client); then call the `benefits` tool. **Agent time:** ~2 min.
 
 **Evidence:**
 
-- command `forge mcp`
+- command `forge agent mcp`
 - source [`internal/cli/mcp_tools.go`](../internal/cli/mcp_tools.go)
 - source [`internal/cli/mcp_deploy.go`](../internal/cli/mcp_deploy.go)
 
@@ -4160,13 +4160,13 @@ A remote MCP server with nothing to install, https://api.reliantapi.com/forge/mc
 
 _Enforced · Reliant harness_
 
-**Works in any repo** (no forge.yaml). **Start:** Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client. **Agent time:** ~2 min.
+**Works in any repo** (no forge.yaml). **Start:** Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge agent skill load connect` has the steps per client. **Agent time:** ~2 min.
 
 **Evidence:**
 
 - source [`internal/cli/mcp_hosted.go`](../internal/cli/mcp_hosted.go)
 - source [`cli/hosted_mcp.go`](../cli/hosted_mcp.go)
-- skill `connect` (`forge skill load connect`)
+- skill `connect` (`forge agent skill load connect`)
 
 <a id="capabilities-introspection"></a>
 
@@ -4242,15 +4242,15 @@ _Enforced · Forge, on any infrastructure_
 
 ### Agents report framework bugs
 
-`forge report-bug` sends a redacted defect report with evidence, deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly what would go.
+`forge agent report-bug` sends a redacted defect report with evidence, deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly what would go.
 
 _Enforced · Forge, on any infrastructure_
 
-**Works in any repo** (no forge.yaml). **Start:** `forge report-bug --dry-run …` prints exactly what would be sent. **Agent time:** ~2 min.
+**Works in any repo** (no forge.yaml). **Start:** `forge agent report-bug --dry-run …` prints exactly what would be sent. **Agent time:** ~2 min.
 
 **Evidence:**
 
-- command `forge report-bug`
+- command `forge agent report-bug`
 - source [`internal/cli/report_bug.go`](../internal/cli/report_bug.go)
 - library [`pkg/redact`](../pkg/redact)
 - source [`docs/report-bug.md`](../docs/report-bug.md)
@@ -4276,13 +4276,13 @@ _Enforced · Forge, on any infrastructure_
 
 ### Works in Claude Code, Cursor
 
-Forge writes thin pointers for Claude Code and Cursor that route an agent to `forge skill`, never copies of skill bodies that would go stale.
+Forge writes thin pointers for Claude Code and Cursor that route an agent to `forge agent skill`, never copies of skill bodies that would go stale.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- command `forge skill list`
+- command `forge agent skill list`
 
 <a id="harness-none"></a>
 
@@ -4296,7 +4296,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge project new --harness`
 - source [`internal/generator/harness.go`](../internal/generator/harness.go)
-- skill `forge/greenfield` (`forge skill load forge/greenfield`)
+- skill `forge/greenfield` (`forge agent skill load forge/greenfield`)
 
 <a id="predictable-layout"></a>
 
@@ -4321,7 +4321,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `frontend` (`forge skill load frontend`)
+- skill `frontend` (`forge agent skill load frontend`)
 
 <a id="llm-placement-guidance"></a>
 
@@ -4335,7 +4335,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
-- skill `llm` (`forge skill load llm`)
+- skill `llm` (`forge agent skill load llm`)
 
 <a id="build-an-app-workflow"></a>
 

@@ -36,20 +36,20 @@ func TestHandOffModeFor(t *testing.T) {
 		{"build", false, handOffRequired},
 		{"generate", false, handOffRequired},
 		{"lint", false, handOffRequired},
-		{"kcl eval", false, handOffRequired},
+		{"env kcl eval", false, handOffRequired},
 		{"db status", false, handOffRequired},
 		{"obs status", false, handOffRequired},
-		{"skill load", false, handOffRequired},
+		{"agent skill load", false, handOffRequired},
 		{"a-command-this-forge-lacks", false, handOffRequired},
 		// machineWide means something only to a command that declares it.
 		{"env up", true, handOffRequired},
 		{"", false, runHere},
 		{"version", false, runHere},
 		{"help", false, runHere},
-		{"report-bug", false, runHere},
+		{"agent report-bug", false, runHere},
 		{"project upgrade", false, runHere},
-		{"storage gc", false, runHere},
-		{"mcp", false, runHere},
+		{"machine storage gc", false, runHere},
+		{"agent mcp", false, runHere},
 	} {
 		if got := handOffModeFor(tc.rel, tc.machineWide); got != tc.want {
 			t.Errorf("handOffModeFor(%q, machineWide=%v) = %v, want %v", tc.rel, tc.machineWide, got, tc.want)
@@ -116,7 +116,7 @@ func TestPinDecisionTable(t *testing.T) {
 		rows = append(rows,
 			row{[]string{"env", "up", "dev"}, avail, project},
 			row{[]string{"env", "render", "dev"}, avail, project},
-			row{[]string{"kcl", "eval", "x.k"}, avail, project},
+			row{[]string{"env", "kcl", "eval", "x.k"}, avail, project},
 			row{[]string{"build"}, avail, project},
 			row{[]string{"lint"}, avail, project},
 			row{[]string{"db", "status"}, avail, project},
@@ -125,7 +125,7 @@ func TestPinDecisionTable(t *testing.T) {
 			row{[]string{"env", "down", "--all"}, avail, ranHere},
 			row{[]string{"env", "ps"}, avail, ranHere},
 			row{[]string{"version"}, avail, ranHere},
-			row{[]string{"report-bug"}, avail, ranHere},
+			row{[]string{"agent", "report-bug"}, avail, ranHere},
 		)
 	}
 
@@ -249,7 +249,7 @@ func TestHandOffToPinned_EnvDown(t *testing.T) {
 func TestPinDecision_ADelegateNeverHandsOffAgain(t *testing.T) {
 	skewedProject(t)
 	actAsDelegate(t)
-	for _, args := range [][]string{{"env", "up", "dev"}, {"env", "down", "dev"}, {"kcl", "eval", "x.k"}, {"generate"}} {
+	for _, args := range [][]string{{"env", "up", "dev"}, {"env", "down", "dev"}, {"env", "kcl", "eval", "x.k"}, {"generate"}} {
 		h, installs := armPin(t, pinBuildable)
 		if handed, _, err := handOffForTest(t, args...); handed || err != nil {
 			t.Errorf("entrypoint, %v: handed %v, err %v", args, handed, err)
@@ -361,11 +361,11 @@ func TestPinDecision_InternalKCLChildIsSilent(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
 	h, _ := armPin(t, pinBuildable)
-	out, err := runCheck(t, "kcl", "eval", "x.k", "--allow-version-skew", "--process-rooted")
+	out, err := runCheck(t, "env", "kcl", "eval", "x.k", "--allow-version-skew", "--process-rooted")
 	if err != nil || out != "" || h.path != "" {
 		t.Errorf("internal child: err %v, handed to %q, output %q", err, h.path, out)
 	}
-	out, err = runCheck(t, "kcl", "eval", "x.k", "--allow-version-skew")
+	out, err = runCheck(t, "env", "kcl", "eval", "x.k", "--allow-version-skew")
 	if err != nil || !strings.Contains(out, "a different forge than the project's") {
 		t.Errorf("a user's kcl eval under skew: err %v, output %q; want the warning", err, out)
 	}

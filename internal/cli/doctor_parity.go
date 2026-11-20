@@ -1,4 +1,4 @@
-// Package cli — `forge doctor parity <svc>` subcommand.
+// Package cli — `forge project doctor parity <svc>` subcommand.
 //
 // Detects when a service's effective env+config diverges between
 // host-mode (`forge run <svc>`) and cluster-mode (`forge env deploy <env>`)
@@ -164,7 +164,7 @@ type parityReport struct {
 }
 
 // bugDivergences returns the subset of divergences whose presence
-// should make `forge doctor parity` exit 1. Secret-channel
+// should make `forge project doctor parity` exit 1. Secret-channel
 // divergences are reported but don't fail the build — the channels
 // differ by design.
 func (r *parityReport) bugDivergences() []parityDivergence {
@@ -420,7 +420,7 @@ func fixSecretChannel(row parityKey) string {
 
 // -- cobra wiring -----------------------------------------------------------
 
-// newDoctorParityCmd returns the `forge doctor parity <service>`
+// newDoctorParityCmd returns the `forge project doctor parity <service>`
 // subcommand. The subcommand assembles parityInputs from the same
 // real loaders host-launch + deploy use, calls diffParity, and emits
 // the result either as a human-readable report (stderr) or a JSON
@@ -446,9 +446,9 @@ divergences are secret-channel (host secrets_file ↔ cluster secret_ref —
 expected by design).
 
 Examples:
-  forge doctor parity tasks                # default --env=dev
-  forge doctor parity tasks --env=staging
-  forge doctor parity tasks --json         # machine-readable output`,
+  forge project doctor parity tasks                # default --env=dev
+  forge project doctor parity tasks --env=staging
+  forge project doctor parity tasks --json         # machine-readable output`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctorParity(cmd.Context(), args[0], env, jsonOutput, cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -464,7 +464,7 @@ Examples:
 // report. Split from the cobra command body so it can be exercised by
 // tests without a *cobra.Command.
 func runDoctorParity(ctx context.Context, serviceName, env string, jsonOutput bool, stdout, stderr io.Writer) error {
-	const ctxLabel = "forge doctor parity"
+	const ctxLabel = "forge project doctor parity"
 
 	// Gate: this must run inside a forge project. We no longer need the
 	// parsed config here (the component inventory comes from
@@ -624,7 +624,7 @@ func extractKCLEnvVars(entities *KCLEntities, serviceName string) (hostKCL, clus
 // printParityReport writes the human-readable report to w. Layout
 // mirrors the spec:
 //
-//	forge doctor parity — service "tasks", env "dev"
+//	forge project doctor parity — service "tasks", env "dev"
 //
 //	Both modes agree on N keys.
 //	  ...divergence rows...

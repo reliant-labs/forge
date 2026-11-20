@@ -163,7 +163,7 @@ var (
 // cache dir, an antivirus-quarantined kcl.dll, a KCL_LIB_HOME pointing
 // nowhere) — from inside its own sync.Once, which a panic still marks done.
 // Unrecovered, that crashed forge from whatever goroutine first touched KCL
-// (`forge doctor`'s deploy probe did). Recovered, the library's Once is spent
+// (`forge project doctor`'s deploy probe did). Recovered, the library's Once is spent
 // and its client is nil, so the failure is PERMANENT for the process: install
 // records it, and Ready reports it to every later caller instead of letting
 // them reach the nil client.

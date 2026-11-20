@@ -8,7 +8,7 @@ package codegen
 // never moves its pins. A form generated into a frontend that still declares
 // zod 3 — a new entity added after forge itself moved to zod 4 — must keep
 // compiling against that frontend's packages until its owner bumps them
-// (`forge skill load migrations/v1.8.0`), so the dialect is read from the
+// (`forge agent skill load migrations/v1.8.0`), so the dialect is read from the
 // frontend, not assumed.
 type FormDialect struct {
 	// Zod3 writes the zod 3 spellings: z.nativeEnum for an enum select and

@@ -49,7 +49,7 @@ const (
 	// registry, and does nothing else: push (and pull, which a push needs)
 	// on the org's `<org>/<project>/<frontend>-sourcemaps` repositories only.
 	// It exists for the CI job that files the maps of a bundle forge did not
-	// build (`forge frontend sourcemaps push`, the Electron renderer), which
+	// build (`forge ui sourcemaps push`, the Electron renderer), which
 	// otherwise needed deploy:write: every image in the org, every release,
 	// every gate.
 	//
@@ -58,7 +58,7 @@ const (
 	// resolves to it (Grant.Validate, Grant.Admissible). A token carrying it
 	// is admitted by the registry's token realm alone: a control plane
 	// refuses it on every RPC, so a leaked one cannot even read the org's
-	// name. That is why `forge frontend sourcemaps push --org` exists.
+	// name. That is why `forge ui sourcemaps push --org` exists.
 	//
 	// It implies nothing and nothing implies it. deploy:write already pushes
 	// to these repositories through its own rule, so no existing token gains

@@ -242,7 +242,7 @@ func adoptionWarning(kind, kctx, namespace, name string) string {
 		"forge.OpenBao serves JWT auth only, so every client still on Kubernetes or AppRole auth loses access at the cutover (a cached token works until its TTL, ~15 min; "+
 		"a client with none is locked out at once), and every release restarts every workload (service.version), so a flip shipped in a LATER release costs one outage window per client. "+
 		"Ship each consumer's JWT flip (role, audience, CA, projected token) in THIS release: the store and its JWT mount are converged before any workload is applied. "+
-		"A client you cannot flip now stays down until you do. Load the deploy/openbao skill (`forge skill load deploy/openbao`)",
+		"A client you cannot flip now stays down until you do. Load the deploy/openbao skill (`forge agent skill load deploy/openbao`)",
 		kind, namespace, name, kctx)
 }
 
@@ -405,7 +405,7 @@ func checkStoreCluster(ctx context.Context, probe StoreProbe, e StoreExpectation
 		}
 		present, err := probe.Presence(ctx, e.Context, r)
 		if err != nil {
-			add(&out.Warnings, fmt.Sprintf("could not ask the %s store whether it holds %s (%v); the deploy proceeds unverified. `forge secret list` asks it directly",
+			add(&out.Warnings, fmt.Sprintf("could not ask the %s store whether it holds %s (%v); the deploy proceeds unverified. `forge env secret list` asks it directly",
 				r.Label(), strings.Join(r.Names, ", "), err))
 			continue
 		}
@@ -417,7 +417,7 @@ func checkStoreCluster(ctx context.Context, probe StoreProbe, e StoreExpectation
 		}
 		if len(missing) > 0 {
 			add(&out.MissingStoreNames, fmt.Sprintf(
-				"the %s store holds no value for %s: an ExternalSecret reads each, so the Secret would never fill. Set each with `forge secret set <NAME>` (value on stdin), import an existing Secret with `forge secret import`, or declare it under `source.generate` to have forge mint it",
+				"the %s store holds no value for %s: an ExternalSecret reads each, so the Secret would never fill. Set each with `forge env secret set <NAME>` (value on stdin), import an existing Secret with `forge env secret import`, or declare it under `source.generate` to have forge mint it",
 				r.Label(), strings.Join(missing, ", ")))
 		}
 	}

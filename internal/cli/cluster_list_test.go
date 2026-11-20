@@ -110,7 +110,7 @@ func useFakeClusterWire(t *testing.T, f *fakeClusterWire) {
 
 func runClusterCmd(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	cmd := newClusterCmd()
+	cmd := newCloudClusterCmd()
 	var out, errOut bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)

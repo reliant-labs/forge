@@ -84,7 +84,7 @@ func TestResolveForgeInvocation(t *testing.T) {
 		"forge project":     {runs: true}, // runnable, but its Use declares no argument
 		"forge project new": leaf, "forge generate": leaf, "forge obs": group,
 		"forge obs issue": leaf, "forge obs issue resolve": leaf, // issue <id> [env] has subcommands too
-		"forge cluster": group,
+		"forge machine": group,
 	}
 	for _, c := range []struct {
 		words      string
@@ -95,7 +95,7 @@ func TestResolveForgeInvocation(t *testing.T) {
 		{"obs issue ISS-1 prod", "forge obs issue", ""},
 		{"obs issue resolve ISS-1", "forge obs issue resolve", ""},
 		{"project frontends", "forge project", "has no subcommand \"frontends\""},
-		{"cluster", "forge cluster", "is a command group"},
+		{"machine", "forge machine", "is a command group"},
 		{"obs nope", "forge obs", "has no subcommand \"nope\""},
 		{"frobnicate now", "forge", "is not a forge command"},
 	} {

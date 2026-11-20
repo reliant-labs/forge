@@ -6,7 +6,7 @@
 // XDG_CONFIG_HOME is the OS convention; neither is an app's configuration, so
 // no typed config object can carry them. Every CLI used to read the two
 // variables itself and fill Dirs by hand — the same three lines in `forge
-// login` and in each consumer, which is how two tools end up disagreeing about
+// cloud login` and in each consumer, which is how two tools end up disagreeing about
 // where one file is. DirsFromEnv is those three lines, once.
 //
 // pkg/.golangci.yml exempts exactly this file from the os.Getenv rule.
@@ -27,7 +27,7 @@ const (
 )
 
 // DirsFromEnv returns the Dirs this process's environment names: $FORGE_HOME,
-// $XDG_CONFIG_HOME and the user's home directory. It is how `forge login`
+// $XDG_CONFIG_HOME and the user's home directory. It is how `forge cloud login`
 // locates the file, so a consumer that calls it shares the file with forge by
 // construction.
 //

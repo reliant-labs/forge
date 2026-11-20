@@ -55,7 +55,7 @@ func (s *Service) Echo(
 }
 `
 
-// TestE2EDebugEnvUpAttachAndStart is the owner-visible `forge debug` flow
+// TestE2EDebugEnvUpAttachAndStart is the owner-visible `forge dev debug` flow
 // against a scaffolded project brought up by `forge env up dev`:
 //
 //   - attach to the running api (air-built, so -trimpath'd): break on an rpc
@@ -130,7 +130,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	t.Cleanup(func() {
 		// Whatever the test left: a debug session first (it may hold the api
 		// halted), then the stack.
-		_, _ = run(project, time.Minute, "debug", "stop")
+		_, _ = run(project, time.Minute, "dev", "debug", "stop")
 		if out, err := run(project, 2*time.Minute, "env", "down", "dev"); err != nil {
 			t.Errorf("cleanup own dev stack: %v\n%s", err, out)
 		}
@@ -206,24 +206,24 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	waitEcho(apiPort)
 
 	// --- attach to env up's api -------------------------------------------
-	out := must(project, "debug", "start", "--attach", strconv.Itoa(apiPID), "--run")
+	out := must(project, "dev", "debug", "start", "--attach", strconv.Itoa(apiPID), "--run")
 	mustContain(out, "Target is RUNNING", "attach")
 	waitEcho(apiPort) // attached, and still serving
 
-	mustContain(must(project, "debug", "break", "Echo"), "internal/handlers/tasks.(*Service).Echo", "break by short name")
-	mustContain(must(project, "debug", "break", fmt.Sprintf("internal/handlers/tasks/rpc_echo.go:%d", returnLine)), fmt.Sprintf("rpc_echo.go:%d", returnLine), "break by file:line on a -trimpath binary")
+	mustContain(must(project, "dev", "debug", "break", "Echo"), "internal/handlers/tasks.(*Service).Echo", "break by short name")
+	mustContain(must(project, "dev", "debug", "break", fmt.Sprintf("internal/handlers/tasks/rpc_echo.go:%d", returnLine)), fmt.Sprintf("rpc_echo.go:%d", returnLine), "break by file:line on a -trimpath binary")
 
 	pending := echoAsync(apiPort, "dbg")
-	out = must(project, "debug", "continue", "--timeout", "90s")
+	out = must(project, "dev", "debug", "continue", "--timeout", "90s")
 	mustContain(out, "Reason: breakpoint", "continue to the rpc entry")
 	mustContain(out, "Echo", "continue to the rpc entry")
-	mustContain(must(project, "debug", "eval", "req.Msg.Text"), "dbg", "eval request field")
-	out = must(project, "debug", "continue", "--timeout", "90s")
+	mustContain(must(project, "dev", "debug", "eval", "req.Msg.Text"), "dbg", "eval request field")
+	out = must(project, "dev", "debug", "continue", "--timeout", "90s")
 	mustContain(out, fmt.Sprintf("rpc_echo.go:%d", returnLine), "continue to the line breakpoint")
-	mustContain(must(project, "debug", "eval", "reply"), "echo: dbg", "eval local")
+	mustContain(must(project, "dev", "debug", "eval", "reply"), "echo: dbg", "eval local")
 
 	// Stop with both breakpoints set and the api halted on one.
-	mustContain(must(project, "debug", "stop"), "detached", "stop an attach session")
+	mustContain(must(project, "dev", "debug", "stop"), "detached", "stop an attach session")
 	select {
 	case r := <-pending:
 		if r.err != nil || !strings.Contains(r.body, "echo: dbg") {
@@ -243,16 +243,16 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 
 	// --- start a debug build with env dev's configuration ----------------
 	appPort := freePortE2E(t)
-	out = must(project, "debug", "start", "api", "--run", "--app-port", strconv.Itoa(appPort))
+	out = must(project, "dev", "debug", "start", "api", "--run", "--app-port", strconv.Itoa(appPort))
 	mustContain(out, `workload "api" of env "dev"`, "start resolves env config")
 	mustContain(out, "Target is RUNNING", "start")
 	mustContain(out, filepath.Join(".forge", "logs", "dev", "debug_api.log"), "start names its program log")
 	waitEcho(appPort)
-	must(project, "debug", "break", "Echo")
+	must(project, "dev", "debug", "break", "Echo")
 	pending = echoAsync(appPort, "own")
-	mustContain(must(project, "debug", "continue", "--timeout", "90s"), "Reason: breakpoint", "continue on the started service")
-	mustContain(must(project, "debug", "eval", "req.Msg.Text"), "own", "eval on the started service")
-	mustContain(must(project, "debug", "stop"), "killed", "stop a started session")
+	mustContain(must(project, "dev", "debug", "continue", "--timeout", "90s"), "Reason: breakpoint", "continue on the started service")
+	mustContain(must(project, "dev", "debug", "eval", "req.Msg.Text"), "own", "eval on the started service")
+	mustContain(must(project, "dev", "debug", "stop"), "killed", "stop a started session")
 	select {
 	case <-pending:
 	case <-time.After(30 * time.Second):

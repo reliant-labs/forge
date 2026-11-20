@@ -49,7 +49,7 @@ codemods (the registry codemods the range crosses), playbooks (the codemods a
 playbook automates, connect-errors and composition-graph among them),
 vendored-contracts, generate, locks, lint. modules, templates and pin always run.
 The pin moves in the same run, so a skipped codemod is not picked up by the next
-upgrade: the phase's detail names each one to run yourself ('forge fix <name>').
+upgrade: the phase's detail names each one to run yourself ('forge lint fix <name>').
 
 Whatever is left is printed as "Still needs a person" (--json: needs_human): a
 lint error, a playbook whose old shape remains, a codemod that listed what it
@@ -234,7 +234,7 @@ func printApplicableMigrations(projectRoot, baseline string) {
 	}
 	fmt.Println("📚 Migrations this project still needs:")
 	for _, row := range rows {
-		fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
+		fmt.Printf("    - %s\n      %s\n      Load with: %s agent skill load %s\n",
 			row.Meta.SkillPath, row.Meta.Description, Name(), row.Meta.SkillPath)
 	}
 	fmt.Println()

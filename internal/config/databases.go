@@ -185,7 +185,7 @@ func ProjectDatabases(projectDir string) ([]DeclaredDatabase, error) {
 		}
 		return nil, fmt.Errorf("%w: forge.yaml declares `database.migrations` / `database.migrations_dir`, and the env declaration (deploy/kcl) declares migrations for %s\n"+
 			"fix: keep one. The env declaration is the long-term home: delete forge.yaml's database.migrations and database.migrations_dir, "+
-			"or drop `migrations` from the KCL databases (forge skill load db)", ErrDatabaseDeclaredTwice, strings.Join(names, ", "))
+			"or drop `migrations` from the KCL databases (forge agent skill load db)", ErrDatabaseDeclaredTwice, strings.Join(names, ", "))
 	}
 	out := append([]DeclaredDatabase(nil), declared...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })

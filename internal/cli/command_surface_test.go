@@ -22,8 +22,9 @@ import (
 //
 // Adding is free: a new command or flag passes without touching the file.
 // Record it with -update-command-surface, which only ever ADDS lines and
-// flags, so it cannot paper over a removal. Moving a command to a new noun is
-// a row in deprecated_aliases.go; the old path stays here, and stays working.
+// flags, so it cannot paper over a removal. A removal is a breaking change:
+// it deletes its lines here by hand, beside a migration playbook that names
+// the replacement (v1.9.0 removed the old top-level spellings that way).
 //
 // Because adding is free, main's file can lag the tree, and a bare
 // -update-command-surface then records every command other changes shipped
@@ -238,7 +239,7 @@ func TestCommandSurfaceIsStable(t *testing.T) {
 		want := frozen[p]
 		cmd := resolveSurfacePath(root, p)
 		if cmd == nil {
-			t.Errorf("`%s` no longer resolves to a command. It is v1 surface: keep it working (move it with a row in deprecated_aliases.go, never by deleting it)", p)
+			t.Errorf("`%s` no longer resolves to a command. It is v1 surface: keep it working (a removal deletes its line here by hand, with a migration playbook naming the replacement)", p)
 			continue
 		}
 		if !want.group && !cmd.Runnable() {

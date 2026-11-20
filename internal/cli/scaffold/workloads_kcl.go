@@ -189,7 +189,7 @@ func clusterNeededNotice(name, kind string, envFiles []string) string {
 		"   It is bound to a cluster you operate, `_on_cluster(wl.%s)`, in %s —\n"+
 		"   and `forge env render` refuses those envs until you declare `_cluster` there\n"+
 		"   (its kubectl context, namespace and platform, registered once with\n"+
-		"   `forge cluster connect`; the file shows the shape).\n"+
+		"   `forge cloud cluster connect`; the file shows the shape).\n"+
 		"   Not running one? Drop the line from that env.\n",
 		kind, name, codegen.HostedRefusal(kind), naming.KCLIdentifier(name), strings.Join(envFiles, ", "))
 }

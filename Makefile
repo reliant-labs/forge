@@ -3,7 +3,7 @@
 # Most day-to-day work goes through `go test ./...` and `go build`. This
 # Makefile collects the few orchestrated checks that don't fit there —
 # notably the real-k3d ingress smoke that drives a freshly-scaffolded
-# project through `forge cluster up` + Traefik + curl.
+# project through `forge dev cluster up` + Traefik + curl.
 
 .PHONY: e2e-ingress test build dev help
 

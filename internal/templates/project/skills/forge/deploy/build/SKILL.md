@@ -12,7 +12,7 @@ forge lint              # Go + proto + frontend linters; fixes formatting in pla
 forge lint --check      # report only: print the diffs, write nothing (what CI does, by itself)
 task test               # full suite
 forge ci validate-kcl   # every env renders to something applyable
-forge doctor --signal deploy   # probes, resources, Secrets, migrations
+forge project doctor --signal deploy   # probes, resources, Secrets, migrations
 ```
 
 Capacity: `deploy/hosted-capacity`.
@@ -22,8 +22,8 @@ Capacity: `deploy/hosted-capacity`.
 ```
 forge build <env>                 # what <env> declares (host workloads need no image)
 forge env build <env> --push          # and push each image to the reference its workload declares
-forge registry login <env>        # hosted: nothing to pass; -u/--password-stdin for your own
-forge registry ref <env>          # <image>@<digest> per image the last build pushed
+forge cloud registry login <env>        # hosted: nothing to pass; -u/--password-stdin for your own
+forge cloud registry ref <env>          # <image>@<digest> per image the last build pushed
 forge build <env> --plan          # resolve + preflight the build set; build nothing
 forge build --tag=<tag>           # override image tag (default: commit SHA)
 forge build --debug               # with debug symbols for Delve

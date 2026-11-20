@@ -78,7 +78,7 @@ func TestHubReconciledDeployIsNotRefusedForStoreBackedSecrets(t *testing.T) {
 		t.Fatalf("want a refusal naming raw-creds only, got %v", err)
 	}
 	// The refusal names its escapes, the store one first.
-	for _, w := range []string{"source = forge.StoreSource", "forge secret set", "forge env secrets sync prod"} {
+	for _, w := range []string{"source = forge.StoreSource", "forge env secret set", "forge env secrets sync prod"} {
 		if !strings.Contains(err.Error(), w) {
 			t.Errorf("refusal lacks escape %q:\n%v", w, err)
 		}

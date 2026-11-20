@@ -480,7 +480,7 @@ type SlotFunc func(ctx context.Context) (HeldSlot, error)
 // HeldSlot is one host slot as the scheduler uses it (*hostslot.Slot is one).
 type HeldSlot interface {
 	// Env is what the check's command inherits, so the heavy commands it
-	// runs in turn (`task test`'s `forge slot run`, verify-generated's
+	// runs in turn (`task test`'s `forge machine slot run`, verify-generated's
 	// `forge generate`) run inside this slot instead of queueing for another.
 	Env() []string
 	// SetLabel names the check holding the slot, for waiters to see.

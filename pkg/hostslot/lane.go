@@ -21,7 +21,7 @@ import (
 // do not raise it. The lane is a declaration, not something Acquire measures;
 // R bounds how many slots bulk work can lose to it, but an express holder may
 // take a bulk slot too, so a caller that runs long work express takes slots
-// from bulk work ahead of its turn. `forge slot status` flags an express
+// from bulk work ahead of its turn. `forge machine slot status` flags an express
 // holder older than ExpressOverdue.
 const (
 	LaneBulk    = "bulk"
@@ -35,7 +35,7 @@ const (
 // environment; a forge that predates lanes ignores it.
 const EnvLane = "FORGE_SLOT_LANE"
 
-// ExpressOverdue is the age past which `forge slot status` flags an express
+// ExpressOverdue is the age past which `forge machine slot status` flags an express
 // holder: the lane is for commands bounded to minutes.
 const ExpressOverdue = 15 * time.Minute
 

@@ -15,7 +15,7 @@ import (
 
 // toolPins are the tool versions this forge pins, keyed by binary name and
 // spelled exactly as the templates constants are — the strings the scaffolded
-// workflows render. It is what `forge tools pins` prints, so a CI workflow
+// workflows render. It is what `forge machine tools pins` prints, so a CI workflow
 // asks the forge it runs instead of grepping forge's source out of the module
 // cache.
 func toolPins() map[string]string {
@@ -42,7 +42,7 @@ scaffolded CI.
 
 With a tool name, print only its version — the form a CI step reads:
 
-  GOLANGCI_LINT_VERSION="$(forge tools pins golangci-lint)"
+  GOLANGCI_LINT_VERSION="$(forge machine tools pins golangci-lint)"
 
 The versions are this forge binary's, so a workflow that runs the forge its
 go.mod pins reads the matching tool pins with no second place to bump. The one
@@ -51,16 +51,16 @@ github.com/bufbuild/buf (` + "`go get -tool github.com/bufbuild/buf/cmd/buf@vX`"
 buf is that version, the one ` + "`forge generate`" + ` and ` + "`forge ci gate`" + ` run.
 
 Examples:
-  forge tools pins
-  forge tools pins golangci-lint
-  forge tools pins --json`,
+  forge machine tools pins
+  forge machine tools pins golangci-lint
+  forge machine tools pins --json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pins := toolPins()
 			if len(args) == 1 {
 				v, ok := pins[args[0]]
 				if !ok {
-					return cliutil.UserErr("forge tools pins", fmt.Sprintf("no pinned tool named %q", args[0]), "",
+					return cliutil.UserErr("forge machine tools pins", fmt.Sprintf("no pinned tool named %q", args[0]), "",
 						"one of: "+strings.Join(sortedKeys(pins), ", "))
 				}
 				if asJSON {

@@ -9,7 +9,7 @@ import (
 
 // TestDlvServerArgs pins the shape of every forge-launched dlv server: it
 // listens on loopback only (its API runs arbitrary code in the target) and
-// accepts many clients (each `forge debug` call connects and leaves).
+// accepts many clients (each `forge dev debug` call connects and leaves).
 func TestDlvServerArgs(t *testing.T) {
 	t.Parallel()
 	got := dlvServerArgs("exec", "127.0.0.1:4000", "/bin/app")

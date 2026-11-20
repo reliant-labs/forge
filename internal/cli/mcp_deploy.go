@@ -451,7 +451,7 @@ func claimNextSteps(res *claimableDeployResult) string {
 func directLLMNote(calls []string) string {
 	return fmt.Sprintf("This code calls an LLM vendor's API directly (%s). An unclaimed backend cannot reach it (no outbound "+
 		"internet). Keep provider keys on a backend, never in a static site's browser bundle. Ask your user to claim "+
-		"the deploy and set up backend billing, then sign in with forge login, store their provider key as a managed "+
+		"the deploy and set up backend billing, then sign in with forge cloud login, store their provider key as a managed "+
 		"secret, wire it into the backend and redeploy without --claimable. Verify an actual model request server-side; "+
 		"a healthy rollout alone does not prove LLM access. Alternatively configure the hosted gateway with forge.LLM "+
 		"and forge.llm_env(), but do not assume an unclaimed gateway route is enabled: missing credentials must "+

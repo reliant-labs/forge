@@ -60,7 +60,7 @@ func TestReadK3dClusterName_EmptyMetadataName(t *testing.T) {
 // (status/logs/info/urls/instances).
 //
 // port-forward is intentionally absent — the Gateway API ingress path
-// (`forge cluster urls`) is the canonical host-to-service entry point.
+// (`forge dev cluster urls`) is the canonical host-to-service entry point.
 // See the comment block at the top of dev.go.
 func TestNewClusterCmd_Subtree(t *testing.T) {
 	cmd := newClusterCmd()

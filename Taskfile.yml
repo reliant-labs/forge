@@ -194,7 +194,7 @@ tasks:
     #   PR=<n> task ci              also read pull request n's labels and body (apigate)
     #   CI_SKIP=pre-commit task ci  waive a step that cannot run here (still listed)
     #
-    # It is a heavy command: run it in a host slot (`reliant forge slot run --
+    # It is a heavy command: run it in a host slot (`reliant forge machine slot run --
     # task ci`, or the harness's heavy flag). Contributors verify with
     # `task test:short -- <their packages>` instead.
     desc: "The pre-merge gate (ci.yml's merge tier, locally, ~5 min): task ci [-- BASE]"
@@ -207,7 +207,7 @@ tasks:
     # tests are t.Parallel and share one forge build, so wall-clock is
     # roughly the slowest fixture — still tens of minutes: run it in the
     # background. It needs the toolchain CI installs (go, node/npm, buf,
-    # kcl, golangci-lint, the codegen plugins from `forge tools install`,
+    # kcl, golangci-lint, the codegen plugins from `forge machine tools install`,
     # docker); a missing tool skips its tests here and fails them in CI
     # (FORGE_E2E_REQUIRE_TOOLS=1 makes it fail here too).
     #

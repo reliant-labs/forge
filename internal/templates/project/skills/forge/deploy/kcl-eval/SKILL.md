@@ -1,6 +1,6 @@
 ---
 name: deploy/kcl-eval
-description: Read a VALUE out of a project's KCL from a script or a Go test — `forge kcl eval <file> -S <path>`, why a plain `kcl run` cannot resolve `import forge` by design, and the pkg/kcleval Go API.
+description: Read a VALUE out of a project's KCL from a script or a Go test — `forge env kcl eval <file> -S <path>`, why a plain `kcl run` cannot resolve `import forge` by design, and the pkg/kcleval Go API.
 ---
 
 # Reading values out of project KCL
@@ -12,10 +12,10 @@ constants in library files — the node-pool inputs a build script needs, the
 cluster each env's daemon pods land in, a vendored chart's pinned version — and
 those are read by scripts and tests, never deployed.
 
-**`forge kcl eval` is THE way anything outside forge reads one of those values.**
+**`forge env kcl eval` is THE way anything outside forge reads one of those values.**
 
 ```bash
-forge kcl eval <file> [-S <path>]... [--format json|yaml|raw] [-D k=v]...
+forge env kcl eval <file> [-S <path>]... [--format json|yaml|raw] [-D k=v]...
 ```
 
 ## A plain `kcl run` cannot do this, by design
@@ -43,12 +43,12 @@ runtime.
 `$(...)` captures exactly the value:
 
 ```bash
-IMAGE_FAMILY="$(forge kcl eval deploy/kcl/lib/kata_pool.k -S sbd.image_family --format raw)"
-DISK_GB="$(forge kcl eval deploy/kcl/lib/kata_pool.k -S sbd.disk_size_gb --format raw)"
-CTX="$(forge kcl eval deploy/kcl/lib/placement.k -S placement.prod.context --format raw)"
+IMAGE_FAMILY="$(forge env kcl eval deploy/kcl/lib/kata_pool.k -S sbd.image_family --format raw)"
+DISK_GB="$(forge env kcl eval deploy/kcl/lib/kata_pool.k -S sbd.disk_size_gb --format raw)"
+CTX="$(forge env kcl eval deploy/kcl/lib/placement.k -S placement.prod.context --format raw)"
 
 # A composite goes to a file or through jq as JSON:
-forge kcl eval deploy/kcl/lib/platform.k -S chart.values > values.json
+forge env kcl eval deploy/kcl/lib/platform.k -S chart.values > values.json
 ```
 
 This replaces `kcl run -S <field> | tr -d "\n'\""`. That pipeline existed
@@ -60,7 +60,7 @@ one came back silently corrupted.
 
 Four things `kcl eval` does that `kcl run -S` does not:
 
-| | `kcl run -S` | `forge kcl eval -S` |
+| | `kcl run -S` | `forge env kcl eval -S` |
 |---|---|---|
 | a selected **list** | one YAML document per element — unusable without knowing the count | one list |
 | a **missing** field | empty output, which a caller reads as a legitimately empty value | an error naming the fields the document does have |
@@ -78,7 +78,7 @@ Repeat `-S` to pull several fields at once; the result is an object keyed by
 selector:
 
 ```bash
-forge kcl eval deploy/kcl/lib/platform.k -S chart.name -S chart.namespace
+forge env kcl eval deploy/kcl/lib/platform.k -S chart.name -S chart.namespace
 ```
 
 ## From a Go test
@@ -117,6 +117,6 @@ CI, which installs it, fails.
   not: KCL evaluates `file.write` itself, so a file that generates a file still
   writes it — reported on stderr.
 - **stdout carries only the value.** Every diagnostic goes to stderr, so
-  `V="$(forge kcl eval … --format raw)"` is safe.
+  `V="$(forge env kcl eval … --format raw)"` is safe.
 - **One file, its own values.** To evaluate an *environment* into Kubernetes
   objects, that is `forge env render <env>`.

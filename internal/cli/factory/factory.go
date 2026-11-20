@@ -130,7 +130,7 @@ var auditAPI AuditAPI
 // init() so it is set before any Factory is built.
 func SetAuditAPI(a AuditAPI) { auditAPI = a }
 
-// DebugAPI is what `forge debug start` needs from internal/cli: a local
+// DebugAPI is what `forge dev debug start` needs from internal/cli: a local
 // workload's configuration, resolved exactly as `forge env exec` resolves it.
 type DebugAPI struct {
 	// WorkloadEnv returns base with the declared configuration of the local
@@ -212,7 +212,7 @@ type GenAPI struct {
 	// the certification chokepoint and needs the project's ownership state.
 	WriteScenariosIndex func(root, scenariosRel string, cs *generator.FileChecksums) error
 
-	// RunPackageNew is the `forge package new` RunE, reused verbatim by
+	// RunPackageNew is the `forge scaffold package` RunE, reused verbatim by
 	// `scaffold package` and `scaffold adapter` (which pre-sets --type).
 	RunPackageNew func(cmd *cobra.Command, args []string) error
 }

@@ -52,7 +52,7 @@ github.com/cyphar/filepath-securejoin  # BSD-3-Clause AND MPL-2.0; we link only 
 
 # --- Composite LICENSE file ---
 #
-# The MCP Go SDK (forge mcp) is mid-relicense from MIT to Apache-2.0, and its
+# The MCP Go SDK (forge agent mcp) is mid-relicense from MIT to Apache-2.0, and its
 # LICENSE file says so: new code and relicensed contributions are Apache-2.0,
 # the rest stays MIT, and only DOCUMENTATION contributions (excluding the
 # specification) are CC-BY-4.0. The classifier trips on the "Creative Commons"

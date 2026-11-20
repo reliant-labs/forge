@@ -257,7 +257,7 @@ context instead.
 
 Both use the same cache and explicit local overrides as frontends. Per-workload
 contexts still replace (not merge with) the project defaults. Resolving code
-never rewrites a declaration into a machine-local path. `forge doctor --verbose`
+never rewrites a declaration into a machine-local path. `forge project doctor --verbose`
 reports pins versus filesystem/BuildKit references across environments without
 fetching any sources.
 
@@ -270,7 +270,7 @@ infra = { repo = "github.com/acme/infra", ref = "v1.4.0", commit = "8f2c1e0b9d4a
 ```
 
 It resolves through the same cache and override file, so a render offline
-needs only an earlier fetch (`forge kcl imports` fetches every pin;
+needs only an earlier fetch (`forge env kcl imports` fetches every pin;
 `--refresh` re-fetches). `commit` is the optional lock: a ref resolving to any
 other commit is refused as a pin mismatch, and a full-sha `ref` is its own
 lock. A release refuses to cut while such an import is overridden. The

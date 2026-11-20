@@ -7,7 +7,7 @@ package cli
 // applies every Kustomization as a ServiceAccount, never as itself. #441
 // shipped that path with the controller's `default` account and every apply
 // failed Forbidden on the Namespaces and CRDs the bundle carried, so it
-// shipped the lockdown off instead. The fix is the one `forge cluster connect` already
+// shipped the lockdown off instead. The fix is the one `forge cloud cluster connect` already
 // uses (cluster_connect_scope.go): THE RENDER CHOOSES THE KINDS. One rule per
 // (apiGroup, resource) the trees apply, nothing else, so a release that adds a
 // kind is Forbidden until the bootstrap re-derives the grant.

@@ -32,7 +32,7 @@ Name the workload, never the hostname:
 
 Unknown names are refused at load; off hosting, so is a URL forge cannot know at render time (a host service without `listen_ports`).
 
-A hosted site's own hostname is not a field: `forge domain add` (see `deploy`).
+A hosted site's own hostname is not a field: `forge cloud domain add` (see `deploy`).
 
 The backend half uses the same reference. A workload's `CORS_ORIGINS` names the site, not its URL:
 

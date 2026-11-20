@@ -16,14 +16,14 @@ For an agent, register the MCP server and call its `benefits` tool: what applies
 to the repo, with the first step and the agent time to each.
 
 ```sh
-claude mcp add forge -- npx -y @reliantlabs/forge mcp
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp
 npx @reliantlabs/forge project benefits   # the same list, in a terminal
 ```
 
 Monitoring and releases in your Reliant account are also a hosted MCP connector
 with nothing to install: add `https://api.reliantapi.com/forge/mcp` as a custom
 connector (claude.ai, Claude Desktop, ChatGPT, VS Code, Cursor) and sign in.
-`npx @reliantlabs/forge skill load connect` has the steps for each client and
+`npx @reliantlabs/forge agent skill load connect` has the steps for each client and
 says which tools live where.
 
 As a CLI:

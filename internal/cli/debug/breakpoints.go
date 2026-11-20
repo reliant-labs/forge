@@ -41,12 +41,12 @@ Setting a breakpoint on a running target halts it for the instant it takes,
 then lets it run on.
 
 Examples:
-  forge debug break handler.go:42
-  forge debug break main.handleRequest
-  forge debug break runtime.gopark
-  forge debug break '(*Server).Serve'
-  forge debug break --func main.handleRequest
-  forge debug break handler.go:42 --cond "id > 5"`,
+  forge dev debug break handler.go:42
+  forge dev debug break main.handleRequest
+  forge dev debug break runtime.gopark
+  forge dev debug break '(*Server).Serve'
+  forge dev debug break --func main.handleRequest
+  forge dev debug break handler.go:42 --cond "id > 5"`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDebugBreak(args, funcName, condition, jsonOutput)
@@ -69,7 +69,7 @@ func runDebugBreak(args []string, funcName, condition string, jsonOutput bool) e
 	//                                 runtime.gopark, (*T).Method, ...)
 	// Delve natively resolves function specs via its location parser; the
 	// wrapper used to reject everything that wasn't file:line, which made
-	// `forge debug break runtime.gopark` impossible.
+	// `forge dev debug break runtime.gopark` impossible.
 	spec := funcName
 	asFunc := funcName != ""
 	if spec == "" {

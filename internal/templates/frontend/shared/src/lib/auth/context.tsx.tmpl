@@ -9,7 +9,7 @@
 // The app's auth state, read from this app's API (GET /auth/session; the cookie is HttpOnly, so no
 // token is reachable here). The Identity decides what to SHOW, never what is ALLOWED. MOCK_API set:
 // the identity is the fixture user and no request is sent; in hybrid it is UI-only, never a
-// credential. Depth: `forge skill load auth/frontend`.
+// credential. Depth: `forge agent skill load auth/frontend`.
 {{- end}}
 // useAuth() lives in ./use-auth (so Fast Refresh can hot-swap this provider): import it from there.
 

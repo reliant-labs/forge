@@ -1,13 +1,13 @@
 # Reporting a forge bug
 
-**forge sends nothing unless someone runs `forge report-bug`.** There is no automatic crash
+**forge sends nothing unless someone runs `forge agent report-bug`.** There is no automatic crash
 reporting, no usage telemetry and no background sending. Nothing on this page happens
 on its own.
 
 ## Filing a report
 
 ```bash
-forge report-bug --severity high \
+forge agent report-bug --severity high \
   --title "forge generate drops optional fields from list filters" \
   --actual "ListTasksRequest.status is missing from the generated filter" \
   --evidence "forge generate on proto/services/tasks/v1/tasks.proto"
@@ -17,7 +17,7 @@ or the same fields as one JSON object on stdin:
 
 ```bash
 echo '{"severity":"low","title":"typo in forge lint --help","actual":"receive"}' \
-  | forge report-bug --json
+  | forge agent report-bug --json
 ```
 
 | field      | required          | what goes in it                                                                                                                  |
@@ -58,7 +58,7 @@ One HTTPS request, `POST https://admin.reliantapi.com/controlplane.v1.ForgeRepor
 | `client.harness`                                                 | the agent harness forge detected (`reliant`, `claude`, `codex`, `cursor`), empty for a person at a terminal. Detected from whether the harness's marker variable is set; the variable's value is not sent                       |
 | `client.installId`                                               | a random UUID minted the first time you file a report and kept in `report-bug.json` in forge's config directory; the ingest rate-limits by it. It is not derived from your machine or account; delete the file to get a new one |
 
-When you are logged in (`forge login`) and do not pass `--anonymous`, the request also
+When you are logged in (`forge cloud login`) and do not pass `--anonymous`, the request also
 carries your login as a bearer token, and the report records your user and organization
 id so the team can follow up. A token the server cannot validate is ignored.
 

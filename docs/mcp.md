@@ -1,6 +1,6 @@
 # Forge as an MCP server
 
-`forge mcp` serves forge over the [Model Context Protocol](https://modelcontextprotocol.io)
+`forge agent mcp` serves forge over the [Model Context Protocol](https://modelcontextprotocol.io)
 on stdio, so any MCP-capable harness (Claude Code, Codex, Cursor, ...) can use
 forge in **any repo**, with no memory file explaining how. The server introduces
 itself as Reliant Forge (not Atlassian Forge, not Foundry's `forge`), then says
@@ -15,7 +15,7 @@ binary to shell out to and nothing to keep in sync with the CLI.
 Most of what forge offers works on the app as it is: forge need not build or
 deploy it. In an existing app, in any language, the server leads with:
 
-- **Monitoring.** After `forge login`, `forge obs init <env>…` (one or more
+- **Monitoring.** After `forge cloud login`, `forge obs init <env>…` (one or more
   envs) declares each env in its env document (`deploy/envs/<env>.yaml`),
   registers it, mints an ingest token per env and prints its
   `OTEL_*` variables. Set them where
@@ -76,12 +76,12 @@ adopts it; the rest are for any repo.
 | `libraries` (`packages`)                                         | `forge project libraries [pkg...]`                            | no                                                                                                                               |
 | `audit`, _codegen_                                               | `forge project audit --json`                                  | no                                                                                                                               |
 | `shapes` (`grep`, `kind`, `service`, `unimplemented`), _codegen_ | `forge project shapes`                                        | no                                                                                                                               |
-| `skill_list` (`group`, `all`, `include_migrations`)              | `forge skill list`                                            | no                                                                                                                               |
-| `skill_search` (`query`)                                         | `forge skill search`                                          | no                                                                                                                               |
-| `skill_load` (`name`)                                            | `forge skill load`                                            | no                                                                                                                               |
+| `skill_list` (`group`, `all`, `include_migrations`)              | `forge agent skill list`                                      | no                                                                                                                               |
+| `skill_search` (`query`)                                         | `forge agent skill search`                                    | no                                                                                                                               |
+| `skill_load` (`name`)                                            | `forge agent skill load`                                      | no                                                                                                                               |
 | `lint` (`scope`)                                                 | `forge lint --quiet [--scope PATH]...`                        | caches only; never `--fix`                                                                                                       |
 | `generate` (`dry_run`, `check`), _codegen_                       | `forge generate [--dry-run \| --check]`                       | yes: generated files                                                                                                             |
-| `report_bug` (`severity`, `title`, `summary`, ...)               | `forge report-bug`                                            | sends one report ([docs/report-bug.md](report-bug.md))                                                                           |
+| `report_bug` (`severity`, `title`, `summary`, ...)               | `forge agent report-bug`                                      | sends one report ([docs/report-bug.md](report-bug.md))                                                                           |
 | `deploy_claimable` (`env`, `name`, `no_wait`)                    | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app, or an app with its own Dockerfile, with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
 | `deploy_status` (`env`)                                          | `forge env status <env> --claimable --json`                   | no                                                                                                                               |
 | `explain_error` (`exit_code`, `error_reason`, `error`, `env`)    | none: maps forge's exit codes and reasons to the next command | no                                                                                                                               |
@@ -155,7 +155,7 @@ crash startup. See the [recovery guide](https://docs.reliantlabs.io/forge/deploy
 ### With no install: npx
 
 ```bash
-claude mcp add forge -- npx -y @reliantlabs/forge mcp
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp
 ```
 
 `@reliantlabs/forge` is a thin npm shim: on first run it downloads the forge
@@ -167,7 +167,10 @@ Any harness config takes the same command:
 ```json
 {
   "mcpServers": {
-    "forge": { "command": "npx", "args": ["-y", "@reliantlabs/forge", "mcp"] }
+    "forge": {
+      "command": "npx",
+      "args": ["-y", "@reliantlabs/forge", "agent", "mcp"]
+    }
   }
 }
 ```
@@ -182,7 +185,7 @@ once npm serves the new version (`docs/releasing.md`, "Installers").
 ### With Docker
 
 `Dockerfile.mcp` builds the forge binary from source into a small image whose
-entrypoint is `forge mcp`. Mount the project at `/workspace`, where the server
+entrypoint is `forge agent mcp`. Mount the project at `/workspace`, where the server
 starts:
 
 ```bash
@@ -208,13 +211,13 @@ forge; introspection, the skill catalog and `deploy_claimable` work as is.
 ### With forge installed
 
 Put `forge` on your `PATH` (`go install github.com/reliant-labs/forge/cmd/forge@<version>`),
-then register `forge mcp` with your harness. Start the harness in the project
+then register `forge agent mcp` with your harness. Start the harness in the project
 directory, or pass `dir` per call.
 
 ### Claude Code
 
 ```bash
-claude mcp add forge -- forge mcp
+claude mcp add forge -- forge agent mcp
 ```
 
 Everything after `--` is the server command. Add `--scope project` to write it
@@ -223,7 +226,7 @@ to a committed `.mcp.json` instead of your local config:
 ```json
 {
   "mcpServers": {
-    "forge": { "command": "forge", "args": ["mcp"] }
+    "forge": { "command": "forge", "args": ["agent", "mcp"] }
   }
 }
 ```
@@ -231,7 +234,7 @@ to a committed `.mcp.json` instead of your local config:
 ### Codex
 
 ```bash
-codex mcp add forge -- forge mcp
+codex mcp add forge -- forge agent mcp
 ```
 
 or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
@@ -239,7 +242,7 @@ or in `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`):
 ```toml
 [mcp_servers.forge]
 command = "forge"
-args = ["mcp"]
+args = ["agent", "mcp"]
 ```
 
 ### Cursor
@@ -251,7 +254,7 @@ args = ["mcp"]
   "mcpServers": {
     "forge": {
       "command": "forge",
-      "args": ["mcp"]
+      "args": ["agent", "mcp"]
     }
   }
 }
@@ -262,7 +265,7 @@ args = ["mcp"]
 ## Under `reliant`
 
 When forge is embedded, register the embedding binary's subcommand instead:
-`claude mcp add forge -- reliant forge mcp`.
+`claude mcp add forge -- reliant forge agent mcp`.
 
 ## The hosted connector: Reliant Forge
 
@@ -299,6 +302,6 @@ only `dir`. The hosted catalog tools serve the skills built into forge, with
 commands written for `forge`. Repo tools (`lint`, `generate`, `shapes`, `audit`,
 …) stay local: they need the repo.
 
-`forge skill load connect` has the setup for each client (Claude, ChatGPT,
+`forge agent skill load connect` has the setup for each client (Claude, ChatGPT,
 VS Code, Cursor, Goose, Codex, Reliant). A host embeds the same tools with
 `github.com/reliant-labs/forge/cli.AddHostedTools`.

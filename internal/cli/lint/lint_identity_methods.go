@@ -236,7 +236,7 @@ func collectIdentityMethodsJSON(root string) ([]lintJSONFinding, error) {
 				"; the declaration is converged and silently ignored by the sign-in screen",
 			FixHint: "serve it from internal/app/login_broker.go: move the file aside, run `forge generate` to scaffold the current broker " +
 				"(it mounts each declared method through devidp.SignInRoutes in mountSignInMethods), and port your edits onto it " +
-				"(`forge skill load auth/frontend`); or drop the declaration",
+				"(`forge agent skill load auth/frontend`); or drop the declaration",
 		})
 	}
 	return out, nil

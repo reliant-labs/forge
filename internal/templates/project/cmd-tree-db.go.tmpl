@@ -2,7 +2,7 @@
 // Migration POLICY, yours to change: `up` refuses a dirty schema (`force` is the way out, run from
 // this image), and there is deliberately no `down` — forge rolls forward with a new migration.
 // It applies the SQL embedded in this binary (db/source_gen.go), so the image migrates itself;
-// the mechanics live in forge/pkg/migratekit. Depth: `forge skill load db/deploy-migrations`.
+// the mechanics live in forge/pkg/migratekit. Depth: `forge agent skill load db/deploy-migrations`.
 package cmd
 
 import (

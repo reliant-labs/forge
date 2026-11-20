@@ -12,7 +12,7 @@ import (
 // the library components they import, in jsdom with real React event
 // delegation: the event-ordering behaviour (portals, capture handlers, native
 // document listeners) that a source-string guard cannot prove. Each suite is
-// laid out next to its components exactly as `forge component install` does.
+// laid out next to its components exactly as `forge ui component install` does.
 func TestComponentBehaviour(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short: installs react, vitest and jsdom with npm; runs in the full tier")

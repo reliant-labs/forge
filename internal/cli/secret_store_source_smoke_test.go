@@ -9,7 +9,7 @@ package cli
 // proves the copy: it applies the policy and role the OpenBao component's
 // converge Job creates (pkg/deploy/openbao, BuildAccess), signs in with a JWT
 // the way a minted service-account token would, and runs set / import / list
-// through the same code a person's `forge secret` runs. What it settles that
+// through the same code a person's `forge env secret` runs. What it settles that
 // the fake cannot:
 //
 //   - the writer role accepts the login the CLI sends (role, audience, subject);

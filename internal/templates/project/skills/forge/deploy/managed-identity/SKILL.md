@@ -69,7 +69,7 @@ IDENTITY = forge.ManagedIdentity {
 - **Owners** are created email-verified, granted `owner_role` and invited once while they have no credential. Removing one revokes nothing, so `owner_role` (default `owner`) must be a declared role with `members_from = "console"`.
 - **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
 - **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
-- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
+- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge env secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
 - **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
 
 | | hosted | dev (`IdentityOnHost`) |
@@ -111,14 +111,14 @@ A hosted env that declares `forge.ManagedIdentity` gets one line in `forge env s
 
 ### Who may call it
 
-The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, the declared token env var, the stored `forge login`, then the host session helper (under Reliant, no extra login is needed). The org comes from the authenticated control plane and the env id is looked up by exact project/name; there is no org override.
+The endpoint comes from that env's `ControlPlane` KCL. Credentials use the usual precedence: `--token`, the declared token env var, the stored `forge cloud login`, then the host session helper (under Reliant, no extra login is needed). The org comes from the authenticated control plane and the env id is looked up by exact project/name; there is no org override.
 
 | what | needs |
 |---|---|
 | `status`, `users` | the `identity:read` scope |
 | every verb that changes a user (`invite`, `set-roles`, `reset`, `lock`, `unlock`, `delete`, `revoke-sessions`), `export`, and any `--return-code` | `identity:manage` (implies read), held by an **org admin** |
 
-A person's session is checked against their org role and their identity grants (owners and admins hold both scopes). A **machine credential** (an org access token, a Reliant agent's session token) is accepted when it is scoped to the org and carries the scope; a `--return-code` from one also needs its acting user to still hold the `identity:manage` grant. A Reliant session or a `forge login` credential does not carry the identity scopes itself: when the control plane answers that one is missing, forge exchanges the credential for exactly that scope (`AccessTokenService/ExchangeToken`, for an hour, in memory only, and only while the person behind it holds the grant) and retries. A `--token` or the token env var is used exactly as given and must already carry the scope.
+A person's session is checked against their org role and their identity grants (owners and admins hold both scopes). A **machine credential** (an org access token, a Reliant agent's session token) is accepted when it is scoped to the org and carries the scope; a `--return-code` from one also needs its acting user to still hold the `identity:manage` grant. A Reliant session or a `forge cloud login` credential does not carry the identity scopes itself: when the control plane answers that one is missing, forge exchanges the credential for exactly that scope (`AccessTokenService/ExchangeToken`, for an hour, in memory only, and only while the person behind it holds the grant) and retries. A `--token` or the token env var is used exactly as given and must already carry the scope.
 
 `status` reports the current state even while provisioning or refused. Every verb fails closed on an identity that is not ready, an unknown role, a declared/read-only role or a missing scope: fix the reported cause; do not bypass it with an internal reconciler credential.
 
@@ -175,11 +175,11 @@ The consumer's typed config fields are filled; the env var is the upper-cased fi
 - `omit = ["scopes", "roles_claim", "login_uri", "jwks", "login_policy"]` declines outputs the app's config has no field for. Without it every standard output is projected under its standard name, as env nothing reads. Only those five may be omitted: issuer, audience and the native-broker outputs define the identity (use `deliver_only` to project none). An output cannot be both mapped in `fields` and omitted, and one omitted twice is refused. The delivered Secrets still carry every key, and the shape records `omit` (absent when empty, so existing shapes hash unchanged).
 - `deliver_only = True` delivers the Secrets and projects nothing, for a workload still on its legacy config.
 
-The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY_*`; nobody sets them, and `forge secret` never asks.
+The control plane is the only writer of `forge-identity-*` and `RELIANT_IDENTITY_*`; nobody sets them, and `forge env secret` never asks.
 
 ## Derived control-plane secrets
 
-`Bundle.identity` derives `forge.ControlPlaneSecret`s you never declare (declaring an identity kind by hand is refused): kind `identity` (required), `identity_jwks` (optional) per cluster namespace that runs a hosted-identity consumer, and `identity_machine_key` per machine user. They are in `shape.control_plane_secrets` and listed in `shape.identity.deliveries`, so the existing delivery path sees them. A cluster consumer needs a connected cluster (`forge cluster connect`), refused at render otherwise.
+`Bundle.identity` derives `forge.ControlPlaneSecret`s you never declare (declaring an identity kind by hand is refused): kind `identity` (required), `identity_jwks` (optional) per cluster namespace that runs a hosted-identity consumer, and `identity_machine_key` per machine user. They are in `shape.control_plane_secrets` and listed in `shape.identity.deliveries`, so the existing delivery path sees them. A cluster consumer needs a connected cluster (`forge cloud cluster connect`), refused at render otherwise.
 
 ## What is refused
 
@@ -198,7 +198,7 @@ The primitive the projection is made of; write it yourself for an output the pro
 
 ## Dev: `forge.IdentityOnHost`
 
-`forge env up` converges the declaration on the env's host-run Zitadel (the `HostInfra` named by `infra`) with the library the control plane runs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's default instance. It writes `.forge/identity/<name>.json` (non-secret) and the env's secret store (broker token, client secrets, `<USER>_MACHINE_KEY`), under the env var each reference resolves to. A seed user's password is the store entry its `password_secret` names (`forge secret set --env dev <NAME>`). `auth/dev-loop` has the rest.
+`forge env up` converges the declaration on the env's host-run Zitadel (the `HostInfra` named by `infra`) with the library the control plane runs, authenticated by the bootstrap PAT (`idp_pat_path`), in the server's default instance. It writes `.forge/identity/<name>.json` (non-secret) and the env's secret store (broker token, client secrets, `<USER>_MACHINE_KEY`), under the env var each reference resolves to. A seed user's password is the store entry its `password_secret` names (`forge env secret set --env dev <NAME>`). `auth/dev-loop` has the rest.
 
 ## Not built yet
 

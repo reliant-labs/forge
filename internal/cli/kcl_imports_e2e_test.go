@@ -61,17 +61,17 @@ func TestE2EKCLImportsForgeProjectAtGoModPin(t *testing.T) {
 	// ── 1. directory replace: the sibling checkout ──────────────────────
 	addModuleLines(t, goMod, "require example.com/producer v0.1.0", "replace example.com/producer => ../producer")
 
-	if got := strings.TrimSpace(runCmdStdout(t, consumer, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")); got != "sibling" {
+	if got := strings.TrimSpace(runCmdStdout(t, consumer, forgeBin, "env", "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")); got != "sibling" {
 		t.Fatalf("replace: marker = %q, want the sibling checkout's", got)
 	}
 	var names []string
-	if err := json.Unmarshal([]byte(runCmdStdout(t, consumer, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "names", "--format", "json")), &names); err != nil || len(names) == 0 {
+	if err := json.Unmarshal([]byte(runCmdStdout(t, consumer, forgeBin, "env", "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "names", "--format", "json")), &names); err != nil || len(names) == 0 {
 		t.Fatalf("replace: the scaffolded producer's ALL must evaluate to its workloads; got %v (%v)", names, err)
 	}
 	var resolved []struct {
 		Name, Module, Version, Via, Dir string
 	}
-	if err := json.Unmarshal([]byte(runCmdStdout(t, consumer, forgeBin, "kcl", "imports", "--json")), &resolved); err != nil {
+	if err := json.Unmarshal([]byte(runCmdStdout(t, consumer, forgeBin, "env", "kcl", "imports", "--json")), &resolved); err != nil {
 		t.Fatal(err)
 	}
 	if len(resolved) != 1 || resolved[0].Dir != filepath.Join(producer, "deploy", "kcl") || resolved[0].Version != "" ||
@@ -103,13 +103,13 @@ func TestE2EKCLImportsForgeProjectAtGoModPin(t *testing.T) {
 		"GOFLAGS=-modcacherw", // so t.TempDir can remove the cache
 	})
 
-	out, err := runForgeEnvE2E(consumer, env, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
+	out, err := runForgeEnvE2E(consumer, env, forgeBin, "env", "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
 	if err == nil || !strings.Contains(out, "go.sum has no hash") {
 		t.Fatalf("module cache: an import go.sum cannot verify must be refused; err=%v\n%s", err, out)
 	}
 	goSum, _ := os.ReadFile(filepath.Join(consumer, "go.sum")) // absent is fine: the line is the whole file then
 	writeFileE2E(t, filepath.Join(consumer, "go.sum"), string(goSum)+"example.com/producer v0.1.0 "+zipHash+"\n")
-	out, err = runForgeEnvE2E(consumer, env, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
+	out, err = runForgeEnvE2E(consumer, env, forgeBin, "env", "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
 	if err != nil || strings.TrimSpace(lastLineE2E(out)) != "v0.1.0" {
 		t.Fatalf("module cache: marker must be the pinned version's (v0.1.0), not the sibling's; err=%v\n%s", err, out)
 	}
@@ -124,7 +124,7 @@ func TestE2EKCLImportsForgeProjectAtGoModPin(t *testing.T) {
 	}
 	addModuleLines(t, goMod, "require example.com/producer v0.1.0", "replace example.com/producer => ../producer")
 	setForgeVersionE2E(t, filepath.Join(producer, "forge.yaml"), "v0.0.1-f6-skew")
-	out, err = runForgeEnvE2E(consumer, []string{"FORGE_ALLOW_VERSION_SKEW="}, forgeBin, "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
+	out, err = runForgeEnvE2E(consumer, []string{"FORGE_ALLOW_VERSION_SKEW="}, forgeBin, "env", "kcl", "eval", "deploy/kcl/f6_probe.k", "-S", "marker", "--format", "raw")
 	if err == nil || !strings.Contains(out, "version skew") || !strings.Contains(out, "v0.0.1-f6-skew") {
 		t.Fatalf("skew: a producer pinning another forge must be refused; err=%v\n%s", err, out)
 	}

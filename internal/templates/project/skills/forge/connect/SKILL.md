@@ -1,6 +1,6 @@
 ---
 name: connect
-description: Connect an agent or chat app to forge over MCP — the local server (npx -y @reliantlabs/forge mcp) for the repo tools, and the hosted Reliant Forge connector (https://api.reliantapi.com/forge/mcp, OAuth sign-in, no install) for the account tools — with the exact steps for Claude (claude.ai, Desktop, Code), ChatGPT, VS Code, Cursor, Goose and Reliant, and which tool lives where.
+description: Connect an agent or chat app to forge over MCP — the local server (npx -y @reliantlabs/forge agent mcp) for the repo tools, and the hosted Reliant Forge connector (https://api.reliantapi.com/forge/mcp, OAuth sign-in, no install) for the account tools — with the exact steps for Claude (claude.ai, Desktop, Code), ChatGPT, VS Code, Cursor, Goose and Reliant, and which tool lives where.
 emit: both
 applies: any
 ---
@@ -12,9 +12,9 @@ each takes about two minutes and neither needs the other.
 
 | | **Local server** | **Hosted connector: "Reliant Forge"** |
 |---|---|---|
-| What it is | `forge mcp` on stdio, started by your agent | a remote MCP server Reliant runs |
-| Address | `npx -y @reliantlabs/forge mcp` (no install) | `https://api.reliantapi.com/forge/mcp` |
-| Sign-in | none (monitoring verbs it mentions use `forge login`) | OAuth: your Reliant account, in the browser |
+| What it is | `forge agent mcp` on stdio, started by your agent | a remote MCP server Reliant runs |
+| Address | `npx -y @reliantlabs/forge agent mcp` (no install) | `https://api.reliantapi.com/forge/mcp` |
+| Sign-in | none (monitoring verbs it mentions use `forge cloud login`) | OAuth: your Reliant account, in the browser |
 | Needs the repo | yes: it acts on the directory it starts in | no: phones and chat apps work |
 | Tools | the **repo** tools: `benefits`, `lint`, `generate`, `shapes`, `audit`, `capabilities`, `annotations`, `libraries`, `deploy_claimable`, `deploy_status`, `report_bug`, `explain_error`, `skill_list`, `skill_search`, `skill_load` | the **account** tools: `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_traces`, `obs_ops`, `obs_check`, `obs_changes`, `releases_list`, `release_show`, `envs_list`, `obs_init`*, `release_record`*, plus `benefits`, `explain_error`, `skill_list`, `skill_search`, `skill_load` |
 
@@ -56,7 +56,7 @@ nothing to install, and nothing on your machine holds a token.
 ### Claude Code
 
 ```bash
-claude mcp add forge -- npx -y @reliantlabs/forge mcp                                  # local
+claude mcp add forge -- npx -y @reliantlabs/forge agent mcp                                  # local
 claude mcp add --transport http reliant-forge https://api.reliantapi.com/forge/mcp     # hosted
 ```
 
@@ -102,14 +102,14 @@ Cursor shows *Needs login* on `reliant-forge`: click it to sign in.
 
 `goose configure` → *Add Extension*:
 
-- **Local**: *Command-line Extension*, command `npx -y @reliantlabs/forge mcp`;
+- **Local**: *Command-line Extension*, command `npx -y @reliantlabs/forge agent mcp`;
 - **Hosted**: *Remote Extension (Streamable HTTP)*, URL
   `https://api.reliantapi.com/forge/mcp`; Goose opens the sign-in on first use.
 
 ### Codex
 
 ```bash
-codex mcp add forge -- npx -y @reliantlabs/forge mcp
+codex mcp add forge -- npx -y @reliantlabs/forge agent mcp
 ```
 
 ### Reliant
@@ -117,7 +117,7 @@ codex mcp add forge -- npx -y @reliantlabs/forge mcp
 forge is built in: agents' shells already have `reliant forge <verb>`, signed
 in, and they load forge's skills without a server. Add the local server only if
 you want forge's tools listed as MCP tools as well: Settings → MCP Servers →
-Add Custom, transport stdio, command `reliant`, args `forge mcp`. The hosted
+Add Custom, transport stdio, command `reliant`, args `forge agent mcp`. The hosted
 connector is for clients outside Reliant.
 
 ## Check it works

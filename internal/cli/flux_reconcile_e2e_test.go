@@ -12,7 +12,7 @@ package cli
 // forge.ControlPlane applies directly, and an env that declares neither a
 // lifecycle nor an applier prints a note naming the two ways to say so.
 //
-// These tests used to pin the OPPOSITE — `forge cluster up` installing
+// These tests used to pin the OPPOSITE — `forge dev cluster up` installing
 // source- and kustomize-controller, and `forge env deploy` writing an
 // OCIRepository + Kustomization pointer that Flux converged. #461 made
 // that path unreachable from every env (it has since been deleted), and both
@@ -83,9 +83,9 @@ func TestE2EDirectApplyEnvInstallsNoFlux(t *testing.T) {
 	// ── The cluster, created by us and deleted by exact name ─────────────
 	t.Cleanup(func() { teardownFluxE2ECluster(t, clusterName, registryName) })
 
-	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "dev", "cluster", "up", "dev-k8s", "--wait")
 
-	// ── `forge cluster up` put no Flux into the deploy target ────────────
+	// ── `forge dev cluster up` put no Flux into the deploy target ────────────
 	assertNoFluxInstalled(t, kctx)
 
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
@@ -239,7 +239,7 @@ func runForgeFluxE2E(t *testing.T, projectDir, forgeBin, ledgerHome string, args
 	return string(out)
 }
 
-// assertFluxInstalled checks that `forge cluster up` put the reconciler in,
+// assertFluxInstalled checks that `forge dev cluster up` put the reconciler in,
 // and put in ONLY the two controllers this path uses.
 //
 // The negative half matters as much as the positive: helm-controller and
@@ -255,7 +255,7 @@ func assertFluxInstalled(t *testing.T, kctx string) {
 	}
 	for _, want := range []string{"source-controller", "kustomize-controller"} {
 		if !running[want] {
-			t.Errorf("flux-system has no %s Deployment; `forge cluster up` must install the reconciler, "+
+			t.Errorf("flux-system has no %s Deployment; `forge dev cluster up` must install the reconciler, "+
 				"or a pointer written at it converges nothing. Present: %v", want, running)
 		}
 	}
@@ -276,7 +276,7 @@ func assertFluxInstalled(t *testing.T, kctx string) {
 	}
 }
 
-// assertNoFluxInstalled is the cluster-level half of #461: `forge cluster up`
+// assertNoFluxInstalled is the cluster-level half of #461: `forge dev cluster up`
 // on an env that declares no Flux chart leaves no Flux behind — no
 // flux-system controllers and no Flux CRDs. Only the cluster can
 // show that nothing installed it.
@@ -493,7 +493,7 @@ func writeFluxE2EFile(t *testing.T, path, content string) {
 }
 
 // TestE2EClusterUpInstallsADeclaredFluxChart: an env that DECLARES
-// `forge.flux_chart()` gets that Flux from `forge cluster up`. forge's own
+// `forge.flux_chart()` gets that Flux from `forge dev cluster up`. forge's own
 // install steps aside for a declared one, so before the platform phase nothing
 // installed it and the first pointer write failed on `no matches for kind
 // OCIRepository`.
@@ -523,7 +523,7 @@ func TestE2EClusterUpInstallsADeclaredFluxChart(t *testing.T) {
 
 	t.Cleanup(func() { teardownFluxE2ECluster(t, clusterName, registryName) })
 
-	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "dev", "cluster", "up", "dev-k8s", "--wait")
 	assertFluxInstalled(t, kctx)
 }
 
@@ -588,7 +588,7 @@ func TestE2EDirectApplySecretsLandAndStayOutOfTheBundle(t *testing.T) {
 	// its own to fall back on: commit the Secrets edit too.
 	commitFluxE2EFixture(t, projectDir)
 
-	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "cluster", "up", "dev-k8s", "--wait")
+	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "dev", "cluster", "up", "dev-k8s", "--wait")
 	runForgeFluxE2E(t, projectDir, forgeBin, ledgerHome, "env", "build", "dev-k8s", "--push")
 
 	// ── Previews never print a value ─────────────────────────────────────

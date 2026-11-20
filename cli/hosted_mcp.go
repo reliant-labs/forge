@@ -9,7 +9,7 @@ import (
 // The hosted MCP seam: forge's account-scoped tools (monitoring, releases,
 // envs) and its catalog tools (skills, benefits, explain_error), for a remote
 // MCP server that serves them to a signed-in person with no install. Reliant
-// mounts them as the "Reliant Forge" connector. The local `forge mcp` keeps
+// mounts them as the "Reliant Forge" connector. The local `forge agent mcp` keeps
 // the repo tools; a tool both serve has one name and one input schema (the
 // local one adds only its repo-only `dir`).
 //

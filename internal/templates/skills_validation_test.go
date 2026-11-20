@@ -26,7 +26,7 @@
 //     true/false, and message-valued fields (e.g. `validate:`) must get
 //     `{ ... }` literals rather than scalars. This validator also covers
 //     reliant.md.tmpl, which ships the same annotation guidance.
-//  4. `forge skill load <path>` references — in SKILL.md AND in every
+//  4. `forge agent skill load <path>` references — in SKILL.md AND in every
 //     other shipped template (scaffolded code points readers at skills
 //     from its header comments) — must name a skill forge actually ships.
 //  5. `forge/pkg/<name>` references must name a real subpackage of the
@@ -1068,13 +1068,13 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 	if reason := validateCommandChain(root, []string{"frobnicate"}); reason == "" {
 		t.Error("validateCommandChain accepted a nonexistent top-level subcommand")
 	}
-	if reason := validateCommandChain(root, []string{"skill", "frobnicate"}); reason == "" {
+	if reason := validateCommandChain(root, []string{"agent", "skill", "frobnicate"}); reason == "" {
 		t.Error("validateCommandChain accepted a nonexistent subcommand of a pure group")
 	}
 	if reason := validateCommandChain(root, []string{"generate"}); reason != "" {
 		t.Errorf("validateCommandChain rejected `forge generate`: %s", reason)
 	}
-	if reason := validateCommandChain(root, []string{"skill", "load", "db"}); reason != "" {
+	if reason := validateCommandChain(root, []string{"agent", "skill", "load", "db"}); reason != "" {
 		t.Errorf("validateCommandChain rejected positional arg after runnable cmd: %s", reason)
 	}
 
@@ -1238,9 +1238,9 @@ func TestSkillsAllowlistEntriesStillNeeded(t *testing.T) {
 	}
 }
 
-// ─── validator 4: `forge skill load <path>` targets ─────────────────────
+// ─── validator 4: `forge agent skill load <path>` targets ─────────────────────
 
-// shippedSkillPaths returns the set of paths `forge skill load` resolves
+// shippedSkillPaths returns the set of paths `forge agent skill load` resolves
 // against the embedded skills. The derivation mirrors
 // listForgeShippedSkills in internal/cli/skill.go: skills/forge/<rest>
 // and skills/general/<rest> both collapse to "<rest>", and
@@ -1300,7 +1300,7 @@ func templateTreeDocs(t *testing.T) map[string]string {
 	return out
 }
 
-var skillLoadRE = regexp.MustCompile(`forge skill load ([a-z0-9][a-z0-9/_.-]*)`)
+var skillLoadRE = regexp.MustCompile(`forge agent skill load ([a-z0-9][a-z0-9/_.-]*)`)
 
 func TestSkillLoadReferencesResolve(t *testing.T) {
 	known := shippedSkillPaths(t)
@@ -1312,11 +1312,11 @@ func TestSkillLoadReferencesResolve(t *testing.T) {
 				continue
 			}
 			seen[ref] = true
-			// `forge skill load` accepts an optional "forge/" prefix.
+			// `forge agent skill load` accepts an optional "forge/" prefix.
 			if known[ref] || known[strings.TrimPrefix(ref, "forge/")] {
 				continue
 			}
-			t.Errorf("%s: `forge skill load %s` names a skill forge does not ship\n"+
+			t.Errorf("%s: `forge agent skill load %s` names a skill forge does not ship\n"+
 				"  (fix the reference, or add the skill under internal/templates/project/skills/)", rel, ref)
 		}
 	}
@@ -1839,7 +1839,7 @@ func TestFlagValidatorCatchesKnownBadClaims(t *testing.T) {
 	}
 	// ...and so is cobra's lazily-added --help, on a command with no flags
 	// of its own.
-	if !commandHasFlag(resolveCommandChain(cli.NewRootCmd(), []string{"skill", "list"}), "help") {
+	if !commandHasFlag(resolveCommandChain(cli.NewRootCmd(), []string{"agent", "skill", "list"}), "help") {
 		t.Error("--help is invisible to the validator — every `forge <cmd> --help` in the corpus would false-positive")
 	}
 
@@ -1882,7 +1882,7 @@ func TestNewSkillValidatorsCatchKnownBadClaims(t *testing.T) {
 
 	// 4. skill-load targets.
 	skills := shippedSkillPaths(t)
-	got := extract(skillLoadRE, "see `forge skill load db` and `forge skill load nope/nope`")
+	got := extract(skillLoadRE, "see `forge agent skill load db` and `forge agent skill load nope/nope`")
 	if len(got) != 2 {
 		t.Errorf("skillLoadRE extracted %v, want 2 refs", got)
 	}

@@ -12,7 +12,7 @@ package cli
 // as dead code (no caller ever bracketed an apply with it). The machine
 // ledger's apply records are HISTORY an older forge wrote, and the storage
 // semantics below are tested against the store directly — what
-// `forge ledger show` and `forge ledger export` read back.
+// `forge release ledger show` and `forge release ledger export` read back.
 
 import (
 	"context"
@@ -104,8 +104,8 @@ func TestBundleRecorder_IsIdempotentOnDigest(t *testing.T) {
 	}
 }
 
-// The machine ledger's APPLY STORAGE, which is what `forge ledger show` and
-// `forge ledger export` read. Nothing in forge writes one any more — these are
+// The machine ledger's APPLY STORAGE, which is what `forge release ledger show` and
+// `forge release ledger export` read. Nothing in forge writes one any more — these are
 // records an older forge left behind — but the file's semantics still have to
 // hold, because a reader joins outcomes to applies by id and derives a state
 // from the pair.

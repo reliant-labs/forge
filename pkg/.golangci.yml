@@ -145,7 +145,7 @@ linters:
       # shared credentials file lives, a contract between every CLI that
       # shares it (forge's own variable and the OS convention), not an app's
       # configuration. DirsFromEnv is the one spelling of that lookup, so a
-      # consumer cannot drift from `forge login`. Scoped to that one file:
+      # consumer cannot drift from `forge cloud login`. Scoped to that one file:
       # the rest of pkg/credentials still takes its Dirs from the caller.
       - path: ^credentials/env\.go$
         linters:

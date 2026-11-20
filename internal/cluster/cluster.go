@@ -1,5 +1,5 @@
 // Package cluster owns the render-KCL → kubectl-apply → wait-rollouts
-// pipeline that `forge env deploy`, `forge cluster reload`, and the
+// pipeline that `forge env deploy`, `forge dev cluster reload`, and the
 // deploy phase of `forge env up` all execute. Before this package existed,
 // the pipeline was duplicated across three call sites:
 //
@@ -73,7 +73,7 @@ const (
 	RolloutWait RolloutMode = "wait"
 
 	// RolloutWarn waits and REPORTS failures without failing the deploy.
-	// For the local inner loop (`forge cluster reload`), where a
+	// For the local inner loop (`forge dev cluster reload`), where a
 	// half-rolled cluster is something you look at rather than a build
 	// result — and where the previous Deployment is still serving anyway.
 	// Never appropriate for CI or a cloud env.
@@ -288,7 +288,7 @@ type ApplyOpts struct {
 	// instead. With DryRunFramed, the output is wrapped in
 	// "--- Generated Manifests (dry-run) ---" / "--- End Manifests ---"
 	// markers (the forge env deploy convention). Without it, raw manifests
-	// are printed (the forge cluster reload convention).
+	// are printed (the forge dev cluster reload convention).
 	DryRun       bool
 	DryRunFramed bool
 
@@ -319,7 +319,7 @@ type ApplyOpts struct {
 	// Quiet suppresses the section-header banners ("Applying
 	// manifests...", "Waiting for rollouts...") and emits the matching
 	// per-resource warnings in the bare format ("Warning: <msg>" with
-	// no leading indent) — the shape `forge cluster reload` used
+	// no leading indent) — the shape `forge dev cluster reload` used
 	// pre-extraction. Off by default; the deploy and up call sites
 	// keep the framed banners.
 	Quiet bool

@@ -73,14 +73,14 @@ func TestDeclarationFromEntities_AbsentIsNil(t *testing.T) {
 // Two properties: the new commands are registered (so the binary shape
 // is stable), and resolving an env that declares no control plane fails
 // with a message about the DECLARATION rather than about credentials.
-// Sending that user to `forge login` would be the wrong hint — logging
+// Sending that user to `forge cloud login` would be the wrong hint — logging
 // in cannot fix an absent declaration.
 func TestForgeStillWorksWithNoHostedEndpoint(t *testing.T) {
 	_, err := cloud.ResolveEndpoint("dev", declarationFromEntities(&KCLEntities{}))
 	if err == nil {
 		t.Fatal("an env with no control_plane must not silently resolve an endpoint")
 	}
-	if strings.Contains(err.Error(), "forge login") {
+	if strings.Contains(err.Error(), "forge cloud login") {
 		t.Errorf("a missing DECLARATION must not be reported as a missing credential; got:\n%s", err)
 	}
 	if !strings.Contains(err.Error(), "declares no hosted control plane") {
@@ -93,7 +93,7 @@ func TestForgeStillWorksWithNoHostedEndpoint(t *testing.T) {
 		t.Errorf("login command name: got %q", root.Name())
 	}
 	if root.Flags().Lookup("token") == nil {
-		t.Error("`forge login` must offer --token: CI has no browser")
+		t.Error("`forge cloud login` must offer --token: CI has no browser")
 	}
 	cloudCmd := newCloudCmd()
 	var names []string

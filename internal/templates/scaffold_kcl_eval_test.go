@@ -86,7 +86,7 @@ func TestScaffoldedIngressEvaluates(t *testing.T) {
 	// what every forge command actually reads — and because it proves the
 	// declaration SURVIVES the Bundle check. The scaffolded dev env targets
 	// `k3d-<project>` without a Bundle.clusters entry (its cluster comes
-	// from deploy/k3d.yaml via `forge cluster up`), which is exactly the
+	// from deploy/k3d.yaml via `forge dev cluster up`), which is exactly the
 	// shape a stricter reading of that check would have refused. A grep of
 	// main.k would have passed while the scaffold failed to render at all.
 	if got := parsed["lifecycle"]; got != "local" {

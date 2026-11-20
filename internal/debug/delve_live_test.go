@@ -257,7 +257,7 @@ func TestLive_GoroutinesOnRunningTarget(t *testing.T) {
 // computeLine is the line of `a := i * 2` in fixtureProgram.
 const computeLine = 9
 
-// launchRunning launches binary under dlv the way `forge debug start` does
+// launchRunning launches binary under dlv the way `forge dev debug start` does
 // by default — running — and connects to it.
 func launchRunning(t *testing.T, binary, output string) *DelveDebugger {
 	t.Helper()

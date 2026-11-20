@@ -267,14 +267,14 @@ func TestHostedImagePushBase(t *testing.T) {
 	t.Run("no resolved push base refused", func(t *testing.T) {
 		// The remedy names the credential source the HOST offers: with a
 		// credential helper configured (Reliant sets one) it names the
-		// helper instead of `forge login`. Pin the bare-host case, so the
+		// helper instead of `forge cloud login`. Pin the bare-host case, so the
 		// verdict does not depend on the machine running the test.
 		t.Setenv(cloudcred.HelperEnv, "")
 		cp, err := deploy("")
 		if err == nil || !strings.Contains(err.Error(), "resolved no image push base") {
 			t.Fatalf("err = %v, want the no-push-base refusal", err)
 		}
-		if !strings.Contains(err.Error(), "forge login") {
+		if !strings.Contains(err.Error(), "forge cloud login") {
 			t.Errorf("the refusal must name the credential remedy:\n%v", err)
 		}
 		if w := writes(cp); len(w) != 0 {

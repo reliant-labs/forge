@@ -136,14 +136,14 @@ func TestEnsureStandaloneRegistry_Idempotent(t *testing.T) {
 	}
 }
 
-// TestRunDevClusterUp_EnsuresStandaloneRegistry pins that `forge cluster up`
+// TestRunDevClusterUp_EnsuresStandaloneRegistry pins that `forge dev cluster up`
 // ensures a `registries.use` standalone registry BEFORE `k3d cluster create`,
 // exactly as the declarative `forge env up` path does.
 //
 // Without the ensure, k3d fails Cluster Preparation ("Didn't find container
 // for node 'k3d-control-plane-registry'") and rolls the create back, so the
 // same deploy/k3d.yaml worked under `forge env up` and failed under
-// `forge cluster up`. Ordering is asserted, not just the call: a registry
+// `forge dev cluster up`. Ordering is asserted, not just the call: a registry
 // created after the cluster is too late to matter.
 func TestRunDevClusterUp_EnsuresStandaloneRegistry(t *testing.T) {
 	origExists := registryExistsFn

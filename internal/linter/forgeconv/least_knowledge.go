@@ -106,9 +106,9 @@ func leastKnowledgeFindings(p *depsurface.Package, strict bool) []Finding {
 		fix := fmt.Sprintf("delete the methods this package never uses from %s", f.Type)
 		if f.Foreign {
 			where = "declared in another package"
-			fix = fmt.Sprintf("`forge fix narrow-deps %s` declares the %d-method interface the package uses, here, and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
+			fix = fmt.Sprintf("`forge lint fix narrow-deps %s` declares the %d-method interface the package uses, here, and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
 			if len(f.Roles) > 0 {
-				fix = fmt.Sprintf("`forge fix narrow-deps %s` declares the %d-method interface the package uses, here — embedding the interfaces it passes the value on as — and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
+				fix = fmt.Sprintf("`forge lint fix narrow-deps %s` declares the %d-method interface the package uses, here — embedding the interfaces it passes the value on as — and retypes the field (compose.go needs no change)", p.Dir, len(f.Used))
 			}
 		}
 		uses := "calls"

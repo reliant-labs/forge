@@ -302,7 +302,7 @@ func runAppTeardown(ctx context.Context, t appTarget, opts appTeardownOptions, i
 	}
 	if err != nil {
 		return fmt.Errorf("could not list the custom domains bound to app %q's envs, so the teardown preview is incomplete; nothing was deleted: %w\n"+
-			"fix: re-run once the control plane's domain service answers (`forge domain list` checks it)", t.Project, err)
+			"fix: re-run once the control plane's domain service answers (`forge cloud domain list` checks it)", t.Project, err)
 	}
 	counts := make([]int, len(envs))
 	for i, e := range envs {
@@ -322,7 +322,7 @@ func runAppTeardown(ctx context.Context, t appTarget, opts appTeardownOptions, i
 		if hs := domains[e.ID]; len(hs) > 0 {
 			hosts = strings.Join(hs, ", ")
 			for _, h := range hs {
-				bound = append(bound, fmt.Sprintf("    forge domain unbind %s --env %s", h, e.Name))
+				bound = append(bound, fmt.Sprintf("    forge cloud domain unbind %s --env %s", h, e.Name))
 			}
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\n", e.Name, e.ID, counts[i], hosts)
@@ -650,7 +650,7 @@ delivered and are not given back to a recreated env.
 
 Before asking for confirmation it shows every env with its id, deployment count
 and bound custom domains, and deletes nothing when any domain is still bound
-(the control plane refuses to delete an env while one is: ` + "`forge domain unbind`" + `
+(the control plane refuses to delete an env while one is: ` + "`forge cloud domain unbind`" + `
 it first) or when an env this project declares also runs parts on a cluster you
 operate. It also deletes nothing when the bound domains cannot be read — the
 domain service failing, or a control plane without one. Tearing down an app

@@ -59,6 +59,6 @@ func checkLockableFS(dir string) error {
 	return fmt.Errorf("%w: %s is %s, where an advisory lock does not serialize writers across machines.\n"+
 		"  Two machines promoting at once would both decide from the same history and both append, losing one.\n"+
 		"  Point $FORGE_LEDGER_HOME at a local disk, or keep the ledger on a control plane (which is how a TEAM shares one):\n"+
-		"    declare forge.ControlPlane on the env, then: forge ledger import --from-file-ledger",
+		"    declare forge.ControlPlane on the env, then: forge release ledger import --from-file-ledger",
 		ErrNetworkFilesystem, dir, pretty)
 }

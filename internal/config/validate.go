@@ -440,10 +440,10 @@ var removedSchemaKeys = map[string]string{
 	// key simply drops. `features.packs` (the feature that gated the subsystem)
 	// went with it.
 	"packs": "delete the key — packs are no longer supported. Frontend components are owned " +
-		"scaffold (`forge skill load frontend`); auth and audit are code + libraries " +
-		"(`forge skill load auth`).",
+		"scaffold (`forge agent skill load frontend`); auth and audit are code + libraries " +
+		"(`forge agent skill load auth`).",
 	"pack_overrides": "delete the block — there are no packs to override. " +
-		"Frontend components are owned scaffold and auth/audit are code + libraries (`forge skill load auth`).",
+		"Frontend components are owned scaffold and auth/audit are code + libraries (`forge agent skill load auth`).",
 	"k8s.provider": "remove the key — per-environment cluster choice now lives in KCL " +
 		"`forge.K8sCluster` blocks under deploy/kcl/.",
 	// deploy.provider was never read: the CI provider lives in `ci.provider`

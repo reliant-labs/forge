@@ -15,7 +15,7 @@
 //	go get -tool github.com/bufbuild/buf/cmd/buf@v1.57.0
 //
 // and every forge surface — `forge generate`, `forge ci gate` (verify-generated
-// and buf-lint), `forge tools install buf`, `forge tools pins buf`, and the
+// and buf-lint), `forge machine tools install buf`, `forge machine tools pins buf`, and the
 // ci.yml forge scaffolds — runs that release. A project that declares none runs
 // forge's pin. Dependabot moves the go.mod line like any other.
 package toolpin

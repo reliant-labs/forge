@@ -90,7 +90,7 @@ type Registry struct {
 	Categories []Category `yaml:"categories" json:"categories"`
 	Benefits   []Benefit  `yaml:"benefits" json:"benefits"`
 	// Glance is the short "what this project gets with no setup" block the
-	// entry skills and `forge start app` open with, one list per audience
+	// entry skills and `forge project start app` open with, one list per audience
 	// (GlanceApp, GlanceSite). Every line names the benefits that back it and
 	// the command that shows it, so it is a digest of the registry, never a
 	// second set of claims.

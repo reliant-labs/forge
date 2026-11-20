@@ -572,17 +572,34 @@ func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience,
 // copy-pasteable under the mount that served it. "" and "forge" leave the
 // content unchanged.
 //
-// "forge " that is not a command is left alone: part of a name
-// (`npx -y @reliantlabs/forge mcp`, a `reliant-forge` server), an MCP server
-// name followed by flags (`claude mcp add forge -- npx …`), or a reference
-// already written under the mount (`reliant forge generate`). Rewriting those
-// printed `@reliantlabs/reliant forge mcp` and `reliant reliant forge`, so a
-// pasted MCP setup failed.
+// A YAML fence is a file (workflow, Taskfile or config), not a command typed
+// in the current shell; it stays as written. Outside YAML, package and server
+// names and commands already under the mount also stay as written.
 func rewriteForgeCommands(content []byte, cliName string) []byte {
 	if cliName == "" || cliName == "forge" {
 		return content
 	}
 	mountPrefix := []byte(strings.TrimSuffix(cliName, "forge"))
+	lines := bytes.SplitAfter(content, []byte("\n"))
+	fence := ""
+	inFence := false
+	for i, line := range lines {
+		if info, ok := fenceLine(line); ok {
+			if inFence {
+				inFence, fence = false, ""
+			} else {
+				inFence, fence = true, info
+			}
+			continue
+		}
+		if !inFence || (fence != "yaml" && fence != "yml") {
+			lines[i] = rewriteForgeCommandLine(line, cliName, mountPrefix)
+		}
+	}
+	return bytes.Join(lines, nil)
+}
+
+func rewriteForgeCommandLine(content []byte, cliName string, mountPrefix []byte) []byte {
 	var out []byte
 	last := 0
 	for _, m := range forgeCmdRE.FindAllIndex(content, -1) {
@@ -617,6 +634,20 @@ func isForgeCommandAt(content []byte, start, end int, mountPrefix []byte) bool {
 		return false // `mcp add forge -- npx …`: a server name, then the command it runs
 	}
 	return true
+}
+
+// fenceLine reports whether line opens or closes a ``` code fence, and the
+// fence's info string (its language) lowercased.
+func fenceLine(line []byte) (string, bool) {
+	t := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(t, []byte("```")) {
+		return "", false
+	}
+	info := strings.TrimSpace(string(bytes.TrimLeft(t, "`")))
+	if f := strings.Fields(info); len(f) > 0 {
+		info = f[0]
+	}
+	return strings.ToLower(info), true
 }
 
 // forgeModulePath is forge's Go module path, used to discover the forge

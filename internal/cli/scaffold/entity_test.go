@@ -136,7 +136,6 @@ func TestCompleteEntityCRUDProto(t *testing.T) {
 	got := readFileT(t, protoPath)
 
 	for _, want := range []string{
-		`import "google/protobuf/timestamp.proto";`,
 		`import "google/protobuf/field_mask.proto";`,
 		"rpc CreateBookmark(CreateBookmarkRequest) returns (CreateBookmarkResponse)",
 		"rpc ListBookmarks(ListBookmarksRequest) returns (ListBookmarksResponse)",
@@ -152,9 +151,18 @@ func TestCompleteEntityCRUDProto(t *testing.T) {
 		"optional string search = 3;",
 		"optional bool done = 4;",
 		"repeated Bookmark bookmarks = 1;",
+		// Delete carries the id and answers empty: what the generated
+		// DeleteOp reads and writes, and nothing it would ignore.
+		"message DeleteBookmarkRequest {\n  string id = 1;\n}\n",
+		"message DeleteBookmarkResponse {}\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("proto missing %q:\n%s", want, got)
+		}
+	}
+	for _, ignored := range []string{"hard_delete", "deleted_at", "google/protobuf/timestamp.proto"} {
+		if strings.Contains(got, ignored) {
+			t.Errorf("proto carries %q, which no generated handler honors (nor anything else this entity declares):\n%s", ignored, got)
 		}
 	}
 

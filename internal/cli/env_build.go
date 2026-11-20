@@ -63,8 +63,9 @@ an environment to mean anything:
                   carries no registry.
 
   --release vX    record an IMMUTABLE RELEASE: capture every artifact's digest
-                  into a release ledger (.forge/releases/vX.json, or the
-                  control plane when the env declares one).
+                  into a release ledger (this machine's, under
+                  $FORGE_LEDGER_HOME, or the control plane when the env
+                  declares one; ` + "`forge ledger where <env>`" + `).
                   IMPLIES --push — a release pins registry-addressable
                   digests, and a local tag cannot be promoted anywhere.
 

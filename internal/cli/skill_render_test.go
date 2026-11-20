@@ -144,6 +144,14 @@ func TestRewriteForgeCommandsLeavesNamesAlone(t *testing.T) {
 	}
 }
 
+func TestRewriteForgeCommandsPreservesNamesAcrossFences(t *testing.T) {
+	input := "```yml\nrun: forge generate\n```\n```bash\nnpx -y @reliantlabs/forge mcp\nclaude mcp add forge -- forge generate\n```\n"
+	want := "```yml\nrun: forge generate\n```\n```bash\nnpx -y @reliantlabs/forge mcp\nclaude mcp add forge -- reliant forge generate\n```\n"
+	if got := string(rewriteForgeCommands([]byte(input), "reliant forge")); got != want {
+		t.Fatalf("rewritten skill differs:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestConnectSkillRendersPasteableUnderTheMount(t *testing.T) {
 	out, err := RenderSkillContentAt("", "connect", SkillAudienceAll, "reliant forge")
 	if err != nil {

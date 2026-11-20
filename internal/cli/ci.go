@@ -543,12 +543,8 @@ func ciRunGovulncheck(ctx context.Context, root string, rootOnly bool, exemption
 	return scanGoModules(ctx, root, rootOnly, exemptions, run, os.Stdout, time.Now())
 }
 
-// runGovulncheckJSON runs `govulncheck -format json ./...` in one module.
-func runGovulncheckJSON(ctx context.Context, dir string) ([]byte, error) {
-	return runGovulncheckJSONWith(ctx, "govulncheck", dir)
-}
-
-// runGovulncheckJSONWith is runGovulncheckJSON with the binary named.
+// runGovulncheckJSONWith runs `<bin> -format json ./...` (govulncheck) in
+// one module.
 func runGovulncheckJSONWith(ctx context.Context, bin, dir string) ([]byte, error) {
 	var stdout bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, "-format", "json", "./...")

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -719,6 +720,10 @@ func skipSet(names []string) map[string]bool {
 // stdout, or under --json the one document to stdout with the human text on
 // stderr. --check <path> is the detail view and short-circuits both.
 func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) error {
+	// Children inspecting the project must use the upgrade's forge, but the
+	// parent must regain its original environment even when the upgrade fails.
+	restore := markChildrenRunThisForge()
+	defer restore()
 	if opts.check && !opts.force && len(opts.forcePaths) > 0 {
 		return runUpgradeWithGo(true, false, opts.showAll, opts.forcePaths, opts.to, opts.goRun)
 	}
@@ -734,6 +739,10 @@ func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) er
 	printUpgradeSummary(os.Stderr, rep)
 	if werr := emitJSONDocument(rep); werr != nil {
 		return werr
+	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) && ec.code == exitNeedsHuman {
+		ec.msg = needsPersonMessage(len(rep.NeedsHuman), true)
 	}
 	return err
 }

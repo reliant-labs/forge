@@ -83,3 +83,11 @@ func SetVersion(version, buildDate, gitCommit string) {
 func ExitCode(err error) int {
 	return exitcode.Of(err)
 }
+
+// ErrorLine is the line a host that embeds forge's command tree prints on
+// stderr for err: "Error: <err>", or the message alone when err is a verdict
+// the exit code carries rather than a failure (`project upgrade` exiting 9:
+// everything mechanical applied, the rest needs a person).
+func ErrorLine(err error) string {
+	return exitcode.Line(err)
+}

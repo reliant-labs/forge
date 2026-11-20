@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,6 +29,9 @@ var (
 
 // MaxDomains bounds a port's custom domains.
 const MaxDomains = 8
+
+// MaxSourceCIDRs bounds a port's allowed source list.
+const MaxSourceCIDRs = 64
 
 // MaxPreStopSeconds bounds PreStopSeconds. Endpoint removal reaches kube-proxy
 // and an ingress in seconds, and a cloud load balancer's deregistration in
@@ -527,11 +531,85 @@ func validatePorts(kind WorkloadKind, ports []Port) []error {
 				errs = append(errs, err)
 			}
 		}
+		if len(p.AllowedSourceCIDRs) > 0 {
+			errs = append(errs, validateSourceCIDRs(p)...)
+		}
 	}
 	if exposed > 1 {
 		errs = append(errs, fmt.Errorf("%d ports set expose; at most one may, because a workload reports one hostname", exposed))
 	}
 	return errs
+}
+
+// validateSourceCIDRs checks one port's allowedSourceCIDRs: only on the
+// exposed port, at most MaxSourceCIDRs, each a valid CIDR or bare IP, none a
+// duplicate once normalized.
+func validateSourceCIDRs(p Port) []error {
+	var errs []error
+	if !p.Expose {
+		errs = append(errs, fmt.Errorf("port %s: allowedSourceCIDRs are only meaningful on the exposed port (expose: true): nothing outside the workload can reach a port that is not exposed", p.Name))
+	}
+	if len(p.AllowedSourceCIDRs) > MaxSourceCIDRs {
+		errs = append(errs, fmt.Errorf("port %s: %d allowedSourceCIDRs; at most %d are allowed", p.Name, len(p.AllowedSourceCIDRs), MaxSourceCIDRs))
+	}
+	seen := map[string]bool{}
+	for _, raw := range p.AllowedSourceCIDRs {
+		c, err := NormalizeSourceCIDR(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("port %s: allowedSourceCIDRs: %w", p.Name, err))
+			continue
+		}
+		if seen[c] {
+			errs = append(errs, fmt.Errorf("port %s: allowedSourceCIDRs lists %s twice (entries are compared after normalization, so 10.0.0.1 and 10.0.0.1/32 are the same)", p.Name, c))
+		}
+		seen[c] = true
+	}
+	return errs
+}
+
+// NormalizeSourceCIDR returns the canonical form of one allowedSourceCIDRs
+// entry: a CIDR with its host bits cleared, or a bare address as a /32
+// (IPv4) or /128 (IPv6). It refuses anything else, an IPv4-mapped IPv6
+// address (write the IPv4 form: the platform compares the unmapped client
+// address) and a /0, which allows every client and so is the unrestricted
+// default written as an allowlist.
+func NormalizeSourceCIDR(s string) (string, error) {
+	in := strings.TrimSpace(s)
+	pfx, err := netip.ParsePrefix(in)
+	if err != nil {
+		addr, aerr := netip.ParseAddr(in)
+		if aerr != nil {
+			return "", fmt.Errorf("%q is not an IPv4 or IPv6 CIDR (192.0.2.0/24, 2001:db8::/32) or a bare address", s)
+		}
+		if addr.Zone() != "" {
+			return "", fmt.Errorf("%q carries an IPv6 zone, which is not a client network address", s)
+		}
+		pfx = netip.PrefixFrom(addr, addr.BitLen())
+	}
+	if pfx.Addr().Is4In6() {
+		return "", fmt.Errorf("%q is an IPv4-mapped IPv6 address: write the IPv4 form", s)
+	}
+	if pfx.Bits() == 0 {
+		return "", fmt.Errorf("%q allows every client: drop allowedSourceCIDRs to leave the port unrestricted", s)
+	}
+	return pfx.Masked().String(), nil
+}
+
+// NormalizeSourceCIDRs normalizes every entry with NormalizeSourceCIDR. An
+// entry that does not normalize is left as written, for Validate to refuse.
+func NormalizeSourceCIDRs(in []string) []string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		if c, err := NormalizeSourceCIDR(s); err == nil {
+			out[i] = c
+		} else {
+			out[i] = s
+		}
+	}
+	return out
 }
 
 func (p Probes) validate() []error {
@@ -628,8 +706,8 @@ func validateSidecars(sidecars []Container) []error {
 			errs = append(errs, fmt.Errorf("%s: %w", label, err))
 		}
 		for _, p := range c.Ports {
-			if p.Expose || len(p.Domains) > 0 {
-				errs = append(errs, fmt.Errorf("%s: port %s: a sidecar's ports are container ports only; expose and domains belong on the workload's own port", label, p.Name))
+			if p.Expose || len(p.Domains) > 0 || len(p.AllowedSourceCIDRs) > 0 {
+				errs = append(errs, fmt.Errorf("%s: port %s: a sidecar's ports are container ports only; expose, domains and allowedSourceCIDRs belong on the workload's own port", label, p.Name))
 			}
 		}
 		if c.Probes != nil {

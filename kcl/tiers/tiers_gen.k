@@ -532,6 +532,7 @@ policy_rule_json = lambda v: PolicyRule -> {str:} {
 
 schema Port:
     """Port is one named port a workload listens on."""
+    allowedSourceCIDRs?: [str]
     appProtocol?: str
     domains?: [str]
     expose?: bool
@@ -540,6 +541,7 @@ schema Port:
     protocol: str = "tcp"
 
     check:
+        allowedSourceCIDRs == Undefined or len(allowedSourceCIDRs) <= 64, "Port.allowedSourceCIDRs allows at most 64 entries"
         appProtocol == Undefined or regex.match(appProtocol, "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"), "Port.appProtocol must match ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
         appProtocol == Undefined or len(appProtocol) <= 63, "Port.appProtocol must be at most 63 characters"
         domains == Undefined or len(domains) <= 8, "Port.domains allows at most 8 entries"
@@ -552,6 +554,7 @@ schema Port:
 
 port_json = lambda v: Port -> {str:} {
     _d = {
+        "allowedSourceCIDRs": v.allowedSourceCIDRs
         "appProtocol": v.appProtocol
         "domains": v.domains
         "expose": v.expose

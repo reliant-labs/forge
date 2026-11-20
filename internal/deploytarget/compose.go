@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -54,6 +56,12 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 			return fmt.Errorf("compose %s: Compose spec is nil (group misrouted?)", svc.Name)
 		}
 		if err := p.deployOne(ctx, runner, group, svc); err != nil {
+			if svc.Compose.BestEffort {
+				fmt.Printf("  warning: %s did not come up, and nothing the app needs depends on it, so the stack starts without it: %v\n"+
+					"  (local telemetry is unavailable until it does; retry with `%s env up %s --target %s`)\n",
+					svc.Name, err, cmdutil.Name(), group.Env, svc.Name)
+				continue
+			}
 			return err
 		}
 	}

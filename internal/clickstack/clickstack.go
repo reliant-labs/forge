@@ -86,3 +86,14 @@ const (
 	// AlertOrg is a local stack's one routing org.
 	AlertOrg = "local"
 )
+
+// IsTelemetryService reports whether a compose service is part of forge's
+// local telemetry stack. None of them is something the application needs in
+// order to run, so a stack starts without one that fails to come up.
+func IsTelemetryService(service string) bool {
+	switch service {
+	case Service, ProfilesService, ForwarderService, AlertmanagerService:
+		return true
+	}
+	return false
+}

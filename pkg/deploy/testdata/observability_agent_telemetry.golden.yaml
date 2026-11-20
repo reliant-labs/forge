@@ -585,10 +585,22 @@ data:
               regex: Running
               source_labels:
               - __meta_kubernetes_pod_phase
-            - action: keep
-              regex: "9363"
+            - action: drop
+              regex: "true"
               source_labels:
-              - __meta_kubernetes_pod_container_port_number
+              - __meta_kubernetes_pod_container_init
+            - action: replace
+              regex: ([^:]+)
+              replacement: $${1}:9363
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
+            - action: replace
+              regex: (.+:.+)
+              replacement: '[$${1}]:9363'
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
             - action: replace
               source_labels:
               - __meta_kubernetes_pod_name
@@ -631,10 +643,22 @@ data:
               regex: Running
               source_labels:
               - __meta_kubernetes_pod_phase
-            - action: keep
-              regex: "8200"
+            - action: drop
+              regex: "true"
               source_labels:
-              - __meta_kubernetes_pod_container_port_number
+              - __meta_kubernetes_pod_container_init
+            - action: replace
+              regex: ([^:]+)
+              replacement: $${1}:8200
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
+            - action: replace
+              regex: (.+:.+)
+              replacement: '[$${1}]:8200'
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
             - action: replace
               source_labels:
               - __meta_kubernetes_pod_name
@@ -678,10 +702,22 @@ data:
               regex: Running
               source_labels:
               - __meta_kubernetes_pod_phase
-            - action: keep
-              regex: "9090"
+            - action: drop
+              regex: "true"
               source_labels:
-              - __meta_kubernetes_pod_container_port_number
+              - __meta_kubernetes_pod_container_init
+            - action: replace
+              regex: ([^:]+)
+              replacement: $${1}:9090
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
+            - action: replace
+              regex: (.+:.+)
+              replacement: '[$${1}]:9090'
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
             - action: replace
               source_labels:
               - __meta_kubernetes_pod_name
@@ -721,10 +757,22 @@ data:
               regex: Running
               source_labels:
               - __meta_kubernetes_pod_phase
-            - action: keep
-              regex: "8080"
+            - action: drop
+              regex: "true"
               source_labels:
-              - __meta_kubernetes_pod_container_port_number
+              - __meta_kubernetes_pod_container_init
+            - action: replace
+              regex: ([^:]+)
+              replacement: $${1}:8080
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
+            - action: replace
+              regex: (.+:.+)
+              replacement: '[$${1}]:8080'
+              source_labels:
+              - __meta_kubernetes_pod_ip
+              target_label: __address__
             - action: replace
               source_labels:
               - __meta_kubernetes_pod_name
@@ -745,12 +793,12 @@ data:
                 auth:
                   authenticator: bearertokenauth/telemetry_openbao_0
                 collection_interval: 5m
-                endpoint: https://`endpoint`/v1/sys/pprof/heap
+                endpoint: 'https://`endpoint contains ":" ? "[" + endpoint + "]" : endpoint`:8200/v1/sys/pprof/heap'
                 timeout: 30s
                 tls:
                   insecure_skip_verify: true
-            rule: type == "port" && pod.namespace in ["openbao"] && pod.labels["app.kubernetes.io/name"]
-              == "openbao" && port == 8200
+            rule: type == "pod" && namespace in ["openbao"] && labels["app.kubernetes.io/name"]
+              == "openbao"
         watch_observers:
         - k8s_observer/telemetry
       receiver_creator/telemetry_temporal_checks:
@@ -759,10 +807,9 @@ data:
             config:
               collection_interval: 30s
               targets:
-              - endpoint: '`endpoint`'
-            rule: type == "port" && pod.namespace in ["temporal"] && pod.labels["app.kubernetes.io/component"]
-              == "frontend" && pod.labels["app.kubernetes.io/name"] == "temporal" && port
-              == 7233
+              - endpoint: '`endpoint contains ":" ? "[" + endpoint + "]" : endpoint`:7233'
+            rule: type == "pod" && namespace in ["temporal"] && labels["app.kubernetes.io/component"]
+              == "frontend" && labels["app.kubernetes.io/name"] == "temporal"
         watch_observers:
         - k8s_observer/telemetry
       receiver_creator/telemetry_temporal_profiles:
@@ -771,20 +818,18 @@ data:
             config:
               remote:
                 collection_interval: 5m
-                endpoint: http://`endpoint`/debug/pprof/profile?seconds=5
+                endpoint: 'http://`endpoint contains ":" ? "[" + endpoint + "]" : endpoint`:7936/debug/pprof/profile?seconds=5'
                 timeout: 20s
-            rule: type == "port" && pod.namespace in ["temporal"] && pod.labels["app.kubernetes.io/component"]
-              == "frontend" && pod.labels["app.kubernetes.io/name"] == "temporal" && port
-              == 7936
+            rule: type == "pod" && namespace in ["temporal"] && labels["app.kubernetes.io/component"]
+              == "frontend" && labels["app.kubernetes.io/name"] == "temporal"
           pprof/0_heap:
             config:
               remote:
                 collection_interval: 5m
-                endpoint: http://`endpoint`/debug/pprof/heap
+                endpoint: 'http://`endpoint contains ":" ? "[" + endpoint + "]" : endpoint`:7936/debug/pprof/heap'
                 timeout: 30s
-            rule: type == "port" && pod.namespace in ["temporal"] && pod.labels["app.kubernetes.io/component"]
-              == "frontend" && pod.labels["app.kubernetes.io/name"] == "temporal" && port
-              == 7936
+            rule: type == "pod" && namespace in ["temporal"] && labels["app.kubernetes.io/component"]
+              == "frontend" && labels["app.kubernetes.io/name"] == "temporal"
         watch_observers:
         - k8s_observer/telemetry
     service:

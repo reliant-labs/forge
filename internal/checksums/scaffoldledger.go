@@ -134,6 +134,14 @@ type ScaffoldEntry struct {
 	// write-once scaffolds, which never need to know whether the file still
 	// matches what forge produced.
 	BirthHash string `json:"birth_hash,omitempty"`
+	// ForgePartHash is the content hash of the forge-owned part of a file
+	// split into a forge part and a part the user writes (AGENTS.md: the
+	// guide above `## Project Notes`, and the notes below it), recorded each
+	// time forge writes that part (RecordScaffoldForgePart). It is the
+	// evidence that the forge part is still exactly what forge wrote, so
+	// `forge generate` may re-render it; the user's part is never hashed,
+	// because forge never reads it. Empty for every other scaffold.
+	ForgePartHash string `json:"forge_part_hash,omitempty"`
 	// Declined, when set, is the project's reason for declaring that forge
 	// must never scaffold this path (`forge project disown <path> --absent`).
 	//
@@ -919,6 +927,56 @@ func RecordScaffoldWithHash(root, relPath string, content []byte) {
 	e.BirthHash = Hash(content)
 	led[rel] = e
 	saveScaffoldLedgerLocked(root)
+}
+
+// RecordScaffoldForgePart records a birth of relPath AND the hash of the
+// forge-owned part forge just wrote to it (ScaffoldEntry.ForgePartHash), for
+// a file whose forge part keeps refreshing while the user writes the rest.
+// Like RecordScaffoldWithHash it overwrites an earlier hash: the record has
+// to track the forge part on disk. An unchanged hash writes nothing.
+func RecordScaffoldForgePart(root, relPath string, part []byte) {
+	if IsLocalOnlyScaffold(relPath) {
+		return
+	}
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	rel := filepath.ToSlash(relPath)
+	led := loadScaffoldLedgerLocked(root)
+	e, known := led[rel]
+	if known && e.ForgePartHash == Hash(part) {
+		return
+	}
+	if !known {
+		noteBirthLocked(rel)
+	}
+	e.ForgePartHash = Hash(part)
+	led[rel] = e
+	saveScaffoldLedgerLocked(root)
+}
+
+// ScaffoldForgePartIsPristine reports whether part — the forge-owned part
+// of relPath as it is on disk now — is byte-for-byte what forge last wrote
+// there. False when the path is excluded, was never recorded with a forge
+// part hash, or the part differs by a byte: as for ScaffoldIsPristine, no
+// evidence reads as an edit, never as permission to rewrite.
+func ScaffoldForgePartIsPristine(root, relPath string, part []byte) bool {
+	if _, excluded := ExcludedBy(root, relPath); excluded {
+		return false
+	}
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	e, ok := loadScaffoldLedgerLocked(root)[filepath.ToSlash(relPath)]
+	return ok && e.ForgePartHash != "" && e.ForgePartHash == Hash(part)
+}
+
+// ScaffoldForgePartRecorded reports whether forge has recorded writing a
+// forge part to relPath at all: what tells "edited since forge wrote it"
+// from "written by a forge that kept no record".
+func ScaffoldForgePartRecorded(root, relPath string) bool {
+	scaffoldMu.Lock()
+	defer scaffoldMu.Unlock()
+	e, ok := loadScaffoldLedgerLocked(root)[filepath.ToSlash(relPath)]
+	return ok && e.ForgePartHash != ""
 }
 
 // ScaffoldIsPristine reports whether relPath is still byte-for-byte what

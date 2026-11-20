@@ -54,7 +54,7 @@ a credential. There is no password option, seed account or implicit recipient.
 Roles managed in deploy/kcl/identity.k (members_from = "declared") are
 read-only here.`,
 	}
-	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd(), newCloudIdentityExportCmd())
+	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd(), newCloudIdentityExportCmd(), newCloudIdentityImportCmd())
 	cmd.AddCommand(newCloudIdentityUserVerbs()...)
 	return cmdutil.StrictGroup(cmd)
 }
@@ -99,7 +99,7 @@ func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCalle
 // procedure here) to identity:manage.
 func declareIdentityScopes(c *cloud.Client) {
 	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers)
-	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport,
+	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport, procIdentityImport,
 		procIdentitySetRoles, procIdentityResetPassword, procIdentityLockUser,
 		procIdentityUnlockUser, procIdentityDeleteUser, procIdentityRevokeSessions)
 }

@@ -1861,6 +1861,7 @@ _Enforced · Forge, on any infrastructure_
 | `forge-proto-format`                 | A `.proto` that `buf format` would rewrite, which the scaffolded pre-commit hook refuses at commit time after `forge lint` passed                                                                                                         | `--proto-format`    |
 | `forge-vendored-proto-drift`         | A vendored `forge.proto` that diverged from the binary's copy: annotations compile, then are ignored                                                                                                                                      | `--vendored-protos` |
 | `forge-go-markers`                   | A `//forge:` comment in Go that forge does not read, an unknown name or a spelling its parser ignores                                                                                                                                     | `--go-markers`      |
+| `forge-go-markers-reason-missing`    | A marker whose reason is mandatory (`forge:auth-unscoped-ok`) written with none, which forge ignores; advisory                                                                                                                            | `--go-markers`      |
 | `forgeconv-open-signup`              | A login broker that mounts `POST /auth/register` unconditionally: outside development an unverified address gets a signed-in account, which opens email-bound invitations to takeover (advisory)                                          | bare `forge lint`   |
 | `forgeconv-identity-methods`         | A `forge.ManagedIdentity` declaring a sign-in method or signup mode the project's own broker does not serve, so the declaration is converged and silently ignored                                                                         | bare `forge lint`   |
 | `forgeconv-unproven-signup`          | A deployed sign-up whose address nobody proves (identity mail `delivery = "none"`, or `auth_self_signup` outside development): the email is a contact field anyone can type, so whatever the app binds to it is bound to whoever typed it | bare `forge lint`   |
@@ -2202,7 +2203,7 @@ _Enforced · Reliant hosting_
 
 ### Find rpcs that ignore the caller
 
-`forge project audit` includes an `unscoped_auth` list of authenticated rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok: <reason>` as the only acknowledged exception.
+`forge project audit` includes an `unscoped_auth` list of authenticated rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok: <reason>` as the only acknowledged exception; a marker with no reason is listed as malformed, never silently ignored.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -2233,7 +2234,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Owner scoping at one chokepoint
 
-Claims are enriched by stable subject (never email) before any handler runs, and a `forge:owner` column makes forge scaffold the owner-scoping wrapper that lint keeps consistent across siblings.
+Claims are enriched by stable subject (never email) before any handler runs, and a `forge:owner` column makes forge scaffold the owner-scoping wrapper that lint keeps consistent across siblings, never recommending an email address as the owner.
 
 _Enforced · Forge, on any infrastructure_
 

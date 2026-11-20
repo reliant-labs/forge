@@ -9,7 +9,10 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/reliant-labs/forge/internal/cigate"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/toolcache"
 	"github.com/reliant-labs/forge/internal/toolpin"
@@ -31,13 +34,19 @@ import (
 // built inside another module's graph; both are honoured. A `=>` replacement
 // line, when present, is not followed: the pinned version is what matters.
 func toolBinVersion(ctx context.Context, binPath, module string) (string, bool) {
-	cmd := exec.CommandContext(ctx, "go", "version", "-m", binPath)
-	cmd.Env = goexec.Env()
-	out, err := cmd.Output()
+	out, err := goVersionM(ctx, binPath)
 	if err != nil {
 		return "", false
 	}
-	return parseBuildInfoVersion(string(out), module)
+	return parseBuildInfoVersion(out, module)
+}
+
+// goVersionM returns `go version -m binPath`. A seam for tests.
+var goVersionM = func(ctx context.Context, binPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "version", "-m", binPath)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // parseBuildInfoVersion extracts module's version from `go version -m` output.
@@ -164,10 +173,12 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 	// the other major never satisfies the pin, whatever its version.
 	for _, t := range projectProtoTools(projectDir) {
 		want := resolveToolVersion(ctx, projectDir, t, "")
-		if want == "latest" {
-			continue // module not in the graph: any binary on PATH is fine
-		}
 		pathBin, lookErr := exec.LookPath(t.Binary)
+		if want == "latest" {
+			if want = unresolvedToolPin(ctx, projectDir, t, pathBin, lookErr == nil); want == "" {
+				continue
+			}
+		}
 		have := "not found on PATH"
 		if lookErr == nil {
 			var ok bool
@@ -202,6 +213,55 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 		return nil, err
 	}
 	return res, nil
+}
+
+// unresolvedToolPin is the version to pin t at when the module graph could
+// not name one (resolveToolVersion said "latest"), or "" to run whatever PATH
+// holds.
+//
+// For every tool but protoc-gen-connect-go "" is right: the module is not in
+// the graph, so any build will do. protoc-gen-connect-go is the one tool whose
+// name two incompatible builds share — connect-go v1's and v2's — and each
+// emits stubs only its own runtime compiles against. "Latest" also does not
+// mean "not in the graph" for it: `go list -m` fails on a go.mod that merely
+// needs a tidy ("updates to go.mod needed"), which is what an appended
+// require or replace leaves behind. Running PATH's build then generated v2
+// stubs (Register<Svc>Handler) into a v1 project whose handlers call
+// New<Svc>Handler. So a PATH build counts only when it is of t's major (at
+// any version); otherwise the pin is the version go.mod's own require line
+// names, read from the file rather than the module graph.
+func unresolvedToolPin(ctx context.Context, projectDir string, t protoTool, pathBin string, onPath bool) string {
+	if _, ok := connectmajor.IsRuntimeImport(t.VersionModule); !ok {
+		return "" // module not in the graph: any binary on PATH is fine
+	}
+	if onPath {
+		if _, ofMajor := toolBinVersion(ctx, pathBin, t.VersionModule); ofMajor {
+			return ""
+		}
+	}
+	return goModRequireVersion(projectDir, t.VersionModule)
+}
+
+// goModRequireVersion is the version projectDir's go.mod requires module at
+// (direct or indirect), read from the file itself, or "" when it names none
+// or cannot be read. It answers when `go list -m` cannot: a go.mod that
+// needs a tidy.
+func goModRequireVersion(projectDir, module string) string {
+	path := filepath.Join(projectDir, "go.mod")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.ParseLax(path, data, nil)
+	if err != nil {
+		return ""
+	}
+	for _, r := range f.Require {
+		if r.Mod.Path == module {
+			return r.Mod.Version
+		}
+	}
+	return ""
 }
 
 // pinNotice reports which pinned build a codegen tool resolved to. It is

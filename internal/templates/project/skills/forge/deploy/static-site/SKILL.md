@@ -157,8 +157,11 @@ forge env up dev --watch   # an agent: run it in the background; SIGTERM stops i
 No database or cluster is needed: the dev env declares only the frontend's dev
 server, and `env up` starts it in the frontend's directory with `PORT` set. A
 site forge started mirrors the browser console to
-`.forge/logs/dev/frontend_<name>.log`; an adopted app does once it calls
-`installDevLogging()` from `@reliantlabs/forge-web-runtime` (load `debug`).
+`.forge/logs/dev/frontend_<name>.log`. An adopted app does the same once it
+calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` in the
+browser, and its dev server receives the lines. On Vite, the receiver is the
+`forgeDevLog()` plugin from `@reliantlabs/forge-web-runtime/vite` (load
+`debug`).
 
 ## 3. Ship it
 

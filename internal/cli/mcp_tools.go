@@ -30,7 +30,7 @@ type librariesInput struct {
 type shapesInput struct {
 	dirInput
 	Grep          string `json:"grep,omitempty" jsonschema:"case-insensitive regex over name and detail; use a|b to ask about several entities in one call"`
-	Kind          string `json:"kind,omitempty" jsonschema:"comma-separated kinds: rpc,message,enum,table,store,handler,hook,deploy-target"`
+	Kind          string `json:"kind,omitempty" jsonschema:"comma-separated kinds: rpc,message,enum,table,store,handler,hook,root,workload,deploy-target"`
 	Service       string `json:"service,omitempty" jsonschema:"only this service's rpcs and handlers (ChatService, or Chat)"`
 	Unimplemented bool   `json:"unimplemented,omitempty" jsonschema:"list declared rpcs that have no handler, or only forge's unwired stub"`
 }

@@ -118,7 +118,7 @@ import (
 // to v1.8.0 when the owner closed every open grace window (2026-11-19). It is
 // a fixed point, not a moving "current version": it does not change when a
 // release is cut.
-const rolloutBaseline = "v1.8.0"
+const rolloutBaseline = "v1.9.0"
 
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to

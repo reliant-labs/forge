@@ -174,7 +174,10 @@ func (h Harness) agentFiles() []agentFile {
 }
 
 // writeAgentSurfaces writes the harness's agent files under root, each only if
-// absent: they are user-owned from birth. Reliant needs no file of its own
+// absent: they are user-owned from birth. AGENTS.md's guide, above its
+// `## Project Notes` heading, is the one part forge keeps current afterwards:
+// `forge generate` re-renders it while it is provably forge's own text
+// (RefreshAgentsGuide), and never touches the notes. Reliant needs no file of its own
 // (it renders the guide in memory from forge.yaml) but still gets AGENTS.md
 // for every other tool that opens the project. site renders AGENTS.md as a
 // static site's memory (the frontend-only quick reference) rather than the Go

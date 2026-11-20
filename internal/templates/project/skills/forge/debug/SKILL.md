@@ -326,10 +326,14 @@ back to one request per line so nothing is lost, and says so once:
 
 To fix it, make the endpoint understand both shapes — a `{"entries":[…]}` batch
 and a bare `{"level","msg"}` — print one `[browser:<level>] <msg>` line per
-entry in a single `console.log`, and answer `X-Forge-Devlog: 2`. The current
-version is what `forge scaffold frontend` writes into a new project:
-`src/lib/devlog-plugin.ts` (Vite) or `src/app/%5F_forge/log/route.ts`
-(Next.js). Copy it from a freshly scaffolded frontend.
+entry in a single `console.log`, and answer `X-Forge-Devlog: 2`. On Vite the
+runtime ships that endpoint itself: `forgeDevLog()` from
+`@reliantlabs/forge-web-runtime/vite` (in the web-runtime releases after
+0.13.19), added to `plugins` in vite.config.ts, replaces a scaffolded
+`src/lib/devlog-plugin.ts`. A project keeps working on its own copy, and that
+copy is how a frontend on an older runtime gets the endpoint. On Next.js the
+current version is `src/app/%5F_forge/log/route.ts`; copy it from a freshly
+scaffolded frontend.
 
 Related failure modes that produce the same silence: a malformed or oversized
 post now prints `[browser:warn] [forge-devlog] dropped …` rather than being

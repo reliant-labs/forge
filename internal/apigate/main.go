@@ -17,8 +17,10 @@
 //
 // forge is semver at major 1 (owner, 2026-11-05), so a break fails unless the
 // OWNER accepted it: the breaking:approved label, applied by the owner's
-// account (its `labeled` event names the actor; APIGATE_OWNERS, default
-// reliant-01). An accepted break still carries the cost of its consumers'
+// account or by the Reliant bot on the owner's instruction (its `labeled`
+// event names the actor; APIGATE_OWNERS, default reliant-01 and
+// reliant-labs[bot]: agents label as the bot, and the owner decided on
+// 2026-11-19 to "let the bot's label count"). An accepted break still carries the cost of its consumers'
 // migration: declared, with its codemod or playbook. See dev-docs/api-breaks.md.
 //
 // The converse fails too: an `API-BREAK:` line in the PR body or a commit body
@@ -221,9 +223,15 @@ var ghAPI = func(args ...string) ([]byte, error) {
 	return out, nil
 }
 
+// defaultOwners are the accounts whose breaking:approved counts when
+// APIGATE_OWNERS is unset: the owner, and the Reliant bot applying the label
+// on the owner's instruction (owner decision, 2026-11-19). The same default as
+// scripts/check-compat.sh's COMPAT_OWNERS.
+const defaultOwners = "reliant-01,reliant-labs[bot]"
+
 // ownerApplied reports whether the last account to apply label to the PR is
-// one of APIGATE_OWNERS (default reliant-01, the owner). It reads every page of
-// the PR's events: `gh api --paginate` prints one JSON array per page.
+// one of APIGATE_OWNERS (default defaultOwners). It reads every page of the
+// PR's events: `gh api --paginate` prints one JSON array per page.
 func ownerApplied(repo, pr, label string) (bool, error) {
 	out, err := ghAPI("--paginate", fmt.Sprintf("repos/%s/issues/%s/events", repo, pr))
 	if err != nil {
@@ -254,7 +262,7 @@ func ownerApplied(repo, pr, label string) (bool, error) {
 	}
 	owners := os.Getenv("APIGATE_OWNERS")
 	if owners == "" {
-		owners = "reliant-01"
+		owners = defaultOwners
 	}
 	for _, o := range strings.FieldsFunc(owners, func(r rune) bool { return r == ',' || r == ' ' }) {
 		if o == last {

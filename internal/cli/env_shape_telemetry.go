@@ -15,11 +15,15 @@ import (
 var telemetryUncollectedNoted sync.Map
 
 // checkBundleTelemetry is the hosted-telemetry step of a bundle write to
-// reader's control plane. One that does not decode release.BundleFeatureTelemetry
-// gets the shape without the env's hosted targets (BundleReader.LimitShape), so
-// the person deploying is WARNED, naming each target that will go uncollected:
-// a warning and not a refusal, because the env still deploys and runs. One that
-// decodes it and advertises caps of its own (GetCapabilities.telemetry_limits)
+// reader's control plane. One that does not collect them
+// (BundleReader.CollectsTelemetry: it must advertise both
+// release.BundleFeatureTelemetry and release.CapabilityCollectsTelemetry, since
+// a forge pin bump alone advertises the first) gets the shape without the
+// env's hosted targets (BundleReader.LimitShape), so the person deploying is
+// WARNED, naming each target that will go uncollected and the capability the
+// control plane lacks: a warning and not a refusal, because the env still
+// deploys and runs. One that collects them and advertises caps of its own
+// (GetCapabilities.telemetry_limits)
 // holds the targets to them, which the shape build could not know: a target
 // over them is refused here, located, rather than dropped by the platform.
 func checkBundleTelemetry(w io.Writer, env string, shape release.Shape, reader *release.BundleReader) error {

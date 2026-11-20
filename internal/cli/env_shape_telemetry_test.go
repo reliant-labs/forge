@@ -110,7 +110,7 @@ func TestCheckBundleTelemetry(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		`[bundle] Warning: env prod-warn-test declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry")`,
+		`[bundle] Warning: env prod-warn-test declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry" or "collects-telemetry")`,
 		"[bundle]     - api (workload:api): metrics\n",
 		"[bundle]     - worker (workload:worker): metrics\n",
 		"[bundle]   The deploy continues",
@@ -125,17 +125,18 @@ func TestCheckBundleTelemetry(t *testing.T) {
 		t.Errorf("the warning repeated for the same env: %s", out.String())
 	}
 
+	collects := []string{release.BundleFeatureTelemetry, release.CapabilityCollectsTelemetry}
 	for name, r := range map[string]*release.BundleReader{
-		"collects, no caps": {Features: []string{release.BundleFeatureTelemetry}},
+		"collects, no caps": {Features: collects},
 		"this forge":        nil,
-		"roomy caps":        {Features: []string{release.BundleFeatureTelemetry}, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 2}},
+		"roomy caps":        {Features: collects, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 2}},
 	} {
 		out.Reset()
 		if err := checkBundleTelemetry(&out, "prod-"+name, shape, r); err != nil || out.Len() != 0 {
 			t.Errorf("%s: err %v, output %q", name, err, out.String())
 		}
 	}
-	tight := &release.BundleReader{Features: []string{release.BundleFeatureTelemetry}, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
+	tight := &release.BundleReader{Features: collects, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
 	err := checkBundleTelemetry(&out, "prod", shape, tight)
 	if err == nil {
 		t.Fatal("caps tighter than the shape's were not enforced")
@@ -144,6 +145,30 @@ func TestCheckBundleTelemetry(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal lacks %q:\n%v", want, err)
 		}
+	}
+}
+
+// A control plane on a newer forge pin advertises every decode feature,
+// shape-telemetry included, before it collects anything: the write still
+// warns, naming the capability it lacks, and is not held to caps it will not
+// apply to targets it never receives.
+func TestCheckBundleTelemetryWarnsAReaderThatOnlyDecodes(t *testing.T) {
+	const env = "prod-decodes-only-test"
+	telemetryUncollectedNoted.Delete(env)
+	t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api"), hostedTelemetryTarget("worker")})}
+	decodes := &release.BundleReader{Features: release.BundleDocFeatures(), Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
+
+	var out bytes.Buffer
+	if err := checkBundleTelemetry(&out, env, shape, decodes); err != nil {
+		t.Fatalf("a control plane that only decodes refused the write: %v", err)
+	}
+	want := `[bundle] Warning: env ` + env + ` declares telemetry this control plane does not collect yet (it does not advertise "collects-telemetry")`
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the warning lacks %q:\n%s", want, out.String())
+	}
+	if got := decodes.LimitShape(shape).Telemetry; got != nil {
+		t.Errorf("the targets were sent to a control plane that only decodes them: %+v", got)
 	}
 }
 

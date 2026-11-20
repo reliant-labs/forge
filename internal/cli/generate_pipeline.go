@@ -195,13 +195,17 @@ type pipelineContext struct {
 	// the warnOrFail helper. See pipelineFlags.Strict for the rationale.
 	Strict bool
 
-	// KeepOnBuildFailure turns a failed compile check (the validate step)
-	// into a failed step the run goes on past, keeping its writes. See
+	// KeepOnBuildFailure turns a failed compile check (the validate step),
+	// and a post generate hook that failed, into a failed step the run goes
+	// on past, keeping its writes. See
 	// pipelineFlags.KeepOnBuildFailure.
 	KeepOnBuildFailure bool
 	// keptBuildFailure is the compile check's error when KeepOnBuildFailure
 	// kept the run's writes despite it, for the report the run ends with.
 	keptBuildFailure error
+	// keptHookFailures are the post generate hooks that failed while
+	// KeepOnBuildFailure kept the run going, in the order they ran.
+	keptHookFailures []error
 
 	// Verbose toggles per-step skip messages. See pipelineFlags.Verbose
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.

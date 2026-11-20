@@ -108,7 +108,8 @@ What it writes, in order:
     workflows, seed data
 then go mod tidy, goimports, and a validating go build of the whole tree.
 A failed build rolls back every file the run wrote; --keep-on-build-failure
-keeps them, for a migration that ports hand-written code after generating.
+keeps them past a failed build or post generate hook, for a migration that
+ports hand-written code after generating.
 
 Hand-written code is never overwritten. Files that are yours from birth
 (handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
@@ -327,7 +328,7 @@ func newGenerateCmd() *cobra.Command {
 	// --skip-validate and --no-revert stay as they were (hidden, unchanged):
 	// the first hides the compile errors a migration is steered by, the
 	// second keeps a tree half-written by ANY failed step, mid-pipeline.
-	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): every step still runs, the compile errors are printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again.")
+	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): a failed compile check or post generate hook (forge.yaml generate.hooks) no longer rolls back, every step and hook still runs, each failure's output is printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again. A failed input hook still rolls back: later steps project from its output.")
 	cmd.MarkFlagsMutuallyExclusive("keep-on-build-failure", "strict")
 
 	// User-vs-maintainer surface split: the flags below are fully
@@ -500,10 +501,12 @@ type pipelineFlags struct {
 	// The compile check still runs, but its failure is a failed step the run
 	// goes on past (warnOrFail) rather than one that rolls the tree back: the
 	// writes stand, the compile errors are reported, and the run exits
-	// non-zero and is never recorded as a verified fixed point. Unlike
-	// NoRevert it covers only the compile check, after every emitter has
-	// run, so the tree it keeps is complete output, never a half-written
-	// one. Unlike SkipValidate the errors the migration is steered by are
+	// non-zero and is never recorded as a verified fixed point. A post
+	// generate hook that ran and failed is kept the same way (every later
+	// hook still runs; stepGenerateHooks says why that is safe), an input
+	// hook never is. Unlike NoRevert it covers only failures after every
+	// forge emitter has run, so the tree it keeps is complete forge output,
+	// never a half-written one. Unlike SkipValidate the errors the migration is steered by are
 	// still printed. --strict contradicts it, and the command refuses both.
 	KeepOnBuildFailure bool
 
@@ -757,34 +760,45 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
 	outcome := softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
-	reportKeptBuildFailure(os.Stderr, ctx.keptBuildFailure)
+	reportKeptBuildFailure(os.Stderr, append(slices.Clone(ctx.keptHookFailures), ctx.keptBuildFailure)...)
 	return outcome
 }
 
-// reportKeptBuildFailure ends a --keep-on-build-failure run whose compile
-// check failed: it says the files were kept, what to do next, and repeats
-// the compiler output so it is the last thing on screen. No-op when the
-// check passed or never ran.
-func reportKeptBuildFailure(w io.Writer, buildErr error) {
-	if buildErr == nil {
+// reportKeptBuildFailure ends a --keep-on-build-failure run that kept its
+// writes past a failure — post generate hooks that failed, then the compile
+// check — saying the files were kept and what to do next, and repeating
+// each failure's output (a hook's tail, the compiler's errors) so it is the
+// last thing on screen. nil entries are skipped; no-op when nothing failed.
+func reportKeptBuildFailure(w io.Writer, failures ...error) {
+	failures = slices.DeleteFunc(slices.Clone(failures), func(err error) bool { return err == nil })
+	if len(failures) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n📝 --keep-on-build-failure: the project does not compile, and this run's generated files were KEPT on disk "+
-		"(the tree was not rolled back). Port or fix the code the compiler errors point at, then run `%s generate` "+
-		"without the flag: it checks the tree again, and only a run that compiles is recorded as verified.\n", Name())
-	reprintCompilerOutput(buildErr, "")
+	fmt.Fprintf(w, "\n📝 --keep-on-build-failure: the project does not build yet (%d failure(s) below), and this run's generated files "+
+		"were KEPT on disk (the tree was not rolled back). Port or fix the code the errors point at, then run `%s generate` "+
+		"without the flag: it runs every hook and checks the tree again, and only a run that passes is recorded as verified.\n",
+		len(failures), Name())
+	for _, err := range failures {
+		reprintCompilerOutput(err, "")
+	}
 }
 
 // hintKeepOnBuildFailure follows the rollback of a run whose compile check
 // failed with the flag that keeps the output instead. A migration that
 // ports hand-written code after generating (connect-go v2) fails exactly
 // here, and the rollback undoes the output it needs; the flag is how to
-// keep it. Only a compile failure gets the hint: no other failure leaves
-// complete output worth keeping.
+// keep it. Only the failures the flag keeps get the hint — a compile
+// failure and a post generate hook that ran and failed (a hook that
+// compiles part of the tree fails first): no other failure leaves complete
+// output worth keeping.
 func hintKeepOnBuildFailure(w io.Writer, stepErr error) {
 	var interrupted *generateInterruptedError
+	if errors.As(stepErr, &interrupted) {
+		return
+	}
 	var ve *validateBuildError
-	if errors.As(stepErr, &interrupted) || !errors.As(stepErr, &ve) {
+	var he *hookFailureError
+	if !errors.As(stepErr, &ve) && !(errors.As(stepErr, &he) && he.Phase == "post") {
 		return
 	}
 	fmt.Fprintf(w, "   Not expected to compile yet (a migration that ports hand-written code after generating, "+

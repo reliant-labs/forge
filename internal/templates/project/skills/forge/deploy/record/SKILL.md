@@ -116,7 +116,9 @@ The zero-flag path records one: forge's pinned syft reads each `--image` from
 its registry by digest (`source: registry`) and the record carries the SBOM's
 digest on that workload. It reads with the registry credentials the CI already
 has: the docker credential store your `docker login` step wrote, or syft's
-`SYFT_REGISTRY_AUTH_*` variables. The bytes go to the machine ledger's SBOM
+`SYFT_REGISTRY_AUTH_*` variables. An env whose document or deploy/kcl declares
+a control plane reads its platform registry with that control plane's
+credential (`FORGE_CONTROL_PLANE_TOKEN`), as `forge env build` does. The bytes go to the machine ledger's SBOM
 store. An SBOM that cannot be produced (no syft for the platform, a registry
 401) warns, is recorded as unavailable with the reason, and the record still
 succeeds.

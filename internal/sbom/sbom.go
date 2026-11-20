@@ -263,7 +263,7 @@ func (g *Generator) scan(ctx context.Context, bin string, t Target) ([]byte, str
 		}
 		return data, release.SBOMSourceRegistry, nil
 	case KindDir:
-		data, err := g.run(ctx, bin, t, "dir:"+t.Ref)
+		data, err := g.run(ctx, bin, t, "dir:"+t.Ref, nil)
 		if err != nil {
 			return nil, release.SBOMSourceLockfile, fmt.Errorf("syft on %s: %s", t.Ref, oneLine(err.Error()))
 		}

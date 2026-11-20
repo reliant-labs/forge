@@ -306,7 +306,9 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 	}
 
 	if len(targets) > 0 {
-		gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner}
+		// The cut's registry credential path: the env's control-plane
+		// identity for its platform registry, the docker store elsewhere.
+		gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.projectDir, in.env, in.declared)}
 		if dir := sbomCacheDir(); dir != "" {
 			gen.Cache = &sbom.Cache{Dir: dir}
 		}

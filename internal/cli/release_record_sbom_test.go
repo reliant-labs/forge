@@ -9,9 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -388,5 +391,33 @@ func TestRecordSourceArtifact_RealGit(t *testing.T) {
 	}
 	if _, err := recordSourceArtifact(tree, ""); err == nil || !strings.Contains(err.Error(), "--commit") {
 		t.Errorf("no commit: %v", err)
+	}
+}
+
+// Registry reads go through the cut's credential path: the record's env and
+// its declaration decide whether forge's own control-plane identity is
+// offered for the image's registry.
+func TestReleaseRecordSBOM_RegistryReadsUseTheCutsCredentialPath(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	prev := sbomRegistryCredential
+	t.Cleanup(func() { sbomRegistryCredential = prev })
+	declared := &KCLEntities{}
+	var mu sync.Mutex
+	var asked []string
+	sbomRegistryCredential = func(projectDir, env string, e *KCLEntities, host string) (auth.CredentialFunc, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, env+" "+host+" "+strconv.FormatBool(e == declared))
+		return nil, nil
+	}
+	artifacts := map[string]release.Artifact{"api": {Kind: release.KindOCI, Mode: release.ModeShared,
+		Digests: map[string]string{release.SharedVariant: recordDigestA}, URI: "registry.example.com/acme/api"}}
+	recordReleaseSBOMs(context.Background(), recordSBOMRun{projectDir: rt.sc.projectDir, project: "shop", env: "prod",
+		version: "v1.4.0", declared: declared}, artifacts, &bytes.Buffer{})
+	if len(asked) != 1 || asked[0] != "prod registry.example.com true" {
+		t.Errorf("credential asked for %v, want prod's declaration for registry.example.com", asked)
+	}
+	if ref := artifacts["api"].SBOM; ref == nil || ref.Status != release.SBOMStatusOK {
+		t.Errorf("SBOM %+v", ref)
 	}
 }

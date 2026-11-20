@@ -36,7 +36,7 @@ func TestManifestSourceLatest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rel, err := ManifestSource{URL: srv.URL + "/daemon-channels.json", Client: srv.Client()}.Latest(context.Background(), "latest")
+	rel, err := ManifestSource{URL: srv.URL + "/daemon-channels.json", AllowedOrigins: []string{"https://dl.example"}, Client: srv.Client()}.Latest(context.Background(), "latest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,12 +74,16 @@ func TestManifestRefuses(t *testing.T) {
 			strings.Replace(testManifest, "reliant_darwin_arm64.tar.gz", "reliant_linux_amd64.tar.gz", 1),
 			"latest", "two files",
 		},
+		"a file on another host": {
+			strings.Replace(testManifest, "https://dl.example/cli/v1.9.0/reliant_linux_amd64.tar.gz", "https://evil.example/reliant_linux_amd64.tar.gz", 1),
+			"latest", "not on an allowed origin",
+		},
 		"no tag": {strings.Replace(testManifest, `"tag": "v1.9.0", "commit": "abc", "commit_time_unix"`, `"tag": "", "commit": "abc", "commit_time_unix"`, 1), "latest", "names no tag"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			doc, err := parseManifest([]byte(tc.body))
 			if err == nil {
-				_, err = doc.release(tc.channel)
+				_, err = doc.release(tc.channel, map[string]bool{"https://dl.example": true})
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
@@ -92,6 +96,37 @@ func TestManifestSourceRefusesPlainHTTP(t *testing.T) {
 	t.Parallel()
 	_, err := ManifestSource{URL: "http://dl.example/daemon-channels.json"}.Latest(context.Background(), "latest")
 	if err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestManifestSourceDefaultsToItsOwnOrigin(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(testManifest))
+	}))
+	defer srv.Close()
+	// The test manifest names dl.example, not the server it is served from.
+	_, err := ManifestSource{URL: srv.URL + "/daemon-channels.json", Client: srv.Client()}.Latest(context.Background(), "latest")
+	if err == nil || !strings.Contains(err.Error(), "not on an allowed origin") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestManifestSourceRefusesARedirectOffItsOrigin(t *testing.T) {
+	t.Parallel()
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(testManifest))
+	}))
+	defer other.Close()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/daemon-channels.json", http.StatusFound)
+	}))
+	defer srv.Close()
+	client := srv.Client()
+	client.Transport.(*http.Transport).TLSClientConfig.RootCAs.AddCert(other.Certificate())
+	_, err := ManifestSource{URL: srv.URL + "/daemon-channels.json", AllowedOrigins: []string{"https://dl.example"}, Client: client}.Latest(context.Background(), "latest")
+	if err == nil || !strings.Contains(err.Error(), "redirect of the channel manifest") {
 		t.Fatalf("err = %v", err)
 	}
 }

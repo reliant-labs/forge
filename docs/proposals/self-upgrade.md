@@ -605,7 +605,9 @@ design is unchanged; these are the API details building it settled.
   the format reliant's R0 publishes as `daemon-channels.json`
   (`dev-docs/cli-release-artifacts.md`): one channel's version, tag, commit
   time, `checksums`, `bundle` and per-`goos/goarch` archives, each named by the
-  last element of its https URL. The manifest's own signature is not checked:
+  last element of its https URL, on an allowed origin (`AllowedOrigins`, default the
+  manifest's own; a redirect of the manifest off its origin is refused). The
+  manifest's own signature is not checked:
   it only names the target. The files are verified against their release's
   bundle (a manifest pointing at another release's files fails the replay
   rule), and `Updater.Check` never moves backwards, so a held-back manifest can

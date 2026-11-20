@@ -11,8 +11,8 @@
 //   - the certificate's identity matches [Config.Identity] (the release
 //     workflow at a release ref) and its issuer [Config.Issuer];
 //   - the in-toto statement's predicate type is [Config.PredicateType];
-//   - EVERY downloaded file but the bundle is a subject of the statement, by
-//     sha256;
+//   - EVERY downloaded file but the bundle is a subject of the statement,
+//     under its own name and with its own sha256;
 //   - the predicate names [Config.Repo] as its repository and the tag being
 //     installed as its release, so an older signed set replayed under a newer
 //     tag is refused.
@@ -199,15 +199,27 @@ func (v *Verifier) Verify(ctx context.Context, rel selfupdate.Release, files map
 	if st.GetPredicateType() != v.cfg.PredicateType {
 		return fmt.Errorf("sigstore: predicate type is %q, want %q", st.GetPredicateType(), v.cfg.PredicateType)
 	}
-	signed := map[string]bool{}
+	// Each file must be signed under its own name with its own digest: a
+	// file renamed to another signed file's name, or carrying another
+	// signed file's bytes under its name, is refused.
+	signed := map[string]string{}
 	for _, s := range st.GetSubject() {
-		if d := s.GetDigest()["sha256"]; d != "" {
-			signed[strings.ToLower(d)] = true
+		name, d := s.GetName(), strings.ToLower(s.GetDigest()["sha256"])
+		if name == "" || d == "" {
+			continue
 		}
+		if prev, dup := signed[name]; dup && prev != d {
+			return fmt.Errorf("sigstore: the statement signs two different files named %s", name)
+		}
+		signed[name] = d
 	}
 	for _, name := range names {
-		if !signed[hex.EncodeToString(digests[name])] {
+		want, ok := signed[name]
+		if !ok {
 			return fmt.Errorf("sigstore: %s is not one of the files %s signed", name, rel.Tag)
+		}
+		if want != hex.EncodeToString(digests[name]) {
+			return fmt.Errorf("sigstore: %s is not the file %s signed under that name", name, rel.Tag)
 		}
 	}
 	fields := st.GetPredicate().GetFields()

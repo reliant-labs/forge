@@ -136,7 +136,7 @@ func TestRefuses(t *testing.T) {
 				}
 				files["forge_linux_amd64.tar.gz"] = p
 			},
-			wantErr: "is not one of the files",
+			wantErr: "is not the file v1.8.0 signed under that name",
 		},
 		{
 			name: "a release with no bundle",

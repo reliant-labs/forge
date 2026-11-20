@@ -43,6 +43,12 @@ import (
 type ManifestSource struct {
 	// URL is the manifest's https URL.
 	URL string
+	// AllowedOrigins are the https origins ("https://host[:port]") the
+	// manifest may name files on. Empty allows only the manifest's own
+	// origin. A manifest naming a file anywhere else is refused, and so is a
+	// redirect of the manifest itself off its origin: whoever can rewrite the
+	// manifest cannot point the updater at a server of their choosing.
+	AllowedOrigins []string
 	// Client fetches it; default an observe.NewHTTPClient with a 30s timeout.
 	Client *http.Client
 }
@@ -75,11 +81,42 @@ type manifestDoc struct {
 
 // Latest returns the release the manifest names for channel.
 func (m ManifestSource) Latest(ctx context.Context, channel string) (Release, error) {
+	allowed, err := m.origins()
+	if err != nil {
+		return Release{}, err
+	}
 	doc, err := m.fetch(ctx)
 	if err != nil {
 		return Release{}, err
 	}
-	return doc.release(channel)
+	return doc.release(channel, allowed)
+}
+
+// origins is the set of origins files may be named on.
+func (m ManifestSource) origins() (map[string]bool, error) {
+	allowed := map[string]bool{}
+	raw := m.AllowedOrigins
+	if len(raw) == 0 {
+		raw = []string{m.URL}
+	}
+	for _, o := range raw {
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return nil, fmt.Errorf("selfupdate: ManifestSource origin %q is not an https URL", o)
+		}
+		allowed[originOf(u)] = true
+	}
+	return allowed, nil
+}
+
+// originOf is u's scheme, lowercased host and explicit port.
+func originOf(u *url.URL) string {
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if port == "" || port == "443" {
+		return "https://" + host
+	}
+	return "https://" + host + ":" + port
 }
 
 func (m ManifestSource) fetch(ctx context.Context) (manifestDoc, error) {
@@ -99,7 +136,16 @@ func (m ManifestSource) fetch(ctx context.Context) (manifestDoc, error) {
 	if client == nil {
 		client = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: 30 * time.Second})
 	}
-	resp, err := httpsOnly(client).Do(req)
+	sameOrigin := httpsOnly(client)
+	check := sameOrigin.CheckRedirect
+	cp := *sameOrigin
+	cp.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if originOf(r.URL) != originOf(u) {
+			return fmt.Errorf("selfupdate: refusing a redirect of the channel manifest off %s to %s", originOf(u), r.URL.Redacted())
+		}
+		return check(r, via)
+	}
+	resp, err := cp.Do(req)
 	if err != nil {
 		return manifestDoc{}, fmt.Errorf("selfupdate: channel manifest: %w", err)
 	}
@@ -128,7 +174,7 @@ func parseManifest(body []byte) (manifestDoc, error) {
 	return doc, nil
 }
 
-func (d manifestDoc) release(channel string) (Release, error) {
+func (d manifestDoc) release(channel string, allowed map[string]bool) (Release, error) {
 	ch, ok := d.Channels[channel]
 	if !ok {
 		return Release{}, fmt.Errorf("selfupdate: the channel manifest has no channel %q", channel)
@@ -143,8 +189,11 @@ func (d manifestDoc) release(channel string) (Release, error) {
 	seen := map[string]bool{}
 	asset := func(what string, f manifestFile) (Asset, error) {
 		u, err := url.Parse(f.URL)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 			return Asset{}, fmt.Errorf("selfupdate: channel %q: %s URL %q is not https", channel, what, f.URL)
+		}
+		if !allowed[originOf(u)] {
+			return Asset{}, fmt.Errorf("selfupdate: channel %q: %s URL %q is not on an allowed origin", channel, what, f.URL)
 		}
 		name := path.Base(u.Path)
 		if !safeName(name) {

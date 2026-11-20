@@ -98,6 +98,10 @@ func TestShapeTelemetryOfRefusesHostedViolations(t *testing.T) {
 // warns, naming each target, and still writes; to one that advertises caps of
 // its own, a target over them is refused, located.
 func TestCheckBundleTelemetry(t *testing.T) {
+	// The warning is process-global; isolate repeated runs of this test while
+	// preserving the assertion that two writes in one run warn only once.
+	telemetryUncollectedNoted.Delete("prod-warn-test")
+	t.Cleanup(func() { telemetryUncollectedNoted.Delete("prod-warn-test") })
 	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api"), hostedTelemetryTarget("worker")})}
 
 	var out bytes.Buffer

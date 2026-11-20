@@ -117,9 +117,26 @@
 // The gate is therefore armed by a sentence the developer wrote, never by
 // a heuristic forge guessed, and it arms per-entity rather than
 // project-wide: declaring an owner column on `customers` does not make an
-// unscoped RPC over a global product catalog a failure. Forge still ships
-// no ownership of its own and injects no WHERE clause — the marker
-// declares that a boundary EXISTS, and the developer writes what it is.
+// unscoped RPC over a global product catalog a failure. The column marker
+// injects no WHERE clause — it declares that a boundary EXISTS, and the
+// developer writes what it is.
+//
+// The table-level form, schemadef.TableMarkerOwner, declares the boundary
+// AND what it is, and the generated ops enforce it:
+//
+//	COMMENT ON TABLE plans IS 'forge:owner=thread_id>chat_id>user_id';
+//
+// It arms the gate exactly as the column marker does (and the raw-SQL
+// check, by the first column of its first owner). It is also an answer to
+// the gate: the op of an owned table resolves the caller itself, through
+// the service's `s.deps.Owners` (forge/pkg/crud's Owned* helpers), so a
+// handler that reaches its OWN `s.crud<Method>Op()` — directly or through
+// package helpers — counts as reading the caller, provided that op really
+// names `s.deps.Owners`. An op generated before the declaration names
+// nothing, and the rpc keeps gating until `forge generate` rewrites it. An
+// authenticated rpc over an owned table whose handler neither delegates to
+// its op nor reads the caller still gates, and its remediation is the
+// delegation. See audit_unscoped_auth_owned_op.go.
 //
 // The `forge:auth-unscoped-ok: <reason>` escape hatch suppresses the
 // ERROR, not merely the warning — a gate with no way to say "this one is
@@ -188,6 +205,11 @@ type unscopedRPC struct {
 	// advisory finding — no owned table sits behind it.
 	Entity string `json:"entity,omitempty"`
 	Table  string `json:"table,omitempty"`
+	// OwnerSpec is the table-level `forge:owner=` declaration that armed
+	// the gate, when it was that form rather than a `forge:owner` column.
+	// Its generated op already scopes by it, so the remediation is to
+	// delegate to the op rather than to hand-write a predicate.
+	OwnerSpec string `json:"owner_spec,omitempty"`
 	// Remediation is the owner-scoping wrapper for this RPC, as code —
 	// the caller resolution, the placeholder owner expression, and the
 	// op-seam override that puts Table's declared owner column into the
@@ -288,6 +310,13 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	// is absent or stale, which is exactly the state a security gate is
 	// least entitled to be silent in.
 	ownerTables := ownerScopedTables(cfg, projectDir)
+	// The table-level form (`COMMENT ON TABLE t IS 'forge:owner=…'`) arms
+	// the gate the same way, and its generated ops resolve the caller
+	// themselves (audit_unscoped_auth_owned_op.go). The raw-SQL check reads
+	// both forms through one table → owner-column map.
+	tableOwners := ownerTableSpecs(migrationTexts(cfg, projectDir))
+	sqlOwners := sqlOwnerColumns(ownerTables, tableOwners)
+	var ownedOpScoped []string
 
 	// The CALLER half's vocabulary: forge's own seam, plus whatever the
 	// project declared resolves the caller (//forge:resolves-caller). Read
@@ -357,7 +386,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 				// about whether that identity reached the rows — so the
 				// RPC is classified by what is in the SQL rather than
 				// counted as verified.
-				ev, hasOwned := classifyHandlerSQL(h.SQL, ownerTables)
+				ev, hasOwned := classifyHandlerSQL(h.SQL, sqlOwners)
 				if !hasOwned {
 					scopedTotal++
 					break
@@ -372,8 +401,14 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 				} else {
 					rawSQLUnscoped = append(rawSQLUnscoped, finding)
 				}
+			case h.DelegatesOwnedOp && ownerSpecFor(method, tableOwners) != "":
+				// The handler delegates to the generated op of a table
+				// that declares `forge:owner=`, and that op resolves the
+				// caller through s.deps.Owners: scoped by construction.
+				scopedTotal++
+				ownedOpScoped = append(ownedOpScoped, svc.Name+"."+name)
 			default:
-				unscoped = append(unscoped, newUnscopedFinding(svc.Name, method, rel, h.Delegating, ownerTables))
+				unscoped = append(unscoped, newUnscopedFinding(svc.Name, method, rel, h.Delegating, ownerTables, tableOwners))
 			}
 		}
 	}
@@ -414,8 +449,10 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		"scoped_rpcs":                scopedTotal,
 		"unscoped_rpcs":              unscoped,
 		"owner_scoped_unscoped_rpcs": gating,
-		"owner_scoped_tables":        sortedKeys(ownerTables),
+		"owner_scoped_tables":        sortedKeys(sqlOwners),
 		"owner_marker":               schemadef.ColumnMarkerOwner,
+		"table_owner_specs":          tableOwners,
+		"owned_op_rpcs":              sortedStrings(ownedOpScoped),
 		"acknowledged_rpcs":          acknowledged,
 		"raw_sql_unscoped_rpcs":      rawSQLUnscoped,
 		"raw_sql_unverifiable_rpcs":  rawSQLUnverifiable,
@@ -515,7 +552,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		// `remediation` snippet goes, and an advisory finding carries
 		// none, so printing it there would name a field that is not
 		// present.
-		details["owner_scoping_hint"] = ownerScopingHint()
+		details["owner_scoping_hint"] = ownerScopingHint(gating)
 		return audittype.Category{
 			Status: audittype.StatusError,
 			Summary: fmt.Sprintf(
@@ -561,15 +598,26 @@ var ownerMarkerTokenRE = regexp.MustCompile(regexp.QuoteMeta(schemadef.ColumnMar
 // that knows a boundary exists but cannot say which column expresses it
 // can only restate the problem.
 func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]string {
+	out := map[string]string{}
+	for _, sql := range migrationTexts(cfg, projectDir) {
+		for table, column := range ownerScopedTablesIn(sql) {
+			out[table] = column
+		}
+	}
+	return out
+}
+
+// migrationTexts reads the primary database's up migrations in name order —
+// which is timestamp order — so a later migration that moves ownership wins
+// over the one it replaced, matching the applied schema. An unreadable or
+// absent migrations directory yields nothing, which disarms the gate: the
+// correct direction for a filesystem problem that is not itself a security
+// finding.
+func migrationTexts(cfg *config.ProjectConfig, projectDir string) []string {
 	migDir := config.MigrationsPathIn(projectDir)
 	if cfg != nil {
 		migDir = filepath.Join(projectDir, filepath.FromSlash(cfg.PrimaryDatabase().MigrationsPath()))
 	}
-
-	out := map[string]string{}
-	// Migrations are walked in name order — which is timestamp order —
-	// so a later migration that moves ownership to a different column
-	// wins over the one it replaced, matching the applied schema.
 	var paths []string
 	_ = filepath.WalkDir(migDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -582,14 +630,13 @@ func ownerScopedTables(cfg *config.ProjectConfig, projectDir string) map[string]
 		return nil
 	})
 	sort.Strings(paths)
+	var out []string
 	for _, path := range paths {
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			continue
 		}
-		for table, column := range ownerScopedTablesIn(string(data)) {
-			out[table] = column
-		}
+		out = append(out, string(data))
 	}
 	return out
 }
@@ -635,23 +682,35 @@ func ownerScopedTablesIn(sql string) map[string]string {
 // rpc mapping to no entity. Reusing that derivation rather than
 // re-inventing one is what keeps the gate's idea of "which table does this
 // RPC touch" from drifting away from the generator's.
-func ownerEntityFor(method codegen.Method, ownerTables map[string]string) (entity, table, column string) {
-	if len(ownerTables) == 0 {
-		return "", "", ""
+func ownerEntityFor(method codegen.Method, ownerTables, tableOwners map[string]string) (entity, table, column, spec string) {
+	if len(ownerTables) == 0 && len(tableOwners) == 0 {
+		return "", "", "", ""
 	}
 	op, name := codegen.CRUDShape(method)
 	if op == "" {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	if op == "list" {
 		name = inflection.Singular(name)
 	}
 	for _, candidate := range codegen.EntityTableCandidates(name) {
+		// The table-level form wins: it is the enforced one, and the
+		// generated op honours it whatever the columns say.
+		if s, owned := tableOwners[candidate]; owned {
+			return name, candidate, "", s
+		}
 		if col, owned := ownerTables[candidate]; owned {
-			return name, candidate, col
+			return name, candidate, col, ""
 		}
 	}
-	return "", "", ""
+	return "", "", "", ""
+}
+
+// ownerSpecFor is the table-level `forge:owner=` declaration of the table a
+// CRUD rpc operates on, "" when it declares none.
+func ownerSpecFor(method codegen.Method, tableOwners map[string]string) string {
+	_, _, _, spec := ownerEntityFor(method, nil, tableOwners)
+	return spec
 }
 
 // newUnscopedFinding builds one finding, resolving the owned entity
@@ -662,8 +721,12 @@ func ownerEntityFor(method codegen.Method, ownerTables map[string]string) (entit
 // arms the gate and Remediation is what the user does about it, and a
 // finding carrying one without the other is the failure this whole
 // change exists to fix.
-func newUnscopedFinding(service string, method codegen.Method, file string, delegating bool, ownerTables map[string]string) unscopedRPC {
-	entity, table, column := ownerEntityFor(method, ownerTables)
+func newUnscopedFinding(service string, method codegen.Method, file string, delegating bool, ownerTables, tableOwners map[string]string) unscopedRPC {
+	entity, table, column, spec := ownerEntityFor(method, ownerTables, tableOwners)
+	remediation := scopingRemediation(method, entity, column)
+	if spec != "" {
+		remediation = ownedOpRemediation(method, table, spec)
+	}
 	return unscopedRPC{
 		Service:     service,
 		Method:      method.Name,
@@ -671,7 +734,8 @@ func newUnscopedFinding(service string, method codegen.Method, file string, dele
 		Delegating:  delegating,
 		Entity:      entity,
 		Table:       table,
-		Remediation: scopingRemediation(method, entity, column),
+		OwnerSpec:   spec,
+		Remediation: remediation,
 	}
 }
 
@@ -710,7 +774,18 @@ func scopingRemediation(method codegen.Method, entity, column string) string {
 // see nothing change, and conclude forge is broken. The claim is
 // falsifiable at their own file: handlers_crud.go opens with "yours:
 // scaffolded once, never touched again".
-func ownerScopingHint() string {
+func ownerScopingHint(gating []unscopedRPC) string {
+	for _, g := range gating {
+		if g.OwnerSpec != "" {
+			return ownerScopingHintText() + " For a table that declares `" + schemadef.TableMarkerOwner + "=`, the generated op already " +
+				"scopes by it through s.deps.Owners: the finding's remediation is the plain delegation to `s.crud<Method>Op()` " +
+				"(run `" + cmdutil.Name() + " generate` first if the op predates the declaration)."
+		}
+	}
+	return ownerScopingHintText()
+}
+
+func ownerScopingHintText() string {
 	return "forge scaffolds this wrapper into internal/handlers/<service>/handlers_crud.go only when that file is first created, " +
 		"and a `" + schemadef.ColumnMarkerOwner + "` declaration lives in a migration written later — so on an existing project the scaffold " +
 		"cannot fire and `" + cmdutil.Name() + " generate` will not add it. Paste each finding's `remediation` into the named method in that " +
@@ -777,6 +852,11 @@ type handlerAuthUse struct {
 	ReadsCaller bool
 	Delegating  bool
 	AckReason   string
+	// DelegatesOwnedOp is true when the handler reaches its own generated
+	// op and that op resolves the caller through s.deps.Owners — the
+	// shape of an op over a table declaring `forge:owner=`
+	// (audit_unscoped_auth_owned_op.go).
+	DelegatesOwnedOp bool
 	// SQL and HasSQL describe the hand-written queries this handler can
 	// reach. They are carried separately from ReadsCaller because they
 	// answer a different question: ReadsCaller says the caller was
@@ -865,6 +945,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 		astFiles = append(astFiles, pf.file)
 	}
 	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
+	delegatesOwnedOp := ownedOpDelegations(decls)
 
 	out := map[string]handlerAuthUse{}
 	for _, pf := range files {
@@ -883,6 +964,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 			}
 			use.ReadsCaller = bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
+			use.DelegatesOwnedOp = delegatesOwnedOp(fn.Name.Name)
 			use.SQL = sqlByName[fn.Name.Name]
 			use.HasSQL = len(use.SQL) > 0
 			out[fn.Name.Name] = use

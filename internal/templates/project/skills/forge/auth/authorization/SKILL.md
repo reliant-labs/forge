@@ -119,11 +119,20 @@ COMMENT ON COLUMN crews.company_id IS 'forge:owner';
   an owner on `crews` does not fail an unscoped RPC over a global product
   catalog; the gate arms per table.
 
-Forge ships no ownership of its own and will not inject a `WHERE` clause at runtime for
-you, because only your app knows how a caller's claims map onto that column's
-values — a direct user id, a company id read from a membership table, an org
-resolved from a subdomain. The marker is a declaration, and what it buys is that
-forge stops letting you ship the handler unfinished.
+The COLUMN marker injects no `WHERE` clause at runtime, because it does not say
+how a caller's claims map onto that column's values: a direct user id, a company
+id read from a membership table, an org resolved from a subdomain. The marker is
+a declaration, and what it buys is that forge stops letting you ship the handler
+unfinished.
+
+**To have the generated ops enforce ownership themselves, declare it on the
+TABLE instead:** `COMMENT ON TABLE crews IS 'forge:owner=company_id'`, or a
+foreign-key path (`forge:owner=thread_id>chat_id>user_id`), or alternatives
+(`forge:owner=user:user_id,org:org_id`). Each op scopes every read and write
+through your `crud.OwnerResolver` (which answers "who is this caller, and which
+orgs are theirs"). There is no wrapper to finish and none to forget. That table
+form, and how overrides compose with it, is in `db/crud-overrides`. It counts as
+scoped for `unscoped_auth`.
 
 ### Scoping a generated CRUD op
 

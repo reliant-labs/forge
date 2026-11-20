@@ -844,6 +844,23 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		}
 	}
 
+	// No owner marked: say so in the catalog, explicitly, rather than leave
+	// the table silent. The `crud-table-unowned` lint asks every table with
+	// authenticated CRUD whose rows they are; a born table answers with a
+	// visible `forge:unscoped` reason the author replaces with
+	// `forge:owner=<column>` the day its rows belong to someone. Forge's own
+	// output therefore passes forge's own gate, and a hand-written table
+	// that never answered still fails it. An append-only table carries the
+	// same words inside its one COMMENT ON TABLE (a second would replace it).
+	if len(owners) == 0 && !spec.AppendOnly {
+		// The SQL comment names no marker spelling: migration-text lanes
+		// read every forge:* token, and an example would read as one.
+		b.WriteString("\n-- Unscoped: who a row belongs to is not declared yet. When it is, replace this\n")
+		b.WriteString("-- with an owner declaration and the generated CRUD scopes every op to the caller\n")
+		b.WriteString("-- (see the forge `db/crud-overrides` skill).\n")
+		fmt.Fprintf(&b, "COMMENT ON TABLE %s IS '%s';\n", spec.Table, strings.TrimPrefix(bornUnscopedSuffix(nil), " "))
+	}
+
 	// forge:append-only — the STORAGE half of the marker (the wire half omits
 	// the Update/Delete RPCs): a trigger that rejects every UPDATE/DELETE so
 	// no bug or compromised caller can rewrite or erase a ledger row. LOUD
@@ -860,8 +877,8 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		// forward, so without this the applied schema looks ordinary and
 		// the generated store happily offers UpdateX/DeleteX for a table
 		// postgres refuses every write to.
-		fmt.Fprintf(&b, "COMMENT ON TABLE %s IS '%s — rows are inserted and read, never rewritten or erased.';\n",
-			spec.Table, schemadef.TableMarkerAppendOnly)
+		fmt.Fprintf(&b, "COMMENT ON TABLE %s IS '%s — rows are inserted and read, never rewritten or erased.%s';\n",
+			spec.Table, schemadef.TableMarkerAppendOnly, bornUnscopedSuffix(owners))
 
 		fmt.Fprintf(&b, "CREATE OR REPLACE FUNCTION %s_forbid_mutation() RETURNS trigger\n", spec.Table)
 		b.WriteString("    LANGUAGE plpgsql AS $$\n")
@@ -1023,4 +1040,16 @@ func mapValueLabel(f codegen.SchemaFieldDef) string {
 		return "unknown"
 	}
 	return f.MapValueKind
+}
+
+// bornUnscopedSuffix is the `forge:unscoped` declaration a born table with
+// no owner column carries (" "-prefixed, to follow another marker's text),
+// or "" when the birth declared an owner.
+func bornUnscopedSuffix(owners []string) string {
+	if len(owners) > 0 {
+		return ""
+	}
+	// The reason must not spell another marker: `forge:owner=<column>` in
+	// the text would read as an owner declaration that names no column.
+	return " " + schemadef.TableMarkerUnscoped + ": born without an owner; declare the owner column when its rows belong to someone"
 }

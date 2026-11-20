@@ -24,7 +24,7 @@ func TestPrintAuditCategory_PrintsTheScopingWrapperInFull(t *testing.T) {
 		Status:  audittype.StatusError,
 		Summary: "1 authenticated RPC(s) over forge:owner-declared data never resolve the caller",
 		Details: map[string]any{
-			"owner_scoping_hint": ownerScopingHint(),
+			"owner_scoping_hint": ownerScopingHint(nil),
 			"owner_scoped_unscoped_rpcs": []unscopedRPC{{
 				Service: "DocumentsService", Method: "GetDocument",
 				File:   "internal/handlers/documents/handlers_crud.go",

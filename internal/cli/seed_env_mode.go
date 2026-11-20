@@ -55,6 +55,11 @@ var errEnvConfigNotEvaluable = errors.New("not evaluable")
 // authoritative whenever it is available; the text match is consulted only
 // when it is not.
 func classifySeedEnv(projectDir, env string) envModeReading {
+	// Seed and reset must classify the declared environment, not a path
+	// that resolves to a different directory or aliases another env.
+	if err := checkLifecycleEnvName(env); err != nil {
+		return envModeReading{Source: err.Error()}
+	}
 	rel := filepath.ToSlash(filepath.Join("deploy", "kcl", env, "config.k"))
 	if _, err := os.Stat(filepath.Join(projectDir, rel)); err != nil {
 		return envModeReading{Source: rel + " does not exist, so nothing declares this environment's runtime MODE"}

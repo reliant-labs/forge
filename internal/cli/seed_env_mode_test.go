@@ -124,6 +124,22 @@ func TestClassifySeedEnvFallsBackToTextWithoutASchema(t *testing.T) {
 	}
 }
 
+func TestClassifySeedEnvRejectsPathsBeforeReadingConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeModeFixture(t, dir, map[string]string{
+		"deploy/kcl/dev/config.k": `environment = "dev"`,
+		"deploy/sibling/config.k": `environment = "dev"`,
+	})
+	for _, env := range []string{"", ".", "..", "../sibling", "dev/../dev", `..\sibling`, "/dev", `C:\dev`, filepath.Join(dir, "deploy", "kcl", "dev")} {
+		if got := classifySeedEnv(dir, env); got.Dev || !strings.Contains(got.Source, "must be one directory name") {
+			t.Errorf("classifySeedEnv(%q) = %+v, want refused before reading a config", env, got)
+		}
+	}
+	if got := classifySeedEnv(dir, "dev"); !got.Dev {
+		t.Errorf("literal dev env not accepted: %+v", got)
+	}
+}
+
 // The regression: a typed config that nests the MODE in a composed block —
 // reliant's `reliant_config: config_gen.ReliantConfig = { runtime =
 // {environment = "dev"} }` — is dev once EVALUATED, where the line match

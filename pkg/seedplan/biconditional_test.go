@@ -329,6 +329,54 @@ func TestBiconditional_OverlayNullOnARequiredCell(t *testing.T) {
 	}
 }
 
+func TestUnionNonBlankUsesOnlyValidVocabularyMembers(t *testing.T) {
+	tab := schemadef.Table{
+		Name: "grants", PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(), textCol("kind"), {Name: "label", DeclType: "TEXT", Type: schemadef.TypeString},
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("kind_pool", `CHECK (kind = ANY (ARRAY['workspace'::text, ''::text]))`, "kind"),
+			check("label_shape", `CHECK (((kind = 'workspace') AND (length(kind) > 0) AND (length(label) > 0)) OR ((kind = '') AND (label IS NULL)))`, "kind", "label"),
+		},
+	}
+	for _, tc := range []struct {
+		name, pool string
+		place      bool
+	}{
+		{"blank included with usable member", `''::text, 'ready'::text`, true},
+		{"all blank", `''::text, ' '::text`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tb := tab
+			tb.Checks = append(append([]schemadef.CheckConstraint{}, tab.Checks...), check("label_pool", "CHECK (label = ANY (ARRAY["+tc.pool+"]))", "label"))
+			p := planFor(t, tb, 8)
+			p.ApplyVocab(&Vocab{Columns: map[string][]string{"grants.label": {vocabNull}}})
+			if !tc.place {
+				if len(p.unions[tb.Name]) != 0 || !strings.Contains(strings.Join(p.Warnings(), "\n"), "declared values are all blank") {
+					t.Fatalf("all-blank pool was not refused with a warning: unions=%v, warnings=%v", p.unions[tb.Name], p.Warnings())
+				}
+				if lit, ok := p.presentLiteral(tb.Name, tb.Columns[2], 0, true); ok || lit != "" {
+					t.Fatalf("presentLiteral returned a usable draw from an all-blank pool: (%q, %t)", lit, ok)
+				}
+				return
+			}
+			seen := map[string]bool{}
+			for row := range 8 {
+				lits := rowLits(t, p, tb.Name, row)
+				kind, label := lits["kind"], lits["label"]
+				seen[kind] = true
+				if kind == "'workspace'" && label != "'ready'" || kind == "''" && label != "NULL" {
+					t.Fatalf("row %d: invalid kind/label combination %s %s", row, kind, label)
+				}
+			}
+			if !seen["'workspace'"] || !seen["''"] {
+				t.Fatalf("did not exercise both branches: %v, warnings=%v", seen, p.Warnings())
+			}
+		})
+	}
+}
+
 // What stays refused: a side outside the grammar keeps the ordering pass's
 // refusal, unchanged.
 func TestBiconditional_OutsideTheGrammarKeepsTheRefusal(t *testing.T) {

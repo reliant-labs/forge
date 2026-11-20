@@ -654,15 +654,11 @@ func unionBranchCells(
 			if a.eq != nil && strings.TrimSpace(a.eq.raw) == "" {
 				return nil, false, "" // pinned blank and required non-blank: never true
 			}
-			// A declared vocabulary is what the column draws from, so a
-			// blank member could be drawn onto exactly the row that needs
-			// a value — not provable, so not placed.
-			if pool, ok := pools.get(t.Name, name); ok && a.eq == nil {
-				for _, v := range pool {
-					if strings.TrimSpace(v) == "" {
-						return nil, false, fmt.Sprintf("it requires a non-blank %s, whose declared values include a blank one", name)
-					}
-				}
+			// A non-blank equality pin is validated against the pool below
+			// and then written directly. A presence-only cell has no pin:
+			// it draws from the usable subset of the pool in presentLiteral.
+			if pool, ok := pools.get(t.Name, name); ok && a.eq == nil && len(nonBlankValues(pool)) == 0 {
+				return nil, false, fmt.Sprintf("it requires a non-blank %s, whose declared values are all blank", name)
 			}
 		}
 		declared := declaredBound(t, name)
@@ -872,7 +868,7 @@ func (p *Plan) unionLiteral(table string, col schemadef.Column, i int) (string, 
 // schema's own value.
 func (p *Plan) presentLiteral(table string, col schemadef.Column, i int, nonBlank bool) (string, bool) {
 	usable := func(lit string) bool {
-		return lit != "NULL" && !(nonBlank && strings.TrimSpace(strings.Trim(lit, "'")) == "")
+		return lit != "NULL" && (!nonBlank || isNonBlankLiteral(lit))
 	}
 	if usable(p.valueLiteral(table, col, i)) {
 		return "", false
@@ -883,10 +879,39 @@ func (p *Plan) presentLiteral(table string, col schemadef.Column, i int, nonBlan
 			vals = append(vals, v)
 		}
 	}
+	salt := p.cfg.EffectiveSalt()
 	if len(vals) > 0 {
-		return poolLiteral(col, vals[pick(p.cfg.EffectiveSalt(), table, col.Name, i, len(vals))]), true
+		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))]), true
 	}
-	return p.schemaValueLiteral(table, col, i), true
+	lit := p.schemaValueLiteral(table, col, i)
+	if usable(lit) {
+		return lit, true
+	}
+	if pool, ok := p.pools.get(table, col.Name); ok && nonBlank {
+		// The branch planner rejects an all-blank pool for a presence
+		// placement. Recheck here rather than returning a schema draw
+		// that does not satisfy the branch.
+		vals := SeedEnumChoices(nonBlankValues(pool))
+		if len(vals) > 0 {
+			return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))]), true
+		}
+	}
+	return "", false
+}
+
+func isNonBlankLiteral(lit string) bool {
+	v, ok := decodeScalarLiteral(lit)
+	return ok && strings.TrimSpace(v) != ""
+}
+
+func nonBlankValues(pool []string) []string {
+	var values []string
+	for _, v := range pool {
+		if strings.TrimSpace(v) != "" {
+			values = append(values, v)
+		}
+	}
+	return values
 }
 
 // unionForbidsEdge reports whether the union branch row i of table takes

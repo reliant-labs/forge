@@ -19,9 +19,10 @@ version bump.
 `forge generate` raises the declared range to the floor its generated code
 needs, but the floor is a version, and the lockfile can still install an
 older runtime than the generated code was written against. So after it settles
-each frontend, generate compares the generated `*_gen.ts` files with the
-INSTALLED runtime's `dist/`. If they use a feature it does not ship (an option
-it would silently ignore, or an import that fails the build), generate prints a
+each frontend, generate checks named imports in its generated TypeScript
+against the INSTALLED runtime's public entry points. It also checks option
+keys it can trace to the telemetry and mock transport API declarations. If
+an import or option is missing, generate prints a
 `⚠️ frontend <name>: the installed @reliantlabs/forge-web-runtime X does not
 ship …` line that names each feature and the file using it. Fix it with
 `npm update @reliantlabs/forge-web-runtime` (or `pnpm update`, `yarn up`). If

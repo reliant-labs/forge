@@ -24,9 +24,9 @@
 // lists every identifier forge's generated frontend code shares with the
 // runtime's declarations (TestWebRuntimeVocabularyIsCurrent keeps it in step
 // with the templates and web-runtime/src). After generate settles a
-// frontend, WebRuntimeContentNotices reads the generated files it owns and
-// the installed package's dist/, and names each vocabulary identifier the
-// former uses and the latter never mentions.
+// frontend, WebRuntimeContentNotices compares its generated imports with
+// the installed public entrypoints, and checks generated option keys against
+// the declaration of the API that accepts them.
 package generator
 
 import (
@@ -73,10 +73,8 @@ func webRuntimeVocabulary() map[string]bool {
 	return webRuntimeVocabularySet
 }
 
-// tsIdentifierRe matches a JavaScript identifier. Used as a tokenizer, so a
-// word inside a comment or a string counts too: over-matching can only make
-// an identifier look PRESENT in the installed runtime, never absent, so it
-// errs towards silence rather than a false alarm.
+// tsIdentifierRe matches a JavaScript identifier for maintaining the
+// checked-in vocabulary (not for inferring installed module exports).
 var tsIdentifierRe = regexp.MustCompile(`[A-Za-z_$][A-Za-z0-9_$]*`)
 
 func addIdentifiers(set map[string]bool, text string) {
@@ -130,42 +128,6 @@ func installedWebRuntimeDir(projectDir, feRelDir string) (string, bool) {
 	}
 }
 
-// shippedWebRuntimeIdentifiers returns every identifier in the installed
-// package's compiled output (dist/ and interceptors/, .js and .d.ts; source
-// maps are skipped because their embedded sources carry comments). ok is
-// false when there is no compiled output to judge, e.g. a link to a source
-// checkout that was never built.
-func shippedWebRuntimeIdentifiers(pkgDir string) (map[string]bool, bool) {
-	set := map[string]bool{}
-	files := 0
-	for _, sub := range []string{"dist", "interceptors"} {
-		root := filepath.Join(pkgDir, sub)
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil //nolint:nilerr // an unreadable entry is skipped, not fatal
-			}
-			if d.IsDir() {
-				if d.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			name := d.Name()
-			if !strings.HasSuffix(name, ".js") && !strings.HasSuffix(name, ".mjs") && !strings.HasSuffix(name, ".d.ts") {
-				return nil
-			}
-			body, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return nil //nolint:nilerr // an unreadable file is skipped, not fatal
-			}
-			files++
-			addIdentifiers(set, string(body))
-			return nil
-		})
-	}
-	return set, files > 0
-}
-
 // generatedFrontendFiles returns the frontend's TypeScript files forge
 // regenerates (first line generatedTSHeader), relative to feAbs, with their
 // contents. Dependency, build-output and dot directories are skipped.
@@ -216,12 +178,12 @@ func WebRuntimeContentNotices(projectDir, feRelDir string) []string {
 	if !ok {
 		return nil
 	}
-	shipped, ok := shippedWebRuntimeIdentifiers(pkgDir)
-	if !ok {
+	raw, err := os.ReadFile(filepath.Join(pkgDir, "package.json"))
+	var manifest webRuntimeManifest
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
 		return nil
 	}
-	vocab := webRuntimeVocabulary()
-
+	surface := webRuntimeSurface{dir: pkgDir, manifest: manifest, entries: map[string]checkedRuntimeEntry{}}
 	usedBy := map[string][]string{} // missing identifier -> generated files using it
 	files := generatedFrontendFiles(filepath.Join(projectDir, feRelDir))
 	paths := make([]string, 0, len(files))
@@ -230,12 +192,8 @@ func WebRuntimeContentNotices(projectDir, feRelDir string) []string {
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
-		used := map[string]bool{}
-		addIdentifiers(used, stripTSProse(files[p]))
-		for id := range used {
-			if vocab[id] && !shipped[id] {
-				usedBy[id] = append(usedBy[id], p)
-			}
+		for id := range surface.missing(files[p]) {
+			usedBy[id] = append(usedBy[id], p)
 		}
 	}
 	if len(usedBy) == 0 {
@@ -252,14 +210,9 @@ func WebRuntimeContentNotices(projectDir, feRelDir string) []string {
 		parts = append(parts, fmt.Sprintf("%s (%s)", id, strings.Join(usedBy[id], ", ")))
 	}
 
-	version := "(unknown version)"
-	if raw, err := os.ReadFile(filepath.Join(pkgDir, "package.json")); err == nil {
-		var doc struct {
-			Version string `json:"version"`
-		}
-		if json.Unmarshal(raw, &doc) == nil && doc.Version != "" {
-			version = doc.Version
-		}
+	version := manifest.Version
+	if version == "" {
+		version = "(unknown version)"
 	}
 	update := "npm update"
 	if lock, ok := frontenddeps.FindLock(filepath.Join(projectDir, feRelDir), projectDir); ok {

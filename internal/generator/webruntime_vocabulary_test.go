@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -203,14 +204,25 @@ func TestWebRuntimeVocabularyCoversOptionsAndImports(t *testing.T) {
 	}
 }
 
-// installRuntime writes a fake installed runtime whose dist mentions only the
-// given identifiers.
 func installRuntime(t *testing.T, nodeModules, version string, shipped ...string) {
 	t.Helper()
 	dir := filepath.Join(nodeModules, filepath.FromSlash(WebRuntimePackage))
-	writeFile(t, filepath.Join(dir, "package.json"), `{"name":"`+WebRuntimePackage+`","version":"`+version+`"}`)
-	writeFile(t, filepath.Join(dir, "dist", "telemetry.js"), "export function x(config) {\n"+
-		"  return [\""+strings.Join(shipped, `", "`)+"\"];\n}\n")
+	writeFile(t, filepath.Join(dir, "package.json"), `{"name":"`+WebRuntimePackage+`","version":"`+version+`","exports":{"./telemetry":{"types":"./dist/telemetry.d.ts","default":"./dist/telemetry.js"},"./service-hooks":{"types":"./dist/service-hooks.d.ts","default":"./dist/service-hooks.js"}}}`)
+	fields := ""
+	if slices.Contains(shipped, "rpcForensics") {
+		fields = "rpcForensics?: boolean;"
+	}
+	writeFile(t, filepath.Join(dir, "dist", "telemetry.d.ts"), "export interface BrowserTelemetryConfig {"+fields+"}\n"+
+		"export declare function initBrowserTelemetry(options: BrowserTelemetryConfig): void;\n"+
+		"export interface AnotherConfig { rpcForensics: boolean; }\n")
+	writeFile(t, filepath.Join(dir, "dist", "telemetry.js"), `const rpcForensics = "rpcForensics";
+export function initBrowserTelemetry(config) { return rpcForensics; }
+export function createMutationCall() {}
+`)
+	writeFile(t, filepath.Join(dir, "dist", "service-hooks.d.ts"), "export declare function createQueryHook(): void;\n")
+	writeFile(t, filepath.Join(dir, "dist", "service-hooks.js"), `function createMutationCall() {}
+export function createQueryHook() { return createMutationCall; }
+`)
 }
 
 func writeFile(t *testing.T, path, body string) {
@@ -250,6 +262,20 @@ func TestWebRuntimeContentNotices_NamesOptionsTheInstalledRuntimeLacks(t *testin
 	}
 	if strings.Contains(n, "mine.ts") || strings.Contains(n, "initBrowserTelemetry") {
 		t.Errorf("notice names something the installed runtime ships, or a file forge does not own:\n%s", n)
+	}
+}
+
+func TestWebRuntimeContentNotices_RequireTheImportedEntrypointExport(t *testing.T) {
+	project := t.TempDir()
+	fe := filepath.Join("frontends", "web")
+	writeFile(t, filepath.Join(project, fe, "src", "hooks_gen.ts"), generatedTSHeader+`
+import { createMutationCall as createCall, createQueryHook } from "@reliantlabs/forge-web-runtime/service-hooks";
+export const result = [createCall, createQueryHook];
+`)
+	installRuntime(t, filepath.Join(project, fe, "node_modules"), "0.13.19")
+	n := WebRuntimeContentNotices(project, fe)
+	if len(n) != 1 || !strings.Contains(n[0], "createMutationCall (src/hooks_gen.ts)") || strings.Contains(n[0], "createQueryHook") {
+		t.Fatalf("want only the missing export on its imported subpath; got %q", n)
 	}
 }
 

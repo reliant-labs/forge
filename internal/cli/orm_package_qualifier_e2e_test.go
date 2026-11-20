@@ -39,9 +39,12 @@ func TestE2EORMPackageBesideTheProjectsOwnDBBuilds(t *testing.T) {
 	}
 	writeCollideFile(t, forgeYAML, cfg)
 
-	// The project's own data layer, which its handlers import as db.
+	// The project's own data layer binds db. A second package, whose
+	// declared name differs from its directory, already binds store.
 	writeCollideFile(t, filepath.Join(projectDir, "internal", "db", "facade.go"),
 		"package db\n\n// Ping is the hand-written data layer.\nfunc Ping() error { return nil }\n")
+	writeCollideFile(t, filepath.Join(projectDir, "internal", "adapter", "adapter.go"),
+		"package store\n\n// Query is unrelated to the generated ORM.\nfunc Query() {}\n")
 
 	// CRUD rpcs over a table that already exists (forge:entity would be
 	// inert): the migration declares the owner, so both shims are scoped
@@ -72,15 +75,18 @@ message GetTaskResponse { Task task = 1; }
 	// facade's db, so both scoped shims are APPENDED to it.
 	shimPath := filepath.Join(projectDir, "internal", "handlers", "widget", "handlers_crud.go")
 	const facadeImport = "\t\"example.com/storeapp/internal/db\"\n"
-	writeCollideFile(t, shimPath, "package widget\n\nimport (\n"+facadeImport+")\n\nvar _ = db.Ping\n")
+	const adapterImport = "\t\"example.com/storeapp/internal/adapter\"\n"
+	writeCollideFile(t, shimPath, "package widget\n\nimport (\n"+facadeImport+adapterImport+")\n\nvar _ = db.Ping\nvar _ = store.Query\n")
 
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	shim := readFileE2E(t, shimPath)
 	for _, want := range []string{
 		facadeImport,
-		"\t\"example.com/storeapp/internal/store\"\n",
-		"*store.Task",
+		"\"example.com/storeapp/internal/adapter\"",
+		"var _ = store.Query",
+		"\tormstore \"example.com/storeapp/internal/store\"\n",
+		"*ormstore.Task",
 		"func (s *Service) GetTask(",
 	} {
 		if !strings.Contains(shim, want) {

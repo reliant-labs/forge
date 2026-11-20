@@ -44,7 +44,7 @@ func TestChooseORMBinding(t *testing.T) {
 
 func TestEnsureImportLine_ORMBinding(t *testing.T) {
 	src := "package x\n\nimport (\n\t\"context\"\n\t\"" + facadePath + "\"\n)\n"
-	b := ChooseORMBinding("example.com/test", config.ORMConfig{Package: "internal/store"}, fileImportNames([]byte(src)))
+	b := ChooseORMBinding("example.com/test", config.ORMConfig{Package: "internal/store"}, func(name string) bool { return name == "db" || name == "context" })
 	got := ensureImportLine(src, b.Spec)
 	bindings := importBindings(t, got)
 	if bindings["store"] != storePath || bindings["db"] != facadePath {

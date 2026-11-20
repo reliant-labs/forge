@@ -33,7 +33,19 @@ func storeProject(t *testing.T) (projectDir, handlerDir string) {
 	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeORMQualifierFixture(t, projectDir, "internal/db/use.go", "package db\nfunc Facade(v any) any { return v }\n")
 	return projectDir, handlerDir
+}
+
+func writeORMQualifierFixture(t *testing.T, root, name, contents string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // importBindings parses src and maps each identifier its imports bind to
@@ -196,6 +208,44 @@ func TestORMQualifier_AppendReusesExistingBinding(t *testing.T) {
 			}
 			if n := strings.Count(src, strconv.Quote(storePath)); n != 1 {
 				t.Errorf("store imported %d times, want 1:\n%s", n, src)
+			}
+		})
+	}
+}
+
+func TestORMQualifier_UsesTheImportedPackageDeclaration(t *testing.T) {
+	projectDir, handlerDir := storeProject(t)
+	const other = "example.com/test/internal/facade"
+	writeORMQualifierFixture(t, projectDir, "internal/facade/use.go", "package store\nfunc Use(v any) any { return v }\n")
+	shim := filepath.Join(handlerDir, "handlers_crud.go")
+	// A single import and a comment containing the ORM path are both legal.
+	// Neither should prevent forge from adding the actual ORM import.
+	existing := "package crews\n\nimport `" + other + "`\n\n// Not an import: \"" + storePath + "\"\nvar _ = store.Use\n"
+	writeORMQualifierFixture(t, handlerDir, "handlers_crud.go", existing)
+	generateCrews(t, projectDir)
+	src := readTestFile(t, shim)
+	if !strings.Contains(src, `db "`+storePath+`"`) || !entityQualifiers(t, src)["db"] || entityQualifiers(t, src)["store"] {
+		t.Errorf("expected the real package name store to be occupied; ORM shims must use db instead:\n%s", src)
+	}
+	if !strings.Contains(src, "var _ = store.Use") || importCount(t, src, storePath) != 1 {
+		t.Errorf("original statement lost or the ORM import was not inserted exactly once:\n%s", src)
+	}
+}
+
+func TestORMQualifier_NonnamedORMImportsAreRejectedWithoutRewriting(t *testing.T) {
+	for _, token := range []string{"_", "."} {
+		t.Run(token, func(t *testing.T) {
+			projectDir, handlerDir := storeProject(t)
+			shim := filepath.Join(handlerDir, "handlers_crud.go")
+			existing := "package crews\n\nimport " + token + " `" + storePath + "`\n"
+			writeORMQualifierFixture(t, handlerDir, "handlers_crud.go", existing)
+			svc, entities := ownerTestServiceAndEntity(true, true)
+			_, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil)
+			if err == nil || !strings.Contains(err.Error(), "handlers_crud.go") || !strings.Contains(err.Error(), "explicit alias") {
+				t.Errorf("expected an actionable alias error, got %v", err)
+			}
+			if got := readTestFile(t, shim); got != existing {
+				t.Errorf("refused append changed the user's file:\n%s", got)
 			}
 		})
 	}

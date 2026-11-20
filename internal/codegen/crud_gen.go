@@ -3,6 +3,9 @@ package codegen
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1070,7 +1073,10 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 			// nothing to scaffold, and an empty shim file helps no one.
 			return nil
 		}
-		binding := shimORMBinding(data, unshimmed, nil)
+		binding, err := shimORMBinding(projectDir, data, unshimmed, nil)
+		if err != nil {
+			return fmt.Errorf("%s: %w", shimRel, err)
+		}
 		unshimmed = withDBQual(unshimmed, binding.Qual)
 		blocks, err := renderCRUDShimMethods(unshimmed)
 		if err != nil {
@@ -1120,7 +1126,10 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		return nil
 	}
 	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing)
-	binding := shimORMBinding(data, missing, existing)
+	binding, err := shimORMBinding(projectDir, data, missing, existing)
+	if err != nil {
+		return fmt.Errorf("%s: %w", shimRel, err)
+	}
 	missing = withDBQual(missing, binding.Qual)
 	blocks, err := renderCRUDShimMethods(missing)
 	if err != nil {
@@ -1221,33 +1230,52 @@ func recordTier2(cs *checksums.FileChecksums, relPath string, content []byte) {
 	checksums.MarkWrittenThisRun(relPath)
 }
 
-// ensureImportLine inserts an import (optionally "alias path") into the
-// file's first import block when no line for that path exists yet. Same
-// minimal-mutation approach as ensureDepsDBField: the file is user-owned,
-// so we touch only what the appended code needs to compile.
+// ensureImportLine inserts a missing import (optionally "alias path").
+// Parse import specs instead of searching text: a comment or a raw-string
+// import must not be confused for a second copy of the path. Only the
+// missing declaration is spliced into the owned source.
 func ensureImportLine(content, imp string) string {
-	alias, path, hasAlias := strings.Cut(imp, " ")
-	if !hasAlias {
-		path = imp
-		alias = ""
-	}
-	if strings.Contains(content, "\""+path+"\"") {
+	importPath := importSpecPath(imp)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", content, parser.ImportsOnly)
+	if err != nil {
 		return content
 	}
-	idx := strings.Index(content, "import (")
-	if idx < 0 {
-		return content
+	for _, spec := range file.Imports {
+		if p, err := strconv.Unquote(spec.Path.Value); err == nil && p == importPath {
+			return content
+		}
 	}
-	closing := strings.Index(content[idx:], ")")
-	if closing < 0 {
-		return content
+	line := strconv.Quote(importPath)
+	if alias, _, ok := strings.Cut(imp, " "); ok {
+		line = alias + " " + line
 	}
-	line := "\t\"" + path + "\"\n"
-	if alias != "" {
-		line = "\t" + alias + " \"" + path + "\"\n"
+	for _, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT && gd.Rparen.IsValid() {
+			// A cgo block must remain next to its own preamble.
+			if len(gd.Specs) == 1 && gd.Specs[0].(*ast.ImportSpec).Path.Value == `"C"` {
+				continue
+			}
+			pos := fset.Position(gd.Rparen).Offset
+			prefix := ""
+			if pos > 0 && content[pos-1] != '\n' {
+				prefix = "\n"
+			}
+			return content[:pos] + prefix + "\t" + line + "\n" + content[pos:]
+		}
 	}
-	insertPos := idx + closing
-	return content[:insertPos] + line + content[insertPos:]
+	// No suitable grouped import. The end of the package clause is always
+	// before any import docs (including cgo preambles). Keep a conventional
+	// package-line comment there, too.
+	pos := fset.Position(file.Name.End()).Offset
+	end := strings.IndexByte(content[pos:], '\n')
+	if end >= 0 {
+		rest := strings.TrimSpace(content[pos : pos+end])
+		if rest == "" || strings.HasPrefix(rest, "//") {
+			pos += end + 1
+		}
+	}
+	return content[:pos] + "\nimport (\n\t" + line + "\n)\n" + content[pos:]
 }
 
 // validateCRUDShape decides whether the request/response messages observed

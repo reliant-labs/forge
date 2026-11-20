@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -570,11 +571,52 @@ func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience,
 // the command a reader types to invoke forge — so every command printed is
 // copy-pasteable under the mount that served it. "" and "forge" leave the
 // content unchanged.
+//
+// "forge " that is not a command is left alone: part of a name
+// (`npx -y @reliantlabs/forge mcp`, a `reliant-forge` server), an MCP server
+// name followed by flags (`claude mcp add forge -- npx …`), or a reference
+// already written under the mount (`reliant forge generate`). Rewriting those
+// printed `@reliantlabs/reliant forge mcp` and `reliant reliant forge`, so a
+// pasted MCP setup failed.
 func rewriteForgeCommands(content []byte, cliName string) []byte {
 	if cliName == "" || cliName == "forge" {
 		return content
 	}
-	return forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
+	mountPrefix := []byte(strings.TrimSuffix(cliName, "forge"))
+	var out []byte
+	last := 0
+	for _, m := range forgeCmdRE.FindAllIndex(content, -1) {
+		start, end := m[0], m[1] // end is just past the space
+		if !isForgeCommandAt(content, start, end, mountPrefix) {
+			continue
+		}
+		out = append(out, content[last:start]...)
+		out = append(out, cliName...)
+		out = append(out, ' ')
+		last = end
+	}
+	if out == nil {
+		return content
+	}
+	return append(out, content[last:]...)
+}
+
+// isForgeCommandAt reports whether the "forge " at content[start:end] is the
+// forge command, rather than part of a name or already under the mount.
+func isForgeCommandAt(content []byte, start, end int, mountPrefix []byte) bool {
+	if start > 0 {
+		switch content[start-1] {
+		case '/', '@', '-', '.', '_', ':':
+			return false // @reliantlabs/forge, reliant-forge, pkg.forge
+		}
+	}
+	if len(mountPrefix) > 0 && bytes.HasSuffix(content[:start], mountPrefix) {
+		return false // already `reliant forge …`
+	}
+	if rest := content[end:]; bytes.HasPrefix(rest, []byte("-- ")) || bytes.Equal(rest, []byte("--")) {
+		return false // `mcp add forge -- npx …`: a server name, then the command it runs
+	}
+	return true
 }
 
 // forgeModulePath is forge's Go module path, used to discover the forge

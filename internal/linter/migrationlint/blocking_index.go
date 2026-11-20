@@ -19,10 +19,9 @@ import (
 // any pin: an index on a table that is still empty in every environment is
 // fine as written. The one emptiness it can prove is local: a table this
 // file creates with a plain CREATE TABLE, indexed before any statement that
-// could put a row in it. Only DDL that writes no rows may come between
-// (writesNoRows); an INSERT, a COPY, a function call, CREATE TABLE … AS or
-// CREATE TABLE IF NOT EXISTS (a no-op over a table that may be full) ends the
-// proof, and the index is reported. lint.rules raises the rule to an error
+// could put a row in it. Only recognized harmless DDL may come between;
+// unknown statements, including CREATE forms that can execute SQL or expose
+// existing rows, end the proof and the index is reported. lint.rules raises the rule to an error
 // for a project that wants it to gate.
 
 // RuleBlockingIndexBuild is the rule ID for a non-concurrent CREATE INDEX on a
@@ -35,11 +34,14 @@ const BlockingIndexBuildRemediation = "build the index with CREATE INDEX CONCURR
 
 var (
 	createIndexRe = regexp.MustCompile(`(?is)^\s*create\s+(?:unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+)?on\s+(?:only\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
-	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+(if\s+not\s+exists\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
-	// ctasRe matches CREATE TABLE … AS <query> (and SELECT … INTO's twin):
-	// "as" followed by a query, never a column's GENERATED … AS (expr).
-	ctasRe         = regexp.MustCompile(`(?is)^\s*create\b[^;]*?\btable\b[^;]*?\bas\s*\(?\s*(?:select|with|values|table|execute)\b`)
-	materializedRe = regexp.MustCompile(`(?is)^\s*create\s+(?:or\s+replace\s+)?materialized\s+view\b`)
+	// The first token after the table name must open a column list. This
+	// excludes PARTITION OF, OF <type> and column-list-free CTAS. The AS
+	// check also excludes CTAS with column names before AS <query>.
+	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))\s*\(`)
+	ctasRe        = regexp.MustCompile(`(?is)\bas\s*\(?\s*(?:select|with|values|table|execute)\b`)
+	// ALTER TABLE may attach a populated partition, or make rows visible
+	// under a new name. Only a simple ADD COLUMN preserves the proof.
+	addOneColumnRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:only\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+add\s+column\b[^,]*$`)
 )
 
 // relationKey normalises a possibly schema-qualified, possibly quoted
@@ -68,30 +70,33 @@ func relationKey(name string) string {
 // rows), and not CREATE TABLE … AS (it creates the table full).
 func createdTable(stmt string) (string, bool) {
 	m := createTableRe.FindStringSubmatch(stmt)
-	if len(m) < 3 || m[1] != "" || ctasRe.MatchString(stmt) {
+	if len(m) < 2 || ctasRe.MatchString(stmt) {
 		return "", false
 	}
-	return relationKey(m[2]), true
+	return relationKey(m[1]), true
 }
 
-// writesNoRows reports whether a statement is DDL that cannot put a row in
-// any table: CREATE (but not CREATE TABLE … AS or a MATERIALIZED VIEW, which
-// run a query), ALTER, DROP, COMMENT, GRANT, REVOKE. Anything else — an
-// INSERT, COPY, UPDATE, a SELECT or DO block that calls a function, a CALL —
-// may write rows, directly or through a trigger, so a table this file created
-// is no longer known to be empty after it.
-func writesNoRows(stmt string) bool {
-	head := strings.Fields(strings.ToLower(strings.TrimSpace(stmt)))
-	if len(head) == 0 {
-		return true
+// preservesEmptyTables recognizes the small set of statements that leave a
+// fresh-table proof intact. Unknown DDL is not harmless by default: for
+// example CREATE EXTENSION runs SQL and ATTACH PARTITION can expose existing
+// rows. An index on a relation not already known empty may evaluate arbitrary
+// index expressions, so it does not preserve proofs for other tables either.
+func preservesEmptyTables(stmt string, emptyTables map[string]bool) bool {
+	head := strings.TrimSpace(stmt)
+	if end := strings.IndexAny(head, " \t\r\n"); end >= 0 {
+		head = head[:end]
 	}
-	switch head[0] {
-	case "alter", "drop", "comment", "grant", "revoke":
+	switch strings.ToLower(head) {
+	case "comment", "grant", "revoke":
 		return true
+	case "alter":
+		return addOneColumnRe.MatchString(stmt)
 	case "create":
-		return !ctasRe.MatchString(stmt) && !materializedRe.MatchString(stmt)
+		m := createIndexRe.FindStringSubmatch(stmt)
+		return len(m) >= 3 && emptyTables[relationKey(m[2])]
+	default:
+		return false
 	}
-	return false
 }
 
 // blockingIndexFinding reports a plain CREATE INDEX on a table not in

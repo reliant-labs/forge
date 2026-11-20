@@ -31,6 +31,12 @@ func TestBlockingIndexBuild(t *testing.T) {
 		{"indexed before the file creates it", "CREATE INDEX i ON products (name);\nCREATE TABLE IF NOT EXISTS products (id text, name text);", 1},
 		{"CREATE TABLE IF NOT EXISTS proves nothing", "CREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);", 1},
 		{"CREATE TABLE AS creates it full", "CREATE TABLE products AS SELECT * FROM old_products;\nCREATE INDEX i ON products (id);", 1},
+		{"CTAS with named columns is not a plain table", "CREATE TABLE products (id) AS SELECT * FROM old_products;\nCREATE INDEX i ON products (id);", 1},
+		{"partition creation does not prove an empty relation", "CREATE TABLE products_child PARTITION OF products FOR VALUES IN (1);\nCREATE INDEX i ON products_child (id);", 1},
+		{"partition creation ends an earlier emptiness proof", "CREATE TABLE products (id int) PARTITION BY LIST (id);\nCREATE TABLE products_child PARTITION OF products FOR VALUES IN (1);\nCREATE INDEX i ON products (id);", 1},
+		{"attaching a partition may expose its existing rows", "CREATE TABLE products (id int) PARTITION BY LIST (id);\nALTER TABLE products ATTACH PARTITION old_products FOR VALUES IN (1);\nCREATE INDEX i ON products (id);", 1},
+		{"unknown CREATE ends an earlier emptiness proof", "CREATE TABLE products (id int);\nCREATE EXTENSION custom_backfill;\nCREATE INDEX i ON products (id);", 1},
+		{"plain CREATE TABLE and CREATE INDEX preserve a fresh proof", "CREATE TABLE products (id int);\nCREATE TABLE orders (id int);\nCREATE INDEX i ON products (id);\nCREATE INDEX j ON products (id);", 0},
 		{"a generated column is not CREATE TABLE AS", "CREATE TABLE products (id text, n int GENERATED ALWAYS AS (1) STORED);\nCREATE INDEX i ON products (id);", 0},
 	}
 	for _, tc := range cases {

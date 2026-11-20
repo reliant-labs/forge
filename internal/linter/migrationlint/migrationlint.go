@@ -330,11 +330,10 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
 			findings = append(findings, f)
 		}
-		if !writesNoRows(text) {
-			clear(emptyTables)
-		}
 		if table, ok := createdTable(text); ok {
 			emptyTables[table] = true
+		} else if !preservesEmptyTables(text, emptyTables) {
+			clear(emptyTables)
 		}
 
 		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {

@@ -29,7 +29,7 @@ type attachCall struct {
 // records each call. It mutates package vars: the test must not be parallel.
 func useReferrerRegistry(t *testing.T) *[]attachCall {
 	t.Helper()
-	prevAttach, prevCred := sbomReferrerAttach, sbomReferrerCredential
+	prevAttach, prevCred := sbomReferrerAttach, sbomRegistryCredential
 	var (
 		mu    sync.Mutex
 		calls []attachCall
@@ -41,8 +41,8 @@ func useReferrerRegistry(t *testing.T) *[]attachCall {
 		opts.Registry.Credential = func(context.Context, string) (auth.Credential, error) { return auth.EmptyCredential, nil }
 		return sbomoci.Attach(ctx, subject, data, opts)
 	}
-	sbomReferrerCredential = func(string, string, *KCLEntities, string) (auth.CredentialFunc, error) { return nil, nil }
-	t.Cleanup(func() { sbomReferrerAttach, sbomReferrerCredential = prevAttach, prevCred })
+	sbomRegistryCredential = func(string, string, *KCLEntities, string) (auth.CredentialFunc, error) { return nil, nil }
+	t.Cleanup(func() { sbomReferrerAttach, sbomRegistryCredential = prevAttach, prevCred })
 	return &calls
 }
 

@@ -155,7 +155,7 @@ func TestPinCodegenTools_UntidyV1GoModWithV2PluginOnPath(t *testing.T) {
 		return os.WriteFile(filepath.Join(gobin, "protoc-gen-connect-go"+exeSuffix()), []byte("v1"), 0o755)
 	}
 
-	res, err := pinCodegenTools(context.Background(), projectDir)
+	res, err := pinCodegenTools(context.Background(), projectDir, codegenToolsMajor(projectDir))
 	if err != nil {
 		t.Fatal(err)
 	}

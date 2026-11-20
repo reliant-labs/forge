@@ -20,10 +20,6 @@ func TestLoad_NormalizesBackslashedKeys(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(DisownedFile)), []byte(disowned), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	hashes := `{"files": {"web\\gen\\api.json": "abc123"}}`
-	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(LegacyHashesFile)), []byte(hashes), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	cs, err := Load(root)
 	if err != nil {
@@ -31,8 +27,5 @@ func TestLoad_NormalizesBackslashedKeys(t *testing.T) {
 	}
 	if !cs.IsDisowned("internal/x/x.go") {
 		t.Errorf("a backslash-keyed disown was not found by its slash form: %v", cs.Disowned)
-	}
-	if got := cs.Unstampable["web/gen/api.json"]; got != "abc123" {
-		t.Errorf("Unstampable[web/gen/api.json] = %q, want abc123 (keys: %v)", got, cs.Unstampable)
 	}
 }

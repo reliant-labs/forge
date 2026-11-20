@@ -108,17 +108,23 @@ func resolveToolVersion(ctx context.Context, projectDir string, t protoTool, ove
 	if override != "" {
 		return override
 	}
-	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", t.VersionModule)
+	if v, err := goListModuleVersion(ctx, projectDir, t.VersionModule); err == nil && v != "" {
+		return v
+	}
+	return "latest"
+}
+
+// goListModuleVersion is the version projectDir's module graph selects for
+// module (`go list -m`). A seam for tests.
+var goListModuleVersion = func(ctx context.Context, projectDir, module string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", module)
 	cmd.Dir = projectDir
 	// The module graph CI sees: a developer's go.work may bridge a local
 	// checkout, which is not what the committed stubs were built against.
 	// Under a caller's -mod=mod this `go list -m` would also write go.sum.
 	cmd.Env = goexec.Env("GOWORK=off")
 	out, err := cmd.Output()
-	if v := strings.TrimSpace(string(out)); err == nil && v != "" {
-		return v
-	}
-	return "latest"
+	return strings.TrimSpace(string(out)), err
 }
 
 func newToolsCmd() *cobra.Command {

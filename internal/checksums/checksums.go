@@ -85,9 +85,6 @@ const (
 	// HashesDir holds one certificate file per comment-incapable Tier-1
 	// output (see hashdir.go).
 	HashesDir = ".forge/hashes"
-	// LegacyHashesFile is the one-manifest predecessor of HashesDir. Load
-	// still reads it and the next Save deletes it (hashdir.go).
-	LegacyHashesFile = ".forge/hashes.json"
 	// LegacyChecksumFile is the dead global manifest. Only the one-time
 	// migration (migrate.go) reads it; nothing writes it.
 	LegacyChecksumFile = ".forge/checksums.json"
@@ -556,15 +553,8 @@ type disownedJSON struct {
 	Files map[string]DisownedEntry `json:"files"`
 }
 
-// hashesJSON is the legacy one-manifest shape of the certificates
-// (LegacyHashesFile), read by Load until the next Save migrates it.
-type hashesJSON struct {
-	Files map[string]string `json:"files"`
-}
-
 // Load reads the project ownership state (.forge/disowned.json + the
-// certificate files under .forge/hashes/, and a legacy .forge/hashes.json
-// whose entries a certificate file does not already hold). Missing files
+// certificate files under .forge/hashes/). Missing files
 // yield empty maps — a project with no disowns and no comment-incapable
 // outputs has NO forge state files at all, by design.
 func Load(root string) (*FileChecksums, error) {
@@ -583,23 +573,10 @@ func Load(root string) (*FileChecksums, error) {
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if data, err := os.ReadFile(filepath.Join(root, LegacyHashesFile)); err == nil {
-		var h hashesJSON
-		if jerr := json.Unmarshal(data, &h); jerr != nil {
-			return nil, fmt.Errorf("parse %s: %w", LegacyHashesFile, jerr)
-		}
-		if h.Files != nil {
-			cs.Unstampable = slashKeys(h.Files)
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
 	certs, err := loadHashCerts(root)
 	if err != nil {
 		return nil, err
 	}
-	// A certificate file is newer than the legacy manifest by construction
-	// (the Save that wrote it deleted the manifest), so it wins.
 	maps.Copy(cs.Unstampable, certs)
 	// An earlier forge certified gen/'s aggregates; nothing does now
 	// (Uncertified), and the next Save drops the record.

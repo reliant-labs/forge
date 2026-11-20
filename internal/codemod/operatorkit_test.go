@@ -1,35 +1,9 @@
 package codemod
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func writeTree(t *testing.T, files map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	for rel, body := range files {
-		path := filepath.Join(dir, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
-}
-
-func readFile(t *testing.T, dir, rel string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
 
 // The shape control-plane's owned lifecycle.go has: lifecyclekit used for
 // WrapWorker (stays) AND for the operator bridge (moves).

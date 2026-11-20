@@ -112,11 +112,13 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
-// rolloutBaseline is the last release before warn-first existed. A rule
-// introduced at or before it has gated since it shipped and declares no
-// GatesFrom; one introduced after it must. It is a fixed point, not a moving
-// "current version": it does not change when a release is cut.
-const rolloutBaseline = "v0.1.46"
+// rolloutBaseline is the last release whose rules gate at any pin. A rule
+// introduced at or before it declares no GatesFrom; one introduced after it
+// must. It was v0.1.46, the last release before warn-first existed; it moved
+// to v1.8.0 when the owner closed every open grace window (2026-11-19). It is
+// a fixed point, not a moving "current version": it does not change when a
+// release is cut.
+const rolloutBaseline = "v1.9.0"
 
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to

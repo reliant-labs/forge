@@ -44,7 +44,9 @@ func TestE2EEnumEntityConversionAndFilter(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "enumapp", "--mod", "example.com/enumapp", "--service", "orders")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "enumapp", "--mod", "example.com/enumapp", "--service", "orders", "--connect", "v1")
 	projectDir := filepath.Join(dir, "enumapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

@@ -247,6 +247,11 @@ func shimORMBinding(projectDir string, data CRUDTemplateData, methods []CRUDMeth
 		if ormQualReserved[name] {
 			return ORMBinding{}, fmt.Errorf("ORM import %q uses %q, shadowed by generated shim locals; give it a different explicit alias", ormPath, name)
 		}
+		// ensureImportLine preserves an existing import verbatim. Do not
+		// choose a replacement qualifier that this import would never bind.
+		if data.pkgDecls[name] {
+			return ORMBinding{}, fmt.Errorf("ORM import %q uses %q, conflicting with a package declaration; give it a different explicit alias before appending CRUD shims", ormPath, name)
+		}
 		return ORMBinding{Spec: ormPath, Qual: name}, nil
 	}
 	var unknown []string

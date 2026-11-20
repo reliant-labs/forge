@@ -232,6 +232,30 @@ func TestORMQualifier_UsesTheImportedPackageDeclaration(t *testing.T) {
 	}
 }
 
+func TestORMQualifier_ConflictingExistingORMImportPreservesOwnedFile(t *testing.T) {
+	for _, alias := range []string{"", "st"} {
+		t.Run("alias="+alias, func(t *testing.T) {
+			projectDir, handlerDir := storeProject(t)
+			name := alias
+			if name == "" {
+				name = "store"
+			}
+			writeORMQualifierFixture(t, handlerDir, "conflict.go", "package crews\nvar "+name+" = 1\n")
+			shim := filepath.Join(handlerDir, "handlers_crud.go")
+			existing := handWrittenCrews(strings.TrimSpace(alias + " " + strconv.Quote(storePath)))
+			writeORMQualifierFixture(t, handlerDir, "handlers_crud.go", existing)
+			svc, entities := ownerTestServiceAndEntity(true, true)
+			_, err := GenerateCRUDHandlers(svc, MatchCRUDMethods(svc, entities), "example.com/test", projectDir, nil)
+			if err == nil || !strings.Contains(err.Error(), "package declaration") || !strings.Contains(err.Error(), "explicit alias") {
+				t.Errorf("expected an actionable alias conflict error, got %v", err)
+			}
+			if got := readTestFile(t, shim); got != existing {
+				t.Errorf("refused append changed the user's file:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestORMQualifier_NonnamedORMImportsAreRejectedWithoutRewriting(t *testing.T) {
 	for _, token := range []string{"_", "."} {
 		t.Run(token, func(t *testing.T) {

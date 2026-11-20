@@ -111,7 +111,7 @@ var mergeCases = map[string]mergeCase{
 	"frontend nav + dashboard": proved("nav.tsx and dashboard.tsx are the user's and render the same for every entity set (their birth hash with them); each entity's route and tile is its own generated module (src/lib/nav-routes/, src/components/dashboard-tiles/), gathered by the bundler",
 		"TestE2EMergeProperty"),
 	"service stubs":                    perInput("one rpc_<name>.go per rpc, in its service's directory"),
-	"internal/db/ ORM (entity-driven)": perInput("one <entity>_orm_gen.go and one <entity>_store_gen.go per table; the aggregate store_gen.go names no entity (each accessor is a method in its entity's store file), proved at project scale by TestE2EMergeProperty"),
+	"internal/db/ ORM (entity-driven)": perInput("one <entity>_orm_gen.go and one <entity>_store_gen.go per table (and one <entity>_ext_store_gen.go per table whose _repo_ext.go seam holds queries); the aggregate store_gen.go names no entity (each accessor is a method in its entity's store file), proved at project scale by TestE2EMergeProperty"),
 	"CRUD handlers":                    perInput("one ops file per service"),
 	"service mocks": proved("one sectioned mock per interface (#1568)",
 		"TestMockMergeProperty_IndependentInterfacesMergeWithPlainGit", "TestStampSections_EveryIndependentPairMergesWithPlainGit"),

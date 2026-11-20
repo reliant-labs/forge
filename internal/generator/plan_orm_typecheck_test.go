@@ -166,11 +166,48 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 		},
 	}
 
+	// Hand-written queries in a seam (G8): their ext store must compile
+	// against them — variadic, named results, no results, unnamed params,
+	// a parameter named after its function and one named like the receiver.
+	dbDir := filepath.Join(root, "internal", "db")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dbDir, "project_repo_ext.go"), []byte(`package db
+
+import (
+	"context"
+
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+type ProjectExtra struct{}
+
+// ProjectsByOrg lists an org's projects.
+func ProjectsByOrg(ctx context.Context, db orm.Context, orgID string, opts ...orm.QueryOption) ([]*Project, error) {
+	return ListProject(ctx, db, append(opts, orm.WhereEq(ProjectFieldOrgID, orgID))...)
+}
+
+func CountAndFirstProject(ctx context.Context, db orm.Context) (n int64, first *Project, err error) {
+	n, err = CountProject(ctx, db)
+	return n, nil, err
+}
+
+func TouchProject(ctx context.Context, db orm.Context, s string) {}
+
+func EchoProject(context.Context, orm.Context, string) (string, error) { return "", nil }
+
+func Name(ctx context.Context, db orm.Context, Name string) string { return Name }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-
-	dbDir := filepath.Join(root, "internal", "db")
+	if _, err := os.Stat(filepath.Join(dbDir, "project_ext_store_gen.go")); err != nil {
+		t.Fatalf("no ext store for the Project seam: %v", err)
+	}
 	files, err := os.ReadDir(dbDir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -214,6 +251,10 @@ import (
 	"github.com/reliant-labs/forge/pkg/crud"
 	"github.com/reliant-labs/forge/pkg/orm"
 )
+
+// The ext store is reachable from the aggregate, its constructor and WithTx.
+var _ ProjectExtStore = NewStore(nil).ProjectsExt().WithTx(nil)
+var _ ProjectExtStore = NewProjectExtStore(nil)
 
 func callerPassesUpdateOptions(ctx context.Context, d orm.Context, p *Project, c *MessageOrderCounter, ps ProjectStore, cs MessageOrderCounterStore) error {
 	if err := UpdateProjectMasked(ctx, d, p, []string{"name"}, crud.NoReadBack()); err != nil {

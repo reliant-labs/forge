@@ -279,6 +279,11 @@ path from an empty directory to authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
+	// `forge why` prints the reasons to use forge with the benefits that
+	// back them (why_cmd.go). Top level for the same reason as `start`: it
+	// answers the question a newcomer asks before any noun means anything
+	// (owner, 2026-11-20). `forge project benefits --why` is the same list.
+	rootCmd.AddCommand(newWhyCmd())
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())

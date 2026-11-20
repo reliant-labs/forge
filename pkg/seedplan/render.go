@@ -160,6 +160,14 @@ func (p *Plan) valueLiteral(table string, col schemadef.Column, i int) string {
 	if vals := p.vocab[table][col.Name]; len(vals) > 0 {
 		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))])
 	}
+	return p.schemaValueLiteral(table, col, i)
+}
+
+// schemaValueLiteral is valueLiteral without the vocabulary overlay: what the
+// schema alone gives the cell. A union cell that requires a value falls back
+// to it when every overlay value it could draw is NULL (see presentLiteral).
+func (p *Plan) schemaValueLiteral(table string, col schemadef.Column, i int) string {
+	salt := p.cfg.EffectiveSalt()
 
 	// Enum / CHECK-constrained pool: draw from the allowed set, preferring
 	// real values over the proto zero-value sentinel (…_UNSPECIFIED). Seeding
@@ -261,6 +269,14 @@ func (p *Plan) fkParentRow(tp tablePlan, cp columnPlan, i int) (int, bool) {
 }
 
 func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bool) {
+	// A union branch that requires this edge ABSENT on row i outranks every
+	// way of picking a parent below: the CHECK is not negotiable, and
+	// declining an optional edge is something the reference path already
+	// does for variety. Only a nullable single-column reference is ever
+	// given such a cell (see nullableSoleFK).
+	if p.unionForbidsEdge(tp.table.Name, cp.col.Name, i) {
+		return 0, false
+	}
 	// A composite FOREIGN KEY places its columns from one parent row (see
 	// composite_fk.go); that is the schema's own statement of which values
 	// go together, so nothing below may re-pick one of them.

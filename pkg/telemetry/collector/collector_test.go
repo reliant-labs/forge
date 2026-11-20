@@ -96,6 +96,62 @@ func TestGolden(t *testing.T) {
 	}
 }
 
+// Shared log processors must not replace the unconditional identity and counter
+// transforms used by a target's metrics and profiles pipelines.
+func TestTargetTransformsDoNotCollideWithSharedProcessors(t *testing.T) {
+	var targets []telemetry.Target
+	for _, service := range []string{"identity", "logs"} {
+		target := clusterManifests()
+		target.ServiceName = service
+		targets = append(targets, target)
+	}
+	f := mustBuild(t, targets, clusterOptions())
+	if len(f.Processors) != 4 {
+		t.Fatalf("got %d processors, want two target transforms and two shared processors", len(f.Processors))
+	}
+	for _, target := range targets {
+		service := target.ServiceName
+		for _, signal := range []string{"metrics", "profiles"} {
+			pipeline := f.Pipelines[signal+"/telemetry_"+service].(map[string]any)
+			found := false
+			for _, id := range pipeline["processors"].([]any) {
+				name := id.(string)
+				if name == IdentityProcessor || name == LogsProcessor {
+					t.Fatalf("%s pipeline for %s references shared processor %s", signal, service, name)
+				}
+				processor, ok := f.Processors[name]
+				if !ok {
+					continue // Caller-owned pre/post processors.
+				}
+				found = true
+				cfg := processor.(map[string]any)
+				key := "metric_statements"
+				if signal == "profiles" {
+					key = "profile_statements"
+				}
+				groups := cfg[key].([]any)
+				identity := groups[0].(map[string]any)["statements"].([]any)[0]
+				want := fmt.Sprintf(`set(attributes["service.name"], %q)`, service)
+				if identity != want {
+					t.Errorf("%s identity = %v, want %s", signal, identity, want)
+				}
+				if signal == "metrics" && !strings.Contains(fmt.Sprint(groups), "convert_gauge_to_sum") {
+					t.Error("target metrics lost counter conversion")
+				}
+			}
+			if !found {
+				t.Errorf("%s pipeline for %s has no target transform", signal, service)
+			}
+		}
+	}
+	for _, id := range []string{IdentityProcessor, LogsProcessor} {
+		cfg := f.Processors[id].(map[string]any)
+		if _, ok := cfg["log_statements"]; !ok {
+			t.Errorf("shared processor %s lost log processing", id)
+		}
+	}
+}
+
 func TestNetworkPoliciesGolden(t *testing.T) {
 	ref := CollectorRef{Namespace: "forge-observability", PodLabels: map[string]string{"app.kubernetes.io/name": "otel-agent"}}
 	noNS := clusterSecured()

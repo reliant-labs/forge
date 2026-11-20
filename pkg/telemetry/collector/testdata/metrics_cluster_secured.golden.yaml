@@ -21,7 +21,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_openbao
+    - transform/telemetry_target/openbao
     - batch
     receivers:
     - prometheus/telemetry_openbao
@@ -107,7 +107,7 @@ processors:
       - delete_key(log.attributes, "forge.telemetry.original")
       - delete_key(log.attributes, "forge.telemetry.parsed")
       - delete_key(log.attributes, "forge.telemetry.rule")
-  transform/telemetry_openbao:
+  transform/telemetry_target/openbao:
     error_mode: ignore
     metric_statements:
     - context: resource

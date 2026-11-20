@@ -20,7 +20,7 @@
 //     `tcpcheck`/`httpcheck` receivers (through `receiver_creator` for pods,
 //     one per pod, on the declared port whether or not the pod spec declares it).
 //     Each target gets its own `metrics/telemetry_<service>` pipeline, whose
-//     `transform/telemetry_<service>` stamps service.name (and the env's
+//     `transform/telemetry_target/<service>` stamps service.name (and the env's
 //     resource attributes when the target's scope is project) and converts the
 //     declared `counters` gauges to cumulative sums.
 //   - profiles (alpha; only with Options.EnableProfiles): `pprof` receivers,
@@ -316,7 +316,9 @@ func (b *builder) target(t telemetry.Target) error {
 		return nil
 	}
 	svc := t.ServiceName
-	transform := "transform/telemetry_" + svc
+	// Keep target IDs in a separate namespace from the shared processors,
+	// including for services named identity or logs.
+	transform := "transform/telemetry_target/" + svc
 	var metricRecv []string
 	if len(t.Metrics) > 0 {
 		recv, err := b.prometheus(t)
@@ -389,7 +391,7 @@ func (b *builder) identityStatements(t telemetry.Target) []string {
 	return out
 }
 
-// targetTransform is transform/telemetry_<service>: identity for every
+// targetTransform is transform/telemetry_target/<service>: identity for every
 // signal of t's own pipelines, and the counters conversion.
 func (b *builder) targetTransform(t telemetry.Target, metrics, profiles bool) map[string]any {
 	identity := map[string]any{"context": "resource", "statements": strs(lits(b.identityStatements(t))...)}

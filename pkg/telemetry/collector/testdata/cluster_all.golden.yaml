@@ -32,7 +32,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_openbao
+    - transform/telemetry_target/openbao
     - batch
     receivers:
     - prometheus/telemetry_openbao
@@ -41,7 +41,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_temporal
+    - transform/telemetry_target/temporal
     - batch
     receivers:
     - prometheus/telemetry_temporal
@@ -51,7 +51,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_zitadel
+    - transform/telemetry_target/zitadel
     - batch
     receivers:
     - prometheus/telemetry_zitadel
@@ -60,7 +60,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_openbao
+    - transform/telemetry_target/openbao
     receivers:
     - receiver_creator/telemetry_openbao_profiles
   profiles/telemetry_temporal:
@@ -68,7 +68,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_temporal
+    - transform/telemetry_target/temporal
     receivers:
     - receiver_creator/telemetry_temporal_profiles
 processors:
@@ -258,7 +258,7 @@ processors:
       - delete_key(log.attributes, "forge.telemetry.original")
       - delete_key(log.attributes, "forge.telemetry.parsed")
       - delete_key(log.attributes, "forge.telemetry.rule")
-  transform/telemetry_openbao:
+  transform/telemetry_target/openbao:
     error_mode: ignore
     metric_statements:
     - context: resource
@@ -268,7 +268,7 @@ processors:
     - context: resource
       statements:
       - set(attributes["service.name"], "openbao")
-  transform/telemetry_temporal:
+  transform/telemetry_target/temporal:
     error_mode: ignore
     metric_statements:
     - context: resource
@@ -286,7 +286,7 @@ processors:
       - set(attributes["service.name"], "temporal")
       - set(attributes["deployment.environment.name"], "dev")
       - set(attributes["service.namespace"], "acme")
-  transform/telemetry_zitadel:
+  transform/telemetry_target/zitadel:
     error_mode: ignore
     metric_statements:
     - context: resource

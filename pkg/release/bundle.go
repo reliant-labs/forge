@@ -579,7 +579,8 @@ type Shape struct {
 	// when the env declares no hosted target, so every shape recorded before
 	// the field encodes and hashes exactly as it did. A control plane that
 	// predates it refuses the whole shape, so it is a bundle-document feature
-	// ([BundleFeatureTelemetry]). See telemetry.go.
+	// ([BundleFeatureTelemetry]), and it is sent only to one that also
+	// collects it ([CapabilityCollectsTelemetry]). See telemetry.go.
 	Telemetry []ShapeTelemetry `json:"telemetry,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet (a

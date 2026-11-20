@@ -148,8 +148,8 @@ func TestShapeTelemetryIsStrippedForOldControlPlanes(t *testing.T) {
 		t.Fatal("LimitShape modified the shape it was given")
 	}
 	for name, r := range map[string]*BundleReader{
-		"names it": {Features: []string{BundleFeatureTelemetry}},
-		"nil":      nil,
+		"decodes and collects": {Features: []string{BundleFeatureTelemetry, CapabilityCollectsTelemetry}},
+		"nil":                  nil,
 	} {
 		if got := r.LimitShape(s); !reflect.DeepEqual(got.Telemetry, s.Telemetry) {
 			t.Errorf("%s: LimitShape changed the targets: %+v", name, got.Telemetry)
@@ -157,6 +157,58 @@ func TestShapeTelemetryIsStrippedForOldControlPlanes(t *testing.T) {
 	}
 	if !slices.Contains(BundleDocFeatures(), BundleFeatureTelemetry) {
 		t.Errorf("BundleDocFeatures does not list %s", BundleFeatureTelemetry)
+	}
+}
+
+// Decoding is not collecting. A control plane advertises BundleDocFeatures
+// verbatim on every forge pin bump, so one that names shape-telemetry but not
+// collects-telemetry (or names collects-telemetry alone, which it cannot
+// decode) is sent no targets and warned about, naming what it lacks. Only a
+// reader that names both, and this forge's own ledger, gets them.
+func TestHostedTelemetryNeedsTheCollectsCapability(t *testing.T) {
+	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{hostedTarget("api")})}
+	for name, c := range map[string]struct {
+		r       *BundleReader
+		keep    bool
+		missing string
+	}{
+		"a pin bump: every decode feature": {&BundleReader{Features: BundleDocFeatures()}, false, `"collects-telemetry"`},
+		"shape-telemetry alone":            {&BundleReader{Features: []string{BundleFeatureTelemetry}}, false, `"collects-telemetry"`},
+		"collects-telemetry alone":         {&BundleReader{Features: []string{CapabilityCollectsTelemetry}}, false, `"shape-telemetry"`},
+		"neither":                          {&BundleReader{}, false, `"shape-telemetry" or "collects-telemetry"`},
+		"both":                             {&BundleReader{Features: append(BundleDocFeatures(), CapabilityCollectsTelemetry)}, true, ""},
+		"this forge's ledger":              {nil, true, ""},
+	} {
+		if got := c.r.CollectsTelemetry(); got != c.keep {
+			t.Errorf("%s: CollectsTelemetry = %v, want %v", name, got, c.keep)
+		}
+		if kept := c.r.LimitShape(s).Telemetry != nil; kept != c.keep {
+			t.Errorf("%s: LimitShape kept the targets = %v, want %v", name, kept, c.keep)
+		}
+		if kept := c.r.Limit(BundleDoc{Shape: s}).Shape.Telemetry != nil; kept != c.keep {
+			t.Errorf("%s: Limit kept the targets = %v, want %v", name, kept, c.keep)
+		}
+		msg := c.r.TelemetryWarning("prod", s)
+		if c.keep {
+			if msg != "" {
+				t.Errorf("%s: warned %q", name, msg)
+			}
+			continue
+		}
+		if want := "(it does not advertise " + c.missing + ")"; !strings.Contains(msg, want) {
+			t.Errorf("%s: the warning does not name %s:\n%s", name, want, msg)
+		}
+	}
+}
+
+// collects-telemetry is advertised by hand, never by a pin bump: it is not in
+// the decode list a control plane copies verbatim.
+func TestCollectsTelemetryIsNotADecodeFeature(t *testing.T) {
+	if slices.Contains(BundleDocFeatures(), CapabilityCollectsTelemetry) {
+		t.Errorf("BundleDocFeatures claims %s; a control plane adds collection by hand", CapabilityCollectsTelemetry)
+	}
+	if CapabilityCollectsTelemetry != "collects-telemetry" {
+		t.Errorf("CapabilityCollectsTelemetry = %q; the wire string is frozen", CapabilityCollectsTelemetry)
 	}
 }
 
@@ -169,7 +221,7 @@ func TestTelemetryWarningNamesTheUncollectedTargets(t *testing.T) {
 	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{hostedTarget("api"), push})}
 
 	got := (&BundleReader{}).TelemetryWarning("prod", s)
-	want := `env prod declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry"), ` +
+	want := `env prod declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry" or "collects-telemetry"), ` +
 		`so it is left out of the release, and these targets will NOT be collected:
   - api (workload:api): logs, metrics, traces
   - relay (workload:relay): traces
@@ -181,7 +233,7 @@ The deploy continues and the workloads run; their declared telemetry is collecte
 		r *BundleReader
 		s Shape
 	}{
-		"a reader that collects": {&BundleReader{Features: []string{BundleFeatureTelemetry}}, s},
+		"a reader that collects": {&BundleReader{Features: []string{BundleFeatureTelemetry, CapabilityCollectsTelemetry}}, s},
 		"this forge's ledger":    {nil, s},
 		"no hosted target":       {&BundleReader{}, Shape{Kind: EnvPersistent}},
 	} {
@@ -193,9 +245,10 @@ The deploy continues and the workloads run; their declared telemetry is collecte
 
 // A target forge rendered on its own (telemetry.OriginDefault, a
 // ManagedDatabase's default) is recorded in the shape, with its origin, and
-// withheld from a reader that does not decode shape-telemetry like any other;
-// but the warning names only what the project declared, and says nothing when
-// every withheld target is a default.
+// withheld from a reader that does not collect hosted telemetry (it lacks
+// shape-telemetry, collects-telemetry, or both) like any other; but the
+// warning names only what the project declared, with the missing capability,
+// and says nothing when every withheld target is a default.
 func TestTelemetryWarningSkipsDefaultTargets(t *testing.T) {
 	db := hostedTarget("db-postgres")
 	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
@@ -205,18 +258,43 @@ func TestTelemetryWarningSkipsDefaultTargets(t *testing.T) {
 	if len(defaults.Telemetry) != 1 || defaults.Telemetry[0].Origin != telemetry.OriginDefault {
 		t.Fatalf("the shape did not record the default target with its origin: %+v", defaults.Telemetry)
 	}
-	old := &BundleReader{}
-	if got := old.LimitShape(defaults); got.Telemetry != nil {
-		t.Errorf("a reader without %s was sent the default target: %+v", BundleFeatureTelemetry, got.Telemetry)
-	}
-	if msg := old.TelemetryWarning("prod", defaults); msg != "" {
-		t.Errorf("warned about a default target nobody declared:\n%s", msg)
+	mixed := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{db, hostedTarget("api")})}
+
+	for name, c := range map[string]struct {
+		r       *BundleReader
+		missing string
+	}{
+		"neither":                          {&BundleReader{}, `"shape-telemetry" or "collects-telemetry"`},
+		"a pin bump: every decode feature": {&BundleReader{Features: BundleDocFeatures()}, `"collects-telemetry"`},
+		"collects-telemetry alone":         {&BundleReader{Features: []string{CapabilityCollectsTelemetry}}, `"shape-telemetry"`},
+	} {
+		if got := c.r.LimitShape(defaults); got.Telemetry != nil {
+			t.Errorf("%s: a reader that does not collect was sent the default target: %+v", name, got.Telemetry)
+		}
+		if msg := c.r.TelemetryWarning("prod", defaults); msg != "" {
+			t.Errorf("%s: warned about a default target nobody declared:\n%s", name, msg)
+		}
+
+		if got := c.r.LimitShape(mixed); got.Telemetry != nil {
+			t.Errorf("%s: a reader that does not collect was sent the targets: %+v", name, got.Telemetry)
+		}
+		msg := c.r.TelemetryWarning("prod", mixed)
+		if !strings.Contains(msg, "  - api (workload:api)") || strings.Contains(msg, "db-postgres") {
+			t.Errorf("%s: the warning must name the declared target and only it:\n%s", name, msg)
+		}
+		if want := "(it does not advertise " + c.missing + ")"; !strings.Contains(msg, want) {
+			t.Errorf("%s: the warning does not name %s:\n%s", name, want, msg)
+		}
 	}
 
-	mixed := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{db, hostedTarget("api")})}
-	msg := old.TelemetryWarning("prod", mixed)
-	if !strings.Contains(msg, "  - api (workload:api)") || strings.Contains(msg, "db-postgres") {
-		t.Errorf("the warning must name the declared target and only it:\n%s", msg)
+	// A reader that collects is sent the default target with the rest, and
+	// nothing is said.
+	both := &BundleReader{Features: append(BundleDocFeatures(), CapabilityCollectsTelemetry)}
+	if got := both.LimitShape(mixed); len(got.Telemetry) != 2 {
+		t.Errorf("a reader that collects was not sent every target: %+v", got.Telemetry)
+	}
+	if msg := both.TelemetryWarning("prod", mixed); msg != "" {
+		t.Errorf("warned a reader that collects:\n%s", msg)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -110,7 +111,7 @@ func TestCheckBundleTelemetry(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		`[bundle] Warning: env prod-warn-test declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry")`,
+		`[bundle] Warning: env prod-warn-test declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry" or "collects-telemetry")`,
 		"[bundle]     - api (workload:api): metrics\n",
 		"[bundle]     - worker (workload:worker): metrics\n",
 		"[bundle]   The deploy continues",
@@ -125,17 +126,18 @@ func TestCheckBundleTelemetry(t *testing.T) {
 		t.Errorf("the warning repeated for the same env: %s", out.String())
 	}
 
+	collects := []string{release.BundleFeatureTelemetry, release.CapabilityCollectsTelemetry}
 	for name, r := range map[string]*release.BundleReader{
-		"collects, no caps": {Features: []string{release.BundleFeatureTelemetry}},
+		"collects, no caps": {Features: collects},
 		"this forge":        nil,
-		"roomy caps":        {Features: []string{release.BundleFeatureTelemetry}, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 2}},
+		"roomy caps":        {Features: collects, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 2}},
 	} {
 		out.Reset()
 		if err := checkBundleTelemetry(&out, "prod-"+name, shape, r); err != nil || out.Len() != 0 {
 			t.Errorf("%s: err %v, output %q", name, err, out.String())
 		}
 	}
-	tight := &release.BundleReader{Features: []string{release.BundleFeatureTelemetry}, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
+	tight := &release.BundleReader{Features: collects, Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
 	err := checkBundleTelemetry(&out, "prod", shape, tight)
 	if err == nil {
 		t.Fatal("caps tighter than the shape's were not enforced")
@@ -144,6 +146,30 @@ func TestCheckBundleTelemetry(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal lacks %q:\n%v", want, err)
 		}
+	}
+}
+
+// A control plane on a newer forge pin advertises every decode feature,
+// shape-telemetry included, before it collects anything: the write still
+// warns, naming the capability it lacks, and is not held to caps it will not
+// apply to targets it never receives.
+func TestCheckBundleTelemetryWarnsAReaderThatOnlyDecodes(t *testing.T) {
+	const env = "prod-decodes-only-test"
+	telemetryUncollectedNoted.Delete(env)
+	t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api"), hostedTelemetryTarget("worker")})}
+	decodes := &release.BundleReader{Features: release.BundleDocFeatures(), Telemetry: &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1000}}
+
+	var out bytes.Buffer
+	if err := checkBundleTelemetry(&out, env, shape, decodes); err != nil {
+		t.Fatalf("a control plane that only decodes refused the write: %v", err)
+	}
+	want := `[bundle] Warning: env ` + env + ` declares telemetry this control plane does not collect yet (it does not advertise "collects-telemetry")`
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("the warning lacks %q:\n%s", want, out.String())
+	}
+	if got := decodes.LimitShape(shape).Telemetry; got != nil {
+		t.Errorf("the targets were sent to a control plane that only decodes them: %+v", got)
 	}
 }
 
@@ -188,30 +214,53 @@ func TestRenderContract_HostedTelemetryReachesTheShape(t *testing.T) {
 
 // A hosted env whose only telemetry is forge's own default (a ManagedDatabase's)
 // deploys to a control plane that does not collect hosted telemetry without a
-// word: the default is withheld silently. A declared target beside it is still
-// named, alone.
+// word: the default is withheld silently, and is not held to caps the control
+// plane will never apply to it. A declared target beside it is still named,
+// alone, with the capability the control plane lacks. That holds for one that
+// decodes nothing and for one on a newer forge pin that only decodes.
 func TestCheckBundleTelemetryIsQuietAboutDefaults(t *testing.T) {
 	db := hostedTelemetryTarget("db-postgres")
 	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
-	old := &release.BundleReader{Features: []string{release.BundleFeatureStorage}}
-	// The warning is deduped per env and process: forget these envs so a
-	// repeated run (-count, -cpu) sees the first warning again.
-	for _, env := range []string{"prod-default-only", "prod-default-mixed"} {
-		telemetryUncollectedNoted.Delete(env)
-		t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+	tight := &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1}
+	defaultOnly := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db})}
+	mixed := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db, hostedTelemetryTarget("api")})}
+
+	// The caps bite: a control plane that collects refuses the default
+	// target under them, so the silence below is not caps that pass anyway.
+	collects := &release.BundleReader{Features: []string{release.BundleFeatureTelemetry, release.CapabilityCollectsTelemetry}, Telemetry: tight}
+	if err := checkBundleTelemetry(io.Discard, "prod-default-collects", defaultOnly, collects); err == nil {
+		t.Fatal("caps tighter than the default target were not enforced on a control plane that collects")
 	}
 
-	var out bytes.Buffer
-	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db})}
-	if err := checkBundleTelemetry(&out, "prod-default-only", shape, old); err != nil || out.Len() != 0 {
-		t.Errorf("default-only telemetry: err %v, output %q; want silence", err, out.String())
-	}
+	for name, c := range map[string]struct {
+		r       *release.BundleReader
+		missing string
+	}{
+		"old":          {&release.BundleReader{Features: []string{release.BundleFeatureStorage}}, `"shape-telemetry" or "collects-telemetry"`},
+		"decodes only": {&release.BundleReader{Features: release.BundleDocFeatures(), Telemetry: tight}, `"collects-telemetry"`},
+	} {
+		onlyEnv, mixedEnv := "prod-default-only-"+name, "prod-default-mixed-"+name
+		// The warning is deduped per env and process: forget these envs so a
+		// repeated run (-count, -cpu) sees the first warning again.
+		for _, env := range []string{onlyEnv, mixedEnv} {
+			telemetryUncollectedNoted.Delete(env)
+			t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+		}
 
-	shape.Telemetry = release.ShapeTelemetryOf([]telemetry.Target{db, hostedTelemetryTarget("api")})
-	if err := checkBundleTelemetry(&out, "prod-default-mixed", shape, old); err != nil {
-		t.Fatal(err)
-	}
-	if got := out.String(); !strings.Contains(got, "[bundle]     - api (workload:api): metrics\n") || strings.Contains(got, "db-postgres") {
-		t.Errorf("the warning must name the declared target and only it:\n%s", got)
+		var out bytes.Buffer
+		if err := checkBundleTelemetry(&out, onlyEnv, defaultOnly, c.r); err != nil || out.Len() != 0 {
+			t.Errorf("%s: default-only telemetry: err %v, output %q; want silence", name, err, out.String())
+		}
+
+		if err := checkBundleTelemetry(&out, mixedEnv, mixed, c.r); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "[bundle]     - api (workload:api): metrics\n") || strings.Contains(got, "db-postgres") {
+			t.Errorf("%s: the warning must name the declared target and only it:\n%s", name, got)
+		}
+		if want := "(it does not advertise " + c.missing + ")"; !strings.Contains(got, want) {
+			t.Errorf("%s: the warning does not name %s:\n%s", name, want, got)
+		}
 	}
 }

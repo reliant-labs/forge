@@ -49,6 +49,10 @@ func TestMain(m *testing.M) {
 	}
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// Nor does a merge driver a test writes reach the forge on the
+	// developer's PATH when its own binary is gone: the launcher clause
+	// names an entry point no machine has. A test of the clause sets its own.
+	driverLaunchers = func(string) [][]string { return [][]string{{"forge-test-no-such-launcher"}} }
 	// This binary serves `forge protoc-gen-forge` (below), so the root may
 	// register the self-exec descriptor extractor (descriptorSelfExecAllowed).
 	testBinaryServesForge = true

@@ -46,6 +46,7 @@ import (
 
 	forge "github.com/reliant-labs/forge"
 	"github.com/reliant-labs/forge/internal/buildinfo"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // forgeRepoURL is where the release notes and compare views of forge live.
@@ -421,7 +422,9 @@ func goModCache() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "go", "env", "GOMODCACHE").Output()
+	cmd := exec.CommandContext(ctx, "go", "env", "GOMODCACHE")
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

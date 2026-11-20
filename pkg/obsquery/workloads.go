@@ -561,6 +561,34 @@ func (q Workloads) PodRestarts() (Stmt, error) {
 		") GROUP BY env, workload, pod_name, pod_uid, container ORDER BY env, workload, pod_name, container LIMIT " + strconv.Itoa(MaxWorkloadRows)), nil
 }
 
+// PodUsage is Usage per pod rather than over every pod of a container: each
+// pod container's usage, utilization, requests and limits. Columns: env,
+// workload, pod_name, pod_uid, container, metric, latest (the pod's latest
+// sample), p95 (over the pod's samples), img, tag (latest non-empty). Ordered
+// by env, workload, pod_name, container, metric; at most MaxWorkloadRows rows.
+//
+// A metric the pod's container never reported has no row, so a reader can
+// tell an unreported limit from a zero one. Its rows key a pod the way Pods
+// and PodRestarts do (pod_name, pod_uid), so the three join.
+func (q Workloads) PodUsage() (Stmt, error) {
+	if err := q.validate(); err != nil {
+		return Stmt{}, err
+	}
+	b := newBuilder(q.Scope)
+	conds, err := q.metricConds(b, UsageMetrics)
+	if err != nil {
+		return Stmt{}, err
+	}
+	return b.stmt("SELECT " + wlEnv + " AS env, " + wlWorkload + " AS workload,\n" +
+		"       ResourceAttributes['k8s.pod.name'] AS pod_name, ResourceAttributes['k8s.pod.uid'] AS pod_uid,\n" +
+		"       " + wlContainer + " AS container, MetricName AS metric,\n" +
+		"       argMax(Value, TimeUnix) AS latest, quantile(0.95)(Value) AS p95,\n" +
+		"       argMaxIf(ResourceAttributes['container.image.name'], TimeUnix, ResourceAttributes['container.image.name'] != '') AS img,\n" +
+		"       argMaxIf(ResourceAttributes['container.image.tag'], TimeUnix, ResourceAttributes['container.image.tag'] != '') AS tag\n" +
+		"FROM " + b.table(q.Scope, MetricGauge.table()) + "\n" + where(conds) + "\n" +
+		"GROUP BY env, workload, pod_name, pod_uid, container, metric ORDER BY env, workload, pod_name, container, metric LIMIT " + strconv.Itoa(MaxWorkloadRows)), nil
+}
+
 // The reasons a Job's own events carry (the Job controller's, upstream
 // kubernetes): one run starts with SuccessfulCreate and ends with Completed or
 // one of the failure reasons.

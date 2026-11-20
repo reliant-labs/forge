@@ -36,6 +36,7 @@ func instanceStatements(sc Scope) map[string]func() (Stmt, error) {
 		"issues":        ServerIssues{Scope: sc, Limit: 5}.Compile,
 		"workloads":     Workloads{Scope: sc}.Usage,
 		"workloads/log": Workloads{Scope: sc}.LatestWarnings,
+		"workloads/pod": Workloads{Scope: sc}.PodUsage,
 		"values":        AttrValues{Scope: sc, Key: "service.name", Limit: 5}.Compile,
 		"panel": func() (Stmt, error) {
 			st, _, err := PanelQuery{Scope: sc, Panel: Panel{ID: "p", Kind: "number", Signal: "traces", Series: []PanelSeries{{Agg: "count"}}}}.Compile()

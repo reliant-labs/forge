@@ -11,6 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/internal/toolpin"
+	"github.com/reliant-labs/forge/pkg/toolpins"
 )
 
 // toolPins are the tool versions this forge pins, keyed by binary name and
@@ -35,7 +36,7 @@ func toolPins() map[string]string {
 }
 
 func newToolsPinsCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, archives bool
 	cmd := &cobra.Command{
 		Use:   "pins [tool]",
 		Short: "Print the tool versions this forge pins (golangci-lint, buf, …), for CI to read",
@@ -58,12 +59,23 @@ their upstream release archives, each verified against a sha256 compiled into
 this forge, into forge's tool cache ($FORGE_TOOLS_CACHE/release) on first use
 or by ` + "`forge tools install syft grype`" + `.
 
+--archives prints, as JSON, the release archives of the tools forge
+installs as binaries (syft, grype): per platform, the archive's name, URL
+and sha256, and the sha256 of the executable inside it — the same data the public Go package
+github.com/reliant-labs/forge/pkg/toolpins exports, for a Dockerfile or a CI
+step that installs the same binary forge pins. --json keeps its shape, a
+flat object of tool → version.
+
 Examples:
   forge tools pins
   forge tools pins golangci-lint
-  forge tools pins --json`,
+  forge tools pins --json
+  forge tools pins grype --archives`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if archives {
+				return printToolArchives(args)
+			}
 			pins := toolPins()
 			if len(args) == 1 {
 				v, ok := pins[args[0]]
@@ -89,5 +101,51 @@ Examples:
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print a JSON object of tool → version")
+	cmd.Flags().BoolVar(&archives, "archives", false, "Print the release archives (name, URL, sha256 per platform) of the binary tools, syft and grype, as JSON")
 	return cmd
+}
+
+// toolArchives is one tool of `forge tools pins --archives`: pkg/toolpins'
+// Tool with each archive's download URL beside it.
+type toolArchives struct {
+	toolpins.Tool
+	Archives []toolArchive `json:"archives"`
+}
+
+type toolArchive struct {
+	toolpins.Archive
+	URL string `json:"url"`
+}
+
+// printToolArchives prints every binary tool's archives, or only the named
+// tool's (one object rather than an array).
+func printToolArchives(args []string) error {
+	tools := toolpins.All()
+	if len(args) == 1 {
+		t, ok := toolpins.Lookup(args[0])
+		if !ok {
+			names := make([]string, 0, len(tools))
+			for _, t := range tools {
+				names = append(names, t.Name)
+			}
+			return cliutil.UserErr("forge tools pins --archives", fmt.Sprintf("%q is not a tool forge installs from release archives", args[0]), "",
+				"one of: "+strings.Join(names, ", "))
+		}
+		tools = []toolpins.Tool{t}
+	}
+	out := make([]toolArchives, 0, len(tools))
+	for _, t := range tools {
+		ta := toolArchives{Tool: t, Archives: make([]toolArchive, 0, len(t.Archives))}
+		for _, a := range t.Archives {
+			url, _ := t.ReleaseURL(a.GOOS, a.GOARCH)
+			ta.Archives = append(ta.Archives, toolArchive{Archive: a, URL: url})
+		}
+		out = append(out, ta)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if len(args) == 1 {
+		return enc.Encode(out[0])
+	}
+	return enc.Encode(out)
 }

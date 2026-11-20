@@ -44,6 +44,15 @@ func WorkspaceInstallDir(dir, boundary string) string {
 	}
 	for _, p := range parents {
 		if body, err := os.ReadFile(filepath.Join(p, "pnpm-workspace.yaml")); err == nil {
+			// An active Yarn root takes membership from package.json, not
+			// a leftover pnpm manifest. Use the same manager selection as
+			// the install that would run there.
+			if PackageManager(p, "") == "yarn" {
+				if workspaceAdopts(p, member) {
+					return p
+				}
+				continue
+			}
 			if pnpmWorkspaceAdopts(p, member, body) {
 				return p
 			}

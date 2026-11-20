@@ -257,7 +257,7 @@ frontend reaches it through `runtime_config` (`forge.WorkloadURL`). The CRUD
 pages generated for its entities are static routes, so it still exports. Write
 your own pages the same way: put the id in the query string and never use a
 `[id]` segment (`frontend/pages`). A frontend scaffolded by forge ≤ v0.1.43
-has `[id]` pages; `forge skill load migrations/v0.1.44` converts them.
+has `[id]` pages; `frontend/serving` converts them.
 
 Two cases leave static hosting behind: server rendering, and request-time
 server APIs such as server actions, middleware, and `cookies()`. For those,

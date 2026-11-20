@@ -34,7 +34,9 @@ func TestE2EScaffoldSecretFieldPreservedOnFullReplace(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "vaultapp", "--mod", "example.com/vaultapp", "--service", "vaults")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "vaultapp", "--mod", "example.com/vaultapp", "--service", "vaults", "--connect", "v1")
 	projectDir := filepath.Join(dir, "vaultapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

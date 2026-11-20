@@ -98,6 +98,10 @@ func toolCacheDir(t protoTool, version string) (string, error) {
 type codegenTools struct {
 	Dirs  []string
 	paths map[string]string
+	// major is the connect-go major protoc-gen-connect-go was pinned for.
+	// A cached resolution for another major is stale (ensureCodegenTools);
+	// zero accepts any.
+	major connectmajor.Major
 }
 
 // Path returns the absolute path of binary if it was resolved into the cache.
@@ -139,23 +143,65 @@ func pathPrepended(env, dirs []string) []string {
 var (
 	pinMu    sync.Mutex
 	pinCache = map[string]*codegenTools{}
+	// pinMajors is the connect-go major a `forge generate` run read once
+	// for a project (bindCodegenToolsMajor), keyed by its absolute path.
+	pinMajors = map[string]connectmajor.Major{}
 )
+
+// bindCodegenToolsMajor makes major the connect-go major every later codegen
+// tool resolution for projectDir pins protoc-gen-connect-go for, in place of
+// reading go.mod again. `forge generate` binds the major it read once for the
+// run, so the plugin buf runs agrees with every file the run renders even if
+// go.mod changes mid-run (a tidy, a user hook). It is a binding rather than a
+// parameter because some tool users run outside any step's reach — the
+// on-demand descriptor build codegen.LoadDescriptor triggers is a
+// process-wide hook. A later run's binding replaces it; zero removes it.
+func bindCodegenToolsMajor(projectDir string, major connectmajor.Major) {
+	abs := absOr(projectDir)
+	pinMu.Lock()
+	defer pinMu.Unlock()
+	if major == 0 {
+		delete(pinMajors, abs)
+		return
+	}
+	pinMajors[abs] = major
+}
+
+// codegenToolsMajor is the connect-go major codegen tools are pinned for in
+// projectDir: the bound run major, else the one its go.mod selects.
+func codegenToolsMajor(projectDir string) connectmajor.Major {
+	abs := absOr(projectDir)
+	pinMu.Lock()
+	m := pinMajors[abs]
+	pinMu.Unlock()
+	if m != 0 {
+		return m
+	}
+	return connectmajor.DetectOrDefault(abs)
+}
+
+func absOr(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
 
 // ensureCodegenTools makes sure every codegen tool forge runs matches the
 // version projectDir's go.mod pins. It is memoised per (project, PATH) so the
-// buf and goimports steps share one resolution and one message.
+// buf and goimports steps share one resolution and one message; a resolution
+// made for the other connect-go major (the run bound another one since) is
+// redone.
 func ensureCodegenTools(ctx context.Context, projectDir string) (*codegenTools, error) {
-	abs, err := filepath.Abs(projectDir)
-	if err != nil {
-		abs = projectDir
-	}
+	abs := absOr(projectDir)
+	major := codegenToolsMajor(abs)
 	key := abs + "\x00" + os.Getenv("PATH")
 	pinMu.Lock()
 	defer pinMu.Unlock()
-	if c, ok := pinCache[key]; ok {
+	if c, ok := pinCache[key]; ok && (c.major == 0 || c.major == major) {
 		return c, nil
 	}
-	c, err := pinCodegenTools(ctx, abs)
+	c, err := pinCodegenTools(ctx, abs, major)
 	if err != nil {
 		return nil, err
 	}
@@ -163,16 +209,16 @@ func ensureCodegenTools(ctx context.Context, projectDir string) (*codegenTools, 
 	return c, nil
 }
 
-func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, error) {
-	res := &codegenTools{paths: map[string]string{}}
+func pinCodegenTools(ctx context.Context, projectDir string, major connectmajor.Major) (*codegenTools, error) {
+	res := &codegenTools{paths: map[string]string{}, major: major}
 	if _, err := exec.LookPath("go"); err != nil {
 		return res, nil // cannot resolve versions without the go tool
 	}
 	// The project's own set: protoc-gen-connect-go of the connect-go major
-	// its go.mod selects (internal/connectmajor). toolMatches checks the
-	// binary's build info against that major's module, so a PATH binary of
-	// the other major never satisfies the pin, whatever its version.
-	for _, t := range projectProtoTools(projectDir) {
+	// the run reads (codegenToolsMajor). toolMatches checks the binary's
+	// build info against that major's module, so a PATH binary of the other
+	// major never satisfies the pin, whatever its version.
+	for _, t := range requiredProtoToolsFor(major) {
 		want := resolveToolVersion(ctx, projectDir, t, "")
 		pathBin, lookErr := exec.LookPath(t.Binary)
 		if want == "latest" {

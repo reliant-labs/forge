@@ -606,13 +606,11 @@ _obs_browser_off = lambda b: Bundle -> bool {
 }
 
 # The env is opted in to session replay, so the platform keeps replay events:
-# observability is on and either the deprecated env-wide signals.replay is
-# set or a frontend switched replay on with telemetry.replay. A frontend's
-# switch counts only while browser telemetry is on: with it off, nothing
-# records (see _runtime_config_declared), so nothing is opted in for it.
+# observability is on and a frontend switched replay on with telemetry.replay.
+# A frontend's switch counts only while browser telemetry is on: with it off,
+# nothing records (see _runtime_config_declared), so nothing is opted in for it.
 _obs_replay_opted_in = lambda b: Bundle -> bool {
-    _obs_on(b) and (b.observability.signals.replay \
-        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
+    _obs_on(b) and not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }
 }
 
 # The frontend switched session replay on (BrowserTelemetry.replay).
@@ -692,6 +690,106 @@ _obs_sampler_env = lambda b: Bundle, env: {str:} -> {str:str} {
         OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
         OTEL_TRACES_SAMPLER_ARG = str(_r)
     } if _r < 1.0 and b.observability.signals.traces and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") else {}
+}
+
+# ---------------------------------------------------------------------------
+# OTLP facts: the values a forge.OtlpRef names (kcl/telemetry.k
+# OTLP_REF_KEYS), resolved per runtime. A Telemetry's OtlpPush.env remaps them
+# into a system's own env keys, and forge.otlp_value interpolates them into a
+# raw object. They name the same collectors the standard injection above does:
+#
+#   host     the local collector on 127.0.0.1:local_port (HTTP only: forge
+#            does not know the local gRPC port)
+#   cluster  Observability.telemetry_collector's endpoints when declared,
+#            else the node agent's Service (rendered only with a destination)
+#   hosted   none: the platform owns every endpoint
+#
+# A fact with no value on a runtime is "", and an env key bound to "" is left
+# out, so an env with observability off is handed no endpoint at all.
+# ---------------------------------------------------------------------------
+
+_OTLP_SIGNAL_PATHS: {str:str} = {"traces_endpoint": "traces", "metrics_endpoint": "metrics", "logs_endpoint": "logs"}
+
+_otlp_cluster_http = lambda o: any -> str {
+    (o.telemetry_collector.otlp_http_endpoint or "") if o.telemetry_collector else \
+        ("http://${OTEL_AGENT_SERVICE}.${o.agent.namespace}.svc.cluster.local:4318" if o.destination else "")
+}
+
+_otlp_cluster_grpc = lambda o: any -> str {
+    (o.telemetry_collector.otlp_grpc_address or "") if o.telemetry_collector else \
+        ("${OTEL_AGENT_SERVICE}.${o.agent.namespace}.svc.cluster.local:4317" if o.destination else "")
+}
+
+# The transport facts (endpoint, <signal>_endpoint, grpc_address, protocol,
+# insecure) for a system on runtime type rt speaking protocol p.
+_otlp_transport_fact = lambda key: str, o: any, rt: str, p: str -> str {
+    _on = bool(o and o.enabled)
+    _http = (_otlp_cluster_http(o) if rt == "cluster" else ("http://127.0.0.1:${o.local_port}" if rt == "host" and o.local_port > 0 else "")) if _on else ""
+    _grpc = _otlp_cluster_grpc(o) if _on and rt == "cluster" else ""
+    _base = _http if p == "http/protobuf" else ("http://${_grpc}" if _grpc else "")
+    _facts = {
+        "endpoint": _base
+        "grpc_address": _grpc
+        "protocol": p if _base else ""
+        "insecure": ("false" if _base.startswith("https://") else "true") if _base else ""
+    }
+    ((_base.rstrip("/") + "/v1/" + _OTLP_SIGNAL_PATHS[key]) if _base and p == "http/protobuf" else _base) if key in _OTLP_SIGNAL_PATHS else _facts[key]
+}
+
+# The transport keys otlp_value can resolve with no workload in hand.
+_OTLP_TRANSPORT_FACTS: [str] = ["endpoint", "traces_endpoint", "metrics_endpoint", "logs_endpoint", "grpc_address", "protocol", "insecure"]
+
+otlp_value = lambda key: str, observability: any, cluster: str = "", protocol: str = "http/protobuf" -> str {
+    """An OTLP fact (forge.OtlpRef's `key`) as a literal, for a raw object
+    forge injects no env into (forge.Manifests):
+
+        env = [{name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = forge.otlp_value("endpoint", _obs, "prod-hub")}]
+
+    `cluster` non-empty resolves the cluster runtime's collector (the
+    env's telemetry_collector, else forge's node agent); empty resolves the
+    local collector `forge env up` runs. `protocol` is the one the system
+    speaks ("grpc" makes `endpoint` the gRPC URL). "" when there is none (the
+    env's observability is off, or the cluster has no collector).
+    service_name, resource_attributes and the sampler are facts of a
+    workload: write those literally.
+    """
+    assert key in _OTLP_TRANSPORT_FACTS, \
+        "forge.otlp_value('${key}'): only the transport facts ${_OTLP_TRANSPORT_FACTS} resolve without a workload; write service_name, resource_attributes and the sampler literally"
+    assert protocol in ["grpc", "http/protobuf"], "forge.otlp_value: protocol must be grpc or http/protobuf, got '${protocol}'"
+    _otlp_transport_fact(key, observability, "cluster" if cluster else "host", protocol)
+}
+
+# Every OTLP fact for a Telemetry t whose service is svc, on runtime type rt.
+_tel_fact = lambda key: str, t: any, svc: str, rt: str, b: Bundle -> str {
+    _p = t.otlp.protocol if t.otlp else "http/protobuf"
+    _ratio = t.otlp.sampler_ratio if t.otlp and t.otlp.sampler_ratio else (b.observability.sampling.traces_ratio if _obs_on(b) else 1.0)
+    _own = {
+        "service_name": svc
+        "resource_attributes": _otel_resource_attributes(b) if t.scope == "project" else ""
+        "traces_sampler": "parentbased_traceidratio" if _obs_on(b) else ""
+        "traces_sampler_arg": str(_ratio) if _obs_on(b) else ""
+    }
+    _own[key] if key in _own else _otlp_transport_fact(key, b.observability, rt, _p)
+}
+
+# The service.name a workload's signals carry: its Telemetry's, else its name.
+_tel_service_name = lambda w: any -> str {
+    w.telemetry.service_name if w.telemetry and w.telemetry.service_name else w.name
+}
+
+# The env a workload's Telemetry adds (OtlpPush): the system's own keys, each
+# a literal or a resolved fact, and the standard sampler at its own ratio.
+# Only keys the author left unset, and never a fact with no value here.
+_tel_env = lambda w: any, rt: any, b: Bundle, env: {str:} -> {str:str} {
+    _o = w.telemetry.otlp if w.telemetry and w.telemetry.otlp else Undefined
+    _svc = _tel_service_name(w)
+    _vals = {k: (v if typeof(v) == "str" else _tel_fact(v.key, w.telemetry, _svc, rt.type, b)) for k, v in _o.env} if _o else {}
+    _mapped = {k: v for k, v in _vals if v != "" and not _env_set(env, k)}
+    _sampler = {
+        OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
+        OTEL_TRACES_SAMPLER_ARG = str(_o.sampler_ratio)
+    } if _o and _o.sampler_ratio and _obs_on(b) and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") and "OTEL_TRACES_SAMPLER" not in _mapped and "OTEL_TRACES_SAMPLER_ARG" not in _mapped else {}
+    _sampler | _mapped
 }
 
 # Workloads that ship their own OTLP logs while the env's collector already
@@ -941,9 +1039,18 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     _env = w.env if w.env else {}
     _runs = rt.type in _RUNS_A_PROCESS and w.kind != "tool"
     _gml = _gomemlimit(w, rt) if _runs else ""
-    ({OTEL_SERVICE_NAME = w.name} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
-        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
-        | (_obs_env(rt, bundle, _env) if _runs else {}) \
+    # A Telemetry's service_name is the workload's service.name, and a
+    # platform-scoped one carries no env identity (kcl/telemetry.k).
+    _platform = bool(w.telemetry and w.telemetry.scope == "platform")
+    _tel = _tel_env(w, rt, bundle, _env) if _runs and w.telemetry else {}
+    # A resolved Telemetry entry occupies a default slot just like explicit
+    # env. Let _obs_env see it first so transport and sampler pairs stay
+    # together, rather than unioning two incompatible scalar values.
+    _set = {k: v for k, v in _env if k not in _tel} | _tel
+    ({OTEL_SERVICE_NAME = _tel_service_name(w)} if _runs and not _env_set(_set, "OTEL_SERVICE_NAME") else {}) \
+        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _platform and not _env_set(_set, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
+        | (_obs_env(rt, bundle, _set) if _runs else {}) \
+        | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
@@ -2177,6 +2284,7 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
+    _tel_rules = _tel_alert_rules(b)
     {
         "enabled": _o.enabled
         "local_port": _o.local_port
@@ -2207,8 +2315,7 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            # Derived, as policy.opt_in is: the deprecated env-wide switch
-            # or any frontend's telemetry.replay.
+            # Derived, as policy.opt_in is: any frontend's telemetry.replay.
             "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
@@ -2240,8 +2347,9 @@ _render_observability = lambda b: Bundle -> any {
         # Alerting is a declaration only: the author's rules (severity
         # defaulted), the tuning of the generated defaults, and the routes. Go
         # resolves the defaults and, absent routes, the in-app + Slack fan-out.
-        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes or _o.alerts.receivers:
-            "alerts": _render_alerts(_o.alerts)
+        # A Telemetry's alerts join the env's rules (_tel_alert_rules).
+        if _o.alerts.rules or _o.alerts.defaults or _o.alerts.routes or _o.alerts.receivers or _tel_rules:
+            "alerts": _render_alerts(_o.alerts, _tel_rules)
         # The project's Events funnels and counts (forge generate merges every
         # env's into the Product dashboard). Omitted when undeclared.
         if _o.analytics:
@@ -2249,18 +2357,25 @@ _render_observability = lambda b: Bundle -> any {
     }
 }
 
-_render_alerts = lambda a: Alerts -> any {
+# One rule; `labels` are defaults the rule's own labels override.
+_render_alert_rule = lambda r: AlertRule, labels: {str:str} -> any {
     {
-        "rules": [{
-            "alert": r.alert
-            "expr": r.expr
-            "for": r["for"]
-            "interval": r.interval
-            "keep_firing_for": r.keep_firing_for if r.keep_firing_for else None
-            "labels": {"severity": "warning"} | r.labels
-            "annotations": r.annotations
-            "enabled": r.enabled
-        } for r in a.rules]
+        "alert": r.alert
+        "expr": r.expr
+        "for": r["for"]
+        "interval": r.interval
+        "keep_firing_for": r.keep_firing_for if r.keep_firing_for else None
+        "labels": {"severity": "warning"} | labels | r.labels
+        "annotations": r.annotations
+        "enabled": r.enabled
+    }
+}
+
+# `extra` are {rule, labels} pairs rendered after the env's own rules (a
+# Telemetry's alerts, labelled with its service).
+_render_alerts = lambda a: Alerts, extra: [any] = [] -> any {
+    {
+        "rules": [_render_alert_rule(r, {}) for r in a.rules] + [_render_alert_rule(x.rule, x.labels) for x in extra]
         "defaults": {id: {
             "enabled": d.enabled
             "labels": d.labels
@@ -2278,6 +2393,227 @@ _render_alerts = lambda a: Alerts -> any {
             "always_alertnames": r.always_alertnames
         } for r in a.receivers]
     }
+}
+
+# ---------------------------------------------------------------------------
+# Telemetry (kcl/telemetry.k): every forge.Telemetry, resolved against where it
+# attaches, as the `output.telemetry` list pkg/telemetry decodes into
+# []telemetry.Target (pkg/telemetry/target.go is the contract; its Decode is
+# strict, so a key added here must be added there).
+#
+#   attachment     source             runtime        identity
+#   workload       workload:<name>    its runtime    selector app.kubernetes.io/name
+#                                                    on a cluster or hosted, else
+#                                                    127.0.0.1; namespace and
+#                                                    cluster from its target
+#   hostinfra      hostinfra:<name>   host           127.0.0.1
+#   manifests      manifests[:<name>] cluster        the entry's selector/address,
+#                                                    the group's cluster and
+#                                                    namespace
+#   observability  observability      cluster when   the entry's own
+#                                     `cluster` is
+#                                     set, else host
+#
+# A named port stays a name here (`port` 0, `port_name`), beside the attached
+# entity's `ports`: Go resolves it and reports one that does not exist, with
+# everything else KCL cannot check (RE2, service_name unique across
+# attachments, the hosted rules).
+# ---------------------------------------------------------------------------
+
+_tel_port = lambda p: any -> {str:} {
+    {"port": p} if typeof(p) == "int" else {"port": 0, "port_name": p}
+}
+
+_tel_secret = lambda s: any -> any {
+    {k: v for k, v in {
+        "secret": s.name
+        "key": s.key
+        "store_key": s.store_key
+        "optional": True if s.optional else None
+    } if v} if s else None
+}
+
+_tel_tls = lambda t: any -> any {
+    {
+        "insecure_skip_verify": t.insecure_skip_verify
+        "ca": _tel_secret(t.ca)
+        "server_name": t.server_name or ""
+    } if t else None
+}
+
+_tel_metrics = lambda m: MetricsScrape -> any {
+    _tel_port(m.port) | {
+        "name": m.name or ""
+        "path": m.path
+        "params": m.params
+        "scheme": m.scheme
+        "interval": m.interval
+        "timeout": m.timeout
+        "allow": m.allow or ""
+        "deny": m.deny or ""
+        "counters": m.counters or ""
+        "drop_labels": m.drop_labels
+        "sample_limit": m.sample_limit
+        "label_limit": m.label_limit
+        "label_value_length_limit": m.label_value_length_limit
+        "bearer_token": _tel_secret(m.bearer_token)
+        "tls": _tel_tls(m.tls)
+    }
+}
+
+_tel_profiles = lambda p: PprofScrape -> any {
+    _tel_port(p.port) | {
+        "path_prefix": p.path_prefix
+        "types": p.types
+        "interval": p.interval
+        "cpu_seconds": p.cpu_seconds
+        "scheme": p.scheme
+        "bearer_token": _tel_secret(p.bearer_token)
+        "tls": _tel_tls(p.tls)
+    }
+}
+
+_tel_check = lambda c: HealthCheck -> any {
+    _tel_port(c.port) | {
+        "name": c.name or ""
+        "kind": c.kind
+        "path": c.path
+        "scheme": c.scheme
+        "interval": c.interval
+    }
+}
+
+_tel_logs = lambda l: LogParse -> any {
+    {
+        "format": l.format
+        "regex": l.regex or ""
+        "timestamp": {"field": l.timestamp.field, "layout": l.timestamp.layout} if l.timestamp else None
+        "severity": {"field": l.severity.field, "mapping": l.severity.mapping} if l.severity else None
+        "body": l.body or ""
+        "trace_id": l.trace_id or ""
+        "span_id": l.span_id or ""
+        "drop": l.drop
+        "rules": [{
+            "body_match": r.body_match or ""
+            "field": r.field or ""
+            "value_match": r.value_match or ""
+            "from_severity": r.from_severity or ""
+            "severity": r.severity
+        } for r in l.rules]
+    } if l else None
+}
+
+# OtlpPush, with each env value a literal or {ref, value}: the fact it names
+# and that fact resolved on this runtime ("" where the runtime fills it).
+_tel_otlp = lambda t: Telemetry, svc: str, rt: str, b: Bundle -> any {
+    _o = t.otlp
+    {
+        "signals": _o.signals
+        "protocol": _o.protocol
+        "sampler_ratio": _o.sampler_ratio if _o.sampler_ratio else None
+        "env": {k: ({"value": v} if typeof(v) == "str" else {"ref": v.key, "value": _tel_fact(v.key, t, svc, rt, b)}) for k, v in _o.env}
+    } if _o else None
+}
+
+_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle -> any {
+    {
+        "service_name": svc
+        "scope": t.scope
+        "source": source
+        "attachment": attachment
+        "runtime": rt
+        "cluster": cluster
+        "namespaces": namespaces
+        "selector": selector
+        "address": address
+        "ports": ports
+        "container": t.container or ""
+        "isolated": t.isolated
+        # Tri-state: absent is "auto" (kcl/telemetry.k network_policy).
+        if t.network_policy in [True, False]:
+            "network_policy": t.network_policy
+        "metrics": [_tel_metrics(m) for m in t.metrics]
+        "otlp": _tel_otlp(t, svc, rt, b)
+        "logs": _tel_logs(t.logs)
+        "profiles": [_tel_profiles(p) for p in t.profiles]
+        "checks": [_tel_check(c) for c in t.checks]
+        "dashboard": {"enabled": t.dashboard.enabled, "title": t.dashboard.title or ""}
+        "default_alerts": t.default_alerts
+    }
+}
+
+_tel_workload = lambda w: any, b: Bundle -> any {
+    _rt = w.runtime
+    _c = _rt.type == "cluster"
+    _tel_target(w.telemetry, _tel_service_name(w), "workload:${w.name}", "workload", _rt.type, \
+        _rt.target.cluster if _c else "", \
+        [_rt.target.namespace] if _c and _rt.target.namespace else [], \
+        {"app.kubernetes.io/name": w.name} if _rt.type in ["cluster", "hosted"] else {}, \
+        "127.0.0.1" if _rt.type in ["host", "compose"] else "", \
+        {p.name: p.port for p in w.ports} if w.ports else {}, b)
+}
+
+# A HostInfra's ports, by the names its Telemetry may use.
+_tel_host_infra_ports = lambda d: HostInfra -> {str:int} {
+    {"server": d.port} \
+        | ({"monitor": d.nats_monitor_port} if d.nats_monitor_port else {}) \
+        | ({"ui": d.temporal_ui_port} if d.temporal_ui_port else {}) \
+        | ({"metrics": d.temporal_metrics_port} if d.temporal_metrics_port else {})
+}
+
+_tel_host_infra = lambda d: HostInfra, b: Bundle -> any {
+    _tel_target(d.telemetry, d.telemetry.service_name or d.name, "hostinfra:${d.name}", "hostinfra", "host", \
+        "", [], {}, "127.0.0.1", _tel_host_infra_ports(d), b)
+}
+
+_tel_manifests = lambda g: Manifests, t: Telemetry, pt: any, b: Bundle -> any {
+    _ns = g.namespace or (pt.namespace if pt else "")
+    _tel_target(t, t.service_name or g.name, "manifests:${g.name}" if g.name else "manifests", "manifests", "cluster", \
+        g.cluster or (pt.cluster if pt else ""), \
+        t.namespaces if t.namespaces else ([_ns] if _ns else []), \
+        t.selector or {}, t.address or "", {}, b)
+}
+
+_tel_observability = lambda t: Telemetry, b: Bundle -> any {
+    _tel_target(t, t.service_name, "observability", "observability", "cluster" if t.cluster else "host", \
+        t.cluster or "", t.namespaces or [], t.selector or {}, t.address or "", {}, b)
+}
+
+# Every Telemetry the env declares, beside its resolved service name:
+# {t, svc}, in render order.
+_tel_declared = lambda b: Bundle -> [any] {
+    [{"t": w.telemetry, "svc": _tel_service_name(w)} for w in b.workloads if w.telemetry] \
+        + [{"t": d.telemetry, "svc": d.telemetry.service_name or d.name} for d in b.infra if d.telemetry] \
+        + [{"t": t, "svc": t.service_name or g.name} for g in b.manifests for t in g.telemetry] \
+        + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else [])
+}
+
+_render_telemetry = lambda b: Bundle -> [any] {
+    _pt = _primary_target(b)
+    [_tel_workload(w, b) for w in b.workloads if w.telemetry] \
+        + [_tel_host_infra(d, b) for d in b.infra if d.telemetry] \
+        + [_tel_manifests(g, t, _pt, b) for g in b.manifests for t in g.telemetry] \
+        + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else [])
+}
+
+# A Telemetry's alerts, as _render_alerts' extra rules: each labelled
+# service = its service_name unless it sets one.
+_tel_alert_rules = lambda b: Bundle -> [any] {
+    [{"rule": r, "labels": {"service": d.svc}} for d in _tel_declared(b) for r in d.t.alerts]
+}
+
+# The env-wide rules on Telemetry: its alerts need a pipeline to evaluate, and
+# share the env's one alert namespace.
+_check_telemetry = lambda b: Bundle -> bool {
+    _tel = [r.alert for d in _tel_declared(b) for r in d.t.alerts]
+    _own = [r.alert for r in b.observability.alerts.rules] if b.observability else []
+    _all = _own + _tel
+    _dups = sorted([a for a in {a: 1 for a in _all if len([x for x in _all if x == a]) > 1}])
+    assert not _tel or _obs_on(b), \
+        "Telemetry declares alerts ${_tel}, but the env's observability is unset or enabled = False: alerts evaluate the env's telemetry. Set Bundle.observability, or drop the alerts"
+    assert not _dups, \
+        "Telemetry alerts ${_dups} are declared twice in this env (Observability.alerts.rules and every Telemetry.alerts share one namespace)"
+    True
 }
 
 _render_managed_database_record = lambda db: any, part_of: str -> any {
@@ -2531,6 +2867,7 @@ render = lambda bundle: Bundle -> any {
     _requires_ok = _check_requires(bundle.workloads)
     _built_images_ok = _check_built_images(bundle.workloads)
     _config_secrets_ok = _check_config_secrets(bundle.workloads)
+    _telemetry_ok = _check_telemetry(bundle)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {
@@ -2588,6 +2925,12 @@ render = lambda bundle: Bundle -> any {
         } for g in bundle.manifests if _manifests_owner(g)]
         if bundle.observability:
             "observability": _render_observability(bundle)
+        # Every forge.Telemetry, resolved against where it attaches
+        # (_render_telemetry): what pkg/telemetry decodes into Targets. The key
+        # appears only when one is declared, so an env without renders as
+        # before.
+        if _render_telemetry(bundle):
+            "telemetry": _render_telemetry(bundle)
         # The resolved delivery policy, every control spelled out, only when the
         # env declares one. Go records it in the release shape unless it is all
         # defaults.
@@ -2751,6 +3094,9 @@ _render_host_infra = lambda d: HostInfra -> any {
         "nats_monitor_port": d.nats_monitor_port if d.nats_monitor_port else None
         "temporal_namespaces": d.temporal_namespaces if d.temporal_namespaces else None
         "temporal_ui_port": d.temporal_ui_port if d.temporal_ui_port else None
+        # Only when declared, so an env without it renders as before.
+        if d.temporal_metrics_port:
+            "temporal_metrics_port": d.temporal_metrics_port
     }
 }
 
@@ -2897,38 +3243,33 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
-#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
-#                   that sets telemetry.replay gets OTEL_REPLAY from
-#                   _telemetry_runtime_config, and the build variable is not
-#                   carried over it)
 #
-# otel_gen.ts reads these from the runtime config first (a build variable is
-# only its deprecated fallback): a build variable is baked into the bundle and
-# follows that build into every environment it is promoted to. So each
-# declaration is carried into the runtime config too (the build variable still
-# renders, for code that reads it). An env_vars literal outranks `config`, as
-# it does for the build variable; a secret or config-map entry is never
-# carried, because config.js is public. React Native has no runtime config
-# document, so it gets nothing.
+# (Session replay is not one of them: it is switched on per frontend with
+# telemetry.replay, which _telemetry_runtime_config renders as OTEL_REPLAY. A
+# {NEXT_PUBLIC_,VITE_}OTEL_REPLAY build variable is not carried.)
+#
+# otel_gen.ts reads these from the runtime config: a build variable is baked
+# into the bundle and follows that build into every environment it is
+# promoted to. So each declaration is carried into the runtime config (the
+# build variable still renders, for code that reads it). An env_vars literal
+# outranks `config`, as it does for the build variable; a secret or
+# config-map entry is never carried, because config.js is public. React
+# Native has no runtime config document, so it gets nothing.
 #
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
-# a literal published in the StaticSite spec would override that (and a fixed
-# OTEL_REPLAY carried from a build variable would apply that build's replay
-# choice wherever the spec lands), so those stay out of the spec. A hosted
-# frontend switches replay on per env with telemetry.replay instead. The
-# ingest path is the author's explicit choice for that environment, and the
-# spec already carries an author's runtime_config the same way.
+# a literal published in the StaticSite spec would override that, so it stays
+# out of the spec. The ingest path is the author's explicit choice for that
+# environment, and the spec already carries an author's runtime_config the
+# same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
     _environment = _build_var_literal(f, "ENVIRONMENT", _c.environment if _c and _c.environment else None)
-    _replay = _build_var_literal(f, "OTEL_REPLAY", None)
     _hosted = _frontend_hosted(f)
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
-        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
-        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
+        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable

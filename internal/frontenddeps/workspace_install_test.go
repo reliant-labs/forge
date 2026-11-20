@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestWorkspaceInstallDirUsesYarnRootWithStalePnpmManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	member := filepath.Join(root, "repo", "web")
+	if err := os.MkdirAll(member, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"package.json":        `{"private":true,"packageManager":"yarn@1.22.22","workspaces":["repo/*"]}`,
+		"yarn.lock":           "# yarn lockfile v1\n",
+		"pnpm-workspace.yaml": "packages: ['repo/*', '!repo/web']\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := WorkspaceInstallDir(member, root); got != root {
+		t.Errorf("WorkspaceInstallDir = %q, want Yarn root %q", got, root)
+	}
+}
+
 func TestWorkspaceInstallDirStopsAtUnrelatedBoundary(t *testing.T) {
 	t.Parallel()
 	common := t.TempDir()

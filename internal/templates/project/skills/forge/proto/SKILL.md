@@ -126,9 +126,10 @@ and `db` for where that column comes from).
 ### No schema annotations
 
 There is no proto-side schema declaration: entities are projections of the
-applied `db/migrations/` schema. `(forge.v1.entity)` and `(forge.v1.field)` are
-ignored — delete any that survive in your protos, along with a `proto/db/`
-directory if you have one. A column's default is likewise plain SQL (`NOT NULL
+applied `db/migrations/` schema. forge.proto defines no entity or column
+annotation (the old `entity` and `field` extensions were removed, so a proto
+still carrying one no longer compiles: delete it, along with a `proto/db/`
+directory if you have one). A column's default is likewise plain SQL (`NOT NULL
 DEFAULT <expr>`) in the birth migration, not an annotation.
 
 ### Birth markers — the `// forge:*` comments

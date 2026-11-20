@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/doctor"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 )
 
 // stubLookup implements binaryLookupFunc against a map. Missing keys
@@ -419,5 +421,47 @@ func TestRunToolDoctorChecks_LiveSmoke(t *testing.T) {
 	}
 	for _, r := range results {
 		t.Logf("%s — %s (%s)", r.Name, r.Status, r.Message)
+	}
+}
+
+// TestFetchedToolChecks covers each disposition of a forge-managed release
+// tool (syft, grype) without the network: installed, fetchable, buildable
+// with go install, and impossible — the one that warns, because a scan that
+// needs it reports "not scanned".
+func TestFetchedToolChecks(t *testing.T) {
+	t.Parallel()
+	tool := toolfetch.Tool{
+		Name: "faketool", Version: "v1.2.3", Repo: "acme/faketool", GoPackage: "example.com/faketool",
+		Checksums: map[string]string{"faketool_1.2.3_linux_amd64.tar.gz": strings.Repeat("a", 64)},
+	}
+	noGo := func(string) (string, error) { return "", errors.New("not found") }
+	hasGo := func(string) (string, error) { return "/usr/bin/go", nil }
+
+	installed := &toolfetch.Fetcher{
+		CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: hasGo, Log: io.Discard,
+		GoInstall: func(_ context.Context, _, gobin string) error {
+			return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("x"), 0o755)
+		},
+	}
+	if _, err := installed.Ensure(context.Background(), tool); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name   string
+		f      *toolfetch.Fetcher
+		status doctor.Status
+		msg    string
+	}{
+		{"installed", installed, doctor.StatusPass, "installed"},
+		{"release", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "linux", GOARCH: "amd64", LookPath: noGo}, doctor.StatusPass, "fetches the sha256-verified release on first use"},
+		{"go install", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: hasGo}, doctor.StatusPass, "go install on first use"},
+		{"unavailable", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: noGo}, doctor.StatusWarn, "cannot be installed here"},
+	}
+	for _, c := range cases {
+		got := fetchedToolChecks(c.f, []toolfetch.Tool{tool})
+		if len(got) != 1 || got[0].Name != "tool: faketool" || got[0].Status != c.status || !strings.Contains(got[0].Message, c.msg) {
+			t.Errorf("%s: got %+v, want status %s with %q", c.name, got, c.status, c.msg)
+		}
 	}
 }

@@ -20,6 +20,12 @@ func TestToolPinsNameForgesGolangciLint(t *testing.T) {
 	if got := pins["buf"]; got != templates.BufVersion {
 		t.Errorf("pins[buf] = %q, want %q", got, templates.BufVersion)
 	}
+	if got := pins["syft"]; got != templates.SyftVersion {
+		t.Errorf("pins[syft] = %q, want %q", got, templates.SyftVersion)
+	}
+	if got := pins["grype"]; got != templates.GrypeVersion {
+		t.Errorf("pins[grype] = %q, want %q", got, templates.GrypeVersion)
+	}
 
 	cmd := newToolsPinsCmd()
 	cmd.SetArgs([]string{"no-such-tool"})
@@ -39,7 +45,7 @@ func TestToolsInstallKnowsTheLintTools(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unknown tool name installed nothing and passed")
 	}
-	for _, want := range []string{"golangci-lint", "buf", "protoc-gen-go"} {
+	for _, want := range []string{"golangci-lint", "buf", "protoc-gen-go", "syft", "grype"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must list %q among the installable tools: %v", want, err)
 		}

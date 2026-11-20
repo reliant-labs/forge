@@ -1,0 +1,439 @@
+package toolfetch
+
+import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/reliant-labs/forge/internal/templates"
+)
+
+const fakeBinary = "#!/bin/sh\necho fake 1.2.3\n"
+
+// tarGz builds a goreleaser-shaped .tar.gz: docs beside the binary.
+func tarGz(t *testing.T, member, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range []struct{ name, body string }{{"LICENSE", "license"}, {member, content}, {"README.md", "readme"}} {
+		if e.name == "" {
+			continue
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(e.body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func zipOf(t *testing.T, member, content string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func sum(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// release is a fake GitHub release server: it serves assets at
+// /<repo>/releases/download/<tag>/<asset> and counts requests.
+type release struct {
+	srv    *httptest.Server
+	hits   atomic.Int64
+	mu     sync.Mutex
+	assets map[string][]byte
+}
+
+func newRelease(t *testing.T) *release {
+	t.Helper()
+	r := &release{assets: map[string][]byte{}}
+	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.hits.Add(1)
+		r.mu.Lock()
+		body, ok := r.assets[req.URL.Path]
+		r.mu.Unlock()
+		if !ok {
+			http.NotFound(w, req)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(r.srv.Close)
+	return r
+}
+
+func (r *release) serve(tool Tool, goos, goarch string, body []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.assets["/"+tool.Repo+"/releases/download/"+tool.Version+"/"+tool.Asset(goos, goarch)] = body
+}
+
+// fakeTool is a Tool whose linux/amd64 and windows/amd64 archives are pinned
+// to the given bodies.
+func fakeTool(linux, windows []byte) Tool {
+	t := Tool{Name: "faketool", Version: "v1.2.3", Repo: "acme/faketool", GoPackage: "example.com/faketool/cmd/faketool", Checksums: map[string]string{}}
+	t.Checksums[t.Asset("linux", "amd64")] = sum(linux)
+	t.Checksums[t.Asset("windows", "amd64")] = sum(windows)
+	return t
+}
+
+func noGo(string) (string, error) { return "", errors.New("not found") }
+
+func (r *release) fetcher(t *testing.T, goos string) *Fetcher {
+	return &Fetcher{
+		CacheDir: t.TempDir(),
+		BaseURL:  r.srv.URL,
+		GOOS:     goos,
+		GOARCH:   "amd64",
+		LookPath: noGo,
+		Log:      io.Discard,
+	}
+}
+
+func TestEnsureInstallsTheVerifiedBinary(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+	f := rel.fetcher(t, "linux")
+
+	in, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Version != "v1.2.3" || in.Source != SourceRelease || in.ArchiveSHA256 != sum(archive) || in.Platform != "linux/amd64" {
+		t.Errorf("installed = %+v", in)
+	}
+	if want := filepath.Join(f.CacheDir, "faketool@v1.2.3-linux-amd64", "faketool"); in.Path != want {
+		t.Errorf("path = %s, want %s", in.Path, want)
+	}
+	got, err := os.ReadFile(in.Path)
+	if err != nil || string(got) != fakeBinary {
+		t.Fatalf("binary = %q, %v; want the archive's member", got, err)
+	}
+	if info, _ := os.Stat(in.Path); info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("binary mode %v is not executable", info.Mode())
+	}
+	// The archive itself is not kept, and no staging directory is left.
+	entries, _ := os.ReadDir(filepath.Dir(in.Path))
+	for _, e := range entries {
+		if e.Name() != "faketool" && e.Name() != manifestName {
+			t.Errorf("entry holds %s besides the binary and its manifest", e.Name())
+		}
+	}
+	assertNoStaging(t, f.CacheDir)
+}
+
+func TestEnsureCacheHitUsesNoNetwork(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+	f := rel.fetcher(t, "linux")
+
+	first, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel.srv.Close() // any request now fails
+	second, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatalf("a cached tool must not need the network: %v", err)
+	}
+	if second.Path != first.Path || rel.hits.Load() != 1 {
+		t.Errorf("second Ensure: path %s (first %s), %d requests; want the same entry and 1 request", second.Path, first.Path, rel.hits.Load())
+	}
+	if in, ok := f.Find(tool); !ok || in.Path != first.Path {
+		t.Errorf("Find = %+v, %v; want the installed entry", in, ok)
+	}
+}
+
+func TestEnsureRefusesAChecksumMismatch(t *testing.T) {
+	t.Parallel()
+	pinned := tarGz(t, "faketool", fakeBinary)
+	substituted := tarGz(t, "faketool", "#!/bin/sh\necho evil\n")
+	tool := fakeTool(pinned, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", substituted)
+	f := rel.fetcher(t, "linux")
+
+	_, err := f.Ensure(context.Background(), tool)
+	if !errors.Is(err, ErrChecksum) {
+		t.Fatalf("err = %v, want ErrChecksum", err)
+	}
+	for _, want := range []string{sum(pinned), sum(substituted), "will not run an unverified binary"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %q: %v", want, err)
+		}
+	}
+	if _, ok := f.Find(tool); ok {
+		t.Error("a mismatched download was installed")
+	}
+	if _, statErr := os.Stat(filepath.Join(f.CacheDir, "faketool@v1.2.3-linux-amd64")); !os.IsNotExist(statErr) {
+		t.Errorf("an entry exists after a refused download: %v", statErr)
+	}
+	assertNoStaging(t, f.CacheDir)
+}
+
+func TestEnsureWindowsZip(t *testing.T) {
+	t.Parallel()
+	archive := zipOf(t, "faketool.exe", "MZ fake")
+	tool := fakeTool(nil, archive)
+	rel := newRelease(t)
+	rel.serve(tool, "windows", "amd64", archive)
+	f := rel.fetcher(t, "windows")
+
+	in, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(in.Path) != "faketool.exe" {
+		t.Errorf("path = %s, want faketool.exe", in.Path)
+	}
+	if got, _ := os.ReadFile(in.Path); string(got) != "MZ fake" {
+		t.Errorf("binary = %q", got)
+	}
+}
+
+func TestEnsureFailsOnHTTPErrorAndMissingMember(t *testing.T) {
+	t.Parallel()
+	t.Run("404", func(t *testing.T) {
+		t.Parallel()
+		archive := tarGz(t, "faketool", fakeBinary)
+		tool := fakeTool(archive, nil)
+		rel := newRelease(t) // serves nothing
+		f := rel.fetcher(t, "linux")
+		_, err := f.Ensure(context.Background(), tool)
+		if err == nil || !strings.Contains(err.Error(), "HTTP 404") || errors.Is(err, ErrChecksum) || errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want a transient HTTP 404", err)
+		}
+		assertNoStaging(t, f.CacheDir)
+	})
+	t.Run("no binary in the archive", func(t *testing.T) {
+		t.Parallel()
+		archive := tarGz(t, "", "")
+		tool := fakeTool(archive, nil)
+		rel := newRelease(t)
+		rel.serve(tool, "linux", "amd64", archive)
+		f := rel.fetcher(t, "linux")
+		_, err := f.Ensure(context.Background(), tool)
+		if err == nil || !strings.Contains(err.Error(), "contains no faketool executable") {
+			t.Fatalf("err = %v, want the missing member named", err)
+		}
+		if _, ok := f.Find(tool); ok {
+			t.Error("an archive without the binary installed an entry")
+		}
+	})
+}
+
+// A platform the release does not publish builds with go install when Go is
+// present, and is ErrUnavailable — "not scanned" — when it is not.
+func TestEnsureUnsupportedPlatform(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+
+	t.Run("go install fallback", func(t *testing.T) {
+		t.Parallel()
+		f := rel.fetcher(t, "plan9")
+		f.LookPath = func(string) (string, error) { return "/usr/bin/go", nil }
+		var gotSpec string
+		f.GoInstall = func(_ context.Context, spec, gobin string) error {
+			gotSpec = spec
+			return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("built"), 0o755)
+		}
+		if m := f.Method(tool); m != MethodGoInstall {
+			t.Fatalf("Method = %s, want go-install", m)
+		}
+		in, err := f.Ensure(context.Background(), tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotSpec != "example.com/faketool/cmd/faketool@v1.2.3" || in.Source != SourceGoInstall || in.GoPackage != gotSpec {
+			t.Errorf("spec %q, installed %+v", gotSpec, in)
+		}
+		if rel.hits.Load() != 0 {
+			t.Error("the go install fallback downloaded a release asset")
+		}
+	})
+	t.Run("no go", func(t *testing.T) {
+		t.Parallel()
+		f := rel.fetcher(t, "plan9")
+		if m := f.Method(tool); m != MethodUnavailable {
+			t.Fatalf("Method = %s, want unavailable", m)
+		}
+		_, err := f.Ensure(context.Background(), tool)
+		if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "not scanned") {
+			t.Fatalf("err = %v, want ErrUnavailable saying it is not scanned", err)
+		}
+	})
+}
+
+// An entry whose manifest does not carry the pinned checksum (a different
+// pin's leftovers, a hand edit) is replaced, not served.
+func TestEnsureReplacesAnEntryWithTheWrongChecksum(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+	f := rel.fetcher(t, "linux")
+
+	dir := filepath.Join(f.CacheDir, "faketool@v1.2.3-linux-amd64")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "faketool"), []byte("stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManifest(dir, Installed{Name: "faketool", Version: "v1.2.3", Source: SourceRelease, Platform: "linux/amd64", ArchiveSHA256: strings.Repeat("0", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Find(tool); ok {
+		t.Fatal("Find served an entry with the wrong checksum")
+	}
+	in, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(in.Path); string(got) != fakeBinary {
+		t.Errorf("binary = %q, want the verified one", got)
+	}
+}
+
+// Parallel forge processes installing the same tool all get one whole entry.
+func TestEnsureConcurrentInstallsConverge(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+	cache := t.TempDir()
+
+	const n = 8
+	var wg sync.WaitGroup
+	paths := make([]string, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := &Fetcher{CacheDir: cache, BaseURL: rel.srv.URL, GOOS: "linux", GOARCH: "amd64", LookPath: noGo, Log: io.Discard}
+			in, err := f.Ensure(context.Background(), tool)
+			paths[i], errs[i] = in.Path, err
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("install %d: %v", i, errs[i])
+		}
+		if paths[i] != paths[0] {
+			t.Errorf("install %d got %s, install 0 got %s", i, paths[i], paths[0])
+		}
+	}
+	if got, _ := os.ReadFile(paths[0]); string(got) != fakeBinary {
+		t.Errorf("binary = %q", got)
+	}
+	assertNoStaging(t, cache)
+}
+
+// FORGE_TOOLS_MIRROR replaces https://github.com and keeps GitHub's paths.
+func TestMirrorReplacesGitHub(t *testing.T) {
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+	t.Setenv(EnvMirror, rel.srv.URL+"/")
+
+	f := &Fetcher{CacheDir: t.TempDir(), GOOS: "linux", GOARCH: "amd64", LookPath: noGo, Log: io.Discard}
+	if want := rel.srv.URL + "/acme/faketool/releases/download/v1.2.3/faketool_1.2.3_linux_amd64.tar.gz"; f.URL(tool) != want {
+		t.Errorf("URL = %s, want %s", f.URL(tool), want)
+	}
+	if _, err := f.Ensure(context.Background(), tool); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv(EnvMirror, "")
+	if got := (&Fetcher{GOOS: "linux", GOARCH: "amd64"}).URL(Syft); got != "https://github.com/anchore/syft/releases/download/"+templates.SyftVersion+"/syft_"+strings.TrimPrefix(templates.SyftVersion, "v")+"_linux_amd64.tar.gz" {
+		t.Errorf("default URL = %s", got)
+	}
+}
+
+// Every platform forge supports has a checksum for the version
+// templates pins, so a version bump without its checksums fails here.
+func TestPinnedChecksumsCoverEveryPlatform(t *testing.T) {
+	t.Parallel()
+	hexSum := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	platforms := [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}}
+	for _, tool := range Tools() {
+		for _, p := range platforms {
+			if _, s, ok := tool.checksum(p[0], p[1]); !ok || !hexSum.MatchString(s) {
+				t.Errorf("%s %s has no sha256 for %s/%s (%s)", tool.Name, tool.Version, p[0], p[1], tool.Asset(p[0], p[1]))
+			}
+		}
+		ver := "_" + strings.TrimPrefix(tool.Version, "v") + "_"
+		for asset, s := range tool.Checksums {
+			if !strings.HasPrefix(asset, tool.Name+ver) {
+				t.Errorf("%s: checksum for %s is not for the pinned version %s", tool.Name, asset, tool.Version)
+			}
+			if !hexSum.MatchString(s) {
+				t.Errorf("%s: checksum for %s is %q, not a sha256", tool.Name, asset, s)
+			}
+		}
+	}
+	if Syft.Version != templates.SyftVersion || Grype.Version != templates.GrypeVersion {
+		t.Errorf("tool versions %s/%s are not templates' pins", Syft.Version, Grype.Version)
+	}
+}
+
+func assertNoStaging(t *testing.T, dir string) {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("staging left behind: %s", e.Name())
+		}
+	}
+}

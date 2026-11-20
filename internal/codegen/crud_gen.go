@@ -2011,6 +2011,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	// migrations past what the scaffolded fixtures satisfy removes this
 	// file, and a presence check read that removal as "absent, write it"
 	// and handed the file back on the next three generate runs.
+	site := lifecycleTestSite{svc: svc, methods: filteredMethods, modulePath: modulePath, projectDir: projectDir, pkg: pkg, targetDir: targetDir, relDir: relDir}
 	lifecycleRel := filepath.Join(relDir, "handlers_crud_test.go")
 	lifecyclePath := filepath.Join(projectDir, lifecycleRel)
 	if !checksums.ScaffoldOnceDecision(projectDir, lifecycleRel) {
@@ -2023,7 +2024,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 		if _, statErr := os.Stat(lifecyclePath); statErr != nil {
 			return CRUDResult{Skipped: "scaffolded once already, then deleted — the service opted out of forge's lifecycle tests", Routine: true}, nil
 		}
-		wrote, err := generateEntityLifecycleTests(svc, filteredMethods, hasCreate, hasGet, modulePath, projectDir, pkg, targetDir, relDir, cs)
+		wrote, err := generateEntityLifecycleTests(site, hasCreate, hasGet, cs)
 		if err != nil {
 			return CRUDResult{}, err
 		}
@@ -2049,7 +2050,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	fix := buildCRUDTestFixtures(projectDir, nil)
 	defer fix.close()
 
-	data := lifecycleTestData(svc, filteredMethods, modulePath, projectDir, pkg, targetDir, relDir, fix)
+	data := lifecycleTestData(site, fix)
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {

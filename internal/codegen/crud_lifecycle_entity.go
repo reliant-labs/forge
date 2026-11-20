@@ -14,22 +14,34 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
+// lifecycleTestSite is where a service's lifecycle tests go and what they
+// cover: the facts GenerateCRUDTests resolves once and both of its writers
+// (handlers_crud_test.go and the per-entity files) share.
+type lifecycleTestSite struct {
+	svc        ServiceDef
+	methods    []CRUDMethod
+	modulePath string
+	projectDir string
+	// pkg is the disk-resolved package clause, targetDir the handler
+	// directory and relDir it relative to projectDir.
+	pkg, targetDir, relDir string
+}
+
 // lifecycleTestData builds the lifecycle test template's data with the
-// disk-resolved facts GenerateCRUDTests and generateEntityLifecycleTests
-// share. Package + TestHelperName are overridden with the disk-resolved
-// package clause so the emitted test file always matches the directory it
-// lands in AND calls the `NewTest<X>` factory the bootstrap testing
-// generator (which uses the same resolver) actually emitted.
-func lifecycleTestData(svc ServiceDef, methods []CRUDMethod, modulePath, projectDir, pkg, targetDir, relDir string, fix *crudTestFixtures) CRUDTestTemplateData {
-	data := buildCRUDTestTemplateData(svc, methods, modulePath, projectDir, fix)
-	data.Package = pkg
-	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
-	data.UnfilledDeps = UnfilledDepsFor(targetDir)
+// disk-resolved facts of site. Package + TestHelperName are overridden with
+// the disk-resolved package clause so the emitted test file always matches
+// the directory it lands in AND calls the `NewTest<X>` factory the bootstrap
+// testing generator (which uses the same resolver) actually emitted.
+func lifecycleTestData(site lifecycleTestSite, fix *crudTestFixtures) CRUDTestTemplateData {
+	data := buildCRUDTestTemplateData(site.svc, site.methods, site.modulePath, site.projectDir, fix)
+	data.Package = site.pkg
+	data.TestHelperName = ComputeTestHelperName(site.pkg, site.projectDir)
+	data.UnfilledDeps = UnfilledDepsFor(site.targetDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
-	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
-	data.ConnectV2 = connectV2For(svc, projectDir)
+	data.ServiceImportPath = filepath.ToSlash(filepath.Base(site.relDir))
+	data.ConnectV2 = connectV2For(site.svc, site.projectDir)
 	// The same gate the test harness uses to declare NewMigratedTestDB.
-	data.HasMigrationsFS = ProjectHasSQLMigrations(projectDir)
+	data.HasMigrationsFS = ProjectHasSQLMigrations(site.projectDir)
 	return data
 }
 
@@ -58,13 +70,14 @@ func entityLifecycleTestRel(relDir, entity string) string {
 // deleting handlers_crud_test.go. It declares only the helpers (see
 // CRUDTestTemplateData.OmitAssert) no other file of the external test
 // package declares, so it compiles beside the user's own files.
-func generateEntityLifecycleTests(svc ServiceDef, methods []CRUDMethod, hasCreate, hasGet map[string]bool, modulePath, projectDir, pkg, targetDir, relDir string, cs *checksums.FileChecksums) (bool, error) {
+func generateEntityLifecycleTests(site lifecycleTestSite, hasCreate, hasGet map[string]bool, cs *checksums.FileChecksums) (bool, error) {
+	projectDir, pkg, targetDir, relDir := site.projectDir, site.pkg, site.targetDir, site.relDir
 	// The common regenerate path stops here: every entity is covered.
 	var pending []string
 	seen := map[string]bool{}
 	var decls testFuncDecls
 	scanned := false
-	for _, cm := range methods {
+	for _, cm := range site.methods {
 		name := cm.Entity.Name
 		if seen[name] || !hasCreate[name] || !hasGet[name] || cm.Entity.PkGoType != "string" {
 			continue
@@ -76,6 +89,14 @@ func generateEntityLifecycleTests(svc ServiceDef, methods []CRUDMethod, hasCreat
 				return false, err
 			}
 			scanned = true
+			if decls.unparsed != "" {
+				// The scan could not read every declaration, so whether an
+				// entity is already covered — or a helper already declared —
+				// is unknown, and a file written now may not compile beside
+				// the package. Write nothing until it parses; the compiler
+				// reports the file meanwhile.
+				return false, nil
+			}
 		}
 		if decls.any["TestCRUD_"+name+"_Lifecycle"] {
 			continue
@@ -91,7 +112,7 @@ func generateEntityLifecycleTests(svc ServiceDef, methods []CRUDMethod, hasCreat
 
 	fix := buildCRUDTestFixtures(projectDir, nil)
 	defer fix.close()
-	all := lifecycleTestData(svc, methods, modulePath, projectDir, pkg, targetDir, relDir, fix)
+	all := lifecycleTestData(site, fix)
 	byName := map[string]CRUDTestEntityData{}
 	for _, e := range all.Entities {
 		byName[e.EntityName] = e
@@ -141,10 +162,13 @@ func generateEntityLifecycleTests(svc ServiceDef, methods []CRUDMethod, hasCreat
 type testFuncDecls struct {
 	any      map[string]bool
 	external map[string]bool
+	// unparsed names a _test.go file that did not parse; "" when all did.
+	// Its declarations are unknown, so the scan is incomplete.
+	unparsed string
 }
 
-// scanTestFuncDecls parses dir's _test.go files (declarations only matter,
-// so a file that does not parse is skipped: the compiler reports it).
+// scanTestFuncDecls parses dir's _test.go files. A file that does not parse
+// is recorded in unparsed rather than read as declaring nothing.
 func scanTestFuncDecls(dir, externalPkg string) (testFuncDecls, error) {
 	d := testFuncDecls{any: map[string]bool{}, external: map[string]bool{}}
 	entries, err := os.ReadDir(dir)
@@ -161,6 +185,9 @@ func scanTestFuncDecls(dir, externalPkg string) (testFuncDecls, error) {
 		}
 		f, err := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
 		if err != nil {
+			if d.unparsed == "" {
+				d.unparsed = e.Name()
+			}
 			continue
 		}
 		external := f.Name.Name == externalPkg

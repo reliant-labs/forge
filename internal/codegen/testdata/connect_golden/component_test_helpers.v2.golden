@@ -99,7 +99,9 @@ func WithDB(db orm.Context) TestOption {
 }
 
 // database is the database the factories inject: WithDB's when a test
-// supplied one, else the default, made on first use.
+// supplied one, else the default, made once, on first use. The default's
+// factory fails the test (t.Fatal) rather than return nil, so the one result
+// cached here is always a usable database.
 func (c *testConfig) database() orm.Context {
 	if c.newDB != nil {
 		c.db, c.newDB = c.newDB(), nil

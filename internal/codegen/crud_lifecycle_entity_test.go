@@ -188,3 +188,21 @@ func TestGenerateCRUDTests_DeletedLifecycleFileOptsTheServiceOut(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateCRUDTests_UnparsableTestFileWritesNoCompanion: a _test.go file
+// that does not parse hides its declarations, so whether the later entity is
+// covered, or a helper declared, is unknown. Nothing is written until it
+// parses.
+func TestGenerateCRUDTests_UnparsableTestFileWritesNoCompanion(t *testing.T) {
+	projectDir, handlerDir := lifecycleEntityProject(t, true)
+	generateLifecycle(t, projectDir, "Patient")
+	if err := os.WriteFile(filepath.Join(handlerDir, "broken_test.go"), []byte("package patients_test\n\nfunc {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := generateLifecycle(t, projectDir, "Patient", "Visit"); res.Wrote {
+		t.Errorf("wrote a companion beside an unparsable test file: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(handlerDir, "handlers_crud_visit_test.go")); err == nil {
+		t.Error("handlers_crud_visit_test.go was written while broken_test.go does not parse")
+	}
+}

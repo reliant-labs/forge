@@ -197,12 +197,14 @@ func (o TxOptions) WithMaxAttempts(n int) TxOptions {
 // retries on all four codes and on a COMMIT that rolled back. A nil fn adds
 // nothing.
 //
-// A classified error is treated exactly as a 40001 is. MaxAttempts still
-// bounds every retry, and an error still classified after the last attempt
-// returns svcerr.Aborted with the error as its cause — with one attempt
-// (orm.ReadCommitted, WithMaxAttempts(1)) at once. Every opener accepts a
-// classifier, so a project's opener can add its own to whatever policy its
-// caller named; BeginDetached never retries and never consults it, and a
+// With more than one attempt, a classified error is treated as a 40001:
+// an error still classified after the last attempt returns svcerr.Aborted
+// with the error as its cause. At one attempt (orm.ReadCommitted by default,
+// or WithMaxAttempts(1)), the runner does not consult the custom classifier;
+// an ordinary error is returned unchanged and native conflicts still return
+// svcerr.Aborted. Every opener accepts a classifier, so a project's opener
+// can add its own to whatever policy its caller named; BeginDetached never
+// retries and never consults it, and a
 // joined RunTx ignores it with the rest of its options. A classifier is a
 // property of the body: say
 // it where the body can produce the error, and keep it narrow — a retried

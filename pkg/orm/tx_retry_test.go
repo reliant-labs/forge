@@ -155,12 +155,19 @@ func TestRunAttempts_RetriesWhatTheClassifierReports(t *testing.T) {
 			t.Errorf("exhausted = %v, want svcerr Aborted with the 40002 as cause", err)
 		}
 	})
-	t.Run("one attempt reports a classified error as a 40001 is reported", func(t *testing.T) {
-		n := 0
-		err := runAttempts(ctx, ReadCommitted.WithRetryOn(RetryOnSQLState("40002")),
-			func() error { n++; return custom })
-		if n != 1 || !svcerr.IsAborted(err) || !errors.Is(err, custom) {
-			t.Errorf("attempts=%d err=%v; want 1 attempt, then svcerr Aborted with the 40002 as cause", n, err)
+	t.Run("one attempt preserves the exact error and never calls the custom classifier", func(t *testing.T) {
+		n, classified := 0, 0
+		policy := ReadCommitted.WithRetryOn(func(error) bool { classified++; return true })
+		bodyErr := fmt.Errorf("body: %w", custom)
+		if err := runAttempts(ctx, policy, func() error { n++; return bodyErr }); n != 1 || classified != 0 || err != bodyErr {
+			t.Fatalf("attempts=%d classifier calls=%d err=%v; want one attempt, no classification, and identical error", n, classified, err)
+		}
+		for _, code := range []string{"40001", "40P01"} {
+			conflict := &pgconn.PgError{Code: code}
+			err := runAttempts(ctx, policy, func() error { return conflict })
+			if !svcerr.IsAborted(err) || !errors.Is(err, conflict) || classified != 0 {
+				t.Errorf("native conflict %s: err=%v classifier calls=%d; want Aborted with original cause and no custom classification", code, err, classified)
+			}
 		}
 	})
 	t.Run("an unclassified error is returned verbatim", func(t *testing.T) {

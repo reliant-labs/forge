@@ -423,7 +423,14 @@ func runAttempts(ctx context.Context, opts TxOptions, attempt func() error) erro
 		if err == nil {
 			return nil
 		}
-		if !opts.Retryable(err) {
+		// With no extra attempt to schedule, do not let a custom classifier
+		// change the one-attempt error contract. Built-in conflicts still
+		// map to Aborted, exactly as they did before WithRetryOn.
+		retryable := isRetryableTxError
+		if opts.MaxAttempts > 1 {
+			retryable = opts.Retryable
+		}
+		if !retryable(err) {
 			return err
 		}
 		if n >= opts.MaxAttempts {

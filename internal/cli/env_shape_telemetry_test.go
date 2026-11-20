@@ -174,6 +174,9 @@ func TestRenderContract_HostedTelemetryReachesTheShape(t *testing.T) {
 			t.Errorf("the recorded shape lacks %s:\n%s", want, enc)
 		}
 	}
+	if strings.Contains(string(enc), `"network_policy"`) || !got[0].AdmitCollector() {
+		t.Errorf("an auto network_policy is not recorded absent (admit %v):\n%s", got[0].AdmitCollector(), enc)
+	}
 	if strings.Contains(string(enc), "SEARCH_OTLP_ENABLED") {
 		t.Errorf("a literal OTLP env value reached the shape:\n%s", enc)
 	}

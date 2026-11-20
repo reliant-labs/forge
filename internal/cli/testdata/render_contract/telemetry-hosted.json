@@ -97,7 +97,6 @@
           }
         ],
         "namespaces": [],
-        "network_policy": true,
         "otlp": {
           "env": {
             "SEARCH_OTLP_ENABLED": {

@@ -45,7 +45,10 @@ func clusterTarget(name string) telemetry.Target {
 // decode (what a control plane runs) and Validate, and re-encode to the same
 // bytes: the shape a user read and the shape the platform stored are one.
 func TestShapeTelemetryRoundTrips(t *testing.T) {
-	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{hostedTarget("worker"), clusterTarget("cache"), hostedTarget("api")})}
+	// network_policy is tri-state: worker says false, api leaves it auto.
+	worker, off := hostedTarget("worker"), false
+	worker.NetworkPolicy = &off
+	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{worker, clusterTarget("cache"), hostedTarget("api")})}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -71,6 +74,12 @@ func TestShapeTelemetryRoundTrips(t *testing.T) {
 		t.Fatalf("want the two hosted targets sorted (api, worker), the cluster one left to forge's agent: %+v", got.Telemetry)
 	}
 	api := got.Telemetry[0]
+	if api.NetworkPolicy != nil || got.Telemetry[1].NetworkPolicy == nil || *got.Telemetry[1].NetworkPolicy {
+		t.Errorf("network_policy did not round-trip as auto (api) and false (worker): %v, %v", api.NetworkPolicy, got.Telemetry[1].NetworkPolicy)
+	}
+	if !api.AdmitCollector() || got.Telemetry[1].AdmitCollector() {
+		t.Errorf("AdmitCollector after the round trip: api %v, worker %v", api.AdmitCollector(), got.Telemetry[1].AdmitCollector())
+	}
 	if api.Metrics[0].Port != 9090 || api.Metrics[0].SampleLimit != telemetry.DefaultSampleLimit || api.Metrics[0].Allow != "app_.*" {
 		t.Errorf("the target is not normalized: %+v", api.Metrics[0])
 	}
@@ -81,6 +90,9 @@ func TestShapeTelemetryRoundTrips(t *testing.T) {
 		if !bytes.Contains(enc, []byte(key)) {
 			t.Errorf("the encoded shape lacks %s:\n%s", key, enc)
 		}
+	}
+	if n := bytes.Count(enc, []byte(`"network_policy"`)); n != 1 {
+		t.Errorf("network_policy appears %d times; want once (auto is absent, false is stated):\n%s", n, enc)
 	}
 	if bytes.Contains(enc, []byte(`"true"`)) {
 		t.Errorf("the literal OTLP env value reached the shape:\n%s", enc)

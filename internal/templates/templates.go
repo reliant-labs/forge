@@ -605,6 +605,17 @@ func ReleaseStages(envs []DeployEnv, mixed map[string]bool) []ReleaseStage {
 	return out
 }
 
+// PGORefreshWorkflowData holds data for pgo-refresh.yml, the weekly job that
+// pulls an env's CPU profiles into each Go binary's cmd/<bin>/default.pgo and
+// opens a pull request when one changed. Emitted for a service project with a
+// hosted env: the platform stores that env's profiles.
+type PGORefreshWorkflowData struct {
+	ProjectName string
+	// Env is the env whose profiles are pulled: the last hosted env in
+	// promotion order, the one real traffic reaches.
+	Env string
+}
+
 // E2EWorkflowData holds data for the standalone E2E test workflow template.
 type E2EWorkflowData struct {
 	ProjectName  string

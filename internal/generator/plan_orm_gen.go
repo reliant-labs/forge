@@ -71,6 +71,15 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if err := checkORMNameCollisions(dbDir, relDir, entities, outputs); err != nil {
 		return err
 	}
+	// The interfaces over each entity's hand-written <entity>_repo_ext.go
+	// queries, read from those files now (a seam this run scaffolds is born
+	// empty, so it has none). A name the project already declares is not a
+	// refusal here: the ext store joined the projection after projects had
+	// written their own, so it yields, with a note (plan_orm_ext_store_gen.go).
+	extStores, extNotes := renderExtStores(dbDir, relDir, pkgName, entities, outputs)
+	for _, note := range extNotes {
+		fmt.Printf("  ℹ️  %s\n", note)
+	}
 
 	if err := os.MkdirAll(dbDir, 0o755); err != nil {
 		return fmt.Errorf("create db directory: %w", err)
@@ -85,6 +94,9 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	for _, ent := range entities {
 		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
 		expectedFiles[entityStoreFile(ent)] = true
+	}
+	for _, ext := range extStores {
+		expectedFiles[ext.file] = true
 	}
 	sweepStaleORMFiles(root, relDir, expectedFiles, false, cs)
 	// A project that moved its ORM out of internal/db (database.orm.package)
@@ -123,6 +135,11 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	// than in a user's package.
 	if err := writeStoreInterfaces(root, orm, entities, cs); err != nil {
 		return fmt.Errorf("generate store interfaces: %w", err)
+	}
+	for _, ext := range extStores {
+		if err := writeORMFile(root, orm, ext.file, ext.src, cs); err != nil {
+			return fmt.Errorf("generate ext store for entity %s: %w", ext.entity, err)
+		}
 	}
 	return nil
 }
@@ -238,6 +255,12 @@ func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 	b.WriteString("//      called with the ctx that s.deps.DB.RunTx hands its fn, a method\n")
 	b.WriteString("//      here (db.Bun() builders and raw SQL included) joins that\n")
 	b.WriteString("//      transaction; with any other ctx it runs on the pool.\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "// Each exported func(ctx context.Context, db orm.Context, …) in this file is\n")
+	fmt.Fprintf(&b, "// also a method of %sExtStore (%s_ext_store_gen.go, regenerated\n", msgName, naming.ToSnakeCase(msgName))
+	b.WriteString("// from this file every forge generate), the handle bound: name that in a\n")
+	b.WriteString("// service's Deps — forge wires and mocks it — instead of hand-writing an\n")
+	b.WriteString("// adapter over these functions.\n")
 	b.WriteString("//\n")
 	b.WriteString("// Example (uncomment and adapt):\n")
 	b.WriteString("//\n")

@@ -278,6 +278,26 @@ const (
 	// that can launch can also stop). A protected environment's policy may
 	// further require a person to approve; the scope alone never opens one.
 	ScopeChangesLaunch Scope = "changes:launch"
+
+	// ScopeVulnRead reads the vulnerability findings of the org's releases
+	// and environments: the per-env summary, the findings list, one advisory
+	// across every artifact it touches, and a release's findings.
+	//
+	// ITS OWN SCOPE, NOT A DEPLOY READ. A list of exploitable
+	// vulnerabilities in what is running is an attack map, so it implies
+	// nothing and nothing implies it:
+	//
+	//   - not deploy:write. The CI token that records releases (and their
+	//     SBOMs) must not, by default, read what is exploitable in every
+	//     env. A machine token carries this only when it was minted in.
+	//   - not deploy:read. Seeing which release runs where is not seeing
+	//     which of its packages are exploitable; a store grants it to
+	//     deploy:read holders once, explicitly, rather than through an
+	//     implication every future deploy:read token would inherit.
+	//
+	// Like obs:read it may be bound to one environment, confining the token
+	// to that env's findings.
+	ScopeVulnRead Scope = "vuln:read"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -321,6 +341,7 @@ var AllScopes = []Scope{
 	ScopeSourcemapsWrite,
 	ScopeChangesWrite,
 	ScopeChangesLaunch,
+	ScopeVulnRead,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

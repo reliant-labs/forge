@@ -32,8 +32,8 @@ const (
 	// enforce is judged as audit (it records "would block" and refuses
 	// nothing), at the cut, at promote, and in the vuln-sbom gate step.
 	RuleVulnGate = "vuln-gate"
-	// RuleSBOMRequired grades `provenance_sbom = enforce` (the schema's
-	// default): a promotion whose artifacts have no SBOM.
+	// RuleSBOMRequired grades a declared `provenance_sbom = enforce` (the
+	// schema default is audit): a promotion whose artifacts have no SBOM.
 	RuleSBOMRequired = "sbom-required"
 )
 

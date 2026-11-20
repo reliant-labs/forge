@@ -22,8 +22,9 @@ package cli
 // the rule's GatesFrom release, enforce is judged as audit and says "would
 // block (new in v1.9.0; gates from v1.10.0)". lint.rules dials it the way it
 // dials every rule ({vuln-gate: error} gates now, {vuln-gate: warn} keeps it a
-// warning). The schema default stays audit (owner decision 5), so a project
-// that declares nothing records findings and blocks nothing, at any pin.
+// warning). Both schema defaults are audit — vuln_gate (owner decision 5)
+// and provenance_sbom (owner, 2026-11-20) — so a project that declares
+// nothing records findings and blocks nothing, at any pin.
 
 import (
 	"context"
@@ -309,6 +310,13 @@ func printCutVulnVerdict(w io.Writer, v *cutVulnVerdict) {
 func cutVerdictText(v *cutVulnVerdict) string {
 	doc := v.Doc
 	refuses := doc.Gate.GradedAs == string(release.DeliveryEnforce)
+	if !doc.Gate.Determined {
+		what := "could not determine (" + string(doc.Gate.Verdict) + ")"
+		if refuses {
+			return what + " — a promotion is refused (" + reasonVulnGateUnscanned + ")"
+		}
+		return what
+	}
 	switch doc.Gate.Verdict {
 	case vulnscan.VerdictBlock:
 		what := describeBlocking(*doc, 3)
@@ -316,12 +324,6 @@ func cutVerdictText(v *cutVulnVerdict) string {
 			return "blocks: " + what + " — a promotion is refused (" + reasonVulnGateBlocked + ")"
 		}
 		return "would block: " + what + " " + wouldBlockNote(v.Declared, v.Grade)
-	case vulnscan.VerdictStale, vulnscan.VerdictUnscanned:
-		what := "could not determine (" + string(doc.Gate.Verdict) + ")"
-		if refuses {
-			return what + " — a promotion is refused (" + reasonVulnGateUnscanned + ")"
-		}
-		return what
 	case vulnscan.VerdictWarn:
 		return "warn: findings at or above warn_severity, none blocking"
 	default:

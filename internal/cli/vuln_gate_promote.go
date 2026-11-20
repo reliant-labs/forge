@@ -248,6 +248,14 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 			scans = append(scans, vulnscan.ArtifactScan{Artifact: name, Reason: "no findings to read for this env's ledger"})
 		}
 	}
+	if len(shippingArtifacts(rel)) == 0 {
+		// A release with no artifact an SBOM describes (a version-only
+		// record) has nothing scanned, which is "0 of 0 scanned" to the
+		// coverage arithmetic, and a pass. It is not: could not determine
+		// is never a pass. (A version-only record's source SBOM, forge
+		// release record --sbom-source, is what will cover it.)
+		scans = []vulnscan.ArtifactScan{{Artifact: "release " + in.Version, Reason: "it names no artifact an SBOM describes, and no source SBOM"}}
+	}
 	now := time.Now()
 	if in.Now != nil {
 		now = in.Now()
@@ -272,12 +280,18 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 	if !doc.DB.BuiltAt.IsZero() {
 		gate.Details["db_built_at"] = doc.DB.BuiltAt.Format("2006-01-02T15:04:05Z")
 	}
-	if verdict.Determined() && verdict != vulnscan.VerdictBlock {
+	gate.Details["determined"] = doc.Gate.Determined
+	if doc.Gate.Determined && verdict != vulnscan.VerdictBlock {
 		return &gate, nil
 	}
 
-	// Block, stale or unscanned: what would refuse.
-	absence := verdict != vulnscan.VerdictBlock
+	// Block, or could not determine: what would refuse. The freshness rule
+	// is the document's (vulnscan.ScanIsCurrent, through BuildDocument): a
+	// verdict counts as determined only when the newest stored scan of
+	// every artifact used a database younger than five days, and stale
+	// outranks block — findings an old database reports are not the
+	// release's findings today.
+	absence := !doc.Gate.Determined
 	var what, reason string
 	if absence {
 		what = vulnUndeterminedSummary(doc)
@@ -319,7 +333,11 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 // vulnUndeterminedSummary says why the verdict could not be determined.
 func vulnUndeterminedSummary(doc vulnscan.Document) string {
 	if doc.Gate.Verdict == vulnscan.VerdictStale {
-		return fmt.Sprintf("could not determine: the findings come from a vulnerability database built %s, older than 5 days", doc.DB.BuiltAt.Format("2006-01-02"))
+		s := fmt.Sprintf("could not determine: the findings come from a vulnerability database built %s, older than 5 days", doc.DB.BuiltAt.Format("2006-01-02"))
+		if len(doc.Gate.Blocking) > 0 {
+			s += " (they include " + describeBlocking(doc, 3) + ")"
+		}
+		return s
 	}
 	var parts []string
 	for _, u := range doc.Coverage.Unscanned {

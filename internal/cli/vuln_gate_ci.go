@@ -174,6 +174,9 @@ func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cf
 	} else {
 		writeVulnDocument(out, doc, now, "source tree ("+name+")")
 	}
+	if !doc.Gate.Determined {
+		return vulnSBOMCouldNotRun(errOut, grade, strings.Join(doc.Notes, "; "))
+	}
 	if doc.Gate.Verdict == vulnscan.VerdictBlock && grade.Gates {
 		return &exitCodeError{code: exitWrong, verdict: true, msg: "vulnerability: " + describeBlocking(doc, 5)}
 	}

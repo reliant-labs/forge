@@ -224,7 +224,8 @@ func TestVulnGateAuditNeverFetchesOrRefuses(t *testing.T) {
 }
 
 func TestSBOMRequiredIsGradedWarnFirst(t *testing.T) {
-	pol := release.DefaultDeliveryPolicy() // provenance_sbom enforce, vuln_gate audit
+	pol := release.DefaultDeliveryPolicy()
+	pol.ProvenanceSBOM.Mode = release.DeliveryEnforce // declared; the default is audit
 	bare := sbomRelease(false)
 	gates, out, err := judge(t, vulnPromoteInput{Policy: pol, Release: bare, Grades: pinnedVulnGrades(warningPin, nil)}, nil)
 	if err != nil {
@@ -241,6 +242,18 @@ func TestSBOMRequiredIsGradedWarnFirst(t *testing.T) {
 	gates, _, err = judge(t, vulnPromoteInput{Policy: pol, Release: bare, Grades: pinnedVulnGrades(gatingPin, nil), Override: "hotfix"}, nil)
 	if err != nil || gateNamed(gates, sbomGateName).Details["outcome"] != "overridden" {
 		t.Fatalf("override: %v %+v", err, gates)
+	}
+}
+
+// The schema default (audit, owner 2026-11-20) never refuses a release with
+// no SBOM, at any pin: it records what enforce would have refused.
+func TestSBOMRequiredDefaultAuditsAtAnyPin(t *testing.T) {
+	gates, _, err := judge(t, vulnPromoteInput{Policy: release.DefaultDeliveryPolicy(), Release: sbomRelease(false), Grades: pinnedVulnGrades(gatingPin, nil)}, nil)
+	if err != nil {
+		t.Fatalf("the default provenance_sbom refused: %v", err)
+	}
+	if g := gateNamed(gates, sbomGateName); g == nil || g.Details["mode"] != "audit" || g.Details["outcome"] != "audit" {
+		t.Fatalf("recorded %+v", g)
 	}
 }
 
@@ -545,5 +558,41 @@ func TestCIVulnSBOMHonorsTheSharedExemptions(t *testing.T) {
 	}
 	if out, code := runCIVulnSBOMWith(t, h, warningPin, []config.CIVulnExemption{cve, bad}); code != 0 || !strings.Contains(out, "exemption not honored") {
 		t.Fatalf("a malformed entry while the rule warns: exit %d\n%s", code, out)
+	}
+}
+
+// A version-only release names nothing to scan: under a graded enforce that
+// is "could not determine", never the pass "0 of 0 scanned" would compute.
+func TestVulnGateVersionOnlyReleaseIsUnscannedNotAPass(t *testing.T) {
+	rel := &release.Release{Version: "v2.0.0", RecordOnly: true, Provenance: &release.Provenance{ForgeVersion: gatingPin}}
+	_, _, err := judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: rel, Grades: pinnedVulnGrades(gatingPin, nil)}, fakeVulnSource{})
+	if vulnRefusalReason(t, err) != reasonVulnGateUnscanned || !strings.Contains(err.Error(), "names no artifact an SBOM describes") {
+		t.Fatalf("%v", err)
+	}
+	gates, _, err := judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: rel, Grades: pinnedVulnGrades(warningPin, nil)}, fakeVulnSource{})
+	if err != nil || gateNamed(gates, vulnGateGateName).Details["outcome"] != "audit" {
+		t.Fatalf("below GatesFrom: %v %+v", err, gates)
+	}
+}
+
+// F4's freshness rule: findings from a database older than five days are not
+// a verdict, and stale outranks block. Under a graded enforce that is
+// vuln_gate_unscanned, naming what the old data reported; never blocked, and
+// never a pass.
+func TestVulnGateStaleOutranksBlock(t *testing.T) {
+	stale := fakeVulnSource{scans: []vulnscan.ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:x", Latest: scanWith(vulnTestNow.Add(-6*24*time.Hour), criticalFinding())}}}
+	_, _, err := judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: sbomRelease(true), Grades: pinnedVulnGrades(gatingPin, nil)}, stale)
+	if vulnRefusalReason(t, err) != reasonVulnGateUnscanned || !strings.Contains(err.Error(), "older than 5 days") || !strings.Contains(err.Error(), "CVE-2026-1234") {
+		t.Fatalf("%v", err)
+	}
+	gates, _, err := judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: sbomRelease(true), Grades: pinnedVulnGrades(warningPin, nil)}, stale)
+	g := gateNamed(gates, vulnGateGateName)
+	if err != nil || g.Details["determined"] != false || g.Details["verdict"] != "stale" || g.Details["outcome"] != "audit" {
+		t.Fatalf("below GatesFrom: %v %+v", err, g)
+	}
+	// A database four days old is still a verdict.
+	fresh := fakeVulnSource{scans: []vulnscan.ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:x", Latest: scanWith(vulnTestNow.Add(-4*24*time.Hour), criticalFinding())}}}
+	if _, _, err := judge(t, vulnPromoteInput{Policy: enforcePolicy(), Release: sbomRelease(true), Grades: pinnedVulnGrades(gatingPin, nil)}, fresh); vulnRefusalReason(t, err) != reasonVulnGateBlocked {
+		t.Fatalf("a 4-day-old database: %v", err)
 	}
 }

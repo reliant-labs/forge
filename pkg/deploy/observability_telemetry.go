@@ -76,7 +76,7 @@ func telemetryResourceAttrs(ctx ObservabilityContext) map[string]string {
 // these is an error naming the fix.
 func (s ObservabilityAgentSpec) checkTelemetry() error {
 	var errs []error
-	for _, t := range telemetry.Normalize(s.Telemetry) {
+	for _, t := range telemetry.Normalize(s.declaredTelemetry()) {
 		id := fmt.Sprintf("telemetry %s (service %s)", t.Source, t.ServiceName)
 		if t.Runtime != telemetry.RuntimeCluster {
 			errs = append(errs, fmt.Errorf("%s: runtime %q is not a cluster: the node agent collects only its cluster's targets", id, t.Runtime))
@@ -131,7 +131,7 @@ func secretMounts(t telemetry.Target) []*telemetry.SecretMount {
 // telemetryFragment is the declared telemetry's collector config for this
 // agent, nil when it declares none.
 func (s ObservabilityAgentSpec) telemetryFragment(ctx ObservabilityContext) (*collector.Fragment, error) {
-	if len(s.Telemetry) == 0 {
+	if len(s.declaredTelemetry()) == 0 {
 		return nil, nil
 	}
 	if err := s.checkTelemetry(); err != nil {
@@ -142,7 +142,7 @@ func (s ObservabilityAgentSpec) telemetryFragment(ctx ObservabilityContext) (*co
 	iso := s.exporter()
 	delete(iso, "sending_queue")
 	delete(iso, "retry_on_failure")
-	f, err := collector.Build(s.Telemetry, collector.Options{
+	f, err := collector.Build(s.declaredTelemetry(), collector.Options{
 		Runtime:           telemetry.RuntimeCluster,
 		Discovery:         collector.DiscoverNodePods,
 		NodeNameEnv:       "K8S_NODE_NAME",
@@ -178,7 +178,7 @@ func (s ObservabilityAgentSpec) telemetryFragment(ctx ObservabilityContext) (*co
 // pod Pending, which names the Secret.
 func (s ObservabilityAgentSpec) telemetrySecretVolumes() ([]corev1.Volume, []corev1.VolumeMount) {
 	keys := map[string]map[string]bool{}
-	for _, t := range telemetry.Normalize(s.Telemetry) {
+	for _, t := range telemetry.Normalize(s.declaredTelemetry()) {
 		for _, m := range secretMounts(t) {
 			if keys[m.Secret] == nil {
 				keys[m.Secret] = map[string]bool{}

@@ -22,9 +22,16 @@ func TestE2EEquivalentServiceNamingGeneratedLint(t *testing.T) {
 	proto := filepath.Join(root, "proto/services/api_key/v1/api_key.proto")
 	source := strings.ReplaceAll(readFileE2E(t, proto), "APIKeyService", "ApiKeyService")
 	source = strings.Replace(source, "  // TODO: Add your RPC methods here.", "  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {\n"+
-		"    option (forge.v1.method) = {activity: {none: \"a naming fixture: it records nothing\"}};\n  }", 1)
+		"    option (forge.v1.method) = {\n"+
+		"      activity: {none: \"a naming fixture: it records nothing\"}\n"+
+		"    };\n  }", 1)
 	source += "\nmessage CreateApiKeyRequest {}\nmessage CreateApiKeyResponse {}\n"
 	writeFileE2E(t, proto, source)
+	// The proto-format lane gates at every pin. The rpc above is written as
+	// forge's pinned buf formats it, but buf releases disagree on a
+	// one-field option literal, and lint runs PATH's buf first: format the
+	// test's own input with the buf lint will use, before forge touches it.
+	runCmd(t, root, bin, "lint", "--proto-format", "--fix")
 	runCmd(t, root, bin, "generate")
 	runCmd(t, root, "go", "build", "./...")
 	out, err := runLintE2E(t, root, contractDir, bin, "lint", "--no-fix")

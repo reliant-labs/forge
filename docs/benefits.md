@@ -3918,11 +3918,11 @@ _Enforced · Forge, on any infrastructure_
 
 A hosted app gets Product overview, Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
 
-_In progress · Reliant hosting_
+_Enforced · Reliant hosting_
 
 **Use:** `forge.Analytics` adds goals, an activation event and channel rules; a `<project>-users.json` replaces a dashboard; `dashboards = False` drops them.
 
-**Why:** Visitors are counted by the platform's cookieless daily hash at the ingest edge, which ships with the control plane's edge columns and hash.
+**Why:** Visitors are counted by the platform's cookieless daily hash, computed at the control plane's ingest edge, so no cookie is set.
 
 **Evidence:**
 

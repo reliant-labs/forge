@@ -285,6 +285,11 @@ type Fetcher struct {
 	// must belong to (see the package doc's threat model): New sets this
 	// process's. Use New; a zero Fetcher trusts only root-owned caches.
 	owner int
+	// hostOS is the OS of the filesystem the cache is on, which decides
+	// whether owner and mode bits are checked (modesEnforced): New sets
+	// runtime.GOOS. Distinct from GOOS, the platform a binary is installed
+	// for.
+	hostOS string
 }
 
 // New returns the Fetcher forge uses: forge's shared tool cache, the
@@ -305,6 +310,7 @@ func New() *Fetcher {
 		GOOS:     runtime.GOOS,
 		GOARCH:   runtime.GOARCH,
 		owner:    os.Getuid(),
+		hostOS:   runtime.GOOS,
 	}
 }
 
@@ -439,7 +445,7 @@ func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 	if !f.ownedEntry(bin, false) {
 		return Installed{}, false
 	}
-	if info, err := os.Lstat(bin); err != nil || (hostEnforcesModes() && (info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o222 != 0)) {
+	if info, err := os.Lstat(bin); err != nil || (f.enforcesModes() && (info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o222 != 0)) {
 		return Installed{}, false
 	}
 	if got, err := hashFile(bin); err != nil || in.BinarySHA256 == "" || got != in.BinarySHA256 {
@@ -558,7 +564,7 @@ func (f *Fetcher) installRelease(ctx context.Context, t Tool, stage string) erro
 			t.Name, t.Version, ErrChecksum, asset, want, got)
 	}
 	bin := filepath.Join(stage, t.Binary(f.goos()))
-	if err := extractMember(archive, asset, t.Binary(f.goos()), bin); err != nil {
+	if err := extractMember(archive, asset, t.Binary(f.goos()), bin, f.executableMode()); err != nil {
 		return fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
 	}
 	binSum, err := hashFile(bin)
@@ -625,7 +631,7 @@ func (f *Fetcher) installGo(ctx context.Context, t Tool, stage string) error {
 	if _, err := os.Stat(bin); err != nil {
 		return fmt.Errorf("%s %s: go install %s produced no %s: %w", t.Name, t.Version, spec, t.Binary(f.goos()), err)
 	}
-	if err := os.Chmod(bin, executableMode()); err != nil {
+	if err := os.Chmod(bin, f.executableMode()); err != nil {
 		return err
 	}
 	binSum, err := hashFile(bin)

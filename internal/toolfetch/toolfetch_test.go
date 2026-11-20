@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,14 +146,17 @@ func TestEnsureInstallsTheVerifiedBinary(t *testing.T) {
 	if in.Version != "v1.2.3" || in.Source != SourceRelease || in.ArchiveSHA256 != sum(archive) || in.Platform != "linux/amd64" {
 		t.Errorf("installed = %+v", in)
 	}
-	if want := filepath.Join(f.CacheDir, "faketool@v1.2.3-linux-amd64", "faketool"); in.Path != want {
+	// The fetcher returns the cache's canonical path; compare canonical to
+	// canonical (on Windows t.TempDir() can be an 8.3 short name).
+	if want := filepath.Join(canonical(t, f.CacheDir), "faketool@v1.2.3-linux-amd64", "faketool"); in.Path != want {
 		t.Errorf("path = %s, want %s", in.Path, want)
 	}
 	got, err := os.ReadFile(in.Path)
 	if err != nil || string(got) != fakeBinary {
 		t.Fatalf("binary = %q, %v; want the archive's member", got, err)
 	}
-	if info, _ := os.Stat(in.Path); info.Mode().Perm()&0o111 == 0 {
+	// Windows has no exec bit; the hash check above holds everywhere.
+	if info, _ := os.Stat(in.Path); runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("binary mode %v is not executable", info.Mode())
 	}
 	// The archive itself is not kept, and no staging directory is left.
@@ -432,6 +436,21 @@ func TestPinnedChecksumsCoverEveryPlatform(t *testing.T) {
 	if Syft.Version != templates.SyftVersion || Grype.Version != templates.GrypeVersion {
 		t.Errorf("tool versions %s/%s are not templates' pins", Syft.Version, Grype.Version)
 	}
+}
+
+// canonical is dir with every link and short name resolved: the form the
+// fetcher returns paths in.
+func canonical(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err = filepath.Abs(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
 }
 
 func assertNoStaging(t *testing.T, dir string) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -47,10 +48,10 @@ func assertRefusedThenReinstalled(t *testing.T, f *Fetcher, rel *release, tool T
 	if err != nil || !info.Mode().IsRegular() {
 		t.Fatalf("repaired binary is not a regular file: %v, %v", info, err)
 	}
-	if hostEnforcesModes() && info.Mode().Perm() != 0o555 {
+	if modesEnforced(runtime.GOOS) && info.Mode().Perm() != 0o555 {
 		t.Errorf("repaired binary mode %v, want 0555", info.Mode().Perm())
 	}
-	if hostEnforcesModes() {
+	if modesEnforced(runtime.GOOS) {
 		if di, _ := os.Lstat(filepath.Dir(fixed.Path)); di.Mode().Perm()&0o022 != 0 {
 			t.Errorf("repaired entry mode %v is writable by others", di.Mode().Perm())
 		}
@@ -97,7 +98,7 @@ func TestCacheRefusesEntriesOthersCouldWrite(t *testing.T) {
 	t.Parallel()
 	t.Run("group-writable entry", func(t *testing.T) {
 		t.Parallel()
-		if !hostEnforcesModes() {
+		if !modesEnforced(runtime.GOOS) {
 			t.Skip("Windows protects the cache by ACL, not mode bits")
 		}
 		f, rel, tool, in := installed(t)
@@ -108,7 +109,7 @@ func TestCacheRefusesEntriesOthersCouldWrite(t *testing.T) {
 	})
 	t.Run("group-writable binary", func(t *testing.T) {
 		t.Parallel()
-		if !hostEnforcesModes() {
+		if !modesEnforced(runtime.GOOS) {
 			t.Skip("Windows protects the cache by ACL, not mode bits")
 		}
 		f, rel, tool, in := installed(t)
@@ -119,7 +120,7 @@ func TestCacheRefusesEntriesOthersCouldWrite(t *testing.T) {
 	})
 	t.Run("owner-writable binary", func(t *testing.T) {
 		t.Parallel()
-		if !hostEnforcesModes() {
+		if !modesEnforced(runtime.GOOS) {
 			t.Skip("Windows keeps 0755")
 		}
 		f, rel, tool, in := installed(t)
@@ -164,7 +165,7 @@ func TestCacheRefusesEntriesOthersCouldWrite(t *testing.T) {
 // is trusted, and nothing is installed into it.
 func TestCacheRefusesAForeignOwner(t *testing.T) {
 	t.Parallel()
-	if !hostEnforcesModes() {
+	if !modesEnforced(runtime.GOOS) {
 		t.Skip("Windows protects the cache by ACL; forge does not read owners there")
 	}
 	f, rel, tool, _ := installed(t)
@@ -188,7 +189,7 @@ func TestCacheRefusesAForeignOwner(t *testing.T) {
 // rename the cache away. A sticky world-writable directory (/tmp) does not.
 func TestCacheRefusesAWritableAncestor(t *testing.T) {
 	t.Parallel()
-	if !hostEnforcesModes() {
+	if !modesEnforced(runtime.GOOS) {
 		t.Skip("Windows protects the cache by ACL, not mode bits")
 	}
 	archive := tarGz(t, "faketool", fakeBinary)
@@ -274,5 +275,74 @@ func TestUnsafeMetadataRejectedBeforeIO(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// On a Windows host the cache's ACL is its protection: os.Stat reports
+// synthetic 0666/0777 modes and no owner, so the mode and ownership rules
+// must not run there, or every Windows cache would be refused. Links are
+// still refused and the binary's hash still checked. Exercised on any host
+// through the Fetcher's hostOS.
+func TestWindowsHostTrustsTheACLNotModeBits(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	rel := newRelease(t)
+	rel.serve(tool, "linux", "amd64", archive)
+
+	// Every directory and file writable by everyone, owned by "someone
+	// else": what Windows' synthetic modes look like to the POSIX rules.
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+	f := rel.fetcher(t, "linux")
+	f.hostOS = "windows"
+	f.owner++
+	f.CacheDir = filepath.Join(parent, "release")
+	in, err := f.Ensure(context.Background(), tool)
+	if err != nil {
+		t.Fatalf("a Windows host refused a cache by its mode bits: %v", err)
+	}
+	if info, _ := os.Lstat(in.Path); info.Mode().Perm() != 0o755 {
+		t.Errorf("Windows binary mode %v, want 0755 (0555 would set the read-only attribute)", info.Mode().Perm())
+	}
+	for _, p := range []string{filepath.Dir(in.Path), filepath.Join(filepath.Dir(in.Path), manifestName), in.Path} {
+		if err := os.Chmod(p, 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok := f.Find(tool); !ok {
+		t.Fatal("a Windows host refused an entry by its mode bits")
+	}
+	if rel.hits.Load() != 1 {
+		t.Errorf("%d downloads; a mode-bit difference must not reinstall on Windows", rel.hits.Load())
+	}
+
+	// The hash is checked on every host.
+	if err := os.Remove(in.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in.Path, []byte("substituted"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.Find(tool); ok {
+		t.Fatal("a Windows host trusted a substituted binary")
+	}
+
+	// And so is a link.
+	elsewhere := filepath.Join(t.TempDir(), "faketool")
+	if err := os.WriteFile(elsewhere, []byte(fakeBinary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(in.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, in.Path); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	if _, ok := f.Find(tool); ok {
+		t.Fatal("a Windows host trusted a symlinked binary")
 	}
 }

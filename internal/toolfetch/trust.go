@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"sync"
 )
@@ -18,10 +17,16 @@ import (
 // fix (tighten its mode, or point FORGE_TOOLS_CACHE somewhere private).
 var ErrUntrustedCache = errors.New("tool cache is writable by another user")
 
-// hostEnforcesModes reports whether this filesystem's owner and mode bits
-// are the access control (Unix), as opposed to ACLs (Windows), where forge
-// checks only for links and relies on the per-user ACL of the cache.
-func hostEnforcesModes() bool { return runtime.GOOS != "windows" }
+// modesEnforced reports whether owner and mode bits are the access control
+// on a host running hostOS (Unix), as opposed to ACLs (Windows). On Windows
+// os.Stat reports synthetic 0666/0777 modes and no owner, so the ownership
+// and mode rules would refuse every cache; there forge checks only for links
+// and the binary's hash, and relies on the cache's per-user ACL (the package
+// doc's threat model).
+func modesEnforced(hostOS string) bool { return hostOS != "windows" }
+
+// enforcesModes is modesEnforced for the host this Fetcher runs on.
+func (f *Fetcher) enforcesModes() bool { return modesEnforced(f.hostOS) }
 
 // checkOwned is the rule for everything forge itself created in the cache:
 // the release kind directory, an entry, and the files in it. Not a link,
@@ -31,7 +36,7 @@ func (f *Fetcher) checkOwned(path string, info fs.FileInfo) error {
 		return fmt.Errorf("%s is a symlink", path)
 	}
 	uid, _, ok := fileOwner(info)
-	if !ok || !hostEnforcesModes() {
+	if !ok || !f.enforcesModes() {
 		return nil
 	}
 	if int(uid) != f.owner {
@@ -66,7 +71,7 @@ func (f *Fetcher) checkAncestor(path string, info fs.FileInfo) error {
 		return fmt.Errorf("%s is not a directory", path)
 	}
 	uid, gid, ok := fileOwner(info)
-	if !ok || !hostEnforcesModes() {
+	if !ok || !f.enforcesModes() {
 		return nil
 	}
 	if uid != 0 && int(uid) != f.owner {

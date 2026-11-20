@@ -19,9 +19,9 @@ import (
 // against its pinned sha256, so this guards against a malformed entry, not a
 // hostile one; the copy is still bounded by the entry's declared size and by
 // maxArchiveBytes.
-func extractMember(archivePath, assetName, member, dest string) error {
+func extractMember(archivePath, assetName, member, dest string, mode os.FileMode) error {
 	return readMember(archivePath, assetName, member, func(src io.Reader, size int64) error {
-		return writeExecutable(src, size, member, dest)
+		return writeExecutable(src, size, member, dest, mode)
 	})
 }
 
@@ -83,7 +83,7 @@ func extractTarGz(archivePath, assetName, member string, consume func(io.Reader,
 	return fmt.Errorf("archive %s contains no %s executable", assetName, member)
 }
 
-func writeExecutable(src io.Reader, size int64, member, dest string) error {
+func writeExecutable(src io.Reader, size int64, member, dest string, mode os.FileMode) error {
 	if size < 0 || size > maxArchiveBytes {
 		return fmt.Errorf("extract %s: entry size %d is out of range", member, size)
 	}
@@ -103,15 +103,15 @@ func writeExecutable(src io.Reader, size int64, member, dest string) error {
 	}
 	// Exact, whatever the umask: read-only, so nothing rewrites a cached
 	// binary in place (the package doc's threat model).
-	return os.Chmod(dest, executableMode())
+	return os.Chmod(dest, mode)
 }
 
 // executableMode is the mode of an installed binary: 0555 on a Unix host —
 // executable, and writable by no one, the owner included. Windows keeps
 // 0755: a read-only file there carries the read-only attribute, which stops
 // the cache from ever removing a replaced entry.
-func executableMode() os.FileMode {
-	if hostEnforcesModes() {
+func (f *Fetcher) executableMode() os.FileMode {
+	if f.enforcesModes() {
 		return 0o555
 	}
 	return 0o755 // #nosec G302 -- Windows ignores the bits but the read-only one

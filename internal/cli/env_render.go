@@ -227,7 +227,7 @@ Examples:
 	cmd.Flags().BoolVar(&noWriteCheck, "no-write-check", false, "Skip the before/after scan that detects files the render wrote")
 	cmd.Flags().BoolVar(&noCharts, "no-charts", false, "Skip templating declared forge.HelmChart platform deps (no helm, no network); the summary names what was left out")
 	cmd.MarkFlagsMutuallyExclusive("json", "list", "count")
-	cmd.Flags().StringArrayVarP(&options, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&options, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }
@@ -328,11 +328,8 @@ func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
 // restore puts back the options that were active before; it is a no-op when
 // no -D was given.
 func bindEnvRenderOptions(projectDir, envName string, values []string) (dArgs []string, restore func(), err error) {
-	dArgs, err = parseRenderOptions(values)
+	dArgs, err = resolveRenderOptions(projectDir, envName, values)
 	if err != nil {
-		return nil, nil, err
-	}
-	if err := validateRenderOptions(projectDir, envName, values); err != nil {
 		return nil, nil, err
 	}
 	if dArgs == nil {

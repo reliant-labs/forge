@@ -14,10 +14,13 @@ package hostinfra
 //   - The declared namespaces are created at launch (`--namespace`). An app's
 //     worker that polls a namespace that does not exist fails in a loop, and a
 //     namespace created by hand is a setup step a teammate's clone skips.
-//   - Only the frontend port is declared. The HTTP API and metrics listeners
-//     default to free ports the server picks itself; the Web UI is off unless
-//     `temporal_ui_port` names a port for it. Every fixed default the dev
-//     server has (7233, 8233) is a collision between two stacks on one machine.
+//   - Only the frontend port is required. The HTTP API listener takes a free
+//     port the server picks itself; the Web UI is off unless
+//     `temporal_ui_port` names a port for it; the Prometheus /metrics
+//     listener takes a free port unless `temporal_metrics_port` names one,
+//     which is what a declared Telemetry scrape points at. Every fixed
+//     default the dev server has (7233, 8233) is a collision between two
+//     stacks on one machine.
 //   - Readiness is "every declared namespace describes", asked through the
 //     same binary. A frontend accepts connections before the namespaces it was
 //     told to create exist, and a worker started in that window fails.
@@ -79,6 +82,7 @@ var temporalEngine = supervisedEngine{
 	release:      temporalRelease,
 	args:         temporalArgs,
 	ready:        temporalReady,
+	drift:        temporalDrift,
 	readyTimeout: 2 * time.Minute,
 }
 
@@ -107,10 +111,25 @@ func temporalArgs(spec Spec, dataDir string) []string {
 	} else {
 		args = append(args, "--headless")
 	}
+	if spec.TemporalMetricsPort > 0 {
+		args = append(args, "--metrics-port", strconv.Itoa(spec.TemporalMetricsPort))
+	}
 	for _, ns := range spec.TemporalNamespaces {
 		args = append(args, "--namespace", ns)
 	}
 	return args
+}
+
+// temporalDrift names what a running instance does not serve that the
+// declaration now asks for. A server started before `temporal_metrics_port`
+// was declared serves its metrics on a port it picked, and the scrape pointed
+// at the declared one finds nothing; adopting the instance silently would make
+// that look like a telemetry bug.
+func temporalDrift(spec Spec) string {
+	if spec.TemporalMetricsPort > 0 && !portListening(spec.TemporalMetricsPort) {
+		return fmt.Sprintf("temporal_metrics_port :%d is declared, but the running server does not serve it (it was started before the port was declared); restart it: `forge env down`, then `forge env up`", spec.TemporalMetricsPort)
+	}
+	return ""
 }
 
 // temporalReady performs one readiness probe: every namespace the instance

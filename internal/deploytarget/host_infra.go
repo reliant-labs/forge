@@ -55,7 +55,7 @@ func (p HostInfraProvider) Deploy(ctx context.Context, group ServiceGroup) error
 				svc.Name, svc.HostInfra.Engine, svc.HostInfra.Port)
 			continue
 		}
-		if err := hostinfra.Start(ctx, p.projectDir(), specOf(svc.Name, svc.HostInfra)); err != nil {
+		if err := hostinfra.Start(ctx, p.projectDir(), specOf(group.Env, svc.Name, svc.HostInfra)); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -80,7 +80,7 @@ func (p HostInfraProvider) Stop(group ServiceGroup) error {
 		if svc.HostInfra == nil {
 			continue
 		}
-		if err := hostinfra.Stop(p.projectDir(), specOf(svc.Name, svc.HostInfra)); err != nil {
+		if err := hostinfra.Stop(p.projectDir(), specOf(group.Env, svc.Name, svc.HostInfra)); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -141,9 +141,13 @@ func engineRank(svc ResolvedService) int {
 // the KCL schema (it is the wire contract), and hostinfra.Spec is what the
 // supervisor needs. Collapsing them would make internal/hostinfra depend on
 // the render layer's JSON tags.
-func specOf(name string, spec *HostInfraSpec) hostinfra.Spec {
+//
+// env is the group's environment: it names the directory the instance logs
+// into (.forge/logs/<env>/), beside every other process of that env.
+func specOf(env, name string, spec *HostInfraSpec) hostinfra.Spec {
 	return hostinfra.Spec{
 		Name:            name,
+		Env:             env,
 		Engine:          spec.Engine,
 		Port:            spec.Port,
 		Database:        spec.Database,
@@ -157,8 +161,9 @@ func specOf(name string, spec *HostInfraSpec) hostinfra.Spec {
 		IDPStepsFile:    spec.IDPStepsFile,
 		IDPPATPath:      spec.IDPPATPath,
 
-		NATSMonitorPort:    spec.NATSMonitorPort,
-		TemporalNamespaces: spec.TemporalNamespaces,
-		TemporalUIPort:     spec.TemporalUIPort,
+		NATSMonitorPort:     spec.NATSMonitorPort,
+		TemporalNamespaces:  spec.TemporalNamespaces,
+		TemporalUIPort:      spec.TemporalUIPort,
+		TemporalMetricsPort: spec.TemporalMetricsPort,
 	}
 }

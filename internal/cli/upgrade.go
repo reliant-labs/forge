@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -206,45 +207,30 @@ func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion
 	return err
 }
 
-// printApplicableMigrations surfaces the migrations this project actually
-// needs BEFORE the destructive work, so the user (or LLM) can decide whether
-// to halt and load them first.
+// printMigrationWorklist surfaces the playbooks this project actually needs
+// BEFORE the destructive work, so the user (or LLM) can decide whether to halt
+// and load them first.
 //
-// "Actually needs" is migrationApplies (upgrade_migrations.go) — the same
-// decision `forge project upgrade list` makes: version range AND detection
-// script, minus anything already recorded in .forge/migrations.json. Silence
-// means nothing applies, which is a real answer; a project that exhibits none
-// of the old shapes should be told so rather than handed the catalogue.
-func printApplicableMigrations(projectRoot, baseline string) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		return
-	}
-	state, err := readMigrationsState(projectRoot)
-	if err != nil {
-		return
-	}
-	var rows []pendingMigration
-	for _, row := range applicableMigrations(metas, baseline, projectRoot) {
-		if _, done := state.Applied[row.Meta.ID]; done {
-			continue
-		}
-		rows = append(rows, row)
-	}
+// "Actually needs" is the run's evaluation (evaluatePlaybooks): version range
+// AND detection script, minus anything already recorded in
+// .forge/migrations.json — the decision `forge project upgrade list` makes. The
+// verdict on every other playbook of the range is printed just above
+// (printPlaybookVerdicts).
+func printMigrationWorklist(w io.Writer, rows []pendingMigration) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Println("📚 Migrations this project still needs:")
+	fmt.Fprintln(w, "📚 Migrations this project still needs:")
 	for _, row := range rows {
-		fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
+		fmt.Fprintf(w, "    - %s\n      %s\n      Load with: %s skill load %s\n",
 			row.Meta.SkillPath, row.Meta.Description, Name(), row.Meta.SkillPath)
 	}
-	fmt.Println()
-	fmt.Println("    The deterministic steps (regen, build) run automatically below.")
-	fmt.Println("    Load each skill above IN THE ORDER LISTED (oldest release first) and")
-	fmt.Println("    follow its 'Migration (manual part)' section — each one assumes the")
-	fmt.Println("    release above it has already been migrated.")
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "    The deterministic steps (regen, build) run automatically below.")
+	fmt.Fprintln(w, "    Load each skill above IN THE ORDER LISTED (oldest release first) and")
+	fmt.Fprintln(w, "    follow its 'Migration (manual part)' section — each one assumes the")
+	fmt.Fprintln(w, "    release above it has already been migrated.")
+	fmt.Fprintln(w)
 }
 
 // describeVersion renders a forge version for human output, labelling

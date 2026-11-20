@@ -181,13 +181,13 @@ func TestCITokenMintingTextPointsAtTheWebApp(t *testing.T) {
 		t.Errorf("release.yml.tmpl still mints the CI token with `forge cloud token create`")
 	}
 	for _, skill := range []string{
-		"adopt/deploy", "deploy/record", "deploy/domains", "deploy/lifecycle", "observability/query",
+		"adopt", "adopt/deploy", "deploy/record", "deploy/domains", "deploy/lifecycle", "observability/query",
 	} {
 		body := read("../templates/project/skills/forge/" + skill + "/SKILL.md")
 		if !strings.Contains(body, "Settings → API tokens") {
 			t.Errorf("skill %s: no pointer to the web app's Settings → API tokens", skill)
 		}
-		for _, stale := range []string{"forge cloud token create --name ci", "forge cloud token\n  create --env staging", "an org admin can mint\n`forge cloud token create"} {
+		for _, stale := range []string{"forge cloud token create --name ci", "forge cloud token revoke` retires the CI token", "forge cloud token\n  create --env staging", "an org admin can mint\n`forge cloud token create"} {
 			if strings.Contains(body, stale) {
 				t.Errorf("skill %s still tells users to mint the CI token with %q", skill, stale)
 			}

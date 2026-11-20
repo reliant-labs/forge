@@ -15,18 +15,19 @@ const (
 	connectV2Plugin = "connectrpc.com/connect/v2/cmd/protoc-gen-connect-go"
 )
 
+const v2GoMod = "module example.com/app\n\ngo 1.26\n\nrequire connectrpc.com/connect/v2 v2.0.2\n"
+
+func writeGoMod(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The scaffold names the protoc-gen-connect-go of the connect-go major the
 // project targets: v1 for a fresh project, the go.mod's choice for a module
-// adopted in place, an explicit ConnectMajor above both.
+// adopted in place.
 func TestProjectGenerator_ConnectMajor(t *testing.T) {
-	writeGoMod := func(t *testing.T, dir, body string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	const v2GoMod = "module example.com/app\n\ngo 1.26\n\nrequire connectrpc.com/connect/v2 v2.0.2\n"
-
 	t.Run("fresh project is v1", func(t *testing.T) {
 		g := NewProjectGenerator("app", t.TempDir(), "example.com/app")
 		if got := g.connectMajor(); got != connectmajor.V1 {
@@ -44,15 +45,6 @@ func TestProjectGenerator_ConnectMajor(t *testing.T) {
 			t.Fatal("forScaffold().ConnectV2 = false for a v2 module")
 		}
 	})
-	t.Run("explicit choice wins", func(t *testing.T) {
-		dir := t.TempDir()
-		writeGoMod(t, dir, v2GoMod)
-		g := NewProjectGenerator("app", dir, "example.com/app")
-		g.ConnectMajor = connectmajor.V1
-		if got := g.connectMajor(); got != connectmajor.V1 {
-			t.Fatalf("connectMajor = %s, want the explicit v1", got)
-		}
-	})
 }
 
 func TestBootstrapScript_InstallsTheProjectsConnectPlugin(t *testing.T) {
@@ -65,8 +57,10 @@ func TestBootstrapScript_InstallsTheProjectsConnectPlugin(t *testing.T) {
 	} {
 		t.Run(tt.major.String(), func(t *testing.T) {
 			dir := t.TempDir()
+			if tt.major == connectmajor.V2 {
+				writeGoMod(t, dir, v2GoMod)
+			}
 			g := NewProjectGenerator("app", dir, "example.com/app")
-			g.ConnectMajor = tt.major
 			if err := g.generateBootstrapScript(); err != nil {
 				t.Fatal(err)
 			}

@@ -101,6 +101,11 @@ type Spec struct {
 	// Name is the workload name (e.g. "postgres"). It names the instance in
 	// logs and, by default, its data directory.
 	Name string
+	// Env is the forge environment the instance belongs to. It places the
+	// instance's log at .forge/logs/<Env>/<Name>.log, beside every other
+	// process `forge env up` runs, where the local collector tails it (see
+	// logs.go). Empty keeps the log beside the data, as before Env existed.
+	Env string
 	// Engine selects the implementation: EnginePostgres, EngineZitadel,
 	// EngineNATS, EngineTemporal or EngineMailpit.
 	Engine string
@@ -161,6 +166,10 @@ type Spec struct {
 	TemporalNamespaces []string
 	// TemporalUIPort is the Web UI's port. Zero means headless.
 	TemporalUIPort int
+	// TemporalMetricsPort is the port the server serves its Prometheus
+	// /metrics on (`--metrics-port`). Zero means a free port the server
+	// picks itself, which nothing can be pointed at.
+	TemporalMetricsPort int
 }
 
 // unsupportedEngine is Start/StatusOf's answer for an engine forge has no
@@ -313,14 +322,15 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 		return fmt.Errorf("host-infra %s: create data dir: %w", spec.Name, err)
 	}
 
-	// initdb's and pg_ctl's own output goes to a log beside the data, the way
-	// the IdP's does (zitadel.log). Left on the library's default — stdout —
-	// a first `forge env up` printed initdb's whole transcript into the
-	// terminal: absolute paths, the locale banner, and a "you can now start
-	// the database server using: pg_ctl … start" hint telling the reader to
-	// do by hand what forge had just done for them.
-	logPath := filepath.Join(dataDir, "postgres.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) // #nosec G304 -- path derived from the project's own data dir
+	// initdb's and pg_ctl's own output goes to the instance's log
+	// (.forge/logs/<env>/<name>.log, see logs.go), the way the IdP's does.
+	// Left on the library's default — stdout — a first `forge env up`
+	// printed initdb's whole transcript into the terminal: absolute paths,
+	// the locale banner, and a "you can now start the database server
+	// using: pg_ctl … start" hint telling the reader to do by hand what
+	// forge had just done for them. Appended, not truncated: the transcript
+	// is written once, on the first boot, and is worth keeping.
+	logFile, logPath, err := spec.openLog(projectDir, "postgres.log", os.O_APPEND)
 	if err != nil {
 		return fmt.Errorf("host-infra %s: open log: %w", spec.Name, err)
 	}
@@ -329,7 +339,7 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 	// pgtest.StartEmbedded fetches a cold cache's binary with retry and
 	// reports a failed download as one, rather than as the library's
 	// "no version found matching X" (pkg/pgtest/fetch.go).
-	ep, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir).Logger(logFile))
+	ep, err := pgtest.StartEmbedded(postgresConfig(spec, dataDir, logPath).Logger(logFile))
 	if err != nil {
 		return fmt.Errorf("host-infra %s: start postgres on :%d: %w (initdb/pg_ctl output: %s)",
 			spec.Name, spec.Port, err, shortPath(projectDir, logPath))
@@ -355,10 +365,11 @@ func startPostgres(ctx context.Context, projectDir string, spec Spec) error {
 	return nil
 }
 
-// postgresConfig is the embedded-postgres configuration for a dev server.
+// postgresConfig is the embedded-postgres configuration for a dev server
+// whose server log is logPath ("" leaves the server's own log unconfigured).
 // The comments explain the settings that are NOT obvious; the obvious ones
 // (user, password, port) are just the spec.
-func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
+func postgresConfig(spec Spec, dataDir, logPath string) embeddedpostgres.Config {
 	cfg := embeddedpostgres.DefaultConfig().
 		Username(spec.User).
 		Password(spec.Password).
@@ -386,7 +397,7 @@ func postgresConfig(spec Spec, dataDir string) embeddedpostgres.Config {
 		// silently wipe the developer's database on every `forge env up`.
 		DataPath(filepath.Join(dataDir, "data")).
 		RuntimePath(filepath.Join(dataDir, "runtime")).
-		StartParameters(postgresStartParameters(runtime.GOOS)).
+		StartParameters(withServerLog(postgresStartParameters(runtime.GOOS), logPath)).
 		// Generous because the FIRST run extracts the postgres archive before
 		// it can start anything. Later runs take a second or two.
 		StartTimeout(90 * time.Second)
@@ -460,6 +471,34 @@ func postgresStartParameters(goos string) map[string]string {
 		params["dynamic_shared_memory_type"] = "mmap"
 		params["shared_memory_type"] = "mmap"
 	}
+	return params
+}
+
+// withServerLog adds to params the settings that make the RUNNING server
+// log to logPath, and returns params. An empty logPath adds nothing.
+//
+// Without them the server has no log anyone can read. embedded-postgres runs
+// `pg_ctl start` with no -l, so the postmaster's stderr is the library's temp
+// file, which pgtest's Detach unlinks once the server is up: every line the
+// server wrote after boot (a failed login, a slow query, a crash) went to a
+// deleted file. The logging collector writes the named file itself, appending,
+// so the server's lines join the initdb transcript in the instance's log.
+//
+// The file is fixed-name (no strftime escape) and never rotated by postgres,
+// so its name stays the one the collector and a human tail. 0644 because the
+// local collector reads it from a container, as another user.
+func withServerLog(params map[string]string, logPath string) map[string]string {
+	if logPath == "" {
+		return params
+	}
+	params["logging_collector"] = "on"
+	// Forward slashes: postgres takes them on every platform, and a
+	// backslash inside the quoted -c value is one more thing to escape.
+	params["log_directory"] = filepath.ToSlash(filepath.Dir(logPath))
+	params["log_filename"] = filepath.Base(logPath)
+	params["log_file_mode"] = "0644"
+	params["log_rotation_age"] = "0"
+	params["log_rotation_size"] = "0"
 	return params
 }
 

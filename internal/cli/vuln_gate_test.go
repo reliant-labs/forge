@@ -478,3 +478,72 @@ func TestCIVulnSBOMSkipsCleanlyWithoutADatabaseWhileItWarns(t *testing.T) {
 		t.Fatalf("a gating rule that could not scan exited %d, want %d (a failing SKIP)", code, cigate.VulnSBOMSkipExit)
 	}
 }
+
+// The SBOM scan honors every well-formed ci.vuln_scan.exemptions entry,
+// whatever its namespace (a CVE included), and refuses the malformed ones the
+// shared contract refuses.
+func TestSBOMScanExemptions(t *testing.T) {
+	accepted, malformed := sbomScanExemptions([]config.CIVulnExemption{
+		{ID: "CVE-2026-4738", Reason: "zlib is never fed untrusted input", Expires: "2026-12-31"},
+		{ID: "GHSA-VFJ7-8CJW-P6XM", Reason: "dev only", Expires: "2026-12-31"},
+		{ID: "GO-2026-4887", Reason: "not called", Expires: "2026-12-31"},
+		{ID: "", Reason: "x", Expires: "2026-12-31"},
+		{ID: "not an id", Reason: "x", Expires: "2026-12-31"},
+		{ID: "CVE-2026-1", Expires: "2026-12-31"},
+		{ID: "CVE-2026-2", Reason: "x", Expires: "31/12/2026"},
+	})
+	var ids []string
+	for _, a := range accepted {
+		ids = append(ids, a.ID)
+	}
+	if strings.Join(ids, " ") != "CVE-2026-4738 GHSA-vfj7-8cjw-p6xm GO-2026-4887" {
+		t.Errorf("accepted %v", ids)
+	}
+	if len(malformed) != 4 {
+		t.Errorf("malformed %q, want the blank id, the non-id, the missing reason and the bad expiry", malformed)
+	}
+}
+
+func runCIVulnSBOMWith(t *testing.T, h *vulnHarness, pin string, ex []config.CIVulnExemption) (string, int) {
+	t.Helper()
+	prev := vulnSBOMSyft
+	vulnSBOMSyft = func(context.Context, string, []string) ([]byte, error) {
+		return []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[]}`), nil
+	}
+	t.Cleanup(func() { vulnSBOMSyft = prev })
+	cfg := &config.ProjectConfig{Name: "demo", ForgeVersion: pin}
+	cfg.CI.VulnScan.Exemptions = ex
+	var out, errOut bytes.Buffer
+	err := runCIVulnSBOM(context.Background(), &out, &errOut, h.deps, cfg, t.TempDir(), false)
+	var ec *exitCodeError
+	var ecv exitCodeError
+	switch {
+	case err == nil:
+		return out.String(), 0
+	case errors.As(err, &ec):
+		return out.String() + err.Error(), ec.code
+	case errors.As(err, &ecv):
+		return out.String() + err.Error(), ecv.code
+	}
+	t.Fatalf("unexpected error: %v", err)
+	return "", 0
+}
+
+// A CVE entry in the shared list exempts the grype finding it names (that is
+// what accepting CVE ids is for), and a malformed entry fails the step once
+// the rule gates — a note before.
+func TestCIVulnSBOMHonorsTheSharedExemptions(t *testing.T) {
+	h := newVulnHarness(t)
+	putVulnDBFile(t, h)
+	cve := config.CIVulnExemption{ID: "CVE-2026-4738", Reason: "zlib is never fed untrusted input", Expires: "2026-12-31"}
+	if out, code := runCIVulnSBOMWith(t, h, gatingPin, []config.CIVulnExemption{cve}); code != 0 {
+		t.Fatalf("a CVE exemption did not exempt the finding: exit %d\n%s", code, out)
+	}
+	bad := config.CIVulnExemption{ID: "CVE-2026-9", Expires: "2026-12-31"}
+	if out, code := runCIVulnSBOMWith(t, h, gatingPin, []config.CIVulnExemption{cve, bad}); code != exitWrong || !strings.Contains(out, "CVE-2026-9 has no `reason`") {
+		t.Fatalf("a malformed entry under a gating rule: exit %d\n%s", code, out)
+	}
+	if out, code := runCIVulnSBOMWith(t, h, warningPin, []config.CIVulnExemption{cve, bad}); code != 0 || !strings.Contains(out, "exemption not honored") {
+		t.Fatalf("a malformed entry while the rule warns: exit %d\n%s", code, out)
+	}
+}

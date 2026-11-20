@@ -36,22 +36,23 @@ import (
 )
 
 // The names the two checks record their verdicts under on a promotion, and
-// their refusal reasons. A caller-supplied gate of either name is refused
-// while the check runs: it would forge the check's own verdict.
+// their refusal reasons: pkg/release's, shared with the control plane that
+// enforces the same checks for its envs. A caller-supplied gate of either
+// name is refused while the check runs: it would forge the check's own
+// verdict.
 const (
-	vulnGateGateName = "vuln_gate"
-	sbomGateName     = "provenance_sbom"
+	vulnGateGateName = release.VulnGateGateName
+	sbomGateName     = release.ProvenanceSBOMGateName
 
-	// reasonVulnGateBlocked: a finding the env's vuln_gate blocks
-	// (KEV-listed, or at or above block_severity with a fix). exitRefused.
-	reasonVulnGateBlocked = "vuln_gate_blocked"
-	// reasonVulnGateUnscanned: an artifact with no SBOM or no scan, or a
-	// scan against a stale database, under enforce: could not determine is
-	// never a pass. exitRefused.
-	reasonVulnGateUnscanned = "vuln_gate_unscanned"
+	// reasonVulnGateBlocked: a finding the env's vuln_gate blocks.
+	// exitRefused.
+	reasonVulnGateBlocked = release.RefusalVulnGateBlocked
+	// reasonVulnGateUnscanned: no SBOM, no scan, or a stale database
+	// under enforce: could not determine is never a pass. exitRefused.
+	reasonVulnGateUnscanned = release.RefusalVulnGateUnscanned
 	// reasonSBOMMissing: provenance_sbom = enforce, and an artifact the
 	// release ships has no SBOM. exitRefused.
-	reasonSBOMMissing = "sbom_missing"
+	reasonSBOMMissing = release.RefusalSBOMMissing
 )
 
 // vulnFindingsSource returns the latest scan of every shipping artifact of a

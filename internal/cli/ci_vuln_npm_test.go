@@ -262,8 +262,11 @@ func TestPartitionExemptions_RoutesByIDNamespace(t *testing.T) {
 		{ID: "GO-2026-4887"},
 		{ID: "GHSA-vfj7-8cjw-p6xm"},
 		{ID: " ghsa-px8p-9vwx-vf98 "},
-		{ID: "CVE-2026-93687"},
+		{ID: "CVE-2026-93687", Reason: "only the SBOM scan reports it", Expires: "2026-12-31"},
 		{ID: ""},
+		{ID: "not an id"},
+		{ID: "CVE-2026-11111", Expires: "2026-12-31"},
+		{ID: "CVE-2026-22222", Reason: "x", Expires: "next year"},
 	})
 
 	if len(byEco[ecosystemGo]) != 1 || byEco[ecosystemGo][0].ID != "GO-2026-4887" {
@@ -272,17 +275,36 @@ func TestPartitionExemptions_RoutesByIDNamespace(t *testing.T) {
 	if len(byEco[ecosystemNPM]) != 2 {
 		t.Errorf("npm entries = %+v, want both GHSA ids", byEco[ecosystemNPM])
 	}
-	// A CVE alias and a blank id can accept nothing anywhere: both must
-	// come back for the caller to FAIL on, each named once.
-	if len(unroutable) != 2 {
-		t.Fatalf("unroutable = %q, want the CVE alias and the blank id", unroutable)
+	// A well-formed CVE entry is the SBOM scan's: neither scanner here sees
+	// it, and it is not a config error.
+	if len(byEco[ecosystemOther]) != 1 || byEco[ecosystemOther][0].ID != "CVE-2026-93687" {
+		t.Errorf("other entries = %+v, want only CVE-2026-93687", byEco[ecosystemOther])
 	}
-	if !strings.Contains(unroutable[0], "CVE-2026-93687") || !strings.Contains(unroutable[0], "GHSA-") {
-		t.Errorf("an unroutable id must be named, with the id forms that DO work; got %q", unroutable[0])
+	// What can accept nothing anywhere comes back for the caller to FAIL
+	// on, each named once: a blank id, a string that is not an advisory id,
+	// and a CVE entry with no reason or an unparseable expiry (no scanner
+	// here would ever report those malformed).
+	if len(unroutable) != 4 {
+		t.Fatalf("unroutable = %q, want the blank id, the non-id and the two malformed CVE entries", unroutable)
+	}
+	if !strings.Contains(unroutable[1], "not an id") || !strings.Contains(unroutable[1], "GHSA-") || !strings.Contains(unroutable[1], "CVE-") {
+		t.Errorf("a non-id must be named, with the id forms that DO work; got %q", unroutable[1])
+	}
+	if !strings.Contains(unroutable[2], "CVE-2026-11111 has no `reason`") || !strings.Contains(unroutable[3], "CVE-2026-22222 has an unparseable `expires") {
+		t.Errorf("malformed CVE entries must say why: %q", unroutable[2:])
 	}
 
-	// The point of routing: a GHSA entry is not stale to govulncheck.
-	goRes := evaluateVulnFindings(nil, byEco[ecosystemGo], time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	// The point of routing: a GHSA entry is not stale to govulncheck, and
+	// a CVE entry is neither stale nor malformed to either scanner.
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	goRes := evaluateVulnFindings([]vulnFinding{{ID: "GO-2026-4887"}}, byEco[ecosystemGo], now)
+	npmRes := evaluateVulnFindings([]vulnFinding{{ID: "GHSA-vfj7-8cjw-p6xm"}}, byEco[ecosystemNPM], now)
+	for _, res := range []vulnGateResult{goRes, npmRes} {
+		judged := strings.Join(append(append([]string{}, res.StaleExemptions...), res.Malformed...), " ")
+		if strings.Contains(judged, "CVE-") {
+			t.Errorf("a scanner judged a CVE entry: stale %v malformed %v", res.StaleExemptions, res.Malformed)
+		}
+	}
 	for _, id := range goRes.StaleExemptions {
 		if strings.HasPrefix(id, "GHSA-") {
 			t.Errorf("govulncheck must never judge a GHSA entry; it reported %s stale", id)

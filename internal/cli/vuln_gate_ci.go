@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -149,16 +150,20 @@ func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cf
 
 	gate := release.DefaultDeliveryPolicy().VulnGate
 	gate.Mode = release.DeliveryEnforce
+	var exemptions []config.CIVulnExemption
 	if cfg != nil {
-		for _, e := range cfg.CI.VulnScan.Exemptions {
-			gate.Exemptions = append(gate.Exemptions, release.ShapeVulnExempt{ID: e.ID, Reason: e.Reason, Expires: e.Expires})
-		}
+		exemptions = cfg.CI.VulnScan.Exemptions
 	}
+	accepted, malformed := sbomScanExemptions(exemptions)
+	gate.Exemptions = accepted
 	now := deps.now()
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
 		Gate: gate, GradedAs: gradedMode(gate.Mode, grade),
 		Artifacts: []vulnscan.ArtifactScan{{Artifact: "source tree (" + name + ")", Latest: scan}}, Now: now,
 	})
+	for _, m := range malformed {
+		doc.Notes = append(doc.Notes, "exemption not honored: "+m)
+	}
 	if doc.Gate.Verdict == vulnscan.VerdictBlock && !grade.Gates {
 		doc.Notes = append(doc.Notes, fmt.Sprintf("would block: %s (%s; gate now with %s)", describeBlocking(doc, 5), grade.Note(), grade.OptIn()))
 	}
@@ -172,5 +177,33 @@ func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cf
 	if doc.Gate.Verdict == vulnscan.VerdictBlock && grade.Gates {
 		return &exitCodeError{code: exitWrong, verdict: true, msg: "vulnerability: " + describeBlocking(doc, 5)}
 	}
+	// An entry the file claims and no gate honors fails, as it fails
+	// `forge ci vuln-scan` — once the rule gates; until then it is a note.
+	if len(malformed) > 0 && grade.Gates {
+		return &exitCodeError{code: exitWrong, msg: fmt.Sprintf("%d unusable exemption(s) in forge.yaml (ci.vuln_scan.exemptions): %s", len(malformed), strings.Join(malformed, "; "))}
+	}
 	return nil
+}
+
+// sbomScanExemptions are the ci.vuln_scan.exemptions entries the SBOM scan
+// honors — every well-formed one, whatever its id's namespace: grype matches
+// an exemption against a finding's id or any alias, so a CVE entry covers the
+// GHSA of the same advisory, and a GHSA entry an npm audit finding shares
+// covers the grype one too. An entry held to the shared contract
+// (checkExemptionEntry) and refused there is returned in malformed. Expiry is
+// the rule's own: an expired exemption exempts nothing (vulnscan.Exemption).
+func sbomScanExemptions(all []config.CIVulnExemption) (accepted []release.ShapeVulnExempt, malformed []string) {
+	for _, ex := range all {
+		id := canonicalAdvisoryID(ex.ID)
+		if id != "" && !vulnExemptIDRE.MatchString(id) {
+			malformed = append(malformed, fmt.Sprintf("%s is not an advisory ID, so it can accept nothing", id))
+			continue
+		}
+		if _, msg := checkExemptionEntry(ex); msg != "" {
+			malformed = append(malformed, msg)
+			continue
+		}
+		accepted = append(accepted, release.ShapeVulnExempt{ID: id, Reason: strings.TrimSpace(ex.Reason), Expires: strings.TrimSpace(ex.Expires)})
+	}
+	return accepted, malformed
 }

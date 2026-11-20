@@ -101,6 +101,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// a postgres foreign-key violation naming a constraint, never the
 		// proto line that caused it.
 		"create-nullability",
+		// Visible: a continuous rule about the user's own schema, and the
+		// one place a table served by authenticated generated CRUD that
+		// never said whose rows it holds is named before a caller reads
+		// another caller's rows.
+		"crud-ownership",
 		// Visible: a continuous rule about the user's own schema, and the only
 		// place a credential column the read-only role is refused surfaces by
 		// name. Left hidden, a project would learn forge_ro cannot read a

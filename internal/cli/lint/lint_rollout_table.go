@@ -236,6 +236,10 @@ var newRules = []rolloutGroup{
 	// auth_self_signup to true (sign-up on in every env that does not set
 	// it): found after ruleUnprovenSignup shipped, so it warns first.
 	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{ruleUnprovenSignupDefault}},
+	// forge lint --crud-ownership: a table served by generated CRUD on an
+	// authenticated rpc that declares no owner (forge:owner=, a forge:owner
+	// column) and no forge:public / forge:unscoped reason.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{ruleCRUDTableUnowned}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{

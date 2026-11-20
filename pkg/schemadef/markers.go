@@ -43,7 +43,7 @@ func SiteMarkers(site MarkerSite) []string {
 		// ViewMarkerEntity on a base table projects a table a forge library
 		// owns (forge/pkg/audit's audit_log), which forge otherwise leaves
 		// off the ORM; on any other table it states the default.
-		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
+		return []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
 	case SiteView:
 		return []string{ViewMarkerEntity, TableMarkerEntityName}
 	case SiteColumn:
@@ -102,6 +102,18 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 					out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
 						"%s needs a reason — `%s <why %s is not a credential>`; the reason is the review record of the exception",
 						tok, tok, column)})
+				}
+			}
+			if tok == TableMarkerOwner && site == SiteTable {
+				// On a table the marker is the enforced form and must name
+				// the owner; a bare one would read as declared and scope
+				// nothing. (Bare on a column is the column form.)
+				if _, _, err := (Table{Comment: comment}).OwnerSpec(); err != nil {
+					out = append(out, MarkerProblem{Marker: tok, Problem: err.Error()})
+				} else if !ownerTableMarkerRE.MatchString(comment) {
+					out = append(out, MarkerProblem{Marker: tok, Problem: fmt.Sprintf(
+						"%s on a table must name the owner — `%s=<column>`, `%s=<fk>><column>` or `%s=user:<column>,org:<column>`; "+
+							"the bare marker belongs on the owner COLUMN (COMMENT ON COLUMN)", tok, tok, tok, tok)})
 				}
 			}
 			if tok == ColumnMarkerNoSoftDelete && column != ColDeletedAt {
@@ -227,6 +239,15 @@ func CheckMarkers(tables []Table) error {
 		problems = append(problems, located(fmt.Sprintf("%s %s", site, t.Name), CommentMarkerProblems(site, "", t.Comment))...)
 		for _, c := range t.Columns {
 			problems = append(problems, located(fmt.Sprintf("column %s.%s", t.Name, c.Name), CommentMarkerProblems(SiteColumn, c.Name, c.Comment))...)
+		}
+		if !t.IsView {
+			// A declared owner that does not describe the schema must
+			// never degrade into an unscoped table.
+			if _, declared, err := ResolveOwnership(t, tables); declared && err != nil && ownerTableMarkerRE.MatchString(t.Comment) {
+				if _, _, perr := t.OwnerSpec(); perr == nil { // parse errors are reported above
+					problems = append(problems, MarkerProblem{Object: fmt.Sprintf("%s %s", site, t.Name), Marker: TableMarkerOwner, Problem: err.Error()})
+				}
+			}
 		}
 		for _, fk := range t.ForeignKeys {
 			object := fmt.Sprintf("constraint %s on %s", fk.Name, t.Name)

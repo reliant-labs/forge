@@ -65,10 +65,13 @@ by one belongs in a migration (`forge skill load db`).
 
 **Use when** a script, Taskfile, workflow or Go exec site passes one of them.
 
+The top-level `forge build` command is compile-only. Move publishing flags to
+`forge env build` and specify the environment.
+
 | Removed | Use instead |
 |---|---|
 | `--crud-fixtures` (on `forge lint`) | `forge lint --fixture-drift` |
-| `--push` / `--release` (on `forge build`, which only refused them) | `forge env build <env> --push` / `forge env build <env> --release <v>` |
+| Top-level build's `--push` / `--release` | `forge env build <env> --push` / `forge env build <env> --release <v>` |
 | `--from-schema` (on `forge scaffold entity`, which only refused it) | proto-first birth: `// forge:entity` on the message, then `forge scaffold` |
 | `--reliant-managed` (on `forge storage worktrees`, accepted and ignored) | drop the flag |
 | the hidden `test` command (it only said "use task test") | `task test` |

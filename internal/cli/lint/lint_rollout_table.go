@@ -254,7 +254,14 @@ var shippedRules = []rolloutGroup{
 }
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.
-var newRules = []rolloutGroup{}
+var newRules = []rolloutGroup{
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
+		Fix:          "forge lint --install",
+		Rules:        []string{ruleFrontendNoInstall},
+	},
+}
 
 // lintRollouts is the declaration of every rule, by ID.
 var lintRollouts = buildRollouts(shippedRules, newRules)

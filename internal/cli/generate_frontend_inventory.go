@@ -42,6 +42,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/obsdash"
 )
 
 // stepDeriveFrontendInventory overlays the DEPLOY GRAPH onto the inventory
@@ -130,6 +131,10 @@ type renderedEnvironments struct {
 	// funnels and counts), in environment order.
 	analytics []renderedEnvAnalytics
 	workloads []WorkloadEntity
+	// telemetry is each env's declared telemetry targets (forge.Telemetry),
+	// in environment order: the systems the observability dashboards and
+	// alert defaults are drawn for.
+	telemetry []obsdash.EnvTelemetry
 	// failed is every environment that did not render, in environment
 	// order. The inventory is built without it (a half-written main.k must
 	// not stop generate), but a step that then misses a frontend that env
@@ -158,6 +163,9 @@ func renderEnvironments(projectDir string) renderedEnvironments {
 			out.frontends = append(out.frontends, renderedEnvFrontend{Env: r.env, Frontend: fe})
 		}
 		out.workloads = append(out.workloads, r.entities.Workloads...)
+		if len(r.entities.Telemetry) > 0 {
+			out.telemetry = append(out.telemetry, obsdash.EnvTelemetry{Env: r.env, Targets: r.entities.Telemetry})
+		}
 		if o := r.entities.Observability; o != nil && o.Analytics != nil {
 			out.analytics = append(out.analytics, renderedEnvAnalytics{Env: r.env, Analytics: *o.Analytics})
 		}

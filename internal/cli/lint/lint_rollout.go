@@ -18,9 +18,9 @@
 // Every rule lint.rules can grade declares a ruleRollout (lint_rollout_table.go):
 //
 //	IntroducedIn  the forge release that shipped the rule, or tightened it
-//	GatesFrom     the release it starts to gate in. Empty for a rule that has
-//	              always gated; for any rule introduced after rolloutBaseline,
-//	              the release after IntroducedIn (derived, buildRollouts).
+//	GatesFrom     the release it starts to gate in, projected from an explicit
+//	              Grace declaration. Empty for rules with no warning window.
+//	Fix           the `forge fix <codemod>` that clears it, when one exists.
 //
 // The project's pinned forge_version decides. A finding that would fail the
 // gate, from a rule whose GatesFrom is later than the pin, is a WARNING that
@@ -71,7 +71,7 @@
 //     NEXT_VERSION predicted, so a commit that ships as v1.6.0 where the row
 //     said v1.5.1 grades by the row.
 //   - Only findings that would have failed the gate are softened. A warning
-//     stays a warning and carries no note; a rule at or before the baseline
+//     stays a warning and carries no note; a rule with no rollout deadline
 //     never softens.
 //
 // ── Passes with no rule ID of their own ───────────────────────────────────
@@ -87,10 +87,9 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it will ship in (the one NEXT_VERSION names); it
-// gates from the release after that. Both tests fail otherwise, and
-// TestRolloutRowsNameTheNextRelease fails a row for a release that is neither
-// shipped nor NEXT_VERSION.
+// IntroducedIn as the release it ships in. The owner-approved v1.9.0 grace
+// window requires an explicit Grace marker; the table guard rejects other
+// grace declarations.
 
 package lint
 
@@ -111,14 +110,6 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
-// rolloutBaseline is the last release whose rules gate at any pin. A rule
-// introduced at or before it declares no GatesFrom; one introduced after it
-// must. It was v0.1.46, the last release before warn-first existed; it moved
-// to v1.8.0 when the owner closed every open grace window (2026-11-19). It is
-// a fixed point, not a moving "current version": it does not change when a
-// release is cut.
-const rolloutBaseline = "v1.9.0"
-
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to
 // dial them and the key their rollout is declared under.
@@ -128,6 +119,7 @@ const rolloutGolangciBuildTags = "golangci-build-tags"
 type ruleRollout struct {
 	IntroducedIn string
 	GatesFrom    string
+	Fix          string
 }
 
 // ruleGrace is the note a softened finding carries, in --json as data and in
@@ -135,10 +127,7 @@ type ruleRollout struct {
 type ruleGrace struct {
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
-	// Fix is `grace.fix` in `forge lint --json`.
-	//
-	// Deprecated: always empty since v1.9.0 (no rule carries a fix hint); kept for the v1 JSON contract.
-	Fix string `json:"fix,omitempty"`
+	Fix          string `json:"fix,omitempty"`
 	// PreviousPin and GatesAfter are set when the pin is already past
 	// GatesFrom but the project came from a pin older than IntroducedIn:
 	// the rule warns while forge_version is GatesAfter and gates from the
@@ -155,6 +144,9 @@ func (g ruleGrace) note(rule string) string {
 			rule, g.IntroducedIn, g.PreviousPin, g.GatesAfter)
 	} else {
 		fmt.Fprintf(&b, "warn: [%s] is new in %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
+	}
+	if g.Fix != "" {
+		fmt.Fprintf(&b, "; fix with `%s`", g.Fix)
 	}
 	fmt.Fprintf(&b, "; gate now with lint.rules: {%s: error}", rule)
 	return b.String()
@@ -274,7 +266,7 @@ func rolloutPin(raw string) (string, bool) {
 // (prevKnown false when forge never saw an earlier one); raw is the pin as
 // forge.yaml spells it, for the note.
 func graceFor(ro ruleRollout, pin, prev string, prevKnown bool, raw string) *ruleGrace {
-	g := &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom}
+	g := &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix}
 	if semver.Compare(pin, ro.GatesFrom) < 0 {
 		return g
 	}
@@ -368,6 +360,7 @@ type GatingRule struct {
 	Rule         string
 	IntroducedIn string
 	GatesFrom    string
+	Fix          string
 }
 
 // RulesStartingToGate lists, by rule ID, the rules that warn under the pin
@@ -417,7 +410,7 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 		warnedBefore := graceFor(ro, oldPin, oldPrev, oldPrevKnown, from) != nil
 		gatesAfter := graceFor(ro, newPin, newPrev, newPrevKnown, to) == nil
 		if warnedBefore && gatesAfter {
-			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom})
+			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Rule < out[j].Rule })

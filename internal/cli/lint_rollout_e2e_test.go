@@ -18,12 +18,12 @@ import (
 // it gates from turns the same finding into a failure; lint.rules opts in
 // early.
 //
-// newRules may be empty (every rule that shipped gates at any pin), so the
-// binary under test is the one forge build that links a newRules row in:
-// rolloutLinkFixture declares forge-column-markers new in v1.0.0, gating from
-// v1.0.1. Nothing else differs from the shipped binary, so this proves the
-// grading, the note, the verdict line and lint.rules exactly as a real new
-// rule meets them.
+// The binary under test is the one forge build that links a grace row in:
+// rolloutLinkFixture declares forge-column-markers new in v1.0.0 with grace
+// until v1.0.1, so the test, not the release calendar, controls the window.
+// Nothing else differs from the shipped binary, so this proves the grading,
+// the note, the verdict line and lint.rules exactly as a real grace row
+// (newRules) meets them.
 func TestE2ENewRuleWarnsUntilPinReachesGatesFrom(t *testing.T) {
 	t.Parallel()
 	requireTool(t, "go")
@@ -31,7 +31,7 @@ func TestE2ENewRuleWarnsUntilPinReachesGatesFrom(t *testing.T) {
 	forgeBin := filepath.Join(dir, "forge-rollout-fixture")
 	repo := findRepoRoot(t)
 	build := exec.Command("go", "build", "-ldflags",
-		devForgeRootLDFlag(repo)+" -X github.com/reliant-labs/forge/internal/cli/lint.rolloutLinkFixture=forge-column-markers@v1.0.0",
+		devForgeRootLDFlag(repo)+" -X github.com/reliant-labs/forge/internal/cli/lint.rolloutLinkFixture=forge-column-markers@v1.0.0@v1.0.1",
 		"-o", forgeBin, "./cmd/forge")
 	build.Dir = repo
 	if out, err := build.CombinedOutput(); err != nil {

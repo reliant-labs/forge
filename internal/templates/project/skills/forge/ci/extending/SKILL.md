@@ -104,5 +104,6 @@ the one-time render). Pick the seam by what you are adding:
   Codecov on `workflow_run`.
 - **Custom security scanners (Snyk, Semgrep).** Tier-2 workflow
   triggered on schedule + PR; the gate's `vuln-go`/`vuln-npm` rows (and the
-  `docker-build` job's Trivy step) cover govulncheck/npm audit/Trivy and are
+  `docker-build` job's Trivy step) cover govulncheck/npm audit/Trivy, and
+  `forge vuln scan` plus the cut's SBOM cover what forge ships, and all are
   opinionated, so add scanners alongside rather than try to extend them.

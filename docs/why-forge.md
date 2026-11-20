@@ -200,7 +200,7 @@ A generic linter cannot tell that a read-only field is never written, that a lis
 
 ## Secure by default, with auth that fails closed and secrets out of git
 
-Security that must be switched on stays off. Every forge RPC needs a valid credential unless its proto opts out, so a forgotten annotation never publishes an endpoint; errors reach callers classified while the SQL and hosts stay in the server log; secrets are references bound per env, and a `.env` file fails lint. Images are signed with an SBOM, dependencies and images are scanned with expiring exemptions, and production reads go through an audited read-only command. What a caller may do stays your handler's code, and forge lists the RPCs that never ask who is calling.
+Security that must be switched on stays off. Every forge RPC needs a valid credential unless its proto opts out, so a forgotten annotation never publishes an endpoint; errors reach callers classified while the SQL and hosts stay in the server log; secrets are references bound per env, and a `.env` file fails lint. Every release records and scans an SBOM per artifact, images are signed, dependencies and images are scanned with expiring exemptions, and production reads go through an audited read-only command. What a caller may do stays your handler's code, and forge lists the RPCs that never ask who is calling.
 
 **How:** Because forge owns the interceptor chain, the env render and the build, it can make the safe path the default one and lint for the rest: unscoped RPCs, secret keys nothing produces, and credential-shaped columns the read-only role could see.
 
@@ -214,7 +214,8 @@ Security that must be switched on stays off. Every forge RPC needs a valid crede
 - [Credential columns need a decision](benefits.md#db-grants-lint)
 - [Find rpcs that ignore the caller](benefits.md#unscoped-auth-audit)
 - [Dependency and image scanning](benefits.md#vuln-scan)
-- [Signed images, SBOM and provenance](benefits.md#image-supply-chain)
+- [SBOM and scan per release](benefits.md#sbom-vuln-scan)
+- [Signed images and provenance](benefits.md#image-supply-chain)
 - [Rate limits, idempotency, webhook checks](benefits.md#middleware-hardening)
 - [Outbound SSRF guard](benefits.md#ssrf-guard)
 - [Audited read-only prod queries](benefits.md#guarded-db-query)

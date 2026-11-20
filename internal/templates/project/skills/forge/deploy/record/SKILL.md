@@ -269,6 +269,7 @@ verdict cannot tell the new release's traffic from the old.
 
 ## Next
 
+- SBOMs: a recorded workload has none yet, so it reads "not scanned"; `--sbom`, `--no-sbom` and `--sbom-source` are pending (forge#2489). `vuln` has the details and `forge vuln scan --image` for now.
 - Monitoring first, if it is not set up yet: `observability`.
 - Hand the deploy to forge when you are ready: `deploy` (`forge env deploy`); the
   recorded history stays in the same ledger, and forge's own releases follow it.

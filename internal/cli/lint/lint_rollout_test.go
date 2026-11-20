@@ -29,6 +29,17 @@ var testRollouts = map[string]ruleRollout{
 	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"},
 }
 
+// withRollouts makes table the rollout declaration for the rest of the test,
+// for a test that goes through an entry point reading lintRollouts. The real
+// table may hold no rule in grace (newRules empty), so the semantics are
+// pinned on a synthetic one.
+func withRollouts(t *testing.T, table map[string]ruleRollout) {
+	t.Helper()
+	saved := lintRollouts
+	lintRollouts = table
+	t.Cleanup(func() { lintRollouts = saved })
+}
+
 func pinnedCfg(pin string, rules map[string]string) *config.ProjectConfig {
 	return &config.ProjectConfig{ForgeVersion: pin, Lint: config.LintConfig{Rules: rules}}
 }
@@ -143,7 +154,7 @@ func TestFirstComputedReleaseCarryingARuleWarns(t *testing.T) {
 		t.Fatalf("VERSION %q: %v", last, err)
 	}
 	for rule, ro := range lintRollouts {
-		if semver.Compare(ro.IntroducedIn, last) <= 0 {
+		if ro.GatesFrom == "" || semver.Compare(ro.IntroducedIn, last) <= 0 {
 			continue
 		}
 		firstReleases := []string{ro.IntroducedIn}
@@ -308,6 +319,28 @@ func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
 	if got := rulesStartingToGate(testRollouts, pinnedCfg("v1.2.0", nil), "v1.2.0", "v1.3.0"); len(got) != 1 || got[0].Rule != rolloutRule {
 		t.Errorf("the pin after a jump must report the jumped rule starting to gate, got %+v", got)
 	}
+	// Upgrade-report defect 4: two consecutive bumps between pseudo-versions
+	// that grade as one release. lint under the second pin still reads the
+	// jump's previous pin from history (it skips same-graded pins), so the
+	// rule still warns there: that bump ends nothing. The bump that leaves
+	// the release ends it — once.
+	for _, step := range []struct {
+		from, to string
+		want     bool
+	}{
+		{"v1.2.1-0.20261030000000-aaaaaaaaaaaa", "v1.2.1-0.20261031000000-bbbbbbbbbbbb", false},
+		{"v1.2.1-0.20261031000000-bbbbbbbbbbbb", "v1.3.1-0.20261101000000-cccccccccccc", true},
+	} {
+		got := rulesStartingToGate(testRollouts, pinnedCfg(step.from, nil), step.from, step.to)
+		if (len(got) == 1) != step.want || len(got) > 1 {
+			t.Errorf("%s → %s: got %+v, want starts-gating=%v", step.from, step.to, got, step.want)
+		}
+		// The same answer lint gives under each pin, so the two cannot disagree.
+		before, _ := gradeProjectLaneWith(testRollouts, pinnedCfg(step.from, nil), []lintJSONFinding{rolloutFinding(lintSevError)}, true)
+		if before[0].Grace == nil {
+			t.Errorf("lint under %s should warn (the jump grace)", step.from)
+		}
+	}
 	if got := rulesStartingToGate(testRollouts, &config.ProjectConfig{ModulePath: "github.com/reliant-labs/forge"}, "v1.0.0", "v1.0.1"); len(got) != 0 {
 		t.Errorf("forge's own tree builds the forge it lints with; got %+v", got)
 	}
@@ -368,7 +401,7 @@ func TestPreviousPinGivesAJumpedRuleItsWarnPin(t *testing.T) {
 			t.Errorf("note %q does not say %q", note, want)
 		}
 	}
-	if verdict := describeGraced(gracedFindings([]lintStepOutcome{{ran: true, findings: got}})); !strings.Contains(verdict, "gates from the pin after v1.2.0") {
+	if verdict := describeGraced(gracedFindings([]lintStepOutcome{{ran: true, findings: got}})); !strings.Contains(verdict, "gates from the next forge pin after v1.2.0") {
 		t.Errorf("verdict clause %q does not say when the rule gates", verdict)
 	}
 	// lint.rules still wins over history.
@@ -643,10 +676,8 @@ func TestMergedBuildTagFindingsStillDedupe(t *testing.T) {
 
 // Through the real engine: the verdict a user reads.
 func TestRolloutVerdictThroughTheEngine(t *testing.T) {
-	ro, ok := lintRollouts[rolloutRule]
-	if !ok || ro.GatesFrom == "" {
-		t.Fatalf("%s must carry a rollout row for this test", rolloutRule)
-	}
+	withRollouts(t, testRollouts)
+	ro := testRollouts[rolloutRule]
 	step := linterStep{
 		name: "closed-sets lint", gates: true, scope: scopeByFile,
 		shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
@@ -745,4 +776,36 @@ func TestOutcomeEngineGradesThroughTheRollout(t *testing.T) {
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	return lines[len(lines)-1]
+}
+
+// Upgrade-report defect 1: the proto-format lane reports each file as a
+// finding plus its diff as a raw sub-tool line under it, and the verdict
+// counted both: "60 new-rule findings" for 30 files. The raw line is the
+// finding's output, not a finding.
+func TestGracedFindingsCountRawToolLinesOnce(t *testing.T) {
+	grace := &ruleGrace{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1"}
+	fs := []lintJSONFinding{
+		{File: "a.proto", Rule: "forge-proto-format", Severity: lintSevWarning, Grace: grace, rollout: "forge-proto-format"},
+		{Rule: "external", Severity: lintSevWarning, Message: "--- a.proto\n+++ a.proto", Grace: grace, rollout: "forge-proto-format"},
+		{File: "b.proto", Rule: "forge-proto-format", Severity: lintSevWarning, Grace: grace, rollout: "forge-proto-format"},
+		{Rule: "external", Severity: lintSevWarning, Message: "--- b.proto", Grace: grace, rollout: "forge-proto-format"},
+	}
+	got := gracedFindings([]lintStepOutcome{{ran: true, findings: fs}})
+	if len(got) != 1 || got[0].n != 2 || got[0].rule != "forge-proto-format" {
+		t.Fatalf("got %+v, want forge-proto-format ×2", got)
+	}
+	if v := describeGraced(got); !strings.Contains(v, "2 new-rule findings") || !strings.Contains(v, "gates from v1.8.1") {
+		t.Errorf("verdict clause %q", v)
+	}
+}
+
+func TestGatesWhenIsOneWording(t *testing.T) {
+	for _, tc := range []struct{ from, after, want string }{
+		{"v1.8.1", "", "gates from v1.8.1"},
+		{"v1.8.1", "v1.8.1-0.20261119173027-ff5a370de464", "gates from the next forge pin after v1.8.1-0.20261119173027-ff5a370de464"},
+	} {
+		if got := GatesWhen(tc.from, tc.after); got != tc.want {
+			t.Errorf("GatesWhen(%q, %q) = %q, want %q", tc.from, tc.after, got, tc.want)
+		}
+	}
 }

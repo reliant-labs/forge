@@ -24,7 +24,7 @@ func main() {
 	cli.SetTelemetryEndpoint(TelemetryEndpoint)
 
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintln(os.Stderr, exitcode.Line(err))
 		os.Exit(exitcode.Of(err))
 	}
 }

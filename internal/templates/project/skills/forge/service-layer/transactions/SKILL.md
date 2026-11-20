@@ -298,12 +298,5 @@ becomes `s.deps.DB.RunTx(ctx, orm.Serializable, func(ctx context.Context) …)`,
 and every `tx` argument inside becomes `s.deps.DB`. Delete the helper. Move
 any side effect inside the closure into `orm.AfterCommit`.
 
-Upgrading from a forge with default levels: `forge fix tx-isolation` spells
-every old call out exactly as it ran (`RunTx(ctx, fn)` →
-`orm.Serializable`; `RunTransaction(ctx, fn)` and `BeginTx(ctx, nil)` →
-`orm.ReadCommitted`) and lists each site; then review the
-`forgeconv-tx-lock-under-serializable` findings. See
-`migrations/v1.0.0/tx-isolation`.
-
 See also: `service-layer` for the Deps/store shape, `db/crud-overrides` for
 read-check-write inside a CRUD op override.

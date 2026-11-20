@@ -63,8 +63,8 @@ layout.
         use-api-mutation.ts
         index.ts
         generated/             # per-service hooks (forge-generated)
-          users-hooks.ts
-          orders-hooks.ts
+          users-hooks_gen.ts
+          orders-hooks_gen.ts
           index.ts
     ui-web/                    # @<project>/ui-web — shared web components
       package.json

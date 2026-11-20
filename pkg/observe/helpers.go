@@ -170,7 +170,7 @@ type CallMetrics struct {
 // keyed on those names keep working.
 //
 // Errors from meter.Int64Counter / Float64Histogram are silently
-// dropped (the same posture as contractkit.NewMetrics). meter == nil
+// dropped. meter == nil
 // returns a CallMetrics whose RecordCall / RecordError methods are
 // no-ops, so callers can wire a CallMetrics in test harnesses without
 // configuring OTel.

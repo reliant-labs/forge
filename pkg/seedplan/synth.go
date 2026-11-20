@@ -350,7 +350,7 @@ const timeLiteralLayout = "2006-01-02T15:04:05Z"
 // is a no-op).
 func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b NumBound) string {
 	if col.IsArray {
-		return arrayLiteral(t, col, i)
+		return p.arrayLiteral(t, col, i)
 	}
 	if role := managedRoleOf(p.conv[t.Name], col); role != managedNone {
 		return managedTimestampLiteral(p.cfg.EffectiveNow(), role, i)
@@ -380,35 +380,6 @@ func (p *Plan) synthScalar(t schemadef.Table, col schemadef.Column, i int, b Num
 	default: // string
 		return sqlString(SynthString(t, col, i))
 	}
-}
-
-// arrayLiteral renders a Postgres ARRAY[...] literal for a real array column.
-// A uuid[] element is a uuid like any other — the placeholder string postgres
-// rejects in a uuid column it rejects just as flatly inside an array of them.
-func arrayLiteral(t schemadef.Table, col schemadef.Column, i int) string {
-	switch {
-	case col.Type == schemadef.TypeInt:
-		return fmt.Sprintf("ARRAY[%d, %d]", i+1, i+2)
-	case col.Type == schemadef.TypeFloat:
-		return fmt.Sprintf("ARRAY[%.2f, %.2f]", float64(i+1)*1.5, float64(i+2)*1.5)
-	case col.Type == schemadef.TypeBool:
-		return "ARRAY[true, false]"
-	case isUUIDArrayColumn(col):
-		return fmt.Sprintf("ARRAY[%s, %s]::uuid[]",
-			sqlString(syntheticUUID(t.Name, col.Name, i)),
-			sqlString(syntheticUUID(t.Name, col.Name, i+1)))
-	default: // string / other → text-ish array
-		return fmt.Sprintf("ARRAY[%s, %s]",
-			sqlString(placeholderString(col.Name, i)),
-			sqlString(placeholderString(col.Name, i+1)))
-	}
-}
-
-// isUUIDArrayColumn reports whether the column is a uuid[]. Introspection
-// spells the declared type of an array with its element type and a `[]`
-// suffix, which isUUIDColumn (an exact match) deliberately does not accept.
-func isUUIDArrayColumn(col schemadef.Column) bool {
-	return col.IsArray && strings.EqualFold(strings.TrimSpace(col.DeclType), "UUID[]")
 }
 
 // timestampLiteral is the instant an UNMANAGED time column carries: one

@@ -17,7 +17,7 @@ forge scaffold entity --from-proto tasks         # batch: quintets with no appli
 
 The `--from-proto <svc>` batch form sweeps `// forge:entity`-marked messages too. Birth is **one-time**: the migration is yours the moment it is written, and forge never re-reads the proto to regenerate or edit it.
 
-**There is no import path** (`--from-schema` is refused). To put a wire contract on a table that already exists, hand-write the matching proto message and run `forge generate` — it projects the ORM and CRUD wiring from the applied schema without writing a migration.
+**There is no import path.** To put a wire contract on a table that already exists, hand-write the matching proto message and run `forge generate` — it projects the ORM and CRUD wiring from the applied schema without writing a migration.
 
 ### Birth markers — schema hardening baked into your owned migration
 

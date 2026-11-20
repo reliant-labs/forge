@@ -164,7 +164,7 @@ func collectOpenSignupJSON(root string) ([]lintJSONFinding, error) {
 				"deployed app can create an account under an address nobody verified and is signed straight in",
 			FixHint: "mount it behind a switch that is off outside development — `if broker.selfSignup { mux.Handle(RegisterPath, ...) }` " +
 				"with selfSignup: cfg.Environment == \"development\" || cfg.AuthSelfSignup — and have every bind-by-email " +
-				"check devidp.User.EmailVerified; `forge skill load migrations/v1.0.16` has the exact edit",
+				"check devidp.User.EmailVerified (`forge skill load auth/frontend`)",
 		})
 	}
 	return out, nil

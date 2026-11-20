@@ -40,13 +40,6 @@ import (
 // cs is the project's checksum tracker — db/embed.go is recorded so `forge
 // project audit` doesn't flag drift on it. A nil cs is tolerated.
 func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs *checksums.FileChecksums) error {
-	// Retire the pre-move pkg/app/migrate.go. Only a copy that still
-	// self-verifies as forge's own render is removed — a hand-edited or
-	// disowned one is the user's now, and deleting it would destroy work
-	// forge did not write. Such a project keeps a compiling (if redundant)
-	// AutoMigrate until the user removes it.
-	removeRetiredForgeFile(targetDir, filepath.Join("pkg", "app", "migrate.go"), cs)
-
 	db := config.DatabaseIn(targetDir)
 	layout := migrationEmbedLayoutOf(db.MigrationsPath())
 	if db.UsesMigrationHook() {
@@ -77,7 +70,6 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs
 		// see migratekit.AutoMigrate on why boot tolerates that while an
 		// explicit `db migrate up` does not. An embed from an earlier run,
 		// when SQL existed, would now match nothing and fail the build.
-		RetireRenamedGenerated(targetDir, filepath.Join("db", "embed.go"), cs)
 		removeRetiredForgeFile(targetDir, filepath.Join("db", "embed_gen.go"), cs)
 		return writeMigrationSource(targetDir, layout, false, nil, cs)
 	}
@@ -88,10 +80,6 @@ func GenerateMigrate(targetDir string, modulePath string, hasMigrations bool, cs
 	// compile against an empty match, so the directive names them only then.
 	_, grantsErr := os.Stat(filepath.Join(targetDir, filepath.FromSlash(dbgrants.GrantsPath)))
 	hasGrants := grantsErr == nil
-
-	// Renamed to _gen so the name states the tier — the embed directive is
-	// re-derived from the migrations directory on every run.
-	RetireRenamedGenerated(targetDir, filepath.Join("db", "embed.go"), cs)
 
 	if layout.pkgDir != "" {
 		return generateMigrateOutsideDB(targetDir, modulePath, layout, hasGrants, cs)

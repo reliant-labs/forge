@@ -2,11 +2,23 @@ package {{.ServicePackage}}
 
 import (
 	"context"
+{{- if connectV2 .}}
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
+{{- if .NamesPbMessages}}
+
+	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{- end}}
+{{- if .HasStreamingMethods}}
+	{{.ProtoConnectPackage}} "{{.Module}}/gen/{{.ProtoPackage}}/v1/{{.ProtoConnectPackage}}"
+{{- end}}
+{{- else}}
 
 	"connectrpc.com/connect"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
+{{- end}}
 )
 
 {{range .Methods}}
@@ -19,7 +31,11 @@ import (
 {{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
+{{- if connectV2 $}}
+	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
+{{- else}}
 	stream *connect.BidiStream[pb.{{.InputType | goName}}, pb.{{.OutputType | goName}}],
+{{- end}}
 ) error {
 	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }
@@ -32,8 +48,13 @@ func (s *Service) {{.Name | goName}}(
 {{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
+{{- if connectV2 $}}
+	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
+) (*pb.{{.OutputType | goName}}, error) {
+{{- else}}
 	stream *connect.ClientStream[pb.{{.InputType | goName}}],
 ) (*connect.Response[pb.{{.OutputType | goName}}], error) {
+{{- end}}
 	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }
 {{- else if .ServerStreaming}}
@@ -45,8 +66,13 @@ func (s *Service) {{.Name | goName}}(
 {{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
+{{- if connectV2 $}}
+	req *pb.{{.InputType | goName}},
+	stream {{$.ProtoConnectPackage}}.{{$.HandlerName}}{{.Name | goName}}ServerStream,
+{{- else}}
 	req *connect.Request[pb.{{.InputType | goName}}],
 	stream *connect.ServerStream[pb.{{.OutputType | goName}}],
+{{- end}}
 ) error {
 	return svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }
@@ -59,8 +85,13 @@ func (s *Service) {{.Name | goName}}(
 {{- end}}
 func (s *Service) {{.Name | goName}}(
 	ctx context.Context,
+{{- if connectV2 $}}
+	req *pb.{{.InputType | goName}},
+) (*pb.{{.OutputType | goName}}, error) {
+{{- else}}
 	req *connect.Request[pb.{{.InputType | goName}}],
 ) (*connect.Response[pb.{{.OutputType | goName}}], error) {
+{{- end}}
 	return nil, svcerr.Wrap(svcerr.ScaffoldStub("{{.Name | goName}}"))
 }
 {{- end}}

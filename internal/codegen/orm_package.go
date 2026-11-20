@@ -219,7 +219,7 @@ var opsFileImportNames = map[string]bool{
 func shimORMBinding(projectDir string, data CRUDTemplateData, methods []CRUDMethodTemplateData, existing []byte) (ORMBinding, error) {
 	ormPath := importSpecPath(data.DBImport)
 	wanted := crudShimImports(CRUDTemplateData{
-		Module: data.Module, ProtoPackage: data.ProtoPackage, DBImport: data.DBImport, CRUDMethods: methods,
+		Module: data.Module, ProtoPackage: data.ProtoPackage, DBImport: data.DBImport, ConnectV2: data.ConnectV2, CRUDMethods: methods,
 	})
 	needsORM := false
 	for _, imp := range wanted {

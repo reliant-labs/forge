@@ -143,17 +143,18 @@ type CRUDTemplateData struct {
 	Package      string // Go package name, e.g. "patients"
 	Module       string // Go module path, e.g. "github.com/demo-project"
 	ProtoPackage string // e.g. "proto/services/patients"
+	// ConnectV2 is whether the project builds against connect-go v2; it is
+	// copied onto every CRUDMethods entry, which the shim template renders.
+	ConnectV2 bool
 	// DBImport is the generated ORM package as an import spec for the ops
 	// file ("path" or "alias path") and DBQual the identifier that file
 	// qualifies it with (ORMQualifier; empty means db). Both come from
-	// ChooseORMBinding: a default project's internal/db is "path" + db, a
-	// relocated internal/store is "path" + store — never a db alias that
-	// a project's own internal/db package would collide with.
+	// ChooseORMBinding: the default internal/db uses db, while a relocated
+	// internal/store can use store without colliding with the project's db.
 	DBImport string
 	DBQual   string
-	// orm is the project's ORM placement and pkgDecls the handler
-	// package's top-level names, which a file's ORM qualifier must not
-	// shadow; shimORMBinding re-binds the ORM per shim file from them.
+	// orm is the project's ORM placement and pkgDecls the handler package's
+	// top-level names. shimORMBinding uses them when appending shims.
 	orm           config.ORMConfig
 	pkgDecls      map[string]bool
 	HasPagination bool // true if any list method uses pagination
@@ -384,6 +385,60 @@ type CRUDMethodTemplateData struct {
 	// OwnerImport is the import spec OwnerResolver's (or a sibling-chosen
 	// AuthSeam's) package needs, "" for the forge seam.
 	OwnerImport string
+	// ConnectV2 renders the shim in connect-go v2 shape: bare request and
+	// response messages, and the connect-neutral pkg/crud functions
+	// (crud.Get) in place of the v1 Handle* wrappers (crud.HandleGet).
+	ConnectV2 bool
+}
+
+// RequestParamType is the shim's request parameter type: the bare pb
+// message for connect-go v2, connect.Request-wrapped for v1.
+func (m CRUDMethodTemplateData) RequestParamType() string {
+	if m.ConnectV2 {
+		return "*pb." + m.InputType
+	}
+	return "*connect.Request[pb." + m.InputType + "]"
+}
+
+// ResultType is the shim's result list: the bare response message for
+// connect-go v2, connect.Response-wrapped for v1.
+func (m CRUDMethodTemplateData) ResultType() string {
+	if m.ConnectV2 {
+		return "(*pb." + m.OutputType + ", error)"
+	}
+	return "(*connect.Response[pb." + m.OutputType + "], error)"
+}
+
+// RequestMsg is the expression that reads the request message's fields:
+// req itself for connect-go v2, req.Msg for v1.
+func (m CRUDMethodTemplateData) RequestMsg() string {
+	if m.ConnectV2 {
+		return "req"
+	}
+	return "req.Msg"
+}
+
+// EmptyResponse is an empty response value of the shim's result type.
+func (m CRUDMethodTemplateData) EmptyResponse() string {
+	if m.ConnectV2 {
+		return "&pb." + m.OutputType + "{}"
+	}
+	return "connect.NewResponse(&pb." + m.OutputType + "{})"
+}
+
+// CRUDFunc is the pkg/crud function the shim delegates to: the
+// connect-neutral core (crud.Get) for connect-go v2, whose
+// func(ctx, *Req) (*Resp, error) is the v2 handler method's own shape, or
+// its v1 wrapper (crud.HandleGet).
+func (m CRUDMethodTemplateData) CRUDFunc() string {
+	op := m.Operation
+	if op != "" {
+		op = strings.ToUpper(op[:1]) + op[1:]
+	}
+	if m.ConnectV2 {
+		return "crud." + op
+	}
+	return "crud.Handle" + op
 }
 
 // OwnerTODOIdent is the identifier an undetermined owner wrapper calls. It
@@ -719,6 +774,10 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return opsFileImportNames[name] || data.pkgDecls[name]
 	})
 	data.DBImport, data.DBQual = opsBinding.Spec, opsBinding.Qual
+	data.ConnectV2 = connectV2For(svc, projectDir)
+	for i := range data.CRUDMethods {
+		data.CRUDMethods[i].ConnectV2 = data.ConnectV2
+	}
 
 	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
 	// Emitted when at least one method passed shape validation OR a wired
@@ -938,6 +997,11 @@ func wrapCommentText(text string, width int) []string {
 // handlers_crud.go shim from the methods it will contain.
 func crudShimImports(data CRUDTemplateData) []string {
 	imports := []string{"context", "connectrpc.com/connect"}
+	if data.ConnectV2 {
+		// A v2 shim names no connect type: its methods take and return
+		// bare pb messages.
+		imports = []string{"context"}
+	}
 	hasMismatch := false
 	hasReal := false
 	needsDB := false
@@ -1125,7 +1189,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	if len(missing) == 0 {
 		return nil
 	}
-	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing)
+	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing, majorOf(data.ConnectV2))
 	binding, err := shimORMBinding(projectDir, data, missing, existing)
 	if err != nil {
 		return fmt.Errorf("%s: %w", shimRel, err)
@@ -1141,6 +1205,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		Module:       data.Module,
 		ProtoPackage: data.ProtoPackage,
 		DBImport:     binding.Spec,
+		ConnectV2:    data.ConnectV2,
 		CRUDMethods:  missing,
 	}) {
 		content = ensureImportLine(content, imp)
@@ -1871,6 +1936,10 @@ type CRUDTestTemplateData struct {
 	// quoted, comma-separated path elements filepath.Join takes.
 	MigrationsDir     string
 	MigrationsDirArgs string
+	// ConnectV2 renders the lifecycle test against connect-go v2 handlers:
+	// bare request messages in, bare responses out, codes read with
+	// svcerr.CodeV2.
+	ConnectV2 bool
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -2031,6 +2100,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	data.UnfilledDeps = UnfilledDepsFor(targetDir)
 	// relDir is internal/handlers/<leaf>; the import needs the leaf.
 	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
+	data.ConnectV2 = connectV2For(svc, projectDir)
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {

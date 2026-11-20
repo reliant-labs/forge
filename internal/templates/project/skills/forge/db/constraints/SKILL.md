@@ -1,6 +1,6 @@
 ---
 name: db/constraints
-description: Schema declarations a migration makes beyond columns — the column write policy (ownership, forge:immutable, forge:version), append-only tables, the authoritative route when two FKs reach one parent (forge:ref), CHECKs that mirror a Go set (forge:closed-set), derived values (generated vs computed), and status-lifecycle CHECKs as implications.
+description: Schema declarations a migration makes beyond columns — the column write policy (ownership, forge:immutable, forge:version), append-only tables, the authoritative route when two FKs reach one parent (forge:ref), CHECKs that mirror a Go set (forge:closed-set), derived values (generated vs computed), and status-lifecycle CHECKs (one-way or two-way).
 ---
 
 # Schema declarations in the migration
@@ -48,20 +48,21 @@ the two equal. Set names and the fix migration: `db/closed-sets`.
 
 Derived from the SAME row (`line_total = quantity * unit_price`) → a `GENERATED ALWAYS AS (…) STORED` column, declared at birth with `// forge:generated <expr>`; never a plain column plus a CHECK asserting the equality, which nothing ever satisfies. Derived from OTHER rows (`amount_paid` summing `payments`) → a plain column marked `// forge:computed`, written by the RPC that owns the change. Load `db/derived-values` for the postgres rules a generated expression must meet (birth checks them) and worked examples.
 
-## A status-lifecycle rule is an implication, not a biconditional
+## A status-lifecycle rule: state the rule you mean
 
-"An approved estimate has an approval timestamp" seeds cleanly one way only:
+"An approved estimate has an approval timestamp" is one-way; "only an approved
+estimate has one" makes it two-way. Both seed, so write the one that is true:
 
 ```sql
--- YES: one-way implication. Any number of these over `status` seed fine.
-CONSTRAINT estimates_approved_has_stamp
-    CHECK (status <> 'ESTIMATE_STATUS_APPROVED' OR approved_at IS NOT NULL)
+-- One-way implication. Any number of these over `status` seed fine.
+CONSTRAINT estimates_sent_has_stamp
+    CHECK (status <> 'ESTIMATE_STATUS_SENT' OR sent_at IS NOT NULL)
 
--- NO: biconditional. `forge db seed apply` cannot place it, nor any guard on
--- `status` beside it, and apply is one transaction: the whole dev dataset.
+-- Biconditional. Seeded as a pair of guards over `status`, merged with the
+-- implications above; rows cover both sides of it.
 CONSTRAINT estimates_approved_iff
     CHECK ((status = 'ESTIMATE_STATUS_APPROVED') = (approved_at IS NOT NULL))
 ```
 
-Enforce the mirror half (not approved ⇒ NULL stamp) in the RPC that owns the
-transition. Why, and the mixing rule: `db/seeding/constraints`.
+Never weaken a constraint to satisfy `forge db seed`. The forms it reads, and
+the vocabulary precondition (`CHECK (status IN (…))`): `db/seeding/constraints`.

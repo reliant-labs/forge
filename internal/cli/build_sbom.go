@@ -64,6 +64,9 @@ type sbomGenerated struct {
 	CutAt time.Time
 	// Name is the artifact's key in the release (an image's repository).
 	Name string
+	// Built reports that this cut's build state recorded the artifact: this
+	// pipeline built (or carried) and pushed it.
+	Built bool
 	// Artifact is the artifact as the release will record it, with
 	// Artifact.SBOM the ref so far (status ok, digest set).
 	Artifact release.Artifact
@@ -230,7 +233,7 @@ func recordGeneratedSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 	)
 	inputs := make([]sbomGenerated, 0, len(jobs))
 	for _, j := range jobs {
-		inputs = append(inputs, sbomGenerated{ProjectDir: in.ProjectDir, Env: in.Env, Version: in.Version, CutAt: in.CreatedAt, Name: j.name, Artifact: artifacts[j.name], Bytes: j.data, Entities: in.Entities})
+		inputs = append(inputs, sbomGenerated{ProjectDir: in.ProjectDir, Env: in.Env, Version: in.Version, CutAt: in.CreatedAt, Name: j.name, Built: in.Built[j.name], Artifact: artifacts[j.name], Bytes: j.data, Entities: in.Entities})
 	}
 	for _, in := range inputs {
 		wg.Add(1)

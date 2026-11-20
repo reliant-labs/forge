@@ -223,3 +223,44 @@ func TestTelemetryAlertsOnClickHouse(t *testing.T) {
 		t.Errorf("TemporalCheckFailing fired for %v", got)
 	}
 }
+
+// TestTelemetryAlertNamesNeverCollide: TelemetryAlertName keeps only a
+// service.name's letters and digits, so foo.bar, foo_bar and foo-bar would
+// all raise FooBarTargetDown. Two systems must never share a rule identity:
+// the resolver refuses the pair, naming both, instead of emitting duplicates.
+func TestTelemetryAlertNamesNeverCollide(t *testing.T) {
+	for _, pair := range [][2]string{{"foo.bar", "foo_bar"}, {"foo_bar", "foo-bar"}, {"foo.bar", "foo-bar"}} {
+		in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{
+			{Service: pair[0], Scrapes: true, Checks: true},
+			{Service: pair[1], Scrapes: true, Checks: true},
+		}}
+		_, _, err := ResolveEnvAlertDefaultsFor(in, "prod", nil, nil)
+		if err == nil {
+			t.Fatalf("%q and %q both raise FooBarTargetDown, and the resolver accepted it", pair[0], pair[1])
+		}
+		for _, want := range []string{pair[0], pair[1], "FooBar", "default_alerts = False"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%v: the error must name %q", err, want)
+			}
+		}
+	}
+
+	// Names that differ in their letters or digits stay distinct rules.
+	in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{{Service: "foo.bar", Scrapes: true, Checks: true}, {Service: "foo-baz", Scrapes: true}}}
+	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, r := range rules {
+		if seen[r.Alert] {
+			t.Errorf("duplicate rule identity %s", r.Alert)
+		}
+		seen[r.Alert] = true
+	}
+	for _, want := range []string{"FooBarTargetDown", "FooBarCheckFailing", "FooBazTargetDown"} {
+		if !seen[want] {
+			t.Errorf("%s missing from %v", want, seen)
+		}
+	}
+}

@@ -50,6 +50,7 @@ import (
 	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -71,7 +72,9 @@ func moduleCacheForgeSource(version string) (dir, why string) {
 	}
 	cache := strings.TrimSpace(os.Getenv("GOMODCACHE"))
 	if cache == "" {
-		out, err := exec.Command("go", "env", "GOMODCACHE").Output()
+		cmd := exec.Command("go", "env", "GOMODCACHE")
+		cmd.Env = goexec.Env()
+		out, err := cmd.Output()
 		if err != nil {
 			return "", fmt.Sprintf("the module cache could not be found (go env GOMODCACHE: %v)", err)
 		}

@@ -28,6 +28,9 @@ func toolPins() map[string]string {
 		"go-licenses": templates.GoLicensesVersion,
 		"prettier":    templates.PrettierVersion,
 		"kcl":         templates.KCLVersion,
+		// Release binaries, each archive sha256-verified (internal/toolfetch).
+		"syft":  templates.SyftVersion,
+		"grype": templates.GrypeVersion,
 	}
 }
 
@@ -49,6 +52,11 @@ go.mod pins reads the matching tool pins with no second place to bump. The one
 the project can move is buf: inside a project whose go.mod requires
 github.com/bufbuild/buf (` + "`go get -tool github.com/bufbuild/buf/cmd/buf@vX`" + `),
 buf is that version, the one ` + "`forge generate`" + ` and ` + "`forge ci gate`" + ` run.
+
+syft (SBOM generation) and grype (vulnerability scanning) are installed from
+their upstream release archives, each verified against a sha256 compiled into
+this forge, into forge's tool cache ($FORGE_TOOLS_CACHE/release) on first use
+or by ` + "`forge tools install syft grype`" + `.
 
 Examples:
   forge tools pins

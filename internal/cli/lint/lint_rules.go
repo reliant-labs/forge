@@ -125,7 +125,7 @@ func gradableRules() []string {
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
 		// schema markers
 		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
-		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
+		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, ruleGoMarkersReasonMissing, "forge-vendored-proto-drift",
 		// proto formatting (the pre-commit buf-format hook's check)
 		ruleProtoFormat,
 		// write policy
@@ -140,6 +140,8 @@ func gradableRules() []string {
 		commitpolicy.RuleForgeStateIgnored,
 		// frontend lockfile
 		ruleFrontendLockDrift,
+		// frontend lanes: lint stops installing dependencies (rolled out)
+		ruleFrontendNoInstall,
 		// cross-lane workarounds
 		"workaround-testing-extras", "workaround-cmd-not-in-binaries",
 		// config reach

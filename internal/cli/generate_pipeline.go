@@ -2752,6 +2752,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		if err != nil {
 			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
 		}
+		if in.Telemetry, err = obsdash.TelemetrySystemsOf(ctx.renderedEnvs().telemetry); err != nil {
+			return fmt.Errorf("deriving the declared telemetry dashboards from deploy/kcl: %w", err)
+		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
 			return err

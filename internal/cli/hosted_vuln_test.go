@@ -51,6 +51,8 @@ type fakeVulnService struct {
 	advisory map[string]map[string]any
 	calls    []string
 	next     http.Handler
+	// delay holds every RecordReleaseSBOM answer this long: a slow upload.
+	delay time.Duration
 }
 
 func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +87,9 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	str := func(k string) string { s, _ := body[k].(string); return s }
 	switch strings.TrimPrefix(r.URL.Path, svc) {
 	case "RecordReleaseSBOM":
+		if f.delay > 0 {
+			time.Sleep(f.delay)
+		}
 		f.records = append(f.records, body)
 		gz, err := base64.StdEncoding.DecodeString(str("sbom"))
 		if err != nil || str("encoding") != "SBOM_ENCODING_GZIP" {
@@ -263,6 +268,47 @@ func TestHostedCutSkipsTheUploadWithoutTheCapability(t *testing.T) {
 	}
 }
 
+// A large SBOM over a slow link outlasts the client's default timeout: the
+// upload runs under its own, scaled to its size.
+func TestHostedCutUploadOutlastsTheDefaultTimeout(t *testing.T) {
+	t.Parallel()
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}, delay: 300 * time.Millisecond}
+	hs, r, warn := hostedSBOMCut(t, fake, "api")
+	client := hs.client.(*cloud.Client)
+	client.HTTP.Timeout = 100 * time.Millisecond
+	// The test bites: without the upload's own timeout, the same call fails.
+	if err := client.Call(context.Background(), procRecordReleaseSBOM, map[string]any{"version": "v", "artifactName": "a", "sbom": []byte("x")}, nil); err == nil {
+		t.Fatal("a slow call under the default timeout succeeded; the test does not exercise the timeout")
+	}
+	fake.mu.Lock()
+	fake.records = nil
+	fake.mu.Unlock()
+	if _, err := hs.Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.records) != 1 || warn.Len() != 0 {
+		t.Fatalf("upload under its own timeout: %d recorded, output:\n%s", len(fake.records), warn)
+	}
+}
+
+func TestSBOMUploadTimeoutScalesWithSize(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		gzipped int
+		want    time.Duration
+	}{
+		{0, 30 * time.Second},
+		{1 << 10, 30 * time.Second},
+		{3 << 20, 30*time.Second + 8*time.Second},   // 4 MiB on the wire
+		{32 << 20, 30*time.Second + 85*time.Second}, // the cap: ~43 MiB on the wire
+		{1 << 30, 10 * time.Minute},                 // capped
+	} {
+		if got := sbomUploadTimeout(tc.gzipped); got != tc.want {
+			t.Errorf("sbomUploadTimeout(%d) = %s, want %s", tc.gzipped, got, tc.want)
+		}
+	}
+}
+
 func TestHostedVulnPlanLine(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -325,7 +371,7 @@ func hostedFindings(sbomDigest string) *fakeVulnService {
 					"advisory":      map[string]any{"id": "CVE-2026-1111", "aliases": []string{"GHSA-aaaa-bbbb-cccc"}, "severity": "VULNERABILITY_SEVERITY_CRITICAL", "cvssScore": 9.8, "kev": false},
 					"package":       map[string]any{"name": "golang.org/x/net", "version": "v0.17.0", "type": "go-module", "purl": "pkg:golang/golang.org/x/net@v0.17.0"},
 					"fixedVersions": []string{"v0.23.0"}, "fixState": "VULNERABILITY_FIX_STATE_FIXED",
-					"artifactNames": []string{"api"}, "firstSeenAt": firstSeen,
+					"artifactNames": []string{"api"}, "firstSeenAt": firstSeen, "blocking": true,
 				},
 				{
 					"advisory":      map[string]any{"id": "CVE-2026-2222", "severity": "VULNERABILITY_SEVERITY_LOW"},
@@ -469,6 +515,73 @@ func TestVulnSBOMOnAControlPlaneReadsThisMachinesCopy(t *testing.T) {
 	_, stderr, code = h3.exec("sbom", "prod", "--artifact", "api")
 	if code != exitUndetermined || !strings.Contains(stderr, "no copy") || !strings.Contains(stderr, "registry.test/acme/api@") {
 		t.Fatalf("missing copy: exit %d\n%s", code, stderr)
+	}
+}
+
+// The control plane's verdict wins over this checkout's vuln_gate, both
+// ways: a finding the local policy would block does not when the control
+// plane exempts it, and one the local policy would pass blocks when the
+// control plane says it does (decision #4).
+func TestVulnListTakesTheControlPlanesVerdictOverTheLocalPolicy(t *testing.T) {
+	t.Parallel()
+	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+	rv := fake.releaseVulns["v1.0.0"]
+	findings := rv["findings"].([]map[string]any)
+	// CVE-2026-1111 (fixable critical: the local rule blocks it) is exempt
+	// on the control plane; CVE-2026-2222 (low, no fix: the local rule
+	// passes it) blocks there. web is given a scanned SBOM so coverage is
+	// complete.
+	findings[0]["blocking"] = false
+	findings[0]["exemption"] = map[string]any{"environmentId": "env-prod", "advisoryId": "CVE-2026-1111", "reason": "accepted on prod", "expiresAt": time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
+	findings[1]["blocking"] = true
+	rv["artifacts"].([]map[string]any)[1]["scanState"] = "VULNERABILITY_SCAN_STATE_SCANNED"
+	rv["artifacts"].([]map[string]any)[1]["sbomDigest"] = "sha256:" + strings.Repeat("b", 64)
+	h := hostedVulnHarness(t, fake)
+	if a, _ := vulnscan.Judge(h.env.Gate, vulnscan.Finding{ID: "CVE-2026-1111", Severity: vulnscan.SeverityCritical, FixState: vulnscan.FixStateFixed}, vulnTestNow); a != vulnscan.ActionBlock {
+		t.Fatalf("precondition: the local policy should block the fixable critical, got %s", a)
+	}
+	out, stderr, code := h.exec("list", "prod", "--include-exempt", "--json")
+	if code != exitWrong {
+		t.Fatalf("exit %d, want 1 (the control plane blocks CVE-2026-2222)\n%s\n%s", code, out, stderr)
+	}
+	doc := decodeVulnDoc(t, out)
+	if strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-2222" || doc.Gate.JudgedBy != vulnscan.JudgedByControlPlane {
+		t.Fatalf("gate = %+v, want only the control plane's CVE-2026-2222, judged by it", doc.Gate)
+	}
+	for _, f := range doc.Findings {
+		if f.ID == "CVE-2026-1111" && (f.Action != vulnscan.ActionNone || f.Exemption == nil || f.Exemption.Expires != "2026-12-31" || f.Exemption.Reason != "accepted on prod") {
+			t.Errorf("CVE-2026-1111 = action %s exemption %+v, want the control plane's exemption through 2026-12-31", f.Action, f.Exemption)
+		}
+	}
+	// And the reverse: nothing blocks on the control plane, so nothing
+	// blocks here, though the local policy would block the critical.
+	findings[1]["blocking"] = false
+	if out, _, code := h.exec("list", "prod", "--json"); code != 0 || decodeVulnDoc(t, out).Gate.Verdict == vulnscan.VerdictBlock {
+		t.Fatalf("exit %d, want 0: the control plane blocks nothing\n%s", code, out)
+	}
+}
+
+// A control plane that returned no verdict (it has no row for the env, so it
+// applied no vuln_gate) is judged locally, and the document says so.
+func TestVulnListJudgesLocallyWhenTheControlPlaneGaveNoVerdict(t *testing.T) {
+	t.Parallel()
+	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+	fake.summary = nil
+	h := hostedVulnHarness(t, fake)
+	out, stderr, code := h.exec("list", "prod", "--release", "v1.0.0", "--json")
+	if code != exitWrong {
+		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
+	}
+	doc := decodeVulnDoc(t, out)
+	if doc.Gate.JudgedBy != vulnscan.JudgedByLocal || strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-1111" {
+		t.Errorf("gate = %+v, want the local rule's verdict, marked local", doc.Gate)
+	}
+	if !strings.Contains(stderr, "judged locally: the control plane returned no verdict") {
+		t.Errorf("no note says it was judged locally:\n%s", stderr)
+	}
+	text, _, _ := h.exec("list", "prod", "--release", "v1.0.0")
+	if !strings.Contains(text, "judged locally with this checkout's vuln_gate") {
+		t.Errorf("text does not say who judged:\n%s", text)
 	}
 }
 

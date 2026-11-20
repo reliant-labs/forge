@@ -261,7 +261,7 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			ScanState      string `json:"scanState"`
 			ComponentCount int32  `json:"componentCount"`
 		}
-		if err := s.client.Call(ctx, procRecordReleaseSBOM, req, &resp); err != nil {
+		if err := s.client.Call(cloud.WithRequestTimeout(ctx, sbomUploadTimeout(len(gz))), procRecordReleaseSBOM, req, &resp); err != nil {
 			switch {
 			case hostedUnimplemented(err):
 				// One note for the whole cut: every other artifact
@@ -279,6 +279,27 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			fmt.Fprintf(warn, "[ledger] warning: %s recorded the SBOM of %s in release %s as %s, but the release records %s: the two copies differ\n", s.endpoint, name, r.Version, resp.Digest, ref.Digest)
 		}
 	}
+}
+
+// The upload's request timeout: the client's default 30s, plus a second per
+// 512 KiB of the request body, up to ten minutes. The body is the gzipped
+// SBOM as proto3 JSON's base64 (4/3 its size); the cap's 32 MiB (≈43 MiB on
+// the wire) gets ~2m, a link of ~350 KiB/s.
+const (
+	sbomUploadBaseTimeout = 30 * time.Second
+	sbomUploadPerChunk    = time.Second
+	sbomUploadChunk       = 512 << 10
+	sbomUploadMaxTimeout  = 10 * time.Minute
+)
+
+// sbomUploadTimeout is the timeout of an upload of gzipped bytes.
+func sbomUploadTimeout(gzipped int) time.Duration {
+	wire := (gzipped + 2) / 3 * 4
+	d := sbomUploadBaseTimeout + time.Duration(wire/sbomUploadChunk)*sbomUploadPerChunk
+	if d > sbomUploadMaxTimeout {
+		d = sbomUploadMaxTimeout
+	}
+	return d
 }
 
 func gzipBytes(data []byte) ([]byte, error) {
@@ -333,14 +354,40 @@ type wireVulnPackage struct {
 	Location string `json:"location"`
 }
 
+// wireVulnExemption is VulnerabilityExemption.
+type wireVulnExemption struct {
+	EnvironmentID string `json:"environmentId"`
+	AdvisoryID    string `json:"advisoryId"`
+	Reason        string `json:"reason"`
+	// ExpiresAt is when it stops covering: the end of its expiry date, UTC.
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// exemption is the exemption as the env declared it (forge.VulnExemption):
+// expiresAt is the end of the declared date, so the date is the instant
+// before it.
+func (w wireVulnExemption) exemption() *vulnscan.Exemption {
+	e := &vulnscan.Exemption{ID: w.AdvisoryID, Reason: w.Reason}
+	if !w.ExpiresAt.IsZero() {
+		e.Expires = w.ExpiresAt.Add(-time.Nanosecond).UTC().Format("2006-01-02")
+	}
+	return e
+}
+
 // wireVulnFinding is VulnerabilityFinding.
 type wireVulnFinding struct {
-	Advisory      wireVulnAdvisory `json:"advisory"`
-	Package       wireVulnPackage  `json:"package"`
-	FixedVersions []string         `json:"fixedVersions"`
-	FixState      string           `json:"fixState"`
-	ArtifactNames []string         `json:"artifactNames"`
-	FirstSeenAt   time.Time        `json:"firstSeenAt"`
+	Advisory       wireVulnAdvisory   `json:"advisory"`
+	Package        wireVulnPackage    `json:"package"`
+	FixedVersions  []string           `json:"fixedVersions"`
+	FixState       string             `json:"fixState"`
+	ArtifactNames  []string           `json:"artifactNames"`
+	EnvironmentIDs []string           `json:"environmentIds"`
+	FirstSeenAt    time.Time          `json:"firstSeenAt"`
+	Exemption      *wireVulnExemption `json:"exemption"`
+	// Blocking is the control plane's verdict on the finding: whether the
+	// scope environment's vuln_gate blocks it, whatever the gate's mode.
+	// Judged only when the request named an environment.
+	Blocking bool `json:"blocking"`
 }
 
 // wireReleaseArtifactSBOM is ReleaseArtifactSBOM.
@@ -372,10 +419,37 @@ type wireVulnObservation struct {
 	FirstReleaseVersion string    `json:"firstReleaseVersion"`
 }
 
-// wireVulnerability is GetVulnerabilityResponse, the fields forge prints.
+// wireVulnOccurrence is VulnerabilityOccurrence.
+type wireVulnOccurrence struct {
+	ReleaseID      string          `json:"releaseId"`
+	ReleaseVersion string          `json:"releaseVersion"`
+	ArtifactName   string          `json:"artifactName"`
+	SBOMDigest     string          `json:"sbomDigest"`
+	Package        wireVulnPackage `json:"package"`
+	FixedVersions  []string        `json:"fixedVersions"`
+	FixState       string          `json:"fixState"`
+	EnvironmentIDs []string        `json:"environmentIds"`
+}
+
+// wireVulnGateVerdict is VulnerabilityGateVerdict: what one promotion's
+// vuln_gate, judged by the control plane, decided about the advisory.
+type wireVulnGateVerdict struct {
+	PromotionID    string    `json:"promotionId"`
+	EnvironmentID  string    `json:"environmentId"`
+	ReleaseVersion string    `json:"releaseVersion"`
+	Mode           string    `json:"mode"`
+	Verdict        string    `json:"verdict"`
+	OverrideReason string    `json:"overrideReason"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// wireVulnerability is GetVulnerabilityResponse.
 type wireVulnerability struct {
 	Advisory     wireVulnAdvisory      `json:"advisory"`
+	Occurrences  []wireVulnOccurrence  `json:"occurrences"`
 	Observations []wireVulnObservation `json:"observations"`
+	Exemptions   []wireVulnExemption   `json:"exemptions"`
+	GateVerdicts []wireVulnGateVerdict `json:"gateVerdicts"`
 }
 
 // The VulnerabilityScanState values.
@@ -577,6 +651,11 @@ type hostedReleaseFindings struct {
 	// Artifacts is the release's SBOM per artifact, as the control plane
 	// records it (`forge vuln sbom`).
 	Artifacts []wireReleaseArtifactSBOM
+	// Judged is the control plane's verdict on each finding, by
+	// Finding.Key() (DocumentInput.Judged): nil when it returned none, and
+	// the findings are then judged locally (JudgedBy says which).
+	Judged   map[string]vulnscan.Judgement
+	JudgedBy string
 }
 
 // hostedVulnSource is the control plane's findings of the releases of ONE env:
@@ -590,8 +669,19 @@ type hostedVulnSource struct {
 	env    string
 }
 
-// releaseFindings reads release version's findings in the source's env. An
-// env the control plane has no row for reads the release with no env applied.
+// releaseFindings reads release version's findings in the source's env.
+//
+// THE VERDICT IS THE CONTROL PLANE'S (decision #4). Asked with the env's id,
+// the control plane judges every finding against the vuln_gate the env
+// recorded there and says which block (VulnerabilityFinding.blocking) and
+// which an exemption covers; those decide the document's gate and its exit
+// code, whatever this checkout's vuln_gate says. Only when it judged nothing —
+// it has no row for the env, so no policy to apply — are the findings judged
+// locally, and the document says so (gate.judged_by "local", and a note).
+//
+// proto3 JSON omits a false bool, so a response cannot say "not blocking"
+// apart from "not judged": the rule is that a read naming the environment is
+// judged, which every control plane serving these reads does (C1's contract).
 func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (hostedReleaseFindings, error) {
 	sum, _, err := h.reader.envSummary(ctx, h.env)
 	if err != nil {
@@ -602,14 +692,29 @@ func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (
 		return hostedReleaseFindings{}, err
 	}
 	scans, stale, notes := hostedArtifactScans(rv)
-	return hostedReleaseFindings{Version: version, Scans: scans, Stale: stale, Notes: notes, Artifacts: rv.Artifacts}, nil
+	out := hostedReleaseFindings{Version: version, Scans: scans, Stale: stale, Notes: notes, Artifacts: rv.Artifacts, JudgedBy: vulnscan.JudgedByLocal}
+	if sum.EnvironmentID == "" {
+		out.Notes = append(out.Notes, fmt.Sprintf("judged locally: the control plane returned no verdict (it has no environment %q, so it applied no vuln_gate); this checkout's vuln_gate judged the findings", h.env))
+		return out, nil
+	}
+	out.JudgedBy = vulnscan.JudgedByControlPlane
+	out.Judged = map[string]vulnscan.Judgement{}
+	for _, w := range rv.Findings {
+		j := vulnscan.Judgement{Blocking: w.Blocking}
+		if w.Exemption != nil {
+			j.Exemption = w.Exemption.exemption()
+		}
+		out.Judged[hostedFinding(w).Key()] = j
+	}
+	return out, nil
 }
 
 // releaseScans is releaseFindings in the shape of the promote check's
 // findings seam. fetch is meaningless here (the control plane keeps its own
-// database). The seam carries no staleness flag, so a control plane that
-// judged the findings stale says so in a note; the database build time each
-// scan carries is still judged by the rule's own bound.
+// database). The seam carries neither a staleness flag nor the control
+// plane's per-finding verdict, so a caller that judges a gate should use
+// releaseFindings and pass Judged and Stale to vulnscan (DocumentInput /
+// EvaluateInput); this shape re-judges locally, and says so in a note.
 func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release, _ bool) ([]vulnscan.ArtifactScan, []string, error) {
 	if rel == nil {
 		return nil, nil, nil
@@ -620,6 +725,9 @@ func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release
 	}
 	if f.Stale {
 		f.Notes = append(f.Notes, "the control plane judges these findings stale (its vulnerability database is past its freshness bound)")
+	}
+	if f.Judged != nil {
+		f.Notes = append(f.Notes, "the control plane's verdict on each finding is not carried by this seam: re-judged with this checkout's vuln_gate")
 	}
 	return f.Scans, f.Notes, nil
 }

@@ -120,3 +120,34 @@ func TestEvaluateVerdicts(t *testing.T) {
 		t.Errorf("Determined wrong")
 	}
 }
+
+// An authoritative ledger's judgement wins over this rule, both ways: a
+// finding the rule would block does not when the ledger says so, and one the
+// rule would pass blocks when the ledger says it does; the ledger's exemption
+// is the one recorded. Only the warn band stays the rule's.
+func TestEvaluateWithAnAuthoritativeJudgement(t *testing.T) {
+	t.Parallel()
+	gate := release.DefaultDeliveryPolicy().VulnGate
+	critical := Finding{ID: "CVE-2026-1", Severity: SeverityCritical, FixState: FixStateFixed, Package: Package{Name: "a", Version: "1"}}
+	low := Finding{ID: "CVE-2026-2", Severity: SeverityLow, Package: Package{Name: "b", Version: "1"}}
+	high := Finding{ID: "CVE-2026-3", Severity: SeverityHigh, Package: Package{Name: "c", Version: "1"}}
+	exempt := &Exemption{ID: "CVE-2026-1", Reason: "accepted on the control plane", Expires: "2026-12-31"}
+	cov := Coverage{Artifacts: 1, WithSBOM: 1, Scanned: 1}
+	in := EvaluateInput{Gate: gate, Findings: []Finding{critical, low, high}, Coverage: cov, Now: testNow}
+
+	if ev := Evaluate(in); ev.Gate.Verdict != VerdictBlock || len(ev.Gate.Blocking) != 1 || ev.Gate.Blocking[0] != "CVE-2026-1" {
+		t.Fatalf("local rule: %+v", ev.Gate)
+	}
+	in.Judged = map[string]Judgement{low.Key(): {Blocking: true}}
+	ev := Evaluate(in)
+	if ev.Gate.Verdict != VerdictBlock || len(ev.Gate.Blocking) != 1 || ev.Gate.Blocking[0] != "CVE-2026-2" {
+		t.Fatalf("authoritative: gate %+v, want only CVE-2026-2 blocking", ev.Gate)
+	}
+	if ev.Findings[0].Action != ActionNone || ev.Findings[2].Action != ActionWarn {
+		t.Errorf("actions = %s %s %s, want none block warn", ev.Findings[0].Action, ev.Findings[1].Action, ev.Findings[2].Action)
+	}
+	in.Judged = map[string]Judgement{critical.Key(): {Exemption: exempt}}
+	if ev := Evaluate(in); ev.Gate.Verdict != VerdictWarn || ev.Findings[0].Exemption != exempt {
+		t.Fatalf("authoritative exemption: gate %+v, exemption %+v", ev.Gate, ev.Findings[0].Exemption)
+	}
+}

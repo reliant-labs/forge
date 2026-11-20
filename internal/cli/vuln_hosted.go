@@ -113,8 +113,11 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 		return hostedVulnReadError(env, err)
 	}
 	now := deps.now()
+	// The control plane's verdict, when it gave one (f.Judged); env.Gate
+	// then supplies only the mode label and the warn band.
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
 		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, Filter: filter, Now: now, Stale: f.Stale,
+		Judged: f.Judged, JudgedBy: f.JudgedBy,
 	})
 	notes := f.Notes
 	if asJSON {
@@ -133,7 +136,11 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	if filter.Match != "" {
 		writeHostedAdvisory(ctx, out, src, filter.Match)
 	}
-	_, _ = fmt.Fprintf(out, "findings: the control plane at %s\n", env.Endpoint)
+	judged := "judged by the control plane"
+	if doc.Gate.JudgedBy == vulnscan.JudgedByLocal {
+		judged = "judged locally with this checkout's vuln_gate"
+	}
+	_, _ = fmt.Fprintf(out, "findings: the control plane at %s, %s\n", env.Endpoint, judged)
 	if link := hostedVulnConsoleLink(env); link != "" {
 		_, _ = fmt.Fprintf(out, "→ %s\n", link)
 	}
@@ -162,6 +169,13 @@ func writeHostedAdvisory(ctx context.Context, out io.Writer, src hostedVulnSourc
 		}
 		if !o.ResolvedAt.IsZero() {
 			line += ", resolved " + o.ResolvedAt.UTC().Format("2006-01-02")
+		}
+		_, _ = fmt.Fprintln(out, line)
+	}
+	for _, g := range v.GateVerdicts {
+		line := fmt.Sprintf("  promotion %s of %s to env %s: vuln_gate (%s) %s", g.PromotionID, g.ReleaseVersion, g.EnvironmentID, g.Mode, strings.ToUpper(g.Verdict))
+		if g.OverrideReason != "" {
+			line += ": " + oneLine(g.OverrideReason, 200)
 		}
 		_, _ = fmt.Fprintln(out, line)
 	}

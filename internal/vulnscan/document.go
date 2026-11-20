@@ -169,6 +169,11 @@ type DocumentInput struct {
 	// says: the source of the scans judged them so (a control plane whose
 	// own freshness bound passed, or whose newest scan is STALE).
 	Stale bool
+	// Judged is an authoritative ledger's judgement of the findings
+	// (EvaluateInput.Judged); nil judges them with Gate.
+	Judged map[string]Judgement
+	// JudgedBy is GateResult.JudgedBy.
+	JudgedBy string
 }
 
 // ScanIsCurrent reports whether s can vouch for an artifact at now: its
@@ -244,8 +249,9 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
 	doc.Gate = ev.Gate
+	doc.Gate.JudgedBy = in.JudgedBy
 	if doc.DB.Stale && ev.Gate.Verdict == VerdictStale {
 		doc.Notes = append(doc.Notes, fmt.Sprintf("undetermined: the newest scan of an artifact used a vulnerability database built %s, older than %s, and no current scan replaced it", doc.DB.BuiltAt.Format("2006-01-02"), humanDuration(StaleAfter)))
 	}

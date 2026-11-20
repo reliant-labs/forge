@@ -191,8 +191,7 @@ type projectTemplateData struct {
 	HasMigrations bool
 	// ConnectV2 reports that the project's Go code targets connect-go v2
 	// (connectrpc.com/connect/v2) rather than v1 — the major its go.mod
-	// selects (internal/connectmajor), or the scaffold's explicit choice
-	// (ProjectGenerator.ConnectMajor). Templates that name a connect-go
+	// selects (internal/connectmajor). Templates that name a connect-go
 	// module branch on it; false, the zero value, keeps every v1 render.
 	ConnectV2 bool
 }

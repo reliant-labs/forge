@@ -278,8 +278,8 @@
               "workflowType"
             ],
             "interval": "30s",
-            "label_limit": 30,
-            "label_value_length_limit": 256,
+            "label_limit": 0,
+            "label_value_length_limit": 0,
             "name": "",
             "params": {},
             "path": "/metrics",

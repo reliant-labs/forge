@@ -30,6 +30,24 @@ shape: the shape alone gives `1@1.1`, which satisfies the CHECK and fails the
 form's email validator, so a seeded row could not be saved from its own
 edit page. `example.com` is reserved for exactly this.
 
+An **array** column whose CHECK confines its elements to a set — the shape a
+closed-set array takes — draws its elements from that set, one per row unless a
+`cardinality(col)` or `array_length(col, 1)` bound asks for more (or fewer):
+
+```sql
+CREATE TABLE access_tokens (
+    scopes TEXT[] NOT NULL,
+    CONSTRAINT access_tokens_scopes CHECK (
+        cardinality(scopes) > 0 AND scopes <@ ARRAY['deploy:read', 'token:read'])
+);
+-- seeds  scopes = ARRAY['token:read'], ARRAY['deploy:read'], …
+```
+
+The set may be `ARRAY[…]` of strings, numbers or booleans, or a `'{a,b}'`
+literal, on any element type. An array with no such set gets two invented
+elements, fitted to any cardinality bound. `db/seeds/vocab.yaml` does not
+describe array columns.
+
 Anything genuinely unsatisfiable is resolved at **plan** time, before a single
 INSERT: a UNIQUE column backed by a 5-value CHECK vocabulary can never carry 20
 rows, so its table caps at 5 and the plan says so — the same cap a 1-1 foreign

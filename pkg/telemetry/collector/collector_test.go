@@ -2,6 +2,7 @@ package collector
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,44 @@ func TestNetworkPoliciesGolden(t *testing.T) {
 		t.Fatal("WorkloadIngressRule: an auto Workload target gets the collector rule")
 	}
 	golden(t, "network_policies", map[string]any{"policies": policies, "skipped": skipped, "workload_rule": rule})
+}
+
+func TestNetworkPoliciesKeepDistinctServiceIdentities(t *testing.T) {
+	services := []string{"foo.bar", "foo_bar", "foo-bar", strings.Repeat("long-", 13) + "a", strings.Repeat("long-", 13) + "b"}
+	var targets []telemetry.Target
+	serviceBySelector := map[string]string{}
+	for i, service := range services {
+		selector := fmt.Sprintf("target-%d", i)
+		serviceBySelector[selector] = service
+		target := clusterSecured()
+		target.ServiceName = service
+		target.Namespaces = []string{"shared"}
+		target.Selector = map[string]string{"app": selector}
+		targets = append(targets, target)
+	}
+	policies, skipped := NetworkPolicies(targets, CollectorRef{Namespace: "obs"})
+	if len(skipped) != 0 || len(policies) != len(services) {
+		t.Fatalf("got %d policies and skipped %v; want one for each service", len(policies), skipped)
+	}
+	seen := map[string]string{}
+	for _, policy := range policies {
+		meta := policy["metadata"].(map[string]any)
+		name := meta["name"].(string)
+		if len(name) > 63 || notDNS.MatchString(name) || strings.HasSuffix(name, "-") {
+			t.Errorf("policy name %q is not a DNS label", name)
+		}
+		spec := policy["spec"].(map[string]any)
+		selector := spec["podSelector"].(map[string]any)["matchLabels"].(map[string]any)["app"].(string)
+		service, ok := serviceBySelector[selector]
+		if !ok || meta["namespace"] != "shared" {
+			t.Fatalf("policy %q has unexpected selector %q or namespace %v", name, selector, meta["namespace"])
+		}
+		delete(serviceBySelector, selector)
+		if old, ok := seen[name]; ok {
+			t.Errorf("services %q and %q share NetworkPolicy %q", old, service, name)
+		}
+		seen[name] = service
+	}
 }
 
 func TestWorkloadIngressRule(t *testing.T) {

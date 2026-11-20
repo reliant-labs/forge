@@ -88,6 +88,7 @@ Workload etc. as bare names; `import .schema` would fork type identity.
 import json
 import regex
 import .tiers
+import .dashspec
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.labels as labels_lib
@@ -786,11 +787,12 @@ _tel_env = lambda w: any, rt: any, b: Bundle, env: {str:} -> {str:str} {
     _o = w.telemetry.otlp if w.telemetry and w.telemetry.otlp else Undefined
     _svc = _tel_service_name(w)
     _vals = {k: (v if typeof(v) == "str" else _tel_fact(v.key, w.telemetry, _svc, rt.type, b)) for k, v in _o.env} if _o else {}
+    _mapped = {k: v for k, v in _vals if v != "" and not _env_set(env, k)}
     _sampler = {
         OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
         OTEL_TRACES_SAMPLER_ARG = str(_o.sampler_ratio)
-    } if _o and _o.sampler_ratio and _obs_on(b) and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") else {}
-    _sampler | {k: v for k, v in _vals if v != "" and not _env_set(env, k)}
+    } if _o and _o.sampler_ratio and _obs_on(b) and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") and "OTEL_TRACES_SAMPLER" not in _mapped and "OTEL_TRACES_SAMPLER_ARG" not in _mapped else {}
+    _sampler | _mapped
 }
 
 # Workloads that ship their own OTLP logs while the env's collector already
@@ -1043,10 +1045,15 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     # A Telemetry's service_name is the workload's service.name, and a
     # platform-scoped one carries no env identity (kcl/telemetry.k).
     _platform = bool(w.telemetry and w.telemetry.scope == "platform")
-    ({OTEL_SERVICE_NAME = _tel_service_name(w)} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
-        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _platform and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
-        | (_obs_env(rt, bundle, _env) if _runs else {}) \
-        | (_tel_env(w, rt, bundle, _env) if _runs and w.telemetry else {}) \
+    _tel = _tel_env(w, rt, bundle, _env) if _runs and w.telemetry else {}
+    # A resolved Telemetry entry occupies a default slot just like explicit
+    # env. Let _obs_env see it first so transport and sampler pairs stay
+    # together, rather than unioning two incompatible scalar values.
+    _set = {k: v for k, v in _env if k not in _tel} | _tel
+    ({OTEL_SERVICE_NAME = _tel_service_name(w)} if _runs and not _env_set(_set, "OTEL_SERVICE_NAME") else {}) \
+        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _platform and not _env_set(_set, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
+        | (_obs_env(rt, bundle, _set) if _runs else {}) \
+        | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
@@ -1554,9 +1561,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # name for ANY tagged image, so the build pushed `<registry>/<name>:<env tag>`
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
+#
+# Except where no image exists to name: a forge.BuildOnly workload whose
+# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
+# tree of static files a frontend's `bundle` copies in). The command owns
+# everything it writes and forge composes no image reference into it, so a
+# name derived from the workload would be a placeholder: it was recorded as
+# the workload's image, overwrote the env's deploy-side build state, and was
+# demanded of every release cut. It renders no artifact name instead.
 _artifact = lambda w: any -> str {
-    (img_lib.repository(w.image) if w.image \
-        else (w.build.output_name if w.build.output_name else w.name)) if w.build else ""
+    "" if _shell_builds_no_image(w) else \
+    ((img_lib.repository(w.image) if w.image \
+        else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
+}
+
+_shell_builds_no_image = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
 }
 
 # The build identity: the registry-less artifact plus the tag the workload's
@@ -2096,8 +2117,57 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        }
+        } | _tel_agent_spec(b, t.cluster)
     } for _, t in _targets]
+}
+
+# ---------------------------------------------------------------------------
+# Declared telemetry on forge's node agent (pkg/deploy/observability_telemetry.go).
+# The agent record of a cluster carries that cluster's Telemetry targets (the
+# `output.telemetry` entries, unnormalized: Go normalizes), and Go renders
+# them through pkg/telemetry/collector into the agent's own config. Only when
+# the env names no collector of its own: Observability.telemetry_collector
+# is "the collector that scrapes this env's Telemetry, when it is not forge's
+# agent", so declaring it moves every target off the agent (one collector per
+# target, never two).
+# ---------------------------------------------------------------------------
+
+_tel_agent_targets = lambda b: Bundle, cluster: str -> [any] {
+    [x for x in _render_telemetry(b) if x["runtime"] == "cluster" and x["cluster"] == cluster] \
+        if b.observability and not b.observability.telemetry_collector else []
+}
+
+# The `telemetry` key of the agent record's spec: absent when the cluster has
+# no targets, so an env without Telemetry renders the record as before.
+_tel_agent_spec = lambda b: Bundle, cluster: str -> {str:} {
+    {"telemetry": _tel_agent_targets(b, cluster)} if _tel_agent_targets(b, cluster) else {}
+}
+
+# Every credential (a bearer token, a CA) a target on forge's node agent
+# reads: {cluster, service, ref}, ref as _tel_secret renders it.
+_tel_agent_secret_refs = lambda b: Bundle -> [any] {
+    _clusters = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    [{"service": x["service_name"], "ref": r} for c, _ in _clusters for x in _tel_agent_targets(b, c) \
+        for r in [m["bearer_token"] for m in x["metrics"] + x["profiles"]] + [m["tls"]["ca"] for m in x["metrics"] + x["profiles"] if m["tls"]] if r]
+}
+
+# The agent mounts each of those Secrets from its own namespace, NOT
+# optionally (the collector reads every credentials file when it loads its
+# config, so one missing file stops every signal on the node), so each must
+# be supplied there, exactly as the destination's own credential must
+# (_headers_secret_supplied): a required_secrets entry (checked live by the
+# deploy preflight), a rendered_secrets entry, or a control_plane_secrets one.
+_check_agent_telemetry = lambda b: Bundle -> bool {
+    _refs = _tel_agent_secret_refs(b)
+    _ns = b.observability.agent.namespace if _refs else ""
+    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, b.identity, b.env, b.project, b.control_plane_secrets)) if _refs else []
+    _missing = [d for d in _refs if not (any s in b.required_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
+        or any s in b.rendered_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
+        or any s in _delivered { s.name == d.ref.secret and _cps_ns(s) == _ns and d.ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] })]
+    _named = sorted({d.service + ": secret " + d.ref.secret + " key " + d.ref.key: 0 for d in _missing})
+    assert not _missing, \
+        "Telemetry ${_named} is not supplied for forge's node agent in namespace '${_ns}', which mounts it (a missing credential file stops the agent). Declare it so the deploy can check it: `required_secrets = [forge.ExternalSecret {name = \"<secret>\", namespace = \"${_ns}\", keys = [\"<key>\"]}]` for a Secret you provision out of band, or a `rendered_secrets` entry in that namespace"
+    True
 }
 
 # DeliveryPolicy, every control resolved. The key set is the release shape's
@@ -2521,6 +2591,9 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
         "profiles": [_tel_profiles(p) for p in t.profiles]
         "checks": [_tel_check(c) for c in t.checks]
         "dashboard": {"enabled": t.dashboard.enabled, "title": t.dashboard.title or ""}
+        # forge.dashboards/v1 objects: obsdash runs each through
+        # dashspec.ParseDashboard, the validator a release cut runs.
+        "dashboards": [dashspec.dashboard_json(d) for d in t.dashboards]
         "default_alerts": t.default_alerts
     }
 }
@@ -2851,6 +2924,7 @@ render = lambda bundle: Bundle -> any {
     _built_images_ok = _check_built_images(bundle.workloads)
     _config_secrets_ok = _check_config_secrets(bundle.workloads)
     _telemetry_ok = _check_telemetry(bundle)
+    _agent_telemetry_ok = _check_agent_telemetry(bundle)
     _entities = [_lower(w, bundle) for w in bundle.workloads]
     _pt = _primary_target(bundle)
     {
@@ -2914,6 +2988,14 @@ render = lambda bundle: Bundle -> any {
         # before.
         if _render_telemetry(bundle):
             "telemetry": _render_telemetry(bundle)
+        # The env's own collector, which pulls its cluster targets instead of
+        # forge's node agent: the peer the targets' NetworkPolicy rules admit
+        # (internal/cluster/telemetry.go). Only beside declared telemetry.
+        if _render_telemetry(bundle) and bundle.observability and bundle.observability.telemetry_collector:
+            "telemetry_collector": {
+                "namespace": bundle.observability.telemetry_collector.namespace
+                "pod_labels": bundle.observability.telemetry_collector.pod_labels
+            }
         # The resolved delivery policy, every control spelled out, only when the
         # env declares one. Go records it in the release shape unless it is all
         # defaults.

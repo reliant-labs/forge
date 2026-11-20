@@ -13,48 +13,14 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/reliant-labs/forge/internal/otelcoltest"
 	"github.com/reliant-labs/forge/pkg/telemetry"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// contribImage is the collector forge pins (kcl/base.k OTEL_COLLECTOR_IMAGE).
-const contribImage = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6"
-
-// otelcol runs the pinned collector: otelcol-contrib on PATH (it must be
-// 0.162.0), else the pinned image in docker. Each run
-// gets dir, holding the config, at the same path the config uses.
-type otelcol struct {
-	binary string
-}
-
-func findCollector(t *testing.T) otelcol {
-	t.Helper()
-	bin, lookErr := exec.LookPath("otelcol-contrib")
-	dockerErr := dockerUsable()
-	if lookErr != nil && dockerErr != nil {
-		t.Skipf("no collector to run: put an otelcol-contrib 0.162.0 binary on PATH (%v), or make docker usable (%v)", lookErr, dockerErr)
-	}
-	return otelcol{binary: bin}
-}
-
-// dockerUsable reports why docker cannot run the pinned image, or nil.
-func dockerUsable() error {
-	if out, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
-		return fmt.Errorf("docker info: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// command is the collector invocation with args, mounting dir at its own
-// path under docker.
-func (o otelcol) command(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
-	if o.binary != "" {
-		return exec.CommandContext(ctx, o.binary, args...)
-	}
-	full := append([]string{"run", "--rm", "--name", name, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", dir + ":" + dir, contribImage}, args...)
-	return exec.CommandContext(ctx, "docker", full...)
-}
+// findCollector is the pinned collector (internal/otelcoltest), shared with
+// pkg/deploy's node-agent test.
+func findCollector(t *testing.T) otelcoltest.Collector { return otelcoltest.Find(t) }
 
 func writeYAML(t *testing.T, path string, doc any) {
 	t.Helper()
@@ -131,7 +97,7 @@ func TestFragmentsValidateInThePinnedCollector(t *testing.T) {
 			writeYAML(t, path, cfg)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			out, err := col.command(ctx, dir, fmt.Sprintf("forge-telemetry-validate-%d", time.Now().UnixNano()),
+			out, err := otelcoltest.Command(ctx, col, dir, fmt.Sprintf("forge-telemetry-validate-%d", time.Now().UnixNano()), nil,
 				"validate", "--config="+path, "--feature-gates=service.profilesSupport").CombinedOutput()
 			if err != nil {
 				cfgText, _ := os.ReadFile(path)
@@ -235,7 +201,16 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 			Body:      "msg",
 		},
 	}
-	f := mustBuild(t, []telemetry.Target{natsT, hostRenamed(), temporal, cnpg, mongo}, hostOptions())
+	certManager := telemetry.Target{
+		ServiceName: "cert-manager", Scope: telemetry.ScopePlatform, Source: "hostinfra:cert-manager",
+		Attachment: telemetry.AttachHostInfra, Runtime: telemetry.RuntimeHost, Address: "127.0.0.1",
+		Logs: &telemetry.LogParse{
+			Format:   "json",
+			Severity: &telemetry.LogSeverity{Field: "v", Mapping: map[string][]string{"debug": {"2"}}},
+			Body:     "message",
+		},
+	}
+	f := mustBuild(t, []telemetry.Target{natsT, hostRenamed(), temporal, cnpg, mongo, certManager}, hostOptions())
 
 	dir := t.TempDir()
 	logs := filepath.Join(dir, "logs", "dev")
@@ -243,19 +218,20 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"nats.log":     "[42] 2026/11/20 05:00:00.123456 [WRN] slow consumer detected\n",
-		"worker.log":   `level=warning msg="charge retried" trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7 invoice=inv_1` + "\n",
-		"temporal.log": `{"level":"error","ts":1763614800.5,"msg":"Workflow execution not found","logging-call-at":"handler.go:42"}` + "\n" + `{"level":"error","ts":1763614801.25,"msg":"persistence failed","error":"context canceled"}` + "\n" + `{"level":"error","ts":1763614802,"msg":"shard lost"}` + "\n",
-		"postgres.log": `{"level":"info","ts":"2026-11-20T05:00:03.5Z","logger":"postgres","record":{"error_severity":"ERROR","message":"duplicate key value"}}` + "\n",
-		"mongo.log":    `{"t":{"$date":"2026-11-20T05:00:04.000+00:00"},"s":"W","c":"NETWORK","msg":"slow query"}` + "\n",
-		"other.log":    `{"time":"2026-11-20T05:00:05Z","level":"info","msg":"untouched","keep":"me"}` + "\n",
+		"nats.log":         "[42] 2026/11/20 05:00:00.123456 [WRN] slow consumer detected\n",
+		"worker.log":       `level=warning msg="charge retried" trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7 invoice=inv_1` + "\n",
+		"temporal.log":     `{"level":"error","ts":1763614800.5,"msg":"Workflow execution not found","logging-call-at":"handler.go:42"}` + "\n" + `{"level":"error","ts":1763614801.25,"msg":"persistence failed","error":"context canceled"}` + "\n" + `{"level":"error","ts":1763614802,"msg":"shard lost"}` + "\n",
+		"postgres.log":     `{"level":"info","ts":"2026-11-20T05:00:03.5Z","logger":"postgres","record":{"error_severity":"ERROR","message":"duplicate key value"}}` + "\n",
+		"mongo.log":        `{"t":{"$date":"2026-11-20T05:00:04.000+00:00"},"s":"W","c":"NETWORK","msg":"slow query"}` + "\n",
+		"cert-manager.log": `{"v":2,"message":"certificate cache hit"}` + "\n",
+		"other.log":        `{"time":"2026-11-20T05:00:05Z","level":"info","msg":"untouched","keep":"me"}` + "\n",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(logs, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	recs, output := runLogs(t, col, dir, hostChain(f.Logs.Preserve), f.Processors, f.Logs.Processors, filepath.Join(logs, "*.log"), 8)
+	recs, output := runLogs(t, col, dir, hostChain(f.Logs.Preserve), f.Processors, f.Logs.Processors, filepath.Join(logs, "*.log"), 9)
 
 	by := func(body string) record {
 		t.Helper()
@@ -321,6 +297,8 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 	}
 	// a `$` key and a short-code mapping.
 	check(by("slow query"), "mongo", 13, "W", nanos("2026-11-20T05:00:04Z"))
+	// A numeric JSON field matches the declared string verbosity mapping.
+	check(by("certificate cache hit"), "cert-manager", 5, "2", "")
 	// No target: the generic stage alone.
 	o := by("untouched")
 	check(o, "other", 9, "info", nanos("2026-11-20T05:00:05Z"))
@@ -445,7 +423,7 @@ func TestClusterIdentityInThePinnedCollector(t *testing.T) {
 // then the processors in order, in the pinned collector, until it has
 // exported want records (or two minutes pass). It returns the records and
 // the collector's output.
-func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[string]any, order []string, include string, want int) ([]record, string) {
+func runLogs(t *testing.T, col otelcoltest.Collector, dir string, ops []any, processors map[string]any, order []string, include string, want int) ([]record, string) {
 	t.Helper()
 	out := filepath.Join(dir, "out.json")
 	pipeline := map[string]any{"receivers": strs("filelog"), "exporters": strs("file")}
@@ -466,7 +444,7 @@ func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[st
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	name := fmt.Sprintf("forge-telemetry-logs-%d", time.Now().UnixNano())
-	cmd := col.command(ctx, dir, name, "--config="+path)
+	cmd := otelcoltest.Command(ctx, col, dir, name, nil, "--config="+path)
 	var stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stderr, &stderr
 	if err := cmd.Start(); err != nil {
@@ -478,7 +456,7 @@ func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[st
 			return
 		}
 		stopped = true
-		if col.binary == "" {
+		if col.Binary == "" {
 			_ = exec.Command("docker", "rm", "-fv", name).Run()
 		} else {
 			_ = cmd.Process.Kill()

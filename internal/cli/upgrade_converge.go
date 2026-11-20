@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
@@ -161,6 +163,24 @@ type upgradePlaybookRun struct {
 	// Resolved: the playbook's detection no longer matches once its
 	// automation ran. A playbook with no automation is never resolved here.
 	Resolved bool `json:"resolved"`
+	// Applies is whether this project needs the playbook: its release is
+	// in the range, it is not recorded as applied, and its detection
+	// matched before any phase changed the tree. Every playbook of a
+	// release after the old pin is listed — those that do not apply with
+	// Reason — so "none exist" and "checked, none apply" read differently.
+	Applies bool `json:"applies"`
+	// Reason says why a playbook does not apply; empty when it does.
+	Reason    string `json:"reason,omitempty"`
+	Version   string `json:"version,omitempty"`
+	SkillPath string `json:"skill_path,omitempty"`
+	Detection string `json:"detection,omitempty"`
+}
+
+// playbookEval is one playbook judged against this run's range and project.
+type playbookEval struct {
+	pendingMigration
+	applies bool
+	reason  string
 }
 
 type upgradeVendoredRun struct {
@@ -238,6 +258,9 @@ type upgradeRun struct {
 	// applicable are the playbooks the range crosses that this project still
 	// exhibits, evaluated BEFORE any phase changes the tree.
 	applicable []pendingMigration
+	// evaluated is every playbook of a release after the old pin, applying
+	// or not, oldest release first: applicable is its applying subset.
+	evaluated []playbookEval
 	// ran are the codemods already run, by name, so a playbook that names
 	// one an Upgrade crossing ran does not run it twice.
 	ran map[string]bool
@@ -331,8 +354,15 @@ func newUpgradeRun(opts upgradeOptions, rep *upgradeReport) (*upgradeRun, error)
 		)
 	}
 	r.startedClean = opts.allowDirty || !upgradeTreeDirty(r.projectDir)
+	// Detection runs once per playbook, here, before any phase changes the
+	// tree; the banner and the playbooks phase both read the verdicts.
+	r.evaluated = r.evaluatePlaybooks()
+	for _, ev := range r.evaluated {
+		if ev.applies {
+			r.applicable = append(r.applicable, ev.pendingMigration)
+		}
+	}
 	r.banner()
-	r.applicable = r.pendingPlaybooks()
 	return r, nil
 }
 
@@ -346,7 +376,8 @@ func (r *upgradeRun) banner() {
 		fmt.Fprintln(r.out, "  Baseline is pre-v0.1: forge has not declared backwards compatibility yet, so expect template churn.")
 	}
 	fmt.Fprintln(r.out)
-	printApplicableMigrations(r.projectDir, r.from)
+	printPlaybookVerdicts(r.out, r.evaluated)
+	printMigrationWorklist(r.out, r.applicable)
 }
 
 // step runs one phase and records its status. A skipped phase is recorded and
@@ -539,9 +570,13 @@ func (r *upgradeRun) phasePin() error {
 
 // ── playbooks ────────────────────────────────────────────────────────────────
 
-// pendingPlaybooks are the playbooks this range crosses that the project still
-// exhibits and has not recorded as applied, oldest release first.
-func (r *upgradeRun) pendingPlaybooks() []pendingMigration {
+// evaluatePlaybooks judges every playbook of a release after the old pin, in
+// release order: the ones this range crosses that the project still exhibits
+// and has not recorded as applied apply; the rest say why not. A playbook of a
+// release at or before the old pin was crossed by an earlier upgrade and is not
+// listed. The applying set is migrationApplies' decision (the one `upgrade
+// list` makes) narrowed to the target, so the two cannot disagree.
+func (r *upgradeRun) evaluatePlaybooks() []playbookEval {
 	metas := r.opts.metas
 	if metas == nil {
 		var err error
@@ -553,19 +588,97 @@ func (r *upgradeRun) pendingPlaybooks() []pendingMigration {
 	if err != nil {
 		return nil
 	}
-	var out []pendingMigration
-	for _, row := range applicableMigrations(metas, r.from, r.projectDir) {
-		if _, done := state.Applied[row.Meta.ID]; done || !targetReaches(r.target, row.Meta.Version) {
+	return evaluatePlaybookMetas(metas, r.from, r.target, state, func(script string) bool {
+		return runDetection(r.projectDir, script)
+	})
+}
+
+// evaluatePlaybookMetas is evaluatePlaybooks over explicit inputs: detect runs
+// a detection script in the project, and is called at most once per playbook —
+// only for one the range crosses, not recorded as applied, that declares one.
+func evaluatePlaybookMetas(metas []migrationMeta, from, target string, state migrationsState, detect func(string) bool) []playbookEval {
+	var out []playbookEval
+	for _, m := range metas {
+		if !baselineIsUnknown(from) && !baselinePrecedes(from, m.Version) {
 			continue
 		}
-		out = append(out, row)
+		ev := playbookEval{pendingMigration: pendingMigration{Meta: m}}
+		switch at, done := state.Applied[m.ID]; {
+		case !targetReaches(target, m.Version):
+			ev.reason = fmt.Sprintf("its release %s is past the target %s", m.Version, target)
+		case done:
+			ev.Applied, ev.AppliedAt = true, at
+			ev.reason = "recorded as applied at " + at + " (.forge/migrations.json)"
+		case strings.TrimSpace(m.Detection) == "":
+			ev.reason = "it declares no detection, so it cannot show it applies"
+		case detect(m.Detection):
+			ev.applies = true
+		default:
+			ev.reason = "detection did not match: this project does not have the old shape"
+		}
+		out = append(out, ev)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		vi, vj := semverKey(out[i].Meta.Version), semverKey(out[j].Meta.Version)
+		if vi != vj && vi != "" && vj != "" {
+			return semver.Compare(vi, vj) < 0
+		}
+		return out[i].Meta.ID < out[j].Meta.ID
+	})
 	return out
 }
 
+// printPlaybookVerdicts prints one line per release whose playbooks the
+// range reaches: how many, how many apply, and why each other one does not.
+// Silence used to be the only answer when none applied, which an agent could
+// not tell from "this range ships no playbooks".
+func printPlaybookVerdicts(w io.Writer, evals []playbookEval) {
+	if len(evals) == 0 {
+		return
+	}
+	var releases []string
+	byRelease := map[string][]playbookEval{}
+	for _, ev := range evals {
+		v := ev.Meta.Version
+		if _, seen := byRelease[v]; !seen {
+			releases = append(releases, v)
+		}
+		byRelease[v] = append(byRelease[v], ev)
+	}
+	fmt.Fprintln(w, "Migration playbooks of the releases this range crosses:")
+	for _, v := range releases {
+		rows := byRelease[v]
+		apply := 0
+		var why []string
+		for _, ev := range rows {
+			if ev.applies {
+				apply++
+				continue
+			}
+			why = append(why, ev.Meta.ID+": "+ev.reason)
+		}
+		line := fmt.Sprintf("  %s: %d %s, %d %s", v, len(rows), plural(len(rows), "playbook", "playbooks"), apply, plural(apply, "applies", "apply"))
+		if len(why) > 0 {
+			line += " (" + strings.Join(why, "; ") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w)
+}
+
 func (r *upgradeRun) phasePlaybooks() error {
+	for _, ev := range r.evaluated {
+		if ev.applies {
+			continue
+		}
+		r.rep.Playbooks = append(r.rep.Playbooks, upgradePlaybookRun{
+			ID: ev.Meta.ID, Description: shorten(ev.Meta.Description, 200), Automation: nonNil(ev.Meta.Automation),
+			Reason: ev.reason, Version: ev.Meta.Version, SkillPath: ev.Meta.SkillPath, Detection: ev.Meta.Detection,
+		})
+	}
 	for _, row := range r.applicable {
-		pr := upgradePlaybookRun{ID: row.Meta.ID, Description: shorten(row.Meta.Description, 200), Automation: nonNil(row.Meta.Automation)}
+		pr := upgradePlaybookRun{ID: row.Meta.ID, Description: shorten(row.Meta.Description, 200), Automation: nonNil(row.Meta.Automation),
+			Applies: true, Version: row.Meta.Version, SkillPath: row.Meta.SkillPath, Detection: row.Meta.Detection}
 		for _, step := range row.Meta.Automation {
 			if err := r.runAutomation(row.Meta, step); err != nil {
 				return err

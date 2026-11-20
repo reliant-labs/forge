@@ -68,8 +68,12 @@ func (b *builder) logs(targets []telemetry.Target) {
 		identity = append(identity, map[string]any{"context": "resource", "statements": strs(
 			lit(`delete_matching_keys(attributes, ` + ottlString("^"+regexp.QuoteMeta(LabelAttributePrefix)) + `)`))})
 	}
+	// trace_statements too: a caller whose k8sattributes also enriches
+	// pushed traces (forge's node agent) runs this processor there, and
+	// only it deletes the extracted selector labels.
 	b.f.Processors[IdentityProcessor] = map[string]any{
 		"error_mode":         "ignore",
+		"trace_statements":   identity,
 		"log_statements":     identity,
 		"metric_statements":  identity,
 		"profile_statements": identity,
@@ -270,7 +274,9 @@ func logStatements(l telemetry.LogParse) []string {
 				quoted[i] = regexp.QuoteMeta(v)
 			}
 			re := "(?i)^(?:" + strings.Join(quoted, "|") + ")$"
-			out = append(out, fmt.Sprintf(`set(log.severity_number, %s) where %s != nil and IsMatch(%s, %s)`, severityEnums[sev], f, f, ottlString(re)))
+			// Match the same string conversion we expose as severity_text,
+			// including numeric JSON fields such as cert-manager's verbosity.
+			out = append(out, fmt.Sprintf(`set(log.severity_number, %s) where %s != nil and IsMatch(String(%s), %s)`, severityEnums[sev], f, f, ottlString(re)))
 		}
 		consumed = append(consumed, s.Field)
 	}

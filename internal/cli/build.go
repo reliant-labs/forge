@@ -3240,8 +3240,32 @@ func requireDeclaredImageArch(e *KCLEntities, declared, flagArch string, pushes 
 // captured in the returned buildResult slice rather than short-circuited
 // so users see the full list of failures from one run.
 func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir string) []buildResult {
+	workloads := e.WorkloadsOn(RuntimeBuildOnly)
+	// The schema can check explicit names and targets. Defaults depend on
+	// workload names and the build host; validate the actual destinations
+	// before starting any variant so no artifact can be overwritten.
+	seen := make(map[string]string)
 	var out []buildResult
-	for _, w := range e.WorkloadsOn(RuntimeBuildOnly) {
+	for _, w := range workloads {
+		for _, v := range w.Runtime.BuildOnly.BuildVariants {
+			id := w.Name + ":" + v.Name
+			filename := variantBinaryFilename(w.Name, v, runtime.GOOS)
+			key := filename
+			if runtime.GOOS == "windows" {
+				key = strings.ToLower(key)
+			}
+			if prior, exists := seen[key]; exists {
+				out = append(out, buildResult{name: id, kind: "variant", err: fmt.Errorf(
+					"build variants %s and %s write the same binary filename %q; choose distinct output_name values", prior, id, filename)})
+			} else {
+				seen[key] = id
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, w := range workloads {
 		// The variant's go-build TARGET is the workload's GoBuild cmd: each
 		// variant layers its own ldflags/tags/arch on that one package. A
 		// build-only workload with variants and no GoBuild has nothing to
@@ -3259,6 +3283,16 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 	return out
 }
 
+// variantBinaryFilename matches the destination used by both build and
+// release harvesting. An unspecified GOOS uses the build host's OS.
+func variantBinaryFilename(workload string, v BuildVariant, hostOS string) string {
+	goos := v.GOOS
+	if goos == "" {
+		goos = hostOS
+	}
+	return hostlaunch.ExeName(goos, variantOutputName(workload, v))
+}
+
 // buildVariant builds one binary for a build-only service variant.
 // buildCmd is the service's resolved go-build target package (from the
 // Build union — NOT a ./cmd hardcode). The output name is
@@ -3267,12 +3301,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 // on the subprocess env.
 func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
-	outName := variantOutputName(svcName, v)
-	variantOS := v.GOOS
-	if variantOS == "" {
-		variantOS = runtime.GOOS
-	}
-	binPath := filepath.Join(outputDir, hostlaunch.ExeName(variantOS, outName))
+	binPath := filepath.Join(outputDir, variantBinaryFilename(svcName, v, runtime.GOOS))
 	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
 	args := []string{"build", "-o", binPath}

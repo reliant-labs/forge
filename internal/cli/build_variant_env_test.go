@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +32,35 @@ func TestVariantOutputName(t *testing.T) {
 	}
 	if got := variantOutputName("cli", BuildVariant{Name: "linux", OutputName: "acme"}); got != "acme" {
 		t.Errorf("override = %q, want acme", got)
+	}
+}
+
+func TestVariantBinaryFilename(t *testing.T) {
+	for _, tc := range []struct {
+		variant    BuildVariant
+		host, want string
+	}{
+		{BuildVariant{Name: "native"}, "windows", "cli-native.exe"},
+		{BuildVariant{Name: "native"}, "linux", "cli-native"},
+		{BuildVariant{GOOS: "windows", OutputName: "cli.EXE"}, "linux", "cli.EXE"},
+		{BuildVariant{GOOS: "linux", OutputName: "cli.exe"}, "windows", "cli.exe"},
+	} {
+		if got := variantBinaryFilename("cli", tc.variant, tc.host); got != tc.want {
+			t.Errorf("filename(%+v, %s) = %q, want %q", tc.variant, tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestBuildOnlyVariantsRejectFilenameCollisionBeforeBuild(t *testing.T) {
+	e := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{
+			{Name: "windows", GOOS: "windows"},
+			{Name: "linux", GOOS: "linux", OutputName: "tool-windows.exe"},
+		}}},
+	}}}
+	got := buildKCLBuildOnlyVariants(context.Background(), e, t.TempDir())
+	if len(got) != 1 || got[0].err == nil || !strings.Contains(got[0].err.Error(), `tool:windows and tool:linux write the same binary filename "tool-windows.exe"`) {
+		t.Fatalf("want the effective filename collision, got %+v", got)
 	}
 }

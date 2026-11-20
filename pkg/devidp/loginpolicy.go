@@ -89,6 +89,13 @@ type LoginPolicySocial struct {
 	Type  string `json:"type"`
 	IdPID string `json:"idp_id"`
 	Label string `json:"label"`
+	// PassTokens hands the provider's tokens from each sign-in to
+	// SignInRoutesConfig.UpstreamTokens (KCL `pass_tokens`). Never in
+	// /auth/options.
+	PassTokens bool `json:"pass_tokens,omitempty"`
+	// Scopes are the provider's declared scopes, carried only with
+	// PassTokens (UpstreamTokens.Scopes).
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // LoginPolicyPassword is the password complexity a sign-up form checks.

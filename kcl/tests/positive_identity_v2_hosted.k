@@ -44,6 +44,7 @@ assert_google_secret_is_a_name = _social["google"].client_secret_secret == "GOOG
 assert_google_default_scopes = _social["google"].scopes == ["openid", "profile", "email"]
 assert_github_client_id_is_a_name = _social["github"].client_id_secret == "GITHUB_CLIENT_ID" and not _social["github"].client_id
 assert_github_default_scopes = _social["github"].scopes == ["read:user", "user:email"]
+assert_pass_tokens_off_by_default = "pass_tokens" not in _social["google"] and "pass_tokens" not in _social["github"]
 assert_email_platform_by_default = _id.email.delivery == "platform" and _id.email.from_local == "no-reply" and _id.email.from_name == "Acme" and _id.email.reply_to == "help@acme.test"
 assert_no_dev_mail_on_hosted = "dev_mail" not in _id
 

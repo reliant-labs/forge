@@ -70,6 +70,7 @@ IDENTITY = forge.ManagedIdentity {
 - **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
 - **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
 - **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
+- **`pass_tokens = True`** on a provider hands its own tokens from each sign-in to the app server, never the browser: `deploy/managed-identity/upstream-tokens`.
 - **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
 
 | | hosted | dev (`IdentityOnHost`) |

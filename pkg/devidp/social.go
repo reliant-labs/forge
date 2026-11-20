@@ -74,6 +74,10 @@ type IDPResult struct {
 	EmailVerified bool
 	GivenName     string
 	FamilyName    string
+	// Upstream are the provider's own tokens, from idpInformation.oauth
+	// when the issuer reports them. They redact themselves and refuse to
+	// marshal; see SignInRoutesConfig.UpstreamTokens.
+	Upstream UpstreamTokens
 }
 
 // RetrieveIDPIntent reads a completed intent. The token is the one the
@@ -93,6 +97,14 @@ func (c *Client) RetrieveIDPIntent(ctx context.Context, intentID, token string) 
 			IdPID    string `json:"idpId"`
 			UserID   string `json:"userId"`
 			UserName string `json:"userName"`
+			// OAuth is set for an OAuth or OIDC provider (Zitadel v2
+			// IDPInformation.oauth: access_token, optional id_token and
+			// refresh_token).
+			OAuth *struct {
+				AccessToken  string `json:"accessToken"`
+				IDToken      string `json:"idToken"`
+				RefreshToken string `json:"refreshToken"`
+			} `json:"oauth"`
 		} `json:"idpInformation"`
 		AddHumanUser *struct {
 			Profile struct {
@@ -120,6 +132,9 @@ func (c *Client) RetrieveIDPIntent(ctx context.Context, intentID, token string) 
 		r.Email = strings.TrimSpace(h.Email.Email)
 		r.EmailVerified = h.Email.IsVerified && r.Email != ""
 		r.GivenName, r.FamilyName = h.Profile.GivenName, h.Profile.FamilyName
+	}
+	if o := out.IDPInformation.OAuth; o != nil {
+		r.Upstream = UpstreamTokens{AccessToken: o.AccessToken, IDToken: o.IDToken, RefreshToken: o.RefreshToken}
 	}
 	return r, nil
 }

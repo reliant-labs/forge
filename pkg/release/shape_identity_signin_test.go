@@ -280,3 +280,30 @@ func TestLimitShape_IdentityConsumersLoseLoginPolicyForAnOldReader(t *testing.T)
 		})
 	}
 }
+
+// pass_tokens is recorded only when on, so every shape without it encodes and
+// hashes as it did, and it survives the canonical round trip.
+func TestShape_IdentitySocialPassTokensOnlyWhenOn(t *testing.T) {
+	off, err := shapeWithIdentity(signInHosted()).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(off), "pass_tokens") {
+		t.Errorf("pass_tokens recorded while off: %s", off)
+	}
+	id := signInHosted()
+	id.Social[1].PassTokens = true
+	on, err := shapeWithIdentity(id).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Shape
+	if err := json.Unmarshal(on, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range out.Identity.Social {
+		if s.PassTokens != (s.Type == IdentitySocialGitHub) {
+			t.Errorf("social %s pass_tokens = %v", s.Type, s.PassTokens)
+		}
+	}
+}

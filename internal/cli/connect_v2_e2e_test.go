@@ -68,7 +68,7 @@ func TestE2EConnectV2ScaffoldServesRPC(t *testing.T) {
 	proto = strings.Replace(proto, todo, `  rpc Ping(PingRequest) returns (PingResponse);
   rpc Echo(EchoRequest) returns (EchoResponse);
   rpc PublicPing(PublicPingRequest) returns (PublicPingResponse) {
-    option (forge.v1.method) = { auth_required: false };
+    option (forge.v1.method) = {auth_required: false};
   }
   rpc Fail(FailRequest) returns (FailResponse);
   rpc Watch(WatchRequest) returns (stream WatchResponse);

@@ -326,6 +326,28 @@ describe("the published surface", () => {
     }
   });
 
+  it("publishes the dev-server plugins from ./vite, and keeps it off the browser half", () => {
+    // vite.config.ts imports these by name: forgeDevLog replaces the
+    // src/lib/devlog-plugin.ts forge used to scaffold, so dropping it breaks
+    // every config that moved to it. vite.js runs in Node, inside Vite: it
+    // must not pull in devlog.js, the browser half, which keeps module state.
+    const vite = readFileSync(join(pkgDir, "dist", "vite.d.ts"), "utf8");
+    for (const symbol of [
+      "forgeRuntimeConfig",
+      "forgeOtelProxy",
+      "forgeDevLog",
+    ]) {
+      expect(
+        new RegExp(`export declare function ${symbol}\\b`).test(vite),
+        `./vite must export ${symbol}`,
+      ).toBe(true);
+    }
+    const js = readFileSync(join(pkgDir, "dist", "vite.js"), "utf8");
+    expect(js.includes("./devlog.js"), "vite.js imports the browser half").toBe(
+      false,
+    );
+  });
+
   it("keeps track, setTelemetryUser and disableTelemetry IN the barrel, free of imports", () => {
     // Components call these without importing the SDK, so they must resolve
     // for a frontend that never installed @hyperdx/browser. track.ts imports

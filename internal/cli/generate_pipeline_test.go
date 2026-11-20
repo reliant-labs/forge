@@ -117,6 +117,7 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		"frontend mocks + transport",
 		"repoint renamed *_gen frontend imports",
 		"retire delivered agent skills",
+		"AGENTS.md guide (above Project Notes)",
 		"go mod tidy (root)",
 		"goimports on generated Go",
 		"cleanup stale codegen",

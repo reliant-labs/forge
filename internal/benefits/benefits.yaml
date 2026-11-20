@@ -2141,6 +2141,12 @@ benefits:
           `delivery = "none"`, or `auth_self_signup` outside development): the
           email is a contact field anyone can type, so whatever the app binds to
           it is bound to whoever typed it
+      - id: forgeconv-unproven-signup-default
+        lane: ""
+        bug_class: >-
+          A config schema that defaults `auth_self_signup` to true, which turns
+          the legacy sign-up on in every environment that does not set it, prod
+          included: each such account's email is an address nobody proved
       - id: typed-config-guardrail
         lane: ""
         bug_class: >-

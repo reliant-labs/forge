@@ -231,6 +231,14 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 // byte-identical to GenerateFrontendFiles so existing callers and
 // snapshot tests are unaffected.
 func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions) error {
+	return generateFrontendFiles(root, modulePath, projectName, frontendName, apiPort, kind, opts, webRuntimePublishedRange)
+}
+
+// generateFrontendFiles renders against runtimeFloor, the web-runtime floor
+// the floor-gated choices (viteDevLogFromRuntime) read: production passes
+// webRuntimePublishedRange, and a test passes another floor to exercise
+// those choices offline (as writeSiteStarter takes its range).
+func generateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions, runtimeFloor string) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
@@ -285,6 +293,8 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// otel_gen.ts that reads these, so the scaffold renders what the
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
+
+		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(runtimeFloor),
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage
@@ -312,6 +322,10 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// member's own file would make it a second workspace root, splitting
 		// it from packages/* and its `workspace:*` dependencies.
 		if opts.Workspaces && file.Rel == "pnpm-workspace.yaml.tmpl" {
+			continue
+		}
+		// The runtime ships the dev-log receiver once the floor admits it.
+		if data.DevLogFromRuntime && file.Rel == inlinedDevLogPlugin {
 			continue
 		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even

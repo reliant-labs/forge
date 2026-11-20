@@ -135,19 +135,6 @@ type FrontendGenOptions struct {
 	// answer "signed out" without an issuer, and are what gating the
 	// frontend later re-attaches to.
 	Public bool
-
-	// webRuntimeFloor overrides the runtime floor the scaffold is rendered
-	// against (default webRuntimePublishedRange). Tests only: it lets the
-	// floor-gated choices (viteDevLogFromRuntime) be exercised offline.
-	webRuntimeFloor string
-}
-
-// runtimeFloor is the runtime floor this render scaffolds against.
-func (o FrontendGenOptions) runtimeFloor() string {
-	if o.webRuntimeFloor != "" {
-		return o.webRuntimeFloor
-	}
-	return webRuntimePublishedRange
 }
 
 // FrontendTypedConfig tells the frontend templates which typed config
@@ -244,6 +231,14 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 // byte-identical to GenerateFrontendFiles so existing callers and
 // snapshot tests are unaffected.
 func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions) error {
+	return generateFrontendFiles(root, modulePath, projectName, frontendName, apiPort, kind, opts, webRuntimePublishedRange)
+}
+
+// generateFrontendFiles renders against runtimeFloor, the web-runtime floor
+// the floor-gated choices (viteDevLogFromRuntime) read: production passes
+// webRuntimePublishedRange, and a test passes another floor to exercise
+// those choices offline (as writeSiteStarter takes its range).
+func generateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions, runtimeFloor string) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
@@ -299,7 +294,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
 
-		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(opts.runtimeFloor()),
+		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(runtimeFloor),
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage

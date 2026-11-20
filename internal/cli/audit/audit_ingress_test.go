@@ -20,7 +20,6 @@ func TestAuditIngress_FeatureOffSkipsCategory(t *testing.T) {
 	// no-ingress-category shape as the old explicit-disable case.
 	yamlBody := `name: t
 module_path: github.com/test/t
-version: 0.0.1
 forge_version: dev
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlBody), 0o644); err != nil {

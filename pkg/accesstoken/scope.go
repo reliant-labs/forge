@@ -263,6 +263,21 @@ const (
 	ScopeApprovalsDecide Scope = "approvals:decide"
 	// ScopeQuestionsAnswer answers a question an agent asked the person.
 	ScopeQuestionsAnswer Scope = "questions:answer"
+
+	// The two scopes below run Changes: remote config, gradual rollouts and
+	// A/B tests, one record per change per environment (see changes.go).
+
+	// ScopeChangesWrite drafts a change, edits its draft, sets who previews
+	// it, and STOPS it. Stopping is here, not under changes:launch, because
+	// turning a change off is the kill switch: whoever may touch a change at
+	// all must be able to stop it without waiting for anyone.
+	ScopeChangesWrite Scope = "changes:write"
+	// ScopeChangesLaunch starts a change's delivery to real users: launches
+	// an experiment run, ramps a percentage, rolls a variant out to everyone
+	// and ends a run. Implies changes:write at the point of use (a holder
+	// that can launch can also stop). A protected environment's policy may
+	// further require a person to approve; the scope alone never opens one.
+	ScopeChangesLaunch Scope = "changes:launch"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -304,6 +319,8 @@ var AllScopes = []Scope{
 	// Last, not beside deploy: a store's CHECK lists the set in this order,
 	// so a new member appended changes no existing member's position.
 	ScopeSourcemapsWrite,
+	ScopeChangesWrite,
+	ScopeChangesLaunch,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -406,6 +423,8 @@ func (s Set) Permits(want Scope) bool {
 		return s.Has(ScopeIdentityManage)
 	case ScopeObsRead:
 		return s.Has(ScopeObsTriage) || s.Has(ScopeObsWrite)
+	case ScopeChangesWrite:
+		return s.Has(ScopeChangesLaunch)
 	default:
 		return false
 	}

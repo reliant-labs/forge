@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// staleHostingClaims are the guide's sentences about the staging/prod pair
-// forge scaffolds onto Reliant hosting. They are true of a project forge
-// scaffolded and false of one that declares other envs.
+// staleHostingClaims are scaffold-only claims or example commands. No live
+// memory can infer them from directory names.
 var staleHostingClaims = []string{
 	"staging/prod are already bound",
 	"Staging and prod are already bound",
@@ -97,26 +96,32 @@ func TestMemoryWithNoEnvsClaimsNoHosting(t *testing.T) {
 	}
 }
 
-// The envs forge scaffolds keep the scaffold's wording: staging and prod
-// ARE bound to hosting there.
-func TestMemoryForScaffoldedEnvsKeepsTheHostingClaim(t *testing.T) {
+func TestMemoryDoesNotInferHostingFromStagingAndProd(t *testing.T) {
 	t.Parallel()
-	goMemory := memoryWithEnvs(t, goServiceFiles(), "dev", "staging", "prod")
-	if !strings.Contains(goMemory, "ships to Reliant hosting (staging/prod are already bound to it; `deploy`)") {
-		t.Error("a scaffolded Go service's memory lost its hosting line")
-	}
-	siteMemory := memoryWithEnvs(t, siteFiles(), "dev", "staging", "prod")
-	for _, want := range []string{
-		"Staging and prod are already bound to Reliant hosted static hosting",
-		"Staging and prod are both bound to hosting",
-		"env deploy staging v0.1.0",
-		"domain add <host> --env prod",
+	for _, tc := range []struct {
+		name    string
+		files   map[string]string
+		runtime string
+	}{
+		{"go-service", goServiceFiles(), `forge.OnKubernetes {}`},
+		{"static-site", siteFiles(), `forge.OnFirebase {}`},
 	} {
-		if !strings.Contains(siteMemory, want) {
-			t.Errorf("a scaffolded site's memory lacks %q", want)
-		}
-	}
-	if strings.Contains(goMemory, "This project's envs are") || strings.Contains(siteMemory, "This project's envs are") {
-		t.Error("a scaffolded project's memory describes its envs as non-scaffold")
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, env := range []string{"staging", "prod"} {
+				tc.files["deploy/kcl/"+env+"/main.k"] = "import forge\nruntime = " + tc.runtime + "\n"
+			}
+			memory := memoryWithEnvs(t, tc.files, "dev", "staging", "prod")
+			for _, banned := range staleHostingClaims {
+				if strings.Contains(memory, banned) {
+					t.Errorf("live memory for rebound envs claims %q", banned)
+				}
+			}
+			for _, want := range []string{"This project's envs are `dev`, `prod`, `staging`", "Names don't establish where an env runs", "env render <env>"} {
+				if !strings.Contains(memory, want) {
+					t.Errorf("live memory for rebound envs lacks %q", want)
+				}
+			}
+		})
 	}
 }

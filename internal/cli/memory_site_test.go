@@ -53,14 +53,14 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 	}
 	for _, want := range []string{
 		"static site",
-		"env up dev",               // run it
-		"lint --static-export",     // the export's constraints
-		"env build prod --release", // build once
-		"env deploy prod",          // ship it
-		"domain add",               // custom domains
-		".forge/logs/",             // frontend logs on disk
-		"frontend/design",          // design brief first
-		"deploy/static-site",       // the skill
+		"env up dev",                // run it
+		"lint --static-export",      // the export's constraints
+		"env build <env> --release", // build once
+		"env deploy <env>",          // ship to the declared runtime
+		"domain add",                // custom domains
+		".forge/logs/",              // frontend logs on disk
+		"frontend/design",           // design brief first
+		"deploy/static-site",        // the skill
 		"One hosted static site per person is free", // the free tier …
 		"counted across environments",               // … per env, precisely
 		"exits 7",                                   // beyond it: queued for billing

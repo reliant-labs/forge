@@ -2,7 +2,7 @@
 # {{.Name}}
 
 This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `{{.CLI}}` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands.
-{{- if .Site}} It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases and hosted static hosting.{{end}}
+{{- if .Site}} It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases{{if .ScaffoldEnvs}} and hosted static hosting{{end}}.{{end}}
 {{- if .Container}} It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.
 {{- else if .Adopted}} It is an **adopted project**: an existing app, in its own language and layout, that uses only the pieces of forge it opted into.{{end}}
 
@@ -185,7 +185,7 @@ Staging and prod are already bound to Reliant hosted static hosting: the platfor
 
 **Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. {{if .ScaffoldEnvs}}Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`.{{else}}So without billing one env's site deploys free, and a second hosted env's queues with `STATIC_FREE_TIER_EXCEEDED`.{{end}} Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
 
-**Custom domains:** `{{.CLI}} domain add <host> --env {{$prod}}` (`deploy/domains`).
+**Custom domains{{if not .ScaffoldEnvs}} (on Reliant hosting){{end}}:** `{{.CLI}} domain add <host> --env {{$prod}}` (`deploy/domains`).
 
 ## Config
 
@@ -360,13 +360,11 @@ Use this project's own test and build commands: its Taskfile, package.json scrip
 {{- end}}
 {{- end}}
 
-{{- /* real-envs: the envs a project declares when they are not the
-staging/prod pair forge scaffolds (ProjectMemoryData.ScaffoldEnvs). It
-names them and claims no hosting binding: which runtime an env binds is
-known only to a render of it. */ -}}
+{{- /* real-envs: list the environments an existing project declares without
+inferring a hosting binding. Only an environment render resolves its runtime. */ -}}
 {{- define "real-envs" -}}
 {{- if .DeployEnvs -}}
-This project's envs are {{range $i, $e := .DeployEnvs}}{{if $i}}, {{end}}`{{$e}}`{{end}}, not the staging/prod pair forge scaffolds onto Reliant hosting, so never assume one is hosted: its `main.k` says where each workload and frontend runs (`forge.OnHosted` is Reliant hosting), and `{{.CLI}} env render <env>` shows it. A new env on hosting is `{{.CLI}} env new <name> --from <env> --bind {{if .Site}}<frontend>{{else}}<workload>{{end}}=hosted` (`deploy/hosting`).
+This project's envs are {{range $i, $e := .DeployEnvs}}{{if $i}}, {{end}}`{{$e}}`{{end}}. Names don't establish where an env runs, so never assume one is hosted: its `main.k` declares the bindings, and `{{.CLI}} env render <env>` resolves them (`forge.OnHosted` is Reliant hosting). A new env on hosting is `{{.CLI}} env new <name> --from <env> --bind {{if .Site}}<frontend>{{else}}<workload>{{end}}=hosted` (`deploy/hosting`).
 {{- else -}}
 This project declares no env yet (no `deploy/kcl/<env>/main.k`), so nothing is bound to Reliant hosting: an env binds a workload or frontend there with `forge.OnHosted {}` (`deploy/hosting`).
 {{- end}}

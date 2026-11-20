@@ -9,6 +9,8 @@
 //
 // It is slow (buf, plugin builds, a cold `go build`), so every entry point
 // skips under -short; the tests that use it run in `task test`.
+//
+//forge:exclude-contract: test plumbing, no part of the forge binary: one concrete *Module over a temp directory, used only by tests
 package connectv2test
 
 import (

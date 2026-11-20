@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var updateUserActivity = flag.Bool("update-user-activity", false, "rewrite testdata/user_activity*.golden.sql")
+var updateUserActivity = flag.Bool("update-user-activity", false, "rewrite testdata/user_activity*.golden.sql and experiment_readout.golden.sql")
 
 // golden compares got with testdata/<name>, or rewrites it under
 // -update-user-activity. The fragments are shared with the control plane's

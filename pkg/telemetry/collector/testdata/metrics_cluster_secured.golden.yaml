@@ -21,7 +21,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_openbao
+    - transform/telemetry_target/openbao
     - batch
     receivers:
     - prometheus/telemetry_openbao
@@ -117,12 +117,17 @@ processors:
       - delete_key(log.attributes, "forge.telemetry.original")
       - delete_key(log.attributes, "forge.telemetry.parsed")
       - delete_key(log.attributes, "forge.telemetry.rule")
-  transform/telemetry_openbao:
+  transform/telemetry_target/openbao:
     error_mode: ignore
     metric_statements:
     - context: resource
       statements:
       - set(attributes["service.name"], "openbao")
+    - context: datapoint
+      statements:
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"])
+        where datapoint.attributes["forge_k8s_namespace"] != nil
+      - delete_key(datapoint.attributes, "forge_k8s_namespace")
 receivers:
   prometheus/telemetry_openbao:
     config:
@@ -180,7 +185,7 @@ receivers:
         - action: replace
           source_labels:
           - __meta_kubernetes_namespace
-          target_label: namespace
+          target_label: forge_k8s_namespace
         sample_limit: 5000
         scheme: https
         scrape_interval: 30s

@@ -30,7 +30,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_temporal
+    - transform/telemetry_target/temporal
     - batch
     receivers:
     - prometheus/telemetry_temporal
@@ -40,7 +40,7 @@ pipelines:
     - otlphttp/destination
     processors:
     - memory_limiter
-    - transform/telemetry_zitadel
+    - transform/telemetry_target/zitadel
     - batch
     receivers:
     - prometheus/telemetry_zitadel
@@ -192,7 +192,7 @@ processors:
       - delete_key(log.attributes, "forge.telemetry.original")
       - delete_key(log.attributes, "forge.telemetry.parsed")
       - delete_key(log.attributes, "forge.telemetry.rule")
-  transform/telemetry_temporal:
+  transform/telemetry_target/temporal:
     error_mode: ignore
     metric_statements:
     - context: resource
@@ -204,7 +204,12 @@ processors:
       statements:
       - convert_gauge_to_sum("cumulative", true) where metric.type == METRIC_DATA_TYPE_GAUGE
         and IsMatch(metric.name, "^(?:(?:num_goroutines))$$")
-  transform/telemetry_zitadel:
+    - context: datapoint
+      statements:
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"])
+        where datapoint.attributes["forge_k8s_namespace"] != nil
+      - delete_key(datapoint.attributes, "forge_k8s_namespace")
+  transform/telemetry_target/zitadel:
     error_mode: ignore
     metric_statements:
     - context: resource
@@ -212,6 +217,11 @@ processors:
       - set(attributes["service.name"], "zitadel")
       - set(attributes["deployment.environment.name"], "dev")
       - set(attributes["service.namespace"], "acme")
+    - context: datapoint
+      statements:
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"])
+        where datapoint.attributes["forge_k8s_namespace"] != nil
+      - delete_key(datapoint.attributes, "forge_k8s_namespace")
 receivers:
   prometheus/telemetry_temporal:
     config:
@@ -269,7 +279,7 @@ receivers:
         - action: replace
           source_labels:
           - __meta_kubernetes_namespace
-          target_label: namespace
+          target_label: forge_k8s_namespace
         sample_limit: 20000
         scheme: http
         scrape_interval: 30s
@@ -324,7 +334,7 @@ receivers:
         - action: replace
           source_labels:
           - __meta_kubernetes_namespace
-          target_label: namespace
+          target_label: forge_k8s_namespace
         sample_limit: 5000
         scheme: http
         scrape_interval: 30s

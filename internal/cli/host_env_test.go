@@ -184,7 +184,6 @@ func TestLoadProjectConfigEnv_UnknownEnvReturnsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	yamlContent := `name: testproj
 module_path: github.com/example/testproj
-version: "0.1.0"
 binary: shared
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yamlContent), 0o644); err != nil {

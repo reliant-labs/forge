@@ -239,7 +239,6 @@ Append to `.gitignore` (`.forge/*`, never `.forge/`: git cannot re-include
 under an ignored directory, and `forge lint` gates on it):
 
 ```
-.forge-kcl/
 secrets/
 .forge/*
 !.forge/disowned.json

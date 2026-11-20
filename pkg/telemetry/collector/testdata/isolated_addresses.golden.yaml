@@ -23,13 +23,13 @@ pipelines:
     - otlphttp/telemetry_isolated
     processors:
     - memory_limiter
-    - transform/telemetry_alertmanager
+    - transform/telemetry_target/alertmanager
     - batch
     receivers:
     - prometheus/telemetry_alertmanager
     - httpcheck/telemetry_alertmanager_0
 processors:
-  transform/telemetry_alertmanager:
+  transform/telemetry_target/alertmanager:
     error_mode: ignore
     metric_statements:
     - context: resource

@@ -203,7 +203,7 @@ func runObsProfile(ctx context.Context, stdout, stderr io.Writer, o obsProfileOp
 		if q.TraceID != "" {
 			what = "trace " + q.TraceID
 		}
-		return fmt.Errorf("no profile samples for %s. Apps push roughly once a minute (the first within ~15s of start), and a trace only collects CPU samples when its spans ran for tens of milliseconds; check `forge obs profile --list`", what)
+		return fmt.Errorf("no profile samples for %s. Apps push a CPU profile about every five minutes by default (the first between ~1 and 5 minutes after start; FORGE_PROFILES_CPU_INTERVAL changes it), and a trace only collects CPU samples when its spans ran for tens of milliseconds; check `forge obs profile --list`", what)
 	}
 
 	var w io.Writer = stdout
@@ -285,7 +285,7 @@ func soleProfiledService(ctx context.Context, run profileRunner, from, to time.T
 	}
 	switch len(names) {
 	case 0:
-		return "", fmt.Errorf("no service has sent profiles since %s; apps push about once a minute once an OTLP endpoint is set (OTEL_PROFILES_EXPORTER=none turns it off)", from.Format(time.RFC3339))
+		return "", fmt.Errorf("no service has sent profiles since %s; apps push about every five minutes by default once an OTLP endpoint is set (OTEL_PROFILES_EXPORTER=none turns it off)", from.Format(time.RFC3339))
 	case 1:
 		return names[0], nil
 	}

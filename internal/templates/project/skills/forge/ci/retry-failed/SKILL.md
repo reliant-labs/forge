@@ -20,9 +20,16 @@ forge ci retry-failed --repo "$REPOSITORY" --base "$BASE_SHA" --head "$TESTED_SH
 
 The first invocation uses ordinary `go test -short -json`. At most five
 unambiguous top-level tests can qualify, each with unchanged source on the
-gate base. Each runs once again with `-count=1` and an anchored test name. A
-race-enabled run, repeated-test lane, panic, build/host failure, unclassified
-subtest or incomplete result is never a retry pass. Other steps still gate.
+gate base. Each must be the only test that began in its package: a sibling
+or subtest that began and then skipped still counts. Packages defining a
+custom `TestMain` are ineligible because setup may change with `-run` even
+when the test name is unchanged. With the original allowlisted Go flags,
+each eligible test runs once again with `-count=1` and an anchored test name.
+
+This is deliberately narrower than retrying individual failures from a
+multi-test package: those failures keep their original red result. A
+race-enabled run, repeated-test lane, conflicting flags, panic, build/host
+failure or incomplete result is never a retry pass. Other steps still gate.
 Do not use this in the changed-test repetition or release lanes.
 
 A recovered test prints `retried:TestName (module/package)`. The original

@@ -64,6 +64,8 @@ func TestIneligibleEventStreamsStayRed(t *testing.T) {
 		{"incomplete", []event{start, run, output, fail}, nil},
 		{"repeated", []event{start, run, output, fail, run, {Action: "pass", Test: "TestOriginal"}, {Action: "pass"}}, nil},
 		{"subtest", []event{start, run, {Action: "run", Test: "TestOriginal/a"}, {Action: "fail", Test: "TestOriginal/a"}, fail, {Action: "fail"}}, nil},
+		{"passing subtest", []event{start, run, {Action: "run", Test: "TestOriginal/a"}, {Action: "pass", Test: "TestOriginal/a"}, output, fail, {Action: "fail"}}, nil},
+		{"skipped sibling", []event{start, {Action: "run", Test: "TestSibling"}, {Action: "skip", Test: "TestSibling"}, run, output, fail, {Action: "fail"}}, nil},
 		{"skip", []event{start, run, {Action: "skip", Test: "TestOriginal"}, {Action: "pass"}}, &identity{fixturePackage, "TestOriginal"}},
 		{"zero-ran", []event{start, {Action: "pass"}}, &identity{fixturePackage, "TestOriginal"}},
 		{"unrelated", []event{start, {Action: "run", Test: "TestDifferent"}, {Action: "pass", Test: "TestDifferent"}, {Action: "pass"}}, &identity{fixturePackage, "TestOriginal"}},
@@ -83,7 +85,7 @@ func TestStrictPackageAndGOFLAGS(t *testing.T) {
 			t.Errorf("admitted %s", arg)
 		}
 	}
-	for _, flags := range []string{"-race", "-trimpath -race=true", "-cpu=1,2,4", "-toolexec=runner", "-overlay=/tmp/edit"} {
+	for _, flags := range []string{"-race", "-trimpath -race=true", "-cpu=1,2,4", "-run=TestOther", "-count=3", "-parallel=1", "-tags=integration", "-toolexec=runner", "-overlay=/tmp/edit"} {
 		if ordinaryFlags(flags) {
 			t.Errorf("admitted %s", flags)
 		}

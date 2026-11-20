@@ -18,6 +18,9 @@ func newCIRetryFailedCmd() *cobra.Command {
 		Long: `Run one ordinary go test -short -json invocation. If it fails solely
 on up to five exact top-level tests whose entire source files are unchanged
 from the checked base, retry only those tests, each once with -count=1.
+Each must be the only test that began in its package in the original run,
+and that package must not define TestMain. Keep the original Go flags;
+unsupported or conflicting flags disqualify a retry.
 
 Read structured Go events, not console PASS lines. Package/build failures,
 race-enabled runs, panics, resource failures, subtests, and incomplete or

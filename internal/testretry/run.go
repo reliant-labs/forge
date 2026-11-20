@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -68,6 +69,11 @@ func Run(ctx context.Context, cfg Config) error {
 		!runPattern.MatchString(cfg.RunID) || cfg.PR < 0 || cfg.Parallel < 0 || cfg.Parallel > 256 || cfg.Timeout <= 0 || cfg.Timeout > 10*time.Minute {
 		return errors.New("invalid merge test gate arguments")
 	}
+	for _, arg := range cfg.Packages {
+		if arg == "" || strings.HasPrefix(arg, "-") {
+			return errors.New("package operands cannot contain Go test options")
+		}
+	}
 	if cfg.Stdout == nil {
 		cfg.Stdout = io.Discard
 	}
@@ -94,7 +100,19 @@ func Run(ctx context.Context, cfg Config) error {
 	if err := freshPath(cfg.ReportPath); err != nil {
 		return err
 	}
-	// Normal Go success exits before any evidence parsing or git/source walk.
+	// Read the effective flags even when Go takes them from its config file.
+	// An unreadable or unsupported configuration still gets its ordinary
+	// run; it just cannot turn a failure green.
+	flags, flagsErr := goSetting(ctx, cfg.Root, goExe, env, "env", "GOFLAGS")
+	eligibleFlags := flagsErr == nil && ordinaryFlags(flags) && os.Getenv("GOEXPERIMENT") == "" && os.Getenv("GOCOVERDIR") == ""
+	if eligibleFlags {
+		// Both processes use the same flags even if the Go env file changes.
+		// A nonempty whitespace value explicitly overrides an empty flag list.
+		if flags == "" {
+			flags = " "
+		}
+		env = append(slices.DeleteFunc(env, func(value string) bool { return strings.HasPrefix(value, "GOFLAGS=") }), "GOFLAGS="+flags)
+	}
 	initialArgs := append(append([]string(nil), settings...), cfg.Packages...)
 	noisy, red := invoke(ctx, cfg, goExe, env, initialArgs, cfg.JSONPath, cfg.Echo)
 	if red == nil {
@@ -103,6 +121,9 @@ func Run(ctx context.Context, cfg Config) error {
 	var status *exec.ExitError
 	if noisy || !errors.As(red, &status) || status.ExitCode() != 1 {
 		return red
+	}
+	if !eligibleFlags {
+		return fmt.Errorf("original failure stands (not an ordinary non-race invocation): %w", red)
 	}
 	proof, err := recoverGate(ctx, cfg, goExe, env, settings)
 	if err != nil {
@@ -118,10 +139,6 @@ func recoverGate(ctx context.Context, cfg Config, goExe string, env, settings []
 	module, err := goSetting(ctx, cfg.Root, goExe, env, "list", "-m", "-f", "{{.Path}}")
 	if err != nil || !packagePattern.MatchString(module) {
 		return Report{}, errors.New("could not resolve a single Go module")
-	}
-	flags, err := goSetting(ctx, cfg.Root, goExe, env, "env", "GOFLAGS")
-	if err != nil || !ordinaryFlags(flags) || os.Getenv("GOEXPERIMENT") != "" || os.Getenv("GOCOVERDIR") != "" {
-		return Report{}, errors.New("not an ordinary non-race invocation")
 	}
 	selected, err := packageSet(module, cfg.Packages)
 	if err != nil {
@@ -147,6 +164,9 @@ func recoverGate(ctx context.Context, cfg Config, goExe string, env, settings []
 		RunID: cfg.RunID, PR: cfg.PR, InitialSHA256: firstSHA}
 	// Prove eligibility for every failure before running any retry.
 	for _, item := range failed {
+		if err := trackedTestInputs(ctx, cfg, gitExe, module, item.pkg); err != nil {
+			return Report{}, err
+		}
 		source, err := locate(ctx, cfg, gitExe, module, cfg.Head, item.identity)
 		if err != nil {
 			return Report{}, err

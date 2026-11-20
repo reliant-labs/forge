@@ -48,6 +48,20 @@ func treeState(ctx context.Context, cfg Config, gitExe string) (string, error) {
 
 type sourceRef struct{ file, blob string }
 
+// A gitignored test file can affect go test without making git status dirty.
+// Reject it rather than try to verify source or TestMain from untracked input.
+func trackedTestInputs(ctx context.Context, cfg Config, gitExe, module, pkg string) error {
+	dir := strings.TrimPrefix(strings.TrimPrefix(pkg, module), "/")
+	if dir != "" {
+		dir += "/"
+	}
+	untracked, err := git(ctx, cfg.Root, gitExe, "ls-files", "-z", "--others", "--", ":(glob)"+dir+"*_test.go")
+	if err != nil || len(untracked) != 0 {
+		return errors.New("package test source is untracked or unreadable")
+	}
+	return nil
+}
+
 func locate(ctx context.Context, cfg Config, gitExe, module, revision string, key identity) (sourceRef, error) {
 	if !shaPattern.MatchString(revision) || !packagePattern.MatchString(module) || !testPattern.MatchString(key.name) {
 		return sourceRef{}, errors.New("invalid revision, module, or test identity")
@@ -86,8 +100,10 @@ func locate(ctx context.Context, cfg Config, gitExe, module, revision string, ke
 		if err != nil || len(data) > maxSource {
 			return sourceRef{}, errors.New("cannot read test source blob")
 		}
-		// Avoid parsing the dozens of files that do not name this test at all.
-		if !bytes.Contains(data, []byte(key.name)) {
+		// A custom TestMain may branch on -run even when the resulting
+		// single test has the same name. Look across both internal and
+		// external test files, including those excluded by build tags.
+		if !bytes.Contains(data, []byte(key.name)) && !bytes.Contains(data, []byte("TestMain")) {
 			continue
 		}
 		decl, err := testDeclaration(data, key.name)
@@ -117,7 +133,13 @@ func testDeclaration(source []byte, name string) (*ast.FuncDecl, error) {
 	var found *ast.FuncDecl
 	for _, candidate := range parsed.Decls {
 		fn, ok := candidate.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Name.Name != name {
+		if !ok || fn.Recv != nil {
+			continue
+		}
+		if fn.Name.Name == "TestMain" {
+			return nil, errors.New("custom TestMain can change the original test setup")
+		}
+		if fn.Name.Name != name {
 			continue
 		}
 		if found != nil || ast.IsGenerated(parsed) || !isGoTest(parsed, fn) {

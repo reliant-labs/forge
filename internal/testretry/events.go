@@ -38,6 +38,7 @@ type event struct {
 type execution struct {
 	state  string
 	active int
+	ran    int
 }
 
 type failure struct {
@@ -126,6 +127,7 @@ func judge(path string, selected map[string]bool, retry *identity) ([]failure, e
 			}
 			tests[key] = "run"
 			current.active++
+			current.ran++
 		case "pause", "cont":
 			if tests[key] != "run" {
 				return errors.New("invalid test schedule event")
@@ -169,6 +171,11 @@ func judge(path string, selected map[string]bool, retry *identity) ([]failure, e
 		}
 		if !testPattern.MatchString(key.name) || !red[key.pkg] || strings.TrimSpace(output[key]) == "" {
 			return nil, errors.New("failed test is not an attributable top-level Go test")
+		}
+		// A singleton retry cannot preserve siblings or subtests, even
+		// ones that eventually skipped after beginning execution.
+		if packages[key.pkg].ran != 1 {
+			return nil, errors.New("original test selection would change on retry")
 		}
 		failed = append(failed, failure{key, strings.ToValidUTF8(output[key], "")})
 	}

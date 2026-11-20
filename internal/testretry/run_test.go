@@ -53,17 +53,12 @@ func TestRunnerRetriesOnlyTheUnchangedFailure(t *testing.T) {
 	}
 	fixture := `package f
 import("os";"testing")
-func TestStable(t *testing.T) {
-    f, err := os.OpenFile(os.Getenv("STABLE_FILE"),os.O_CREATE|os.O_EXCL,0600)
-    if err != nil { t.Fatalf("stable test improperly repeated: %v", err) }; _=f.Close()
-}
 func TestOriginal(t *testing.T) {
     f, err := os.OpenFile(os.Getenv("ORIGINAL_FILE"),os.O_CREATE|os.O_EXCL,0600)
     if err == nil { _=f.Close(); t.Fatalf("the initial observed failure") }
 }
 `
 	outside := t.TempDir()
-	t.Setenv("STABLE_FILE", filepath.Join(outside, "stable"))
 	t.Setenv("ORIGINAL_FILE", filepath.Join(outside, "original"))
 	write("go.mod", "module example.com/fixture\n\ngo 1.27.0\n")
 	const testDir = "internal/pkg"
@@ -75,6 +70,33 @@ func TestOriginal(t *testing.T) {
 	// test with the exact parent's package identity.
 	write(testDir+"/neighbor/n_test.go", "package n\nimport \"testing\"\nfunc TestOriginal(t *testing.T) {}\n")
 	write("r_test.go", "package f\nimport \"testing\"\nfunc TestRoot(t *testing.T) {}\n")
+	for dir, source := range map[string]string{
+		"interaction": `package context
+import "testing"
+var initialized bool
+func TestSetup(t *testing.T) { initialized = true }
+func TestOriginal(t *testing.T) {
+    if initialized { t.Fatal("fails only after its sibling runs") }
+}
+`,
+		"testmain": `package context_test
+import ("flag"; "os"; "testing")
+var ordinary bool
+func TestMain(m *testing.M) {
+    flag.Parse()
+    ordinary = flag.Lookup("test.run").Value.String() == ""
+    os.Exit(m.Run())
+}
+func TestOriginal(t *testing.T) {
+    if ordinary { t.Fatal("fails with the original TestMain setup") }
+}
+`,
+	} {
+		if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		write(dir+"/context_test.go", source)
+	}
 	callGit("init", "-qb", "main")
 	callGit("add", ".")
 	callGit("commit", "-qm", "base with unchanged test")
@@ -135,10 +157,8 @@ func TestOriginal(t *testing.T) {
 	write(testDir+"/f_test.go", fixture+"\n// candidate edited the test file\n")
 	callGit("add", testDir+"/f_test.go")
 	callGit("commit", "-qm", "edited test source")
-	for _, name := range []string{"stable", "original"} {
-		if err := os.Remove(filepath.Join(outside, name)); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Remove(filepath.Join(outside, "original")); err != nil {
+		t.Fatal(err)
 	}
 	cfg.Head = callGit("rev-parse", "HEAD")
 	cfg.JSONPath += ".changed"
@@ -152,5 +172,24 @@ func TestOriginal(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.ReportPath); !os.IsNotExist(err) {
 		t.Fatalf("unexpected changed-test report: %v", err)
+	}
+	for _, tc := range []struct{ dir, reason string }{
+		{"interaction", "original test selection"}, {"testmain", "custom TestMain"},
+	} {
+		t.Run(tc.dir, func(t *testing.T) {
+			cfg.Packages = []string{"./" + tc.dir}
+			cfg.JSONPath = filepath.Join(outside, tc.dir+".ndjson")
+			cfg.ReportPath = filepath.Join(outside, tc.dir+".json")
+			diagnostic.Reset()
+			if err := Run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("unsafe context did not stay red (%s): %v\n%s", tc.reason, err, &diagnostic)
+			}
+			if strings.Contains(diagnostic.String(), "checking") {
+				t.Fatalf("ineligible test was retried: %s", &diagnostic)
+			}
+			if _, err := os.Stat(cfg.ReportPath); !os.IsNotExist(err) {
+				t.Fatalf("ineligible retry left a report: %v", err)
+			}
+		})
 	}
 }

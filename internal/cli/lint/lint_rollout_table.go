@@ -1,8 +1,8 @@
 // File: internal/cli/lint/lint_rollout_table.go
 //
 // The rollout declaration of every rule lint.rules grades — see
-// lint_rollout.go for what the three fields mean and how the project's pin
-// reads them.
+// lint_rollout.go for what the fields mean and how the project's pin reads
+// them.
 //
 // TestEveryGradableRuleDeclaresItsRollout fails for a rule in gradableRules
 // with no row here, so a new lane cannot ship without choosing when it gates.
@@ -11,33 +11,34 @@
 //
 // Add it to `newRules` below:
 //
-//	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.10.0", Rules: []string{"my-new-rule"}},
 //
 // IntroducedIn is the release the rule will ship in — the one NEXT_VERSION
-// names, never a guess at VERSION's patch+1 —, GatesFrom the release after
-// that (NEXT_VERSION's patch+1, which is what the release script writes into
-// NEXT_VERSION when it cuts; TestRolloutRowsNameTheNextRelease). Tightening an existing rule — raising a
-// warning to an error, or making it find what it used to miss — is the same
-// act: move its ID out of `shippedRules` into `newRules` with the release that
-// tightens it, and its findings warn for one release again.
+// names, never a guess at VERSION's patch+1 (TestRolloutRowsNameTheNextRelease).
+// It gates from the release after that, NEXT_VERSION's patch+1, which
+// buildRollouts derives. Tightening an existing rule — raising a warning to an
+// error, or making it find what it used to miss — is the same act: move its ID
+// out of `shippedRules` into `newRules` with the release that tightens it, and
+// its findings warn for one release again.
 //
 // A rule the project must NOT be given a grace period for (it cannot be
-// softened without making the gate meaningless) is still declared; set
-// GatesFrom equal to IntroducedIn... which TestRolloutRowsAreWellFormed
-// refuses, on purpose: ask the owner first.
+// softened without making the gate meaningless) has no way to say so here, on
+// purpose: ask the owner first.
 
 package lint
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
 
-// rolloutGroup is a set of rules that share a declaration.
+// rolloutGroup is a set of rules that share a declaration. A group in
+// newRules gates from the release after IntroducedIn (buildRollouts).
 type rolloutGroup struct {
 	IntroducedIn string
-	GatesFrom    string
-	Fix          string
 	Rules        []string
 }
 
@@ -257,21 +258,56 @@ var shippedRules = []rolloutGroup{
 }
 
 // newRules joined `forge lint`, or were tightened, after rolloutBaseline:
-// they warn in a project pinned below GatesFrom. Empty when every rule that
-// shipped gates; the next rule to join (or be tightened) goes here.
+// they warn in a project pinned below GatesFrom, the release after
+// IntroducedIn. Empty when every rule that shipped gates; the next rule to
+// join (or be tightened) goes here.
 var newRules = []rolloutGroup{}
 
-// lintRollouts is the declaration of every rule, by ID.
-var lintRollouts = buildRollouts(shippedRules, newRules)
+// rolloutLinkFixture is a newRules row linked into a test build of the forge
+// binary, "<rule>@<introduced_in>", so the warn-first path is proven through
+// the real binary while newRules is empty (TestE2ENewRuleWarnsUntilPinReachesGatesFrom).
+// Only the linker sets it (-ldflags -X); no flag, env var or file reaches
+// it, and it is empty in every release build.
+var rolloutLinkFixture string
 
-func buildRollouts(groups ...[]rolloutGroup) map[string]ruleRollout {
+// lintRollouts is the declaration of every rule, by ID.
+var lintRollouts = buildRollouts(shippedRules, append(newRules, linkedFixtureRows(rolloutLinkFixture)...))
+
+// buildRollouts is the declaration of every rule, by ID. A shipped rule gates
+// at any pin; a new one gates from the release after the one that ships it —
+// NEXT_VERSION's patch+1, which is what the release script writes into
+// NEXT_VERSION when it cuts — so GatesFrom is derived, never typed.
+func buildRollouts(shipped, fresh []rolloutGroup) map[string]ruleRollout {
 	out := map[string]ruleRollout{}
-	for _, list := range groups {
-		for _, g := range list {
-			for _, r := range g.Rules {
-				out[r] = ruleRollout{IntroducedIn: g.IntroducedIn, GatesFrom: g.GatesFrom, Fix: g.Fix}
-			}
+	for _, g := range shipped {
+		for _, r := range g.Rules {
+			out[r] = ruleRollout{IntroducedIn: g.IntroducedIn}
+		}
+	}
+	for _, g := range fresh {
+		for _, r := range g.Rules {
+			out[r] = ruleRollout{IntroducedIn: g.IntroducedIn, GatesFrom: nextPatch(g.IntroducedIn)}
 		}
 	}
 	return out
+}
+
+// nextPatch is the release after v: v1.9.0 → v1.9.1. A v that is not a
+// vX.Y.Z release yields "", which TestRolloutRowsAreWellFormed refuses.
+func nextPatch(v string) string {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(v, "v%d.%d.%d", &major, &minor, &patch); err != nil ||
+		fmt.Sprintf("v%d.%d.%d", major, minor, patch) != v {
+		return ""
+	}
+	return fmt.Sprintf("v%d.%d.%d", major, minor, patch+1)
+}
+
+// linkedFixtureRows is the newRules row rolloutLinkFixture names, if any.
+func linkedFixtureRows(fixture string) []rolloutGroup {
+	rule, introduced, ok := strings.Cut(fixture, "@")
+	if !ok || rule == "" || introduced == "" {
+		return nil
+	}
+	return []rolloutGroup{{IntroducedIn: introduced, Rules: []string{rule}}}
 }

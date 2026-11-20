@@ -19,9 +19,8 @@
 //
 //	IntroducedIn  the forge release that shipped the rule, or tightened it
 //	GatesFrom     the release it starts to gate in. Empty for a rule that has
-//	              always gated; required for any rule introduced after
-//	              rolloutBaseline.
-//	Fix           the `forge fix <codemod>` that clears it, when one exists.
+//	              always gated; for any rule introduced after rolloutBaseline,
+//	              the release after IntroducedIn (derived, buildRollouts).
 //
 // The project's pinned forge_version decides. A finding that would fail the
 // gate, from a rule whose GatesFrom is later than the pin, is a WARNING that
@@ -88,8 +87,8 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it will ship in (the one NEXT_VERSION names) and
-// GatesFrom as the release after that. Both tests fail otherwise, and
+// IntroducedIn as the release it will ship in (the one NEXT_VERSION names); it
+// gates from the release after that. Both tests fail otherwise, and
 // TestRolloutRowsNameTheNextRelease fails a row for a release that is neither
 // shipped nor NEXT_VERSION.
 
@@ -129,7 +128,6 @@ const rolloutGolangciBuildTags = "golangci-build-tags"
 type ruleRollout struct {
 	IntroducedIn string
 	GatesFrom    string
-	Fix          string
 }
 
 // ruleGrace is the note a softened finding carries, in --json as data and in
@@ -137,7 +135,6 @@ type ruleRollout struct {
 type ruleGrace struct {
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
-	Fix          string `json:"fix,omitempty"`
 	// PreviousPin and GatesAfter are set when the pin is already past
 	// GatesFrom but the project came from a pin older than IntroducedIn:
 	// the rule warns while forge_version is GatesAfter and gates from the
@@ -154,9 +151,6 @@ func (g ruleGrace) note(rule string) string {
 			rule, g.IntroducedIn, g.PreviousPin, g.GatesAfter)
 	} else {
 		fmt.Fprintf(&b, "warn: [%s] is new in %s and gates from %s", rule, g.IntroducedIn, g.GatesFrom)
-	}
-	if g.Fix != "" {
-		fmt.Fprintf(&b, "; fix with `%s`", g.Fix)
 	}
 	fmt.Fprintf(&b, "; gate now with lint.rules: {%s: error}", rule)
 	return b.String()
@@ -276,7 +270,7 @@ func rolloutPin(raw string) (string, bool) {
 // (prevKnown false when forge never saw an earlier one); raw is the pin as
 // forge.yaml spells it, for the note.
 func graceFor(ro ruleRollout, pin, prev string, prevKnown bool, raw string) *ruleGrace {
-	g := &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix}
+	g := &ruleGrace{IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom}
 	if semver.Compare(pin, ro.GatesFrom) < 0 {
 		return g
 	}
@@ -370,7 +364,6 @@ type GatingRule struct {
 	Rule         string
 	IntroducedIn string
 	GatesFrom    string
-	Fix          string
 }
 
 // RulesStartingToGate lists, by rule ID, the rules that warn under the pin
@@ -420,7 +413,7 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 		warnedBefore := graceFor(ro, oldPin, oldPrev, oldPrevKnown, from) != nil
 		gatesAfter := graceFor(ro, newPin, newPrev, newPrevKnown, to) == nil
 		if warnedBefore && gatesAfter {
-			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
+			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Rule < out[j].Rule })

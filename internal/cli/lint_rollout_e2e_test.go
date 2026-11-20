@@ -16,11 +16,27 @@ import (
 // release the project's forge_version has not been through is a warning, and
 // the verdict line — the last line of the run — says so; pinning the release
 // it gates from turns the same finding into a failure; lint.rules opts in
-// early. forge-column-markers is a rule that is warn-first at this commit.
+// early.
+//
+// newRules may be empty (every rule that shipped gates at any pin), so the
+// binary under test is the one forge build that links a newRules row in:
+// rolloutLinkFixture declares forge-column-markers new in v1.0.0, gating from
+// v1.0.1. Nothing else differs from the shipped binary, so this proves the
+// grading, the note, the verdict line and lint.rules exactly as a real new
+// rule meets them.
 func TestE2ENewRuleWarnsUntilPinReachesGatesFrom(t *testing.T) {
 	t.Parallel()
-	forgeBin := buildforgeBinary(t)
+	requireTool(t, "go")
 	dir := t.TempDir()
+	forgeBin := filepath.Join(dir, "forge-rollout-fixture")
+	repo := findRepoRoot(t)
+	build := exec.Command("go", "build", "-ldflags",
+		devForgeRootLDFlag(repo)+" -X github.com/reliant-labs/forge/internal/cli/lint.rolloutLinkFixture=forge-column-markers@v1.0.0",
+		"-o", forgeBin, "./cmd/forge")
+	build.Dir = repo
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build forge with the rollout fixture: %v\n%s", err, out)
+	}
 	runCmd(t, dir, forgeBin, "project", "new", "rollapp", "--mod", "example.com/rollapp", "--kind", "cli")
 	projectDir := filepath.Join(dir, "rollapp")
 

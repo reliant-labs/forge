@@ -255,7 +255,6 @@ type upgradeStartsGating struct {
 	Rule         string `json:"rule"`
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
-	Fix          string `json:"fix,omitempty"`
 	// Findings is how many of the rule's findings the lint phase reported
 	// as errors under the new pin; absent when lint did not run.
 	Findings *int `json:"findings,omitempty"`
@@ -608,7 +607,7 @@ func (r *upgradeRun) newAcrossRange(v string) bool {
 func (r *upgradeRun) phasePin() error {
 	for _, g := range lint.RulesStartingToGate(r.cfg, r.from, r.target) {
 		r.rep.StartsGating = append(r.rep.StartsGating, upgradeStartsGating{
-			Rule: g.Rule, IntroducedIn: g.IntroducedIn, GatesFrom: g.GatesFrom, Fix: g.Fix,
+			Rule: g.Rule, IntroducedIn: g.IntroducedIn, GatesFrom: g.GatesFrom,
 		})
 	}
 	return bumpForgeVersion(r.cfg, r.configPath, r.target, r.check)
@@ -1107,9 +1106,6 @@ func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
 			line := fmt.Sprintf("  - %s (new in %s; warned under %s, gates under %s)", g.Rule, g.IntroducedIn, rep.From, rep.To)
 			if g.Findings != nil {
 				line += fmt.Sprintf(": %d %s now %s", *g.Findings, plural(*g.Findings, "finding", "findings"), plural(*g.Findings, "gates", "gate"))
-			}
-			if g.Fix != "" {
-				line += "; fix with `" + g.Fix + "`"
 			}
 			fmt.Fprintln(w, line)
 		}

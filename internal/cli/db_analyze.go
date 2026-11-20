@@ -80,7 +80,7 @@ from forge.yaml. A file whose one statement cannot run inside a transaction
 (CREATE INDEX CONCURRENTLY) runs it on its own; its lock is reported
 statically.
 
-Rules (lint.rules sets their severity; each warns before it gates):
+Rules (lint.rules sets their severity):
   ` + dbanalyze.RuleTableRewrite + `         a pre-existing table or its indexes rewritten
   ` + dbanalyze.RuleAccessExclusiveLock + ` ACCESS EXCLUSIVE held across a scan or rewrite
   ` + dbanalyze.RuleValidationScan + `        a full scan under a lock that blocks writes

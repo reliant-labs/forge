@@ -26,7 +26,7 @@ import (
 const rolloutRule = "forge-closed-set"
 
 var testRollouts = map[string]ruleRollout{
-	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"},
+	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"},
 }
 
 // withRollouts makes table the rollout declaration for the rest of the test,
@@ -73,6 +73,53 @@ func TestEveryGradableRuleDeclaresItsRollout(t *testing.T) {
 		if !gradable[r] {
 			t.Errorf("rollout row %q names no rule lint.rules grades; a stale row, or a misspelling", r)
 		}
+	}
+}
+
+// A new rule gates from the release after the one that ships it, derived
+// from IntroducedIn; a shipped rule gates at any pin. A row whose release is
+// not a vX.Y.Z version derives nothing, which TestRolloutRowsAreWellFormed
+// then refuses.
+func TestBuildRolloutsDerivesGatesFrom(t *testing.T) {
+	got := buildRollouts(
+		[]rolloutGroup{{IntroducedIn: "v1.8.0", Rules: []string{"shipped-a"}}},
+		[]rolloutGroup{
+			{IntroducedIn: "v1.10.0", Rules: []string{"new-a", "new-b"}},
+			{IntroducedIn: "v1.10.1", Rules: []string{"new-c"}},
+			{IntroducedIn: "v1.10", Rules: []string{"new-bad"}},
+		},
+	)
+	want := map[string]ruleRollout{
+		"shipped-a": {IntroducedIn: "v1.8.0"},
+		"new-a":     {IntroducedIn: "v1.10.0", GatesFrom: "v1.10.1"},
+		"new-b":     {IntroducedIn: "v1.10.0", GatesFrom: "v1.10.1"},
+		"new-c":     {IntroducedIn: "v1.10.1", GatesFrom: "v1.10.2"},
+		"new-bad":   {IntroducedIn: "v1.10"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for rule, ro := range want {
+		if got[rule] != ro {
+			t.Errorf("%s = %+v, want %+v", rule, got[rule], ro)
+		}
+	}
+}
+
+// The link-time fixture is one newRules row, "<rule>@<introduced_in>", and
+// anything else is no row at all: a release build (empty) declares nothing.
+func TestLinkedFixtureRows(t *testing.T) {
+	if got := linkedFixtureRows("forge-column-markers@v1.0.0"); len(got) != 1 ||
+		got[0].IntroducedIn != "v1.0.0" || len(got[0].Rules) != 1 || got[0].Rules[0] != "forge-column-markers" {
+		t.Errorf("got %+v", got)
+	}
+	for _, bad := range []string{"", "forge-column-markers", "@v1.0.0", "forge-column-markers@"} {
+		if got := linkedFixtureRows(bad); got != nil {
+			t.Errorf("%q: got %+v, want no row", bad, got)
+		}
+	}
+	if rolloutLinkFixture != "" {
+		t.Errorf("rolloutLinkFixture = %q in a test binary: only the e2e forge build links one", rolloutLinkFixture)
 	}
 }
 
@@ -269,8 +316,7 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 			if (got[0].Grace != nil) != tc.wantGrace {
 				t.Errorf("grace = %+v, want present=%v", got[0].Grace, tc.wantGrace)
 			}
-			if tc.wantGrace && (got[0].Grace.IntroducedIn != "v1.0.0" || got[0].Grace.GatesFrom != "v1.0.1" ||
-				got[0].Grace.Fix != "forge fix example") {
+			if tc.wantGrace && (got[0].Grace.IntroducedIn != "v1.0.0" || got[0].Grace.GatesFrom != "v1.0.1") {
 				t.Errorf("grace note = %+v", got[0].Grace)
 			}
 		})
@@ -308,7 +354,7 @@ func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
 				}
 				return
 			}
-			want := GatingRule{Rule: rolloutRule, IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"}
+			want := GatingRule{Rule: rolloutRule, IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("got %+v, want [%+v]", got, want)
 			}
@@ -746,7 +792,7 @@ func TestGraceIsMachineReadableInJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	grace, _ := m["grace"].(map[string]any)
-	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" || grace["fix"] != "forge fix example" {
+	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" {
 		t.Errorf("grace = %v in %s", grace, raw)
 	}
 	if _, leaked := m["rollout"]; leaked {

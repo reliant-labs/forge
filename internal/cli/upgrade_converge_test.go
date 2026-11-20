@@ -241,7 +241,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	rep := newUpgradeReport(upgradeOptions{})
 	rep.From, rep.To = "v1.5.0", "v1.6.0"
 	rep.StartsGating = append(rep.StartsGating,
-		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Fix: "forge fix waits"},
+		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"},
 		upgradeStartsGating{Rule: "forgeconv-product-event-pii", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"},
 	)
 	countStartsGating(rep.StartsGating, []lintDocFinding{
@@ -260,7 +260,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	printUpgradeSummary(&out, rep)
 	for _, want := range []string{
 		"Starts gating at v1.6.0",
-		"testwait-fixed-sleep (new in v1.5.0; warned under v1.5.0, gates under v1.6.0): 2 findings now gate; fix with `forge fix waits`",
+		"testwait-fixed-sleep (new in v1.5.0; warned under v1.5.0, gates under v1.6.0): 2 findings now gate",
 		"forgeconv-product-event-pii (new in v1.5.0; warned under v1.5.0, gates under v1.6.0): 0 findings now gate",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -272,7 +272,7 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(doc), `"starts_gating":[{"rule":"testwait-fixed-sleep","introduced_in":"v1.5.0","gates_from":"v1.5.1","fix":"forge fix waits","findings":2}`) {
+	if !strings.Contains(string(doc), `"starts_gating":[{"rule":"testwait-fixed-sleep","introduced_in":"v1.5.0","gates_from":"v1.5.1","findings":2}`) {
 		t.Errorf("--json lacks starts_gating: %s", doc)
 	}
 	if empty, _ := json.Marshal(newUpgradeReport(upgradeOptions{})); !strings.Contains(string(empty), `"starts_gating":[]`) {

@@ -14,7 +14,7 @@ import (
 // critical-rules section that downstream agents rely on.
 func TestRenderProjectMemory_HappyPath(t *testing.T) {
 	dir := t.TempDir()
-	cfg := "name: my-app\nmodule_path: example.com/my-app\nversion: \"1.0.0\"\n"
+	cfg := "name: my-app\nmodule_path: example.com/my-app\n"
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(cfg), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRenderProjectMemory_EmptyRoot(t *testing.T) {
 // missing-name case rather than rendering "# " (silently broken).
 func TestRenderProjectMemory_MissingName(t *testing.T) {
 	dir := t.TempDir()
-	cfg := "module_path: example.com/x\nversion: \"1.0.0\"\n"
+	cfg := "module_path: example.com/x\n"
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(cfg), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
 	}

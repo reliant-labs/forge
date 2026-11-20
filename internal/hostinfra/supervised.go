@@ -358,8 +358,7 @@ func (e supervisedEngine) start(ctx context.Context, projectDir string, spec Spe
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return fmt.Errorf("host-infra %s: create data dir: %w", spec.Name, err)
 	}
-	logPath := filepath.Join(dataDir, name+".log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) // #nosec G304 -- path derived from the project's own data dir
+	logFile, logPath, err := spec.openLog(projectDir, name+".log", os.O_TRUNC)
 	if err != nil {
 		return fmt.Errorf("host-infra %s: open log: %w", spec.Name, err)
 	}

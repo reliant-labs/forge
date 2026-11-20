@@ -69,6 +69,13 @@ var (
 		name:    "dashapp",
 		newArgs: []string{"--mod", "example.com/dashapp", "--service", "catalog", "--frontend", "dashboard"},
 	}
+	// dashboardCatalogV1ProjectE2E is dashboardCatalogProjectE2E on
+	// connect-go v1, for the validate-projection test, which drives the v1
+	// protovalidate interceptor and asserts the v1 chain.
+	dashboardCatalogV1ProjectE2E = sharedProjectSpec{
+		name:    "dashapp",
+		newArgs: []string{"--mod", "example.com/dashapp", "--service", "catalog", "--frontend", "dashboard", "--connect", "v1"},
+	}
 	// widgetServiceProjectE2E: one `widget` service and no frontend — the
 	// start of the tests whose subject is `forge scaffold frontend`.
 	widgetServiceProjectE2E = sharedProjectSpec{

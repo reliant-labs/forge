@@ -11,6 +11,8 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 var pingSpecV2 = connectv2.Spec{Procedure: "/demo.v1.API/Ping", StreamType: connectv2.StreamTypeUnary}
@@ -89,5 +91,28 @@ func TestNewClientV2PreservesGeneratedInterfaceHTTPClientAndOptions(t *testing.T
 	}
 	if calls != 1 || h.requests != 1 {
 		t.Fatalf("custom HTTPClient not preserved: %d %d", calls, h.requests)
+	}
+}
+
+// NewClientV2's client reads the reason a server refused for from the error
+// alone (svcerr.MetaOf), as a v1 client read ce.Meta().
+func TestNewClientV2ErrorCarriesServerMetadata(t *testing.T) {
+	srv := connectv2.NewServer(svcerr.InterceptorV2())
+	srv.Register(connectv2.Method{Spec: pingSpecV2, Handler: func(_ context.Context, _ connectv2.Spec, stream connectv2.ServerStream) error {
+		if err := stream.Receive(&emptypb.Empty{}); err != nil {
+			return err
+		}
+		return svcerr.WithReason(svcerr.PermissionDenied("not yours"), "not_owner")
+	}})
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, srv)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewClientV2(ClientBinding{Service: "demo.v1.API", ConfigField: "demo.config.API.url"},
+		constructorV2, server.Client(), server.URL, nil)
+	_, err := c.Ping(context.Background(), &emptypb.Empty{})
+	if got := svcerr.MetaOf(err).Get(svcerr.ReasonHeader); got != "not_owner" {
+		t.Fatalf("reason = %q, want not_owner (err %v)", got, err)
 	}
 }

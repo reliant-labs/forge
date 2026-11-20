@@ -575,10 +575,11 @@ func fileImportSpecs(file *ast.File) map[string]string {
 //
 // A file's birth never comes here: it has no siblings, and its scaffolded
 // lifecycle test is written for the placeholder's owner.
-func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing []CRUDMethodTemplateData) []CRUDMethodTemplateData {
-	// The project's connect-go major decides which handler shapes are
-	// evidence; an unreadable go.mod is v1's, the shapes forge always read.
-	major := connectmajor.DetectOrDefault(projectDir)
+//
+// major is the connect-go major the shim is rendered for (the run's major,
+// so the evidence read agrees with the methods being appended); it decides
+// which handler shapes are evidence.
+func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing []CRUDMethodTemplateData, major connectmajor.Major) []CRUDMethodTemplateData {
 	var fileUses []CRUDOwnerUse
 	fset := token.NewFileSet()
 	if f, err := parser.ParseFile(fset, shimRel, existing, parser.SkipObjectResolution); err == nil {

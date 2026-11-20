@@ -289,6 +289,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	plan.DeployPlan = opts.DeployPlan
 	plan.Capacity = opts.Capacity
 	plan.Floor = floorVerdict
+	plan.Vulnerabilities = hostedVulnPlan(ctx, ledger)
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	guard.Target, guard.RaiseFloorReason = floorTarget, opts.RaiseFloorReason
 	if guard.ExpectUnbound {

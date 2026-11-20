@@ -113,6 +113,10 @@ func envQuery(env string) url.Values {
 // Home is the project's overview, scoped to env.
 func (c Console) Home(env string) string { return c.link("", envQuery(env)) }
 
+// Vulnerabilities is the project's Vulnerabilities page (the findings of its
+// releases and environments).
+func (c Console) Vulnerabilities() string { return c.link("/vulnerabilities", nil) }
+
 // Dashboards is the project's observability dashboards, scoped to env.
 func (c Console) Dashboards(env string) string {
 	return c.link("/observability/dashboards", envQuery(env))

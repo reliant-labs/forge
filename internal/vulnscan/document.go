@@ -111,6 +111,11 @@ type ArtifactScan struct {
 	// History is every stored scan of its SBOM, oldest first: where
 	// FirstSeen comes from. Latest alone is enough without it.
 	History []*Scan
+	// FirstSeen is when each finding was first seen, by Finding.Key(), as
+	// a ledger that keeps it itself reports it (a control plane's
+	// per-environment first_seen_at). It wins over History; a finding it
+	// does not name falls back to History, then to Latest.ScannedAt.
+	FirstSeen map[string]time.Time
 }
 
 // Filter narrows the listed findings. The gate always judges all of them.
@@ -160,6 +165,10 @@ type DocumentInput struct {
 	Now       time.Time
 	// Notes are carried into the document (Document.Notes).
 	Notes []string
+	// Stale marks the findings stale whatever the database's build time
+	// says: the source of the scans judged them so (a control plane whose
+	// own freshness bound passed, or whose newest scan is STALE).
+	Stale bool
 }
 
 // ScanIsCurrent reports whether s can vouch for an artifact at now: its
@@ -201,7 +210,10 @@ func BuildDocument(in DocumentInput) Document {
 		firstSeen := firstSeenIn(a.History)
 		for _, f := range a.Latest.Findings {
 			k := f.Key()
-			seen := firstSeen[k]
+			seen := a.FirstSeen[k]
+			if seen.IsZero() {
+				seen = firstSeen[k]
+			}
 			if seen.IsZero() {
 				seen = a.Latest.ScannedAt
 			}
@@ -222,7 +234,7 @@ func BuildDocument(in DocumentInput) Document {
 	if oldest != nil {
 		doc.DB = DocumentDB{
 			Scanner: oldest.Scanner, Version: oldest.ScannerVersion, Schema: oldest.DBSchema,
-			BuiltAt: oldest.DBBuiltAt, Stale: !ScanIsCurrent(oldest, in.Now),
+			BuiltAt: oldest.DBBuiltAt, Stale: in.Stale || !ScanIsCurrent(oldest, in.Now),
 		}
 	} else {
 		doc.DB = DocumentDB{Scanner: ScannerGrype}

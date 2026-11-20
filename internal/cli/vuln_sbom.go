@@ -32,7 +32,10 @@ func newVulnSBOMCmd(deps vulnDeps) *cobra.Command {
 		Short: "Print the SBOM a release recorded for one artifact",
 		Long: `Print the SBOM (CycloneDX JSON, as forge stored it at the cut) of one artifact of
 the release an env runs, or of --release. The bytes come from this machine's
-ledger, verified against the digest the release records.
+ledger, verified against the digest the release records. For an env whose
+ledger is a control plane, the control plane names the SBOM's digest and the
+bytes are this machine's copy (the cut keeps one); an SBOM cut on another
+machine is not fetched from its OCI referrer by this forge.
 
 --artifact names the artifact; it may be left out when only one artifact has an
 SBOM. --format spdx converts to SPDX JSON with syft (installed on first use).`,
@@ -61,7 +64,11 @@ func runVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		return undeterminedf("env %q: %v", envName, err)
 	}
 	if env.hosted() {
-		return hostedVulnError(env)
+		data, err := hostedVulnSBOM(ctx, deps, env, opts)
+		if err != nil {
+			return err
+		}
+		return writeSBOM(ctx, out, errOut, deps, data, format)
 	}
 	store, err := deps.machineLedger(projectDir)
 	if err != nil {
@@ -105,6 +112,11 @@ func runVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		}
 		return err
 	}
+	return writeSBOM(ctx, out, errOut, deps, data, format)
+}
+
+// writeSBOM prints a stored CycloneDX SBOM as format.
+func writeSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, data []byte, format string) error {
 	if format == "cyclonedx" {
 		_, err := out.Write(data)
 		return err

@@ -483,7 +483,18 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	l.Units = units
 	l.Mixed = forgeAppliesLocally(entities, units)
 	l.HostedTiers = hostedTiersOf(entities)
-	return attachCodeSource(attachHostedMirror(l, projectDir), projectDir, os.Getenv), nil
+	return attachSBOMSource(attachCodeSource(attachHostedMirror(l, projectDir), projectDir, os.Getenv), projectDir), nil
+}
+
+// attachSBOMSource gives a hosted ledger the machine ledger its cuts' SBOM
+// bytes are stored in (build_sbom.go), so a cut can upload them to the
+// control plane (hosted_vuln.go). Opened on first use: a ledger that cuts
+// nothing never opens it.
+func attachSBOMSource(l envLedger, projectDir string) envLedger {
+	if hs, ok := l.Bindings.(*hostedStore); ok && hs.sboms == nil && projectDir != "" {
+		hs.sboms = func() (sbomBytesReader, error) { return openMachineLedger(projectDir) }
+	}
+	return l
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion

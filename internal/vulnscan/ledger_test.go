@@ -188,3 +188,28 @@ func TestBuildDocumentGolden(t *testing.T) {
 		t.Errorf("match by alias = %+v", shown.Findings)
 	}
 }
+
+// A ledger that keeps first-seen times itself (a control plane) states them
+// per finding, and they win over the scan history; a source that judged its
+// findings stale makes the document stale whatever the build time says.
+func TestBuildDocumentTakesFirstSeenAndStaleFromTheSource(t *testing.T) {
+	t.Parallel()
+	f := Finding{ID: "CVE-2026-1", Severity: SeverityLow, Package: Package{Name: "a", Version: "1", PURL: "pkg:golang/a@1"}}
+	scan := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow, Findings: []Finding{f}}
+	seen := testNow.Add(-30 * 24 * time.Hour)
+	in := DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts: []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: scan, FirstSeen: map[string]time.Time{f.Key(): seen}}},
+	}
+	doc := BuildDocument(in)
+	if len(doc.Findings) != 1 || !doc.Findings[0].FirstSeen.Equal(seen) {
+		t.Fatalf("first seen = %+v, want %s", doc.Findings, seen)
+	}
+	if doc.DB.Stale || doc.Gate.Verdict != VerdictPass {
+		t.Fatalf("fresh document: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+	in.Stale = true
+	if doc := BuildDocument(in); !doc.DB.Stale || doc.Gate.Verdict != VerdictStale {
+		t.Fatalf("source-stale document: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+}

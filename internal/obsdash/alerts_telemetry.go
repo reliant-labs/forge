@@ -66,7 +66,9 @@ func AlertTelemetryTargetsOf(targets []telemetry.Target) []AlertTelemetryTarget 
 // TelemetryAlertName is the name of the rule a telemetry default raises for
 // service: the service.name in UpperCamelCase ("pg-bouncer" → "PgBouncer"),
 // then suffix. A name an alert may not start with (a digit) is prefixed
-// "Telemetry", so the result is always a valid rule name.
+// "Telemetry", so the result is always a valid rule name. The mapping folds
+// punctuation (foo.bar and foo-bar both give FooBar), so the resolver refuses
+// two systems whose names collide rather than emit one rule identity twice.
 func TelemetryAlertName(service, suffix string) string {
 	var b strings.Builder
 	upper := true

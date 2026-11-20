@@ -22,6 +22,9 @@ const Image = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelem
 type Collector struct {
 	// Binary is the otelcol-contrib on PATH; empty runs Image in docker.
 	Binary string
+	// HostNetwork runs the image in the host's network namespace, for a
+	// collector that must reach a server the test listens with on loopback.
+	HostNetwork bool
 }
 
 // Find returns the collector to run, and skips t (naming both reasons) when
@@ -60,6 +63,9 @@ func Command(ctx context.Context, c Collector, dir, name string, env []string, a
 		return cmd
 	}
 	full := []string{"run", "--rm", "--name", name, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-v", dir + ":" + dir}
+	if c.HostNetwork {
+		full = append(full, "--network", "host")
+	}
 	for _, e := range env {
 		full = append(full, "-e", e)
 	}

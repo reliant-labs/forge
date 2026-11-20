@@ -512,11 +512,14 @@ whatever the state; a script that must branch on it passes --require-verified.`,
 			if err != nil {
 				return err
 			}
-			if err := runDomainVerify(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout(), env); err != nil {
+			d, err := verifyDomain(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout(), env)
+			if err != nil {
 				return err
 			}
 			if requireVerified {
-				return domainVerifiedExit(cmd.Context(), c, args[0])
+				// The state the check just left, not a later read: a
+				// poller may move it between the two.
+				return domainStateExit(d)
 			}
 			return nil
 		},
@@ -529,31 +532,28 @@ whatever the state; a script that must branch on it passes --require-verified.`,
 }
 
 func runDomainVerify(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) error {
+	_, err := verifyDomain(ctx, c, hostname, jsonOutput, out, envName...)
+	return err
+}
+
+// verifyDomain runs VerifyDomain, prints the result, and returns the domain as
+// that check left it.
+func verifyDomain(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) (domainWire, error) {
 	found, err := lookupDomain(ctx, c, hostname)
 	if err != nil {
-		return err
+		return domainWire{}, err
 	}
 	var resp struct {
 		Domain domainWire `json:"domain"`
 	}
 	if err := c.Call(ctx, procVerifyDomain, map[string]any{"domainId": found.ID}, &resp); err != nil {
-		return fmt.Errorf("verify domain %q: %w", hostname, err)
+		return domainWire{}, fmt.Errorf("verify domain %q: %w", hostname, err)
 	}
 	if jsonOutput {
-		return writeDomainJSON(out, resp)
+		return resp.Domain, writeDomainJSON(out, resp)
 	}
 	writeDomainDetail(out, resp.Domain, domainEnvNamesFor(ctx, c, resp.Domain, envName))
-	return nil
-}
-
-// domainVerifiedExit is --require-verified: the domain's state as an exit
-// code, read after the verify it follows.
-func domainVerifiedExit(ctx context.Context, c cloudCaller, hostname string) error {
-	d, err := lookupDomain(ctx, c, hostname)
-	if err != nil {
-		return err
-	}
-	return domainStateExit(d)
+	return resp.Domain, nil
 }
 
 // domainStateExit maps a domain's state onto the shared exit codes.

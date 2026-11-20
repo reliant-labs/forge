@@ -4412,8 +4412,9 @@ func stopHostInfra(env string) (int, error) {
 // stream. The `<name>` is sanitised ("/" and ":" → "_") so frontend
 // labels like "frontend:web" map to a flat filename.
 func upLogPath(env, name string) (string, error) {
-	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
-	return filepath.Join(projectDirForKCL(), ".forge", "logs", env, safe+".log"), nil
+	// hostinfra.LogPath is the one definition, so a host-infra engine's log
+	// and a host process's land in the same directory under the same rule.
+	return hostinfra.LogPath(projectDirForKCL(), env, name), nil
 }
 
 // upLogDir returns the directory upLogPath writes into, for the summary's

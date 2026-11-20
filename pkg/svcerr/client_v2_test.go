@@ -277,3 +277,30 @@ func TestMetaOf_LocalProjectionMatchesTheWire(t *testing.T) {
 		})
 	}
 }
+
+// TestWrapReadInProcessV2 pins what section 5 step 7 of the connect-v2
+// migration doc tells a v2 project: Wrap's result is a v1 *connect.Error
+// until v1 is removed, so connect-go v2's own readers miss it in process,
+// and svcerr's v2 readers do not.
+func TestWrapReadInProcessV2(t *testing.T) {
+	for name, err := range map[string]error{
+		"Wrap":   svcerr.Wrap(refusal()),
+		"WrapOr": svcerr.WrapOr(errors.New("db down"), refusal()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := svcerr.CodeV2(err); got != connectv2.CodePermissionDenied {
+				t.Errorf("CodeV2 = %v, want permission_denied", got)
+			}
+			if v2 := svcerr.ToConnectV2(err); v2.Code() != connectv2.CodePermissionDenied || v2.Message() != "not yours" {
+				t.Errorf("ToConnectV2 = %v %q", v2.Code(), v2.Message())
+			}
+			if got := svcerr.MetaOf(err).Get(svcerr.ReasonHeader); got != "not_owner" {
+				t.Errorf("MetaOf reason = %q, want not_owner", got)
+			}
+			// The documented gap, until Wrap returns v2 errors (4(j)).
+			if got := connectv2.CodeOf(err); got != connectv2.CodeUnknown {
+				t.Errorf("connectv2.CodeOf(Wrap result) = %v: Wrap now returns v2 errors, update the migration doc", got)
+			}
+		})
+	}
+}

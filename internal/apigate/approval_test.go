@@ -192,7 +192,7 @@ func TestClassifyGitHubFailure(t *testing.T) {
 // A read GitHub refused exits exitInfrastructure with a message that says it is
 // not an API break; a verdict keeps exit 1.
 func TestReportSeparatesInfrastructureFromVerdicts(t *testing.T) {
-	useFakeGitHub(t, &fakeGitHub{prErr: &ghFailure{bin: "./scripts/ci-public-gh.sh", exitCode: 75, err: errors.New("exit status 75"),
+	useFakeGitHub(t, &fakeGitHub{prErr: &ghFailure{bin: "./scripts/ci-public-gh.sh", started: true, exitCode: 75, err: errors.New("exit status 75"),
 		stderr: "ci-public-gh: infrastructure: GitHub API rate limit (HTTP 403) reading repos/o/r/pulls/5 after 1 attempt(s)"}})
 	_, _, _, err := prDeclaration("5")
 	var stdout, stderr strings.Builder

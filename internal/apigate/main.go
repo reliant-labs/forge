@@ -255,20 +255,21 @@ var ghAPI = func(args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		f := &ghFailure{bin: bin, exitCode: -1, stderr: strings.TrimSpace(stderr.String()), err: err}
+		f := &ghFailure{bin: bin, stderr: strings.TrimSpace(stderr.String()), err: err}
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			f.exitCode = exit.ExitCode()
+			f.started, f.exitCode = true, exit.ExitCode()
 		}
 		return nil, f
 	}
 	return out, nil
 }
 
-// ghFailure is a `gh api` (or APIGATE_GH) invocation that failed: its exit
-// status (-1 when it did not start) and what it printed on stderr.
+// ghFailure is a `gh api` (or APIGATE_GH) invocation that failed: whether it
+// started, its exit status and what it printed on stderr.
 type ghFailure struct {
 	bin      string
+	started  bool
 	exitCode int
 	stderr   string
 	err      error
@@ -302,7 +303,7 @@ func newGitHubReadError(what string, err error) *githubReadError {
 	exitCode, stderr := 0, err.Error()
 	var f *ghFailure
 	if errors.As(err, &f) {
-		if f.exitCode < 0 {
+		if !f.started {
 			return &githubReadError{what: what, cause: "cannot run the GitHub client " + f.bin, err: err}
 		}
 		exitCode, stderr = f.exitCode, f.stderr

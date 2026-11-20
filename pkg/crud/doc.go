@@ -16,6 +16,29 @@
 // Everything else — error mapping, cursor encoding/decoding, pagination
 // clamping, list bookkeeping — moves into this package.
 //
+// # Connect majors
+//
+// The lifecycle has no connect type in it, so it is written once, in the
+// connect-neutral shape func(ctx, *Req) (*Resp, error): [Create], [Get],
+// [Update], [Delete] and [List]. That is exactly the signature of a
+// connect-go v2 handler method (v2 generated code is always "simple": bare
+// messages, no Request/Response wrappers), so a v2 shim calls them directly:
+//
+//	func (s *Service) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.GetUserResponse, error) {
+//	    return crud.Get(op)(ctx, req)
+//	}
+//
+// The Handle* functions are the same lifecycles behind connect-go v1's
+// *connect.Request / *connect.Response, for v1 projects. Neither shape gets a
+// V2-suffixed twin: the neutral one has no connect type to version.
+//
+// Errors are identical in both shapes: svcerr-wrapped *connect.Error values
+// (connect-go v1's type) carrying a crud.Reason* reason. A v1 server sends
+// them as they are; svcerr.InterceptorV2 re-encodes them for a v2 server with
+// the same code, message, details and reason header. A test that calls a v2
+// shim directly reads the code with svcerr.CodeV2 (or tdd.AssertConnectErrorV2),
+// not connectv2.CodeOf, which does not know the v1 type.
+//
 // # Scoping seams
 //
 // This package resolves no principal and injects no WHERE clause: who a

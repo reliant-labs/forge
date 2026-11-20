@@ -240,9 +240,11 @@ func TestSupervisedEnginesStartAndStop(t *testing.T) {
 		engine string
 		spec   func(port int) Spec
 	}{
-		{EngineNATS, func(port int) Spec { return Spec{Name: "nats", Engine: EngineNATS, Port: port} }},
+		// Workload names that differ from the engine's, in an env: the log
+		// is named for the workload, under .forge/logs/<env>/.
+		{EngineNATS, func(port int) Spec { return Spec{Name: "events", Env: "dev", Engine: EngineNATS, Port: port} }},
 		{EngineTemporal, func(port int) Spec {
-			return Spec{Name: "temporal", Engine: EngineTemporal, Port: port, TemporalNamespaces: []string{"forge-test"}}
+			return Spec{Name: "workflows", Env: "dev", Engine: EngineTemporal, Port: port, TemporalNamespaces: []string{"forge-test"}}
 		}},
 	} {
 		t.Run(tc.engine, func(t *testing.T) {
@@ -255,6 +257,16 @@ func TestSupervisedEnginesStartAndStop(t *testing.T) {
 				t.Fatalf("start: %v", err)
 			}
 			t.Cleanup(func() { _, _ = StopReport(project, spec) })
+			logPath := LogPath(project, spec.Env, spec.Name)
+			if _, err := os.Stat(logPath); err != nil {
+				t.Errorf("the engine's log should be %s, where the local collector tails it: %v", logPath, err)
+			}
+			legacy := filepath.Join(spec.dataDir(project), tc.engine+".log")
+			if runtime.GOOS != "windows" {
+				if got, err := filepath.EvalSymlinks(legacy); err != nil || !sameDir(got, logPath) {
+					t.Errorf("the old path %s should resolve to %s: got %q, %v", legacy, logPath, got, err)
+				}
+			}
 			st, err := StatusOf(ctx, project, spec)
 			if err != nil || !st.Running || !st.Ready || st.Port != spec.Port {
 				t.Fatalf("status after start: %+v, %v", st, err)

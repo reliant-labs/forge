@@ -4,11 +4,12 @@ forge is semver at major 1 (owner, 2026-11-05). Within v1 a change to `pkg/`
 never removes or reshapes an exported API: **deprecate it instead** — keep the
 old identifier working beside the new one, mark it `// Deprecated: use <new>.`,
 and leave its removal to a future major, which only the owner cuts. The API
-gate fails every incompatible change unless the **owner** applied the
-`breaking:approved` label (its `labeled` event must name the owner's account,
-`APIGATE_OWNERS`, default `reliant-01`; locally, `-owner-approved`). An accepted
-break still may not leave the cost to the next person who pins forge: **the
-breaking PR ships its migration**, as below. Two checks hold that line.
+gate fails every incompatible change unless the **owner** accepted it with the
+`breaking:approved` label (its `labeled` event must name the owner's account, or
+the Reliant bot applying it on the owner's instruction: `APIGATE_OWNERS`,
+default `reliant-01,reliant-labs[bot]`, owner decision 2026-11-19; locally,
+`-owner-approved`). An accepted break still may not leave the cost to the next
+person who pins forge: **the breaking PR ships its migration**, as below. Two checks hold that line.
 
 |                     | what it checks                                                         | where                                                                           | when                                                             |
 | ------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |

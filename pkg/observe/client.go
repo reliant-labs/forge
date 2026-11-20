@@ -44,6 +44,8 @@ const defaultClientTimeout = 30 * time.Second
 // ClientStackDeps configures NewClientStack. The zero value is a working
 // production default: shared http.DefaultTransport pool, 30s timeout,
 // otelconnect + request-ID forwarding interceptors.
+//
+// connect-go v2 projects use ClientStackDepsV2.
 type ClientStackDeps struct {
 	// Timeout bounds each outbound request end-to-end (http.Client.Timeout).
 	// Zero applies the 30s default. Negative disables the timeout entirely —
@@ -84,6 +86,8 @@ type ClientStack struct {
 // error surface is otelconnect interceptor construction (never fails under a
 // correctly-installed OTel SDK, but is not swallowed — an uninstrumented
 // outbound edge should be loud).
+//
+// connect-go v2 projects use NewClientStackV2.
 func NewClientStack(deps ClientStackDeps) (ClientStack, error) {
 	timeout := deps.Timeout
 	switch {
@@ -120,6 +124,8 @@ func NewClientStack(deps ClientStackDeps) (ClientStack, error) {
 //
 // It is included in NewClientStack's canonical chain; it is exported for
 // projects assembling a bespoke client chain.
+//
+// connect-go v2 projects use ClientRequestIDInterceptorV2.
 func ClientRequestIDInterceptor() connect.Interceptor {
 	return &clientRequestIDInterceptor{}
 }

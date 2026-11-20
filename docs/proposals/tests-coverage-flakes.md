@@ -1,9 +1,10 @@
 # Proposal: Tests — coverage, results and flaky tests as a forge default
 
-**Status:** proposal. The owner settled decisions 1, 2 and 4 and the two
+**Status:** proposal. The owner settled all five decisions and the two
 smaller calls on 2026-11-20 ([Decisions](#decisions-owner-2026-11-20)).
-Decisions 3 (coverage source) and 5 (retention) were reopened and are
-re-argued in [Amendment 1](#amendment-1-coverage-source-and-retention-2026-11-20).
+Decisions 3 (coverage source) and 5 (retention) were reopened and then decided
+on the research in [Amendment 1](#amendment-1-coverage-source-and-retention-2026-11-20).
+Where the body below disagrees with those two, the decisions win.
 Nothing here is implemented in forge, control-plane or reliant.
 **Date:** 2026-11-20
 **Scope:** forge (test capture, coverage merge, instrumented builds, KCL, CLI,
@@ -621,9 +622,10 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
   never cut a release can still record tests: forge itself has no deployed env.
   So the first `RecordTestRun` registers the project identity under the same
   rule `CutRelease` uses (C2).
-- **No source code is stored by default.** Coverage keeps file paths,
-  positions, counts and each covered file's git blob id. Where the browser gets
-  source is [Amendment 1, part A](#a-where-the-coverage-browser-gets-source).
+- **No source code is stored.** Coverage keeps file paths, positions, counts
+  and each covered file's git blob id. The browser fetches source from the
+  linked GitHub repo at view time
+  ([Amendment 1, part A](#a-where-the-coverage-browser-gets-source)).
 - **Pass rows are implied, not stored** ([Amendment 1, part B](#b-retention)).
   `test_case_results` holds only fail, skip and retry-pass rows. Each run
   records which packages it ran, so a test in a package the run covered with
@@ -657,7 +659,7 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
   reports, and on opt-in projects it files and closes issues and opens
   quarantine PRs through the GitHub connection (once per test and transition).
 - **`test_retention`**, daily, collects blobs and case partitions past the
-  plan's retention, keeping anything a retained release references
+  retention rules ([Amendment 1, part B](#b-retention)), keeping anything a retained release references
   (`deploystore.RetainedReleaseIDs`, the vulnstore rule).
 - **Fairness.** Per-org concurrency caps and bounded batches, as in
   `vuln_rescan`.
@@ -730,9 +732,11 @@ yet") and keeps the local record.
 
 ### 2.5 Retention and billing
 
-> **Superseded** by [Amendment 1, part B](#b-retention). Retention is by branch
-> class and count, not a flat number of days. The text below is the original
-> proposal, kept for the record.
+> **Superseded** by [Amendment 1, part B](#b-retention) and decision 5. One
+> rule set, the same for every org (default branch's newest 50 reports plus
+> daily summaries, other branches latest-only, releases keep theirs), counted
+> against the org's global storage tier and tracked, not charged, until it
+> exists. The text below is the original proposal, kept for the record.
 
 - **Retention is a plan-catalog block,** the template being
   `product_events_retention_days`: `tests.retention_days {free: 30, paid: 180}`.
@@ -1058,7 +1062,7 @@ the same parallel group can run at the same time. → means "blocked by".
 | C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to `deploy:read` holders; project identity on first upload                        | control-plane             | M    | C1                         | B              |
 | C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                | control-plane             | M    | C2, F1 released and pinned | C              |
 | C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                     | control-plane             | M    | C2                         | C (with C3)    |
-| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention`, the plan-catalog `tests.retention_days`, admin RPCs                                                | control-plane             | M    | C3                         | D              |
+| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention` (the rules in Amendment 1, part B) and the `test_storage_gib` shadow meter, admin RPCs              | control-plane             | M    | C3                         | D              |
 | C6  | Releases: bind commit reports at `CutRelease` and on later ingest (`deploy_release_tests`); `Promote` refuses a `cover` digest on a persistent env; advertise `release-test-evidence` and `refuses-cover-variant` | control-plane             | S    | C3, F5                     | D              |
 | F10 | forge hosted: `report --upload`, `collect` uploads, reads (`coverage`, `runs`, `flakes`) from the control plane, `Release.Tests` from the server, `Unimplemented` handled                                         | forge                     | S    | C1, F3, F6                 | C              |
 | P1  | Pin bumps: reliant to the forge with F1–F10, then control-plane in lockstep                                                                                                                                       | reliant, control-plane    | S    | F1–F10 released            | E              |
@@ -1114,6 +1118,9 @@ detection with no control-plane change. The dogfood steps that only need the
 local part (D1a, and D2a and D3a once pinned) do not wait for phase 2.
 
 ## 9. Decisions for the owner
+
+> All five are settled. See [Decisions](#decisions-owner-2026-11-20); 3 and 5
+> were decided differently from the recommendations below.
 
 1. **Where Tests lives in the nav** ([3.1](#31-where-it-lives)).
    (a) A Tests group after Deployments (Overview, Coverage, Runs, Flaky
@@ -1175,7 +1182,9 @@ Two smaller calls go the recommended way unless vetoed:
 ## Decisions (owner, 2026-11-20)
 
 The owner took the recommended option on decisions 1, 2 and 4 and on both
-smaller calls. These are settled, and implementation follows them:
+smaller calls, and then decided the two reopened questions (3 and 5) after
+[Amendment 1](#amendment-1-coverage-source-and-retention-2026-11-20). All of
+these are settled, and implementation follows them:
 
 1. **Nav: (a).** A **Tests** group after Deployments, with Overview,
    Coverage, Runs and Flaky tests, plus a Tests tab on release detail, a Tests
@@ -1184,12 +1193,32 @@ smaller calls. These are settled, and implementation follows them:
 2. **Previews: (a).** A preview runs the release's `cover` variant. It is the
    same commit built with `-cover`, recorded on the release, and never
    promotable to a persistent env ([1.3](#13-instrumented-builds-integration-and-e2e-coverage)).
-3. _Reopened._ See [Amendment 1, part A](#a-where-the-coverage-browser-gets-source).
+3. **Coverage source: GitHub only, nothing stored.** The owner: "Just do
+   GitHub for now, if we find shortcomings we can adjust later. Let's not store
+   the excess data." The coverage browser fetches each file from the project's
+   linked GitHub repository when it is viewed, by the git blob id forge sends
+   with every report. Without a linked GitHub repo, or for a file whose blob is
+   not in any commit, the browser shows line numbers and hit counts only. No
+   source upload exists, not even as an opt-in, and our own repos use the same
+   path ([Amendment 1, part A](#a-where-the-coverage-browser-gets-source)).
 4. **Scopes: (a).** A new `tests:read`, granted on day one to every
    `deploy:read` holder, and a new narrow `tests:write`. `RecordTestRun` also
    accepts `deploy:write` ([2.4](#24-tenancy-and-grants-fails-closed)).
-5. _Reopened._ See [Amendment 1, part B](#b-retention). The owner's note:
-   "although 30 is ok too".
+5. **Retention: one simple rule set, under the org's global storage tier.** The
+   owner: "I don't love all of our scattered storage tier policies. Can we have
+   one global storage tier? Or no? I prefer simple for now." A separate design
+   for one global storage tier has started. Tests uses the fewest knobs that
+   work, the same for every org:
+
+   - the default branch keeps its newest reports in full, plus a daily
+     summary;
+   - every other branch keeps only its latest report, deleted a day after the
+     branch merges or closes;
+   - a release keeps its report while the release is kept.
+
+   Tests has no allowance of its own and no free/paid split. Its storage
+   counts against the org's global storage tier once that exists. Until then
+   it is tracked and not charged ([Amendment 1, part B](#b-retention)).
 
 The two smaller calls are settled too:
 
@@ -1201,12 +1230,13 @@ The two smaller calls are settled too:
 
 ## Amendment 1: coverage source and retention (2026-11-20)
 
-The owner reopened two decisions with these questions. On source: "What does
-gocov do? Should we store the full code file, or snapshots? Doesn't a coverage
-report contain enough detail in the first place? Or maybe we upload surrounding
-lines?" On retention: by day or last N, non-default branches kept 1 day, "could
-do better on retention", and perhaps fitting under the 10 GB free-tier quota.
-This amendment answers both. It changes no settled decision.
+The owner reopened decisions 3 and 5 with these questions. On source: "What
+does gocov do? Should we store the full code file, or snapshots? Doesn't a
+coverage report contain enough detail in the first place? Or maybe we upload
+surrounding lines?" On retention: by day or last N, non-default branches kept 1
+day, "could do better on retention", and perhaps fitting under the 10 GB
+free-tier quota. This amendment records the research and the result. The
+owner's decisions are [above](#decisions-owner-2026-11-20).
 
 ### How Go coverage tools work: no format carries source
 
@@ -1273,160 +1303,131 @@ is line numbers with hit counts.
   rising to 12,500, or 15,000 on Enterprise Cloud
   ([blobs](https://docs.github.com/en/rest/git/blobs),
   [rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)).
-- **Dedup** keys stored blobs by that id.
 - **Mismatch detection.** A file with uncommitted changes has a blob id that
   is in no commit, so the UI says "source not available for this version"
   instead of drawing wrong highlights.
 
-**Amendment to 1.1 (accepted with this amendment either way):**
-`forge.test.coverage/v1` carries a repo-relative path and a git blob id for
-every covered file, next to the import path. forge gets them from `git ls-files
--s`, or `git hash-object` for dirty files.
-
 ### A. Where the coverage browser gets source
 
-**Sizes, measured 2026-11-20** on `origin/main`, counting non-test,
-non-generated `.go` files. These are three of the highest-churn repos there
-are, at 40 to 50 commits a day on main:
+**Decided: fetch from the linked GitHub repo at view time, store none.**
 
-| Repo              | Source a snapshot would hold          | New or changed source blobs on main, last 30 days         |
-| ----------------- | ------------------------------------- | --------------------------------------------------------- |
-| forge             | 2,430 files, 26.6 MB raw, 8.1 MB gzip | 1,221 commits, 4,671 blobs, 125 MB raw (about 38 MB gzip) |
-| control-plane     | 2,300 files, 17.6 MB, 4.9 MB gzip     | 1,532 commits, 4,657 blobs, 82 MB (about 25 MB gzip)      |
-| reliant (Go only) | 2,304 files, 20.6 MB, 5.6 MB gzip     | 1,459 commits, 5,337 blobs, 121 MB (about 36 MB gzip)     |
+- **What forge sends.** Every `forge.test.coverage/v1` document carries a
+  repo-relative path and a git blob id for each covered file, next to the
+  import path. forge gets them from `git ls-files -s`, or from `git
+hash-object` for a file with uncommitted changes. Blob ids are always sent,
+  and there is no knob.
+- **How a file is shown.** A new reliant RPC, `GetCoverageSource(project,
+blob_id)`, reads the blob through the project's GitHub connection (`GET
+/repos/{o}/{r}/git/blobs/{sha}`). It serves only blob ids that appear in a
+  retained report of that project, so `tests:read` cannot be used to read
+  arbitrary repository files. A blob is immutable, so the response can be
+  cached briefly by blob id. The viewer must hold `tests:read` on the project.
+- **When there is no source.** There are four cases:
 
-A typical customer service (about 30 packages, about 5 commits a day) is 1 to
-3 MB of source, and roughly 1 to 5 MB of new blobs a month.
+  - no linked GitHub repo (a local-only folder, GitLab, Bitbucket, a GitHub
+    Enterprise Server we cannot reach);
+  - a blob in no commit (the run had uncommitted changes);
+  - a blob GitHub no longer has;
+  - a revoked connection.
 
-| Option                                                                          | What is stored                          | Storage cost                                                                                                                                                                                                                                                                         | Works for                                                                                                                                                                                          | Security                                                                                                                                                                                                                                                                                                                                                              | Build cost                                                                                                                                                     |
-| ------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **(a) Fetch at view time** by blob id from the linked repo                      | No source. Blob ids in the report       | 0. A short-lived cache of fetched blobs, keyed by blob id                                                                                                                                                                                                                            | Repos linked through Reliant's GitHub connection. Not local-only repos, GitLab or Bitbucket (reliant has no connection for them today), a GitHub Enterprise Server we cannot reach, or dirty trees | No custody: we read on request, as Codecov and Coveralls do. Reads are limited to blob ids that appear in a retained report of that project, so `tests:read` cannot be used to read arbitrary repo files                                                                                                                                                              | A reliant RPC over the existing GitHub connection (reliant already reads repo content through `github__repo_get_content`), plus the viewer                     |
-| **(b) Content-addressed snapshot** of covered files, deduped per org by blob id | Each covered file's bytes, once per org | First upload is the whole covered tree (5–8 MB gzip for our repos, 1–3 MB for a typical project), then only new blobs. The steady state is the head snapshot plus blobs changed inside the retention window (part B): about 30–50 MB per repo for us, a few MB for a typical project | **Everything**: local folders, GitLab, self-hosted git, dirty trees, and deleted or force-pushed commits                                                                                           | **We hold customer source.** That means encrypting at rest with a per-org envelope key (OpenBao transit, as the delivery signer already uses per org), reading only through the API under `tests:read` and never through public URLs, cascading on org delete, a user-facing "purge source", an update to the data-processing terms, and a larger breach blast radius | Upload negotiation (forge sends `path → blob id`, and the server answers with the ids it lacks), a blob store with a copy-state machine, and a reference sweep |
-| **(c) Hunks only**: N lines around uncovered or changed lines                   | Fragments of source                     | Smaller than (b) per report, but hunks move whenever coverage or code moves, so they barely dedupe across commits, and in practice can cost more than (b)                                                                                                                            | Same as (b), but the file view is partial                                                                                                                                                          | **The same custody as (b).** Partial source is still source, so it buys no security                                                                                                                                                                                                                                                                                   | The most complex: hunk selection and stitching, and a viewer for gaps                                                                                          |
-| **(d) Line numbers and hit counts only**                                        | Nothing                                 | 0                                                                                                                                                                                                                                                                                    | Everything                                                                                                                                                                                         | None                                                                                                                                                                                                                                                                                                                                                                  | None. This is every option's fallback                                                                                                                          |
+  In every case the file view shows line numbers and hit counts, with one line
+  saying why. The numbers (per lane, per package, per file, per line and diff
+  coverage) do not need source, so they are unaffected. The UI never draws
+  highlights over source that does not match the blob, because the experiment
+  above shows that is silently wrong.
 
-**Blob dedup and retention, for (b).** Blobs are keyed `(org, blob id)`, never
-across orgs, because a cross-org content address would reveal that two tenants
-hold the same file. A blob has no expiry of its own. A daily mark-and-sweep
-keeps a blob while any retained report references it (part B's rules, plus
-releases through `deploystore.RetainedReleaseIDs`), with a 24h grace for
-uploads not yet bound. Deletion goes through vulnstore's copy-state machine.
-Expiring an old commit therefore frees only the blobs no newer retained report
-shares, and storage tracks "head plus churn inside the window", not "commits
-times repo size".
+- **Not stored, anywhere:** no source snapshots, no hunks, no upload path. If
+  GitHub-only proves short (the owner: "if we find shortcomings we can adjust
+  later"), the blob ids already in every report are what a later fetcher for
+  GitLab or Bitbucket, or an upload path, would key on. Old reports would need
+  no change.
 
-**Recommendation: (a) by default, (d) as its fallback, and (b) as an opt-in
-(`tests.source: upload`). Not (c).**
+The options that were weighed, kept for the record: (a) fetch at view time,
+**chosen**; (b) a content-addressed snapshot of the covered files, deduplicated
+per org by blob id; (c) only the lines around uncovered or changed lines; (d)
+line numbers and hit counts only, which is now (a)'s fallback.
 
-- (a) is what Codecov and Coveralls do, and it covers the common case, a
-  GitHub-linked repo, with no custody of customer source and no storage.
-- The projects (a) cannot serve (local-only, GitLab, unreachable self-hosted,
-  dirty-tree runs) still get every number and the line-and-hit view under (d).
-  With one line of forge.yaml, they get full source through (b).
-- Custody of source is a consent decision, so it is opt-in, and opting in is
-  reported in the project's settings.
-- Our three repos set `upload`, which dogfoods the path. It also means their
-  dev-stack and dirty-tree runs show source.
-- (c) costs the same custody as (b), with a worse viewer and worse dedup.
+Measured on `origin/main` on 2026-11-20, a snapshot of the covered Go source
+would have been:
 
-forge.yaml gets `tests.source: fetch | upload | none`. `fetch` is the default
-and degrades to line numbers when no linked repo can serve the blob. `none`
-sends paths and positions only, without blob ids.
+| Repo          | Snapshot size | New or changed blobs in 30 days |
+| ------------- | ------------- | ------------------------------- |
+| forge         | 8.1 MB gzip   | about 38 MB gzip                |
+| control-plane | 4.9 MB gzip   | about 25 MB gzip                |
+| reliant       | 5.6 MB gzip   | about 36 MB gzip                |
+
+With (b) we would have held customer source, which needs encryption,
+purge and a breach story. That is the data the owner chose not to keep.
 
 ### B. Retention
 
-**What the "10 GB" is.** control-plane has **no org-wide storage quota**.
-Each stored product has its own meter and its own allowance, and the meters are
-independent counters: `ck_cp_rub_kind` in
-`control-plane/db/migrations/20261106085053_pricing_v2_shadow_kinds.up.sql:33-43`,
-and migration 00079's header. The 10 GB users see is **observability: 10 GiB
-of stored ingest per org per month**, then $0.10/GiB
-(`internal/plansconfig/pricing.yaml:449-454`). The other storage figures:
+**Decided: one rule set, the same for every org, under the global storage
+tier.**
 
-| Resource                | Allowance                                                    |
-| ----------------------- | ------------------------------------------------------------ |
-| Free static site        | 1 GiB (`computegate/gate.go:20`)                             |
-| Registry                | 5 GiB free per org (shadow-billed, charging nothing yet)     |
-| Managed Postgres disk   | nothing included, about $0.18/GiB-month                      |
-| Product-event retention | 90 days free, 400 paid, 400 the cap (`observability.go:116`) |
-| Object storage          | no meter                                                     |
+The research behind it:
 
-So "under the 10 GB" would put a storage total inside a monthly ingest
-allowance. Those are two different units.
+- control-plane has **no org-wide storage quota today**. Each stored product
+  has its own meter and allowance (`ck_cp_rub_kind` in
+  `control-plane/db/migrations/20261106085053_pricing_v2_shadow_kinds.up.sql:33-43`).
+- The 10 GB users see is **observability's 10 GiB of stored ingest per org
+  per month** (`internal/plansconfig/pricing.yaml:449-454`).
+- Other caps are separate:
+  - static site: 1 GiB;
+  - registry: 5 GiB, shadow-billed;
+  - managed Postgres disk: nothing included;
+  - object storage: no meter.
 
-**Sizes per run, measured 2026-11-20** on a fifth of forge's packages (49
-sampled, about 245 total), scaled to the whole module. Phase 0
-(`tests/phase0-results.md`) refines these.
+That scatter is what the global storage tier design replaces. Tests adds no
+new per-product cap to it.
 
-| Piece                                    | forge (about 245 packages)                                         | Typical service (about 30 packages) |
-| ---------------------------------------- | ------------------------------------------------------------------ | ----------------------------------- |
-| Unit cover profile                       | about 8.9 MB raw, **0.8 MB gzip** (113k blocks, about 1,400 files) | about 100 KB gzip                   |
-| `go test -json` stream                   | about 20 MB raw, 1.5 MB gzip (about 20k test results)              | about 150 KB gzip                   |
-| Normalised results (cases)               | about 150 KB gzip                                                  | about 15 KB                         |
-| Postgres per run, with pass rows implied | about 50 KB (per-package rows plus non-pass rows)                  | about 5 KB                          |
-| **One stored commit report**             | **about 1 MB**                                                     | **about 120 KB**                    |
+**The rules** (`TestService` retention, applied by the daily `test_retention`
+worker):
 
-The proposed policy, by branch class and count rather than a flat number of
-days:
+| What                        | Kept                                                                                                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Default branch**          | The newest **50** commit reports in full (results, per-file coverage, blob ids), and a **daily summary** (totals, per-lane and per-package coverage) for **400 days**, the platform's existing retention cap    |
+| **Any other branch or PR**  | Only its **latest** report. It is deleted **1 day** after the branch merges or closes, or after **30 days** with no upload, which counts as closed. Merge and close come from the GitHub connection when linked |
+| **Releases**                | The release commit's report, for as long as the release is retained (`deploystore.RetainedReleaseIDs`: live releases, rollback targets, the newest per project)                                                 |
+| **Flake events and states** | 400 days. Rows only, about 100 bytes each, which is what scores and history read                                                                                                                                |
+| **Raw uploads**             | Deleted once ingest succeeds. The normalised documents are the record                                                                                                                                           |
 
-| Class                                               | Full detail (results, per-file coverage, source refs)                                                                                                                                                                                                                                                                  | Summary (totals, per-lane %, per-package %)                                |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| **Default branch**                                  | The newest **30** commit reports (paid: **200**), plus **each day's last report** for 30 days (paid: 90)                                                                                                                                                                                                               | One per day for **400 days** (the platform's retention cap), on both tiers |
-| **PRs and other branches**                          | The **latest report per branch**, kept until the branch merges or closes, then **1 day** (paid: 7). Superseded reports on a branch: **1 day**. A branch with no upload for **30 days** counts as closed (Sonar's precedent). Merge and close come from the GitHub connection, or from that inactivity rule without one | None: a merged branch's numbers live on in the default branch's reports    |
-| **Releases**                                        | The release commit's report, **for as long as the release is retained** (live releases, rollback targets, the newest per project)                                                                                                                                                                                      | Same                                                                       |
-| **Flake events and states**                         | 400 days (rows only, about 100 B each)                                                                                                                                                                                                                                                                                 | —                                                                          |
-| **Raw uploads**                                     | **24h after a successful ingest**. The normalised documents are the record. A parser fix applies to new runs                                                                                                                                                                                                           | —                                                                          |
-| **Source blobs** (only with `tests.source: upload`) | Kept while a retained report references them                                                                                                                                                                                                                                                                           | —                                                                          |
+**Knobs.** There is one, `tests.retention.default_branch_reports` (default
+50), and a project may only lower it. Every other number is a constant: no
+free/paid split, no per-plan block in `pricing.yaml`, no separate Tests
+allowance. The org's tier decides how much an org may store in total.
 
-What the policy costs, one project, steady state:
+**Storage and the tier.**
 
-| Project                                                                          | Default branch                             | Branches                                                        | Summaries   | Source (opt-in) | Total                                 |
-| -------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------- | ----------- | --------------- | ------------------------------------- |
-| forge-sized, about 40 main commits (measured) and an assumed 100 PR pushes a day | 30 newest plus 30 daily heads, about 60 MB | about 30 open PRs plus 1 day of superseded pushes, about 130 MB | about 12 MB | about 45 MB     | **about 250 MB** (paid: about 450 MB) |
-| Typical, about 5 commits and 3 PR pushes a day                                   | about 7 MB                                 | about 3 MB                                                      | about 2 MB  | about 3 MB      | **about 15 MB**                       |
+- Tests writes its stored bytes per org to a `test_storage_gib` meter. It is
+  **tracked, not charged**, the registry's shadow precedent.
+- When the global storage tier exists, that meter counts against it under the
+  tier's rules.
+- Tests never refuses an upload because of storage. What happens at a full
+  tier is the tier design's to decide. If it asks products to shed data, Tests
+  sheds default-branch reports beyond the newest 10 first, and never
+  summaries, releases or open branches' latest reports.
 
-This beats "30 days of everything" on what users look at: main's
-trend for more than a year, every open PR, every release still running, and a
-month of browsable daily heads. It drops what nobody opens: every superseded PR
-push, every intermediate main commit after a day, and raw uploads after ingest.
-It also stops one busy PR from costing as much as a month of main.
+**Sizes.** These were measured on 2026-11-20 on a fifth of forge's packages
+and scaled; phase 0 (`tests/phase0-results.md`) refines them:
 
-**The quota.** Options:
+- **One stored commit report** is about **1 MB** for forge (about 245
+  packages: a 0.8 MB gzip cover profile plus normalised results and about 50 KB
+  of Postgres rows) and about **120 KB** for a typical 30-package service.
+- **Pass rows are implied**, not stored (2.1), which is what keeps the
+  Postgres share small.
 
-- **(i) Tests gets its own allowance, 1 GiB stored per org free,** like a
-  static site's 1 GiB, with `test_storage_gib` added as a **shadow meter**
-  first (the registry precedent) so we learn real numbers before charging.
-  Retention keeps a typical org far below it. Over the allowance, detail is
-  thinned oldest-first: default-branch reports beyond the newest 30 go first,
-  then the daily heads. Summaries and releases are never thinned. An upload is
-  **never refused** (report-only), and the Tests page says what was thinned.
-- **(ii) Count tests storage against the observability 10 GiB.** That mixes a
-  stored total with a monthly ingest allowance, and ties Tests to observability
-  billing.
-- **(iii) A new org-wide storage quota across every stored product** (static
-  sites, registry, Postgres, SBOM copies, tests). That is a pricing change for
-  every product and belongs in its own pricing proposal.
+| Project                                                      | Default branch (50 reports) | Open branches (latest each) | Summaries (400 days) | Total           |
+| ------------------------------------------------------------ | --------------------------- | --------------------------- | -------------------- | --------------- |
+| forge-sized (about 40 main commits a day, about 30 open PRs) | about 50 MB                 | about 30 MB                 | about 12 MB          | **about 90 MB** |
+| Typical (about 5 commits a day, a few open PRs)              | about 6 MB                  | about 0.5 MB                | about 2 MB           | **under 10 MB** |
 
-**Recommendation: the class-and-count policy above, with (i).** If the owner
-wants one storage number for the whole platform, (iii) can absorb Tests' meter
-later without changing this policy.
+**Tasks changed by this amendment:**
 
-**Plan catalog.** A `tests:` block in `pricing.yaml`, modelled on
-`product_events_retention_days` and holding `{default_branch_reports: {free:
-30, paid: 200}, daily_heads_days: {free: 30, paid: 90}, closed_branch_days:
-{free: 1, paid: 7}, summary_days: 400, storage_gib: {free: 1}}`. A project's
-forge.yaml can lower any of these, never raise them.
-
-**Tasks changed:**
-
-- **C2** gains the blob-id columns, `test_source_blobs`, and the non-pass-only
-  case table.
-- **C5** implements this policy and the blob sweep instead of flat days, and
-  adds the shadow meter.
-- **F3** adds blob ids and repo paths to `forge.test.coverage/v1`.
-- **New W2b** (reliant, S): a `GetCoverageSource(project, blob_id)` RPC over
-  the GitHub connection, restricted to blob ids in a retained report, with the
-  viewer's degraded states.
-- **New C7** (control-plane, M, opt-in path): upload negotiation and the
-  `test_source_blobs` store with per-org envelope encryption, purge, and the
-  sweep. C7 can follow phase 3.
+- **C2** adds blob-id and repo-path columns and the non-pass-only case table.
+- **C5** implements these rules and the `test_storage_gib` shadow meter. It
+  drops the plan-catalog `tests.retention_days`.
+- **F3** puts blob ids and repo paths in `forge.test.coverage/v1`.
+- **New W2b** (reliant, S): `GetCoverageSource` over the GitHub connection,
+  restricted to blob ids in a retained report, with the line-numbers fallback
+  and its reasons.
+- No source-upload task exists.

@@ -181,7 +181,7 @@ forge.yaml ` + "`envs:`" + ` declares (the legacy shorthand) stays in forge.yaml
   forge obs init prod --json   # the same, as a document
 
 Rotate or revoke a token with ` + "`forge obs tokens`" + `; route alerts with ` + "`forge obs receivers`" + `.
-Language-by-language setup: forge skill load observability (section "Monitoring only, any language").`,
+Language-by-language setup: ` + Name() + ` skill load observability/monitoring-only.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runObsInit(cmd.Context(), defaultObsInitDeps(cmd), args, o)
 		},
@@ -887,7 +887,7 @@ func writeObsInit(d obsInitDeps, doc obsInitDoc, o obsInitOpts, selfHosted strin
 		env := doc.Envs[0].Env
 		fmt.Fprintf(w, "\nnext: forge obs status %s · forge obs issues %s · forge obs receivers create … (alerts to Slack, PagerDuty, a webhook)\n", env, env)
 	}
-	fmt.Fprintln(w, "per language: forge skill load observability (\"Monitoring only, any language\")")
+	fmt.Fprintln(w, "per language: "+Name()+" skill load observability/monitoring-only")
 	return nil
 }
 

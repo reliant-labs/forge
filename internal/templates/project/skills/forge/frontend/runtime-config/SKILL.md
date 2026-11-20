@@ -39,3 +39,26 @@ The backend half uses the same reference. A workload's `CORS_ORIGINS` names the 
 ```kcl
 wl.api | {env = {CORS_ORIGINS = forge.WorkloadURL {workload = "web"}}}
 ```
+
+## A frontend hosted elsewhere, calling a forge API
+
+A frontend you keep on Vercel, Netlify or your own host can call a forge API on Reliant hosting (or any env). forge does not build or serve that frontend, so nothing above resolves its URL: the two halves are literal values.
+
+1. **Give the API a hostname on the frontend's own registrable domain.** The session cookie forge's sign-in sets is `SameSite=Lax`, so a browser sends it only to the same *site*. `app.example.com` and `api.example.com` are the same site. `my-app.vercel.app` and the API's platform hostname are not, and there every call after sign-in answers 401. With no sign-in (public RPCs only), any hostname works.
+
+   ```bash
+   forge domain add api.example.com --env prod      # publish the DNS it prints
+   forge domain bind api.example.com --env prod --target api
+   ```
+
+2. **Allow the frontend's origin on the API, with credentials.** Set both on the service in `deploy/kcl/<env>/main.k`. `CORS_ORIGINS` is the frontend's exact origin, comma-separated for several. `CORS_ALLOW_CREDENTIALS` lets the browser send the cookie:
+
+   ```kcl
+   wl.api | {env = {CORS_ORIGINS = "https://app.example.com", CORS_ALLOW_CREDENTIALS = "true"}}
+   ```
+
+   A wildcard origin with credentials is refused at config load, because browsers reject it.
+
+3. **Call the API with credentials from the frontend.** Point its base URL at `https://api.example.com` through the frontend's own env config, and send `credentials: "include"` on every request. forge's generated `src/lib/connect.ts` does this (`fetchWithSession`); copy it if the frontend was not scaffolded by forge.
+
+Preview deploys on the frontend's host get their own origins. List each one you need in `CORS_ORIGINS`, or sign in only on the production origin.

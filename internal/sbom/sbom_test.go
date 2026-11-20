@@ -2,6 +2,7 @@ package sbom
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -43,7 +44,34 @@ func (f *fakeSyft) Run(_ context.Context, bin string, args, env []string) ([]byt
 	if f.out != nil {
 		return f.out, nil
 	}
-	return []byte(fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"source":%q}}`, src)), nil
+	// Like syft, the document names its subject by --source-name.
+	return []byte(fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"source":%q,"component":{"name":%q,"version":%q}}}`,
+		src, argAfter(args, "--source-name"), argAfter(args, "--source-version"))), nil
+}
+
+func argAfter(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// subjectName is the name a generated document records for its subject.
+func subjectName(t *testing.T, doc []byte) string {
+	t.Helper()
+	var d struct {
+		Metadata struct {
+			Component struct {
+				Name string `json:"name"`
+			} `json:"component"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(doc, &d); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	return d.Metadata.Component.Name
 }
 
 func (f *fakeSyft) sources() []string {
@@ -222,23 +250,71 @@ func TestGenerate_CacheHitRunsNoSyft(t *testing.T) {
 func TestCache_DamagedEntryIsAMiss(t *testing.T) {
 	t.Parallel()
 	cache := &Cache{Dir: t.TempDir()}
+	key := CacheKey{Generator: "syft@v1.57.2", Subject: imageDigest, SourceName: "ghcr.io/acme/api"}
 	doc := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6"}`)
-	if err := cache.Put("syft@v1.57.2", imageDigest, "", release.SBOMSourceImage, doc); err != nil {
+	if err := cache.Put(key, release.SBOMSourceImage, doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := cache.Get("syft@v1.57.2", imageDigest, ""); !ok {
+	if _, _, ok := cache.Get(key); !ok {
 		t.Fatal("a stored entry missed")
 	}
-	stem, _ := cache.stem("syft@v1.57.2", imageDigest, "")
+	stem, _ := cache.stem(key)
 	if err := os.WriteFile(stem+".cdx.json", []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","x":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := cache.Get("syft@v1.57.2", imageDigest, ""); ok {
+	if _, _, ok := cache.Get(key); ok {
 		t.Error("bytes that no longer hash to their digest were served")
 	}
 	var nilCache *Cache
-	if _, _, ok := nilCache.Get("syft@v1.57.2", imageDigest, ""); ok || nilCache.Put("g", imageDigest, "", "image", doc) != nil {
+	if _, _, ok := nilCache.Get(key); ok || nilCache.Put(key, "image", doc) != nil {
 		t.Error("a nil cache must miss and accept writes silently")
+	}
+}
+
+// The document records its subject's name (--source-name), so the name is
+// part of what the cache is keyed on: identical bytes under two names are two
+// documents, each naming its own artifact. The same name again, in another
+// project or release, is still one syft run.
+func TestGenerate_CacheKeysOnTheSourceName(t *testing.T) {
+	t.Parallel()
+	cache := &Cache{Dir: t.TempDir()}
+	targets := []Target{
+		{Name: "ghcr.io/acme/api", Kind: KindRegistry, Ref: "ghcr.io/acme/api@" + imageDigest, Subject: imageDigest},
+		{Name: "registry.example.com/mirror/api", Kind: KindRegistry, Ref: "registry.example.com/mirror/api@" + imageDigest, Subject: imageDigest},
+	}
+	first := &fakeSyft{}
+	g := &Generator{Tool: pinnedTool, Runner: first, Cache: cache, Concurrency: 1}
+	cold := g.Generate(context.Background(), targets)
+	if len(first.calls) != 2 {
+		t.Fatalf("two names over one digest ran syft %d time(s), want 2", len(first.calls))
+	}
+	for _, r := range cold {
+		if got := subjectName(t, r.Bytes); got != r.Target.Name {
+			t.Errorf("%s: SBOM names %q", r.Target.Name, got)
+		}
+	}
+	if cold[0].Ref.Digest == cold[1].Ref.Digest {
+		t.Errorf("two different documents share digest %s", cold[0].Ref.Digest)
+	}
+
+	again := &fakeSyft{}
+	warm := (&Generator{Tool: pinnedTool, Runner: again, Cache: cache}).Generate(context.Background(), targets)
+	if len(again.calls) != 0 {
+		t.Errorf("the same names over the same digest ran syft again: %v", again.calls)
+	}
+	for i, r := range warm {
+		if !r.Cached || r.Ref.Digest != cold[i].Ref.Digest || subjectName(t, r.Bytes) != r.Target.Name {
+			t.Errorf("%s: warm %+v names %q, want the cold document", r.Target.Name, r.Ref, subjectName(t, r.Bytes))
+		}
+	}
+
+	// A version the document records is part of the key too.
+	versioned := targets[0]
+	versioned.Version = "v2"
+	other := &fakeSyft{}
+	(&Generator{Tool: pinnedTool, Runner: other, Cache: cache}).Generate(context.Background(), []Target{versioned})
+	if len(other.calls) != 1 {
+		t.Errorf("a new source version reused another version's document: %d call(s)", len(other.calls))
 	}
 }
 

@@ -26,11 +26,11 @@ type Runner interface {
 	Run(ctx context.Context, bin string, args, env []string) ([]byte, error)
 }
 
-// CacheStore holds generated SBOMs keyed by generator, subject digest and
-// platform.
+// CacheStore holds generated SBOMs keyed by every input that decides their
+// bytes ([CacheKey]).
 type CacheStore interface {
-	Get(generator, subject, platform string) (data []byte, source string, ok bool)
-	Put(generator, subject, platform, source string, data []byte) error
+	Get(key CacheKey) (data []byte, source string, ok bool)
+	Put(key CacheKey, source string, data []byte) error
 }
 
 var (

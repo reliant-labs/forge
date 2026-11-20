@@ -380,7 +380,11 @@ func planReleaseSBOMTargets(in sbomCut, artifacts map[string]release.Artifact) (
 				// an earlier release was not built here.
 				kind = sbom.KindImage
 			}
-			add(name, sbom.Target{Kind: kind, Ref: name + "@" + digest, Subject: digest, Version: in.Version, Platform: sbomPlatform(art.Platforms)})
+			// No source version: the image's SBOM describes the image, which
+			// later releases carry unchanged (carried_from), and the release
+			// that ships it is the record's binding, not the document's. A
+			// release version here would also make every cut a cache miss.
+			add(name, sbom.Target{Kind: kind, Ref: name + "@" + digest, Subject: digest, Platform: sbomPlatform(art.Platforms)})
 		case release.KindFile:
 			path := fileArtifactPath(in.ProjectDir, in.OutputDir, name)
 			add(name, sbom.Target{Kind: sbom.KindBinary, Ref: path, Subject: art.Integrity, Version: art.Version})

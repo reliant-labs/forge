@@ -66,7 +66,7 @@ func (m *MockRunner) Run(ctx context.Context, bin string, args []string, env []s
 var _ Runner = (*MockRunner)(nil)
 
 // forge:section MockCacheStore
-// forge:hash=471e69995677f5ecf20c06c0e93a3a7f4c5593cd71eb04993117e434f49a6ed3
+// forge:hash=84d5ae49e183542b44ef5d953ec06fbacde46ce56b64c61a657da6752df6cd50
 
 // MockCacheStore is a test mock for the CacheStore interface.
 //
@@ -76,24 +76,24 @@ var _ Runner = (*MockRunner)(nil)
 // "MockCacheStore.<Method>Func not set" error.
 type MockCacheStore struct {
 	contractkit.Recorder
-	GetFunc func(string, string, string) ([]byte, string, bool)
-	PutFunc func(string, string, string, string, []byte) error
+	GetFunc func(CacheKey) ([]byte, string, bool)
+	PutFunc func(CacheKey, string, []byte) error
 }
 
 // Get records the call and delegates to GetFunc when set.
-func (m *MockCacheStore) Get(generator string, subject string, platform string) ([]byte, string, bool) {
-	m.Recorder.Record("Get", generator, subject, platform)
+func (m *MockCacheStore) Get(key CacheKey) ([]byte, string, bool) {
+	m.Recorder.Record("Get", key)
 	if m.GetFunc != nil {
-		return m.GetFunc(generator, subject, platform)
+		return m.GetFunc(key)
 	}
 	return nil, "", false
 }
 
 // Put records the call and delegates to PutFunc when set.
-func (m *MockCacheStore) Put(generator string, subject string, platform string, source string, data []byte) error {
-	m.Recorder.Record("Put", generator, subject, platform, source, data)
+func (m *MockCacheStore) Put(key CacheKey, source string, data []byte) error {
+	m.Recorder.Record("Put", key, source, data)
 	if m.PutFunc != nil {
-		return m.PutFunc(generator, subject, platform, source, data)
+		return m.PutFunc(key, source, data)
 	}
 	return contractkit.MockNotSet("MockCacheStore", "Put")
 }

@@ -199,7 +199,8 @@ func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Re
 	}
 	t.Subject = subject
 
-	if data, source, ok := g.Cache.Get(generator, t.Subject, t.Platform); ok {
+	key := CacheKey{Generator: generator, Subject: t.Subject, Platform: t.Platform, SourceName: t.Name, SourceVersion: t.Version}
+	if data, source, ok := g.Cache.Get(key); ok {
 		return okResult(t, generator, source, data, true)
 	}
 
@@ -214,7 +215,7 @@ func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Re
 		return unavailable(t, source, err.Error())
 	}
 	// A cache write failure costs the next cut a syft run, nothing more.
-	_ = g.Cache.Put(generator, t.Subject, t.Platform, source, data)
+	_ = g.Cache.Put(key, source, data)
 	return okResult(t, generator, source, data, false)
 }
 

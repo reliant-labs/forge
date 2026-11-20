@@ -34,7 +34,15 @@ func (f *cutSyft) Run(_ context.Context, _ string, args, _ []string) ([]byte, er
 	if err := f.fail[src[:strings.Index(src, ":")]]; err != nil {
 		return nil, err
 	}
-	return []byte(fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"component":{"name":%q}}}`, src)), nil
+	// Like syft, the document names its subject by --source-name (and the
+	// source it read, so a test can tell the reads apart).
+	name := ""
+	for i, a := range args {
+		if a == "--source-name" && i+1 < len(args) {
+			name = args[i+1]
+		}
+	}
+	return []byte(fmt.Sprintf(`{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"component":{"name":%q},"properties":[{"name":"read","value":%q}]}}`, name, src)), nil
 }
 
 func (f *cutSyft) calls() []string {
@@ -210,6 +218,64 @@ func TestGenerateReleaseSBOMs_RecordsAndStoresEachSBOM(t *testing.T) {
 	if again["ghcr.io/acme/api"].SBOM.Digest != artifacts["ghcr.io/acme/api"].SBOM.Digest ||
 		!strings.Contains(warn.String(), "1 recorded (1 from cache)") {
 		t.Errorf("cache hit: %+v / %s", again["ghcr.io/acme/api"].SBOM, warn.String())
+	}
+}
+
+// One image under two names (pushed to two repositories, or mirrored) is two
+// SBOMs: each names its own artifact, so their bytes and ledger digests
+// differ, though one cache holds both. A later release of the same names
+// reads both from the cache: the release version is not in the document.
+func TestGenerateReleaseSBOMs_SameDigestUnderTwoNames(t *testing.T) {
+	dir := newLedgerTestProject(t, "sbomtwonames")
+	fake := &cutSyft{}
+	useFakeSyft(t, fake, t.TempDir())
+	names := []string{"ghcr.io/acme/api", "registry.example.com/acme/api"}
+	cut := func(version string, names ...string) map[string]release.Artifact {
+		artifacts := map[string]release.Artifact{}
+		for _, n := range names {
+			artifacts[n] = sbomTestImage(sha("same"))
+		}
+		var warn bytes.Buffer
+		generateReleaseSBOMs(context.Background(), sbomCut{ProjectDir: dir, Env: "prod", Version: version}, artifacts, &warn)
+		return artifacts
+	}
+	// One name, then the other: the second must not be served the first's
+	// document from the cache.
+	first := cut("v1.0.0", names[0])
+	for k, v := range cut("v1.0.0", names[1]) {
+		first[k] = v
+	}
+	store := testStore(t, dir)
+	digests := map[string]string{}
+	for _, n := range names {
+		ref := first[n].SBOM
+		if !ref.HasSBOM() {
+			t.Fatalf("%s: %+v", n, ref)
+		}
+		data, err := store.GetSBOM(ref.Digest)
+		if err != nil {
+			t.Fatalf("%s: the ledger does not hold %s: %v", n, ref.Digest, err)
+		}
+		if !strings.Contains(string(data), fmt.Sprintf(`"component":{"name":%q}`, n)) {
+			t.Errorf("%s: its SBOM names another artifact: %s", n, data)
+		}
+		digests[n] = ref.Digest
+	}
+	if digests[names[0]] == digests[names[1]] {
+		t.Errorf("two documents naming different artifacts share ledger digest %s", digests[names[0]])
+	}
+	if n := len(fake.calls()); n != 2 {
+		t.Errorf("syft ran %d time(s) for two names, want 2", n)
+	}
+
+	second := cut("v1.0.1", names...)
+	if n := len(fake.calls()); n != 2 {
+		t.Errorf("a later release of the same names ran syft %d more time(s)", n-2)
+	}
+	for _, n := range names {
+		if second[n].SBOM.Digest != digests[n] {
+			t.Errorf("%s: v1.0.1 SBOM %s, want the cached %s", n, second[n].SBOM.Digest, digests[n])
+		}
 	}
 }
 

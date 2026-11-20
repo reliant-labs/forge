@@ -33,8 +33,8 @@ package generator
 // Exported package functions of exactly <entity>_repo_ext.go — the file forge
 // scaffolds and names — whose first two parameters are a context.Context and
 // forge's orm.Context (contract.CollectExtQueries; it shares derive.go's
-// syntax-only import resolution and doc copying). Sibling files are not read:
-// `<entity>_repo_ext_*.go` would be ambiguous across entities (Plan's
+// syntax-only import resolution and doc copying). Sibling files are not searched
+// for query functions: `<entity>_repo_ext_*.go` would be ambiguous across entities (Plan's
 // plan_repo_ext_x.go is also entity PlanRepoExt's seam), and the one file is
 // the seam's documented home. An exported function that takes a handle but
 // cannot be collected is named in one ℹ️ line per entity; a file that cannot
@@ -110,6 +110,7 @@ func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity
 		}
 	}
 	var project map[string]string // name → "internal/db/x.go:12", read once, lazily
+	var collector contract.ExtQueryCollector
 	var exts []ormOutput
 	var notes []string
 	for _, ent := range entities {
@@ -120,7 +121,7 @@ func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity
 		}
 		rel := relDir + "/" + extFile
 		names := extStoreNamesFor(ent)
-		set, err := contract.CollectExtQueries(path)
+		set, err := collector.Collect(path)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("%s %s, so there is no %s for it", rel, strings.ReplaceAll(strings.TrimPrefix(err.Error(), path+": "), path, rel), names.iface))
 			continue

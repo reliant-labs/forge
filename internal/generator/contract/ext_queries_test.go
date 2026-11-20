@@ -144,6 +144,39 @@ type planRow struct{}
 	}
 }
 
+func TestCollectExtQueries_DistinguishesPredeclaredTypesFromLocalShadows(t *testing.T) {
+	path := writeExtFile(t, "plan_repo_ext.go", `package store
+import (
+	"context"
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+type Filter[T any] struct{}
+func UsesUniverse(ctx context.Context, db orm.Context, v Filter[rune], x interface{ Echo(byte) any }) complex128 { return 0 }
+func UsesShadow(ctx context.Context, db orm.Context, v Filter[error]) uint { return 0 }
+`)
+	// A type declared in a sibling source file hides a predeclared type;
+	// a declaration in an internal test file does not affect generated code.
+	for name, src := range map[string]string{
+		"local.go":      "package store; type error struct{}",
+		"local_test.go": "package store; type rune struct{}",
+	} {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set, err := CollectExtQueries(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := queryNames(set), []string{"UsesUniverse"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("queries = %v, want %v", got, want)
+	}
+	if got := skipReasons(set)["UsesShadow"]; got != "names the unexported type error" {
+		t.Errorf("UsesShadow skip reason = %q", got)
+	}
+}
+
 // Aliases are the file's: an interface rendered with the same imports reads
 // exactly like the source, and orm.Context is recognised under any alias.
 func TestCollectExtQueries_KeepsTheFilesAliases(t *testing.T) {

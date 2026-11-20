@@ -198,15 +198,30 @@ func TouchProject(ctx context.Context, db orm.Context, s string) {}
 func EchoProject(context.Context, orm.Context, string) (string, error) { return "", nil }
 
 func Name(ctx context.Context, db orm.Context, Name string) string { return Name }
+
+type QueryFilter[T any] struct{}
+type privateScope struct{}
+type QueryScope = privateScope
+
+func UniversalProject(ctx context.Context, db orm.Context, filter QueryFilter[rune], scope QueryScope) (complex128, error) { return 0, nil }
+func PrivateProject(ctx context.Context, db orm.Context, v complex64) {}
 `), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// This is an unexported package type, not the Go universe's complex64.
+	if err := os.WriteFile(filepath.Join(dbDir, "shadow.go"), []byte("package db; type complex64 struct{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := GeneratePlanORM(root, config.ORMConfig{}, entities, nil); err != nil {
 		t.Fatalf("GeneratePlanORM: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dbDir, "project_ext_store_gen.go")); err != nil {
+	store, err := os.ReadFile(filepath.Join(dbDir, "project_ext_store_gen.go"))
+	if err != nil {
 		t.Fatalf("no ext store for the Project seam: %v", err)
+	}
+	if strings.Contains(string(store), "PrivateProject(") {
+		t.Fatal("a shadowed predeclared type escaped into the Project ext store")
 	}
 	files, err := os.ReadDir(dbDir)
 	if err != nil {
@@ -255,6 +270,10 @@ import (
 // The ext store is reachable from the aggregate, its constructor and WithTx.
 var _ ProjectExtStore = NewStore(nil).ProjectsExt().WithTx(nil)
 var _ ProjectExtStore = NewProjectExtStore(nil)
+
+// The generated interface keeps the actual Go universe types and an exported
+// package-local alias, but does not expose the shadowed, private complex64.
+var _ func(ProjectExtStore, context.Context, QueryFilter[rune], QueryScope) (complex128, error) = ProjectExtStore.UniversalProject
 
 func callerPassesUpdateOptions(ctx context.Context, d orm.Context, p *Project, c *MessageOrderCounter, ps ProjectStore, cs MessageOrderCounterStore) error {
 	if err := UpdateProjectMasked(ctx, d, p, []string{"name"}, crud.NoReadBack()); err != nil {

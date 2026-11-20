@@ -25,6 +25,8 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -105,6 +107,18 @@ func (e *ErrExtFileUnusable) Error() string { return e.Path + ": " + e.Reason }
 // exported functions taking neither handle are not queries and are not
 // reported.
 func CollectExtQueries(path string) (ExtQuerySet, error) {
+	return new(ExtQueryCollector).Collect(path)
+}
+
+// ExtQueryCollector collects multiple ext files in one generation run. It
+// indexes package declarations once per directory, even if it reads many seams.
+// The zero value is ready to use; do not reuse across edits or concurrently.
+type ExtQueryCollector struct {
+	localTypes map[[2]string]map[string]bool // (directory, package) → package-local type names
+}
+
+// Collect reads the query declarations of one seam.
+func (batch *ExtQueryCollector) Collect(path string) (ExtQuerySet, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
@@ -117,7 +131,10 @@ func CollectExtQueries(path string) (ExtQuerySet, error) {
 	if contractsrc.BuildConstrained(filepath.Dir(path), filepath.Base(path), file) {
 		return ExtQuerySet{}, &ErrExtFileUnusable{Path: path, Reason: "is left out of some builds by build constraints"}
 	}
-	c := &extCollector{path: path, fset: fset, fi: fi, set: ExtQuerySet{Package: file.Name.Name}, needed: map[string]ImportDef{}}
+	c := &extCollector{
+		path: path, fset: fset, fi: fi, set: ExtQuerySet{Package: file.Name.Name},
+		needed: map[string]ImportDef{}, localTypes: batch.packageLocalTypes(path, file),
+	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Recv != nil || !fn.Name.IsExported() {
@@ -138,13 +155,57 @@ func CollectExtQueries(path string) (ExtQuerySet, error) {
 	return c.set, nil
 }
 
+// packageLocalTypes finds declarations which can hide a universe type. Read
+// across build variants: the unconditional generated interface must not expose
+// a private type in any supported build. Test files are never part of it.
+func (batch *ExtQueryCollector) packageLocalTypes(path string, file *ast.File) map[string]bool {
+	dir := filepath.Dir(path)
+	key := [2]string{dir, file.Name.Name}
+	if names, ok := batch.localTypes[key]; ok {
+		return names
+	}
+	names := map[string]bool{}
+	addTypes := func(f *ast.File) {
+		for _, decl := range f.Decls {
+			if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.TYPE {
+				for _, spec := range gd.Specs {
+					if ts, ok := spec.(*ast.TypeSpec); ok {
+						names[ts.Name.Name] = true
+					}
+				}
+			}
+		}
+	}
+	addTypes(file)
+	entries, _ := os.ReadDir(dir)
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || name == filepath.Base(path) || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+			!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		// The parser can provide usable declarations even if a function body
+		// is mid-edit. No package type checking or toolchain load is needed.
+		if f, _ := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution); f != nil && f.Name.Name == file.Name.Name {
+			addTypes(f)
+		}
+	}
+	if batch.localTypes == nil {
+		batch.localTypes = map[[2]string]map[string]bool{}
+	}
+	batch.localTypes[key] = names
+	return names
+}
+
 type extCollector struct {
-	path   string
-	fset   *token.FileSet
-	fi     *fileImports
-	r      *Resolver
-	set    ExtQuerySet
-	needed map[string]ImportDef // local name → import
+	path       string
+	fset       *token.FileSet
+	fi         *fileImports
+	r          *Resolver
+	set        ExtQuerySet
+	needed     map[string]ImportDef // local name → import
+	localTypes map[string]bool
 }
 
 // resolve returns the import a qualifier binds, building the toolchain
@@ -228,7 +289,7 @@ func (c *extCollector) collect(fn *ast.FuncDecl) {
 	results := flattenFields(fn.Type.Results)
 	kept := append(append([]field(nil), params[0]), params[2:]...)
 	for _, f := range append(append([]field(nil), kept...), results...) {
-		if name := unexportedLocalType(f.typ); name != "" {
+		if name := unexportedLocalType(f.typ, c.localTypes); name != "" {
 			c.skip(fn, "names the unexported type "+name)
 			return
 		}
@@ -341,19 +402,11 @@ func freshName(base string, taken map[string]bool) string {
 	return name
 }
 
-// predeclaredTypes are the universe-scope type names, which an unqualified
-// lower-case identifier in a signature may legitimately spell.
-var predeclaredTypes = map[string]bool{
-	"any": true, "bool": true, "byte": true, "comparable": true, "complex64": true, "complex128": true,
-	"error": true, "float32": true, "float64": true, "int": true, "int8": true, "int16": true,
-	"int32": true, "int64": true, "rune": true, "string": true, "uint": true, "uint8": true,
-	"uint16": true, "uint32": true, "uint64": true, "uintptr": true,
-}
-
-// unexportedLocalType returns the first unexported package-local type a type
-// expression names, "" for none. Only type positions are walked: a struct's
-// field names and an interface's method names are not types.
-func unexportedLocalType(expr ast.Expr) string {
+// unexportedLocalType returns the first unexported type a signature names,
+// or "" if it names none. A package-local declaration takes precedence over
+// a predeclared type. Only type positions are walked: a struct's field names
+// and an interface's method names are not types.
+func unexportedLocalType(expr ast.Expr, localTypes map[string]bool) string {
 	var found string
 	var walk func(ast.Expr)
 	walkFields := func(fl *ast.FieldList) {
@@ -370,7 +423,8 @@ func unexportedLocalType(expr ast.Expr) string {
 		}
 		switch t := e.(type) {
 		case *ast.Ident:
-			if !t.IsExported() && !predeclaredTypes[t.Name] {
+			_, predeclared := types.Universe.Lookup(t.Name).(*types.TypeName)
+			if !t.IsExported() && (!predeclared || localTypes[t.Name]) {
 				found = t.Name
 			}
 		case *ast.SelectorExpr:

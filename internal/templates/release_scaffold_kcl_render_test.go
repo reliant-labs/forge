@@ -69,9 +69,6 @@ func TestReleaseBuildScaffoldResolvesAndRenders(t *testing.T) {
 	if has, _ := kclvendor.HasForgeDep(kclModPath); has {
 		t.Fatalf("release scaffold declares the forge KCL module — the binary supplies it; kcl.mod must not:\n%s", kclMod)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, kclvendor.LegacyVendorDirName)); !os.IsNotExist(err) {
-		t.Fatalf("release scaffold materialized a project-local %s/ (stat err %v)", kclvendor.LegacyVendorDirName, err)
-	}
 
 	// The pipeline-generated config trio, which a bare Generate has not
 	// produced yet. Same stubs as TestScaffoldedIngressEvaluates.

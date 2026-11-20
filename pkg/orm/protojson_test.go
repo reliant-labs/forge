@@ -13,14 +13,14 @@ import (
 // The pairings below are what a json/jsonb column stores for a structured
 // proto field. forgepb is used as the fixture package because it is the
 // only compiled proto in this module; the shapes it happens to carry are
-// the ones under test — a repeated message (EntityOptions.indexes), a
-// repeated scalar inside it (IndexDef.fields), and an enum
+// the ones under test — a list of messages (ServiceOptions), a repeated
+// scalar inside one (ServiceOptions.dependencies), and an enum
 // (ConfigFieldOptions.role).
 
 func TestMarshalJSONBList_RoundTripsRepeatedMessages(t *testing.T) {
-	in := []*forgepb.IndexDef{
-		{Name: "idx_email", Fields: []string{"email"}, Unique: true},
-		{Name: "idx_name", Fields: []string{"first", "last"}},
+	in := []*forgepb.ServiceOptions{
+		{Name: "billing", Dependencies: []string{"users"}, Version: "v1"},
+		{Name: "orders", Dependencies: []string{"billing", "users"}},
 	}
 
 	s, err := MarshalJSONBList(in)
@@ -31,7 +31,7 @@ func TestMarshalJSONBList_RoundTripsRepeatedMessages(t *testing.T) {
 		t.Fatalf("stored text is not valid JSON: %s", s)
 	}
 
-	var out []*forgepb.IndexDef
+	var out []*forgepb.ServiceOptions
 	if err := UnmarshalJSONBList(s, &out); err != nil {
 		t.Fatalf("UnmarshalJSONBList: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestMarshalJSONBList_RoundTripsRepeatedMessages(t *testing.T) {
 // encoding/json renders a nil slice as `null`, which fails that CHECK and
 // aborts the INSERT.
 func TestMarshalJSONBList_EmptyIsAnArrayNotNull(t *testing.T) {
-	for _, in := range [][]*forgepb.IndexDef{nil, {}} {
+	for _, in := range [][]*forgepb.ServiceOptions{nil, {}} {
 		s, err := MarshalJSONBList(in)
 		if err != nil {
 			t.Fatalf("MarshalJSONBList(%v): %v", in, err)
@@ -59,7 +59,7 @@ func TestMarshalJSONBList_EmptyIsAnArrayNotNull(t *testing.T) {
 			t.Errorf("empty list stored as %q, want []", s)
 		}
 	}
-	var out []*forgepb.IndexDef
+	var out []*forgepb.ServiceOptions
 	for _, absent := range []string{"", "null", "[]"} {
 		out = nil
 		if err := UnmarshalJSONBList(absent, &out); err != nil {
@@ -72,12 +72,12 @@ func TestMarshalJSONBList_EmptyIsAnArrayNotNull(t *testing.T) {
 }
 
 // TestJSONBEncodingIsSQLReadable pins the two encoder choices a SQL author
-// depends on: keys are the PROTO names (so `col ->> 'soft_delete'` is the
+// depends on: keys are the PROTO names (so `col ->> 'default_value'` is the
 // spelling that works, matching the columns around it), and every declared
 // field is present (so an expression never has to distinguish an absent key
 // from a zero value).
 func TestJSONBEncodingIsSQLReadable(t *testing.T) {
-	s, err := MarshalJSONBMessage(&forgepb.EntityOptions{Table: "orders"})
+	s, err := MarshalJSONBMessage(&forgepb.ConfigFieldOptions{EnvVar: "ORDERS_URL"})
 	if err != nil {
 		t.Fatalf("MarshalJSONBMessage: %v", err)
 	}
@@ -85,14 +85,14 @@ func TestJSONBEncodingIsSQLReadable(t *testing.T) {
 	if err := json.Unmarshal([]byte(s), &doc); err != nil {
 		t.Fatalf("stored text is not a JSON object: %s", s)
 	}
-	if _, ok := doc["soft_delete"]; !ok {
-		t.Errorf("proto-name key soft_delete missing (camelCase leaked?): %s", s)
+	if _, ok := doc["default_value"]; !ok {
+		t.Errorf("proto-name key default_value missing (camelCase leaked?): %s", s)
 	}
-	if _, ok := doc["softDelete"]; ok {
-		t.Errorf("camelCase key softDelete present; keys must be proto names: %s", s)
+	if _, ok := doc["defaultValue"]; ok {
+		t.Errorf("camelCase key defaultValue present; keys must be proto names: %s", s)
 	}
 	// A zero-valued field is still written — that is EmitUnpopulated.
-	if v, ok := doc["timestamps"]; !ok || v != false {
+	if v, ok := doc["sensitive"]; !ok || v != false {
 		t.Errorf("unpopulated field must still be present as its zero value: %s", s)
 	}
 }
@@ -107,23 +107,23 @@ func TestUnmarshalJSONBIsLoudOnCorruptDocuments(t *testing.T) {
 		read         func(string) error
 	}{
 		{"unknown key", `[{"name":"x","gone":1}]`, func(s string) error {
-			var out []*forgepb.IndexDef
+			var out []*forgepb.ServiceOptions
 			return UnmarshalJSONBList(s, &out)
 		}},
 		{"array where an object belongs", `["enterprise","free"]`, func(s string) error {
-			var out *forgepb.EntityOptions
+			var out *forgepb.ConfigFieldOptions
 			return UnmarshalJSONBMessage(s, &out)
 		}},
 		{"object where an array belongs", `{"label":"trial"}`, func(s string) error {
-			var out []*forgepb.IndexDef
+			var out []*forgepb.ServiceOptions
 			return UnmarshalJSONBList(s, &out)
 		}},
 		{"scalars where messages belong", `["enterprise","free"]`, func(s string) error {
-			var out []*forgepb.IndexDef
+			var out []*forgepb.ServiceOptions
 			return UnmarshalJSONBList(s, &out)
 		}},
 		{"not JSON at all", `sample_line_items_2`, func(s string) error {
-			var out []*forgepb.IndexDef
+			var out []*forgepb.ServiceOptions
 			return UnmarshalJSONBList(s, &out)
 		}},
 	}
@@ -144,15 +144,15 @@ func TestMarshalJSONBMessage_NilAndRoundTrip(t *testing.T) {
 	// A nil message stores the message's zero DOCUMENT, not SQL-invalid
 	// text: every declared field at its zero value, which is what proto3
 	// says an absent message means and what the read path reconstructs.
-	s, err := MarshalJSONBMessage((*forgepb.IndexDef)(nil))
+	s, err := MarshalJSONBMessage((*forgepb.ServiceOptions)(nil))
 	if err != nil {
 		t.Fatalf("MarshalJSONBMessage(nil): %v", err)
 	}
-	var zero *forgepb.IndexDef
+	var zero *forgepb.ServiceOptions
 	if err := UnmarshalJSONBMessage(s, &zero); err != nil {
 		t.Fatalf("a nil message must store a READABLE document; got %q: %v", s, err)
 	}
-	if zero == nil || !proto.Equal(zero, &forgepb.IndexDef{}) {
+	if zero == nil || !proto.Equal(zero, &forgepb.ServiceOptions{}) {
 		t.Errorf("a nil message must read back as the zero message; got %v from %q", zero, s)
 	}
 

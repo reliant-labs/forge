@@ -27,7 +27,9 @@ func TestE2EIntegerEnumColumns(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "intenumapp", "--mod", "example.com/intenumapp", "--service", "tasks")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "intenumapp", "--mod", "example.com/intenumapp", "--service", "tasks", "--connect", "v1")
 	projectDir := filepath.Join(dir, "intenumapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

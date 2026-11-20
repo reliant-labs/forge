@@ -39,10 +39,10 @@ func TestScaffoldLedger_PlainGitMergeOfIndependentBirths(t *testing.T) {
 	})
 }
 
-// A legacy one-file ledger is read, written out one entry per path on the
-// next save, and deleted; the .gitignore line that committed it now commits
-// the directory.
-func TestScaffoldLedger_MigratesTheLegacyFile(t *testing.T) {
+// Each recorded path is one entry file; a plain birth's records nothing but
+// the birth, an absent path keeps its reported mark, and forgetting every
+// path leaves no directory.
+func TestScaffoldLedger_EntryFilesPerPath(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel, body string) {
 		t.Helper()
@@ -54,26 +54,23 @@ func TestScaffoldLedger_MigratesTheLegacyFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(checksums.LegacyScaffoldedFile, `{"files": {"a.go": {"scaffolded_at": "2026-10-01T00:00:00Z"}, "gone.go": {}}, "absent_reported": ["gone.go"]}`)
-	write(".gitignore", "node_modules/\n.forge/*\n!.forge/disowned.json\n!.forge/scaffolded.json\n")
 	write("a.go", "package a\n") // present; gone.go is the absent one
 	write("b.go", "package a\n")
 	checksums.ResetScaffoldLedgerCache()
-	if !checksums.ScaffoldRecorded(root, "a.go") || !checksums.ScaffoldRecorded(root, "gone.go") {
-		t.Fatal("the legacy ledger's entries must be read")
+	for _, p := range []string{"a.go", "gone.go", "b.go"} {
+		checksums.RecordScaffold(root, p)
 	}
-	checksums.RecordScaffold(root, "b.go") // any save migrates
+	if got := checksums.AbsentScaffoldsIfChanged(root); len(got) != 1 || got[0] != "gone.go" {
+		t.Fatalf("absent set = %v, want [gone.go]", got)
+	}
 	checksums.ResetScaffoldLedgerCache()
 
-	if _, err := os.Stat(filepath.Join(root, checksums.LegacyScaffoldedFile)); !os.IsNotExist(err) {
-		t.Errorf("the legacy ledger must be deleted once migrated (stat err=%v)", err)
-	}
 	for _, p := range []string{"a.go", "gone.go", "b.go"} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(checksums.ScaffoldEntryPath(p)))); err != nil {
 			t.Errorf("no entry file for %s: %v", p, err)
 		}
 		if !checksums.ScaffoldRecorded(root, p) {
-			t.Errorf("%s not recorded after migration", p)
+			t.Errorf("%s not recorded", p)
 		}
 	}
 	// A plain birth's entry records nothing but the birth: no clock, so
@@ -88,11 +85,7 @@ func TestScaffoldLedger_MigratesTheLegacyFile(t *testing.T) {
 	}
 	// The absent baseline survives: an unchanged absent set is not re-reported.
 	if got := checksums.AbsentScaffoldsIfChanged(root); got != nil {
-		t.Errorf("re-reported an unchanged absent set after migration: %v", got)
-	}
-	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if strings.Contains(string(gi), "!.forge/scaffolded.json") || !strings.Contains(string(gi), "\n!.forge/scaffolded/\n") {
-		t.Errorf(".gitignore must re-include the ledger directory:\n%s", gi)
+		t.Errorf("re-reported an unchanged absent set: %v", got)
 	}
 
 	// Forgetting a path removes its entry file and the directories it emptied.
@@ -104,39 +97,15 @@ func TestScaffoldLedger_MigratesTheLegacyFile(t *testing.T) {
 	}
 }
 
-// The upgrade run migrates a legacy ledger even when it scaffolds nothing:
-// a save used to need a birth, so a project whose upgrade run recorded none
-// kept .forge/scaffolded.json until some later pull request scaffolded a
-// file and carried the whole migration (reliant, upgrading to v1.0.12).
-func TestPersistLedgerMigrations_MigratesWithoutABirth(t *testing.T) {
+// A ledger already in the current shape is left alone by the per-run
+// convergence `forge generate` calls.
+func TestPersistLedgerMigrations_LeavesACurrentLedgerAlone(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	legacy := filepath.Join(root, filepath.FromSlash(checksums.LegacyScaffoldedFile))
-	if err := os.WriteFile(legacy, []byte(`{"files": {"a.go": {"scaffolded_at": "2026-10-01T00:00:00Z"}}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(".forge/*\n!.forge/scaffolded.json\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	checksums.ResetScaffoldLedgerCache()
-	checksums.PersistLedgerMigrations(root)
+	checksums.RecordScaffold(root, "a.go")
 	checksums.ResetScaffoldLedgerCache()
-
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Errorf("the legacy ledger must be migrated without a birth (stat err=%v)", err)
-	}
 	entry := filepath.Join(root, filepath.FromSlash(checksums.ScaffoldEntryPath("a.go")))
-	if got, err := os.ReadFile(entry); err != nil || string(got) != "{}\n" {
-		t.Errorf("a.go's entry = %q (err %v), want {}", got, err)
-	}
-	gi, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if !strings.Contains(string(gi), "!.forge/scaffolded/\n") {
-		t.Errorf(".gitignore must re-include the ledger directory:\n%s", gi)
-	}
 
-	// A ledger already in the current shape is left alone.
 	old := time.Unix(1_700_000_000, 0)
 	if err := os.Chtimes(entry, old, old); err != nil {
 		t.Fatal(err)
@@ -155,7 +124,7 @@ func TestScaffoldEntryPathRoundTrip(t *testing.T) {
 			t.Errorf("round trip %q: %q, %v", rel, got, ok)
 		}
 	}
-	for _, not := range []string{checksums.LegacyScaffoldedFile, ".forge/scaffolded/a.go", ".forge/scaffolded/../x.json"} {
+	for _, not := range []string{".forge/scaffolded.json", ".forge/scaffolded/a.go", ".forge/scaffolded/../x.json"} {
 		if _, ok := checksums.ScaffoldEntryTarget(not); ok {
 			t.Errorf("ScaffoldEntryTarget(%q) accepted", not)
 		}

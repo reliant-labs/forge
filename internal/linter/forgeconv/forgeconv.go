@@ -34,6 +34,9 @@
 //	                                    advisory lock, LOCK TABLE); warning,
 //	                                    error under --strict
 //	                                    (see tx_lock_under_serializable.go)
+//	forgeconv-one-rpc-per-file          a handler file implementing more
+//	                                    than one custom rpc; advisory
+//	                                    (see one_rpc_per_file.go)
 //	forgeconv-crud-owner-resolver       an owner-scoping handler whose
 //	                                    owner source disagrees with its
 //	                                    siblings' on the same column

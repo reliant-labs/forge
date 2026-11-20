@@ -870,13 +870,6 @@ func auditCodegen(f *factory.Factory, cfg *config.ProjectConfig, projectDir stri
 	}
 	sort.Slice(disowned, func(i, j int) bool { return disowned[i].Path < disowned[j].Path })
 
-	// Additive-extension contract: the legacy `forked_files` key is never
-	// repurposed. It now always emits an empty array, with a note field
-	// pointing consumers at its replacement; both will be dropped in a
-	// future release.
-	details["forked_files"] = []auditDisownedFile{}
-	details["forked_files_note"] = "deprecated: the fork state was removed; see disowned_files"
-
 	if len(disowned) > 0 {
 		details["disowned_files"] = disowned
 		details["disowned_hint"] = "disowned files are user-owned; forge never regenerates them. Re-adopt one by deleting it and running `forge generate`."
@@ -1054,8 +1047,8 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 }
 
 // auditCRUDStubs counts custom-read-shape CodeUnimplemented stubs in
-// the project's CRUD shim files (user-owned handlers_crud.go, plus
-// legacy handlers_crud_gen.go from pre-split projects). These stubs are
+// the project's CRUD shim files (the user-owned handlers_crud.go). These
+// stubs are
 // scaffolded when a request/response message shape deliberately
 // diverges from the AIP-158 CRUD conventions — a legitimate domain
 // decision, not an error; the body is the user's to implement in the
@@ -1063,10 +1056,7 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 // CodeUnimplemented at runtime — production traffic to that RPC will
 // 501 until the body lands, which is why the category warns.
 //
-// Markers recognized: `// forge:custom-read-shape: <reason>` (current)
-// and `// FORGE_CRUD_SHAPE_MISMATCH: <reason>` (the pre-rename
-// spelling, kept for one release so existing files and greps keep
-// matching — see the legacy_marker detail).
+// Marker recognized: `// forge:custom-read-shape: <reason>`.
 //
 // Without this audit, the stub is silent: nothing in `forge doctor`
 // or CI tells the operator that an RPC is shipping as Unimplemented
@@ -1099,7 +1089,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 			}
 			return nil
 		}
-		if d.Name() != "handlers_crud.go" && d.Name() != "handlers_crud_gen.go" {
+		if d.Name() != "handlers_crud.go" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
@@ -1125,11 +1115,6 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 		for i, line := range lines {
 			trimmed := strings.TrimLeft(line, " \t")
 			if marker, ok := strings.CutPrefix(trimmed, "// forge:custom-read-shape:"); ok {
-				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
-				continue
-			}
-			// Pre-rename spelling — recognized for one release.
-			if marker, ok := strings.CutPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"); ok {
 				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
 				continue
 			}
@@ -1188,12 +1173,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 			"files":       fileNames,
 			"total_stubs": total,
 			"stubs":       stubs,
-			// Grep compatibility: the marker was renamed from
-			// FORGE_CRUD_SHAPE_MISMATCH to forge:custom-read-shape;
-			// both spellings are scanned this release. Consumers
-			// grepping source for the old string should switch.
-			"marker":        "forge:custom-read-shape",
-			"legacy_marker": "FORGE_CRUD_SHAPE_MISMATCH",
+			"marker":      "forge:custom-read-shape",
 		},
 	}
 }

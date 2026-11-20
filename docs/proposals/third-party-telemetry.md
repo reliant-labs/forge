@@ -1,7 +1,7 @@
 # Proposal: declared telemetry for workloads forge did not build (`forge.Telemetry`)
 
 **Status:** accepted in shape by the owner (2026-11-20): ONE generic primitive, four signals, no
-per-system packs. Being implemented in the phased PRs of §5; F1 (the schema, the render and
+per-system bundles. Being implemented in the phased PRs of §5; F1 (the schema, the render and
 `pkg/telemetry`) is the first to land. Where an implementation PR diverged from this text, the
 "Implementation notes" section at the end says so.
 **Date:** 2026-11-20
@@ -23,7 +23,7 @@ Owner decision (2026-11-20, binding): ONE generic, configurable forge primitive.
   engines, and anything else on a cluster.
 - It covers all four signals (metrics, logs, traces, profiles), plus dashboards and alerts over
   them.
-- forge ships **no per-system pack, preset or vendor catalog**. Every vendor fact (Temporal
+- forge ships **no per-system bundle, preset or vendor catalog**. Every vendor fact (Temporal
   metric names, Zitadel env keys, ClickHouse panels) lives in the project's KCL.
 
 The design:

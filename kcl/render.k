@@ -88,6 +88,7 @@ Workload etc. as bare names; `import .schema` would fork type identity.
 import json
 import regex
 import .tiers
+import .dashspec
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.labels as labels_lib
@@ -2519,6 +2520,9 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
         "profiles": [_tel_profiles(p) for p in t.profiles]
         "checks": [_tel_check(c) for c in t.checks]
         "dashboard": {"enabled": t.dashboard.enabled, "title": t.dashboard.title or ""}
+        # forge.dashboards/v1 objects: obsdash runs each through
+        # dashspec.ParseDashboard, the validator a release cut runs.
+        "dashboards": [dashspec.dashboard_json(d) for d in t.dashboards]
         "default_alerts": t.default_alerts
     }
 }

@@ -63,9 +63,9 @@ func auditLockfiles(projectDir string) audittype.Category {
 	byManager := map[string][]string{}
 	byDir := map[string]map[string][]string{} // dir -> manager -> lockfiles
 
-	_ = filepath.WalkDir(projectDir, func(p string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(projectDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return err
 		}
 		if d.IsDir() {
 			if _, skip := lockfileWalkSkip[d.Name()]; skip && p != projectDir {
@@ -79,7 +79,7 @@ func auditLockfiles(projectDir string) audittype.Category {
 		}
 		rel, rerr := filepath.Rel(projectDir, p)
 		if rerr != nil {
-			return nil
+			return rerr
 		}
 		rel = filepath.ToSlash(rel)
 		byManager[manager] = append(byManager[manager], rel)
@@ -89,7 +89,15 @@ func auditLockfiles(projectDir string) audittype.Category {
 		}
 		byDir[dir][manager] = append(byDir[dir][manager], rel)
 		return nil
-	})
+	}); err != nil {
+		// A partial walk cannot establish which manager is primary or
+		// recommend deleting any lockfile. Report the cause instead.
+		return audittype.Category{
+			Status:  audittype.StatusWarn,
+			Summary: "JavaScript lockfile scan incomplete",
+			Details: map[string]any{"scan_error": err.Error()},
+		}
+	}
 
 	managers := make([]string, 0, len(byManager))
 	for m, files := range byManager {

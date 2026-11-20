@@ -118,6 +118,20 @@ func TestAuditLockfiles(t *testing.T) {
 	}
 }
 
+func TestAuditLockfiles_IncompleteScanWarns(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "missing-project")
+	cat := auditLockfiles(projectDir)
+	if cat.Status != audittype.StatusWarn || !strings.Contains(cat.Summary, "incomplete") {
+		t.Fatalf("got %s (%s), want an incomplete-scan warning", cat.Status, cat.Summary)
+	}
+	if scanErr, ok := cat.Details["scan_error"].(string); !ok || !strings.Contains(scanErr, "missing-project") {
+		t.Errorf("scan_error = %q, want the failed path", scanErr)
+	}
+	if _, ok := cat.Details["hint"]; ok {
+		t.Errorf("incomplete scan must not recommend a package manager: %+v", cat.Details)
+	}
+}
+
 // The category is advisory: a mixed-lockfile project must never make
 // `forge project audit` exit non-zero (audit_gate.go gates on error only).
 func TestAuditLockfiles_NeverGates(t *testing.T) {

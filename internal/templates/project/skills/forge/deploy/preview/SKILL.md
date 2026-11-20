@@ -156,6 +156,8 @@ github.repository`): never run a fork's code with your deploy token. The
 runner installs the standalone `forge` from npm, so the recipe calls `forge`,
 not `reliant forge`, whichever CLI printed this skill.
 
+The instance directory (`deploy/kcl/preview-pr-<N>/`) writes its own `.gitignore`, so creating a preview leaves the checkout clean and the release it cuts is not a dirty-tree release.
+
 ## Not yet
 
 - An instance's secrets are not copied from the template.

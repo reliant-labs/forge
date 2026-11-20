@@ -253,6 +253,11 @@ var shippedRules = []rolloutGroup{
 	// A handler file implementing more than one custom rpc. Its findings
 	// stay advisory at any pin; the row lets lint.rules raise them.
 	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
+	// forge lint --migration-safety: a plain CREATE INDEX on a table that
+	// may hold rows (NS FG-35), the static twin of db analyze's
+	// db-analyze-blocking-index-build. A warning at any pin (it cannot see
+	// the table's size); the row lets lint.rules raise it.
+	{IntroducedIn: "v1.9.0", Rules: []string{"blocking-index-build"}},
 	// A reason-required Go marker (forge:auth-unscoped-ok, …) written with
 	// no reason, which its recognizer silently ignored (FG-32). Advisory at
 	// any pin; the row lets lint.rules raise it.

@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/semver"
 
@@ -115,6 +116,15 @@ type upgradeReport struct {
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
+	// TemplateDriftRows are every file both template lanes report and do
+	// not write — upgrade-managed ("managed") and scaffold-once — sized,
+	// with whether the range changed its template (upgrade_drift_range.go).
+	// TemplateDriftHidden is how many of them the text did not list, and
+	// TemplateDriftRangeNote why changed_in_range is null for all of them,
+	// when the pinned forge's templates could not be read.
+	TemplateDriftRows      []upgradeDriftRow `json:"template_drift_rows"`
+	TemplateDriftHidden    int               `json:"template_drift_hidden"`
+	TemplateDriftRangeNote string            `json:"template_drift_range_note,omitempty"`
 	// Offers are scaffold-once files this project never had whose
 	// templates are not new across the range: upgrade did not add them,
 	// and Command does.
@@ -134,6 +144,11 @@ type upgradePhase struct {
 	// Status is done, skipped, planned (--check) or failed.
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// DurationMS is the phase's wall time. A phase --skip left out did not
+	// run and records 0; one that ran and found nothing to do under the
+	// mode (generate and lint under --check) records the time it took to
+	// decide that.
+	DurationMS int64 `json:"duration_ms"`
 }
 
 type upgradeCodemodRun struct {
@@ -207,12 +222,15 @@ type upgradeHumanItem struct {
 }
 
 type upgradeUpcoming struct {
-	Rule         string   `json:"rule"`
-	Count        int      `json:"count"`
-	IntroducedIn string   `json:"introduced_in"`
-	GatesFrom    string   `json:"gates_from"`
-	Fix          string   `json:"fix,omitempty"`
-	Examples     []string `json:"examples"`
+	Rule         string `json:"rule"`
+	Count        int    `json:"count"`
+	IntroducedIn string `json:"introduced_in"`
+	GatesFrom    string `json:"gates_from"`
+	// GatesAfter is set when the pin jumped the rule's warn-first window:
+	// it gates from the next pin after this one, not from GatesFrom.
+	GatesAfter string   `json:"gates_after,omitempty"`
+	Fix        string   `json:"fix,omitempty"`
+	Examples   []string `json:"examples"`
 }
 
 func newUpgradeReport(opts upgradeOptions) *upgradeReport {
@@ -270,6 +288,7 @@ type upgradeRun struct {
 // report; the error, when set, is what the process exits with.
 func runUpgradeConverge(opts upgradeOptions) (*upgradeReport, error) {
 	rep := newUpgradeReport(opts)
+	rep.TemplateDriftRows = []upgradeDriftRow{}
 	err := convergeUpgrade(opts, rep)
 	rep.stamp(err)
 	rep.Converged = err == nil && !opts.check && len(rep.NeedsHuman) == 0
@@ -303,8 +322,9 @@ func convergeUpgrade(opts upgradeOptions, rep *upgradeReport) error {
 		}
 	}
 	if len(rep.NeedsHuman) > 0 && !opts.check {
-		return &exitCodeError{code: exitNeedsHuman, msg: fmt.Sprintf(
-			"upgrade applied every mechanical fix; %d item(s) still need a person (see needs_human in --json, or above)", len(rep.NeedsHuman))}
+		// Exit 9 is the contract's "needs a person", not a failure: it is
+		// printed without "Error:" (exitcode.Line).
+		return &exitCodeError{code: exitNeedsHuman, verdict: true, msg: needsPersonMessage(len(rep.NeedsHuman), false)}
 	}
 	return nil
 }
@@ -380,13 +400,16 @@ func (r *upgradeRun) banner() {
 	printMigrationWorklist(r.out, r.applicable)
 }
 
-// step runs one phase and records its status. A skipped phase is recorded and
-// not run; a failed one stops the run with its error.
+// step runs one phase and records its status and wall time. A skipped phase
+// is recorded and not run (duration 0); a failed one stops the run with its
+// error.
 func (r *upgradeRun) step(name string, run func() error) error {
 	if r.opts.skip[name] {
 		r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: "skipped", Detail: r.skipDetail(name)})
 		return nil
 	}
+	start := time.Now()
+	defer func() { r.setPhaseDuration(name, time.Since(start)) }()
 	err := run()
 	switch {
 	case err != nil:
@@ -399,6 +422,16 @@ func (r *upgradeRun) step(name string, run func() error) error {
 		r.setPhase(name, status, "")
 	}
 	return err
+}
+
+// setPhaseDuration records how long a phase that ran took.
+func (r *upgradeRun) setPhaseDuration(name string, d time.Duration) {
+	for i := range r.rep.Phases {
+		if r.rep.Phases[i].Name == name {
+			r.rep.Phases[i].DurationMS = d.Milliseconds()
+			return
+		}
+	}
 }
 
 func (r *upgradeRun) hasPhase(name string) bool {
@@ -539,13 +572,22 @@ func (r *upgradeRun) phaseTemplates() error {
 	if err != nil {
 		return err
 	}
-	counts := tallyAndPrintUpgradeResults(results, r.check, r.opts.showAll)
+	rng := newTemplateRange(r.from, r.target)
+	view := driftView{showAll: r.opts.showAll, rng: rng}
+	counts := tallyAndPrintUpgradeResults(results, r.check, view)
 	printSkippedPaths(counts, r.opts.showAll)
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
 	r.rep.Offers = append(r.rep.Offers, counts.offers...)
-	if _, err := runAdvisoryPass(r.projectDir, r.cfg, selection, r.check, r.opts.showAll); err != nil {
+	adv, err := runAdvisoryPassView(r.projectDir, r.cfg, selection, r.check, view)
+	if err != nil {
 		return err
+	}
+	appendDriftRows(r.rep, "managed", counts.modifiedRows)
+	appendDriftRows(r.rep, "scaffold-once", adv.rows)
+	r.rep.TemplateDriftHidden = counts.hiddenByRange + adv.hidden
+	if rng.dir == "" && len(r.rep.TemplateDriftRows) > 0 {
+		r.rep.TemplateDriftRangeNote = rng.why
 	}
 	r.setPhase("templates", map[bool]string{true: "planned", false: "done"}[r.check],
 		fmt.Sprintf("%d updated, %d modified by you (kept), %d up to date", counts.updated, counts.userModified, counts.upToDate))
@@ -906,6 +948,7 @@ type lintDocFinding struct {
 	Grace    *struct {
 		IntroducedIn string `json:"introduced_in"`
 		GatesFrom    string `json:"gates_from"`
+		GatesAfter   string `json:"gates_after"`
 		Fix          string `json:"fix"`
 	} `json:"grace"`
 }
@@ -1005,15 +1048,20 @@ func (r *upgradeRun) phaseLint() error {
 		switch {
 		case f.Severity == "error":
 			errs = append(errs, f)
-		case f.Grace != nil:
+		case f.Grace != nil && !(f.Rule == "external" && f.File == ""):
+			// A raw sub-tool line (rule "external", no file) is the output
+			// under the finding before it — a formatter's diff — not a
+			// finding: counted, it made a phantom rule "external" ×30 with
+			// empty examples beside forge-proto-format ×30.
 			u := upcoming[f.Rule]
 			if u == nil {
-				u = &upgradeUpcoming{Rule: f.Rule, IntroducedIn: f.Grace.IntroducedIn, GatesFrom: f.Grace.GatesFrom, Fix: f.Grace.Fix, Examples: []string{}}
+				u = &upgradeUpcoming{Rule: f.Rule, IntroducedIn: f.Grace.IntroducedIn, GatesFrom: f.Grace.GatesFrom,
+					GatesAfter: f.Grace.GatesAfter, Fix: f.Grace.Fix, Examples: []string{}}
 				upcoming[f.Rule] = u
 				order = append(order, f.Rule)
 			}
 			u.Count++
-			if len(u.Examples) < 3 {
+			if len(u.Examples) < 3 && f.File != "" {
 				u.Examples = append(u.Examples, strings.TrimSuffix(fmt.Sprintf("%s:%d", f.File, f.Line), ":0"))
 			}
 		}
@@ -1046,10 +1094,13 @@ func countStartsGating(rows []upgradeStartsGating, errs []lintDocFinding) {
 
 // printUpgradeSummary is the human tail: what is left, and what is coming.
 func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
+	if line := slowPhasesLine(rep.Phases); line != "" {
+		fmt.Fprintf(w, "\n%s\n", line)
+	}
 	if len(rep.StartsGating) > 0 {
 		fmt.Fprintf(w, "\nStarts gating at %s (warn-first rules whose grace this pin ends):\n", rep.To)
 		for _, g := range rep.StartsGating {
-			line := fmt.Sprintf("  - %s (new in %s, gates from %s)", g.Rule, g.IntroducedIn, g.GatesFrom)
+			line := fmt.Sprintf("  - %s (new in %s; warned under %s, gates under %s)", g.Rule, g.IntroducedIn, rep.From, rep.To)
 			if g.Findings != nil {
 				line += fmt.Sprintf(": %d %s now %s", *g.Findings, plural(*g.Findings, "finding", "findings"), plural(*g.Findings, "gates", "gate"))
 			}
@@ -1062,7 +1113,7 @@ func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
 	if len(rep.Upcoming) > 0 {
 		fmt.Fprintln(w, "\nGating soon (warn-first rules this pin's lint reports; they gate from the release named):")
 		for _, u := range rep.Upcoming {
-			line := fmt.Sprintf("  - %s ×%d, gates from %s", u.Rule, u.Count, u.GatesFrom)
+			line := fmt.Sprintf("  - %s ×%d, %s", u.Rule, u.Count, lint.GatesWhen(u.GatesFrom, u.GatesAfter))
 			if u.Fix != "" {
 				line += "; fix with `" + u.Fix + "`"
 			}
@@ -1199,4 +1250,15 @@ func shorten(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// needsPersonMessage is exit 9's one line: what is left and where it is
+// listed — the JSON document on stdout under --json (it is not "above" when
+// a bot captured stdout), the "Still needs a person" list otherwise.
+func needsPersonMessage(n int, jsonOut bool) string {
+	where := `listed above under "Still needs a person"`
+	if jsonOut {
+		where = "needs_human in the JSON document on stdout"
+	}
+	return fmt.Sprintf("upgrade applied every mechanical fix; %d item(s) need a person (%s)", n, where)
 }

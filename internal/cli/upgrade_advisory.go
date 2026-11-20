@@ -53,27 +53,42 @@ func upgradeAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) (rows []
 	return append(rows, generator.CIWorkflowAdvisoryFiles(projectDir, cfg, ciInputs(projectDir, cfg))...), "", nil
 }
 
-// runAdvisoryPass inspects every scaffold-once row and prints the report.
-// Returns the results so callers can act on them; the printing is the
-// product.
+// runAdvisoryPass inspects every scaffold-once row and prints the report,
+// listing every row (no upgrade range to filter by). Returns the results so
+// callers can act on them; the printing is the product.
 func runAdvisoryPass(projectDir string, cfg *config.ProjectConfig, selection generator.ForceSelection, check, showAll bool) ([]generator.AdvisoryResult, error) {
+	pass, err := runAdvisoryPassView(projectDir, cfg, selection, check, driftView{showAll: showAll})
+	return pass.results, err
+}
+
+// advisoryPass is what the scaffold-once lane found and printed.
+type advisoryPass struct {
+	results []generator.AdvisoryResult
+	// rows are the drift rows the lane reports (not those adopted this
+	// run), and hidden how many of them the text left out (driftView).
+	rows   []driftRow
+	hidden int
+}
+
+// runAdvisoryPassView is runAdvisoryPass printed through view.
+func runAdvisoryPassView(projectDir string, cfg *config.ProjectConfig, selection generator.ForceSelection, check bool, view driftView) (advisoryPass, error) {
 	files, ciNote, err := upgradeAdvisoryFiles(projectDir, cfg)
 	if err != nil {
-		return nil, err
+		return advisoryPass{}, err
 	}
 	if ciNote != "" {
 		defer fmt.Printf("\n%s\n", ciNote)
 	}
 	cs, err := generator.LoadChecksums(projectDir)
 	if err != nil {
-		return nil, fmt.Errorf("load .forge ownership state: %w", err)
+		return advisoryPass{}, fmt.Errorf("load .forge ownership state: %w", err)
 	}
 	results, err := generator.InspectAdvisories(projectDir, cs, files, selection, check)
 	if err != nil {
-		return nil, err
+		return advisoryPass{}, err
 	}
-	printAdvisoryReport(results, check, showAll)
-	return results, nil
+	rows, hidden := printAdvisoryReport(results, check, view)
+	return advisoryPass{results: results, rows: rows, hidden: hidden}, nil
 }
 
 // printAdvisoryReport prints the scaffold-once section: what differs,
@@ -90,7 +105,13 @@ func runAdvisoryPass(projectDir string, cfg *config.ProjectConfig, selection gen
 //
 // Silence is still the normal outcome and is still a real answer — a
 // project whose mechanism files match their templates is told nothing.
-func printAdvisoryReport(results []generator.AdvisoryResult, check, showAll bool) {
+//
+// Across a pin bump the same customized frontend reappears every time, so
+// a row whose template the range did not change is counted in one line,
+// not listed (driftView). Returns the drift rows (the backlog, not the
+// rows adopted this run) and how many of them the text hid.
+func printAdvisoryReport(results []generator.AdvisoryResult, check bool, view driftView) (rows []driftRow, hidden int) {
+	showAll := view.showAll
 	var behind []generator.AdvisoryResult
 	var adopted []generator.AdvisoryResult
 	for _, r := range results {
@@ -104,7 +125,7 @@ func printAdvisoryReport(results []generator.AdvisoryResult, check, showAll bool
 		behind = append(behind, r)
 	}
 	if len(behind) == 0 && len(adopted) == 0 {
-		return
+		return nil, 0
 	}
 
 	fmt.Println()
@@ -119,19 +140,21 @@ func printAdvisoryReport(results []generator.AdvisoryResult, check, showAll bool
 		}
 	}
 	if len(behind) == 0 {
-		return
+		return nil, 0
 	}
 
-	rows := make([]driftRow, 0, len(behind))
+	rows = make([]driftRow, 0, len(behind))
 	for _, r := range behind {
 		rows = append(rows, driftRow{
 			Path:    r.Path,
 			Missing: r.Missing,
 			Local:   r.Local,
 			Absent:  r.Status == generator.AdvisoryAbsent,
+			Changed: view.rng.changed(r.Template),
 		})
 	}
-	cheap, merge, absent := groupDriftRows(rows)
+	shown, hidden := view.split(rows)
+	cheap, merge, absent := groupDriftRows(shown)
 
 	printCountsLine(
 		countPart(len(cheap), "cheap adopt(s)"),
@@ -141,6 +164,8 @@ func printAdvisoryReport(results []generator.AdvisoryResult, check, showAll bool
 	printDriftGroup("Cheap adopts (no local edits):", cheap, showAll)
 	printDriftGroup("Merges (your lines + the template's):", merge, showAll)
 	printDriftGroup("Shipped by the template, absent here:", absent, showAll)
+	view.noteUnknown(shown)
+	view.printCollapse(hidden, len(shown))
 
 	// Under --all, name the rows this section is normally silent about,
 	// so "--all shows everything" is true of this lane too rather than
@@ -156,6 +181,7 @@ func printAdvisoryReport(results []generator.AdvisoryResult, check, showAll bool
 	}
 
 	printAdvisoryRemedies(cheap, merge, absent, showAll)
+	return rows, hidden
 }
 
 // advisoryLabel names, in one phrase, what forge found and how sure it is.

@@ -21,7 +21,7 @@ forge obs endpoints dev               # p50/p95/p99 and error rate per RPC, with
 forge obs check <env> --wait --json   # after a deploy: proves the release good, or names what regressed
 ```
 
-`forge skill list` is the catalog. `forge project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `forge project capabilities` lists every verb; `forge project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
+`forge skill list` is the catalog. `forge project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `forge project capabilities` lists every verb; `forge project benefits` lists what this project gets without setup. `forge why` gives the reasons behind them. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
 
 ## Critical rules
 

@@ -2513,7 +2513,9 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
         "ports": ports
         "container": t.container or ""
         "isolated": t.isolated
-        "network_policy": t.network_policy
+        # Tri-state: absent is "auto" (kcl/telemetry.k network_policy).
+        if t.network_policy in [True, False]:
+            "network_policy": t.network_policy
         "metrics": [_tel_metrics(m) for m in t.metrics]
         "otlp": _tel_otlp(t, svc, rt, b)
         "logs": _tel_logs(t.logs)

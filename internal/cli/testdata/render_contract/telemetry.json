@@ -294,7 +294,6 @@
         "namespaces": [
           "acme-dev"
         ],
-        "network_policy": true,
         "otlp": {
           "env": {
             "TEMPORAL_OTEL_ENDPOINT": {
@@ -379,7 +378,6 @@
           }
         ],
         "namespaces": [],
-        "network_policy": true,
         "otlp": null,
         "ports": {
           "monitor": 8222,
@@ -542,7 +540,6 @@
         "namespaces": [
           "cert-manager"
         ],
-        "network_policy": true,
         "otlp": null,
         "ports": {},
         "profiles": [],

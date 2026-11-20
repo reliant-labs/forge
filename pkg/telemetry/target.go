@@ -127,9 +127,22 @@ type Target struct {
 	// Isolated asks for its own pipeline with a bounded in-memory queue that
 	// drops on overflow, never sharing back-pressure with workload telemetry.
 	Isolated bool `json:"isolated"`
-	// NetworkPolicy asks for a policy admitting only the collector, on only
-	// the scrape, pprof and check ports.
-	NetworkPolicy bool            `json:"network_policy"`
+	// NetworkPolicy is whether a collector admits itself with a
+	// NetworkPolicy on only the scrape, pprof and check ports. It is
+	// tri-state because a NetworkPolicy that selects pods no policy selected
+	// before flips them to default-deny for ALL other ingress, which would
+	// black-hole a raw system's real traffic:
+	//
+	//   - nil ("auto") on AttachWorkload/AttachHostInfra: add the collector's
+	//     ingress rule to the policy forge already renders for that workload
+	//     (it exists either way, so nothing new is denied).
+	//   - nil on AttachManifests/AttachObservability: render NO policy. forge
+	//     cannot know whether those pods are already policy-selected; the
+	//     project owns admission (Warnings notes that the collector needs it).
+	//   - true: render it. false: never.
+	//
+	// AdmitCollector resolves it.
+	NetworkPolicy *bool           `json:"network_policy,omitempty"`
 	Metrics       []MetricsScrape `json:"metrics"`
 	OTLP          *OTLPPush       `json:"otlp,omitempty"`
 	Logs          *LogParse       `json:"logs,omitempty"`
@@ -333,4 +346,16 @@ func (t Target) Signals() []string {
 // scrape, a profile pull or a check (a push or a log parse needs none).
 func (t Target) Pulled() bool {
 	return len(t.Metrics) > 0 || len(t.Profiles) > 0 || len(t.Checks) > 0
+}
+
+// AdmitCollector resolves NetworkPolicy: whether a collector should admit
+// itself into the target's pods with a NetworkPolicy rule. Auto (nil) is true
+// only where forge already renders the pods' policy (a Workload or HostInfra
+// target), and false for Manifests and Observability targets, whose pods
+// forge does not own.
+func (t Target) AdmitCollector() bool {
+	if t.NetworkPolicy != nil {
+		return *t.NetworkPolicy
+	}
+	return t.Attachment == AttachWorkload || t.Attachment == AttachHostInfra
 }

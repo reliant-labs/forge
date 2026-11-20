@@ -83,6 +83,10 @@ func normalizeTarget(t Target) Target {
 		ports[k] = v
 	}
 	t.Ports = ports
+	if t.NetworkPolicy != nil {
+		np := *t.NetworkPolicy
+		t.NetworkPolicy = &np
+	}
 
 	metrics := make([]MetricsScrape, len(t.Metrics))
 	for i, m := range t.Metrics {

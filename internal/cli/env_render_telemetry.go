@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"sort"
 
@@ -13,6 +14,26 @@ import (
 // syntax, a service_name used twice, a port name the workload does not
 // declare, a cluster the env does not declare, and the hosted rules. Nil when
 // the env declares none.
+// checkEnvTelemetry validates the env's declared telemetry and, when it is
+// valid, prints its notes (envTelemetryWarnings) on errOut.
+func checkEnvTelemetry(errOut io.Writer, envName string, entities *KCLEntities) error {
+	if err := validateEnvTelemetry(envName, entities); err != nil {
+		return err
+	}
+	for _, w := range envTelemetryWarnings(entities) {
+		fmt.Fprintln(errOut, w.Error())
+	}
+	return nil
+}
+
+// envTelemetryWarnings are telemetry.Warnings for the env's declared telemetry.
+func envTelemetryWarnings(entities *KCLEntities) []telemetry.Problem {
+	if entities == nil {
+		return nil
+	}
+	return telemetry.Warnings(entities.Telemetry)
+}
+
 func validateEnvTelemetry(envName string, entities *KCLEntities) error {
 	if entities == nil || len(entities.Telemetry) == 0 {
 		return nil

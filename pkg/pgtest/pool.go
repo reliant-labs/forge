@@ -62,6 +62,20 @@ import (
 	"time"
 )
 
+// legacyPoolStateFile is the state file forge wrote before pools were scoped
+// and users leased (lease.go): one pool for every pid namespace, its users as
+// pids. A forge that old may still run beside this one, so its live server is
+// still spared by reapStaleInstances (portsInUse). The pool's files are FILES
+// (not dirs), so reapStaleInstances — which only considers directory entries
+// — skips them.
+const legacyPoolStateFile = "pool.json"
+
+// legacyPoolState is the part of legacyPoolStateFile portsInUse reads.
+type legacyPoolState struct {
+	Port  uint32 `json:"port"`
+	Users []int  `json:"users"`
+}
+
 // poolState is the on-disk registry of a scope's shared embedded server. Who
 // uses it is not recorded here: that is the scope's leases (lease.go).
 type poolState struct {
@@ -499,6 +513,18 @@ func readPoolStateOf(scope string) poolState {
 	return st
 }
 
+// readLegacyPoolState reads the pool state an older forge keeps
+// (legacyPoolStateFile).
+func readLegacyPoolState() legacyPoolState {
+	var st legacyPoolState
+	b, err := os.ReadFile(filepath.Join(poolRoot(), legacyPoolStateFile))
+	if err != nil {
+		return st
+	}
+	_ = json.Unmarshal(b, &st)
+	return st
+}
+
 // publishBootedPool releases the boot claim only after atomic registration or
 // owned cleanup. stop is injected so failure ordering has a deterministic proof.
 func publishBootedPool(st poolState, claim *bootClaim, stop func()) error {
@@ -542,4 +568,21 @@ func lockPool() (unlock func(), err error) {
 		unlockFile()
 		_ = f.Close()
 	}, nil
+}
+
+// prunePIDs drops PIDs whose process is no longer alive. A signal-0 probe
+// returning EPERM means the process exists but is owned by another user —
+// still alive — so it is kept. Only the legacy pool's users are pids
+// (portsInUse); within one pid namespace, as an older forge assumes.
+func prunePIDs(pids []int) []int {
+	var live []int
+	for _, p := range pids {
+		if p <= 0 {
+			continue
+		}
+		if processAlive(p) {
+			live = append(live, p)
+		}
+	}
+	return live
 }

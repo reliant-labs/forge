@@ -92,6 +92,10 @@ type VerifyOptions struct {
 	// Rescan rescans each changed manifest's directory; nil rescans
 	// nothing, and every bumped finding stays "bumped".
 	Rescan RescanFunc
+	// ScanImage rescans the image of each Dockerfile Apply changed, after
+	// Verify rebuilds it with docker; nil rebuilds nothing, and a finding
+	// fixed in a Dockerfile stays "bumped".
+	ScanImage ScanImageFunc
 }
 
 // Verify runs the gate, then rescans the directory of every manifest Apply
@@ -115,13 +119,18 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 		}
 	}
 	p.verify = v
+	byImage := p.verifyImages(ctx, run, o.ScanImage, v)
 	if o.Rescan == nil {
 		return v
 	}
 	dirs := map[string]bool{}
+	byDir := map[int]bool{} // results a directory rescan settles
 	for _, b := range p.bumps {
-		if b.done != nil {
+		if b.done != nil && b.eco != EcosystemDocker {
 			dirs[b.dir] = true
+			for _, r := range b.results {
+				byDir[r] = !byImage[r]
+			}
 		}
 	}
 	var sorted []string
@@ -147,11 +156,12 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 		scans[d] = fs
 	}
 	if len(errs) > 0 {
-		v.RescanError = strings.Join(errs, "; ")
+		// The image rescans (verifyImages) may have failed too: keep both.
+		v.RescanError = strings.Join(append(nonEmpty(v.RescanError), errs...), "; ")
 	}
 	for i := range p.Results {
 		r := &p.Results[i]
-		if r.Status != StatusBumped {
+		if r.Status != StatusBumped || !byDir[i] {
 			continue
 		}
 		rdirs, minTo := p.resultDirs(i)
@@ -181,7 +191,7 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 				// fix did not fix it). Any other version is another copy
 				// of the package, which this finding was not about.
 				got := f.Package.Version
-				if sameVersion(got, r.Installed) || atLeast(got, minTo) {
+				if bumpedCopy(r, got, minTo) {
 					r.Status = StatusStillPresent
 					r.Reason = "the rescan of " + relTo(p.Dir, d) + " still reports it, in " + f.Package.Name + " " + got
 					break scan
@@ -197,7 +207,9 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 // sorted, and the lowest version those bumps raised the package to.
 func (p *Plan) resultDirs(i int) (dirs []string, minTo string) {
 	for _, b := range p.bumps {
-		if b.done == nil {
+		// A Dockerfile is verified by rebuilding its image, never by a
+		// directory rescan (verifyImages).
+		if b.done == nil || b.eco == EcosystemDocker {
 			continue
 		}
 		for _, r := range b.results {
@@ -237,6 +249,26 @@ func purlBase(purl string) string {
 		}
 	}
 	return strings.ToLower(purl)
+}
+
+// bumpedCopy reports whether a rescan that reports r's advisory on r's
+// package at version got is reporting the copy r bumped: still at the
+// installed version (the bump did not take), or at minTo or later (the fix
+// did not fix it). Any other version is another copy of the package. A Go
+// standard library version is compared without its "go" prefix.
+func bumpedCopy(r *Result, got, minTo string) bool {
+	installed := r.Installed
+	if kind, _ := classify(r.Package); kind == kindGoStdlib {
+		got, installed, minTo = goBare(got), goBare(installed), goBare(minTo)
+	}
+	return sameVersion(got, installed) || atLeast(got, minTo)
+}
+
+func nonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return []string{s}
 }
 
 // sameVersion reports whether a and b are one version, with or without a

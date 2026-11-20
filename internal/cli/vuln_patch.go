@@ -5,7 +5,7 @@ package cli
 // pull request. The patcher is internal/vulnpatch; this file is the input
 // (an env's findings, or a scan of a directory), flags, output and exit codes.
 //
-//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn]
+//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn|docker]
 //	                 [--allow-major] [--verify[=<cmd>]] [--pr | --no-pr]
 //	                 [--branch <name>] [--json]
 //
@@ -13,8 +13,9 @@ package cli
 // requested finding bumped (and verified, with --verify); 1 a bump or the
 // verification failed — the signal the vuln-patch workflow hands the tree to
 // an agent on; 2 nothing deterministic to do for at least one requested
-// finding (an OS package, an ambiguous manifest, an ecosystem with no
-// patcher), or the findings could not be read; 4 refused (a dirty tree with
+// finding (an ambiguous manifest or Dockerfile, an ecosystem with no
+// patcher, no docker to verify a rebuilt image), or the findings could not
+// be read; 4 refused (a dirty tree with
 // --pr, or a named advisory whose fix needs a major bump without
 // --allow-major) — nothing was changed.
 
@@ -78,7 +79,7 @@ func newVulnPatchCmdWith(deps vulnPatchDeps) *cobra.Command {
 	var opts vulnPatchOptions
 	cmd := &cobra.Command{
 		Use:   "patch <env | dir> [<advisory-id>...]",
-		Short: "Bump vulnerable Go and npm/pnpm/yarn dependencies to their fix, and verify the result",
+		Short: "Bump vulnerable dependencies, base images and the Go toolchain to their fix, and verify the result",
 		Long: `Bump each vulnerable dependency to the lowest version that fixes it, staying in
 its major version, with the ecosystem's own tool so lockfiles stay consistent:
 
@@ -87,6 +88,11 @@ its major version, with the ecosystem's own tool so lockfiles stay consistent:
   npm    npm install <pkg>@<fix> (direct), or an "overrides" entry (transitive)
   pnpm   pnpm update <pkg>@<fix>, or "pnpm.overrides"
   yarn   yarn up <pkg>@<fix> (yarn upgrade on yarn 1), or "resolutions"
+  docker an OS package (deb, apk, rpm): the FROM of the Dockerfile whose final
+         stage built the image moves to the newest tag of its minor
+         (alpine:3.19.1 -> alpine:3.19.4), else to its tag's newest digest
+  go     the Go standard library: the toolchain directive of each go.mod
+         (go mod edit -toolchain=) and the golang builder image's tag
 
 <env> patches the findings of the release the env runs, read from this
 machine's ledger (` + "`forge vuln list <env>`" + ` shows them); a directory (".", "./web")
@@ -94,16 +100,19 @@ is scanned first and patched in place. With no advisory ids, every finding with
 a fix that no exemption covers is patched; named ids (a CVE finds its GHSA) are
 patched whatever their exemption.
 
-Nothing is guessed. A finding the tree cannot be tied to one manifest, an OS
-package, the Go standard library, a Python package, or a fix only in a new
-major is reported as skipped with the reason: the vuln-patch workflow's agent
-picks those up. --allow-major takes a major bump.
+Nothing is guessed. A finding the tree cannot be tied to one manifest (or to
+one Dockerfile), a Python package, or a fix only in a new major is reported as
+skipped with the reason: the vuln-patch workflow's agent picks those up.
+--allow-major takes a major bump; for a base image or the Go toolchain, a new
+minor (alpine 3.20, Go 1.23) already counts as one.
 
 --verify runs the project's gate after the bump (vuln.patch.verify in
 forge.yaml, else ` + "`task test:short`" + ` when the Taskfile has it, else go build and go test
 -short, else the package manager's test script; --verify=<cmd> runs <cmd>),
-then rescans each changed manifest's directory: a finding still reported is
-still_present.
+then rescans each changed manifest's directory, and rebuilds each changed
+Dockerfile (docker build --pull --no-cache, the project as context) and rescans
+its image: a finding still reported is still_present. With no docker, a
+Dockerfile fix is skipped (no docker to verify).
 
 --pr refuses a tree with uncommitted changes, and, when the bump verified,
 commits it on forge/vuln-patch/<date>-<commit>, pushes, and opens the pull
@@ -118,7 +127,7 @@ with --pr, or a named advisory whose fix needs --allow-major), nothing changed.`
 			return runVulnPatch(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), deps, args[0], args[1:], opts)
 		},
 	}
-	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn (repeatable, or comma-separated)")
+	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn, docker (repeatable, or comma-separated)")
 	cmd.Flags().BoolVar(&opts.allowMajor, "allow-major", false, "take a fix in a new major version when no fix is in the installed one")
 	cmd.Flags().Var((*optionalString)(&opts.verify), "verify", "after the bump, run the project's gate (or --verify=CMD) and rescan the changed manifests")
 	cmd.Flags().Lookup("verify").NoOptDefVal = verifyGate
@@ -162,7 +171,7 @@ func runVulnPatch(ctx context.Context, out, errOut io.Writer, deps vulnPatchDeps
 			ok = ok || eco == known
 		}
 		if !ok {
-			return fmt.Errorf("--ecosystem %q (expected go, npm, pnpm or yarn)", e)
+			return fmt.Errorf("--ecosystem %q (expected one of %s)", e, ecosystemList())
 		}
 		ecos = append(ecos, eco)
 	}
@@ -219,7 +228,7 @@ func runVulnPatch(ctx context.Context, out, errOut io.Writer, deps vulnPatchDeps
 	}
 
 	findings, missing, notes := selectPatchFindings(in, ids)
-	plan, err := vulnpatch.NewPlan(tree, findings, vulnpatch.Options{AllowMajor: opts.allowMajor, Ecosystems: ecos, Explicit: len(ids) > 0})
+	plan, err := vulnpatch.NewPlanContext(ctx, tree, findings, vulnpatch.Options{AllowMajor: opts.allowMajor, Ecosystems: ecos, Explicit: len(ids) > 0})
 	if err != nil {
 		return err
 	}
@@ -248,6 +257,13 @@ func runVulnPatch(ctx context.Context, out, errOut io.Writer, deps vulnPatchDeps
 					}
 					return s.Findings, nil
 				},
+				ScanImage: func(ctx context.Context, image string) ([]vulnscan.Finding, error) {
+					s, err := scanner.Scan(ctx, "docker:"+image)
+					if err != nil {
+						return nil, err
+					}
+					return s.Findings, nil
+				},
 			})
 		}
 	}
@@ -271,6 +287,14 @@ func runVulnPatch(ctx context.Context, out, errOut io.Writer, deps vulnPatchDeps
 		writePatchDocument(out, doc)
 	}
 	return patchExit(doc)
+}
+
+func ecosystemList() string {
+	var out []string
+	for _, e := range vulnpatch.Ecosystems() {
+		out = append(out, string(e))
+	}
+	return strings.Join(out, ", ")
 }
 
 // selectPatchFindings picks the findings to patch: those ids name (by id or

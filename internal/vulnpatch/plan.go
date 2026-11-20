@@ -1,6 +1,7 @@
 package vulnpatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,6 +24,9 @@ type Options struct {
 	// needs a major bump is then refused (exit 4) rather than skipped for
 	// the agent.
 	Explicit bool
+	// Registry answers what a base image refresh asks of an image's
+	// registry (OS packages, the Go builder image); nil is LiveRegistry.
+	Registry Registry
 }
 
 func (o Options) wants(e Ecosystem) bool {
@@ -55,6 +59,10 @@ type Plan struct {
 	applied bool
 	verify  *VerifyResult
 	failed  map[int]bool // results whose bump failed
+
+	registry    Registry
+	tagCache    map[string][]string
+	digestCache map[string]string
 }
 
 // plannedBump is one package to raise in one manifest, for the results
@@ -69,13 +77,18 @@ type plannedBump struct {
 	direct   bool
 	results  []int
 	done     *Bump
+	// line is a Dockerfile bump's FROM line (1-based); toolchain marks a
+	// go.mod or go.work toolchain directive bump.
+	line      int
+	toolchain bool
 }
 
 // index is every manifest in the tree.
 type index struct {
-	goMods    []*goModule
-	lockfiles []*jsLockfile
-	goWork    bool
+	goMods      []*goModule
+	lockfiles   []*jsLockfile
+	dockerfiles []*dockerfile
+	goWork      bool
 }
 
 // skipDirs are never searched for manifests: vendored and installed
@@ -113,14 +126,29 @@ func scan(dir string) (*index, []string, error) {
 				return nil
 			}
 			idx.lockfiles = append(idx.lockfiles, l)
+		default:
+			if isDockerfileName(d.Name()) {
+				df, err := readDockerfile(dir, path)
+				if err != nil {
+					notes = append(notes, fmt.Sprintf("%s: unreadable, ignored: %v", relTo(dir, path), err))
+					return nil
+				}
+				idx.dockerfiles = append(idx.dockerfiles, df)
+			}
 		}
 		return nil
 	})
 	return idx, notes, err
 }
 
-// NewPlan resolves findings against the tree at dir. It changes nothing.
+// NewPlan is NewPlanContext with a background context.
 func NewPlan(dir string, findings []vulnscan.Finding, opts Options) (*Plan, error) {
+	return NewPlanContext(context.Background(), dir, findings, opts)
+}
+
+// NewPlanContext resolves findings against the tree at dir. It changes
+// nothing; it reads the tree, and the registry of a base image to refresh.
+func NewPlanContext(ctx context.Context, dir string, findings []vulnscan.Finding, opts Options) (*Plan, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -129,9 +157,12 @@ func NewPlan(dir string, findings []vulnscan.Finding, opts Options) (*Plan, erro
 	if err != nil {
 		return nil, fmt.Errorf("read the manifests under %s: %w", abs, err)
 	}
-	p := &Plan{Dir: abs, Notes: notes, Results: []Result{}, failed: map[int]bool{}}
+	p := &Plan{Dir: abs, Notes: notes, Results: []Result{}, failed: map[int]bool{}, registry: opts.Registry, tagCache: map[string][]string{}, digestCache: map[string]string{}}
+	if p.registry == nil {
+		p.registry = LiveRegistry()
+	}
 	for _, f := range findings {
-		p.add(f, idx, opts)
+		p.add(ctx, f, idx, opts)
 	}
 	return p, nil
 }
@@ -148,7 +179,7 @@ func (p *Plan) Refuse(reason string) { p.Refusals = append(p.Refusals, reason) }
 // Changes reports whether the plan has any bump to apply.
 func (p *Plan) Changes() bool { return len(p.bumps) > 0 }
 
-func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
+func (p *Plan) add(ctx context.Context, f vulnscan.Finding, idx *index, opts Options) {
 	r := Result{
 		ID: f.ID, Aliases: f.Aliases, Severity: f.Severity, Package: f.Package,
 		Installed: f.Package.Version, Status: StatusSkipped,
@@ -158,10 +189,6 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		return
 	}
 	switch kind {
-	case kindGoStdlib:
-		r.Reason = "the Go standard library: raising the toolchain directive and the builder image has no patcher yet"
-	case kindOS:
-		r.Reason = fmt.Sprintf("an OS package (%s): refreshing the image's base has no patcher yet", f.Package.Type)
 	case kindPython:
 		r.Reason = "a Python package: no patcher yet"
 	case kindOther:
@@ -178,7 +205,16 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		p.Results = append(p.Results, r)
 		return
 	}
-	target, err := ChooseTarget(f.Package.Version, f.FixedIn, opts.AllowMajor)
+	if kind == kindOS {
+		p.resolveOS(ctx, &r, f, idx, opts, len(p.Results))
+		p.Results = append(p.Results, r)
+		return
+	}
+	choose := ChooseTarget
+	if kind == kindGoStdlib {
+		choose = chooseGoTarget
+	}
+	target, err := choose(f.Package.Version, f.FixedIn, opts.AllowMajor)
 	if err != nil {
 		r.Reason = err.Error()
 		if opts.Explicit && errors.Is(err, ErrNeedsMajor) {
@@ -193,6 +229,9 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 	case kindGo:
 		r.Ecosystem = EcosystemGo
 		p.resolveGo(&r, f, idx, at)
+	case kindGoStdlib:
+		r.Ecosystem = EcosystemGo
+		p.resolveGoStdlib(ctx, &r, idx, at)
 	case kindJS:
 		if !p.resolveJS(&r, f, idx, opts, at) {
 			return
@@ -442,7 +481,7 @@ func classify(p vulnscan.Package) (packageKind, Ecosystem) {
 	case "npm":
 		return kindJS, EcosystemNPM
 	case "apk", "deb", "rpm", "alpm", "portage", "nix":
-		return kindOS, ""
+		return kindOS, EcosystemDocker
 	case "python", "pypi":
 		return kindPython, ""
 	}

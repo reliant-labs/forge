@@ -93,15 +93,33 @@ func applyManifest(ctx context.Context, run vulnscan.Runner, bs []*plannedBump) 
 		}
 		return nil
 	}
+	if first.eco == EcosystemDocker {
+		edits, err := applyDockerfile(bs)
+		return [][]string{}, edits, err
+	}
 	if first.eco == EcosystemGo {
 		args := []string{"get"}
+		toolchain := ""
 		for _, b := range bs {
+			if b.toolchain {
+				toolchain = b.to
+				continue
+			}
 			args = append(args, b.pkg+"@"+b.to)
 		}
-		if err := exec("go", args...); err != nil {
-			return cmds, nil, err
+		if len(args) > 1 {
+			if err := exec("go", args...); err != nil {
+				return cmds, nil, err
+			}
+			if err := exec("go", "mod", "tidy"); err != nil {
+				return cmds, nil, err
+			}
 		}
-		return cmds, nil, exec("go", "mod", "tidy")
+		if toolchain != "" {
+			// Last, so go get and tidy run with the toolchain they did.
+			return cmds, nil, exec("go", toolchainCommand(first.manifest, toolchain)...)
+		}
+		return cmds, nil, nil
 	}
 
 	var direct []string

@@ -44,7 +44,7 @@ _d = ds.Dashboard {
         }
         ds.Panel {
             id = "top", title = "Top spans", kind = "bar", signal = "traces", groupBy = ["span.name"], limit = 5
-            series = [ds.Series {label = "calls", agg = "count"}]
+            series = [ds.Series {label = "calls", agg = "count", metricType = ""}]
         }
         ds.Panel {
             id = "heat", title = "Latency heatmap", kind = "heatmap", signal = "traces"
@@ -89,6 +89,7 @@ assert_unset_optionals_dropped = "description" not in dashboard and "unit" not i
 assert_rate_helper = dashboard.panels[0].series[0] == {"label": "rps", "agg": "rate", "field": "demo.requests", "metricType": "sum"}
 assert_p95 = dashboard.panels[1].series[0].quantile == 0.95 and dashboard.panels[1].series[0].metricType == "histogram"
 assert_summary = dashboard.panels[2].series[0].metricType == "summary"
+assert_empty_optional_metric_type = dashboard.panels[5].series[0].metricType == ""
 assert_ratio = dashboard.panels[3].ratio and len(dashboard.panels[3].series) == 2 and dashboard.panels[3].series[0].where[0].op == "eq"
 assert_nested_figure = dashboard.panels[15].attention.figures[0].display == {"good": "up"}
 assert_spec_version = ds.SPEC_VERSION == "forge.dashboards/v1"

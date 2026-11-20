@@ -187,6 +187,10 @@ func TestDashspecKCLRoundTripsThroughParseDashboard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseDashboard refused the KCL-declared dashboard: %v\n%s", err, raw)
 	}
+	var emptyMetricTypePreserved bool
+	if err := json.Unmarshal(doc["assert_empty_optional_metric_type"], &emptyMetricTypePreserved); err != nil || !emptyMetricTypePreserved {
+		t.Fatalf("the trace count must serialize an explicitly empty optional metricType: %v\n%s", err, raw)
+	}
 
 	kinds := map[dashspec.PanelKind]bool{}
 	var p95, summary bool

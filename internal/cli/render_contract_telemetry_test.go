@@ -34,6 +34,9 @@ func TestRenderContract_TelemetryDecodesNormalizesAndValidates(t *testing.T) {
 	if m := tmp.Metrics[0]; m.Port != 9090 || m.PortName != "metrics" {
 		t.Errorf("the named scrape port did not resolve: %+v", m)
 	}
+	if m := tmp.Metrics[0]; m.LabelLimit == nil || m.LabelValueLengthLimit == nil || *m.LabelLimit != 0 || *m.LabelValueLengthLimit != 0 {
+		t.Errorf("explicit disabled label limits were not preserved: %+v", m)
+	}
 	if c := tmp.Checks[0]; c.Port != 7233 {
 		t.Errorf("the named check port did not resolve: %+v", c)
 	}

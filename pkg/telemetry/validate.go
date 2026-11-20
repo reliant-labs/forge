@@ -334,13 +334,29 @@ func (v *validator) scheme(field, scheme string, bearer *SecretMount, tls *TLS) 
 		name  string
 		mount *SecretMount
 	}{{"bearer_token", bearer}, {"tls.ca", caOf(tls)}} {
-		if m.mount != nil && (m.mount.Secret == "" || m.mount.Key == "") {
-			v.add(field+"."+m.name, "needs a secret name and key")
+		if m.mount != nil && (!safeSecretComponent(m.mount.Secret) || !safeSecretComponent(m.mount.Key)) {
+			v.add(field+"."+m.name, "needs a secret name and key that are safe single path components (letters, digits, '.', '_' or '-', not '.' or '..')")
 		}
 	}
 	if tls != nil && tls.InsecureSkipVerify && tls.CA != nil {
 		v.add(field+".tls", "ca and insecure_skip_verify are exclusive")
 	}
+}
+
+// safeSecretComponent uses the Secret data-key alphabet, excluding the two
+// directory components. Reject both Unix and Windows separators and volumes.
+func safeSecretComponent(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, c := range s {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func caOf(t *TLS) *SecretMount {

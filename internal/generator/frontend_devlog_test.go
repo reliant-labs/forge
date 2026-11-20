@@ -90,8 +90,7 @@ func TestViteSPAScaffoldFollowsTheRuntimeFloor(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			opts := FrontendGenOptions{webRuntimeFloor: tc.floor}
-			if err := GenerateFrontendFilesWithOptions(root, "example.com/app", "app", "web", 8080, "vite-spa", opts); err != nil {
+			if err := generateFrontendFiles(root, "example.com/app", "app", "web", 8080, "vite-spa", FrontendGenOptions{}, tc.floor); err != nil {
 				t.Fatal(err)
 			}
 			fe := filepath.Join(root, "frontends", "web")

@@ -19,6 +19,24 @@ type FindingsStore interface {
 	ListFindings(sbomDigest string) ([]ledgerfile.FindingsRecord, error)
 }
 
+// ShipsCode reports whether an artifact is code that ships, which an SBOM
+// describes and the gate covers: an image, a host binary, an npm package or
+// a Go module. A git source pin (a frontend built from another repository)
+// names a commit, not bytes, and a frontend's source maps are debugging data,
+// so neither gets an SBOM at the cut, and neither leaves a release "not
+// scanned". It is the rule the cut's SBOM step (internal/cli/build_sbom.go,
+// sbomDescribes) applies, stated where the gate reads it.
+func ShipsCode(name string, art release.Artifact) bool {
+	if _, maps := release.SourcemapsFrontend(name); maps {
+		return false
+	}
+	switch art.Kind {
+	case release.KindOCI, release.KindFile, release.KindNPM, release.KindGoModule:
+		return true
+	}
+	return false
+}
+
 // Record wraps a scan of one SBOM in the ledger's envelope; the scan itself
 // is the body.
 func Record(sbomDigest string, s *Scan) (ledgerfile.FindingsRecord, error) {
@@ -90,8 +108,12 @@ type ReleaseScan struct {
 func ScanRelease(ctx context.Context, store FindingsStore, scanner *Scanner, local Status, rel *release.Release, policy Rescan) (ReleaseScan, error) {
 	var out ReleaseScan
 	names := make([]string, 0, len(rel.Artifacts))
-	for name := range rel.Artifacts {
-		names = append(names, name)
+	for name, art := range rel.Artifacts {
+		// An artifact that ships no code (a source pin, source maps) has
+		// no SBOM by design (ShipsCode): it is not part of the coverage.
+		if ShipsCode(name, art) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	canScan := scanner != nil && local.Present && !local.Stale(scanner.DB.now())

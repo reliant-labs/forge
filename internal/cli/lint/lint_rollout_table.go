@@ -278,6 +278,17 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
 	},
+	// The vulnerability gate made real (rollout_grade.go): an env's declared
+	// `vuln_gate = enforce` is judged as audit until it gates — at the cut,
+	// at a self-hosted promote and in the vuln-sbom gate step — and a
+	// declared `provenance_sbom = enforce` refuses a promotion whose
+	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
+	// rollout (forge#2468 §1.8).
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
+	},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

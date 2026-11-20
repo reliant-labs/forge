@@ -3113,6 +3113,29 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/releasehealth/releasehealth.go`](../pkg/releasehealth/releasehealth.go)
 - command `forge obs check`
 
+<a id="vuln-gate-self-hosted"></a>
+
+### Vulnerability gate, warn first
+
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+
+**Evidence:**
+
+- command `forge vuln exempt`
+- command `forge ci vuln-sbom`
+- source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
+
+| Rule            | Bug class it prevents                                                                                                                | Lane               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+
 <a id="delivery-policy-recorded"></a>
 
 ### Per-env delivery policy controls

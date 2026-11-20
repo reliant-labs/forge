@@ -42,6 +42,7 @@ func newCICmd() *cobra.Command {
 	cmd.AddCommand(newCIVerifyTestRetryCmd())
 	cmd.AddCommand(newCIValidateKCLCmd())
 	cmd.AddCommand(newCIVulnScanCmd())
+	cmd.AddCommand(newCIVulnSBOMCmd())
 	cmd.AddCommand(newCIMigrationSafetyCmd())
 	cmd.AddCommand(newCIRunCmd())
 	cmd.AddCommand(newCISummarizeCmd())

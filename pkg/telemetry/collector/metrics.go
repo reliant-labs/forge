@@ -15,6 +15,8 @@ import (
 func (b *builder) prometheus(t telemetry.Target) (map[string]any, error) {
 	jobs := make([]any, 0, len(t.Metrics))
 	for i, m := range t.Metrics {
+		// An unnamed scrape's suffix is its index. Validate refuses an
+		// all-digit name, so no named scrape can take the same job name.
 		suffix := m.Name
 		if suffix == "" {
 			suffix = strconv.Itoa(i)
@@ -86,9 +88,21 @@ func (b *builder) prometheus(t telemetry.Target) (map[string]any, error) {
 // declaring it (valid in a manifest) has no target of its own. The relabels
 // therefore ignore the declared ports: they keep every running, non-init
 // container's target and point each at <pod IP>:port. Nothing per-container
-// survives into the final labels (job, instance = the address, pod,
-// namespace), so a pod's targets are identical and Prometheus's scrape pool
-// keeps one of them: one scrape, and one `up`, per pod.
+// survives into the final labels (job, instance = the address, pod, and
+// NamespaceLabel), so a pod's targets are identical and Prometheus's scrape
+// pool keeps one of them: one scrape, and one `up`, per pod.
+//
+// A target label wins over an exporter's label of the same name (honor_labels
+// is off), which Prometheus renames to exported_<name>. So the pod's namespace
+// is NOT stamped as `namespace`, the label an exporter that reports on other
+// objects (Flux, External Secrets, cert-manager, kube-state-metrics) uses for
+// the namespace of what it reports on: it is stamped as NamespaceLabel, which
+// no exporter writes, and the target's transform moves it to the resource
+// attribute k8s.namespace.name. job and instance are Prometheus's own and the
+// receiver moves them to the resource (service.name, service.instance.id), as
+// any Prometheus does. pod is kept as it is: it is the per-pod identity the
+// scrape pool collapses on, and an exporter that also writes `pod` sees it
+// renamed exported_pod, as under any Prometheus pod scrape.
 func podRelabels(port int) []any {
 	p := strconv.Itoa(port)
 	return []any{
@@ -101,7 +115,19 @@ func podRelabels(port int) []any {
 		map[string]any{"source_labels": strs("__meta_kubernetes_pod_ip"), "regex": "([^:]+)", "target_label": "__address__", "replacement": lit("${1}:" + p), "action": "replace"},
 		map[string]any{"source_labels": strs("__meta_kubernetes_pod_ip"), "regex": "(.+:.+)", "target_label": "__address__", "replacement": lit("[${1}]:" + p), "action": "replace"},
 		map[string]any{"source_labels": strs("__meta_kubernetes_pod_name"), "target_label": "pod", "action": "replace"},
-		map[string]any{"source_labels": strs("__meta_kubernetes_namespace"), "target_label": "namespace", "action": "replace"},
+		map[string]any{"source_labels": strs("__meta_kubernetes_namespace"), "target_label": NamespaceLabel, "action": "replace"},
+	}
+}
+
+// namespaceStatements move a pod scrape's NamespaceLabel from each datapoint
+// to its resource's k8s.namespace.name. Every datapoint of a resource is one
+// target's, so they agree; a datapoint without the label (a check's) is left
+// alone.
+func namespaceStatements() []string {
+	l := ottlString(NamespaceLabel)
+	return []string{
+		`set(resource.attributes["k8s.namespace.name"], datapoint.attributes[` + l + `]) where datapoint.attributes[` + l + `] != nil`,
+		`delete_key(datapoint.attributes, ` + l + `)`,
 	}
 }
 
@@ -180,6 +206,8 @@ func (b *builder) checks(t telemetry.Target) []string {
 	return names
 }
 
+// checkName is c's receiver-name suffix: its name, else its index. Validate
+// refuses an all-digit name, so the two never collide.
 func checkName(c telemetry.HealthCheck, i int) string {
 	if c.Name != "" {
 		return c.Name

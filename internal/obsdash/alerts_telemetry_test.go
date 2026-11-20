@@ -224,6 +224,37 @@ func TestTelemetryAlertsOnClickHouse(t *testing.T) {
 	}
 }
 
+func TestTelemetryAlertServiceLabelDoesNotIdentifyOrigin(t *testing.T) {
+	in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{{Service: "temporal", Scrapes: true, Checks: true}}}
+	tuning := map[string]AlertTuning{}
+	for _, id := range []string{"telemetry-target-down", "telemetry-check-failing"} {
+		tuning[id] = AlertTuning{Enabled: true, Labels: map[string]string{"service": "custom-service"}}
+	}
+	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("got %d rules, want both telemetry defaults", len(rules))
+	}
+	for _, r := range rules {
+		if r.Labels["service"] != "custom-service" {
+			t.Errorf("%s: service label = %q, want custom-service", r.ID, r.Labels["service"])
+		}
+	}
+
+	// Another default cannot hide a name collision by adopting the target's
+	// service label either: default IDs, not labels, identify the origin.
+	err = validateTelemetryDefaultNames([]AlertRule{{
+		ID: "another-default", Alert: "TemporalTargetDown", Labels: map[string]string{"service": "temporal"},
+	}}, map[string]telemetryAlertOrigin{
+		"TemporalTargetDown": {service: "temporal", defaultID: "telemetry-target-down"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "another-default") {
+		t.Fatalf("expected collision with another-default, got %v", err)
+	}
+}
+
 // TestTelemetryAlertNamesNeverCollide: TelemetryAlertName keeps only a
 // service.name's letters and digits, so foo.bar, foo_bar and foo-bar would
 // all raise FooBarTargetDown. Two systems must never share a rule identity:

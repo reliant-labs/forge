@@ -10,10 +10,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -325,35 +323,6 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 		)
 	}
 	return generator.ForcePaths(selected...), nil
-}
-
-// migrateLegacyChecksums performs the one-time legacy .forge/checksums.json
-// migration (the same conversion `forge generate` performs). Unlike the
-// pipeline, upgrade has no emitters to side-render against, so unverifiable
-// entries get the unverified-legacy sentinel directly — the next generate's
-// guard names them with the standard remedies. A missing/unreadable manifest is
-// a no-op (nothing to migrate).
-func migrateLegacyChecksums(projectDir string) error {
-	mcs, lerr := generator.LoadChecksums(projectDir)
-	if lerr != nil {
-		return nil
-	}
-	outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
-	if merr != nil {
-		return fmt.Errorf("legacy checksums migration: %w", merr)
-	}
-	if outcome == nil {
-		return nil
-	}
-	fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
-	for _, p := range outcome.Unverified {
-		checksums.StampUnverified(projectDir, p)
-		fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge project disown`)\n", p)
-	}
-	if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
-		return fmt.Errorf("save .forge ownership state: %w", serr)
-	}
-	return nil
 }
 
 // upgradeCounts tallies the per-file outcomes of a template-upgrade pass.
@@ -668,31 +637,6 @@ func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, chec
 	}
 	fmt.Printf("\nforge_version → %s (forge.yaml updated)\n", target)
 	return nil
-}
-
-// isPreV01Baseline reports whether v sits below v0.1.0 — the line forge has
-// not crossed yet, and therefore the line before which no backwards-
-// compatibility promise exists. Purely an ordering question, answered by
-// SemVer precedence, so every shape a real pin takes lands correctly:
-//
-//	""                                    unpinned          → pre-v0.1
-//	"0.0.0"                               unpinned sentinel → pre-v0.1
-//	"v0.0.3"                              released patch    → pre-v0.1
-//	"v0.0.4-0.20260724212501-dfb…+dirty"  dev build         → pre-v0.1
-//	"dev"                                 unorderable       → pre-v0.1
-//	"v0.1.0"                              first compat tag  → NOT pre-v0.1
-//
-// A dev build's pseudo-version is a PRE-RELEASE of the next patch, so it
-// orders below that patch and far below v0.1.0 without any special casing:
-// nothing here has to know a version came from a local checkout.
-func isPreV01Baseline(v string) bool {
-	key := semverKey(v)
-	if key == "" {
-		// Unorderable (the "dev" sentinel, a malformed pin). Forge has
-		// never released v0.1.0, so anything we cannot place is below it.
-		return true
-	}
-	return semver.Compare(key, "v0.1.0") < 0
 }
 
 // minorPlus returns the version n minor releases after v (e.g.

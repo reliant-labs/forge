@@ -685,6 +685,27 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) projectTemp
 	return forUpgrade(cfg, projectDir)
 }
 
+// connectV2Twins maps a project file's template to its connect-go v2 twin.
+// The auth-policy pair is two files per major rather than one template that
+// branches: both are the user's from birth, so the copy a project gets is
+// read as plain Go — and a template whose Go is split by actions does not
+// parse as Go (forge's own checks read these sources). middleware.go
+// declares NewAuthInterceptor on v1 and NewAuthInterceptorV2 on v2;
+// middleware_test.go drives whichever it is.
+var connectV2Twins = map[string]string{
+	"middleware.go.tmpl": "middleware_v2.go.tmpl",
+	"middleware_test.go": "middleware_test_v2.go",
+}
+
+// connectMajorTemplate is the template name a project of the given major
+// renders for name: its v2 twin for a v2 project, else name.
+func connectMajorTemplate(name string, v2 bool) string {
+	if twin, ok := connectV2Twins[name]; ok && v2 {
+		return twin
+	}
+	return name
+}
+
 // renderManagedFile renders a managed file's template content.
 func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) {
 	var content []byte
@@ -693,9 +714,9 @@ func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) 
 	case f.render != nil:
 		content, err = f.render()
 	case f.templated:
-		content, err = templates.ProjectTemplates().Render(f.templateName, data)
+		content, err = templates.ProjectTemplates().Render(connectMajorTemplate(f.templateName, data.ConnectV2), data)
 	default:
-		content, err = templates.ProjectTemplates().Get(f.templateName)
+		content, err = templates.ProjectTemplates().Get(connectMajorTemplate(f.templateName, data.ConnectV2))
 	}
 	if err != nil {
 		return nil, err

@@ -174,7 +174,9 @@ type Target struct {
 
 // MetricsScrape is one Prometheus-exposition endpoint the collector pulls.
 type MetricsScrape struct {
-	// Name distinguishes several scrapes of one target (a job-name suffix).
+	// Name distinguishes several scrapes of one target (a job-name suffix):
+	// an RFC-1123 label with a non-digit, unique within the target. An
+	// unnamed scrape's suffix is its index, which no name can equal.
 	Name string `json:"name,omitempty"`
 	// Port is the container (or host) port. After Normalize it is set for
 	// every resolvable PortName; 0 with a PortName is a name the attached
@@ -309,6 +311,9 @@ type PprofScrape struct {
 
 // HealthCheck is reachability when there is nothing to scrape.
 type HealthCheck struct {
+	// Name distinguishes several checks of one target (a receiver-name
+	// suffix): an RFC-1123 label with a non-digit, unique within the
+	// target. An unnamed check's suffix is its index, which no name can equal.
 	Name string `json:"name,omitempty"`
 	// Kind is "tcp" (connect) or "http" (a GET; 2xx is healthy).
 	Kind     string `json:"kind"`

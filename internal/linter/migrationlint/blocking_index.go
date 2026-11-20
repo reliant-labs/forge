@@ -69,7 +69,7 @@ func createdTable(stmt string) (string, bool) {
 // created.
 func blockingIndexFinding(file string, stmt statement, created map[string]bool) (Finding, bool) {
 	m := createIndexRe.FindStringSubmatch(stmt.Text)
-	if m == nil || m[1] != "" {
+	if len(m) < 3 || m[1] != "" {
 		return Finding{}, false
 	}
 	table := relationKey(m[2])

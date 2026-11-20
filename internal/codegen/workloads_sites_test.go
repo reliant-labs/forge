@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,56 @@ b = fw.Workload {
 				t.Fatalf("workloadSitesIn =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestWorkloadSitesInProseBoundaries(t *testing.T) {
+	for _, prose := range []string{
+		`"{#not a comment"`,
+		`"}#not a comment"`,
+		`'{'`,
+		`'}'`,
+		`r'{#raw'`,
+		`"escaped \" {"`,
+		`'escaped \' }'`,
+		`"""multiline {
+name = "fake"
+fw.Workload {
+}"""`,
+		`'''multiline }
+name = "fake"
+fw.Workload {
+{'''`,
+	} {
+		t.Run(prose, func(t *testing.T) {
+			src := "first = fw.Workload {\n    args = [" + prose + "]\n" +
+				"    # } { misleading braces\n    name = \"first\" # trailing }\n}\n" +
+				"second = fw.Workload {\n    name = \"second\"\n    kind = \"worker\"\n}\n"
+			got := workloadSitesIn(src, "w.k")
+			if len(got) != 2 || got[0].Name != "first" || got[0].Kind != "" || got[1].Name != "second" || got[1].Kind != "worker" {
+				t.Fatalf("incorrect workload boundaries: %+v", got)
+			}
+			// Exercise the block reader directly, without prose stripping.
+			body, ok := kclBlockBody(src, len("first = fw.Workload {"))
+			if !ok || !strings.HasSuffix(body, "name = \"first\" # trailing }\n") {
+				t.Fatalf("incorrect body: %q, %v", body, ok)
+			}
+		})
+	}
+}
+
+func TestWorkloadSitesInIgnoresStringExamples(t *testing.T) {
+	src := `example = "fw.Workload {"
+other = 'fw.Workload {'
+real = fw.Workload {
+    args = ["#", '}', "{"]
+    name = "real"
+    image = "registry/image#fragment"
+}
+`
+	want := []WorkloadSite{{Name: "real", Image: "registry/image#fragment", File: "w.k", Line: 3}}
+	if got := workloadSitesIn(src, "w.k"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
 

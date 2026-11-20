@@ -88,7 +88,17 @@ func DeclaredWorkloadSites(projectDir string) []WorkloadSite {
 func workloadSitesIn(src, rel string) []WorkloadSite {
 	src = stripKCLProseKeepLines(src)
 	var out []WorkloadSite
-	for _, loc := range workloadOpen.FindAllStringIndex(src, -1) {
+	// Search code only: an example inside an ordinary string is not a site.
+	code := []byte(src)
+	for i := 0; i < len(src); i++ {
+		if end := kclProseEnd(src, i); end > i {
+			for j := i; j < end; j++ {
+				code[j] = blankKeepNewline(code[j])
+			}
+			i = end - 1
+		}
+	}
+	for _, loc := range workloadOpen.FindAllStringIndex(string(code), -1) {
 		body, ok := kclBlockBody(src, loc[1])
 		if !ok {
 			continue
@@ -125,10 +135,20 @@ func workloadSitesIn(src, rel string) []WorkloadSite {
 // a docstring becomes the newlines it spanned, so a line number read from the
 // result is the line in the file.
 func stripKCLProseKeepLines(src string) string {
-	src = kclDocstring.ReplaceAllStringFunc(src, func(doc string) string {
-		return strings.Repeat("\n", strings.Count(doc, "\n"))
-	})
-	return kclComment.ReplaceAllString(src, "")
+	b := []byte(src)
+	for i := 0; i < len(src); i++ {
+		end := kclProseEnd(src, i)
+		if end == i {
+			continue
+		}
+		if src[i] == '#' || (i+2 < len(src) && src[i] == src[i+1] && src[i] == src[i+2]) {
+			for j := i; j < end; j++ {
+				b[j] = blankKeepNewline(b[j])
+			}
+		}
+		i = end - 1
+	}
+	return string(b)
 }
 
 // kclTopLevel is a literal body with everything nested inside its brackets
@@ -137,23 +157,18 @@ func stripKCLProseKeepLines(src string) string {
 func kclTopLevel(body string) string {
 	b := []byte(body)
 	depth := 0
-	inString := false
 	for i := 0; i < len(b); i++ {
+		if end := kclProseEnd(body, i); end > i {
+			if depth > 0 || body[i] == '#' {
+				for j := i; j < end; j++ {
+					b[j] = blankKeepNewline(b[j])
+				}
+			}
+			i = end - 1
+			continue
+		}
 		c := b[i]
 		switch {
-		case inString:
-			if c == '\\' && i+1 < len(b) {
-				if depth > 0 {
-					b[i], b[i+1] = ' ', blankKeepNewline(b[i+1])
-				}
-				i++
-				continue
-			}
-			if c == '"' {
-				inString = false
-			}
-		case c == '"':
-			inString = true
 		case c == '{' || c == '[' || c == '(':
 			depth++
 			if depth == 1 {
@@ -172,6 +187,37 @@ func kclTopLevel(body string) string {
 		}
 	}
 	return string(b)
+}
+
+// kclProseEnd skips a comment or a single/triple quoted string, including
+// escaped quotes. Returning i means this byte is code. Raw strings use the
+// same delimiter boundaries; their optional prefix remains ordinary code.
+func kclProseEnd(src string, i int) int {
+	if src[i] == '#' {
+		if n := strings.IndexByte(src[i:], '\n'); n >= 0 {
+			return i + n
+		}
+		return len(src)
+	}
+	quote := src[i]
+	if quote != '\'' && quote != '"' {
+		return i
+	}
+	width := 1
+	if i+2 < len(src) && src[i+1] == quote && src[i+2] == quote {
+		width = 3
+	}
+	delim := src[i : i+width]
+	for j := i + width; j < len(src); j++ {
+		if src[j] == '\\' {
+			j++
+			continue
+		}
+		if strings.HasPrefix(src[j:], delim) {
+			return j + width
+		}
+	}
+	return len(src)
 }
 
 func blankKeepNewline(c byte) byte {

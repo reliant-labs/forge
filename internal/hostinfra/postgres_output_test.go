@@ -6,8 +6,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A first `forge env up` printed initdb's whole transcript into the
@@ -28,7 +30,7 @@ func TestStartPostgres_KeepsInitdbOutputOutOfTheTerminal(t *testing.T) {
 	_ = ln.Close()
 
 	projectDir := t.TempDir()
-	spec := Spec{Name: "postgres", Engine: EnginePostgres, Port: port, Database: "app", User: "postgres", Password: "postgres"}
+	spec := Spec{Name: "postgres", Env: "dev", Engine: EnginePostgres, Port: port, Database: "app", User: "postgres", Password: "postgres"}
 	t.Cleanup(func() { _ = Stop(projectDir, spec) })
 
 	// Start writes to the process's stdout; capture it.
@@ -59,11 +61,30 @@ func TestStartPostgres_KeepsInitdbOutputOutOfTheTerminal(t *testing.T) {
 	if !strings.Contains(out, "postgres serving on :") {
 		t.Errorf("forge's own status line is missing:\n%s", out)
 	}
-	logBody, err := os.ReadFile(filepath.Join(spec.dataDir(projectDir), "postgres.log"))
-	if err != nil {
-		t.Fatalf("the transcript should be in postgres.log: %v", err)
+	// The instance's log is .forge/logs/<env>/<name>.log, where the local
+	// collector tails it. It holds initdb's transcript AND the running
+	// server's own lines, which before went to a temp file unlinked once the
+	// server was up.
+	logPath := LogPath(projectDir, spec.Env, spec.Name)
+	var logBody []byte
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		logBody, err = os.ReadFile(logPath) // #nosec G304 -- test temp dir
+		if err == nil && strings.Contains(string(logBody), "ready to accept connections") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s should hold the running server's log (\"ready to accept connections\"): %v\n%s", logPath, err, logBody)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if !strings.Contains(string(logBody), "database system") {
-		t.Errorf("postgres.log does not hold initdb's output:\n%s", logBody)
+	if !strings.Contains(string(logBody), "The files belonging to this database system") {
+		t.Errorf("%s does not hold initdb's output:\n%s", logPath, logBody)
+	}
+	// The path an earlier forge wrote still reads the same log.
+	if runtime.GOOS != "windows" {
+		legacy, err := os.ReadFile(filepath.Join(spec.dataDir(projectDir), "postgres.log"))
+		if err != nil || !strings.Contains(string(legacy), "ready to accept connections") {
+			t.Errorf("the legacy postgres.log should read the live log: %v", err)
+		}
 	}
 }

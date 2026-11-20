@@ -107,9 +107,44 @@ func TestSetNotNull_ProvenByValidatedCheck(t *testing.T) {
 		{"column retyped", []compatFile{add, validate,
 			{"3.up.sql", "ALTER TABLE users ALTER COLUMN email TYPE varchar(320);"},
 			{"4_set.up.sql", set.content}}, 1},
-		{"unrelated statements keep the proof", []compatFile{add, validate,
-			{"3.up.sql", "UPDATE users SET name = 'x' WHERE name IS NULL;\nCREATE INDEX users_name ON users (name);\nALTER TABLE users DROP COLUMN legacy;"},
+		{"harmless statements keep the proof", []compatFile{add, validate,
+			{"3.up.sql", "UPDATE users SET name = 'x' WHERE name IS NULL;\nCREATE INDEX users_name ON users (name);\nSET lock_timeout = '5s';\nCOMMENT ON TABLE users IS 'x';"},
 			{"4_set.up.sql", set.content}}, 0},
+		// Conservative from here: what the pass does not positively know to
+		// be harmless forgets proofs. An extra warning is acceptable.
+		{"any other ALTER TABLE clause on the table", []compatFile{add, validate,
+			{"3.up.sql", "ALTER TABLE users DROP COLUMN legacy;"},
+			{"4_set.up.sql", set.content}}, 1},
+
+		// Review round 4 of #2533.
+		// B1: two statements on one line share the finding's file:line:column,
+		// so the findings cannot be told apart. Only users.email is proven:
+		// both stay (the unproven accounts.email must never be silenced; the
+		// extra warning on users.email is the price of not guessing).
+		{"one line, two tables, one proven", []compatFile{add, validate,
+			{"3_set.up.sql", "ALTER TABLE users ALTER COLUMN email SET NOT NULL; ALTER TABLE accounts ALTER COLUMN email SET NOT NULL;"}}, 2},
+		{"one line, two tables, both proven", []compatFile{add, validate,
+			{"3.up.sql", "ALTER TABLE accounts ADD CONSTRAINT nn CHECK (email IS NOT NULL);"},
+			{"4_set.up.sql", "ALTER TABLE users ALTER COLUMN email SET NOT NULL; ALTER TABLE accounts ALTER COLUMN email SET NOT NULL;"}}, 0},
+		// B2: a schema cascade removes the table without naming it.
+		{"DROP SCHEMA CASCADE then recreate", []compatFile{
+			{"1.up.sql", `ALTER TABLE public.users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", "DROP SCHEMA public CASCADE;\nCREATE SCHEMA public;\nCREATE TABLE public.users (id TEXT PRIMARY KEY, email TEXT);"},
+			{"3_set.up.sql", `ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"DROP SCHEMA CASCADE alone", []compatFile{
+			{"1.up.sql", `ALTER TABLE public.users ADD CONSTRAINT nn CHECK (email IS NOT NULL);`},
+			{"2.up.sql", "DROP SCHEMA public CASCADE;"},
+			{"3_set.up.sql", `ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;`}}, 1},
+		// B2: procedural DDL the pass cannot read.
+		{"DO block dropping the constraint", []compatFile{add, validate,
+			{"3.up.sql", "DO $$ BEGIN EXECUTE 'ALTER TABLE users DROP CONSTRAINT users_email_nn'; END $$;"},
+			{"4_set.up.sql", set.content}}, 1},
+		{"a function call", []compatFile{add, validate,
+			{"3.up.sql", "SELECT drop_old_constraints();"},
+			{"4_set.up.sql", set.content}}, 1},
+		// B3: PostgreSQL's inheritance star after the table name.
+		{"inheritance star, unproven", []compatFile{{"1_set.up.sql", `ALTER TABLE users * ALTER COLUMN email SET NOT NULL;`}}, 1},
+		{"inheritance star, proven", []compatFile{add, validate, {"3_set.up.sql", `ALTER TABLE users * ALTER COLUMN email SET NOT NULL;`}}, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

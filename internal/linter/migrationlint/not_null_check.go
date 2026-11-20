@@ -24,7 +24,9 @@ import (
 // so the proof must sit in this directory's migrations.
 
 var (
-	alterTableNameRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?((?:"[^"]+"|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][\w$]*))?)`)
+	// alterTableNameRe is an ALTER TABLE prefix through the table name and
+	// PostgreSQL's optional inheritance star (`ALTER TABLE users * …`).
+	alterTableNameRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?((?:"[^"]+"|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][\w$]*))?)(?:\s*\*)?`)
 	// addNotNullCheckRe is a WHOLE clause: ADD CONSTRAINT <name> CHECK
 	// (<col> IS NOT NULL), the expression optionally parenthesized once,
 	// then an optional NOT VALID and nothing else. Anchored at both ends, so
@@ -35,10 +37,7 @@ var (
 	dropConstraintRe     = regexp.MustCompile(`(?is)^\s*drop\s+constraint\s+(?:if\s+exists\s+)?("[^"]+"|[a-zA-Z_][\w$]*)`)
 	setNotNullClauseRe   = regexp.MustCompile(`(?is)^\s*alter\s+(?:column\s+)?("[^"]+"|[a-zA-Z_][\w$]*)\s+set\s+not\s+null\s*$`)
 	searchPathChangeRe   = regexp.MustCompile(`(?is)^\s*(?:(?:set\s+(?:(?:local|session)\s+)?|reset\s+)search_path\b|reset\s+all\b|discard\s+all\b)`)
-	// tableReplacedRe is an ALTER TABLE clause after which the table's
-	// proofs name the wrong table: a rename or a move to another schema.
-	tableReplacedRe = regexp.MustCompile(`(?is)^\s*(?:rename\s+to|set\s+schema)\b`)
-	leadingWordsRe  = regexp.MustCompile(`(?is)^\s*([a-z]+)(?:\s+([a-z]+))?`)
+	leadingWordsRe       = regexp.MustCompile(`(?is)^\s*([a-z]+)(?:\s+([a-z]+))?`)
 )
 
 // notNullCheck is one CHECK (<column> IS NOT NULL) constraint on a table.
@@ -48,25 +47,38 @@ type notNullCheck struct {
 }
 
 // notNullProofs is the CHECK (<column> IS NOT NULL) constraints the
-// migrations read so far leave in place, keyed by table, then constraint
-// name (both normalized). It forgets a proof whenever a statement could have
-// removed or replaced what it proves and is not one it understands: a proof
-// it keeps wrongly silences a finding, one it drops wrongly only keeps it.
+// migrations read so far leave in place, keyed by the normalized,
+// schema-qualified-as-written table, then constraint name. A proof is
+// established and used only on that exact table key.
+//
+// It is conservative by construction: a missed warning is the defect, an
+// extra one is acceptable. Any statement the pass does not positively
+// recognise as unable to remove or replace a table, column or constraint
+// (harmlessStatement) forgets EVERY proof — DROP SCHEMA … CASCADE, a DO block
+// or function that runs DDL, CREATE/DROP TABLE, anything unknown. Within an
+// ALTER TABLE, a clause it does not understand forgets the table's proofs.
 type notNullProofs map[string]map[string]*notNullCheck
+
+// setNotNullKey is where the per-file rule reports a SET NOT NULL finding:
+// its file, line and column. Two statements on one line share it, so the pass
+// counts every SET NOT NULL clause per key and suppresses that key's findings
+// only when every one of them was proven.
+type setNotNullKey struct {
+	file   string
+	line   int
+	column string
+}
 
 func dropCheckProvenSetNotNull(files []compatFile, findings []Finding) []Finding {
 	checks := notNullProofs{}
-	type key struct {
-		file   string
-		line   int
-		column string
-	}
-	proven := map[key]bool{}
+	seen, proven := map[setNotNullKey]int{}, map[setNotNullKey]int{}
 	for _, f := range files {
 		for _, stmt := range migrationStatements(f.content) {
 			m := alterTableNameRe.FindStringSubmatch(stmt.Text)
 			if m == nil {
-				checks.forgetStatement(stmt.Text)
+				if !harmlessStatement(stmt.Text) {
+					clear(checks)
+				}
 				continue
 			}
 			table := normalizeSQLName(m[1])
@@ -89,70 +101,57 @@ func dropCheckProvenSetNotNull(files []compatFile, findings []Finding) []Finding
 					checks.forgetConstraint(table, normalizeSQLIdentifier(dropConstraintRe.FindStringSubmatch(clause)[1]))
 				case setNotNullClauseRe.MatchString(clause):
 					col := normalizeSQLIdentifier(setNotNullClauseRe.FindStringSubmatch(clause)[1])
+					k := setNotNullKey{f.path, stmt.Line, col}
+					seen[k]++
 					for _, c := range checks[table] {
 						if c.valid && c.column == col {
-							proven[key{f.path, stmt.Line, col}] = true
+							proven[k]++
+							break
 						}
 					}
-				case tableReplacedRe.MatchString(clause):
-					checks.forgetTable(table)
 				default:
-					// DROP COLUMN, ALTER COLUMN … TYPE, RENAME COLUMN, a
-					// CHECK this does not read: any clause that names a
-					// proven column may have removed or replaced it.
-					checks.forgetColumnsNamedIn(table, clause)
+					// DROP COLUMN, ALTER COLUMN … TYPE, RENAME, SET SCHEMA,
+					// a CHECK this does not read: the table's proofs go.
+					checks.forgetTable(table)
 				}
 			}
 		}
 	}
-	if len(proven) == 0 {
-		return findings
-	}
 	kept := findings[:0:0]
 	for _, f := range findings {
-		if f.Rule == RuleSetNotNullWithoutBackfill && proven[key{f.File, f.Line, setNotNullFindingColumn(f.Message)}] {
-			continue
+		if f.Rule == RuleSetNotNullWithoutBackfill {
+			k := setNotNullKey{f.File, f.Line, setNotNullFindingColumn(f.Message)}
+			if seen[k] > 0 && proven[k] == seen[k] {
+				continue
+			}
 		}
 		kept = append(kept, f)
 	}
 	return kept
 }
 
-// forgetStatement drops the proofs of every table a statement that is not an
-// ALTER TABLE names — DROP TABLE, CREATE TABLE after one, DROP SCHEMA,
-// ALTER … RENAME of another object onto it — except the statements that
-// cannot remove or replace a table or a column: DML, comments, grants,
-// maintenance, and index builds.
-func (p notNullProofs) forgetStatement(text string) {
-	if len(p) == 0 {
-		return
-	}
+// harmlessStatement reports whether a statement other than ALTER TABLE
+// certainly removes or replaces no table, column or constraint, so the proofs
+// survive it: plain DML, COMMENT, GRANT/REVOKE, index builds, and SET of
+// anything but the search path (which re-points unqualified names). Anything
+// else — DROP SCHEMA, CREATE or DROP TABLE, DO, CREATE FUNCTION, CALL, SELECT
+// (which can call a function that runs DDL), unknown DDL — is not.
+func harmlessStatement(text string) bool {
 	if searchPathChangeRe.MatchString(text) {
-		for table := range p {
-			if table == unqualified(table) {
-				delete(p, table)
-			}
-		}
-		return
+		return false
 	}
 	w := leadingWordsRe.FindStringSubmatch(text)
 	if w == nil {
-		return
+		return strings.TrimSpace(text) == ""
 	}
 	first, second := strings.ToLower(w[1]), strings.ToLower(w[2])
 	switch first {
-	case "insert", "update", "delete", "select", "with", "comment", "grant", "revoke", "analyze", "vacuum", "set", "do":
-		return
+	case "insert", "update", "delete", "comment", "grant", "revoke", "set":
+		return true
 	case "create":
-		if second == "index" || second == "unique" {
-			return
-		}
+		return second == "index" || second == "unique"
 	}
-	for table := range p {
-		if namesIdent(text, unqualified(table)) {
-			delete(p, table)
-		}
-	}
+	return false
 }
 
 // An unqualified name may resolve to any schema with that table name. Use
@@ -176,20 +175,6 @@ func (p notNullProofs) forgetTable(table string) {
 	}
 }
 
-// forgetColumnsNamedIn drops the proofs on table whose column clause names.
-func (p notNullProofs) forgetColumnsNamedIn(table, clause string) {
-	for t, byName := range p {
-		if unqualified(t) != unqualified(table) {
-			continue
-		}
-		for name, c := range byName {
-			if namesIdent(clause, c.column) {
-				delete(byName, name)
-			}
-		}
-	}
-}
-
 // Normalized qualified names use a NUL separator so a dot inside a quoted
 // identifier cannot alias a real schema separator. SQL identifiers cannot
 // contain NUL.
@@ -200,13 +185,6 @@ func unqualified(table string) string {
 		return name
 	}
 	return table
-}
-
-// namesIdent reports whether text contains ident as a whole identifier,
-// quoted or not, case-insensitively.
-func namesIdent(text, ident string) bool {
-	re := regexp.MustCompile(`(?i)(?:^|[^\w$])"?` + regexp.QuoteMeta(ident) + `"?(?:$|[^\w$])`)
-	return re.MatchString(text)
 }
 
 // setNotNullFindingColumn reads the column back out of a

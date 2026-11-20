@@ -274,6 +274,10 @@ type wireActivityEvent struct {
 // ChangesRequest.Limit after the merge.
 const changesPageSize = 200
 
+// changesMaxPages bounds how many activity pages one read follows. Past it
+// the feed is reported truncated, never silently short.
+const changesMaxPages = 25
+
 // Changes implements ChangesReader: the env's promotions and failed deploys
 // (internal/releasetimeline over the control plane's deploy ledger) merged
 // with its activity feed. A source that cannot be read costs its rows, not the
@@ -302,18 +306,18 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 	if req.Project != "" {
 		scope["projectId"] = req.Project
 	}
-	body := map[string]any{"scope": scope, "pageSize": changesPageSize}
-	var act struct {
-		Events []wireActivityEvent `json:"events"`
-	}
-	if err := c.callEnvWide(ctx, procListActivity, body, &act); err != nil {
+	events, more, err := c.activityPages(ctx, scope, req.Limit)
+	if err != nil {
 		note := fmt.Sprintf("activity unreadable, only the deploy ledger is shown: %v", err)
 		if unimplemented(err) {
 			note = "the control plane does not serve activity yet; only the deploy ledger is shown"
 		}
+		if len(events) > 0 {
+			note = fmt.Sprintf("activity only partly read (%d events), the rest is missing: %v", len(events), err)
+		}
 		res.Warnings = append(res.Warnings, note)
 	}
-	for _, ev := range act.Events {
+	for _, ev := range events {
 		// A promotion is already a ledger row; its activity event only adds
 		// who and how, which the timeline merged.
 		if ev.Verb == "promote" {
@@ -330,7 +334,46 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 		})
 	}
 	sortChanges(&res, req.Limit)
+	if more && res.Omitted == 0 {
+		// Activity older than the pages read exists in the range: the feed
+		// is short by an unknown count, and must not read as complete
+		// (forge report 0108cca3: ~200 items with truncated:false).
+		res.Omitted = 1
+		res.Warnings = append(res.Warnings, fmt.Sprintf("activity has more events in the range than the %d read; raise --limit, or narrow --from/--to", len(events)))
+	}
 	return res, nil
+}
+
+// activityPages reads the activity feed newest first, following
+// next_page_token until it holds limit events (every event when limit is 0)
+// or the feed ends. more reports a page left unread. Only the newest limit
+// changes survive the merge, so events past limit are never needed.
+func (c Cloud) activityPages(ctx context.Context, scope map[string]any, limit int) (events []wireActivityEvent, more bool, err error) {
+	token := ""
+	for page := 0; ; page++ {
+		if page == changesMaxPages {
+			return events, true, nil
+		}
+		body := map[string]any{"scope": scope, "pageSize": changesPageSize}
+		if token != "" {
+			body["pageToken"] = token
+		}
+		var act struct {
+			Events        []wireActivityEvent `json:"events"`
+			NextPageToken string              `json:"nextPageToken"`
+		}
+		if err := c.callEnvWide(ctx, procListActivity, body, &act); err != nil {
+			return events, false, err
+		}
+		events = append(events, act.Events...)
+		token = act.NextPageToken
+		if token == "" {
+			return events, false, nil
+		}
+		if limit > 0 && len(events) >= limit {
+			return events, true, nil
+		}
+	}
 }
 
 func firstNonEmpty(ss ...string) string {

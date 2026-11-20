@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/commitpolicy"
@@ -525,19 +526,28 @@ func (u unavailable) Unwrap() error        { return u.err }
 // process failing, output that will not parse — is therefore an explicit
 // error below, never a fall-through.
 func ciRunGovulncheck(ctx context.Context, root string, rootOnly bool, exemptions []config.CIVulnExemption) (string, error) {
-	if _, err := exec.LookPath("govulncheck"); err != nil {
-		return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
-			"govulncheck is not on PATH, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
-			"",
-			"install it with `go install golang.org/x/vuln/cmd/govulncheck@latest` (forge's generated .github/workflows/ci.yml installs a pinned version in the vuln-scan job, and scripts/bootstrap.sh installs it locally), then re-run")}
+	bin, err := exec.LookPath("govulncheck")
+	if err != nil {
+		// None on PATH: build the version `forge ci gate` pins into forge's
+		// tool cache, as the gate itself does, rather than refuse.
+		dir, eerr := cigate.NewResolver(root, os.Stderr).Ensure(ctx, cigate.GovulncheckTool())
+		if eerr != nil || dir == "" {
+			return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
+				"govulncheck is not on PATH and the pinned one could not be built, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
+				"",
+				fmt.Sprintf("install it with `go install golang.org/x/vuln/cmd/govulncheck@latest`, or run the whole gate with `forge ci gate`, which builds its pinned tools (%v)", eerr))}
+		}
+		bin = filepath.Join(dir, "govulncheck")
 	}
-	return scanGoModules(ctx, root, rootOnly, exemptions, runGovulncheckJSON, os.Stdout, time.Now())
+	run := func(ctx context.Context, dir string) ([]byte, error) { return runGovulncheckJSONWith(ctx, bin, dir) }
+	return scanGoModules(ctx, root, rootOnly, exemptions, run, os.Stdout, time.Now())
 }
 
-// runGovulncheckJSON runs `govulncheck -format json ./...` in one module.
-func runGovulncheckJSON(ctx context.Context, dir string) ([]byte, error) {
+// runGovulncheckJSONWith runs `<bin> -format json ./...` (govulncheck) in
+// one module.
+func runGovulncheckJSONWith(ctx context.Context, bin, dir string) ([]byte, error) {
 	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, "govulncheck", "-format", "json", "./...")
+	cmd := exec.CommandContext(ctx, bin, "-format", "json", "./...")
 	cmd.Dir = dir
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr

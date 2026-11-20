@@ -165,7 +165,9 @@ environment.
 
 WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
 an env whose KCL declares forge.ControlPlane records promotions on that control
-plane; every other env records them in .forge/promotions/<env>.jsonl.
+plane; every other env records them in this machine's ledger under
+$FORGE_LEDGER_HOME (default ~/.forge/ledger), shared by every worktree of the
+project. ` + "`forge ledger where <env>`" + ` says which, and why.
 
 EVERY DEPLOY IS A NEW ENTRY, NOT AN EDIT. Re-deploying the release an env
 already runs appends nothing and still applies and waits; a CI retry is safe.

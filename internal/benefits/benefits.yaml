@@ -1831,7 +1831,9 @@ benefits:
     claim: >-
       For a statically hosted Next.js app, `forge lint --static-export` names
       each route, server action, `cookies()` call or `next/image` use the export
-      would refuse, with file and line.
+      would refuse, with file and line. For a Vite app it checks that the build
+      lands in the directory the deploy publishes and its asset URLs match the
+      mount.
     availability: forge
     evidence:
       - command: lint --static-export
@@ -2352,6 +2354,19 @@ benefits:
           A frontend on a bucket with `trailingSlash` off: the export writes
           `<route>.html` and a bucket serves objects by exact name, so every
           route but `/` 404s
+      - id: static-export-vite-out-dir
+        lane: --static-export
+        bug_class: >-
+          A Vite frontend on a static runtime whose `build.outDir` is not the
+          env's `public_dir`, so the deploy publishes a directory the build
+          never wrote: missing, or stale from an older build
+      - id: static-export-vite-base
+        lane: --static-export
+        bug_class: >-
+          A Vite `base` that misses where the env mounts the frontend
+          (`base_path`, or the site root), so every script and stylesheet 404s
+          and the page loads blank; or a relative base with a path-based client
+          router, which breaks deep links to nested routes
       - id: forgeconv-frontend-process-env
         lane: --conventions
         bug_class: >-

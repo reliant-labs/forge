@@ -185,6 +185,17 @@ next/image without `unoptimized`. It also warns on what the export drops
 silently, such as middleware and rewrites. The real `next build` in CI stays
 authoritative. The lane only tells you sooner.
 
+A Vite site has no server features to lose, so the lane checks the seam with
+the deploy instead: `build.outDir` in `vite.config.*` (or `--outDir` in the
+build script) must be the env's `public_dir` (`dist` when unset), and `base`
+must match where the env mounts the site (`/` at the root, `<base_path>/`
+under a `base_path`). Either mismatch fails with file:line. A relative base
+(`./`) with a path-based router warns, because deep links to nested routes
+then request their assets under the route's path. A value the lane cannot
+read statically, such as a computed `outDir` or a `mergeConfig`, is named in a
+note rather than guessed. Every frontend the lane does not check gets a
+`<name> (<type>): not applicable — <reason>` line.
+
 A hosted deploy ships only what a release froze, never a local build. Without a
 release it refuses, and the error prints the cut-then-deploy command.
 Promotion re-points another env at the same digest:

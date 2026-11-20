@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -627,13 +629,27 @@ func isForgeCommandAt(content []byte, start, end int, mountPrefix []byte) bool {
 			return false // @reliantlabs/forge, reliant-forge, pkg.forge
 		}
 	}
-	if len(mountPrefix) > 0 && bytes.HasSuffix(content[:start], mountPrefix) {
+	if hasForgeMount(content[:start], mountPrefix) {
 		return false // already `reliant forge …`
 	}
 	if rest := content[end:]; bytes.HasPrefix(rest, []byte("-- ")) || bytes.Equal(rest, []byte("--")) {
 		return false // `mcp add forge -- npx …`: a server name, then the command it runs
 	}
 	return true
+}
+
+// hasForgeMount matches the mount itself, not its suffix inside a word
+// (myreliant) or another executable's name (other-reliant). A path to the
+// mount executable still qualifies, as does a shell/Markdown delimiter.
+func hasForgeMount(before, mount []byte) bool {
+	if len(mount) == 0 || !bytes.HasSuffix(before, mount) {
+		return false
+	}
+	if len(before) == len(mount) {
+		return true
+	}
+	r, _ := utf8.DecodeLastRune(before[:len(before)-len(mount)])
+	return unicode.IsSpace(r) || strings.ContainsRune("/`'\"([{=;|&<>", r)
 }
 
 // fenceLine reports whether line opens or closes a ``` code fence, and the

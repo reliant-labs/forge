@@ -131,6 +131,10 @@ func TestRewriteForgeCommandsLeavesNamesAlone(t *testing.T) {
 		"npx -y @reliantlabs/forge mcp":                           "npx -y @reliantlabs/forge mcp",
 		"claude mcp add forge -- npx -y @reliantlabs/forge mcp":   "claude mcp add forge -- npx -y @reliantlabs/forge mcp",
 		"claude mcp add --transport http reliant-forge https://x": "claude mcp add --transport http reliant-forge https://x",
+		"myreliant forge lint":                                    "myreliant reliant forge lint",
+		"other-reliant forge lint":                                "other-reliant reliant forge lint",
+		"λreliant forge lint":                                     "λreliant reliant forge lint",
+		"`/opt/bin/reliant forge lint`":                           "`/opt/bin/reliant forge lint`",
 		"already `reliant forge lint` here":                       "already `reliant forge lint` here",
 		"then forge lint, and forge generate":                     "then reliant forge lint, and reliant forge generate",
 	}

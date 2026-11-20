@@ -414,7 +414,7 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		if err := os.Remove(filepath.Join(root, "Taskfile.yml")); err != nil {
 			return nil, fmt.Errorf("replace scaffolded Taskfile: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "Makefile"), []byte("test:\n\tgo test ./...\n"), 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(root, "Makefile"), []byte("test:\n\tgo test ./...\n"), 0o644); err != nil {
 			return nil, fmt.Errorf("write project Makefile: %w", err)
 		}
 	}

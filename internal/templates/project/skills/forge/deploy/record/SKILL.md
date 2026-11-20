@@ -25,6 +25,9 @@ That is the whole integration. forge builds nothing and applies nothing.
   compares the window after the deploy with the one before (exit 0 good, 1
   regressed, 2 not proven, 8 not enough data yet). Recorded releases are judged
   like forge-built ones: from telemetry, by `service.version`.
+- An **SBOM per workload**, generated from each `--image` digest with no
+  extra flag, so vulnerability findings cover what your pipeline shipped
+  (below).
 - A **Releases page** in the console —
   `https://forge.reliantlabs.io/forge/p/<project>/releases/<version>` — showing
   the commit, the run and each workload's digest, labelled "recorded by CI".
@@ -106,6 +109,23 @@ file and the lines to add.
   shipped is the point. When forge takes
   over deploying an env, its own `forge env deploy` releases follow the
   recorded ones in the same history.
+
+## SBOMs
+
+The zero-flag path records one: forge's pinned syft reads each `--image` from
+its registry by digest (`source: registry`) and the record carries the SBOM's
+digest on that workload. It reads with the registry credentials the CI already
+has: the docker credential store your `docker login` step wrote, or syft's
+`SYFT_REGISTRY_AUTH_*` variables. The bytes go to the machine ledger's SBOM
+store. An SBOM that cannot be produced (no syft for the platform, a registry
+401) warns, is recorded as unavailable with the reason, and the record still
+succeeds.
+
+| Flag | What it records |
+|---|---|
+| `--sbom <workload>=<path>` (repeatable) | the SBOM your pipeline already produced, CycloneDX or SPDX 2.x JSON, verbatim (`source: ci-provided`, the format the document states, the digest of the bytes as given). A workload the record does not name, or a file that is not an SBOM, refuses the record before anything is cut |
+| `--no-sbom` | no SBOMs: each workload shows as not scanned (`skipped: --no-sbom`) |
+| `--sbom-source <dir>` | version-only records: syft scans that source tree's lockfiles (dev dependencies excluded, `source: lockfile`). The release then names one artifact, a git source pin of the checkout at the record's commit (origin repo, commit, the directory as `subdir`), named after the project, and the SBOM is on it. It needs a commit and an origin remote; without them the record stays version-only and warns. Recording the same version later without the flag is a conflict, because the artifact is part of the release |
 
 ## Where it records
 
@@ -265,7 +285,9 @@ verdict cannot tell the new release's traffic from the old.
 
 `--json` prints one object: `project`, `env`, `version`, `commit`, `workloads`
 (name → ref@digest), `ledger` (`hosted` | `machine`), `location`,
-`release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`.
+`release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`, and
+`sboms`: one `{workload, digest, status, source, format, reason}` per recorded
+artifact (`status` `ok`, or `unavailable` with the `reason`).
 
 ## Next
 

@@ -86,6 +86,7 @@ type releaseRecordOptions struct {
 	run       runOptions
 	token     string
 	jsonOut   bool
+	sbom      recordSBOMOptions
 }
 
 // releaseRecordResult is what `--json` prints, and what the text output says.
@@ -112,6 +113,9 @@ type releaseRecordResult struct {
 	// ConsoleURL is the release's page in the forge console; empty when the
 	// record is not on Reliant cloud.
 	ConsoleURL string `json:"console_url,omitempty"`
+	// SBOMs is each recorded artifact's SBOM: its digest, or why it has
+	// none. Empty when the record names no artifact.
+	SBOMs []recordSBOMEntry `json:"sboms,omitempty"`
 }
 
 func newReleaseRecordCmd() *cobra.Command {
@@ -144,6 +148,13 @@ not signed in, on this machine's ledger, which monitoring cannot see.
 Idempotent: a CI retry records once. The same version with different digests
 (or, version-only, a different commit) is refused as a conflict.
 
+SBOMs: each --image gets an SBOM generated from its registry by digest, with
+the registry credentials the CI already has (docker login), stored in this
+machine's ledger and recorded on the workload. --sbom <workload>=<path> records
+one your pipeline produced instead (CycloneDX or SPDX JSON); --sbom-source <dir>
+describes a version-only record's source tree; --no-sbom records none. An SBOM
+that cannot be produced warns, and the record still succeeds.
+
 Examples:
   ` + Name() + ` release record --env prod --version v1.4.0
   ` + Name() + ` release record --env prod --version v1.4.0 --commit "$GITHUB_SHA" \
@@ -167,6 +178,9 @@ Examples:
 	f.BoolVar(&o.run.None, "no-run", false, "Record no CI run, even inside CI")
 	f.StringVar(&o.token, "token", "", "Credential for the control plane, ahead of the env var and the credentials file")
 	f.BoolVar(&o.jsonOut, "json", false, "Emit machine-readable JSON")
+	f.StringArrayVar(&o.sbom.specs, "sbom", nil, "An SBOM your pipeline produced for a workload, CycloneDX or SPDX JSON: <workload>=<path> (repeatable; default: generated from the workload's --image)")
+	f.BoolVar(&o.sbom.noSBOM, "no-sbom", false, "Record without SBOMs (each workload shows as not scanned)")
+	f.StringVar(&o.sbom.source, "sbom-source", "", "Version-only records: describe this source tree's lockfiles as the release's SBOM")
 	_ = cmd.MarkFlagRequired("env")
 	_ = cmd.MarkFlagRequired("version")
 	return cmd
@@ -446,6 +460,10 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if err != nil {
 		return releaseRecordResult{}, err
 	}
+	sbomPlan, err := planRecordSBOMs(o.sbom, artifacts)
+	if err != nil {
+		return releaseRecordResult{}, err
+	}
 	commit, err := recordCommit(o.commit, sc.getenv)
 	if err != nil {
 		return releaseRecordResult{}, err
@@ -470,11 +488,29 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if target.note != "" {
 		fmt.Fprintln(errOut, target.note)
 	}
-	return recordReleaseInto(ctx, target, recordInput{
+	if sbomPlan.sourceDir != "" {
+		art, serr := recordSourceArtifact(sbomPlan.sourceDir, commit)
+		if serr != nil {
+			fmt.Fprintf(errOut, "warning: release %s recorded version-only, without an SBOM of %s: %v\n", version, sbomPlan.sourceDir, serr)
+		} else {
+			artifacts = map[string]release.Artifact{project: art}
+			sbomPlan.sourceName = project
+		}
+	}
+	// SBOMs are produced last, after every check that can refuse the
+	// record, so a refused record pays for no syft run.
+	sboms := recordReleaseSBOMs(ctx, recordSBOMRun{projectDir: sc.projectDir, project: project, env: env,
+		version: version, declared: declared, plan: sbomPlan}, artifacts, errOut)
+	res, err := recordReleaseInto(ctx, target, recordInput{
 		project: project, env: env, version: version, commit: commit,
 		artifacts: artifacts, workloads: workloads, run: run,
 		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
 	})
+	if err != nil {
+		return res, err
+	}
+	res.SBOMs = sboms
+	return res, nil
 }
 
 // recordInput is one record, resolved: what recordReleaseInto writes.
@@ -569,6 +605,7 @@ func printReleaseRecord(w io.Writer, r releaseRecordResult) {
 	if len(names) == 0 {
 		fmt.Fprintln(w, "  version-only: no image digests recorded")
 	}
+	printRecordSBOMs(w, r.SBOMs)
 	if r.RunURL != "" {
 		fmt.Fprintf(w, "  run      %s\n", r.RunURL)
 	}

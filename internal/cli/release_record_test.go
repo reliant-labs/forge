@@ -110,7 +110,9 @@ func (f *fakeRecordCP) Call(_ context.Context, proc string, req, out any) error 
 		if arts, ok := cut["artifacts"].([]any); ok {
 			for _, a := range arts {
 				am := a.(map[string]any)
-				resolved[am["name"].(string)] = am["digest"]
+				if d, ok := am["digest"].(string); ok && d != "" { // shared digests only, as release.NewPromotion
+					resolved[am["name"].(string)] = d
+				}
 			}
 		}
 		p := map[string]any{

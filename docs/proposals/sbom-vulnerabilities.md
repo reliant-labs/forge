@@ -960,7 +960,7 @@ These came up during implementation. The owner took the recommended option on
 each one, and they are settled.
 
 1. **A source-tree SBOM is release evidence (F5).** `forge release record
-   --sbom-source <dir>` records the SBOM as `Release.SourceSBOM`, which is
+--sbom-source <dir>` records the SBOM as `Release.SourceSBOM`, which is
    evidence outside the release's identity. It never adds an artifact, so
    recording the same version with or without the flag is the same release.
 2. **Bundles carry no SBOM (C7).** Delivery bundles hold rendered config, not

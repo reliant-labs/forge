@@ -1743,6 +1743,10 @@ var removals = []removal{
 					"pkg/deploy/observability_line_resource_test.go",
 					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.
 					"pkg/observe/cliev/otlp.go",
+					// The telemetry translator's tests read the pinned collector's
+					// file exporter, which writes OTLP/JSON.
+					"pkg/telemetry/collector/otelcol_test.go",
+					"pkg/telemetry/collector/pods_test.go",
 				},
 			},
 			{

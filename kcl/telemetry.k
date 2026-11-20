@@ -30,6 +30,8 @@ _TEL_DURATION_RE: str = r"^([0-9]+(ms|s|m|h))+$"
 _TEL_PROM_LABEL_RE: str = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 _TEL_PORT_NAME_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _TEL_RFC1123_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+# An unnamed scrape or check is identified by its index, so a name may not be all digits.
+_TEL_DIGITS_RE: str = r"^[0-9]+$"
 _TEL_ENV_KEY_RE: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
 # A field path into a parsed log record: dotted segments; a segment that holds a
 # dot (or any character outside [A-Za-z0-9_$@-]) is written ["quoted"].
@@ -242,6 +244,8 @@ schema MetricsScrape:
 
     check:
         not name or regex.match(name, _TEL_RFC1123_RE), "MetricsScrape.name '${name}' must be an RFC-1123 label"
+        not name or not regex.match(name, _TEL_DIGITS_RE), \
+            "MetricsScrape.name '${name}' needs a letter: an unnamed scrape's job name ends in its index, so all-digit names are reserved"
         _tel_port_ok(port), "MetricsScrape.port must be 1-65535 or an IANA port name"
         path.startswith("/"), "MetricsScrape.path must start with /"
         regex.match(interval, _TEL_DURATION_RE) and regex.match(timeout, _TEL_DURATION_RE), \
@@ -443,6 +447,8 @@ schema HealthCheck:
 
     check:
         not name or regex.match(name, _TEL_RFC1123_RE), "HealthCheck.name '${name}' must be an RFC-1123 label"
+        not name or not regex.match(name, _TEL_DIGITS_RE), \
+            "HealthCheck.name '${name}' needs a letter: an unnamed check's receiver name ends in its index, so all-digit names are reserved"
         _tel_port_ok(port), "HealthCheck.port must be 1-65535 or an IANA port name"
         kind == "http" or (path == "/" and scheme == "http"), "HealthCheck.path and scheme are http-only"
         path.startswith("/"), "HealthCheck.path must start with /"

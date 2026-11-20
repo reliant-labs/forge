@@ -784,11 +784,12 @@ _tel_env = lambda w: any, rt: any, b: Bundle, env: {str:} -> {str:str} {
     _o = w.telemetry.otlp if w.telemetry and w.telemetry.otlp else Undefined
     _svc = _tel_service_name(w)
     _vals = {k: (v if typeof(v) == "str" else _tel_fact(v.key, w.telemetry, _svc, rt.type, b)) for k, v in _o.env} if _o else {}
+    _mapped = {k: v for k, v in _vals if v != "" and not _env_set(env, k)}
     _sampler = {
         OTEL_TRACES_SAMPLER = "parentbased_traceidratio"
         OTEL_TRACES_SAMPLER_ARG = str(_o.sampler_ratio)
-    } if _o and _o.sampler_ratio and _obs_on(b) and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") else {}
-    _sampler | {k: v for k, v in _vals if v != "" and not _env_set(env, k)}
+    } if _o and _o.sampler_ratio and _obs_on(b) and not _env_set(env, "OTEL_TRACES_SAMPLER") and not _env_set(env, "OTEL_TRACES_SAMPLER_ARG") and "OTEL_TRACES_SAMPLER" not in _mapped and "OTEL_TRACES_SAMPLER_ARG" not in _mapped else {}
+    _sampler | _mapped
 }
 
 # Workloads that ship their own OTLP logs while the env's collector already
@@ -1041,10 +1042,15 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
     # A Telemetry's service_name is the workload's service.name, and a
     # platform-scoped one carries no env identity (kcl/telemetry.k).
     _platform = bool(w.telemetry and w.telemetry.scope == "platform")
-    ({OTEL_SERVICE_NAME = _tel_service_name(w)} if _runs and not _env_set(_env, "OTEL_SERVICE_NAME") else {}) \
-        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _platform and not _env_set(_env, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
-        | (_obs_env(rt, bundle, _env) if _runs else {}) \
-        | (_tel_env(w, rt, bundle, _env) if _runs and w.telemetry else {}) \
+    _tel = _tel_env(w, rt, bundle, _env) if _runs and w.telemetry else {}
+    # A resolved Telemetry entry occupies a default slot just like explicit
+    # env. Let _obs_env see it first so transport and sampler pairs stay
+    # together, rather than unioning two incompatible scalar values.
+    _set = {k: v for k, v in _env if k not in _tel} | _tel
+    ({OTEL_SERVICE_NAME = _tel_service_name(w)} if _runs and not _env_set(_set, "OTEL_SERVICE_NAME") else {}) \
+        | ({OTEL_RESOURCE_ATTRIBUTES = _otel_resource_attributes(bundle)} if _runs and not _platform and not _env_set(_set, "OTEL_RESOURCE_ATTRIBUTES") else {}) \
+        | (_obs_env(rt, bundle, _set) if _runs else {}) \
+        | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \

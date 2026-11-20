@@ -106,6 +106,13 @@ func k(ctx context.Context, db orm.Context) error {
 		return err
 	})
 }
+
+func l(ctx context.Context, db orm.Context) error {
+	return db.RunTx(ctx, orm.Serializable.WithRetryOn(orm.RetryOnCommitRollback).WithMaxAttempts(3), func(ctx context.Context) error { // a classifier keeps the level
+		_, err := db.Exec(ctx, lockQuery, 1)
+		return err
+	})
+}
 `
 
 func TestLintTxLockUnderSerializable(t *testing.T) {
@@ -142,6 +149,7 @@ func TestLintTxLockUnderSerializable(t *testing.T) {
 			"store.go:53 LOCK TABLE",
 			"store.go:66 .For(\"UPDATE\")",
 			"store.go:91 SELECT … FOR UPDATE",
+			"store.go:98 SELECT … FOR UPDATE",
 		}
 		if !slices.Equal(got, want) {
 			t.Errorf("strict=%v findings:\n  %s\nwant:\n  %s", strict, strings.Join(got, "\n  "), strings.Join(want, "\n  "))

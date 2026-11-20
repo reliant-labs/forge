@@ -481,7 +481,8 @@ func (l txLockLint) lockingLevel(e ast.Expr) (string, bool) {
 			e = x.X
 			continue
 		case *ast.CallExpr:
-			// orm.Serializable.WithMaxAttempts(n) / .WithReadOnly()
+			// orm.Serializable.WithMaxAttempts(n) / .WithRetryOn(fn) /
+			// .WithReadOnly()
 			sel, ok := x.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return "", false
@@ -489,7 +490,7 @@ func (l txLockLint) lockingLevel(e ast.Expr) (string, bool) {
 			switch sel.Sel.Name {
 			case "WithReadOnly":
 				return "", false
-			case "WithMaxAttempts":
+			case "WithMaxAttempts", "WithRetryOn":
 				e = sel.X
 				continue
 			}

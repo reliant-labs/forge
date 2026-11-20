@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,9 @@ func TestSBOMRoundTripIsContentAddressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SBOM not at its content address: %v", err)
 	}
-	if info.Mode().Perm() != fileMode {
+	// Windows has no POSIX permission bits (os.Stat reports 0666 for any
+	// writable file), so the mode is only meaningful elsewhere.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != fileMode {
 		t.Fatalf("SBOM mode = %v, want %v", info.Mode().Perm(), os.FileMode(fileMode))
 	}
 	got, err := s.GetSBOM(digest)

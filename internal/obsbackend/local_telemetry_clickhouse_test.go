@@ -52,8 +52,8 @@ SELECT %s, 'INFO', 9, 'temporal', 'started', map('deployment.environment.name','
 	for _, s := range res.Signals {
 		got[s.Signal] = s
 	}
-	if m := got["metrics"]; m.Rows != 5 || !m.LastSeen.Equal(now.Add(-time.Minute)) {
-		t.Errorf("metrics arrival = %+v, want dev's 5 rows, newest a minute ago", m)
+	if m := got["metrics"]; m.Rows != 6 || !m.LastSeen.Equal(now.Add(-time.Minute)) {
+		t.Errorf("metrics arrival = %+v, want dev's 6 rows, newest a minute ago", m)
 	}
 	if lg := got["logs"]; lg.Rows != 1 {
 		t.Errorf("logs arrival = %+v", lg)

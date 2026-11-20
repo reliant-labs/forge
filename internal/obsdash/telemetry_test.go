@@ -27,11 +27,11 @@ func temporalTarget() telemetry.Target {
 	return telemetry.Target{
 		ServiceName: "temporal", Scope: telemetry.ScopeProject, Source: "workload:temporal", Attachment: telemetry.AttachWorkload,
 		Runtime: telemetry.RuntimeCluster, Cluster: "k3d-acme", Namespaces: []string{"acme-prod"}, Selector: map[string]string{"app.kubernetes.io/name": "temporal"},
-		Ports:   map[string]int{"metrics": 9090, "grpc": 7233},
-		Metrics: []telemetry.MetricsScrape{{Port: 9090, PortName: "metrics", Allow: "service_.*", SampleLimit: 8000}},
-		OTLP:    &telemetry.OTLPPush{Signals: []string{"traces"}},
-		Checks:  []telemetry.HealthCheck{{Kind: "tcp", Port: 7233}, {Kind: "http", Port: 7243, Path: "/health"}},
-		Profiles: []telemetry.PprofScrape{{Port: 7936, Types: []string{"heap", "cpu"}}},
+		Ports:         map[string]int{"metrics": 9090, "grpc": 7233},
+		Metrics:       []telemetry.MetricsScrape{{Port: 9090, PortName: "metrics", Allow: "service_.*", SampleLimit: 8000}},
+		OTLP:          &telemetry.OTLPPush{Signals: []string{"traces"}},
+		Checks:        []telemetry.HealthCheck{{Kind: "tcp", Port: 7233}, {Kind: "http", Port: 7243, Path: "/health"}},
+		Profiles:      []telemetry.PprofScrape{{Port: 7936, Types: []string{"heap", "cpu"}}},
 		Dashboard:     telemetry.SystemDashboard{Enabled: true},
 		DefaultAlerts: true,
 	}

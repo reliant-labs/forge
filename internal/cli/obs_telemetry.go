@@ -116,12 +116,6 @@ func renderedTelemetryTargets(ctx context.Context, env string) ([]telemetry.Targ
 	return e.Telemetry, nil
 }
 
-// telemetryArrivalReader is the read a backend needs for arrival; only the
-// local backend serves it.
-type telemetryArrivalReader interface {
-	TelemetryArrival(ctx context.Context, req obsbackend.TelemetryArrivalRequest) (obsbackend.TelemetryArrivalResult, error)
-}
-
 func newObsTelemetryCmd() *cobra.Command {
 	var o obsCommon
 	cmd := &cobra.Command{
@@ -178,7 +172,7 @@ func runObsTelemetry(ctx context.Context, d obsDeps, targetsOf telemetryTargetsF
 	}
 
 	doc := obsTelemetryDoc{Scope: obsout.Scope{Env: env, From: n.Range.From, To: n.Range.To, Services: n.Services}, Arrival: telemetryArrivalUnknown, Targets: []obsTelemetryTargetDoc{}}
-	var res obsbackend.TelemetryArrivalResult
+	var res telemetryArrival
 	read := false
 	if len(targets) == 0 {
 		doc.ArrivalNote = fmt.Sprintf("env %s declares no forge.Telemetry", env)
@@ -192,7 +186,7 @@ func runObsTelemetry(ctx context.Context, d obsDeps, targetsOf telemetryTargetsF
 		doc.Arrival = telemetryArrivalRead
 	}
 	if n.Explain {
-		doc.Statements = res.Statements
+		doc.Statements = res.statements
 	}
 	for _, t := range targets {
 		doc.Targets = append(doc.Targets, telemetryTargetDoc(t, res, read))
@@ -203,19 +197,29 @@ func runObsTelemetry(ctx context.Context, d obsDeps, targetsOf telemetryTargetsF
 		return err
 	}
 	if n.Explain {
-		explainText(d.Stdout, res.Statements)
+		explainText(d.Stdout, res.statements)
 		return nil
 	}
 	renderObsTelemetry(d.Stdout, doc)
 	return nil
 }
 
+// telemetryArrival is what the backend answered for every target: the reads
+// of each group (project and platform systems are read apart), with each
+// service's unread signals.
+type telemetryArrival struct {
+	signals    []obsbackend.TelemetrySignalArrival
+	scrapes    []obsbackend.TelemetryScrapeResult
+	unread     map[string]map[string]string
+	statements []obsbackend.Statement
+}
+
 // readTelemetryArrival asks env's backend whether the targets' telemetry is
 // arriving. A backend that cannot be asked (the stack is down, the env's
 // telemetry goes to the hosted store) is not a failure: read is false, and
 // doc says why.
-func readTelemetryArrival(ctx context.Context, d obsDeps, o *obsCommon, env string, n obsbackend.Narrow, targets []telemetry.Target, doc *obsTelemetryDoc) (obsbackend.TelemetryArrivalResult, bool, error) {
-	var none obsbackend.TelemetryArrivalResult
+func readTelemetryArrival(ctx context.Context, d obsDeps, o *obsCommon, env string, n obsbackend.Narrow, targets []telemetry.Target, doc *obsTelemetryDoc) (telemetryArrival, bool, error) {
+	var none telemetryArrival
 	b, _, err := o.open(ctx, d, env, "telemetry")
 	if err != nil {
 		doc.ArrivalNote = err.Error()
@@ -223,7 +227,7 @@ func readTelemetryArrival(ctx context.Context, d obsDeps, o *obsCommon, env stri
 	}
 	info := b.Info()
 	doc.Scope.Backend, doc.Scope.EnvID, doc.Scope.Instance = info.Backend, info.EnvID, obsScopeInstance(info.Instances)
-	r, ok := b.(telemetryArrivalReader)
+	r, ok := b.(obsbackend.TelemetryArrivalReader)
 	if !ok {
 		doc.ArrivalNote = fmt.Sprintf("the %s backend does not serve per-target arrival: read each system's telemetry-<service> dashboard in the console", info.Backend)
 		return none, false, nil
@@ -237,7 +241,7 @@ func readTelemetryArrival(ctx context.Context, d obsDeps, o *obsCommon, env stri
 			project = append(project, t.ServiceName)
 		}
 	}
-	out := obsbackend.TelemetryArrivalResult{Unread: map[string]string{}}
+	out := telemetryArrival{unread: map[string]map[string]string{}}
 	for _, group := range []struct {
 		services []string
 		platform bool
@@ -251,11 +255,11 @@ func readTelemetryArrival(ctx context.Context, d obsDeps, o *obsCommon, env stri
 		if err != nil {
 			return none, false, err
 		}
-		out.Signals = append(out.Signals, res.Signals...)
-		out.Scrapes = append(out.Scrapes, res.Scrapes...)
-		out.Statements = append(out.Statements, res.Statements...)
-		for k, v := range res.Unread {
-			out.Unread[k] = v
+		out.signals = append(out.signals, res.Signals...)
+		out.scrapes = append(out.scrapes, res.Scrapes...)
+		out.statements = append(out.statements, res.Statements...)
+		for _, svc := range group.services {
+			out.unread[svc] = res.Unread
 		}
 	}
 	return out, !n.Explain, nil
@@ -279,7 +283,7 @@ func telemetrySignalsOf(t telemetry.Target) []string {
 	return out
 }
 
-func telemetryTargetDoc(t telemetry.Target, res obsbackend.TelemetryArrivalResult, read bool) obsTelemetryTargetDoc {
+func telemetryTargetDoc(t telemetry.Target, res telemetryArrival, read bool) obsTelemetryTargetDoc {
 	doc := obsTelemetryTargetDoc{Service: t.ServiceName, Source: t.Source, Attachment: string(t.Attachment), Runtime: string(t.Runtime), Scope: string(t.Scope),
 		Declared: t.Signals(), Dashboards: []string{}, DefaultAlerts: t.DefaultAlerts, Signals: []obsTelemetrySignalDoc{}}
 	if t.Dashboard.Enabled {
@@ -292,13 +296,13 @@ func telemetryTargetDoc(t telemetry.Target, res obsbackend.TelemetryArrivalResul
 	}
 	for _, sig := range telemetrySignalsOf(t) {
 		s := obsTelemetrySignalDoc{Signal: sig, Status: telemetrySignalUnknown}
-		switch why, unread := res.Unread[sig]; {
+		switch why, unread := res.unread[t.ServiceName][sig]; {
 		case !read:
 		case unread:
 			s.Note = why
 		default:
 			s.Status = telemetrySignalAbsent
-			for _, a := range res.Signals {
+			for _, a := range res.signals {
 				if a.Service == t.ServiceName && a.Signal == sig {
 					s.Status, s.LastSeen, s.Rows = telemetrySignalArriving, a.LastSeen.UTC(), a.Rows
 				}
@@ -310,7 +314,7 @@ func telemetryTargetDoc(t telemetry.Target, res obsbackend.TelemetryArrivalResul
 	for _, m := range t.Metrics {
 		limit = max(limit, m.SampleLimit)
 	}
-	for _, sc := range res.Scrapes {
+	for _, sc := range res.scrapes {
 		if sc.Service == t.ServiceName {
 			doc.Scrapes = append(doc.Scrapes, obsTelemetryScrapeDoc{Instance: sc.Instance, Up: sc.Up, Samples: sc.Samples, Kept: sc.Kept, SampleLimit: limit, LastSeen: sc.LastSeen.UTC()})
 		}

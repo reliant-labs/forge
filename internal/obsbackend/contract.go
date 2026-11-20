@@ -179,3 +179,13 @@ type DashboardReader interface {
 	GetDashboard(ctx context.Context, ref DashboardRef) (DashboardDocument, error)
 	QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error)
 }
+
+// PGOExporter reads an env's merged CPU profile in the shape `go build -pgo`
+// takes: what `forge pgo pull` fetches from the control plane. Only the cloud
+// backend implements it; a ClickStack's profiles are read through
+// pkg/profilequery instead.
+//
+//forge:contract
+type PGOExporter interface {
+	ExportPGOProfile(ctx context.Context, req ExportPGORequest) (ExportPGOResult, error)
+}

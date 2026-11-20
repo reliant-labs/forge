@@ -30,9 +30,10 @@
 // release. The owner's breaking:approved label waives it.
 //
 // WHERE THE DECLARATION COMES FROM. With -pr, the label list and body are read
-// live through `gh api` (GH_TOKEN, GITHUB_REPOSITORY), not from the workflow
-// event: a label added after the run started, then "Re-run failed jobs", is
-// seen. Locally, pass -label and -body-file instead.
+// live through `gh api` (GITHUB_REPOSITORY; APIGATE_GH may name an equivalent
+// read-only client), not from the workflow event: a label added after the run
+// started, then "Re-run failed jobs", is seen. Locally, pass -label and
+// -body-file instead.
 //
 //forge:exclude-contract: a CI command, no collaborator to substitute
 package main
@@ -213,7 +214,11 @@ func prDeclaration(pr string) (string, []string, bool, error) {
 // ghAPI runs `gh api <args>` and returns its stdout; tests replace it with a
 // fake GitHub.
 var ghAPI = func(args ...string) ([]byte, error) {
-	cmd := exec.Command("gh", append([]string{"api"}, args...)...)
+	bin := os.Getenv("APIGATE_GH")
+	if bin == "" {
+		bin = "gh"
+	}
+	cmd := exec.Command(bin, append([]string{"api"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

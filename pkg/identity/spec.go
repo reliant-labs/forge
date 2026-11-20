@@ -49,7 +49,24 @@ type Spec struct {
 	// SeedUsers are throwaway accounts for local and ephemeral environments.
 	// Reconcile refuses them unless Options.AllowSeedUsers is set.
 	SeedUsers []SeedUser
+	// CodeLifetime is how long a password-set code stays redeemable: the
+	// code a reset link carries and the one an invite or reset with
+	// return_code hands back (forge#2265). Reconcile converges the
+	// instance's password-reset code generator to it. Zero leaves the
+	// generator alone (Zitadel's default is DefaultCodeLifetime). At most
+	// MaxCodeLifetime.
+	CodeLifetime time.Duration
 }
+
+const (
+	// DefaultCodeLifetime is Zitadel's default password-reset code expiry,
+	// and the lifetime an env that declares none keeps.
+	DefaultCodeLifetime = time.Hour
+	// MinCodeLifetime and MaxCodeLifetime bound a declared lifetime. The
+	// code works like a password; a week is the most it may live.
+	MinCodeLifetime = 5 * time.Minute
+	MaxCodeLifetime = 7 * 24 * time.Hour
+)
 
 // HTTPEmail is Zitadel's HTTP email provider.
 type HTTPEmail struct {
@@ -457,6 +474,9 @@ func (s Spec) Validate() error {
 
 	if strings.TrimSpace(s.Project.Name) == "" {
 		bad("project", "", "a name is required")
+	}
+	if s.CodeLifetime != 0 && (s.CodeLifetime < MinCodeLifetime || s.CodeLifetime > MaxCodeLifetime) {
+		bad("secret generator", "password reset code", "lifetime %s is outside %s..%s", s.CodeLifetime, MinCodeLifetime, MaxCodeLifetime)
 	}
 
 	roles := map[string]Role{}

@@ -129,7 +129,7 @@ and for queries `--capture DIR` and `--all`.
 
 ## Rules
 
-Each warns first through forge's lint rollout and is dialled through
+Each is graded through forge's lint rollout and dialled through
 `lint.rules` like any forge rule (`{db-analyze-table-rewrite: off}`).
 
 | Rule | Fires when | Fix |

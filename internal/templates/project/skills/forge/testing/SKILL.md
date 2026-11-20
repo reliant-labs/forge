@@ -118,9 +118,9 @@ See `testing/patterns` for copy-paste-ready templates.
 ## Test commands
 
 The suite is defined in the project's `Taskfile.yml`, not in the forge CLI —
-so these are the same commands the generated CI workflow runs. (There is no
-`forge test`; it was removed precisely because a second definition could
-disagree with this one.)
+so these are the same commands the generated CI workflow runs. (forge has no
+test command of its own: a second definition of the suite could disagree with
+this one.)
 
 ```bash
 task test:short -- ./internal/<pkg>/...    # inner loop: -short, cached, no race

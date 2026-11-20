@@ -29,9 +29,9 @@ const (
 	// ProjectSpecFile is the project's ProjectPart.
 	ProjectSpecFile = SpecDir + "/project" + genSuffix
 
-	// LegacySpecFile is the whole-project spec the parts replace. Write
-	// retires it when pristine, as it does the whole-project
-	// saved-searches_gen.ndjson, an unwritten *_gen.ndjson like any other.
+	// LegacySpecFile is the whole-project spec the parts replaced. Nothing
+	// writes or retires it; it is kept only because
+	// internal/cli/generate_pipeline.go still names it (remove both together).
 	LegacySpecFile = "deploy/observability/dashboard-spec_gen.json"
 )
 
@@ -63,13 +63,14 @@ const (
 // Jobs the Kubernetes Job events it delivers, Releases reads the release
 // ledger and the built-in Product overview, Users, Product and Acquisition dashboards read
 // product_events (sql panels HyperDX cannot draw, over a table the local
-// ClickStack lacks), the AI hub's are sql panels too, and none of them exists
-// under `forge env up`. They are also constant text, independent of the
+// ClickStack lacks), as do the Overview's Traffic and Uptime cards (Uptime
+// reads the platform prober's gauges), the AI hub's are sql panels too, and
+// none of them exists under `forge env up`. They are also constant text, independent of the
 // project's services, so writing them would put library code in the project's
 // tree behind a do-not-edit banner. They ship in the spec and in the release
 // bundle.
 func hostedOnly(d Dashboard) bool {
-	return d.ID == WorkloadsID || d.ID == ReleasesID || d.ID == JobsID || obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID)
+	return d.ID == WorkloadsID || d.ID == ReleasesID || d.ID == JobsID || obsbuiltin.IsDashboard(d.ID) || obsbuiltin.IsAIDashboard(d.ID) || obsbuiltin.IsCardDashboard(d.ID)
 }
 
 // OverridePath is the file that, when present, replaces the generated
@@ -117,7 +118,7 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			if err != nil {
 				return nil, err
 			}
-			if err := writeOwnedOverview(projectDir, owned, rel, f.Content, undeployed, cs); err != nil {
+			if err := writeOwnedOverview(projectDir, owned, f.Content, undeployed); err != nil {
 				return nil, err
 			}
 			out = append(out, owned)
@@ -215,78 +216,33 @@ func undeployedOverview(in Input, file string) ([]byte, error) {
 	return nil, nil
 }
 
-// writeOwnedOverview gives the local overview the same ownership as an
-// explicit dashboard override. Edits to a legacy generated file are migrated
-// verbatim before retiring its old name; an existing owned override wins.
+// writeOwnedOverview scaffolds the local overview as an owned file, the same
+// ownership as an explicit dashboard override: written once, then the user's.
 //
-// Two cases are NOT the user's edits and so are not preserved: a legacy file
-// that is pristine forge output, and an owned file still byte-equal to the
-// undeployed render (undeployed). Both froze the overview's identity scope as
-// the no-deployed-process sentinel, typically because `forge project new`'s
-// first generate ran before any environment's workloads rendered; once owned,
-// no later generate refreshed it, and every panel of the local overview drew
-// nothing forever. They take the current render instead.
-func writeOwnedOverview(root, owned, legacy string, content, undeployed []byte, cs *checksums.FileChecksums) error {
-	old, err := os.ReadFile(filepath.Join(root, legacy))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err != nil {
-		old = nil
-	}
-	pristine := old != nil && cs != nil && cs.Unstampable[legacy] == checksums.BodyHash(old)
-	if old != nil && !pristine {
-		content = old
-	}
+// One owned file is NOT the user's edit and so is refreshed: one still
+// byte-equal to the undeployed render (undeployed). It froze the overview's
+// identity scope as the no-deployed-process sentinel, typically because
+// `forge project new`'s first generate ran before any environment's workloads
+// rendered; once owned, no later generate refreshed it, and every panel of the
+// local overview drew nothing forever. It takes the current render instead.
+func writeOwnedOverview(root, owned string, content, undeployed []byte) error {
 	written, err := checksums.WriteScaffoldIfMissing(root, owned, content)
 	if err != nil {
 		return err
 	}
-	if !written && undeployed != nil && !bytes.Equal(content, undeployed) {
-		onDisk, err := os.ReadFile(filepath.Join(root, owned))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err == nil && bytes.Equal(onDisk, undeployed) {
-			checksums.RecordPreWrite(root, owned)
-			if err := atomicfile.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
-				return err
-			}
-			checksums.MarkWrittenThisRun(owned)
-		}
+	if written || undeployed == nil || bytes.Equal(content, undeployed) {
+		return nil
 	}
-	// A deliberately deleted scaffold must not resurrect or erase its legacy
-	// source. Only retire after the owned destination is present.
-	if _, err := os.Stat(filepath.Join(root, owned)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+	onDisk, err := os.ReadFile(filepath.Join(root, owned))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if old != nil {
-		// The pre-emitter guard may already have quarantined this legacy
-		// path. Record the explicit one-way ownership transfer so final
-		// adjudication does not demand a render for a now user-owned file.
-		if cs != nil {
-			if err := cs.DisownPaths(root, []string{legacy}, "constant overview migrated to owned scaffold"); err != nil {
-				return err
-			}
-		}
-		destination, err := os.ReadFile(filepath.Join(root, owned))
-		if err != nil {
+	if err == nil && bytes.Equal(onDisk, undeployed) {
+		checksums.RecordPreWrite(root, owned)
+		if err := atomicfile.WriteFile(filepath.Join(root, owned), content, 0o644); err != nil {
 			return err
 		}
-		if !bytes.Equal(destination, old) && !pristine {
-			checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
-			return nil // Two independent edits: preserve both, never discard one.
-		}
-		checksums.RecordPreservedOwnershipTransfer(root, legacy, owned, old)
-		if err := checksums.RemoveJournaled(filepath.Join(root, legacy)); err != nil {
-			return err
-		}
-		if cs != nil {
-			delete(cs.Unstampable, legacy)
-		}
+		checksums.MarkWrittenThisRun(owned)
 	}
 	return nil
 }
@@ -309,8 +265,7 @@ func retireGenerated(projectDir, rel string, cs *checksums.FileChecksums) error 
 }
 
 // retireStale removes every pristine generated file under the dashboards
-// directory and SpecDir that this run did not write (written), plus the
-// legacy whole-project spec.
+// directory and SpecDir that this run did not write (written).
 func retireStale(projectDir string, written []string, cs *checksums.FileChecksums) error {
 	want := map[string]bool{}
 	for _, rel := range written {
@@ -331,7 +286,7 @@ func retireStale(projectDir string, written []string, cs *checksums.FileChecksum
 			}
 		}
 	}
-	return retireGenerated(projectDir, LegacySpecFile, cs)
+	return nil
 }
 
 // ReadFragments reads reusable generation input without loading old process

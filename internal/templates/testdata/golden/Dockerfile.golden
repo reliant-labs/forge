@@ -55,9 +55,15 @@ COPY . .
 # is the primary binary, and a workload's `args` (deploy/kcl/workloads.k)
 # pick its subcommand. Building them all into a single image keeps one
 # build + one push + one registry tag for the whole project.
+#
+# Profile-guided optimization is per binary: `-pgo=auto` (Go's default)
+# reads the committed cmd/<bin>/default.pgo when it exists, which `forge pgo
+# pull` writes. `forge build` passes `--build-arg FORGE_PGO_<BIN>=off` for a
+# binary whose KCL build declares `pgo = forge.PGO {enabled = False}`.
+ARG FORGE_PGO_DEMO=auto
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}" -o /app/bin/demo ./cmd/demo
+    CGO_ENABLED=0 go build -pgo=${FORGE_PGO_DEMO} -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}" -o /app/bin/demo ./cmd/demo
 
 # ── Debug builder (only used by the `debug` stage) ──
 # Split out so the default production build doesn't pay the debug-build
@@ -68,10 +74,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Dockerfile fork; see its FRICTION.md "Dockerfile debug-builder split".)
 FROM builder AS debug-builder
 
-# Debug build — full symbols, no inlining.
+# Debug build — full symbols, no inlining. A stage does not inherit its
+# parent's ARGs, so the binary's PGO arg is declared again: without it a
+# binary whose PGO is off would still read its default.pgo here.
+ARG FORGE_PGO_DEMO=auto
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/demo-debug ./cmd/demo
+    CGO_ENABLED=0 go build -pgo=${FORGE_PGO_DEMO} -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/demo-debug ./cmd/demo
 
 # Install Delve
 RUN --mount=type=cache,target=/root/.cache/go-build \

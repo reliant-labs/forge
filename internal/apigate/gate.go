@@ -22,7 +22,8 @@ import (
 //
 // And since forge is semver at major 1 (owner, 2026-11-05), neither passes
 // without the OWNER's acceptance: the breaking:approved label, applied by the
-// owner's account. Without it a break fails with the deprecation path.
+// owner's account or by the Reliant bot on the owner's instruction (owner
+// decision, 2026-11-19). Without it a break fails with the deprecation path.
 const (
 	ApprovedLabel = "breaking:approved"
 	BreakLabel    = "api-break"
@@ -118,7 +119,8 @@ func Evaluate(breaks []Break, decl Declaration, changed []string, root string) V
 		return fail("forge is semver at major 1 (owner, 2026-11-05): an incompatible change to pkg/ does not merge.\n"+
 			"  Deprecate instead: keep the old identifier working beside the new one, mark it\n"+
 			"  `// Deprecated: use <new>.`, and leave its removal to a future major, which only the owner cuts.\n"+
-			"  Only the owner accepts a break, with the `%s` label; it must then still be declared\n"+
+			"  Only the owner accepts a break, with the `%s` label (applied by the owner, or by the\n"+
+			"  Reliant bot on the owner's instruction); it must then still be declared\n"+
 			"  (the `%s` label, or an `%s` line) and ship its remedy: a `forge fix` codemod in %s,\n"+
 			"  or a migration playbook under %s%s<vX.Y.Z>/. (docs: dev-docs/api-breaks.md)",
 			ApprovedLabel, BreakLabel, markerToken, codemodDir, playbookRoot, playbookGroup)

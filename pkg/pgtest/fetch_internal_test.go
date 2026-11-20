@@ -38,15 +38,22 @@ func fakeRepository(t *testing.T, script ...int) (*httptest.Server, *atomic.Int3
 }
 
 // withFetchPolicy points the relay at upstream alone (no mirror) with no real
-// waiting, for the duration of the test.
+// waiting, for the duration of the test. It also empties the pinned checksum
+// table, so a fake archive is verified against what the fake repository
+// publishes; a test of the pin sets its own.
 func withFetchPolicy(t *testing.T, upstream string, attempts int) {
 	t.Helper()
 	saved := fetchPolicy
+	savedPins := pinnedArchiveSHA256
 	fetchPolicy.repositories = []string{upstream}
 	fetchPolicy.attempts = attempts
 	fetchPolicy.firstDelay = time.Millisecond
 	fetchPolicy.maxDelay = time.Millisecond
-	t.Cleanup(func() { fetchPolicy = saved })
+	pinnedArchiveSHA256 = map[string]string{}
+	t.Cleanup(func() {
+		fetchPolicy = saved
+		pinnedArchiveSHA256 = savedPins
+	})
 }
 
 // coldConfig is an embedded-postgres config whose binary cache is an empty
@@ -152,10 +159,11 @@ func TestFetchRelay_NoResponseNamesTheURL(t *testing.T) {
 		t.Errorf("relay answered %d for a repository that never responds, want 502", resp.StatusCode)
 	}
 
-	fe := relay.lastFailure()
-	if fe == nil {
+	ff := relay.lastFailure()
+	if ff == nil {
 		t.Fatal("a repository that never responds is not recorded as a FetchError")
 	}
+	fe := ff.lead
 	if fe.Status != 0 || fe.Err == nil || fe.Attempts != 2 {
 		t.Errorf("FetchError = %+v, want Status 0, a transport error, 2 attempts", fe)
 	}
@@ -169,12 +177,21 @@ func TestFetchRelay_NoResponseNamesTheURL(t *testing.T) {
 // relayArtifact is an archive path as the library asks for it.
 const relayArtifact = "/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64/18.3.0/embedded-postgres-binaries-linux-amd64-18.3.0.jar"
 
-// scriptedRepository answers every GET with status (and, on 200, body),
-// counting the requests.
+// scriptedRepository answers every archive GET with status (and, on 200,
+// body), counting those requests, and publishes the body's .sha256 beside
+// it when it serves the body (a 404 otherwise).
 func scriptedRepository(t *testing.T, status int, body string) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			if status != http.StatusOK {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, sha256Hex([]byte(body)))
+			return
+		}
 		hits.Add(1)
 		if status == http.StatusOK {
 			_, _ = io.WriteString(w, body)
@@ -259,8 +276,20 @@ func TestFetchRelay_A404EverywhereIsNoPublishedBinary(t *testing.T) {
 		t.Errorf("relay answered %d, want 404", status)
 	}
 	fe := relay.lastFailure()
-	if fe == nil || fe.Status != http.StatusNotFound || len(fe.Also()) != 1 {
-		t.Fatalf("FetchError = %+v, want a 404 with the mirror's 404 in Also", fe)
+	if fe == nil || fe.lead.Status != http.StatusNotFound || len(fe.also) != 1 {
+		t.Fatalf("fetch failure = %+v, want a 404 with the mirror's 404 beside it", fe)
+	}
+	// The public view: errors.As finds the lead, and its Also still names
+	// the mirror's answer, as it did before fetchFailures existed.
+	var lead *FetchError
+	if !errors.As(fe, &lead) {
+		t.Fatalf("errors.As(%v, *FetchError) = false", fe)
+	}
+	if also := lead.Also(); len(also) != 1 || also[0].URL != mirror.URL+relayArtifact || also[0].Status != http.StatusNotFound {
+		t.Errorf("Also() = %+v, want the mirror's 404", also)
+	}
+	if also := (&FetchError{URL: "x"}).Also(); also != nil {
+		t.Errorf("Also() on a FetchError built by hand = %+v, want nil", also)
 	}
 	for _, want := range []string{primary.URL + relayArtifact, mirror.URL + relayArtifact, "no published binary"} {
 		if !strings.Contains(fe.Error(), want) {
@@ -285,8 +314,8 @@ func TestFetchRelay_ATransientMirrorFailureIsNotAMissingVersion(t *testing.T) {
 		t.Errorf("mirror asked %d time(s), want the 2 the policy allows", got)
 	}
 	fe := relay.lastFailure()
-	if fe == nil || fe.Status != http.StatusServiceUnavailable {
-		t.Fatalf("FetchError = %+v, want the mirror's 503 to lead", fe)
+	if fe == nil || fe.lead.Status != http.StatusServiceUnavailable {
+		t.Fatalf("fetch failure = %+v, want the mirror's 503 to lead", fe)
 	}
 	msg := fe.Error()
 	if strings.Contains(msg, "no published binary") {

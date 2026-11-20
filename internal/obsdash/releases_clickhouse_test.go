@@ -27,6 +27,11 @@ import (
 //	  v3  2026-03-15  three spans: one error, one a stream (a request, but no
 //	                  latency: its 60s is the stream's lifetime)
 //	  v9  (e2)        one span, never in e1's figures
+//	  probes          synthetic monitor spans (forge.probe = true), never a
+//	                  request: a slow error on v1 and on v3, a slow success
+//	                  on v3, and v4, a version only a probe ever reached.
+//	                  A v2 and a v3 span carry forge.probe = false: ordinary
+//	                  traffic, like every span with no forge.probe at all
 //
 //	browser sessions (shop-web, e1)
 //	  v1  s1 clean, s2 two errors; s10 began before the range
@@ -55,13 +60,19 @@ INSERT INTO forge_releases_test.otel_traces VALUES
     ('2026-03-11 10:03:00', 'api', 'payments.Charge', 'Client', 'Ok', 5000000, '', {'service.version': 'v1', 'reliant.env.id': 'e1'}, {}),
     ('2026-03-08 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 10000000, '', {'service.version': 'v1', 'reliant.env.id': 'e1'}, {}),
     ('2026-03-13 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 50000000, '', {'service.version': 'v2', 'reliant.env.id': 'e1'}, {}),
-    ('2026-03-13 10:01:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 50000000, '', {'service.version': 'v2', 'reliant.env.id': 'e1'}, {}),
+    ('2026-03-13 10:01:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 50000000, '', {'service.version': 'v2', 'reliant.env.id': 'e1'}, {'forge.probe': 'false'}),
     ('2026-03-13 10:02:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Error', 50000000, '', {'service.version': 'v2', 'reliant.env.id': 'e1'}, {'error_class': 'canceled'}),
     ('2026-03-15 08:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 60000000, '', {'service.version': 'v2', 'reliant.env.id': 'e1'}, {}),
-    ('2026-03-15 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 300000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {}),
+    ('2026-03-15 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 300000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {'forge.probe': 'false'}),
     ('2026-03-15 10:01:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Error', 300000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {}),
     ('2026-03-15 10:02:00', 'api', 'orders.v1.OrdersService/Watch', 'Server', 'Ok', 60000000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {'forge.rpc.stream_type': 'server'}),
-    ('2026-03-14 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 10000000, '', {'service.version': 'v9', 'reliant.env.id': 'e2'}, {});
+    ('2026-03-14 10:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 10000000, '', {'service.version': 'v9', 'reliant.env.id': 'e2'}, {}),
+    ('2026-03-11 10:04:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Error', 9000000000, '', {'service.version': 'v1', 'reliant.env.id': 'e1'}, {'forge.probe': 'true'}),
+    ('2026-03-15 10:03:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Error', 9000000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {'forge.probe': 'true'}),
+    ('2026-03-15 10:04:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 9000000000, '', {'service.version': 'v3', 'reliant.env.id': 'e1'}, {'forge.probe': 'true'}),
+    ('2026-03-16 09:00:00', 'api', 'orders.v1.OrdersService/Get', 'Server', 'Ok', 9000000000, '', {'service.version': 'v4', 'reliant.env.id': 'e1'}, {'forge.probe': 'true'});
+-- The structured (line) panels' compiler also reads StatusMessage.
+ALTER TABLE forge_releases_test.otel_traces ADD COLUMN StatusMessage String DEFAULT '';
 CREATE TABLE forge_releases_test.rum_sessions (
     ServiceName LowCardinality(String), SessionId String, Day Date,
     Start SimpleAggregateFunction(min, DateTime64(3)), End SimpleAggregateFunction(max, DateTime64(3)),
@@ -214,5 +225,34 @@ func TestReleasesSQLOnClickHouse(t *testing.T) {
 	}
 	if got := run("crash-free-sessions-by-version"); !strings.Contains(got, "v9\t2026-03-14 09:00\t1\t0\t100") || !strings.HasPrefix(got, "v3\t") {
 		t.Errorf("crash-free-sessions-by-version over every environment =\n%s", got)
+	}
+
+	// The by-version line panels are structured queries, compiled by the
+	// compiler the console runs. Like the sql panels above, they count the
+	// forge.probe = false spans and every span with no forge.probe, and never
+	// a probe: no v4 line, and no probe's 9s or error.
+	for id, want := range map[string]string{
+		// Weighted requests per day and version: v1's 12, v2's forge.probe =
+		// false span among its 3 on 2026-03-13, v3's on 2026-03-15.
+		"request-rate-by-version": "2026-03-11 00:00:00\t['v1']\t12\n" +
+			"2026-03-13 00:00:00\t['v2']\t3\n" +
+			"2026-03-15 00:00:00\t['v2']\t1\n" +
+			"2026-03-15 00:00:00\t['v3']\t3",
+		// Errors over requests (the ratio's two series): the probes' errors
+		// on v1 and v3 are not among them.
+		"error-rate-by-version": "2026-03-11 00:00:00\t['v1']\t1\t12\n" +
+			"2026-03-13 00:00:00\t['v2']\t1\t3\n" +
+			"2026-03-15 00:00:00\t['v2']\t0\t1\n" +
+			"2026-03-15 00:00:00\t['v3']\t1\t3",
+		// No probe's 9s: v1's p95 is its 200ms span; v3's is the stream's
+		// lifetime, which this panel does not set apart.
+		"p95-by-version": "2026-03-11 00:00:00\t['v1']\t200\n" +
+			"2026-03-13 00:00:00\t['v2']\t50\n" +
+			"2026-03-15 00:00:00\t['v2']\t60\n" +
+			"2026-03-15 00:00:00\t['v3']\t60000",
+	} {
+		if got := runStructured(t, exec1, "forge_releases_test", panels[id], end.Add(-7*24*time.Hour), end); got != want {
+			t.Errorf("%s in e1 =\n%s\nwant\n%s\n(a forge.probe span was counted, or ordinary traffic was dropped)", id, got, want)
+		}
 	}
 }

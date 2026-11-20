@@ -160,6 +160,17 @@ linters:
         linters:
           - forbidigo
 
+      # selfupdate/env.go is the package's whole contact with the environment,
+      # and neither use is app configuration. FORGE_MANAGED_BY is a contract
+      # between a SUPERVISOR (or packager) and the binary it runs: it marks the
+      # install as someone else's without the app's cooperation, and it can
+      # only refuse a self-replacement, never grant one. os.Environ is passed
+      # through, unread, to exec(2), so the new binary starts with the same
+      # environment, as forgedelegate.Exec does. Scoped to that one file.
+      - path: ^selfupdate/env\.go$
+        linters:
+          - forbidigo
+
       # The prettier guard over the component library reads CI to decide
       # whether a missing npx is a skip (laptop) or a failure (CI). It is a
       # test-harness switch: it never runs in a shipped binary and changes
@@ -198,5 +209,16 @@ linters:
       # file that never compiles into a shipped binary and changes nothing
       # about how the library behaves; scoped to that one file.
       - path: ^obsbuiltin/clickhouse_harness_test\.go$
+        linters:
+          - forbidigo
+
+      # The PGO toolchain proof (TestWritePGODrivesTheGoToolchain, slow-gated)
+      # builds a probe program with the real `go` and hands it the inherited
+      # environment plus GOFLAGS=, GOWORK=off and GOTOOLCHAIN=local, so an
+      # ambient GOFLAGS or go.work cannot change what is being proven. A
+      # child go needs the environment to run at all (PATH, HOME, GOCACHE),
+      # the same reason release/capture passes it to git. Nothing is
+      # consulted; test-only, scoped to that one file.
+      - path: ^profilequery/pgo_test\.go$
         linters:
           - forbidigo

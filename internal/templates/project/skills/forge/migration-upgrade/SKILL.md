@@ -74,6 +74,7 @@ small enough that every migration in it is still true.
 # Inspect the current pin and the binary version.
 grep forge_version forge.yaml
 forge version
+forge version --pinned [--json]   # the pinned forge's executable, version and source (self|tools|cache|built)
 
 # A project whose go.mod requires forge: bump it there first.
 go get github.com/reliant-labs/forge@vX.Y.Z && go mod tidy

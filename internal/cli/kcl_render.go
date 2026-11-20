@@ -53,6 +53,7 @@ import (
 	"github.com/reliant-labs/forge/internal/secrets"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // KCLEntities is the typed view of the JSON contract the KCL deploy module
@@ -224,6 +225,11 @@ type KCLEntities struct {
 	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
 	// ones forge derives for a hosted env. Empty when the env has none.
 	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+
+	// Telemetry is every forge.Telemetry the env declares (output.telemetry),
+	// decoded and normalized: what a collector consumes. Nil when none is
+	// declared. Validate it with telemetry.Validate (forge env render does).
+	Telemetry []telemetry.Target `json:"telemetry,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -1035,6 +1041,9 @@ type HostInfraEntity struct {
 	// engine = "temporal" only.
 	TemporalNamespaces []string `json:"temporal_namespaces,omitempty"`
 	TemporalUIPort     int      `json:"temporal_ui_port,omitempty"`
+	// TemporalMetricsPort is the Prometheus port the server is started with
+	// (--metrics-port); 0 = a free port the server picks.
+	TemporalMetricsPort int `json:"temporal_metrics_port,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a workload's build
@@ -1064,6 +1073,11 @@ type GoBuild struct {
 	Tags       []string          `json:"tags,omitempty"`
 	Flags      []string          `json:"flags,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	// PGO is the binary's profile-guided optimization (kcl/schema.k PGO).
+	// nil is the defaults: the render omits a default PGO, so an env that
+	// declares none decodes exactly as before. Read it through
+	// ResolvePGOBinaries, which applies the defaults.
+	PGO *PGOConfig `json:"pgo,omitempty"`
 }
 
 // DockerBuild mirrors the kcl/schema.k DockerBuild — the per-service
@@ -1095,6 +1109,10 @@ type DockerBuild struct {
 	// as config.DockerConfig.BuildContexts. Empty falls back to the
 	// project-level forge.yaml docker.build_contexts.
 	BuildContexts map[string]config.BuildContext `json:"build_contexts,omitempty"`
+	// PGO is the profile-guided optimization of each Go binary the image
+	// builds, keyed by package path ("./cmd/app"). A binary it does not name
+	// gets the defaults (kcl/schema.k DockerBuild.pgo).
+	PGO map[string]PGOConfig `json:"pgo,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1677,6 +1695,7 @@ type kclRenderRaw struct {
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
 	Gateways                 []GatewayEntity                           `json:"gateways,omitempty"`
@@ -1956,6 +1975,11 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if err := validateAPIs(projectDir, entities.APIs); err != nil {
 		return nil, err
 	}
+	// One binary, one profile: two workloads of the env that build the same
+	// Go binary with different PGO are refused here, naming both.
+	if _, err := ResolvePGOBinaries(entities); err != nil {
+		return nil, err
+	}
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2104,6 +2128,13 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ManifestNamespaces:       renderedNamespaces(raw.Manifests),
 		ManifestUnits:            manifestUnits(raw.Manifests),
 		ClusterWork:              manifestClusterWork(raw.Manifests, raw.Gateways),
+	}
+	targets, err := telemetry.Decode(raw.Telemetry)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) > 0 {
+		out.Telemetry = telemetry.Normalize(targets)
 	}
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)

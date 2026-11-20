@@ -27,8 +27,10 @@ const (
 	// ResourceEnvironment binds to one environment id: a CI token that may
 	// read one env's telemetry (obs:read), triage its issues (obs:triage),
 	// query its database (db:query), read its object storage
-	// (storage:read) or read its rendered config values
-	// (deploy:config:read), and no other env of the org.
+	// (storage:read), read its rendered config values
+	// (deploy:config:read), run its changes (changes:write,
+	// changes:launch) or read its vulnerability findings (vuln:read), and no
+	// other env of the org.
 	ResourceEnvironment ResourceKind = "environment"
 )
 
@@ -81,6 +83,14 @@ var scopeResourceRules = map[Scope]struct {
 	// deploy:config:read reads one env's config values when bound: a
 	// support token can see prod's config without seeing staging's.
 	ScopeDeployConfigRead: {kind: ResourceEnvironment, required: false},
+	// A change lives in one environment, so both Changes scopes may be
+	// confined to one: an agent's token that drafts and stops in prod only,
+	// or a launch grant for staging and nothing else.
+	ScopeChangesWrite:  {kind: ResourceEnvironment, required: false},
+	ScopeChangesLaunch: {kind: ResourceEnvironment, required: false},
+	// vuln:read reads one env's findings when bound: what is exploitable in
+	// prod, for a token that must not see staging's.
+	ScopeVulnRead: {kind: ResourceEnvironment, required: false},
 }
 
 // admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:

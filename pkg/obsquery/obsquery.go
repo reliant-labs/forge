@@ -117,6 +117,13 @@ type Scope struct {
 	// dashspec.Dashboard.ToggleValues so every declared toggle is bound.
 	// Structured panels ignore it.
 	Toggles map[string]bool
+	// FilterParams are the dashboard's filter params (dashspec.FilterParam)
+	// the viewer set, by id, each bound to a sql panel as the String
+	// parameter {<id>:String}. One a statement reads that is absent here is
+	// bound to '' (no filter), so nil runs every panel unfiltered. Build it
+	// with dashspec.Dashboard.FilterParamValues to drop ids the dashboard does
+	// not declare. Structured panels ignore it.
+	FilterParams map[string]string
 	// Declared are the attribute keys the queried metric's own data points
 	// carry; the one extension to the key allowlist, for metrics.
 	Declared map[string]bool

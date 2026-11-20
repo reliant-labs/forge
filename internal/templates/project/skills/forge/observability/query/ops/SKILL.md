@@ -32,6 +32,7 @@ in the location.
 ```bash
 forge obs ops prod --sort p95 --top 5
 forge obs ops prod --kind component --sort errors --since 6h --json
+forge obs ops prod --name billing.Charge,todo.v1.TodoService/CreateTodo --since 7d --json
 ```
 
 | Flag | Meaning |
@@ -39,18 +40,24 @@ forge obs ops prod --kind component --sort errors --since 6h --json
 | `--sort calls\|p95\|errors\|rate` | the ranking (default `calls`); `errors` is the error ratio |
 | `--top N` | most ops to return (default 20); `omitted` counts the rest |
 | `--kind rpc,endpoint,component` | only these kinds (default all) |
+| `--name OP` | only these ops, by span name: repeatable or comma-separated, at most 200 names of at most 200 characters. The query itself is narrowed to them (an `in` on the span name, locally and through the control plane), so it stays cheap over a long window where an unnarrowed one may not. With `--name`, `--top` defaults to every requested op. A name `--kind` leaves out is refused |
 | `--since`, `--from/--to`, `--service`, `--filter`, `--explain` | the common telemetry flags (`observability/query`) |
 
-Each op: `service`, `name`, `kind`, `calls`, `errors`, `error_ratio`,
+Each op: `service`, `name`, `kind`, `found`, `calls`, `errors`, `error_ratio`,
 `rate_per_second`, `p50_ms`/`p95_ms`/`p99_ms` (weighted for tail sampling),
 and its code: `code_file_path`, `code_function`, `code_line`, with
 `code_source` `telemetry` (the span's `code.file.path`) or `static` (found in
-this checkout by the op's name); absent when neither knew. Each kind's table
+this checkout by the op's name); absent when neither knew. `found` is false
+only for an op `--name` asked for that had no spans in the window and scope:
+it is still listed, with zero figures and `service` `""`, so "no traffic"
+reads apart from "not asked"; `names` echoes the requested ops. (`--filter
+span.name=…` is not the way to ask for an op: span.name is not a filterable
+attribute.) Each kind's table
 is the busiest 200 ops; `--sort` re-ranks within them. Schema
 `forge.obs.ops/v1`. `suggested[]` names the top op's slowest and failing
 traces (a component op by `--filter span.attr.forge.op=<op>` when its spans
 carry it). The hosted MCP's `obs_ops` tool is this document, located from
-telemetry only.
+telemetry only; its `name` input is `--name`.
 
 ## `forge obs blast-radius [env]`
 

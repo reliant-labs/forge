@@ -353,8 +353,14 @@ func TestWindowsHostHoldsTheCacheToItsACL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a private Windows cache was refused: %v", err)
 		}
-		if info, _ := os.Lstat(in.Path); info.Mode().Perm() != 0o755 {
-			t.Errorf("Windows binary mode %v, want 0755 (0555 would set the read-only attribute)", info.Mode().Perm())
+		// 0755, not 0555, which would set the read-only attribute. A real
+		// Windows stat reports only that attribute (0444 vs 0666).
+		info, _ := os.Lstat(in.Path)
+		if runtime.GOOS == "windows" && info.Mode().Perm()&0o200 == 0 {
+			t.Errorf("Windows binary is read-only (%v)", info.Mode().Perm())
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+			t.Errorf("Windows-host binary mode %v, want 0755", info.Mode().Perm())
 		}
 		for _, p := range []string{filepath.Dir(in.Path), filepath.Join(filepath.Dir(in.Path), manifestName), in.Path} {
 			if err := os.Chmod(p, 0o777); err != nil {

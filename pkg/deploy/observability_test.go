@@ -398,7 +398,7 @@ func TestAgentStripsClientIdentityBeforeEnrichment(t *testing.T) {
 			t.Errorf("pipeline %s is node-derived; stripping would delete the trustworthy k8s.* attributes: %v", name, p.Processors)
 		}
 	}
-	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id"} {
+	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id", "forge.telemetry.label.app", "forge.telemetry.label.app.kubernetes.io/name"} {
 		if !regexp.MustCompile(ClientIdentityKeyPattern).MatchString(key) {
 			t.Errorf("%s is not stripped", key)
 		}

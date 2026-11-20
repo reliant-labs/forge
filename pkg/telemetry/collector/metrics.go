@@ -67,14 +67,7 @@ func (b *builder) prometheus(t telemetry.Target) (map[string]any, error) {
 		}
 		if b.pods(t) {
 			job["kubernetes_sd_configs"] = []any{b.podSD(t)}
-			job["relabel_configs"] = []any{
-				// A pod that is not running has no address to scrape.
-				map[string]any{"source_labels": strs("__meta_kubernetes_pod_phase"), "regex": "Running", "action": "keep"},
-				// One target per pod: the declared container port.
-				map[string]any{"source_labels": strs("__meta_kubernetes_pod_container_port_number"), "regex": strconv.Itoa(m.Port), "action": "keep"},
-				map[string]any{"source_labels": strs("__meta_kubernetes_pod_name"), "target_label": "pod", "action": "replace"},
-				map[string]any{"source_labels": strs("__meta_kubernetes_namespace"), "target_label": "namespace", "action": "replace"},
-			}
+			job["relabel_configs"] = podRelabels(m.Port)
 		} else {
 			job["static_configs"] = []any{map[string]any{"targets": strs(lit(net.JoinHostPort(t.Address, strconv.Itoa(m.Port))))}}
 		}
@@ -84,6 +77,32 @@ func (b *builder) prometheus(t telemetry.Target) (map[string]any, error) {
 		jobs = append(jobs, job)
 	}
 	return map[string]any{"config": map[string]any{"scrape_configs": jobs}}, nil
+}
+
+// podRelabels turn pod discovery into one target per running pod on port.
+//
+// Pod discovery yields a target per declared container port, plus one per
+// container that declares none, so a port the pod listens on without
+// declaring it (valid in a manifest) has no target of its own. The relabels
+// therefore ignore the declared ports: they keep every running, non-init
+// container's target and point each at <pod IP>:port. Nothing per-container
+// survives into the final labels (job, instance = the address, pod,
+// namespace), so a pod's targets are identical and Prometheus's scrape pool
+// keeps one of them: one scrape, and one `up`, per pod.
+func podRelabels(port int) []any {
+	p := strconv.Itoa(port)
+	return []any{
+		// A pod that is not running has no address to scrape.
+		map[string]any{"source_labels": strs("__meta_kubernetes_pod_phase"), "regex": "Running", "action": "keep"},
+		// An init container's target names no container that serves.
+		map[string]any{"source_labels": strs("__meta_kubernetes_pod_container_init"), "regex": "true", "action": "drop"},
+		// The address is the pod's IP on the declared port, declared or not
+		// in the pod spec; an IPv6 address is bracketed.
+		map[string]any{"source_labels": strs("__meta_kubernetes_pod_ip"), "regex": "([^:]+)", "target_label": "__address__", "replacement": lit("${1}:" + p), "action": "replace"},
+		map[string]any{"source_labels": strs("__meta_kubernetes_pod_ip"), "regex": "(.+:.+)", "target_label": "__address__", "replacement": lit("[${1}]:" + p), "action": "replace"},
+		map[string]any{"source_labels": strs("__meta_kubernetes_pod_name"), "target_label": "pod", "action": "replace"},
+		map[string]any{"source_labels": strs("__meta_kubernetes_namespace"), "target_label": "namespace", "action": "replace"},
+	}
 }
 
 // podSD is t's Kubernetes pod discovery: its namespaces, its selector
@@ -144,8 +163,8 @@ func (b *builder) checks(t telemetry.Target) []string {
 		for i, c := range t.Checks {
 			kind := c.Kind + "check"
 			templates[kind+"/"+checkName(c, i)] = map[string]any{
-				"rule":   lit(podPortRule(t, c.Port)),
-				"config": checkConfig(c, "`endpoint`"),
+				"rule":   lit(podRule(t)),
+				"config": checkConfig(c, podEndpoint(c.Port)),
 			}
 		}
 		name := "receiver_creator/telemetry_" + svc + "_checks"
@@ -169,7 +188,7 @@ func checkName(c telemetry.HealthCheck, i int) string {
 }
 
 // checkConfig is a check's receiver config against hostport (host:port, or
-// receiver_creator's `endpoint`).
+// a podEndpoint expression).
 func checkConfig(c telemetry.HealthCheck, hostport string) map[string]any {
 	endpoint := hostport
 	target := map[string]any{"endpoint": endpoint}
@@ -179,20 +198,27 @@ func checkConfig(c telemetry.HealthCheck, hostport string) map[string]any {
 	return map[string]any{"collection_interval": c.Interval, "targets": []any{target}}
 }
 
-// podPortRule is receiver_creator's rule for port endpoints of t's pods on
-// port: in its namespaces, carrying every selector label.
-func podPortRule(t telemetry.Target, port int) string {
-	parts := []string{`type == "port"`}
+// podRule is receiver_creator's rule for t's pods: the k8s_observer's pod
+// endpoints (one per pod) in its namespaces, carrying every selector label.
+// It matches pods rather than their declared container ports, which a pod
+// need not declare for the port it serves on; podEndpoint names the port.
+func podRule(t telemetry.Target) string {
+	parts := []string{`type == "pod"`}
 	if len(t.Namespaces) > 0 {
 		quoted := make([]string, len(t.Namespaces))
 		for i, n := range t.Namespaces {
 			quoted[i] = strconv.Quote(n)
 		}
-		parts = append(parts, "pod.namespace in ["+strings.Join(quoted, ", ")+"]")
+		parts = append(parts, "namespace in ["+strings.Join(quoted, ", ")+"]")
 	}
 	for _, k := range sortedKeys(t.Selector) {
-		parts = append(parts, fmt.Sprintf("pod.labels[%s] == %s", strconv.Quote(k), strconv.Quote(t.Selector[k])))
+		parts = append(parts, fmt.Sprintf("labels[%s] == %s", strconv.Quote(k), strconv.Quote(t.Selector[k])))
 	}
-	parts = append(parts, "port == "+strconv.Itoa(port))
 	return strings.Join(parts, " && ")
+}
+
+// podEndpoint is a podRule receiver's host:port: the pod endpoint's IP
+// (bracketed when it is IPv6) on port.
+func podEndpoint(port int) string {
+	return "`" + `endpoint contains ":" ? "[" + endpoint + "]" : endpoint` + "`:" + strconv.Itoa(port)
 }

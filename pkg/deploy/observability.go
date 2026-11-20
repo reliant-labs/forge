@@ -45,10 +45,11 @@ import (
 
 // ClientIdentityKeyPattern matches the resource attributes a client must not
 // be allowed to set on the node agent's OTLP input: Kubernetes identity
-// (k8s.*), which the node supplies, and the hosting platform's own namespace
-// (reliant.*). The node agent deletes them before k8sattributes runs.
-// service.* and deployment.* are the app's own and are kept.
-const ClientIdentityKeyPattern = `^(k8s|reliant)\..*`
+// (k8s.*), which the node supplies, the hosting platform's own namespace
+// (reliant.*), and reserved target selectors (forge.telemetry.label.*).
+// The node agent deletes them before k8sattributes runs, so only discovered
+// pod labels can select a target. service.* and deployment.* are kept.
+const ClientIdentityKeyPattern = `^(k8s|reliant|forge\.telemetry\.label)\..*`
 
 // stripIdentityStatement is the OTTL form: a string literal, so the regex's
 // backslash is doubled.

@@ -3902,6 +3902,16 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 	if !bound {
 		return base, "", nil
 	}
+	// The build state is whatever the LAST `forge env build` for this env
+	// recorded, however long ago. A release cut after it already carries
+	// (or deliberately replaced) that build, so a differing digest is news
+	// only when the build is newer than the release.
+	var releaseCut time.Time
+	if rel, rerr := releases.Get(ctx, binding.Release); rerr == nil && rel != nil {
+		releaseCut = rel.CreatedAt
+	}
+	buildAt := latestBuildStateTime(projectDir, envName)
+	buildIsNews := releaseCut.IsZero() || buildAt.IsZero() || buildAt.After(releaseCut)
 	// Layer the release's resolved digests over the per-env build state. A
 	// per-image override (not a wholesale replace) keeps any image present in
 	// the build state but absent from the release still resolvable — though in
@@ -3916,8 +3926,8 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// successful `forge env build --push` becomes a deploy that ships the old
 		// image and still reports a clean rollout. The operator sees a green
 		// deploy and an unchanged app, with nothing connecting the two.
-		if built, ok := base[image]; ok && built != digest {
-			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
+		if built, ok := base[image]; ok && built != digest && buildIsNews {
+			fmt.Printf("  Note: the last `forge env build` of %s recorded %s, but release %s pins %s — deploying the RELEASE.\n"+
 				"        To ship the build instead: forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
@@ -5738,4 +5748,29 @@ func declaredDeliveryUnits(e *KCLEntities) []release.DeliveryUnit {
 		return nil
 	}
 	return e.DeliveryUnits
+}
+
+// latestBuildStateTime is when the newest build state recorded for env was
+// pushed (its pushed_at), or zero when none records a time.
+func latestBuildStateTime(projectDir, envName string) time.Time {
+	var latest time.Time
+	note := func(at string) {
+		if t, err := time.Parse(time.RFC3339, at); err == nil && t.After(latest) {
+			latest = t
+		}
+	}
+	for _, key := range buildStateLookupEnvs(envName) {
+		if st, err := ReadBuildState(projectDir, key); err == nil && st != nil {
+			note(st.PushedAt)
+		}
+	}
+	matches, _ := filepath.Glob(filepath.Join(projectDir, statefile.DirRel, "build-"+statefile.SafeSegment(envName)+"-*.json"))
+	prefix := "build-" + statefile.SafeSegment(envName) + "-"
+	for _, path := range matches {
+		service := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), prefix), ".json")
+		if st, err := buildtarget.ReadState(projectDir, envName, service); err == nil && st != nil && buildtarget.StateBelongsTo(st, envName, service) {
+			note(st.PushedAt)
+		}
+	}
+	return latest
 }

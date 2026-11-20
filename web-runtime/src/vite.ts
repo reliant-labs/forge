@@ -396,9 +396,9 @@ export function forgeDevLog(
     apply: "serve",
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        // The endpoint and anything under it, as a connect mount would match.
+        // Own only the endpoint, not routes beneath it; ignore query strings.
         const path = requestPath(req);
-        if (path !== endpoint && !path.startsWith(`${endpoint}/`)) {
+        if (path !== endpoint) {
           next();
           return;
         }

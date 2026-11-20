@@ -403,7 +403,19 @@ describe("forgeDevLog", () => {
     expect((await post(undefined, DEV_LOG_ENDPOINT, "GET")).status).toBe(405);
     expect((await post("{}", "/src/main.tsx")).status).toBe(418);
     expect((await post("{}", "/__forge/logs")).status).toBe(418);
+    for (const method of ["GET", "POST"]) {
+      for (const path of ["/__forge/log/", "/__forge/log/assets/app.js?raw"]) {
+        expect((await post("{}", path, method)).status).toBe(418);
+      }
+    }
     expect(printed).toEqual([]);
+  });
+
+  it("matches the exact endpoint with a query string", async () => {
+    expect(await post("{}", `${DEV_LOG_ENDPOINT}?source=browser`)).toEqual({
+      status: 204,
+      protocol: "2",
+    });
   });
 
   it("serves a custom endpoint", async () => {
@@ -413,6 +425,12 @@ describe("forgeDevLog", () => {
     });
     const outcome = await request(middlewares, "/custom/log", "GET");
     expect(outcome.status).toBe(405);
+    for (const method of ["GET", "POST"]) {
+      expect(
+        (await request(middlewares, "/custom/log/assets/app.js?raw", method))
+          .next,
+      ).toBe(true);
+    }
     expect((await request(middlewares, DEV_LOG_ENDPOINT, "GET")).next).toBe(
       true,
     );

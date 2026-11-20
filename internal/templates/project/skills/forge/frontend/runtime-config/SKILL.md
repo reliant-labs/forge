@@ -59,6 +59,18 @@ A frontend you keep on Vercel, Netlify or your own host can call a forge API on 
 
    A wildcard origin with credentials is refused at config load, because browsers reject it.
 
-3. **Call the API with credentials from the frontend.** Point its base URL at `https://api.example.com` through the frontend's own env config, and send `credentials: "include"` on every request. forge's generated `src/lib/connect.ts` does this (`fetchWithSession`); copy it if the frontend was not scaffolded by forge.
+3. **Make the frontend's origin the app origin sign-in trusts.** The sign-in routes refuse a POST from any origin but the API's own and the app's (`devidp.NewCrossOriginProtection`; a same-site sibling is refused like a cross-site one). The app origin is the one in `idp_login_uri`. With managed identity it is derived from the env's hosted frontend or first bound domain, so for a frontend forge does not host, declare the application's URIs literally in `deploy/kcl/identity.k`:
+
+   ```kcl
+   applications = [forge.IdentityApplication {
+       name = "prod:api", workload = "api"
+       login_uri = "https://app.example.com/auth/sign-in"           # the frontend's sign-in page
+       redirect_uris = ["https://app.example.com/auth/callback"]
+   }]
+   ```
+
+   Each env needs its own name and URIs, so pick the values by env (`option("env")`) when more than one env uses it. Without managed identity, set `IDP_LOGIN_URI` on the API to the frontend's sign-in URL. Skip this step and the browser's sign-in POST answers 403, however CORS is set.
+
+4. **Call the API with credentials from the frontend.** Point its base URL at `https://api.example.com` through the frontend's own env config, and send `credentials: "include"` on every request. forge's generated `src/lib/connect.ts` does this (`fetchWithSession`); copy it if the frontend was not scaffolded by forge.
 
 Preview deploys on the frontend's host get their own origins. List each one you need in `CORS_ORIGINS`, or sign in only on the production origin.

@@ -90,6 +90,37 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 	}
 }
 
+func TestUnscopedAuth_WrapperReferencesAreNotCalls(t *testing.T) {
+	seamPkg, _, _ := strings.Cut(codegen.CRUDAuthSeam(), ".")
+	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
+	src := handlerSource([]string{`"example.com/app/internal/whoami"`},
+		handlerCalling("GetOrder", "whoami.Caller"),
+		handlerCalling("GetInvoice", "consume(whoami.Caller)"),
+		handlerCalling("GetCart", "whoami.Client.UserID"),
+		handlerCalling("GetSession", "whoami.Indirect(ctx)"),
+		handlerCalling("ListOrders", "whoami.Caller(ctx)"),
+	)
+	dir := writeProject(t, "ShopService", map[string]bool{
+		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "ListOrders": true,
+	}, src)
+	writeSeamPackage(t, dir)
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
+		[]string{seamImport, `"example.com/app/internal/session"`},
+		"func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"+
+			"type Client struct { UserID string }\n"+
+			"type Other struct{}\n"+
+			"func (Other) Client(ctx context.Context) any { return Caller(ctx) }\n"+
+			"func Indirect(ctx context.Context) any { return session.Caller }\n"))
+	writeFile(t, filepath.Join(dir, "internal", "session", "session.go"), goFile("session",
+		[]string{seamImport}, "func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"))
+
+	got := unscopedMethods(t, auditUnscopedAuth(nil, dir))
+	slices.Sort(got)
+	if want := []string{"GetCart", "GetInvoice", "GetOrder", "GetSession"}; !slices.Equal(got, want) {
+		t.Fatalf("unscoped = %v, want %v — only an invoked wrapper resolves the caller", got, want)
+	}
+}
+
 // The walk is bounded: a chain longer than maxWrapperHops packages reports
 // unscoped (mark the resolver instead), and an import cycle — which does not
 // build, but can sit on disk — terminates.

@@ -183,7 +183,7 @@ func (m *moduleReach) moduleImports(f *ast.File) map[string]string {
 	return out
 }
 
-// callsReachingImport reports whether body references `<import>.<Func>`,
+// callsReachingImport reports whether body calls `<import>.<Func>`,
 // with the import a package of the main module, where Func resolves the
 // caller within hops further packages.
 func (m *moduleReach) callsReachingImport(body ast.Node, f *ast.File, hops int) bool {
@@ -199,7 +199,13 @@ func (m *moduleReach) callsReachingImport(body ast.Node, f *ast.File, hops int) 
 		if found {
 			return false
 		}
-		sel, ok := n.(*ast.SelectorExpr)
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		// A selector used as a value (or nested in a field selector) does
+		// not invoke the resolver. Follow only the call's direct target.
+		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}

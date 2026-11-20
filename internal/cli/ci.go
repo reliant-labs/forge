@@ -425,6 +425,17 @@ func newCIVulnScanCmd() *cobra.Command {
 				failed = append(failed, fmt.Sprintf("%d unusable exemption(s) in forge.yaml", len(unroutable)))
 			}
 
+			// The default selection runs the scanners the project has
+			// something for (NS FG-34): a static site has no Go module, and
+			// demanding govulncheck there failed the scan its npm lane would
+			// have passed. An explicit --go still demands it.
+			if runGo && !flagGo {
+				if modules, _, derr := discoverGoModules(projectDirForKCL(), flagRootModule); derr == nil && len(modules) == 0 {
+					fmt.Fprintln(os.Stderr, "⏭️  govulncheck: the project has no Go module — nothing to scan")
+					runGo = false
+				}
+			}
+
 			if runGo {
 				what, err := ciRunGovulncheck(cmd.Context(), projectDirForKCL(), flagRootModule, exemptions[ecosystemGo])
 				switch {

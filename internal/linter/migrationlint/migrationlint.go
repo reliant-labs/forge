@@ -315,12 +315,22 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// see without a live schema, and guessing beyond it would be worse than
 	// the finding.
 	generatedColumns := map[string]bool{}
+	// createdTables records every table this migration creates: an index
+	// built on one holds no rows yet, so it is not a blocking build.
+	createdTables := map[string]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {
 		text := strings.TrimSpace(stmt.Text)
 		if text == "" {
 			continue
+		}
+
+		if table, ok := createdTable(text); ok {
+			createdTables[table] = true
+		}
+		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, createdTables); ok {
+			findings = append(findings, f)
 		}
 
 		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {
@@ -652,6 +662,8 @@ func RemediationFor(rule string) string {
 		return NonTransactionalStatementRemediation
 	case RuleEnumValueUsedBeforeCommit:
 		return EnumValueUsedBeforeCommitRemediation
+	case RuleBlockingIndexBuild:
+		return BlockingIndexBuildRemediation
 	case RuleCompatUndeclared:
 		return CompatUndeclaredRemediation
 	case RuleCompatReason:

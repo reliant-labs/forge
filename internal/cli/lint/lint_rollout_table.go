@@ -253,6 +253,11 @@ var shippedRules = []rolloutGroup{
 	// A handler file implementing more than one custom rpc. Its findings
 	// stay advisory at any pin; the row lets lint.rules raise them.
 	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
+	// forge lint --migration-safety: a plain CREATE INDEX on a table an
+	// earlier migration created (NS FG-35), the static twin of db analyze's
+	// db-analyze-blocking-index-build. A warning at any pin (it cannot see
+	// the table's size); the row lets lint.rules raise it.
+	{IntroducedIn: "v1.9.0", Rules: []string{"blocking-index-build"}},
 }
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.

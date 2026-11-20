@@ -577,6 +577,7 @@ benefits:
       - path: internal/linter/migrationlint/compat_declaration.go
       - path: internal/linter/migrationlint/add_column.go
       - path: internal/linter/migrationlint/transaction_block.go
+      - path: internal/linter/migrationlint/blocking_index.go
       - path: internal/cli/lint/lint_rules.go
     rules:
       - id: no-down-migration
@@ -623,6 +624,12 @@ benefits:
         bug_class: >-
           `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block;
           the statement must be alone in its file
+      - id: blocking-index-build
+        lane: --migration-safety
+        bug_class: >-
+          A plain `CREATE INDEX` on a table an earlier migration created blocks
+          every write to it for the whole build (a warning: lint cannot see the
+          table's size; `forge db analyze` measures it)
       - id: enum-value-used-before-commit
         lane: --migration-safety
         bug_class: >-

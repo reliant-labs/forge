@@ -537,24 +537,26 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/linter/migrationlint/compat_declaration.go`](../internal/linter/migrationlint/compat_declaration.go)
 - source [`internal/linter/migrationlint/add_column.go`](../internal/linter/migrationlint/add_column.go)
 - source [`internal/linter/migrationlint/transaction_block.go`](../internal/linter/migrationlint/transaction_block.go)
+- source [`internal/linter/migrationlint/blocking_index.go`](../internal/linter/migrationlint/blocking_index.go)
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 
-| Rule                                  | Bug class it prevents                                                                                                                              | Lane                 |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| `no-down-migration`                   | A down migration claims to undo a release and cannot: by the time anyone would run it, rows are in the new shape and other services have read them | `--migration-safety` |
-| `duplicate-migration-version`         | Two files claiming one version, so whichever reached a shared database first leaves the other permanently unapplied                                | `--migration-safety` |
-| `non-timestamp-migration-version`     | Sequential numbering makes parallel branches collide; a UTC timestamp cannot without two allocations in one second                                 | `--migration-safety` |
-| `migration-version-below-merged-head` | A new migration numbered at or below the default branch's head is invisible: every already-migrated database never runs it                         | `--migration-safety` |
-| `destructive-change`                  | A `DROP`/`TRUNCATE`-class statement; split it into data-preserving steps or allow it by `forge:allow-destructive`                                  | `--migration-safety` |
-| `unsafe-add-not-null-column`          | `ADD COLUMN … NOT NULL` without a default fails on a populated table                                                                               | `--migration-safety` |
-| `set-not-null-without-backfill`       | `SET NOT NULL` with no earlier backfill fails on a populated table                                                                                 | `--migration-safety` |
-| `volatile-default`                    | A volatile `DEFAULT` in `ADD COLUMN` can rewrite and lock a populated table                                                                        | `--migration-safety` |
-| `non-transactional-statement`         | `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block; the statement must be alone in its file                                     | `--migration-safety` |
-| `enum-value-used-before-commit`       | Using an enum value the same file adds fails with SQLSTATE 55P04                                                                                   | `--migration-safety` |
-| `invalid-adopts-directive`            | A `-- forge:adopts` baseline declaration the migrator would refuse at boot on every database                                                       | `--migration-safety` |
-| `migration-compat-conflict`           | A migration that declares both `forge:backward-compatible` and `forge:breaks-rollback`                                                             | `--migration-safety` |
-| `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                            | `--migration-safety` |
-| `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read        | `--migration-safety` |
+| Rule                                  | Bug class it prevents                                                                                                                                                                     | Lane                 |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `no-down-migration`                   | A down migration claims to undo a release and cannot: by the time anyone would run it, rows are in the new shape and other services have read them                                        | `--migration-safety` |
+| `duplicate-migration-version`         | Two files claiming one version, so whichever reached a shared database first leaves the other permanently unapplied                                                                       | `--migration-safety` |
+| `non-timestamp-migration-version`     | Sequential numbering makes parallel branches collide; a UTC timestamp cannot without two allocations in one second                                                                        | `--migration-safety` |
+| `migration-version-below-merged-head` | A new migration numbered at or below the default branch's head is invisible: every already-migrated database never runs it                                                                | `--migration-safety` |
+| `destructive-change`                  | A `DROP`/`TRUNCATE`-class statement; split it into data-preserving steps or allow it by `forge:allow-destructive`                                                                         | `--migration-safety` |
+| `unsafe-add-not-null-column`          | `ADD COLUMN … NOT NULL` without a default fails on a populated table                                                                                                                      | `--migration-safety` |
+| `set-not-null-without-backfill`       | `SET NOT NULL` with no earlier backfill fails on a populated table                                                                                                                        | `--migration-safety` |
+| `volatile-default`                    | A volatile `DEFAULT` in `ADD COLUMN` can rewrite and lock a populated table                                                                                                               | `--migration-safety` |
+| `non-transactional-statement`         | `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block; the statement must be alone in its file                                                                            | `--migration-safety` |
+| `blocking-index-build`                | A plain `CREATE INDEX` on a table an earlier migration created blocks every write to it for the whole build (a warning: lint cannot see the table's size; `forge db analyze` measures it) | `--migration-safety` |
+| `enum-value-used-before-commit`       | Using an enum value the same file adds fails with SQLSTATE 55P04                                                                                                                          | `--migration-safety` |
+| `invalid-adopts-directive`            | A `-- forge:adopts` baseline declaration the migrator would refuse at boot on every database                                                                                              | `--migration-safety` |
+| `migration-compat-conflict`           | A migration that declares both `forge:backward-compatible` and `forge:breaks-rollback`                                                                                                    | `--migration-safety` |
+| `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                                                                   | `--migration-safety` |
+| `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read                                               | `--migration-safety` |
 
 <a id="migration-analysis"></a>
 

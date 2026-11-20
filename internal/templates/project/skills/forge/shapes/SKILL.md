@@ -32,10 +32,11 @@ message  Material                      proto/services/roofops/v1/roofops.proto:7
 table    materials                     db/migrations/00010_create_materials.up.sql:9
 handler  RoofopsService.ListMaterials  internal/handlers/roofops/handlers_crud.go:790
 hook     useListMaterials              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
-root     worker                        internal/app/roots.go:14  type=Worker command=worker migrate=wait fields=3
+root     worker                        internal/app/compose.go:14  type=Worker command=worker migrate=wait fields=3
 workload ingest                        deploy/kcl/workloads.k:40  kind=worker build=docker image=ghcr.io/acme/ingest
 ```
 
+A `root` row points to the file where the project declared the struct.
 A `workload` row is the literal as written; where each env runs it is
 `forge project audit --json`'s `.categories.shape.details.workloads[].runtimes`.
 

@@ -23,7 +23,7 @@ A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge en
 
 An app forge does not deploy, any language: `observability/monitoring-only`.
 
-A system forge did not build (a Helm chart, an image-only workload, raw Manifests) gets metrics, logs, traces, profiles, dashboards and alerts from one `forge.Telemetry`, whose vendor facts are yours: `observability/third-party`.
+A system forge did not build (Helm, an image, raw Manifests) declares all it emits in one `forge.Telemetry`: `observability/third-party`.
 
 **To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
 
@@ -185,7 +185,7 @@ Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU pr
 
 In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. The RPC edge is measured by the otelconnect server interceptor: `rpc.server.call.duration` (histogram, attributes `rpc.method` — the full `pkg.Service/Method` — and `rpc.response.status_code`, `OK` or the upper-case Connect code such as `NOT_FOUND`). Other series the app exports: `db.sql.*` / `go.sql.*` for the DB pool and queries, and `<pkg>_calls` / `<pkg>_errors` / `<pkg>_duration` for the per-package in-process method metrics (component chain). Every series carries `ServiceName`.
 
-**Declare your own metrics** in `internal/metrics/metrics.go`: each instrument is declared (name, type, UCUM unit, description, attribute keys, stability, `since`) and the registry returns the standard OTel instrument. An attribute you did not declare panics under `ENVIRONMENT=development` and is dropped (counted on `forge.metrics.rejected_attributes`) elsewhere. The declared set prints with `<bin> metrics schema --json`, `GET /debug/metrics/schema` (the pprof listener) and `forge obs metrics declared [--binary|--url]`; `forge build` writes `bin/observability/metrics-schema.json`, which a release carries as `observability/metrics-schema.json`; `forge obs metrics declared --dashboard` draws the Custom metrics dashboard from it. Adopting it in an older project: `migrations/v0.1.45/metrics-schema`.
+**Declare your own metrics** in `internal/metrics/metrics.go`: each instrument is declared (name, type, UCUM unit, description, attribute keys, stability, `since`) and the registry returns the standard OTel instrument. An attribute you did not declare panics under `ENVIRONMENT=development` and is dropped (counted on `forge.metrics.rejected_attributes`) elsewhere. The declared set prints with `<bin> metrics schema --json`, `GET /debug/metrics/schema` (the pprof listener) and `forge obs metrics declared [--binary|--url]`; `forge build` writes `bin/observability/metrics-schema.json`, which a release carries as `observability/metrics-schema.json`; `forge obs metrics declared --dashboard` draws the Custom metrics dashboard from it. Adopting it in an older project: `forge generate` births `cmd/<bin>/cmd/metrics.go` and `internal/metrics/metrics.go` when they are absent, and never touches an existing one.
 
 ## In-process component observability (the middleware chain)
 
@@ -253,8 +253,8 @@ observability = forge.Observability {                        # per category
 `telemetry = forge.BrowserTelemetry {replay = True}` renders its
 `OTEL_REPLAY = "true"` and opts the env in, so the platform keeps the events
 (browser logs of scope `rum.rr-web`); the shape records
-`observability_policy.opt_in = ["replay"]`. `signals.replay` is a
-**deprecated** env-wide opt-in that switches no frontend on.
+`observability_policy.opt_in = ["replay"]` (and the rendered
+`signals.replay`). There is no env-wide replay switch to declare.
 
 `enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
 browser switch. Author-set `OTEL_*` values still win.

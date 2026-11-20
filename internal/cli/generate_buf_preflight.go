@@ -465,9 +465,9 @@ func toolListMatches(tools []string, name string) bool {
 
 // goToolPackageHint names the package to `go get -tool` for a missing tool:
 // for protoc-gen-connect-go, the cmd package of the connect-go major the
-// project's go.mod selects.
+// project's go.mod selects (the run's bound major during a generate).
 func goToolPackageHint(projectDir, name string) string {
-	for _, t := range projectProtoTools(projectDir) {
+	for _, t := range requiredProtoToolsFor(codegenToolsMajor(projectDir)) {
 		if t.Binary == name {
 			return t.Module
 		}

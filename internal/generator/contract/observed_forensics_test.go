@@ -101,7 +101,7 @@ func TestClassifyParam(t *testing.T) {
 		{"max_session_id", "int64", captureDigits}, // ID-shaped: never a quantity
 		{"num_otp_id", "uint64", captureDigits},
 		{"maxSessionID", "int", captureDigits},
-		{"max_SESSIONID", "int64", captureDigits}, // ID-shaped as ForensicIDName always read it
+		{"max_SESSIONID", "int64", captureDigits}, // ID-shaped in the broader legacy shape
 		{"maxSESSIONID", "uint32", captureDigits},
 		{"tokenCounter", "int", captureDigits}, // `counter` is not `count`
 		{"maxTokens", "string", captureLen},

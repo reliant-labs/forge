@@ -17,7 +17,7 @@ pipelines:
     - otlphttp/clickstack
     processors:
     - memory_limiter
-    - transform/telemetry_nats
+    - transform/telemetry_target/nats
     - batch
     receivers:
     - prometheus/telemetry_nats
@@ -27,7 +27,7 @@ pipelines:
     - otlphttp/profiles
     processors:
     - memory_limiter
-    - transform/telemetry_nats
+    - transform/telemetry_target/nats
     receivers:
     - pprof/telemetry_nats_0_cpu
     - pprof/telemetry_nats_0_goroutine
@@ -165,7 +165,7 @@ processors:
       - delete_key(log.attributes, "forge.telemetry.original")
       - delete_key(log.attributes, "forge.telemetry.parsed")
       - delete_key(log.attributes, "forge.telemetry.rule")
-  transform/telemetry_nats:
+  transform/telemetry_target/nats:
     error_mode: ignore
     metric_statements:
     - context: resource

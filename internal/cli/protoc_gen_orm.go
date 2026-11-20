@@ -23,15 +23,11 @@ const (
 )
 
 // validateForgePluginMode maps the plugin's mode option to a
-// forgePluginMode. mode=orm gets a dedicated removal message so legacy
-// buf templates fail loudly with the migration path instead of a
-// generic "unknown mode".
+// forgePluginMode.
 func validateForgePluginMode(value string) (forgePluginMode, error) {
 	switch forgePluginMode(value) {
 	case forgePluginModeDescriptor:
 		return forgePluginModeDescriptor, nil
-	case "orm":
-		return "", fmt.Errorf("protoc-gen-forge mode=orm was removed: entities are projected from the applied db/migrations schema (run `forge generate`); delete the buf template that requests mode=orm")
 	default:
 		return "", fmt.Errorf("unknown mode: %s (valid: descriptor)", value)
 	}

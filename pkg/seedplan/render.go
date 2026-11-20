@@ -261,6 +261,14 @@ func (p *Plan) fkParentRow(tp tablePlan, cp columnPlan, i int) (int, bool) {
 }
 
 func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bool) {
+	// A union branch that requires this edge ABSENT on row i outranks every
+	// way of picking a parent below: the CHECK is not negotiable, and
+	// declining an optional edge is something the reference path already
+	// does for variety. Only a nullable single-column reference is ever
+	// given such a cell (see nullableSoleFK).
+	if p.unionForbidsEdge(tp.table.Name, cp.col.Name, i) {
+		return 0, false
+	}
 	// A composite FOREIGN KEY places its columns from one parent row (see
 	// composite_fk.go); that is the schema's own statement of which values
 	// go together, so nothing below may re-pick one of them.

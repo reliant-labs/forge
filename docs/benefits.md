@@ -3033,13 +3033,13 @@ _Enforced · Reliant hosting_
 
 ### Per-PR preview environments
 
-Every pull request gets its own environment, a copy of a committed template env named for the PR, which deletes itself when it expires.
+`forge env preview create --pr <n> --ttl <d>` makes a pull request its own environment, a copy of a committed template env named for the PR, which your CI creates, deploys and deletes on close; an expired one is deleted by the control plane when hosted, or by `forge env gc` on a cluster you run.
 
 _Enforced · Forge, on any infrastructure_
 
 **Use:** `forge env preview create --pr 123 --ttl 72h`, then `forge env deploy preview-pr-123 --yes`; `forge env preview delete --pr 123 --yes` on close, `forge env gc --yes` on a schedule
 
-**Why:** The instance is an ordinary env, so every env verb works on it, and its name depends only on the PR or branch, so the job that creates it and the job that deletes it agree with no shared state. Its expiry is recorded in the release shape (a control plane that advertises `shape-preview` deletes an expired hosted instance) and stamped on its namespaces, so `forge env gc` finds an expired preview on a cluster you operate from the cluster alone. `create` refuses an instance that would deploy into the template env's own namespace.
+**Why:** The instance is an ordinary env, so every env verb works on it, and its name depends only on the PR or branch, so the job that creates it and the job that deletes it agree with no shared state. Its expiry is recorded in the release shape (a control plane that advertises `shape-preview` deletes an expired hosted instance) and stamped on its namespaces, so `forge env gc` finds an expired preview on a cluster you operate from the cluster alone. `create` refuses an instance that would deploy into the template env's own namespace. Forge generates no preview workflow: the `deploy/preview` skill has a GitHub Actions recipe that is yours to commit.
 
 **Evidence:**
 

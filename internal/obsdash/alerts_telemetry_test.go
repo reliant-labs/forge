@@ -98,35 +98,6 @@ func TestTelemetryDefaultsAreTunedOnceAndOptedOutPerSystem(t *testing.T) {
 	}
 }
 
-func TestTelemetryServiceLabelTuningDoesNotChangeRuleOwnership(t *testing.T) {
-	in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{
-		{Service: "foo.bar", Scrapes: true, Checks: true},
-		{Service: "foo-baz", Scrapes: true},
-	}}
-	tuning := map[string]AlertTuning{
-		TelemetryTargetDown:   {Enabled: true, Labels: map[string]string{"service": "overridden"}},
-		TelemetryCheckFailing: {Enabled: true, Labels: map[string]string{"service": "overridden"}},
-	}
-	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rules) != 3 {
-		t.Fatalf("want three distinct rules, got %+v", rules)
-	}
-	for _, r := range rules {
-		if r.Labels["service"] != "overridden" {
-			t.Errorf("%s: service label override lost: %+v", r.Alert, r.Labels)
-		}
-	}
-
-	// Giving colliding systems the same label must not hide a real collision.
-	in.TelemetryTargets[1].Service = "foo-bar"
-	if _, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil); err == nil {
-		t.Fatal("service label tuning hid a duplicate alert name")
-	}
-}
-
 func TestTelemetryDefaultsReachAProjectWithNoGeneratedDefaults(t *testing.T) {
 	// A static site generates no alert defaults; a system it declares still
 	// alerts, from the env's render alone.
@@ -250,6 +221,37 @@ func TestTelemetryAlertsOnClickHouse(t *testing.T) {
 	}
 	if got := firing("TemporalCheckFailing", 1); !slices.Equal(got, []string{"http://temporal:7243/health", "http://temporal:7244/dead", "temporal:7233"}) {
 		t.Errorf("TemporalCheckFailing fired for %v", got)
+	}
+}
+
+func TestTelemetryAlertServiceLabelDoesNotIdentifyOrigin(t *testing.T) {
+	in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{{Service: "temporal", Scrapes: true, Checks: true}}}
+	tuning := map[string]AlertTuning{}
+	for _, id := range []string{"telemetry-target-down", "telemetry-check-failing"} {
+		tuning[id] = AlertTuning{Enabled: true, Labels: map[string]string{"service": "custom-service"}}
+	}
+	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("got %d rules, want both telemetry defaults", len(rules))
+	}
+	for _, r := range rules {
+		if r.Labels["service"] != "custom-service" {
+			t.Errorf("%s: service label = %q, want custom-service", r.ID, r.Labels["service"])
+		}
+	}
+
+	// Another default cannot hide a name collision by adopting the target's
+	// service label either: default IDs, not labels, identify the origin.
+	err = validateTelemetryDefaultNames([]AlertRule{{
+		ID: "another-default", Alert: "TemporalTargetDown", Labels: map[string]string{"service": "temporal"},
+	}}, map[string]telemetryAlertOrigin{
+		"TemporalTargetDown": {service: "temporal", defaultID: "telemetry-target-down"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "another-default") {
+		t.Fatalf("expected collision with another-default, got %v", err)
 	}
 }
 

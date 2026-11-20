@@ -1,39 +1,24 @@
 // File: pkg/seedplan/biconditional_test.go
 //
-// A status-lifecycle invariant has two spellings, and forge places only one of
-// them:
+// A two-way rule is a valid constraint, and forge seeds it:
 //
-//	CHECK (status <> 'APPROVED' OR approved_at IS NOT NULL)     -- an implication, placeable
-//	CHECK ((status = 'APPROVED') = (approved_at IS NOT NULL))   -- a biconditional, not
+//	CHECK ((status = 'APPROVED') = (approved_at IS NOT NULL))   -- a biconditional
+//	CHECK ((kind = 'workspace') = (daemon_id IS NOT NULL))      -- reliant's connector_grants
 //
-// guard.go's grammar (guard.go:60-71) admits only the negative arm, so
-// tableGuardSpecs merges any number of implications over one column into a
-// single union. A biconditional has no top-level OR at all, so no pass reads
-// it.
+// biconditional.go reads `(P) = (Q)` as the union of its two truth values,
+// `(P AND Q) OR (NOT P AND NOT Q)` (and `(P) <> (Q)` as the xor), so the
+// rows forge writes satisfy it by construction and cover BOTH truth values.
+// Before, forge refused it and told the author to weaken it to a one-way
+// implication, which no seeder should ever ask of a schema.
 //
-// Two things about the failure are not obvious, and both were measured rather
-// than reasoned (see lifecycle_form_test.go, and the probe run recorded in the
-// task report):
-//
-//  1. A biconditional does not reach union.go's joint-satisfiability refusal.
-//     It falls through to the ORDERING pass and is refused with "not a
-//     two-column ordering comparison" — a message about ordering, for a
-//     constraint that has nothing to do with ordering. That is the message an
-//     author actually sees, and it points nowhere near the real problem.
-//
-//  2. One biconditional takes its WELL-FORMED NEIGHBOURS down with it. It
-//     still spans `status`, so the merged guard union hits the rivalry
-//     refusal at union.go:464 and every implication over that column goes
-//     unplaced too. This is why the first dogfood run's incremental repairs
-//     looked like no progress at all: fixing two of three constraints yields
-//     the identical failure, so the author concluded the rewrite did not work
-//     and began deleting constraints instead.
-//
-// These tests pin that both messages name the shape and the rewrite.
+// These tests read the literals the plan actually renders, row by row, and
+// evaluate the CHECK against them.
 
 package seedplan
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -75,64 +60,360 @@ func sentImplication() schemadef.CheckConstraint {
 		"status", "sent_at")
 }
 
-// The message an author with a lone biconditional actually receives. Today it
-// is the ordering pass's "not a two-column ordering comparison", which
-// describes forge's parser rather than the author's mistake.
-func TestBiconditional_OrderingRefusalNamesTheRewrite(t *testing.T) {
-	joined := strings.Join(planFor(t, estimatesTable(approvedIff()), 6).Warnings(), "\n")
+// bicondTable is estimatesTable plus a second vocabulary column, `kind`, for
+// the two-value-atom cases. withStatusVocab false drops status's IN CHECK.
+func bicondTable(withStatusVocab bool, checks ...schemadef.CheckConstraint) schemadef.Table {
+	t := estimatesTable(checks...)
+	t.Columns = append(t.Columns, textCol("kind"))
+	t.Checks = append(t.Checks, check("estimates_kind_check",
+		"CHECK ((kind = ANY (ARRAY['quote'::text, 'final'::text])))", "kind"))
+	if !withStatusVocab {
+		t.Checks = t.Checks[1:]
+	}
+	return t
+}
 
-	for _, want := range []string{
-		"estimates_approved_iff",
-		// Name the shape, so the author can recognize it in the migration.
-		"biconditional",
-		// Name the fix as a concept AND as pasteable SQL.
-		"one-way implication",
-		"status <> 'APPROVED' OR approved_at IS NOT NULL",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("the biconditional refusal must contain %q; got:\n%s", want, joined)
+// rowLits renders every column of row i the way the INSERT spells it.
+func rowLits(t *testing.T, p *Plan, table string, i int) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, tp := range p.tables {
+		if tp.table.Name != table {
+			continue
+		}
+		for _, cp := range tp.cols {
+			out[cp.col.Name] = p.cellLiteral(tp, cp, i, 0)
 		}
 	}
+	return out
+}
 
-	// The old text described the wrong subsystem. A constraint that never
-	// mentions an ordering must not be reported as a failed ordering.
-	if strings.Contains(joined, "not a two-column ordering comparison") {
-		t.Errorf("a biconditional must no longer be reported as a failed ordering comparison; got:\n%s", joined)
+// unquoted strips a rendered string literal's quotes and cast.
+func unquoted(lit string) string {
+	if i := strings.Index(lit, "::"); i > 0 {
+		lit = lit[:i]
+	}
+	return strings.Trim(lit, "'")
+}
+
+func TestBiconditional_PlacedOnBothTruthValues(t *testing.T) {
+	isNull := func(r map[string]string, c string) bool { return r[c] == "NULL" }
+	in := func(r map[string]string, c string, vs ...string) bool {
+		for _, v := range vs {
+			if unquoted(r[c]) == v {
+				return true
+			}
+		}
+		return false
+	}
+	cases := []struct {
+		name  string
+		table schemadef.Table
+		// p and q evaluate the two sides on a rendered row.
+		p, q func(map[string]string) bool
+		xor  bool
+		// oneSided: only the P-true side can be written, and a warning
+		// says so.
+		oneSided bool
+	}{{
+		name:  "lifecycle shape, as postgres renders it",
+		table: estimatesTable(approvedIff()),
+		p:     func(r map[string]string) bool { return in(r, "status", "APPROVED") },
+		q:     func(r map[string]string) bool { return !isNull(r, "approved_at") },
+	}, {
+		name: "arms swapped",
+		table: estimatesTable(check("iff", "CHECK (((approved_at IS NOT NULL) = (status = 'APPROVED'::text)))",
+			"status", "approved_at")),
+		p: func(r map[string]string) bool { return in(r, "status", "APPROVED") },
+		q: func(r map[string]string) bool { return !isNull(r, "approved_at") },
+	}, {
+		name: "IS NULL polarity",
+		table: estimatesTable(check("iff", "CHECK (((status = 'DRAFT'::text) = (approved_at IS NULL)))",
+			"status", "approved_at")),
+		p: func(r map[string]string) bool { return in(r, "status", "DRAFT") },
+		q: func(r map[string]string) bool { return isNull(r, "approved_at") },
+	}, {
+		name: "IN list on the value side",
+		table: estimatesTable(check("iff",
+			"CHECK (((status = ANY (ARRAY['SENT'::text, 'APPROVED'::text])) = (sent_at IS NOT NULL)))",
+			"status", "sent_at")),
+		p: func(r map[string]string) bool { return in(r, "status", "SENT", "APPROVED") },
+		q: func(r map[string]string) bool { return !isNull(r, "sent_at") },
+	}, {
+		name: "negated value side",
+		table: estimatesTable(check("iff", "CHECK (((status <> 'DRAFT'::text) = (sent_at IS NOT NULL)))",
+			"status", "sent_at")),
+		p: func(r map[string]string) bool { return !in(r, "status", "DRAFT") },
+		q: func(r map[string]string) bool { return !isNull(r, "sent_at") },
+	}, {
+		name: "NOT IN, as postgres renders it",
+		table: estimatesTable(check("iff",
+			"CHECK (((status <> ALL (ARRAY['DRAFT'::text, 'SENT'::text])) = (approved_at IS NOT NULL)))",
+			"status", "approved_at")),
+		p: func(r map[string]string) bool { return !in(r, "status", "DRAFT", "SENT") },
+		q: func(r map[string]string) bool { return !isNull(r, "approved_at") },
+	}, {
+		name: "xor",
+		table: estimatesTable(check("xor", "CHECK (((status = 'DRAFT'::text) <> (approved_at IS NOT NULL)))",
+			"status", "approved_at")),
+		p:   func(r map[string]string) bool { return in(r, "status", "DRAFT") },
+		q:   func(r map[string]string) bool { return !isNull(r, "approved_at") },
+		xor: true,
+	}, {
+		name: "two presence sides",
+		table: estimatesTable(check("iff", "CHECK (((approved_at IS NULL) = (sent_at IS NULL)))",
+			"approved_at", "sent_at")),
+		p: func(r map[string]string) bool { return isNull(r, "approved_at") },
+		q: func(r map[string]string) bool { return isNull(r, "sent_at") },
+	}, {
+		name: "two value sides, both with a vocabulary",
+		table: bicondTable(true, check("iff", "CHECK (((status = 'APPROVED'::text) = (kind = 'final'::text)))",
+			"status", "kind")),
+		p: func(r map[string]string) bool { return in(r, "status", "APPROVED") },
+		q: func(r map[string]string) bool { return in(r, "kind", "final") },
+	}, {
+		name:  "beside a one-way guard over the same column",
+		table: estimatesTable(approvedIff(), sentImplication()),
+		p:     func(r map[string]string) bool { return in(r, "status", "APPROVED") },
+		q:     func(r map[string]string) bool { return !isNull(r, "approved_at") },
+	}, {
+		name:     "a value side with no vocabulary seeds only the side it can write",
+		table:    bicondTable(false, approvedIff()),
+		p:        func(r map[string]string) bool { return in(r, "status", "APPROVED") },
+		q:        func(r map[string]string) bool { return !isNull(r, "approved_at") },
+		oneSided: true,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const rows = 12
+			p := planFor(t, tc.table, rows)
+			joined := strings.Join(p.Warnings(), "\n")
+			switch {
+			case tc.oneSided && !strings.Contains(joined, "seeded on only one side"):
+				t.Errorf("a one-sided placement must say so; warnings:\n%s", joined)
+			case !tc.oneSided && joined != "":
+				t.Errorf("a placeable biconditional must plan without warnings; got:\n%s", joined)
+			}
+			if strings.Contains(joined, "one-way implication") {
+				t.Errorf("forge must not tell the author to weaken a constraint it places; got:\n%s", joined)
+			}
+			seen := map[bool]bool{}
+			for i := 0; i < rows; i++ {
+				r := rowLits(t, p, "estimates", i)
+				pv, qv := tc.p(r), tc.q(r)
+				if (pv != qv) != tc.xor {
+					t.Errorf("row %d violates the constraint (P=%v Q=%v xor=%v): %v", i, pv, qv, tc.xor, r)
+				}
+				seen[pv] = true
+			}
+			if tc.oneSided {
+				if seen[false] {
+					t.Errorf("a one-sided placement wrote a row on the side it cannot prove")
+				}
+				return
+			}
+			if !seen[true] || !seen[false] {
+				t.Errorf("rows cover only one truth value of the constraint: %v", seen)
+			}
+		})
 	}
 }
 
-// The second precondition, and the difference between good advice and a worse
-// dead end. Rewriting to an implication only helps if the guarded column
-// carries a readable vocabulary — guard.go:67-71 refuses otherwise, because
-// with no `IN (...)` CHECK there is no set of values to draw the non-excluded
-// branch from. A scaffolded enum gets this free; a hand-written TEXT column
-// does not. Omit it and the author follows the advice and is refused again.
-func TestBiconditional_RefusalNamesTheVocabularyPrecondition(t *testing.T) {
-	joined := strings.Join(planFor(t, estimatesTable(approvedIff()), 6).Warnings(), "\n")
-	if !strings.Contains(joined, "CHECK (status IN") {
-		t.Errorf("the rewrite advice must state the vocabulary precondition on the guarded column; got:\n%s", joined)
+// The reliant shape: the presence side is a NULLABLE FOREIGN KEY, so the
+// false side is a declined edge, and the discriminator also carries two
+// one-way guards whose consequents are non-blank requirements
+// (`length(TRIM(BOTH FROM col)) > 0`). All three merge into one union over
+// `kind`.
+func TestBiconditional_ConnectorGrantsShape(t *testing.T) {
+	daemons := schemadef.Table{Name: "daemons", PKCols: []string{"id"}, Columns: []schemadef.Column{idCol()}}
+	grants := schemadef.Table{
+		Name:   "connector_grants",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(),
+			{Name: "daemon_id", DeclType: "TEXT", Type: schemadef.TypeString},
+			{Name: "kind", DeclType: "TEXT", Type: schemadef.TypeString, NotNull: true, Default: "'workspace'::text"},
+			{Name: "org_id", DeclType: "TEXT", Type: schemadef.TypeString, NotNull: true, Default: "''::text"},
+			{Name: "path_root", DeclType: "TEXT", Type: schemadef.TypeString, NotNull: true},
+		},
+		ForeignKeys: []schemadef.ForeignKey{{Column: "daemon_id", RefTable: "daemons", RefColumn: "id"}},
+		Checks: []schemadef.CheckConstraint{
+			check("connector_grants_kind_valid",
+				"CHECK ((kind = ANY (ARRAY['workspace'::text, 'forge'::text]))) NOT VALID", "kind"),
+			check("connector_grants_forge_org",
+				"CHECK (((kind <> 'forge'::text) OR (length(TRIM(BOTH FROM org_id)) > 0))) NOT VALID", "kind", "org_id"),
+			check("connector_grants_daemon_by_kind",
+				"CHECK (((kind = 'workspace'::text) = (daemon_id IS NOT NULL))) NOT VALID", "kind", "daemon_id"),
+			check("connector_grants_path_root_not_empty",
+				"CHECK (((kind <> 'workspace'::text) OR (length(TRIM(BOTH FROM path_root)) > 0))) NOT VALID", "kind", "path_root"),
+		},
+	}
+	tables := []schemadef.Table{daemons, grants}
+	for _, minimal := range []bool{false, true} {
+		p, err := BuildPlan(tables, PoolsFromTables(tables), Config{Rows: 10, Salt: 3, Minimal: minimal})
+		if err != nil {
+			t.Fatalf("BuildPlan: %v", err)
+		}
+		if w := strings.Join(p.Warnings(), "\n"); strings.Contains(w, "connector_grants") {
+			t.Errorf("minimal=%v: connector_grants constraints are warned about:\n%s", minimal, w)
+		}
+		kinds := map[string]bool{}
+		for i := 0; i < p.rowsOf["connector_grants"]; i++ {
+			r := rowLits(t, p, "connector_grants", i)
+			kind := unquoted(r["kind"])
+			if minimal && !p.Writes("connector_grants", "kind") {
+				kind = "workspace" // the DEFAULT
+			}
+			kinds[kind] = true
+			hasDaemon := p.Writes("connector_grants", "daemon_id") && r["daemon_id"] != "NULL"
+			if (kind == "workspace") != hasDaemon {
+				t.Errorf("minimal=%v row %d: kind=%s daemon_id=%s violates connector_grants_daemon_by_kind", minimal, i, kind, r["daemon_id"])
+			}
+			if kind == "forge" && (!p.Writes("connector_grants", "org_id") || strings.TrimSpace(unquoted(r["org_id"])) == "") {
+				t.Errorf("minimal=%v row %d: a forge grant with a blank org_id (%s)", minimal, i, r["org_id"])
+			}
+		}
+		if !minimal && (!kinds["workspace"] || !kinds["forge"]) {
+			t.Errorf("rows cover only %v; both kinds must appear", kinds)
+		}
 	}
 }
 
-// The expensive case: one biconditional blocking otherwise-placeable
-// implications over the same column. The refusal must say that the neighbours
-// are collateral damage, because an author who cannot see that concludes the
-// rewrite does not work.
-func TestBiconditional_BlockedNeighboursAreNamed(t *testing.T) {
-	table := estimatesTable(approvedIff(), sentImplication())
-	joined := strings.Join(planFor(t, table, 6).Warnings(), "\n")
+// reliant's model_endpoints, found by the e2e seed: the project had pinned
+// `daemon_id: [null]` and `route: [direct]` in vocab.yaml to dodge the
+// refusal. Once forge places the biconditional, a via_daemon row must still
+// get a daemon_id — an overlay NULL on a cell the branch requires present is
+// replaced by a usable value, never written.
+func TestBiconditional_OverlayNullOnARequiredCell(t *testing.T) {
+	endpoints := schemadef.Table{
+		Name:   "model_endpoints",
+		PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(),
+			textCol("route"),
+			{Name: "daemon_id", DeclType: "TEXT", Type: schemadef.TypeString},
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("model_endpoints_route_check",
+				"CHECK ((route = ANY (ARRAY['direct'::text, 'via_daemon'::text])))", "route"),
+			check("model_endpoints_check",
+				"CHECK (((route = 'via_daemon'::text) = (daemon_id IS NOT NULL)))", "daemon_id", "route"),
+		},
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vocab.yaml")
+	if err := os.WriteFile(path, []byte("columns:\n  model_endpoints.route: [direct]\n  model_endpoints.daemon_id: [null]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v, err := LoadVocab(path)
+	if err != nil {
+		t.Fatalf("LoadVocab: %v", err)
+	}
+	tables := []schemadef.Table{endpoints}
+	p, err := BuildPlan(tables, PoolsFromTables(tables), Config{Rows: 6, Salt: 1})
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	p.ApplyVocab(v)
+	routes := map[string]bool{}
+	for i := 0; i < 6; i++ {
+		r := rowLits(t, p, "model_endpoints", i)
+		route := unquoted(r["route"])
+		routes[route] = true
+		if (route == "via_daemon") != (r["daemon_id"] != "NULL") {
+			t.Errorf("row %d: route=%s daemon_id=%s violates model_endpoints_check", i, route, r["daemon_id"])
+		}
+	}
+	if !routes["direct"] || !routes["via_daemon"] {
+		t.Errorf("rows cover only %v", routes)
+	}
+}
 
-	for _, want := range []string{
-		// The blocked neighbour, by name.
-		"estimates_sent_has_stamp",
-		// The blocker, by name.
-		"estimates_approved_iff",
-		// And the causal claim, so the author fixes ONE constraint rather
-		// than weakening three.
-		"one-way implication",
+func TestUnionNonBlankUsesOnlyValidVocabularyMembers(t *testing.T) {
+	tab := schemadef.Table{
+		Name: "grants", PKCols: []string{"id"},
+		Columns: []schemadef.Column{
+			idCol(), textCol("kind"), {Name: "label", DeclType: "TEXT", Type: schemadef.TypeString},
+		},
+		Checks: []schemadef.CheckConstraint{
+			check("kind_pool", `CHECK (kind = ANY (ARRAY['workspace'::text, ''::text]))`, "kind"),
+			check("label_shape", `CHECK (((kind = 'workspace') AND (length(kind) > 0) AND (length(label) > 0)) OR ((kind = '') AND (label IS NULL)))`, "kind", "label"),
+		},
+	}
+	for _, tc := range []struct {
+		name, pool string
+		place      bool
+	}{
+		{"blank included with usable member", `''::text, 'ready'::text`, true},
+		{"all blank", `''::text, ' '::text`, false},
 	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("the blocked-guard refusal must contain %q; got:\n%s", want, joined)
+		t.Run(tc.name, func(t *testing.T) {
+			tb := tab
+			tb.Checks = append(append([]schemadef.CheckConstraint{}, tab.Checks...), check("label_pool", "CHECK (label = ANY (ARRAY["+tc.pool+"]))", "label"))
+			p := planFor(t, tb, 8)
+			p.ApplyVocab(&Vocab{Columns: map[string][]string{"grants.label": {vocabNull}}})
+			if !tc.place {
+				if len(p.unions[tb.Name]) != 0 || !strings.Contains(strings.Join(p.Warnings(), "\n"), "declared values are all blank") {
+					t.Fatalf("all-blank pool was not refused with a warning: unions=%v, warnings=%v", p.unions[tb.Name], p.Warnings())
+				}
+				if lit, ok := p.presentLiteral(tb.Name, tb.Columns[2], 0, true); ok || lit != "" {
+					t.Fatalf("presentLiteral returned a usable draw from an all-blank pool: (%q, %t)", lit, ok)
+				}
+				return
+			}
+			seen := map[string]bool{}
+			for row := range 8 {
+				lits := rowLits(t, p, tb.Name, row)
+				kind, label := lits["kind"], lits["label"]
+				seen[kind] = true
+				if kind == "'workspace'" && label != "'ready'" || kind == "''" && label != "NULL" {
+					t.Fatalf("row %d: invalid kind/label combination %s %s", row, kind, label)
+				}
+			}
+			if !seen["'workspace'"] || !seen["''"] {
+				t.Fatalf("did not exercise both branches: %v, warnings=%v", seen, p.Warnings())
+			}
+		})
+	}
+}
+
+// What stays refused: a side outside the grammar keeps the ordering pass's
+// refusal, unchanged.
+func TestBiconditional_OutsideTheGrammarKeepsTheRefusal(t *testing.T) {
+	table := estimatesTable(check("estimates_cmp_iff",
+		"CHECK (((char_length(status) > 3) = (approved_at IS NULL)))", "status", "approved_at"))
+	joined := strings.Join(planFor(t, table, 6).Warnings(), "\n")
+	if !strings.Contains(joined, "estimates_cmp_iff") || !strings.Contains(joined, "not a two-column ordering comparison") {
+		t.Errorf("an unreadable biconditional must keep the existing refusal; got:\n%s", joined)
+	}
+}
+
+func TestParseBiconditional(t *testing.T) {
+	cases := []struct {
+		def    string
+		wantOK bool
+		xor    bool
+	}{
+		{"CHECK (((kind = 'workspace'::text) = (daemon_id IS NOT NULL))) NOT VALID", true, false},
+		{"CHECK (((kind = 'workspace'::text) <> (daemon_id IS NULL)))", true, true},
+		{"CHECK (((kind = ANY (ARRAY['a'::text, 'b'::text])) = (x IS NULL)))", true, false},
+		{"CHECK (((a IS NULL) = (b IS NULL)))", true, false},
+		{"CHECK (((a = 1) = (b = 'x'::text)))", true, false},
+		{"CHECK (((a IS NULL) = (a IS NOT NULL)))", false, false}, // one column
+		{"CHECK ((amount_paid_cents = amount_cents))", false, false},
+		{"CHECK ((starts_at <= ends_at))", false, false},
+		{"CHECK (((status <> 'SENT'::text) OR (sent_at IS NOT NULL)))", false, false},
+		{"CHECK (((a > 0) = (b IS NULL)))", false, false},
+	}
+	for _, tc := range cases {
+		body, _ := checkBody(tc.def)
+		bc, ok := parseBiconditional(body)
+		if ok != tc.wantOK {
+			t.Errorf("parseBiconditional(%q) ok = %v, want %v", tc.def, ok, tc.wantOK)
+			continue
+		}
+		if ok && bc.xor != tc.xor {
+			t.Errorf("parseBiconditional(%q) xor = %v, want %v", tc.def, bc.xor, tc.xor)
 		}
 	}
 }

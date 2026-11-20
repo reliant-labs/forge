@@ -154,7 +154,7 @@ forge picks each workload's path from its own binding.
 ### Pre-commit and generated files
 
 `.pre-commit-config.yaml` excludes every forge-generated path (`gen/`,
-`*_gen.*`, `.forge-kcl/`,
+`*_gen.*`,
 `public/config.js`, the hooks barrel) from the MUTATING hooks — whitespace
 fixers, gofmt/goimports, prettier. `forge ci verify-generated` demands
 generated files regenerate byte-identically, so a formatter that rewrote one
@@ -325,8 +325,8 @@ generate` does not bring it back. To get forge's current version of one,
   literal `true` lets each merge kill main's run). Pushes to main share one
   group per workflow and ref (`ci-${{ github.ref }}`, plus
   `${{ github.event_name }}` if also scheduled, dispatched or called): a newer
-  push supersedes the pending run. Never group on `github.sha`. Older
-  scaffolds: `migrations/v1.0.14`.
+  push supersedes the pending run. Never group on `github.sha`. An older
+  scaffold's workflows show up in `forge project upgrade --check`.
 - Tier-2 workflows live alongside Tier-1 in `.github/workflows/`. Use
   any name forge doesn't own; open with `# yours: scaffolded once,
 never touched again — forge will not overwrite this file` so the

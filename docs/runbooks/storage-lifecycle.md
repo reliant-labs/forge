@@ -501,7 +501,6 @@ per-repository command runs the same classifier and needs no policy:
 ```sh
 forge storage worktrees --repo /path/to/repo            # preview
 forge storage worktrees --repo /path/to/repo --apply
-forge storage worktrees --repo /path/to/repo --apply --reliant-managed   # include ~/.reliant/worktrees
 ```
 
 ## Recovery and rollout

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	forge "github.com/reliant-labs/forge"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const crossedChangelog = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- not shipped yet\n\n" +
@@ -130,7 +132,12 @@ func (f fakeHistory) idx(rev string) int {
 	}
 	return -1
 }
-func (f fakeHistory) Has(rev string) bool         { return f.idx(rev) >= 0 }
+func (f fakeHistory) Commit(rev string) string {
+	if i := f.idx(rev); rev != "" && i >= 0 {
+		return f.revs[i]
+	}
+	return ""
+}
 func (f fakeHistory) IsAncestor(a, b string) bool { return f.idx(a) >= 0 && f.idx(a) <= f.idx(b) }
 func (f fakeHistory) Log(from, to string) ([]forgeCommit, error) {
 	var out []forgeCommit
@@ -253,6 +260,31 @@ func TestCrossedRange(t *testing.T) {
 		if !strings.Contains(string(doc), want) {
 			t.Errorf("json lacks %s: %s", want, doc)
 		}
+	}
+}
+
+func TestCrossedRangeResolvesPackedPseudoVersionCommits(t *testing.T) {
+	testkit.Slow(t, "execs git in a local repository")
+	repo := t.TempDir()
+	gitIn(t, repo, "init", "-q")
+	commit := func(subject, date string) string {
+		t.Setenv("GIT_AUTHOR_DATE", date)
+		t.Setenv("GIT_COMMITTER_DATE", date)
+		gitIn(t, repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", subject)
+		return gitOut(t, repo, "rev-parse", "HEAD")
+	}
+	from := commit("feat: already in the pin (#101)", "2026-11-19T00:00:01Z")[:12]
+	to := commit("fix: came after the pin (#102)", "2026-11-19T00:00:02Z")[:12]
+	// A same-named ref points to the old commit. A pseudo-version names the
+	// new commit's object prefix, not this ref, even in a packed repository.
+	gitIn(t, repo, "update-ref", "refs/tags/"+to, from)
+	gitIn(t, repo, "gc", "--prune=now")
+
+	history := gitHistory{dir: filepath.Join(repo, ".git")}
+	got := crossedRange("v0.0.0-20261119000001-"+from, "v0.0.0-20261119000002-"+to, nil, history)
+	if len(got) != 1 || got[0].Source != "git" || got[0].Commits == nil || *got[0].Commits != 1 ||
+		len(got[0].Fixed) != 1 || got[0].Fixed[0].PR != 102 || got[0].After != from || got[0].Commit != to {
+		t.Fatalf("crossed = %+v, want only the newer commit with abbreviated display IDs", got)
 	}
 }
 

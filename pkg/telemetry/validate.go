@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // Options is what Validate needs to know about the env beyond its targets.
@@ -72,13 +74,14 @@ func (e *ValidationError) Error() string {
 // attachment rules (a Manifests or Observability target names a selector or
 // an address; a selector needs a cluster), a cluster the env does not
 // declare, and the hosted rules (every scrape sets `allow`; no address, no
-// bearer token, no profiles; only declared ports). It returns a
+// bearer token, no profiles; only declared ports), and every declared
+// dashboard against dashspec.ParseDashboard, its id unique in the env. It returns a
 // *ValidationError naming every problem, or nil.
 //
 // The KCL checks are repeated where they are cheap, so a Target built
 // outside the render (a KCL plugin caller, a test) is held to the same rules.
 func Validate(targets []Target, opts Options) error {
-	v := &validator{opts: opts}
+	v := &validator{opts: opts, dashboardIDs: map[string]string{}}
 	seen := map[string]string{}
 	for _, t := range targets {
 		v.t = t
@@ -121,6 +124,9 @@ type validator struct {
 	opts     Options
 	t        Target
 	problems []Problem
+	// dashboardIDs is every declared dashboard id seen so far in the env,
+	// with the target that declared it.
+	dashboardIDs map[string]string
 }
 
 func (v *validator) add(field, msg string) {
@@ -212,6 +218,26 @@ func (v *validator) target() {
 	}
 	v.otlp()
 	v.logs()
+	v.dashboards()
+}
+
+// dashboards runs each declared dashboard through dashspec.ParseDashboard and
+// refuses an id another target of the env already declares: every dashboard
+// becomes one file named for its id.
+func (v *validator) dashboards() {
+	for i, raw := range v.t.Dashboards {
+		f := fmt.Sprintf("dashboards[%d]", i)
+		d, err := dashspec.ParseDashboard(f, raw)
+		if err != nil {
+			v.add(f, err.Error())
+			continue
+		}
+		if prev, dup := v.dashboardIDs[d.ID]; dup {
+			v.add(f+".id", fmt.Sprintf("%q is also a dashboard of %s: a dashboard id is unique within the project", d.ID, prev))
+			continue
+		}
+		v.dashboardIDs[d.ID] = v.t.Source
+	}
 }
 
 func (v *validator) runtime() {
@@ -308,13 +334,29 @@ func (v *validator) scheme(field, scheme string, bearer *SecretMount, tls *TLS) 
 		name  string
 		mount *SecretMount
 	}{{"bearer_token", bearer}, {"tls.ca", caOf(tls)}} {
-		if m.mount != nil && (m.mount.Secret == "" || m.mount.Key == "") {
-			v.add(field+"."+m.name, "needs a secret name and key")
+		if m.mount != nil && (!safeSecretComponent(m.mount.Secret) || !safeSecretComponent(m.mount.Key)) {
+			v.add(field+"."+m.name, "needs a secret name and key that are safe single path components (letters, digits, '.', '_' or '-', not '.' or '..')")
 		}
 	}
 	if tls != nil && tls.InsecureSkipVerify && tls.CA != nil {
 		v.add(field+".tls", "ca and insecure_skip_verify are exclusive")
 	}
+}
+
+// safeSecretComponent uses the Secret data-key alphabet, excluding the two
+// directory components. Reject both Unix and Windows separators and volumes.
+func safeSecretComponent(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, c := range s {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func caOf(t *TLS) *SecretMount {

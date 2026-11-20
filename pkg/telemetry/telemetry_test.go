@@ -65,7 +65,7 @@ func TestNormalizeResolvesPortsAndDefaults(t *testing.T) {
 	}
 	m := got.Metrics[0]
 	if m.Port != 9090 || m.Path != DefaultMetricsPath || m.Scheme != "http" || m.Interval != "30s" || m.Timeout != "10s" ||
-		m.SampleLimit != DefaultSampleLimit || m.LabelLimit != DefaultLabelLimit || m.LabelValueLengthLimit != DefaultLabelValueLengthLimit {
+		m.SampleLimit != DefaultSampleLimit || *m.LabelLimit != DefaultLabelLimit || *m.LabelValueLengthLimit != DefaultLabelValueLengthLimit {
 		t.Errorf("metrics not resolved/defaulted: %+v", m)
 	}
 	if m.Params == nil || m.DropLabels == nil {

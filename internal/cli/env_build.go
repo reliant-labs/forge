@@ -180,7 +180,7 @@ Examples:
 	cmd.Flags().StringArrayVarP(&selectors, "target", "t", nil, "Build target; repeatable for snapshot composition (default all)")
 	cmd.Flags().StringVar(&basePromotion, "base-promotion", "", "Compose from this exact desired promotion (or resolve current once before builds)")
 	cmd.Flags().BoolVar(&snapshotBootstrap, "snapshot-bootstrap", false, "Build a complete sealed snapshot selecting all consumers; never use legacy state as a partial base")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services (implied by --push and --release)")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")

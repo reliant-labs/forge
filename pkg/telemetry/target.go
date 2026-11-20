@@ -29,7 +29,10 @@
 // added, never renamed or repurposed.
 package telemetry
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // Attachment is where a declaration attaches, which decides what forge infers
 // about its target.
@@ -147,6 +150,12 @@ type Target struct {
 	Checks        []HealthCheck   `json:"checks"`
 	// Dashboard is the signal-generic system dashboard's settings.
 	Dashboard SystemDashboard `json:"dashboard"`
+	// Dashboards are the system's own dashboards, each one forge.dashboards/v1
+	// object exactly as a dashboard file carries it (pkg/dashspec). Validate
+	// runs each through dashspec.ParseDashboard, the validator a release cut
+	// runs; they are kept raw so that validator, with its line and column, is
+	// the one judge of them.
+	Dashboards []json.RawMessage `json:"dashboards"`
 	// DefaultAlerts arms <Service>TargetDown and <Service>CheckFailing.
 	DefaultAlerts bool `json:"default_alerts"`
 }
@@ -173,11 +182,12 @@ type MetricsScrape struct {
 	// Deny is an RE2, anchored: names dropped after Allow.
 	Deny string `json:"deny,omitempty"`
 	// Counters is an RE2, anchored: gauges converted to cumulative sums.
-	Counters              string   `json:"counters,omitempty"`
-	DropLabels            []string `json:"drop_labels"`
-	SampleLimit           int      `json:"sample_limit"`
-	LabelLimit            int      `json:"label_limit"`
-	LabelValueLengthLimit int      `json:"label_value_length_limit"`
+	Counters    string   `json:"counters,omitempty"`
+	DropLabels  []string `json:"drop_labels"`
+	SampleLimit int      `json:"sample_limit"`
+	// Nil uses the default; zero explicitly disables the Prometheus limit.
+	LabelLimit            *int `json:"label_limit"`
+	LabelValueLengthLimit *int `json:"label_value_length_limit"`
 	// BearerToken is sent as Authorization: Bearer, read from a mounted file.
 	BearerToken *SecretMount `json:"bearer_token,omitempty"`
 	TLS         *TLS         `json:"tls,omitempty"`

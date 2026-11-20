@@ -158,8 +158,8 @@ Examples:
 }
 
 // requireDevResetTargetIn is the dev gate for the destructive verb. It reads
-// the SAME fail-closed classifier seed apply/reset use (seedEnvIsDevIn: the
-// runtime MODE in deploy/kcl/<env>/config.k), with the same absence of an
+// the SAME fail-closed classifier seed apply/reset use (classifySeedEnv: the
+// runtime MODE of the evaluated deploy/kcl/<env>/config.k), with the same absence of an
 // override — a destructive command inherits the stricter posture, never the
 // looser one.
 //
@@ -167,9 +167,10 @@ Examples:
 // directory, so the gate can be exercised against a temp project without the
 // test standing in a different cwd.
 func requireDevResetTargetIn(projectDir, env string) error {
-	if !seedEnvIsDevIn(projectDir, env) {
-		return fmt.Errorf("refusing to reset: environment %q is not dev — `forge db reset` DROPS the database, so it runs only against an environment forge can confirm is development, and there is no override flag.\n"+
-			"If you need to rebuild a staging or production database, that is a deliberate operational act and belongs in your deploy tooling, not here", env)
+	if reading := classifySeedEnv(projectDir, env); !reading.Dev {
+		return fmt.Errorf("refusing to reset: forge cannot confirm environment %q is development — `forge db reset` DROPS the database, so it runs only against an environment forge can confirm is development, and there is no override flag.\n"+
+			"  It read: %s.\n"+
+			"If you need to rebuild a staging or production database, that is a deliberate operational act and belongs in your deploy tooling, not here", env, reading.Source)
 	}
 	return nil
 }

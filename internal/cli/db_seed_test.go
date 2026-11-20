@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,4 +103,45 @@ func TestSeedApplyHasNoOverrideFlag(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A typed config that NESTS the runtime MODE in a composed block — reliant's
+// `reliant_config: config_gen.ReliantConfig = { runtime = {environment = "dev"} }`
+// — is dev once evaluated. The line match the gate used to be refused it with
+// `environment "dev" is not dev`. A nested non-dev value still refuses, and
+// the refusal names the file and the value it read.
+func TestSeedEnvClassificationNestedTypedConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("evaluates KCL; runs in task test")
+	}
+	dir := t.TempDir()
+	files := map[string]string{
+		"deploy/kcl/kcl.mod": "[package]\nname = \"nestedmode\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n",
+		"deploy/kcl/config_gen.k": "schema ReliantConfigRuntime:\n    environment: str = \"\"\n\n" +
+			"schema ReliantConfig:\n    runtime: ReliantConfigRuntime = ReliantConfigRuntime {}\n",
+		"deploy/kcl/dev/config.k":  "import config_gen\n\nreliant_config: config_gen.ReliantConfig = {\n    runtime = {environment = \"dev\"}\n}\n",
+		"deploy/kcl/demo/config.k": "import config_gen\n\nreliant_config: config_gen.ReliantConfig = {\n    runtime = {environment = \"prod\"}\n}\n",
+	}
+	for rel, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !seedEnvIsDevIn(dir, "dev") {
+		t.Error(`a config.k nesting runtime = {environment = "dev"} must classify as dev`)
+	}
+	if err := requireDevResetTargetIn(dir, "dev"); err != nil {
+		t.Errorf("db reset refused a nested dev config: %v", err)
+	}
+	if seedEnvIsDevIn(dir, "demo") {
+		t.Error(`a config.k nesting runtime = {environment = "prod"} must not classify as dev`)
+	}
+	err := requireDevResetTargetIn(dir, "demo")
+	if err == nil || !strings.Contains(err.Error(), "deploy/kcl/demo/config.k") || !strings.Contains(err.Error(), `"prod"`) {
+		t.Errorf("refusal must name the file and value it read, got: %v", err)
+	}
 }

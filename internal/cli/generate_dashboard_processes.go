@@ -47,6 +47,13 @@ func dashboardSpecForEntities(projectDir string, entities *KCLEntities) (*obsdas
 	if len(in.Processes) == 0 {
 		sp = obsdash.WithoutProcessDashboards(sp)
 	}
+	// The systems THIS environment declares forge.Telemetry for. They need
+	// no forge process, so they follow the cut above.
+	systems, err := obsdash.TelemetrySystemsOf([]obsdash.EnvTelemetry{{Env: entities.Env, Targets: entities.Telemetry}})
+	if err != nil {
+		return nil, err
+	}
+	sp.Dashboards = append(sp.Dashboards, obsdash.TelemetryDashboards(in.Project, systems)...)
 	// The Overview page's cards ride the bundle only, and only to a control
 	// plane that serves them (withholdUnservedDashboards); `forge generate`
 	// writes nothing for them.

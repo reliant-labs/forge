@@ -252,6 +252,13 @@ var newRules = []rolloutGroup{
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
+	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
+	// what it collects. Only the uncollected dashboard series is an error;
+	// the other three are advisory at any pin, and the row is what lets
+	// lint.rules raise them.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{
+		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
+	}},
 }
 
 // lintRollouts is the declaration of every rule, by ID.

@@ -1,7 +1,7 @@
 # Proposal: declared telemetry for workloads forge did not build (`forge.Telemetry`)
 
 **Status:** accepted in shape by the owner (2026-11-20): ONE generic primitive, four signals, no
-per-system packs. Being implemented in the phased PRs of §5; F1 (the schema, the render and
+pack per system. Being implemented in the phased PRs of §5; F1 (the schema, the render and
 `pkg/telemetry`) is the first to land. Where an implementation PR diverged from this text, the
 "Implementation notes" section at the end says so.
 **Date:** 2026-11-20
@@ -23,7 +23,7 @@ Owner decision (2026-11-20, binding): ONE generic, configurable forge primitive.
   engines, and anything else on a cluster.
 - It covers all four signals (metrics, logs, traces, profiles), plus dashboards and alerts over
   them.
-- forge ships **no per-system pack, preset or vendor catalog**. Every vendor fact (Temporal
+- forge ships **no pack, preset or vendor catalog per system**. Every vendor fact (Temporal
   metric names, Zitadel env keys, ClickHouse panels) lives in the project's KCL.
 
 The design:
@@ -910,3 +910,131 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - Validate's hosted rules: every scrape sets `allow`; no `address`, no bearer token, no
   profiles; a numeric port must be one the workload declares. A target on `forge.OnExternal` or
   `forge.BuildOnly` is refused (nothing forge reaches runs it).
+
+**F5 (dashboards, default alerts, `forge obs telemetry`):**
+
+- `Telemetry.dashboards: [dashspec.Dashboard] = []` (`kcl/telemetry.k` imports `.dashspec`;
+  projects write `import forge.dashspec as ds`). Each renders through `dashspec.dashboard_json`
+  into `Target.Dashboards []json.RawMessage`, kept raw so `dashspec.ParseDashboard` (in
+  `telemetry.Validate` and again in obsdash) is the one judge, with line and column. Ids are
+  unique within a Telemetry (KCL) and within an env (Validate). The `dash_*` re-exports of §2
+  were not added: the F2 helpers (`ds.rate`, `ds.quantile`, `ds.gauge`, `ds.ratio`) are the one
+  spelling.
+- `obsdash.TelemetrySystemsOf([]EnvTelemetry)` merges every env's targets into one
+  `TelemetrySystem` per service (signals union; scope, system-dashboard title and a declared
+  dashboard's content must agree across envs, else an error naming both envs). `Input.Telemetry`
+  carries them. Each system's dashboards are their own spec part,
+  `deploy/observability/spec/telemetry-<service>_gen.json` (`TelemetryPart`), not
+  `project_gen.json`, so two branches that declare different systems touch different files;
+  `ReadSpec` appends them after the project's dashboards.
+- The system dashboard `telemetry-<service>` (`BuildSystemDashboard`) draws: collection health
+  from the Prometheus receiver's `up`, `scrape_samples_scraped`,
+  `scrape_samples_post_metric_relabeling` and `scrape_duration_seconds` (per
+  `service.instance.id`); CPU, memory and restarts from the node agent (only on a cluster or
+  hosted runtime; keyed by `k8s.workload.name` for a Workload attachment, by `service.name`
+  otherwise); log volume by severity, error lines and recent lines; span rate, error ratio, p95
+  and a RED table by span name (only with OTLP traces); tcpcheck / httpcheck status and latency
+  (only with checks); and a text panel naming `forge obs profile --service <svc>` (only with
+  profiles). Scope `platform` makes it dashspec scope platform with no env filter; group
+  `platform`. A declared dashboard with no scope takes the system's.
+- Locally, a declared dashboard's HyperDX file keeps only what HyperDX can draw
+  (`localDrawable`: a summary quantile or a sql panel is the console's); the bundle ships it
+  whole. A declared id that collides with a generated dashboard's is a generate error.
+- The release bundle of an env carries the telemetry dashboards of the systems THAT env declares
+  (`dashboardSpecForEntities`), after the process-less cut.
+- Default alerts are two catalog defaults, tuned by id in `forge.Alerts.defaults`:
+  `telemetry-target-down` (`<Service>TargetDown`, newest `up` of an endpoint is 0, `for` 5m) and
+  `telemetry-check-failing` (`<Service>CheckFailing`, no successful tcpcheck / 2xx httpcheck probe
+  in the window, `for` 5m), severity warning, labelled `service`. Each expands to one rule per
+  system with `default_alerts` (`TelemetryAlertName`: UpperCamelCase of the service). They are
+  env-scoped like the uptime defaults (`AlertInput.TelemetryTargets`, never written to the
+  generated file), so a project with no telemetry writes a byte-identical catalog, and a static
+  site still records them. A rule of the env's own that takes one's name is refused at shape
+  time, naming `default_alerts = False` as the way to replace it.
+- `forge obs telemetry [env]` (`forge.obs.telemetry/v1`) lists the env's targets and, from the
+  local ClickStack, per signal the newest row and row count (`obsquery.TelemetryArrival`) and
+  per scraped endpoint its newest `up` and samples (`obsquery.TelemetryScrapes`). Platform
+  systems are read without the env predicate. A table the store lacks costs only its signal;
+  an unreachable store or the cloud backend lists the targets with arrival `unknown`.
+
+**F4 (forge's cluster node agent):**
+
+- The agent record of a cluster carries that cluster's targets (`ObservabilityAgentSpec.Telemetry`,
+  appended by `_tel_agent_spec` in `kcl/render.k`; absent when there are none, so the record and
+  the agent render byte-identically). `RenderObservabilityAgent` builds them through
+  `collector.Build` (`DiscoverNodePods`, `MountRoot = deploy.TelemetryMountRoot`, env identity
+  from the record's env and part-of) and splices the pieces: `Logs.Preserve` after the
+  `container` operator, `Logs.Processors` and `NodeMetricsProcessors` after k8sattributes, and
+  `K8sAttributesLabels` into its extract. `exporterName()+"_telemetry_isolated"` is the isolated
+  exporter (the destination, with Build's bounded in-memory queue).
+- The identity processor also runs in every pushed (OTLP) pipeline, traces included, because they
+  share k8sattributes and only it deletes the extracted selector labels. `IdentityProcessor` gained
+  `trace_statements` for that.
+- Declaring `Observability.telemetry_collector` moves every target off the agent: it is "the
+  collector that scrapes this env's Telemetry, when it is not forge's agent". The render projects
+  it as `output.telemetry_collector` for the NetworkPolicy rules.
+- No singleton, so the agent REFUSES (render error) a cluster target it would pull at an
+  `address`. It also refuses a target whose signal the env's observability does not ship. With a
+  destination, profiles need `signals.profiles = True`; the agent already sends profiles there,
+  and the feature gate follows that signal. It refuses an `optional` credential too, because the
+  collector reads every credentials file at config load.
+- Every referenced Secret is mounted from the agent's namespace, not optionally. The render refuses
+  one that no `required_secrets`, `rendered_secrets` or `control_plane_secrets` entry supplies
+  there (`_check_agent_telemetry`).
+- The agent's ClusterRole is unchanged: it already lists and watches pods, namespaces and nodes, which is all
+  pod discovery and `k8s_observer` need.
+- NetworkPolicy (`internal/cluster/telemetry.go`): the collector for a cluster is the env's own
+  collector, else the agent (`deploy.AgentCollectorRef`). A Workload target's rule joins its own
+  policy (`deploy.Context.Telemetry`). A Manifests or Observability target with
+  `network_policy = True` gets `collector.NetworkPolicies`, inserted after its Manifests group's
+  last object with the group's owner and delivery unit (an Observability target: at the end of the
+  stream). The agent namespace carries no NetworkPolicy, so its egress to the pulled ports is open.
+
+**F11 (a ManagedDatabase is watched by default):**
+
+Owner decision 2026-11-20: the CloudNativePG operator and every user's managed database are
+monitored by default. This is the generic primitive with a working default, not a pack: forge
+renders the database itself (a CloudNativePG `Cluster`, `pkg/deploy` `RenderManagedDatabase`; on
+hosting the control plane renders the same object), so the exporter port, pod labels and log
+shape are facts of forge's own output. The default is an ordinary `forge.Telemetry`, built in
+`kcl/database_telemetry.k`, and rides every existing path: the targets, the collectors, the
+system dashboard, the default alerts, declared dashboards and, on hosting, the release shape.
+
+- `ManagedDatabase.telemetry?: Telemetry` replaces the default; `default_telemetry: bool = True`
+  turns it off. An explicit empty Telemetry was rejected as the off switch: `Telemetry`
+  refuses a declaration that collects nothing, and loosening that check would weaken it for
+  every attachment. `forge.managed_database_telemetry(name)` returns the default, so a project
+  extends it with `|` rather than copying it.
+- The default target (`attachment: manageddatabase`, source `manageddatabase:<name>`, service
+  `<name>-postgres`) is the database's instances: selector `cnpg.io/cluster: <name>`, container
+  `postgres`, ports `metrics` 9187 and `postgres` 5432. On a cluster it carries the database's
+  cluster and namespace; on hosting neither (the platform places them). It declares one scrape
+  of `metrics` with `MANAGED_DATABASE_METRICS_ALLOW` (the instance collector, the default
+  monitoring queries' backends, size, xid age, replication, archiver and per-database
+  transactions, and the Barman Cloud plugin's backup timestamps) at `sample_limit` 2000; a
+  JSON log parse (severity `record.error_severity` with Postgres's levels mapped, body
+  `record.message`, timestamp `ts`, and rules mapping the instance manager's own `level`); a
+  tcp check on `postgres`; and the dashboard `<name>-postgres`.
+- The CloudNativePG operator: one default target per cluster that holds a database keeping its
+  default (`manageddatabase-operator:<cluster>`, service `cloudnative-pg`, suffixed with the
+  cluster when the databases span several), selecting `app.kubernetes.io/name: cloudnative-pg`
+  in every namespace, scraping :8080 with `CNPG_OPERATOR_METRICS_ALLOW`, with its JSON logs and a
+  dashboard. forge does not install the operator, so the selector is the label the upstream chart
+  and manifest put on it. A Telemetry of the same service name anywhere in the env replaces it
+  (`forge.cnpg_operator_telemetry(cluster)` is that Telemetry, to narrow or extend). On hosting
+  the operator is the platform's, so there is no tenant target for it.
+- A default is rendered only for a database that is placed (hosted, or on a known cluster), so
+  no previously valid env gains an invalid target. A declared `telemetry` renders anyway.
+- `network_policy` stays unset ("auto"), which renders no policy for a `manageddatabase` target
+  (`AdmitCollector` is false, as for Manifests): a policy selecting the instances would deny
+  every other Postgres caller. No `telemetry.Warnings` note either, since every database would
+  carry one. Where the namespace already denies ingress, admitting the collector on 9187 and 5432
+  is the project's (or, on hosting, the control plane's).
+- No default alert rules beyond the two catalog defaults (TargetDown on the scrape,
+  CheckFailing on the check): a `Telemetry.alerts` entry needs the env's observability on, and a
+  default must not fail an env that has it off. Lag, archiving, backup age and xid age alerts
+  are a follow-up, as catalog defaults.
+- A project without a ManagedDatabase renders byte-identically
+  (`TestRenderContract_NoTelemetryWithoutDeclaration`). A project with one gains telemetry,
+  dashboards and the two default alerts on its next render and `forge generate`, which is the
+  intent.

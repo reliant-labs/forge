@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,13 @@ type AlertInput struct {
 	// env. The uptime defaults apply only to an env that has checks, and read
 	// only those checks' series, so a check an env opts out of cannot alert.
 	UptimeChecks []string `json:"-"`
+	// TelemetryTargets are the declared telemetry systems (forge.Telemetry)
+	// that arm the default alerts. Like UptimeChecks they are an env's: the
+	// resolver sets them from the env's render (AlertTelemetryTargetsOf), and
+	// the generated file never records them. AlertInputOf sets them from
+	// every env's, so the catalog lists the telemetry defaults exactly when
+	// some env declares a system.
+	TelemetryTargets []AlertTelemetryTarget `json:"-"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -72,6 +80,12 @@ func AlertInputOf(in Input) AlertInput {
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].Name < out.Services[j].Name })
 	out.FrontendServices = in.frontendServiceNames()
+	for _, sys := range in.Telemetry {
+		if sys.DefaultAlerts {
+			out.TelemetryTargets = append(out.TelemetryTargets, AlertTelemetryTarget{Service: sys.Service, Platform: sys.Platform,
+				Scrapes: len(sys.Scrapes) > 0, Checks: sys.TCPChecks || sys.HTTPChecks})
+		}
+	}
 	return out
 }
 
@@ -151,6 +165,14 @@ type alertDef struct {
 	// metadata. ResolveEnvAlertDefaultsFor resolves these alone, for a
 	// project forge generate writes no alert defaults for (a static site).
 	envScoped bool
+	// perTarget, when set, makes the default one rule per declared telemetry
+	// target it holds for (AlertInput.TelemetryTargets), named for the
+	// target's service (TelemetryAlertName: Alert is "<Service><suffix>"),
+	// labelled service = its service.name, and compiled by targetSQL instead
+	// of sql. The default is tuned once for every target; a target opts out
+	// with Telemetry.default_alerts = False.
+	perTarget func(AlertTelemetryTarget) bool
+	targetSQL func(env string, t AlertTelemetryTarget, p map[string]float64) string
 }
 
 // alertLevel is one severity of a default with levels.
@@ -387,6 +409,36 @@ var alertDefs = []alertDef{
 		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
 		envScoped:   true,
 		sql:         certificateExpiringSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: TelemetryTargetDown, Alert: telemetryAlertPlaceholder + "TargetDown",
+			Title:    "A declared telemetry target's scrape keeps failing (up = 0)",
+			Severity: SeverityWarning, For: "5m", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWindow, 10, "minutes back the newest scrape result of each endpoint is looked for; keep it above the scrape interval"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }}: scraping {{ $labels.instance }} has failed for 5 minutes (up = 0: the target is down, the scrape times out, or it returns more samples than its sample_limit)"},
+		applies:     func(in AlertInput) bool { return slices.ContainsFunc(in.TelemetryTargets, scrapedTarget) },
+		perTarget:   scrapedTarget,
+		targetSQL:   telemetryTargetDownSQL,
+		envScoped:   true,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: TelemetryCheckFailing, Alert: telemetryAlertPlaceholder + "CheckFailing",
+			Title:    "A declared telemetry check has not succeeded for 5 minutes",
+			Severity: SeverityWarning, For: "5m", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWindow, 5, "minutes of probes considered: the check fires when none of them succeeded"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }}: the check of {{ $labels.check }} has not succeeded once in the window ({{ $value }} failed probes)"},
+		applies:     func(in AlertInput) bool { return slices.ContainsFunc(in.TelemetryTargets, checkedTarget) },
+		perTarget:   checkedTarget,
+		targetSQL:   telemetryCheckFailingSQL,
+		envScoped:   true,
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -670,6 +722,30 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					ID: d.ID, Alert: pr.alert, Expr: PlatformExpr(pr.key, tuned && !t.Enabled) + platformParams(d.Params, params),
 					For: d.For, Interval: d.Interval,
 					Labels:      map[string]string{"severity": pr.severity},
+					Annotations: map[string]string{},
+				}
+				for k, v := range d.annotations {
+					r.Annotations[k] = v
+				}
+				if t.For != "" {
+					r.For = t.For
+				}
+				for k, v := range t.Labels {
+					r.Labels[k] = v
+				}
+				out = append(out, r)
+			}
+			continue
+		}
+		if d.perTarget != nil {
+			for _, tt := range in.TelemetryTargets {
+				if !d.perTarget(tt) {
+					continue
+				}
+				r := AlertRule{
+					ID: d.ID, Alert: TelemetryAlertName(tt.Service, strings.TrimPrefix(d.Alert, telemetryAlertPlaceholder)),
+					Expr: d.targetSQL(env, tt, params), For: d.For, Interval: d.Interval,
+					Labels:      map[string]string{"severity": d.Severity, "service": tt.Service},
 					Annotations: map[string]string{},
 				}
 				for k, v := range d.annotations {

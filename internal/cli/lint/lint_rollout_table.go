@@ -251,17 +251,18 @@ var shippedRules = []rolloutGroup{
 	// A handler file implementing more than one custom rpc. Its findings
 	// stay advisory at any pin; the row lets lint.rules raise them.
 	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
+}
+
+// newRules holds new v1.9.0 rules with explicit, owner-approved grace.
+var newRules = []rolloutGroup{
 	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
 	// what it collects. Only the uncollected dashboard series is an error;
 	// the other three are advisory at any pin, and the row is what lets
 	// lint.rules raise them.
-	{IntroducedIn: "v1.9.0", Rules: []string{
+	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
 		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 	}},
 }
-
-// newRules holds new v1.9.0 rules with explicit, owner-approved grace.
-var newRules = []rolloutGroup{}
 
 // lintRollouts is the declaration of every rule, by ID.
 var lintRollouts = buildRollouts(shippedRules, newRules)

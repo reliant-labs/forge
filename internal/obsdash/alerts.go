@@ -696,6 +696,10 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 	var (
 		out     []AlertRule
 		skipped []AlertSkip
+		// telemetryNamed is each per-target rule's name → its service:
+		// TelemetryAlertName folds punctuation, so two accepted services
+		// (foo.bar, foo-bar) can name one rule, which is refused below.
+		telemetryNamed = map[string]string{}
 	)
 	for _, d := range alertDefs {
 		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
@@ -757,6 +761,10 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 				for k, v := range t.Labels {
 					r.Labels[k] = v
 				}
+				if other, ok := telemetryNamed[r.Alert]; ok && other != tt.Service {
+					return nil, nil, telemetryNameCollision(r.Alert, other, tt.Service)
+				}
+				telemetryNamed[r.Alert] = tt.Service
 				out = append(out, r)
 			}
 			continue
@@ -791,8 +799,20 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 			out = append(out, r)
 		}
 	}
+	// A per-target name must not be one another default already raises.
+	for _, r := range out {
+		if svc, ok := telemetryNamed[r.Alert]; ok && r.Labels["service"] != svc {
+			return nil, nil, fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", svc, r.Alert, r.ID)
+		}
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil
+}
+
+// telemetryNameCollision is the error for two declared systems whose
+// service names TelemetryAlertName folds into one rule name.
+func telemetryNameCollision(alert, a, b string) error {
+	return fmt.Errorf("telemetry systems %q and %q both raise the default alert %q (its name keeps only the letters and digits of service.name); rename one service, or set default_alerts = False on one of their forge.Telemetry", a, b, alert)
 }
 
 // EnvIDPlaceholder stands for the env's id in a rule whose data is stamped with

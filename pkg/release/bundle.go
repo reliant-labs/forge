@@ -573,6 +573,14 @@ type Shape struct {
 	// shape, so it is a bundle-document feature
 	// ([BundleFeatureExternalDatabases]).
 	ExternalDatabases []ShapeExternalDatabase `json:"external_databases,omitempty"`
+	// Telemetry is the env's declared telemetry targets (forge.Telemetry)
+	// that run on Reliant hosting, normalized: what the platform collects,
+	// since forge runs no collector there. Sorted by service name. Omitted
+	// when the env declares no hosted target, so every shape recorded before
+	// the field encodes and hashes exactly as it did. A control plane that
+	// predates it refuses the whole shape, so it is a bundle-document feature
+	// ([BundleFeatureTelemetry]). See telemetry.go.
+	Telemetry []ShapeTelemetry `json:"telemetry,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet (a
 	// transitional state, see [ApplierForge]), or "flux" for one an in-cluster
@@ -1230,6 +1238,9 @@ func (s Shape) Validate() error {
 	if err := s.validateExternalDatabases(); err != nil {
 		return err
 	}
+	if err := validateShapeTelemetry(s.Telemetry); err != nil {
+		return err
+	}
 	delivered := map[string]bool{}
 	for _, c := range s.ControlPlaneSecrets {
 		if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Namespace) == "" || strings.TrimSpace(c.Cluster) == "" {
@@ -1416,6 +1427,7 @@ func (s Shape) Canonical() Shape {
 	out.ReleaseProbes = canonicalReleaseProbes(s.ReleaseProbes)
 	out.Databases = canonicalShapeDatabases(s.Databases)
 	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)
+	out.Telemetry = canonicalShapeTelemetry(s.Telemetry)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

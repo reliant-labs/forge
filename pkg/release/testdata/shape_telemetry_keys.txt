@@ -17,6 +17,8 @@ container
 dashboard
 dashboard.enabled
 dashboard.title
+dashboards
+dashboards[]
 default_alerts
 isolated
 logs

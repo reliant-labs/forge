@@ -43,17 +43,27 @@ import (
 // hosted platform renders its own agent and forge emits only the OTEL_*
 // contract for hosted workloads.
 
-// ClientIdentityKeyPattern matches the resource attributes a client must not
+// ClientIdentityKeyPattern matches the identity attributes a client must not
 // be allowed to set on the node agent's OTLP input: Kubernetes identity
-// (k8s.*), which the node supplies, the hosting platform's own namespace
-// (reliant.*), and reserved target selectors (forge.telemetry.label.*).
-// The node agent deletes them before k8sattributes runs, so only discovered
-// pod labels can select a target. service.* and deployment.* are kept.
-const ClientIdentityKeyPattern = `^(k8s|reliant|forge\.telemetry\.label)\..*`
+// (k8s.*), which the node supplies, and the hosting platform's own namespace
+// (reliant.*). service.* and deployment.* are the app's own and are kept.
+//
+// Deprecated: use StrippedClientKeyPattern; it does not cover
+// forge.telemetry.label.*.
+const ClientIdentityKeyPattern = `^(k8s|reliant)\..*`
+
+// StrippedClientKeyPattern matches every resource attribute the node agent
+// deletes from a client's OTLP input before k8sattributes runs: Kubernetes
+// identity (k8s.*), which the node supplies, the hosting platform's own
+// namespace (reliant.*), and the declared telemetry's reserved target
+// selectors (forge.telemetry.label.*, collector.LabelAttributePrefix), so
+// only discovered pod labels can select a target. service.* and
+// deployment.* are the app's own and are kept.
+const StrippedClientKeyPattern = `^(k8s|reliant|forge\.telemetry\.label)\..*`
 
 // stripIdentityStatement is the OTTL form: a string literal, so the regex's
 // backslash is doubled.
-var stripIdentityStatement = `delete_matching_keys(resource.attributes, "` + strings.ReplaceAll(ClientIdentityKeyPattern, `\`, `\\`) + `")`
+var stripIdentityStatement = `delete_matching_keys(resource.attributes, "` + strings.ReplaceAll(StrippedClientKeyPattern, `\`, `\\`) + `")`
 
 // ObservabilityAgentKind is the kind of the forge.dev/v1alpha1 record kcl/render.k
 // emits, one per cluster that runs a forge workload.
@@ -116,9 +126,20 @@ type ObservabilityAgentSpec struct {
 	// Telemetry is the declared telemetry (forge.Telemetry) this agent's
 	// cluster collects: kcl/render.k lists the env's cluster targets of the
 	// agent's cluster, unless the env names its own collector
-	// (Observability.telemetry_collector). Empty renders the agent exactly
-	// as before. See observability_telemetry.go.
-	Telemetry []telemetry.Target `json:"telemetry,omitempty"`
+	// (Observability.telemetry_collector). Nil or empty renders the agent
+	// exactly as before. See observability_telemetry.go.
+	//
+	// A pointer, so the spec stays comparable (a slice field is not); on
+	// the wire it is the same JSON list.
+	Telemetry *[]telemetry.Target `json:"telemetry,omitempty"`
+}
+
+// declaredTelemetry is s.Telemetry, nil when it declares none.
+func (s ObservabilityAgentSpec) declaredTelemetry() []telemetry.Target {
+	if s.Telemetry == nil {
+		return nil
+	}
+	return *s.Telemetry
 }
 
 var (

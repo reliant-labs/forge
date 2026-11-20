@@ -1,6 +1,6 @@
 ---
 name: observability/third-party/runtimes
-description: Where a forge.Telemetry declaration is collected, per runtime — forge env up (the local telemetry agent, the .forge/logs/.telemetry includes, the agent log, the upgrade row for older otel-collector.yaml), forge's cluster node agent (no address pulls, mounted Secrets), Reliant hosted (shape-telemetry, the 5000/20 caps, allow required, scope platform refused), and your own collector (Observability.telemetry_collector, forge.telemetry_targets and forge.telemetry_collector with the exact call and what to splice).
+description: Where a forge.Telemetry declaration is collected, per runtime — forge env up (the local telemetry agent, the .forge/logs/.telemetry includes, the agent log, the upgrade row for older otel-collector.yaml), forge's cluster node agent (no address pulls, mounted Secrets), Reliant hosted (shape-telemetry, the 5000/20 caps, allow required, scope platform refused), and your own collector (Observability.telemetry_collector, forge.telemetry_targets and forge.telemetry_collector with the exact call and what to splice), and the default telemetry of a forge.ManagedDatabase (ManagedDatabase.telemetry, default_telemetry, forge.managed_database_telemetry, forge.cnpg_operator_telemetry).
 ---
 
 # Where a Telemetry is collected
@@ -127,3 +127,25 @@ _tel = forge.telemetry_collector(_targets, forge.TelemetryCollectorOptions {
 | `warnings` | what it skipped, and why (e.g. profiles with `enable_profiles` off) |
 
 Three things bite. **Mount every referenced Secret non-optional** at `<mount_root>/<secret>`, as the collector fails its config load on a missing credentials file; the fragment does not list them, so collect `bearer_token` and `tls.ca` names from the targets. **If your `k8sattributes` also serves pushed OTLP pipelines, put `transform/telemetry_identity` in them too**, because it is what deletes the extracted selector labels. **Pprof needs `enable_profiles = True`** and `--feature-gates=service.profilesSupport` on the collector. With two collectors splitting discovery (a DaemonSet and a singleton), set `collector` on only one of them.
+
+## A ManagedDatabase
+
+A `forge.ManagedDatabase` is the one system forge watches with no line, because forge renders it (a CloudNativePG Cluster, on a cluster or by the platform on `forge.OnHosted`). Its default is an ordinary `forge.Telemetry`, `forge.managed_database_telemetry(name)`, collected like any other (the node agent, your `telemetry_collector`, or the platform). It covers the instances' `:9187` exporter under `forge.MANAGED_DATABASE_METRICS_ALLOW` (`sample_limit` 2000), the Postgres JSON logs (`record.error_severity` → severity), a tcp check on 5432, and a dashboard with id `<name>-postgres`. Its service name is `<name>-postgres`, attachment `manageddatabase`. A host-run Postgres (`HostInfra`) gets no default.
+
+```kcl
+forge.ManagedDatabase {name = "orders", ...}                     # watched by default
+forge.ManagedDatabase {name = "orders", default_telemetry = False}   # off: the database and its share of the operator
+forge.ManagedDatabase {name = "orders",                          # extend: the default, plus an alert
+    telemetry = forge.managed_database_telemetry("orders") | {alerts = [_replication_lag]}
+}
+```
+
+A declared `telemetry` **replaces** the default. To keep series from your own monitoring queries, write the scrape out with `allow = forge.MANAGED_DATABASE_METRICS_ALLOW + "|cnpg_my_query_.*"`. It targets the database's own instances, so `selector`, `namespaces`, `cluster` and `address` are refused. Ports are `metrics` and `postgres`, by name.
+
+**The operator.** Each cluster holding a database that keeps the default also gets `forge.cnpg_operator_telemetry(cluster)`. That covers its `:8080` controller metrics (`forge.CNPG_OPERATOR_METRICS_ALLOW`), its logs and a dashboard, found by `app.kubernetes.io/name: cloudnative-pg` in every namespace. The service is `cloudnative-pg`, or `cloudnative-pg-<cluster>` when the env's databases span clusters. On hosting the operator is the platform's, so there is no target. Replace it with an `Observability.telemetry` entry of the same service name:
+
+```kcl
+forge.Observability {telemetry = [forge.cnpg_operator_telemetry("prod-hub") | {namespaces = ["cnpg-system"]}]}
+```
+
+**No NetworkPolicy by default.** One selecting the instances would deny every other Postgres caller. When the database's namespace already denies ingress, admit the collector on 9187 and 5432 yourself, or set `network_policy = True` in the override. forge then renders a policy beside the database's objects.

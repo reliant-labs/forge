@@ -140,6 +140,16 @@ jobs:
           path: sbom-{{.ProjectName}}.spdx.json
           if-no-files-found: error
 
+      - name: Attach SBOM to the image (cosign attest)
+        # The run artifact above expires with the run and is not where a
+        # consumer of the image looks. A signed in-toto attestation in the
+        # registry, beside the image, is: `cosign verify-attestation --type
+        # spdxjson <image>` reads it back. Keyless, like the signature, so it
+        # works on a private repository too.
+        env:
+          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+        run: cosign attest --yes --type spdxjson --predicate sbom-{{.ProjectName}}.spdx.json "$IMAGE_REF"
+
       - name: Attest build provenance
         # GitHub's attestation store only accepts public repositories (or
         # private ones on GitHub Enterprise Cloud). Elsewhere the step fails
@@ -153,6 +163,28 @@ jobs:
           subject-name: ${{"{{"}} steps.ref.outputs.image {{"}}"}}
           subject-digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
           push-to-registry: true
+
+      - name: Attest build provenance (private repositories, cosign)
+        # Where GitHub's attestation store refuses the upload, the same SLSA
+        # v1 provenance goes to the registry as a cosign attestation instead,
+        # so a private repository's image is not left without one.
+        # `cosign verify-attestation --type slsaprovenance1 <image>` reads it.
+        if: ${{"{{"}} github.event.repository.private {{"}}"}}
+        env:
+          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+          BUILDER_ID: ${{"{{"}} github.server_url {{"}}"}}/${{"{{"}} github.workflow_ref {{"}}"}}
+          SOURCE_URI: git+${{"{{"}} github.server_url {{"}}"}}/${{"{{"}} github.repository {{"}}"}}@${{"{{"}} github.ref {{"}}"}}
+          RUN_URL: ${{"{{"}} github.server_url {{"}}"}}/${{"{{"}} github.repository {{"}}"}}/actions/runs/${{"{{"}} github.run_id {{"}}"}}/attempts/${{"{{"}} github.run_attempt {{"}}"}}
+        run: |
+          jq -n --arg builder "$BUILDER_ID" --arg source "$SOURCE_URI" --arg sha "$GITHUB_SHA" --arg run "$RUN_URL" '{
+            buildDefinition: {
+              buildType: "https://actions.github.io/buildtypes/workflow/v1",
+              externalParameters: {workflow: {ref: env.GITHUB_REF, repository: ($source | sub("@.*$"; "") | ltrimstr("git+")), path: (env.GITHUB_WORKFLOW_REF | sub("^[^/]+/[^/]+/"; "") | sub("@.*$"; ""))}},
+              resolvedDependencies: [{uri: $source, digest: {gitCommit: $sha}}]
+            },
+            runDetails: {builder: {id: $builder}, metadata: {invocationId: $run}}
+          }' > provenance.json
+          cosign attest --yes --type slsaprovenance1 --predicate provenance.json "$IMAGE_REF"
 {{- if .VulnDocker}}
 
   trivy-scan:

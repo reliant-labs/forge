@@ -2662,7 +2662,8 @@ benefits:
     claim: >-
       The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign
       signature and a build-provenance attestation to every image, bound to its
-      digest.
+      digest and stored in the registry beside it (`cosign
+      verify-attestation`), private repositories included.
     availability: forge
     headline: true
     why: >-

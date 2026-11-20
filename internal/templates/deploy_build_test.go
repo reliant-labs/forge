@@ -204,6 +204,20 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		t.Errorf("provenance attestation is not gated off for private repositories:\n%s", step)
 	}
 
+	// The SBOM is attached to the image as a signed attestation, not only a
+	// run artifact that expires with the run, and a private repository's
+	// image still gets provenance, as a cosign attestation (NS FG-22).
+	if !strings.Contains(s, `cosign attest --yes --type spdxjson --predicate sbom-`) {
+		t.Error("the SBOM is not attached to the image (cosign attest --type spdxjson)")
+	}
+	j := strings.Index(s, "cosign attest --yes --type slsaprovenance1")
+	if j < 0 {
+		t.Fatal("no provenance for a private repository's image")
+	}
+	if step := s[strings.LastIndex(s[:j], "- name:"):j]; !strings.Contains(step, "if: ${{ github.event.repository.private }}") {
+		t.Errorf("the cosign provenance step is not the private-repository path:\n%s", step)
+	}
+
 	// The image is built and tagged by forge — sha-<short>, or the
 	// dispatch's override — not by docker/metadata-action.
 	if !strings.Contains(s, `tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"`) {

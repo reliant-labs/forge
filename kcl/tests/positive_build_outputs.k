@@ -53,13 +53,13 @@ _installer = fw.Workload {
     }
 }
 
-# Build-only with no outputs and no image: unchanged (the artifact is named
-# after the workload).
+# Build-only with a named image output and no file outputs. An explicit
+# output_name still supplies the image, unlike an unnamed ShellBuild.
 _legacy = fw.Workload {
     name = "legacy-cli"
     kind = "tool"
     runtime = forge.BuildOnly {}
-    build = forge.ShellBuild {cmd = "./scripts/legacy.sh"}
+    build = forge.ShellBuild {cmd = "./scripts/legacy.sh", output_name = "legacy-cli"}
 }
 
 # Outputs on a cluster workload never drop its image.
@@ -87,5 +87,5 @@ assert_agent_outputs = _w["acme-agent"].build.outputs == [{"path": "bin/acme-age
 assert_agent_files_only = _w["acme-agent"].image == ""
 assert_installer_keeps_image = _w["installer"].image == "ghcr.io/acme/installer"
 assert_installer_outputs = _w["installer"].build.outputs == [{"path": "out/acme-setup.exe", "platform": "windows/amd64"}]
-assert_legacy_unchanged = _w["legacy-cli"].image == "legacy-cli" and "outputs" not in _w["legacy-cli"].build
+assert_named_output_keeps_image = _w["legacy-cli"].image == "legacy-cli" and "outputs" not in _w["legacy-cli"].build
 assert_cluster_keeps_image = _w["api"].image == "localhost:5051/api" and _w["api"].build.outputs == [{"path": "sbom.json"}]

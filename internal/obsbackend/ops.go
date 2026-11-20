@@ -228,6 +228,13 @@ func planOps(req OpsRequest) (opsPlan, error) {
 	p.server = p.kinds[OpKindRPC] || p.kinds[OpKindEndpoint]
 	p.rpcOnly = !p.kinds[OpKindEndpoint]
 	p.component = p.kinds[OpKindComponent]
+	// A name --kind leaves out would be asked nowhere, and its empty answer
+	// would read as "no traffic" rather than "not asked".
+	for _, n := range req.Names {
+		if k := OpKindOf(n); !p.kinds[k] {
+			return opsPlan{}, Wrong("--name %q is a %s op, which --kind leaves out", n, k)
+		}
+	}
 	if len(req.Names) > 0 {
 		for _, n := range req.Names {
 			if componentOpRE.MatchString(n) {

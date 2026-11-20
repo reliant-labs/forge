@@ -165,7 +165,10 @@ type lintJSONReport struct {
 // been written when text mode would have exited non-zero. Same pattern
 // as errDoctorFailed: the report carries the detail; this line just
 // makes cobra exit 1 with a one-line stderr reason.
-var errLintJSONFailed = fmt.Errorf("lint reported errors; see JSON report above")
+//
+// The report is on stdout, which a caller that reads the JSON has captured:
+// "see JSON report above" pointed at nothing (upgrade-report defect 8).
+var errLintJSONFailed = fmt.Errorf("lint reported errors; the JSON report on stdout has them")
 
 // buildLintJSONReport assembles the report envelope from collected
 // findings plus the gating verdict computed by the caller (which

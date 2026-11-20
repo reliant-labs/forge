@@ -145,6 +145,7 @@ var mergeCases = map[string]mergeCase{
 		"TestMergeProperty_ScenarioRpcs", "TestE2EMergeProperty"),
 	"repoint renamed *_gen frontend imports":                    perInput("rewrites import lines in the files that name a renamed module"),
 	"retire delivered agent skills":                             noOutput("removes retired files"),
+	agentsGuideStep:                                             perInput("AGENTS.md's guide is a function of the pin and the project's shape (its envs, frontends, unmanaged services and gate), not of its services, entities or rpcs, and its ledger hash changes only with it; the Project Notes below it are the user's, kept byte for byte"),
 	"go mod tidy (root)":                                        external("go.mod / go.sum"),
 	"goimports on generated Go":                                 external("formats files other steps wrote"),
 	"cleanup stale codegen":                                     noOutput("removes files no step wrote"),

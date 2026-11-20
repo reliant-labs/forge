@@ -694,7 +694,16 @@ func collectHandlerTreeFindings() ([]forgeconv.Finding, bool, error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
 	}
-	return append(findings, sizeRes.Findings...), true, nil
+	findings = append(findings, sizeRes.Findings...)
+
+	// One custom rpc per file — warns on a handler file implementing two or
+	// more of its service's custom rpcs (CRUD shims and helpers excluded).
+	// Advisory at every pin; lint.rules can raise it.
+	rpcRes, err := forgeconv.LintOneRPCPerFile(".")
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (one rpc per file) failed: %w", err)
+	}
+	return append(findings, rpcRes.Findings...), true, nil
 }
 
 // collectGoCodeConventionFindings runs the rules that read Go code

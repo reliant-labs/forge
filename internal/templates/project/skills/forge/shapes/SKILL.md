@@ -19,6 +19,8 @@ forge project shapes --grep Estimate      # one entity across ALL layers at once
 forge project shapes --kind rpc,handler   # what is DECLARED vs what is IMPLEMENTED
 forge project shapes --unimplemented      # declared rpcs with no handler, or only a stub
 forge project shapes --service Chat       # one service's rpcs and handlers
+forge project shapes --kind root,workload # every process: //forge:root structs, KCL workload literals
+forge project shapes --grep Chat --json   # the same rows as a JSON array
 ```
 
 Every line carries `file:line`, so the next step is a targeted read — never
@@ -30,7 +32,12 @@ message  Material                      proto/services/roofops/v1/roofops.proto:7
 table    materials                     db/migrations/00010_create_materials.up.sql:9
 handler  RoofopsService.ListMaterials  internal/handlers/roofops/handlers_crud.go:790
 hook     useListMaterials              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
+root     worker                        internal/app/roots.go:14  type=Worker command=worker migrate=wait fields=3
+workload ingest                        deploy/kcl/workloads.k:40  kind=worker build=docker image=ghcr.io/acme/ingest
 ```
+
+A `workload` row is the literal as written; where each env runs it is
+`forge project audit --json`'s `.categories.shape.details.workloads[].runtimes`.
 
 Reach for it when you would otherwise:
 

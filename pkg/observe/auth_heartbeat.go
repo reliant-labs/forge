@@ -72,6 +72,8 @@ func (s *resumedSet) first(userID, day string) bool {
 // else "jwt". Calls with no user id and API-key principals (machines) record
 // nothing. Like the CRUD events it is one of forge's automatic product
 // events, so FORGE_PRODUCT_EVENTS=off switches it off (AutoProductEvents).
+//
+// connect-go v2 projects use AuthHeartbeatInterceptorV2.
 func AuthHeartbeatInterceptor(caller CallerLookup, provider string) connect.Interceptor {
 	if caller == nil {
 		caller = authn.ClaimsFromContext

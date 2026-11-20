@@ -7937,6 +7937,11 @@ schema IdentityGoogle:
     client_id: str | ManagedSecret
     client_secret: ManagedSecret
     scopes: [str] = ["openid", "profile", "email"]
+    # Hand the provider's own tokens from each sign-in to the app's login
+    # broker hook (WithUpstreamTokens), server-side, so the app can call the
+    # provider's API as the user with these scopes. They never reach the
+    # browser. Off by default.
+    pass_tokens: bool = False
 
     check:
         typeof(client_id) != "str" or client_id, "IdentityGoogle.client_id is required: the OAuth client id (a literal, or a forge.ManagedSecret name)"
@@ -7951,6 +7956,11 @@ schema IdentityGitHub:
     client_id: str | ManagedSecret
     client_secret: ManagedSecret
     scopes: [str] = ["read:user", "user:email"]
+    # Hand the provider's own tokens from each sign-in to the app's login
+    # broker hook (WithUpstreamTokens), server-side, so the app can call the
+    # provider's API as the user with these scopes. They never reach the
+    # browser. Off by default.
+    pass_tokens: bool = False
 
     check:
         typeof(client_id) != "str" or client_id, "IdentityGitHub.client_id is required: the OAuth client id (a literal, or a forge.ManagedSecret name)"

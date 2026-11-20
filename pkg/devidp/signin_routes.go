@@ -186,6 +186,19 @@ type SignInRoutesConfig struct {
 	// verification of a credential-less account, so nothing needs
 	// serialising across replicas any more (forge#2121). Leave it nil.
 	ProofLocker ProofLocker
+
+	// UpstreamTokens receives the provider's own tokens after each
+	// successful social sign-in through a provider whose policy entry has
+	// PassTokens, server-side, before the response is written. Store them
+	// sealed, keyed by (Subject, Provider). nil drops them. An error is
+	// logged and the sign-in still succeeds, unless RequireUpstreamTokens.
+	// It is not called for a refused sign-in, nor for a sign-up that waits
+	// on the address's code (no session yet): the next sign-in hands them.
+	UpstreamTokens func(ctx context.Context, g UpstreamGrant) error
+	// RequireUpstreamTokens refuses the sign-in (CodeSocialFailed) and
+	// deletes the issuer session when UpstreamTokens errors or no access
+	// token came back. It needs UpstreamTokens.
+	RequireUpstreamTokens bool
 }
 
 // NewSignInRoutes validates the configuration. It refuses a policy-bearing
@@ -193,6 +206,9 @@ type SignInRoutesConfig struct {
 func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 	if cfg.Client == nil || cfg.SignedIn == nil || cfg.SessionToken == nil {
 		return nil, fmt.Errorf("sign-in routes need a client, SignedIn and SessionToken")
+	}
+	if cfg.RequireUpstreamTokens && cfg.UpstreamTokens == nil {
+		return nil, fmt.Errorf("RequireUpstreamTokens needs an UpstreamTokens hook")
 	}
 	u, err := url.Parse(strings.TrimRight(cfg.AppBase, "/"))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -1123,7 +1139,7 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 	// signInWith creates the session with create: CreateSession for an
 	// existing account, createSessionForNewUser for one created just now,
 	// which the session API may not see yet (new_user_session.go).
-	signInWith := func(userID string, create func(context.Context, Credentials) (Session, error)) {
+	signInWith := func(userID, event string, create func(context.Context, Credentials) (Session, error)) {
 		s, err := create(ctx, Credentials{UserID: userID, IDPIntent: intent})
 		if err != nil {
 			r.cfg.Logger.WarnContext(ctx, "social sign-in: session refused", "user_id", userID, "error", err)
@@ -1131,12 +1147,23 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			return
 		}
 		r.complete(w, req, s, func(tokens Tokens) {
+			// The provider's tokens go to the app server-side, for the user
+			// this session is for, before anything reaches the browser.
+			if !r.handUpstreamTokens(ctx, social, res, userID, event) {
+				if err := c.DeleteSession(ctx, s); err != nil {
+					r.cfg.Logger.ErrorContext(ctx, "social sign-in: the refused session could not be deleted", "user_id", userID, "error", err)
+				}
+				writeErr(w, http.StatusUnauthorized, CodeSocialFailed, msgSocialFailed)
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"identity": r.cfg.SignedIn(w, tokens), "returnTo": b.ReturnTo})
 		})
 	}
-	signIn := func(userID string) { signInWith(userID, c.CreateSession) }
+	signIn := func(userID string) { signInWith(userID, UpstreamEventSignIn, c.CreateSession) }
 	if b.InviteUserID != "" {
-		r.acceptInviteBySocial(w, req, b, res, social, signIn)
+		r.acceptInviteBySocial(w, req, b, res, social, func(userID string) {
+			signInWith(userID, UpstreamEventInviteAccept, c.CreateSession)
+		})
 		return
 	}
 	if res.LinkedUserID != "" {
@@ -1194,7 +1221,7 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			return
 		}
 		r.grantSignupRoleIfSelfSignup(ctx, id, email)
-		signInWith(id, c.createSessionForNewUser)
+		signInWith(id, UpstreamEventSignUp, c.createSessionForNewUser)
 	}
 }
 

@@ -1388,6 +1388,9 @@ _render_identity = lambda b: Bundle -> any {
                 "client_id_secret": s.client_id.name if typeof(s.client_id) != "str" else None
                 "client_secret_secret": s.client_secret.name
                 "scopes": s.scopes
+                # Only when on, so a shape without it is unchanged.
+                if s.pass_tokens:
+                    "pass_tokens": True
             } for s in _id.social]
         if _id.email:
             "email": {

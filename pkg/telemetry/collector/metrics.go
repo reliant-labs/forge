@@ -15,6 +15,8 @@ import (
 func (b *builder) prometheus(t telemetry.Target) (map[string]any, error) {
 	jobs := make([]any, 0, len(t.Metrics))
 	for i, m := range t.Metrics {
+		// An unnamed scrape's suffix is its index. Validate refuses an
+		// all-digit name, so no named scrape can take the same job name.
 		suffix := m.Name
 		if suffix == "" {
 			suffix = strconv.Itoa(i)
@@ -180,6 +182,8 @@ func (b *builder) checks(t telemetry.Target) []string {
 	return names
 }
 
+// checkName is c's receiver-name suffix: its name, else its index. Validate
+// refuses an all-digit name, so the two never collide.
 func checkName(c telemetry.HealthCheck, i int) string {
 	if c.Name != "" {
 		return c.Name

@@ -209,6 +209,12 @@ func TestBuildRefuses(t *testing.T) {
 	noExporters.MetricsExporters = nil
 	bad := clusterManifests()
 	bad.Metrics[0].Allow = "("
+	// An unnamed first scrape's job, and an unnamed first check's receiver,
+	// end in "0": an entry named "0" beside it would share the name.
+	scrapeCollides := clusterAddress()
+	scrapeCollides.Metrics = append(scrapeCollides.Metrics, telemetry.MetricsScrape{Name: "0", Port: 9094, Allow: "x"})
+	checkCollides := clusterAddress()
+	checkCollides.Checks = append(checkCollides.Checks, telemetry.HealthCheck{Name: "0", Kind: "tcp", Port: 9094})
 	cases := []struct {
 		name    string
 		targets []telemetry.Target
@@ -221,6 +227,8 @@ func TestBuildRefuses(t *testing.T) {
 		{"mount root", []telemetry.Target{clusterSecured()}, noMount, "Options.MountRoot"},
 		{"exporters", []telemetry.Target{clusterManifests()}, noExporters, "MetricsExporters"},
 		{"invalid", []telemetry.Target{bad}, clusterOptions(), "not an RE2 expression"},
+		{"scrape named like an index", []telemetry.Target{scrapeCollides}, clusterOptions(), `metrics[1].name: "0" is all digits`},
+		{"check named like an index", []telemetry.Target{checkCollides}, clusterOptions(), `checks[1].name: "0" is all digits`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -113,4 +113,4 @@ assert_preserve_spliced = len(_config.receivers.filelog.operators) == 2
 assert_selector_labels = len(fragment.k8sattributes_labels) == 1
 assert_policy = [[p.metadata.namespace, p.spec.ingress[0].from[0].podSelector.matchLabels] for p in fragment.network_policies] == [["engine", {"app.kubernetes.io/name": "agent"}]]
 assert_agent_rendered = len([m for m in _out.manifests if m.kind == "ConfigMap" and m.metadata.name == "agent-config"]) == 1
-assert_policy_rendered = len([m for m in _out.manifests if m.kind == "NetworkPolicy" and m.metadata.name == "telemetry-engine"]) == 1
+assert_policy_rendered = len([m for m in _out.manifests if m.kind == "NetworkPolicy" and m.metadata?.labels?["forge.dev/telemetry-service"] == "engine" and m.metadata.name.startswith("telemetry-engine-")]) == 1

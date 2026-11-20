@@ -1552,8 +1552,12 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// from `frontends` (the input to buildFrontend → `npm run build`)
 	// while keeping their entry in cfg.Frontends so other commands
 	// (forge generate, forge env up's frontend phase) see them unchanged.
+	//
+	// The same filter drops a frontend the env does not declare at all,
+	// unless --target named it: see filterFrontendsForBuild.
 	if entities != nil {
-		frontends = filterFrontendsForBuild(frontends, entities)
+		named := opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external"
+		frontends = filterFrontendsForBuild(frontends, entities, opts.env, named)
 	}
 
 	// KCL-driven docker skip: with --env set, no frontend builds an image
@@ -3063,13 +3067,24 @@ func kclFrontendAsBuildTarget(e *KCLEntities, target string) *config.FrontendCon
 //   - forge.OnHosted — built by buildHostedStaticSites, environment-agnostic
 //     and pushed as a release artifact; a plain build here would repeat it.
 //
-// Every other runtime (bucket, firebase, build-only) is kept. A frontend in
-// cfg.Frontends that the env does not declare is kept too: with no runtime
-// to read there is nothing to skip on.
+// Every other runtime (bucket, firebase, build-only) is kept.
 //
-// Prints a one-line note per skipped dev server so users can see at a
-// glance why their build finished early.
-func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities) []config.FrontendConfig {
+// A frontend in the project inventory (cfg.Frontends: every frontends/<name>
+// on disk) that the env does not declare is dropped too, because nothing in
+// the env consumes its `npm run build`: deploy already warns that such a
+// frontend "will NOT be deployed" (warnUndeployedFrontends), and a frontend
+// served from a container builds inside its own Dockerfile. Keeping it ran a
+// full prod build of frontends/web on `forge env build release` for an env
+// that declares no frontend at all (bug 194a8475), so the env had to pass
+// --target to avoid it. The rendered env is the build set, as it already is
+// for every workload.
+//
+// keepUndeclared is set when --target named the frontend: an explicit
+// request builds it whether or not this env declares it, as it always has.
+//
+// Prints a one-line note per skipped frontend so users can see at a glance
+// why their build finished early.
+func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities, env string, keepUndeclared bool) []config.FrontendConfig {
 	if entities == nil {
 		return frontends
 	}
@@ -3077,6 +3092,9 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 	for _, fe := range frontends {
 		entity, ok := findFrontendEntity(entities, fe.Name)
 		switch {
+		case !ok && !keepUndeclared:
+			fmt.Printf("[build] skipping prod build for %s (env %q declares no such frontend; --target %s builds it anyway)\n", fe.Name, env, fe.Name)
+			continue
 		case ok && entity.Runtime.Type == FrontendRuntimeHost:
 			fmt.Printf("[build] skipping prod build for %s (forge.OnHost: the dev server)\n", fe.Name)
 			continue

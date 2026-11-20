@@ -24,7 +24,8 @@
 //
 // Find reports an installed tool without installing anything or touching the
 // network (`forge doctor` uses it). MethodFor reports how this platform
-// would get a tool: the verified release, `go install`, or not at all. A Fetcher is the same API with every input injectable — cache
+// would get a tool: the verified release, `go install`, or not at all. A Fetcher
+// (New) is the same API with every input injectable — cache
 // directory, download base URL, HTTP client, platform, the `go install`
 // fallback — for tests and for callers that need their own log writer.
 //
@@ -211,19 +212,22 @@ type Installed struct {
 	GoPackage string `json:"go_package,omitempty"`
 }
 
-// Fetcher installs tools. The zero value is ready to use and resolves every
-// field from the environment; tests set the fields instead.
+// Fetcher installs tools. New returns the one forge uses, every field
+// resolved from this process and its environment; tests start from New and
+// override fields.
 type Fetcher struct {
-	// CacheDir is the directory entries live in. "" is the release kind of
-	// forge's shared tool cache ($FORGE_TOOLS_CACHE/release).
+	// CacheDir is the directory entries live in: New sets the release kind
+	// of forge's shared tool cache ($FORGE_TOOLS_CACHE/release). "" (that
+	// cache could not be resolved) makes every install fail with the reason.
 	CacheDir string
-	// BaseURL replaces https://github.com. "" is $FORGE_TOOLS_MIRROR, else
-	// DefaultBaseURL.
+	// BaseURL replaces https://github.com: New sets $FORGE_TOOLS_MIRROR,
+	// else DefaultBaseURL.
 	BaseURL string
-	// Client downloads archives. nil is a client with a 10-minute timeout
+	// Client downloads archives: New sets a client with a 10-minute timeout
 	// that honours the standard proxy environment.
 	Client *http.Client
-	// GOOS and GOARCH are the platform to install for. "" is this process's.
+	// GOOS and GOARCH are the platform to install for: New sets this
+	// process's.
 	GOOS, GOARCH string
 	// LookPath finds the Go toolchain for the fallback. nil is exec.LookPath.
 	LookPath func(file string) (string, error)
@@ -234,10 +238,30 @@ type Fetcher struct {
 	Log io.Writer
 }
 
+// New returns the Fetcher forge uses: forge's shared tool cache, the
+// $FORGE_TOOLS_MIRROR (else GitHub), a 10-minute download client, and this
+// process's platform.
+func New() *Fetcher {
+	// An unresolvable cache root leaves CacheDir "", and cacheDir reports
+	// why when something needs it; Method needs no cache at all.
+	cache, _ := toolcache.KindDir(toolcache.KindRelease)
+	base := DefaultBaseURL
+	if m := strings.TrimSpace(os.Getenv(EnvMirror)); m != "" {
+		base = m
+	}
+	return &Fetcher{
+		CacheDir: cache,
+		BaseURL:  base,
+		Client:   &http.Client{Timeout: 10 * time.Minute},
+		GOOS:     runtime.GOOS,
+		GOARCH:   runtime.GOARCH,
+	}
+}
+
 // Ensure returns the path and pinned version of a usable t, installing it
-// on first use with the default Fetcher. See the package doc.
+// on first use with New's Fetcher. See the package doc.
 func Ensure(ctx context.Context, t Tool) (path, version string, err error) {
-	in, err := (&Fetcher{}).Ensure(ctx, t)
+	in, err := New().Ensure(ctx, t)
 	if err != nil {
 		return "", "", err
 	}
@@ -246,24 +270,14 @@ func Ensure(ctx context.Context, t Tool) (path, version string, err error) {
 
 // Find reports t when it is installed in the default cache, without
 // installing anything or using the network.
-func Find(t Tool) (Installed, bool) { return (&Fetcher{}).Find(t) }
+func Find(t Tool) (Installed, bool) { return New().Find(t) }
 
-// MethodFor reports how the default Fetcher would get t on this platform.
-func MethodFor(t Tool) Method { return (&Fetcher{}).Method(t) }
+// MethodFor reports how New's Fetcher would get t on this platform.
+func MethodFor(t Tool) Method { return New().Method(t) }
 
-func (f *Fetcher) goos() string {
-	if f.GOOS != "" {
-		return f.GOOS
-	}
-	return runtime.GOOS
-}
+func (f *Fetcher) goos() string { return f.GOOS }
 
-func (f *Fetcher) goarch() string {
-	if f.GOARCH != "" {
-		return f.GOARCH
-	}
-	return runtime.GOARCH
-}
+func (f *Fetcher) goarch() string { return f.GOARCH }
 
 func (f *Fetcher) platform() string { return f.goos() + "/" + f.goarch() }
 
@@ -271,25 +285,17 @@ func (f *Fetcher) cacheDir() (string, error) {
 	if f.CacheDir != "" {
 		return f.CacheDir, nil
 	}
-	return toolcache.KindDir(toolcache.KindRelease)
+	// Only a Fetcher whose cache root did not resolve gets here; resolving
+	// again returns the reason.
+	if _, err := toolcache.KindDir(toolcache.KindRelease); err != nil {
+		return "", err
+	}
+	return "", errors.New("toolfetch: no cache directory")
 }
 
-func (f *Fetcher) baseURL() string {
-	if f.BaseURL != "" {
-		return strings.TrimRight(f.BaseURL, "/")
-	}
-	if m := strings.TrimSpace(os.Getenv(EnvMirror)); m != "" {
-		return strings.TrimRight(m, "/")
-	}
-	return DefaultBaseURL
-}
+func (f *Fetcher) baseURL() string { return strings.TrimRight(f.BaseURL, "/") }
 
-func (f *Fetcher) client() *http.Client {
-	if f.Client != nil {
-		return f.Client
-	}
-	return &http.Client{Timeout: 10 * time.Minute}
-}
+func (f *Fetcher) client() *http.Client { return f.Client }
 
 func (f *Fetcher) log() io.Writer {
 	if f.Log != nil {

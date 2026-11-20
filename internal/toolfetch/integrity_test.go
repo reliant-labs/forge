@@ -59,7 +59,8 @@ func TestUnsafeMetadataRejectedBeforeIO(t *testing.T) {
 			t.Run(field+"/"+bad, func(t *testing.T) {
 				t.Parallel()
 				root := t.TempDir()
-				f := &Fetcher{CacheDir: filepath.Join(root, "cache"), GOOS: "linux", GOARCH: "amd64", LookPath: func(string) (string, error) { t.Fatal("unexpected IO"); return "", nil }}
+				f := testFetcher(filepath.Join(root, "cache"), "", "linux")
+				f.LookPath = func(string) (string, error) { t.Fatal("unexpected IO"); return "", nil }
 				tool := Tool{Name: "faketool", Version: "v1", Checksums: map[string]string{}}
 				switch field {
 				case "name":

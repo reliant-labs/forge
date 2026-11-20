@@ -635,7 +635,7 @@ func runToolDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, project
 		return nil
 	}
 	results := runToolChecks(ctx, defaultToolChecks(runtime.GOOS), cfg, projectDir, realBinaryLookup, realVersionRunner)
-	results = append(results, fetchedToolChecks(&toolfetch.Fetcher{}, toolfetch.Tools())...)
+	results = append(results, fetchedToolChecks(toolfetch.New(), toolfetch.Tools())...)
 	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
 	return results
 }

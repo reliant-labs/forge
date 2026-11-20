@@ -118,14 +118,16 @@ func fakeTool(linux, windows []byte) Tool {
 func noGo(string) (string, error) { return "", errors.New("not found") }
 
 func (r *release) fetcher(t *testing.T, goos string) *Fetcher {
-	return &Fetcher{
-		CacheDir: t.TempDir(),
-		BaseURL:  r.srv.URL,
-		GOOS:     goos,
-		GOARCH:   "amd64",
-		LookPath: noGo,
-		Log:      io.Discard,
-	}
+	return testFetcher(t.TempDir(), r.srv.URL, goos)
+}
+
+// testFetcher is New's Fetcher pointed at cache, base and goos/amd64, with
+// no Go toolchain and no download notices.
+func testFetcher(cache, base, goos string) *Fetcher {
+	f := New()
+	f.CacheDir, f.BaseURL, f.GOOS, f.GOARCH = cache, base, goos, "amd64"
+	f.LookPath, f.Log = noGo, io.Discard
+	return f
 }
 
 func TestEnsureInstallsTheVerifiedBinary(t *testing.T) {
@@ -359,7 +361,7 @@ func TestEnsureConcurrentInstallsConverge(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			f := &Fetcher{CacheDir: cache, BaseURL: rel.srv.URL, GOOS: "linux", GOARCH: "amd64", LookPath: noGo, Log: io.Discard}
+			f := testFetcher(cache, rel.srv.URL, "linux")
 			in, err := f.Ensure(context.Background(), tool)
 			paths[i], errs[i] = in.Path, err
 		}()
@@ -387,7 +389,9 @@ func TestMirrorReplacesGitHub(t *testing.T) {
 	rel.serve(tool, "linux", "amd64", archive)
 	t.Setenv(EnvMirror, rel.srv.URL+"/")
 
-	f := &Fetcher{CacheDir: t.TempDir(), GOOS: "linux", GOARCH: "amd64", LookPath: noGo, Log: io.Discard}
+	// New reads the mirror; the trailing "/" is trimmed.
+	f := New()
+	f.CacheDir, f.GOOS, f.GOARCH, f.LookPath, f.Log = t.TempDir(), "linux", "amd64", noGo, io.Discard
 	if want := rel.srv.URL + "/acme/faketool/releases/download/v1.2.3/faketool_1.2.3_linux_amd64.tar.gz"; f.URL(tool) != want {
 		t.Errorf("URL = %s, want %s", f.URL(tool), want)
 	}
@@ -396,7 +400,9 @@ func TestMirrorReplacesGitHub(t *testing.T) {
 	}
 
 	t.Setenv(EnvMirror, "")
-	if got := (&Fetcher{GOOS: "linux", GOARCH: "amd64"}).URL(Syft); got != "https://github.com/anchore/syft/releases/download/"+templates.SyftVersion+"/syft_"+strings.TrimPrefix(templates.SyftVersion, "v")+"_linux_amd64.tar.gz" {
+	def := New()
+	def.GOOS, def.GOARCH = "linux", "amd64"
+	if got := def.URL(Syft); got != "https://github.com/anchore/syft/releases/download/"+templates.SyftVersion+"/syft_"+strings.TrimPrefix(templates.SyftVersion, "v")+"_linux_amd64.tar.gz" {
 		t.Errorf("default URL = %s", got)
 	}
 }

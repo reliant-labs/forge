@@ -25,8 +25,9 @@ command, a lint lane, a marker, a skill, a library or a file. A test
 resolves every piece of evidence against the forge binary and this
 repository, so an entry whose backing code is removed fails the build
 instead of going stale. It is not a tutorial:
-[getting-started](getting-started.md) walks the first project and
-[concepts](concepts.md) explains why Forge is shaped the way it is.
+[getting-started](getting-started.md) walks the first project,
+[concepts](concepts.md) explains why Forge is shaped the way it is, and
+[why-forge](why-forge.md) is the argument these entries back.
 
 This page is generated from `internal/benefits/benefits.yaml`: to change
 it, edit the YAML and run `task docs:benefits`.
@@ -3005,12 +3006,32 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `forge env deploy <env> --release <older> --note "<why>"`
 
-**Why:** There is no rollback command and no down migration, deliberately; the plan and the ledger label an older release `direction BEHIND`. A per-env rollback floor ("never deploy anything older than X") is designed and not shipped; do not cite it until it is.
+**Why:** There is no rollback command and no down migration, deliberately; the plan and the ledger label an older release `direction BEHIND`. How far back an env may go is a rollback floor (`rollback-floors`): a deploy below one is refused before anything is built.
 
 **Evidence:**
 
 - command `forge env deploy --note`
 - lint lane `forge lint --migration-safety`
+
+<a id="rollback-floors"></a>
+
+### Rollback floors per environment
+
+A rollback floor refuses every deploy of a release older than it to one environment before anything is built: set one by hand or with `forge env deploy --floor`, and promoting a release that carries a `forge:breaks-rollback` migration or a `deploy/rollback-floors/<id>.yaml` declaration raises one on its own.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge env deploy <env> <release> --floor "<why>"`, or `forge env floor set <env> --current --reason "<why>"`
+
+**Why:** There is no `--force` on deploy: lowering or lifting a floor is its own act, recorded with its reason and principal on the ledger and in the activity stream, and `forge env floor check <env> <release>` asks the same question before a pipeline tags.
+
+**Evidence:**
+
+- command `forge env floor`
+- command `forge env floor check`
+- command `forge env deploy --floor`
+- skill `deploy/rollback-floor` (`forge skill load deploy/rollback-floor`)
+- source [`internal/cli/env_floor.go`](../internal/cli/env_floor.go)
 
 <a id="release-health-gate"></a>
 
@@ -3798,14 +3819,19 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="continuous-profiling"></a>
 
-### Continuous profiling, no setup
+### Continuous CPU and heap profiling
 
-Every process samples a CPU profile every five minutes and a heap snapshot every two hours over OTLP, and `forge obs profile` exports pprof, speedscope or collapsed stacks.
+With profiling on, every process samples a CPU profile every five minutes and a heap snapshot every two hours over OTLP, and `forge obs profile` exports pprof, speedscope or collapsed stacks; it is on by default with the local ClickStack, and one line turns it on for a hosted or cluster env.
 
 _Enforced · Forge, on any infrastructure_
 
+**Use:** `observability = forge.Observability { signals = forge.ObservabilitySignals { profiles = True } }` in the env's `main.k`
+
+**Why:** An unset `signals.profiles` means "on where forge runs the store": on in a dev env with the local ClickStack, off on a destination, a cluster or `forge.OnHosted` until the env says `profiles = True`.
+
 **Evidence:**
 
+- source [`kcl/schema.k`](../kcl/schema.k)
 - command `forge obs profile`
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
 - library [`pkg/profilequery`](../pkg/profilequery)
@@ -3815,7 +3841,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Profile-guided builds from production
 
-`forge pgo pull` turns the CPU profiles your env already collects into each Go binary's `cmd/<bin>/default.pgo`, which you commit; every build automatically uses the committed profile, so the compiler optimizes (inlining, devirtualization) the call sites production runs hot, and a build never depends on a live profile store.
+`forge pgo pull` turns the CPU profiles your env collects into each Go binary's `cmd/<bin>/default.pgo`, which you commit; every build automatically uses the committed profile, so the compiler optimizes (inlining, devirtualization) the call sites production runs hot, and a build never depends on a live profile store.
 
 _Enforced · Forge, on any infrastructure_
 

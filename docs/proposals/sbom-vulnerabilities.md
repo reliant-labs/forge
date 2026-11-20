@@ -954,6 +954,37 @@ day one to every current holder of `deploy:read` (2.4).
 The owner's framing: vulnerabilities and SBOMs are a forge feature given by
 default. When forge scaffolds someone's code, they get all of it.
 
+### Implementation decisions (owner, 2026-11-20)
+
+These came up during implementation. The owner took the recommended option on
+each one, and they are settled.
+
+1. **A source-tree SBOM is release evidence (F5).** `forge release record
+   --sbom-source <dir>` records the SBOM as `Release.SourceSBOM`, which is
+   evidence outside the release's identity. It never adds an artifact, so
+   recording the same version with or without the flag is the same release.
+2. **Bundles carry no SBOM (C7).** Delivery bundles hold rendered config, not
+   packages, and section 1.1 gives them no SBOM. The images and sites a bundle
+   deploys carry their own. If a bundle referrer is ever wanted, the control
+   plane attaches it with its publisher identity. sigguard is never loosened
+   for tenants on `bundle.v1/` paths.
+3. **forge's tool pins are a public package (F1b).** `pkg/toolpins` exports the
+   syft and grype release pins: versions, archives, sha256. It is held to v1
+   semver. control-plane's scanner image asserts its grype pin against it, so
+   the two cannot drift.
+4. **`provenance_sbom` defaults to `audit`.** The recorded release shape
+   cannot tell an explicit `enforce` from the schema default, and no release
+   ever evaluated the control. So the KCL default moves to `audit` before any
+   enforcement ships (F6). This applies decision 5's rule: a control that can
+   refuse a deploy defaults to `audit`.
+5. **The control-plane SBOM copies and the grype DB mirror live in a
+   dedicated bucket,** `reliant-prod-vulnerabilities` (C3, C4).
+6. **Navigation.** The web app shows vulnerabilities and SBOMs under a
+   **Security** section of the project nav. It is visible before any scan,
+   with a "not scanned yet" state. It is not a separate Vulnerabilities row
+   that hides on an empty read (this supersedes W2's "hidden on a definite
+   empty read").
+
 ## Phase 0 results and amendments (2026-11-20)
 
 Phase 0 (tasks 0.1 and 0.2) confirmed syft + grype and the referrer with the

@@ -183,6 +183,11 @@ processors:
       statements:
       - convert_gauge_to_sum("cumulative", true) where metric.type == METRIC_DATA_TYPE_GAUGE
         and IsMatch(metric.name, "^(?:(?:num_goroutines))$$")
+    - context: datapoint
+      statements:
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"])
+        where datapoint.attributes["forge_k8s_namespace"] != nil
+      - delete_key(datapoint.attributes, "forge_k8s_namespace")
   transform/telemetry_target/zitadel:
     error_mode: ignore
     metric_statements:
@@ -191,6 +196,11 @@ processors:
       - set(attributes["service.name"], "zitadel")
       - set(attributes["deployment.environment.name"], "dev")
       - set(attributes["service.namespace"], "acme")
+    - context: datapoint
+      statements:
+      - set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"])
+        where datapoint.attributes["forge_k8s_namespace"] != nil
+      - delete_key(datapoint.attributes, "forge_k8s_namespace")
 receivers:
   prometheus/telemetry_temporal:
     config:
@@ -248,7 +258,7 @@ receivers:
         - action: replace
           source_labels:
           - __meta_kubernetes_namespace
-          target_label: namespace
+          target_label: forge_k8s_namespace
         sample_limit: 20000
         scheme: http
         scrape_interval: 30s
@@ -303,7 +313,7 @@ receivers:
         - action: replace
           source_labels:
           - __meta_kubernetes_namespace
-          target_label: namespace
+          target_label: forge_k8s_namespace
         sample_limit: 5000
         scheme: http
         scrape_interval: 30s

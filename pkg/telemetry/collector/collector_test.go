@@ -152,6 +152,46 @@ func TestTargetTransformsDoNotCollideWithSharedProcessors(t *testing.T) {
 	}
 }
 
+// A pod scrape never stamps a target label an exporter may also write: the
+// pod's namespace goes under NamespaceLabel, which the target's transform
+// moves to k8s.namespace.name, so an exporter's own `namespace` survives
+// instead of being renamed exported_namespace. An address scrape stamps
+// neither and moves nothing.
+func TestPodScrapeKeepsExportersNamespaceLabel(t *testing.T) {
+	f := mustBuild(t, []telemetry.Target{clusterManifests()}, clusterOptions())
+	job := f.Receivers["prometheus/telemetry_temporal"].(map[string]any)["config"].(map[string]any)["scrape_configs"].([]any)[0].(map[string]any)
+	if job["honor_labels"] != nil {
+		t.Errorf("honor_labels = %v: a scraped pod must not override the target labels", job["honor_labels"])
+	}
+	targets := map[string]string{}
+	for _, r := range job["relabel_configs"].([]any) {
+		r := r.(map[string]any)
+		if l, ok := r["target_label"].(string); ok && l != "__address__" {
+			targets[l] = fmt.Sprint(r["source_labels"])
+		}
+	}
+	if want := map[string]string{"pod": "[__meta_kubernetes_pod_name]", "forge_k8s_namespace": "[__meta_kubernetes_namespace]"}; fmt.Sprint(targets) != fmt.Sprint(want) {
+		t.Errorf("target labels = %v, want %v (never `namespace`, which exporters write)", targets, want)
+	}
+
+	groups := f.Processors["transform/telemetry_target/temporal"].(map[string]any)["metric_statements"].([]any)
+	last := groups[len(groups)-1].(map[string]any)
+	want := []any{
+		`set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"]) where datapoint.attributes["forge_k8s_namespace"] != nil`,
+		`delete_key(datapoint.attributes, "forge_k8s_namespace")`,
+	}
+	if last["context"] != "datapoint" || fmt.Sprint(last["statements"]) != fmt.Sprint(want) {
+		t.Errorf("last metric group = %v, want the datapoint move %v", last, want)
+	}
+
+	host := mustBuild(t, hostTargets(), hostOptions())
+	for name, p := range host.Processors {
+		if strings.Contains(fmt.Sprint(p), "forge_k8s_namespace") {
+			t.Errorf("host processor %s moves forge_k8s_namespace, which only a pod scrape stamps", name)
+		}
+	}
+}
+
 func TestNetworkPoliciesGolden(t *testing.T) {
 	ref := CollectorRef{Namespace: "forge-observability", PodLabels: map[string]string{"app.kubernetes.io/name": "otel-agent"}}
 	noNS := clusterSecured()

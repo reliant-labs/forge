@@ -21,8 +21,10 @@
 //     one per pod, on the declared port whether or not the pod spec declares it).
 //     Each target gets its own `metrics/telemetry_<service>` pipeline, whose
 //     `transform/telemetry_target/<service>` stamps service.name (and the env's
-//     resource attributes when the target's scope is project) and converts the
-//     declared `counters` gauges to cumulative sums.
+//     resource attributes when the target's scope is project), converts the
+//     declared `counters` gauges to cumulative sums, and moves a pod scrape's
+//     namespace to the resource's k8s.namespace.name (leaving an exporter's
+//     own `namespace` label as the exporter wrote it).
 //   - profiles (alpha; only with Options.EnableProfiles): `pprof` receivers,
 //     through `receiver_creator` + `k8s_observer` for pods, in a
 //     `profiles/telemetry_<service>` pipeline.
@@ -67,6 +69,11 @@ const (
 	// k8sattributes to extract; IdentityProcessor deletes them after use, so
 	// they are never stored.
 	LabelAttributePrefix = "forge.telemetry.label."
+	// NamespaceLabel is the target label a pod scrape stamps the pod's
+	// namespace under, reserved so it never displaces an exporter's own
+	// `namespace` label. The target's transform moves it to the resource
+	// attribute k8s.namespace.name, so it is never stored.
+	NamespaceLabel = "forge_k8s_namespace"
 	// DefaultNodeNameEnv is the env var holding the node's name in a
 	// per-node collector (the downward API's spec.nodeName).
 	DefaultNodeNameEnv = "K8S_NODE_NAME"
@@ -408,6 +415,9 @@ func (b *builder) targetTransform(t telemetry.Target, metrics, profiles bool) ma
 			re := "^(?:" + strings.Join(counters, "|") + ")$"
 			groups = append(groups, map[string]any{"context": "metric", "statements": strs(lit(
 				`convert_gauge_to_sum("cumulative", true) where metric.type == METRIC_DATA_TYPE_GAUGE and IsMatch(metric.name, ` + ottlString(re) + `)`))})
+		}
+		if b.pods(t) && len(t.Metrics) > 0 {
+			groups = append(groups, map[string]any{"context": "datapoint", "statements": strs(lits(namespaceStatements())...)})
 		}
 		out["metric_statements"] = groups
 	}

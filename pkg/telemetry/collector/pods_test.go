@@ -77,7 +77,9 @@ func mustAtoi(t *testing.T, s string) int {
 // pod discovery's (one per declared container port, one port-free per
 // container that declares none, an init container's, a pod that is not
 // running), none of which declares the scrape port, yield exactly one
-// scrape per running pod, on the scrape port, with only per-pod labels.
+// scrape per running pod, on the scrape port, with only per-pod labels; and
+// the exporter's own `namespace` label survives as written while the pod's
+// namespace lands on the resource as k8s.namespace.name.
 // Static targets stand in for kubernetes_sd_configs, which needs an API
 // server; the relabels are the generated ones, unchanged.
 func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
@@ -87,7 +89,9 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		_, _ = fmt.Fprintln(w, "# TYPE app_ready gauge\napp_ready 1")
+		// Like Flux or cert-manager, the exporter reports on objects in
+		// another namespace and labels them with it.
+		_, _ = fmt.Fprintln(w, "# TYPE app_ready gauge\napp_ready{namespace=\"flux-system\"} 1")
 	}))
 	defer srv.Close()
 	_, portText, err := net.SplitHostPort(srv.Listener.Addr().String())
@@ -137,11 +141,13 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out.json")
+	transform := "transform/telemetry_target/web"
 	cfg := map[string]any{
-		"receivers": map[string]any{"prometheus/telemetry_web": recv},
-		"exporters": map[string]any{"file": map[string]any{"path": out}},
+		"receivers":  map[string]any{"prometheus/telemetry_web": recv},
+		"processors": map[string]any{transform: f.Processors[transform]},
+		"exporters":  map[string]any{"file": map[string]any{"path": out}},
 		"service": map[string]any{"pipelines": map[string]any{
-			"metrics": map[string]any{"receivers": strs("prometheus/telemetry_web"), "exporters": strs("file")},
+			"metrics": map[string]any{"receivers": strs("prometheus/telemetry_web"), "processors": strs(transform), "exporters": strs("file")},
 		}},
 	}
 	path := filepath.Join(dir, "config.yaml")
@@ -175,7 +181,7 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 	// scraped twice, c and d would have been scraped too, were they kept.
 	var ups []upPoint
 	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); time.Sleep(300 * time.Millisecond) {
-		ups = readUps(out)
+		ups = readPoints(out, "up")
 		if n := countBy(ups); n["a"] >= 2 && n["b"] >= 2 {
 			break
 		}
@@ -202,8 +208,11 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if fmt.Sprint(keys) != "[namespace pod]" {
-			t.Errorf("pod %s: up attributes %v, want only the per-pod pod and namespace (a per-container label splits the pod into several targets)", u.Pod, u.Attrs)
+		if fmt.Sprint(keys) != "[pod]" {
+			t.Errorf("pod %s: up attributes %v, want only the per-pod pod (a per-container label splits the pod into several targets; the namespace is the resource's)", u.Pod, u.Attrs)
+		}
+		if ns := u.Resource["k8s.namespace.name"]; ns != "shop" {
+			t.Errorf("pod %s: up resource k8s.namespace.name = %q, want the pod's namespace, shop", u.Pod, ns)
 		}
 		series[fmt.Sprint(u.Instance, u.Attrs)] = true
 	}
@@ -212,6 +221,24 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 	if len(series) != 2 {
 		t.Errorf("up series = %v, want one per pod (a and b)", series)
 	}
+
+	ready := readPoints(out, "app_ready")
+	if len(ready) == 0 {
+		t.Fatalf("no app_ready samples\ncollector output:\n%s", stderr.String())
+	}
+	for _, p := range ready {
+		if ns := p.Attrs["namespace"]; ns != "flux-system" {
+			t.Errorf("pod %s: app_ready namespace = %q, want the exporter's own flux-system (attributes %v)", p.Pod, ns, p.Attrs)
+		}
+		for _, k := range []string{"exported_namespace", "forge_k8s_namespace"} {
+			if v, ok := p.Attrs[k]; ok {
+				t.Errorf("pod %s: app_ready carries %s=%q: the pod's namespace displaced the exporter's, or was not moved", p.Pod, k, v)
+			}
+		}
+		if ns := p.Resource["k8s.namespace.name"]; ns != "shop" {
+			t.Errorf("pod %s: app_ready resource k8s.namespace.name = %q, want the pod's namespace, shop", p.Pod, ns)
+		}
+	}
 }
 
 type upPoint struct {
@@ -219,6 +246,7 @@ type upPoint struct {
 	Instance string
 	Value    float64
 	Attrs    map[string]string
+	Resource map[string]string
 }
 
 func countBy(ups []upPoint) map[string]int {
@@ -229,9 +257,9 @@ func countBy(ups []upPoint) map[string]int {
 	return n
 }
 
-// readUps is every `up` sample the file exporter wrote to path, with its
-// datapoint attributes and its resource's service.instance.id.
-func readUps(path string) []upPoint {
+// readPoints is every gauge sample of metric the file exporter wrote to
+// path, with its datapoint and resource attributes.
+func readPoints(path, metric string) []upPoint {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -276,12 +304,12 @@ func readUps(path string) []upPoint {
 			res := kvs(rm.Resource.Attributes)
 			for _, sm := range rm.ScopeMetrics {
 				for _, m := range sm.Metrics {
-					if m.Name != "up" {
+					if m.Name != metric {
 						continue
 					}
 					for _, dp := range m.Gauge.DataPoints {
 						attrs := kvs(dp.Attributes)
-						u := upPoint{Pod: attrs["pod"], Instance: res["service.instance.id"], Attrs: attrs}
+						u := upPoint{Pod: attrs["pod"], Instance: res["service.instance.id"], Attrs: attrs, Resource: res}
 						if dp.AsDouble != nil {
 							u.Value = *dp.AsDouble
 						}

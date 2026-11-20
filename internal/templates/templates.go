@@ -692,6 +692,13 @@ type FrontendTemplateData struct {
 	// module, or one scaffolded before api-base.ts existed: its own auth
 	// decides who the user is (identifyUser / setTelemetryUser).
 	IdentifySession bool
+	// DevLogFromRuntime selects the Vite dev server's browser-log receiver:
+	// true imports forgeDevLog() from @reliantlabs/forge-web-runtime/vite
+	// (and the scaffold writes no src/lib/devlog-plugin.ts), false wires the
+	// inlined src/lib/devlog-plugin.ts. The generator sets it from the
+	// runtime floor it scaffolds (viteDevLogFromRuntime), so a new project
+	// never imports what the runtime it installs lacks.
+	DevLogFromRuntime bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

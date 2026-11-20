@@ -135,6 +135,19 @@ type FrontendGenOptions struct {
 	// answer "signed out" without an issuer, and are what gating the
 	// frontend later re-attaches to.
 	Public bool
+
+	// webRuntimeFloor overrides the runtime floor the scaffold is rendered
+	// against (default webRuntimePublishedRange). Tests only: it lets the
+	// floor-gated choices (viteDevLogFromRuntime) be exercised offline.
+	webRuntimeFloor string
+}
+
+// runtimeFloor is the runtime floor this render scaffolds against.
+func (o FrontendGenOptions) runtimeFloor() string {
+	if o.webRuntimeFloor != "" {
+		return o.webRuntimeFloor
+	}
+	return webRuntimePublishedRange
 }
 
 // FrontendTypedConfig tells the frontend templates which typed config
@@ -285,6 +298,8 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// otel_gen.ts that reads these, so the scaffold renders what the
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
+
+		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(opts.runtimeFloor()),
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage
@@ -312,6 +327,10 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// member's own file would make it a second workspace root, splitting
 		// it from packages/* and its `workspace:*` dependencies.
 		if opts.Workspaces && file.Rel == "pnpm-workspace.yaml.tmpl" {
+			continue
+		}
+		// The runtime ships the dev-log receiver once the floor admits it.
+		if data.DevLogFromRuntime && file.Rel == inlinedDevLogPlugin {
 			continue
 		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even

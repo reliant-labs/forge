@@ -392,12 +392,6 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 		// The parent upgrade made the pin decision and said so.
 		return nil
 	}
-	if upgradeRuns(rel) {
-		// `project upgrade` runs as this forge by design: a forge it starts
-		// for its own use (the descriptor plugin of --check) is this forge
-		// too, not the pin it is moving away from. See forgeChildOfEnv.
-		markChildrenRunThisForge()
-	}
 	_, _ = fmt.Fprint(w, pinSkewNotice(cmd, rel, projectRoot, pin, binary, overridden))
 	return nil
 }
@@ -426,12 +420,19 @@ func upgradeRuns(rel string) bool {
 // delegate, an unrelated forge on PATH — ignores the variable.
 const forgeChildOfEnv = "FORGE_CHILD_OF"
 
-// markChildrenRunThisForge sets forgeChildOfEnv for every process this one
-// starts from here on. A seam so tests can watch it without leaking the
-// variable into the process.
-var markChildrenRunThisForge = func() {
+// markChildrenRunThisForge scopes the child marker to the upgrade execution.
+// The caller must defer the returned restore function, including on errors.
+func markChildrenRunThisForge() func() {
+	previous, present := os.LookupEnv(forgeChildOfEnv)
 	if id := forgeIdentity(buildinfo.Version()); id != "" {
 		_ = os.Setenv(forgeChildOfEnv, id)
+	}
+	return func() {
+		if present {
+			_ = os.Setenv(forgeChildOfEnv, previous)
+		} else {
+			_ = os.Unsetenv(forgeChildOfEnv)
+		}
 	}
 }
 

@@ -346,23 +346,14 @@ func TestChildOfThisForgeRunsHere(t *testing.T) {
 	if childOfThisForge() {
 		t.Fatal("no marker: not a child")
 	}
-	var marked string
-	saved := markChildrenRunThisForge
-	markChildrenRunThisForge = func() { marked = forgeIdentity(buildinfo.Version()) }
-	t.Cleanup(func() { markChildrenRunThisForge = saved })
-	if err := guardVerdict(t, "project", "audit"); err != nil {
-		t.Fatal(err)
-	}
-	if marked != "" {
-		t.Fatalf("only project upgrade marks its children, got %q after project audit", marked)
-	}
 	if err := guardVerdict(t, "project", "upgrade", "--check"); err != nil {
 		t.Fatal(err)
 	}
-	if marked != forgeIdentity(skewTestBinary) {
-		t.Fatalf("project upgrade under skew must mark children with this forge's identity, got %q", marked)
+	if childOfThisForge() {
+		t.Fatal("the skew check must not mark the parent as a child")
 	}
-	t.Setenv(forgeChildOfEnv, marked)
+	restore := markChildrenRunThisForge()
+	defer restore()
 	if !childOfThisForge() {
 		t.Error("a child of this forge must run here")
 	}
@@ -389,8 +380,33 @@ func TestProjectUpgradeListAcceptsAllowVersionSkew(t *testing.T) {
 	}
 }
 
-// The in-process tests run checkForgePinSkew under skew many times; the real
-// marker would leak FORGE_CHILD_OF into the test process and turn every later
-// skew check into a silent child run. TestChildOfThisForgeRunsHere swaps in
-// its own recorder.
-func init() { markChildrenRunThisForge = func() {} }
+func TestUpgradeChildMarkerRestoresEnvironment(t *testing.T) {
+	for _, initial := range []string{"", "another-forge"} {
+		t.Run(initial, func(t *testing.T) {
+			skewedProject(t)
+			t.Setenv(forgeChildOfEnv, initial)
+			if initial == "" {
+				if err := os.Unsetenv(forgeChildOfEnv); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, present := os.LookupEnv(forgeChildOfEnv)
+			func() {
+				restore := markChildrenRunThisForge()
+				defer restore()
+				if !childOfThisForge() {
+					t.Fatal("upgrade children must inherit this forge's identity")
+				}
+			}()
+			if err := runUpgradeCommand(nil, upgradeOptions{skip: map[string]bool{"invalid-phase": true}}, false); err == nil {
+				t.Fatal("expected invalid-phase upgrade to fail")
+			}
+			if got, exists := os.LookupEnv(forgeChildOfEnv); got != before || exists != present {
+				t.Fatalf("marker not restored after failed upgrade: got (%q, %v), want (%q, %v)", got, exists, before, present)
+			}
+			if childOfThisForge() {
+				t.Fatal("later commands must not be treated as upgrade children")
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"regexp"
 	"sort"
@@ -137,13 +138,17 @@ func NetworkPolicies(targets []telemetry.Target, c CollectorRef) (policies []map
 
 var notDNS = regexp.MustCompile(`[^a-z0-9-]+`)
 
-// policyName is "telemetry-<service>" as a DNS-1123 label.
+// policyName includes the original service's digest: punctuation folding and
+// truncation can map distinct services to the same readable DNS label prefix.
 func policyName(svc string) string {
-	n := "telemetry-" + strings.Trim(notDNS.ReplaceAllString(strings.ToLower(svc), "-"), "-")
-	if len(n) > 63 {
-		n = strings.TrimRight(n[:63], "-")
+	const prefix = "telemetry-"
+	sum := sha256.Sum256([]byte(svc))
+	suffix := fmt.Sprintf("-%x", sum[:8])
+	name := prefix + strings.Trim(notDNS.ReplaceAllString(strings.ToLower(svc), "-"), "-")
+	if limit := 63 - len(suffix); len(name) > limit {
+		name = name[:limit]
 	}
-	return n
+	return strings.TrimRight(name, "-") + suffix
 }
 
 // labelValue is svc cut to a label value's 63 characters.

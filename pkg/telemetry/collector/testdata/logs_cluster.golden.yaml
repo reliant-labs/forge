@@ -143,17 +143,23 @@ processors:
       - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where log.attributes["forge.telemetry.parsed"]["level"]
         != nil
       - set(log.severity_number, SEVERITY_NUMBER_TRACE) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:trace)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:trace)$$")
       - set(log.severity_number, SEVERITY_NUMBER_DEBUG) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:debug)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:debug)$$")
       - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:info|information)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:info|information)$$")
       - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:warn|warning)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:warn|warning)$$")
       - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:error|err)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:error|err)$$")
       - set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.attributes["forge.telemetry.parsed"]["level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["level"], "(?i)^(?:fatal|critical|crit|panic)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["level"]),
+        "(?i)^(?:fatal|critical|crit|panic)$$")
       - set(log.body, log.attributes["forge.telemetry.parsed"]["msg"]) where log.attributes["forge.telemetry.parsed"]["msg"]
         != nil
       - set(log.attributes["forge.telemetry.rule"], 0) where log.attributes["forge.telemetry.rule"]
@@ -194,17 +200,23 @@ processors:
       - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where log.attributes["forge.telemetry.parsed"]["@level"]
         != nil
       - set(log.severity_number, SEVERITY_NUMBER_TRACE) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:trace)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:trace)$$")
       - set(log.severity_number, SEVERITY_NUMBER_DEBUG) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:debug)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:debug)$$")
       - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:info|information)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:info|information)$$")
       - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:warn|warning)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:warn|warning)$$")
       - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:error|err)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:error|err)$$")
       - set(log.severity_number, SEVERITY_NUMBER_FATAL) where log.attributes["forge.telemetry.parsed"]["@level"]
-        != nil and IsMatch(log.attributes["forge.telemetry.parsed"]["@level"], "(?i)^(?:fatal|critical|crit|panic)$$")
+        != nil and IsMatch(String(log.attributes["forge.telemetry.parsed"]["@level"]),
+        "(?i)^(?:fatal|critical|crit|panic)$$")
       - set(log.body, log.attributes["forge.telemetry.parsed"]["@message"]) where
         log.attributes["forge.telemetry.parsed"]["@message"] != nil
       - delete_key(log.attributes, "@timestamp")

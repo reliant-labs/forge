@@ -274,7 +274,9 @@ func logStatements(l telemetry.LogParse) []string {
 				quoted[i] = regexp.QuoteMeta(v)
 			}
 			re := "(?i)^(?:" + strings.Join(quoted, "|") + ")$"
-			out = append(out, fmt.Sprintf(`set(log.severity_number, %s) where %s != nil and IsMatch(%s, %s)`, severityEnums[sev], f, f, ottlString(re)))
+			// Match the same string conversion we expose as severity_text,
+			// including numeric JSON fields such as cert-manager's verbosity.
+			out = append(out, fmt.Sprintf(`set(log.severity_number, %s) where %s != nil and IsMatch(String(%s), %s)`, severityEnums[sev], f, f, ottlString(re)))
 		}
 		consumed = append(consumed, s.Field)
 	}

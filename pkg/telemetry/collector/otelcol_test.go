@@ -201,7 +201,16 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 			Body:      "msg",
 		},
 	}
-	f := mustBuild(t, []telemetry.Target{natsT, hostRenamed(), temporal, cnpg, mongo}, hostOptions())
+	certManager := telemetry.Target{
+		ServiceName: "cert-manager", Scope: telemetry.ScopePlatform, Source: "hostinfra:cert-manager",
+		Attachment: telemetry.AttachHostInfra, Runtime: telemetry.RuntimeHost, Address: "127.0.0.1",
+		Logs: &telemetry.LogParse{
+			Format:   "json",
+			Severity: &telemetry.LogSeverity{Field: "v", Mapping: map[string][]string{"debug": {"2"}}},
+			Body:     "message",
+		},
+	}
+	f := mustBuild(t, []telemetry.Target{natsT, hostRenamed(), temporal, cnpg, mongo, certManager}, hostOptions())
 
 	dir := t.TempDir()
 	logs := filepath.Join(dir, "logs", "dev")
@@ -209,19 +218,20 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"nats.log":     "[42] 2026/11/20 05:00:00.123456 [WRN] slow consumer detected\n",
-		"worker.log":   `level=warning msg="charge retried" trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7 invoice=inv_1` + "\n",
-		"temporal.log": `{"level":"error","ts":1763614800.5,"msg":"Workflow execution not found","logging-call-at":"handler.go:42"}` + "\n" + `{"level":"error","ts":1763614801.25,"msg":"persistence failed","error":"context canceled"}` + "\n" + `{"level":"error","ts":1763614802,"msg":"shard lost"}` + "\n",
-		"postgres.log": `{"level":"info","ts":"2026-11-20T05:00:03.5Z","logger":"postgres","record":{"error_severity":"ERROR","message":"duplicate key value"}}` + "\n",
-		"mongo.log":    `{"t":{"$date":"2026-11-20T05:00:04.000+00:00"},"s":"W","c":"NETWORK","msg":"slow query"}` + "\n",
-		"other.log":    `{"time":"2026-11-20T05:00:05Z","level":"info","msg":"untouched","keep":"me"}` + "\n",
+		"nats.log":         "[42] 2026/11/20 05:00:00.123456 [WRN] slow consumer detected\n",
+		"worker.log":       `level=warning msg="charge retried" trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7 invoice=inv_1` + "\n",
+		"temporal.log":     `{"level":"error","ts":1763614800.5,"msg":"Workflow execution not found","logging-call-at":"handler.go:42"}` + "\n" + `{"level":"error","ts":1763614801.25,"msg":"persistence failed","error":"context canceled"}` + "\n" + `{"level":"error","ts":1763614802,"msg":"shard lost"}` + "\n",
+		"postgres.log":     `{"level":"info","ts":"2026-11-20T05:00:03.5Z","logger":"postgres","record":{"error_severity":"ERROR","message":"duplicate key value"}}` + "\n",
+		"mongo.log":        `{"t":{"$date":"2026-11-20T05:00:04.000+00:00"},"s":"W","c":"NETWORK","msg":"slow query"}` + "\n",
+		"cert-manager.log": `{"v":2,"message":"certificate cache hit"}` + "\n",
+		"other.log":        `{"time":"2026-11-20T05:00:05Z","level":"info","msg":"untouched","keep":"me"}` + "\n",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(logs, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	recs, output := runLogs(t, col, dir, hostChain(f.Logs.Preserve), f.Processors, f.Logs.Processors, filepath.Join(logs, "*.log"), 8)
+	recs, output := runLogs(t, col, dir, hostChain(f.Logs.Preserve), f.Processors, f.Logs.Processors, filepath.Join(logs, "*.log"), 9)
 
 	by := func(body string) record {
 		t.Helper()
@@ -287,6 +297,8 @@ func TestLogsFragmentParsesInThePinnedCollector(t *testing.T) {
 	}
 	// a `$` key and a short-code mapping.
 	check(by("slow query"), "mongo", 13, "W", nanos("2026-11-20T05:00:04Z"))
+	// A numeric JSON field matches the declared string verbosity mapping.
+	check(by("certificate cache hit"), "cert-manager", 5, "2", "")
 	// No target: the generic stage alone.
 	o := by("untouched")
 	check(o, "other", 9, "info", nanos("2026-11-20T05:00:05Z"))

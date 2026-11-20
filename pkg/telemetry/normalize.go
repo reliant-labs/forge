@@ -98,12 +98,8 @@ func normalizeTarget(t Target) Target {
 		if m.SampleLimit == 0 {
 			m.SampleLimit = DefaultSampleLimit
 		}
-		if m.LabelLimit == 0 {
-			m.LabelLimit = DefaultLabelLimit
-		}
-		if m.LabelValueLengthLimit == 0 {
-			m.LabelValueLengthLimit = DefaultLabelValueLengthLimit
-		}
+		m.LabelLimit = normalizeLimit(m.LabelLimit, DefaultLabelLimit)
+		m.LabelValueLengthLimit = normalizeLimit(m.LabelValueLengthLimit, DefaultLabelValueLengthLimit)
 		params := make(map[string][]string, len(m.Params))
 		for k, v := range m.Params {
 			params[k] = cloneStrings(v)
@@ -205,8 +201,20 @@ func normalizeMount(m *SecretMount) *SecretMount {
 		return nil
 	}
 	c := *m
-	c.Path = path.Join(c.Secret, c.Key)
+	// Invalid references remain diagnosable by Validate, but never acquire a
+	// usable path outside the collector's secrets directory.
+	c.Path = ""
+	if safeSecretComponent(c.Secret) && safeSecretComponent(c.Key) {
+		c.Path = path.Join(c.Secret, c.Key)
+	}
 	return &c
+}
+
+func normalizeLimit(value *int, fallback int) *int {
+	if value != nil {
+		fallback = *value
+	}
+	return &fallback
 }
 
 func normalizeTLS(t *TLS) *TLS {

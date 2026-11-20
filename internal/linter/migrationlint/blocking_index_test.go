@@ -19,9 +19,19 @@ func TestBlockingIndexBuild(t *testing.T) {
 		{"unnamed index", "create index on products (name);", 1},
 		{"concurrently", "CREATE INDEX CONCURRENTLY idx_products_name ON products (name);", 0},
 		{"table created in the same file", "CREATE TABLE products (id text PRIMARY KEY, name text);\nCREATE INDEX idx_products_name ON products (name);", 0},
-		{"quoted table created in the same file", "CREATE TABLE IF NOT EXISTS public.\"Products\" (id text);\nCREATE INDEX i ON \"Products\" (id);", 0},
+		{"quoted table created in the same file", "CREATE TABLE public.\"Products\" (id text);\nCREATE INDEX i ON \"Products\" (id);", 0},
 		{"another table created in the same file", "CREATE TABLE orders (id text);\nCREATE INDEX i ON products (name);", 1},
 		{"in a comment", "-- CREATE INDEX i ON products (name);\nSELECT 1;", 0},
+		// Emptiness is proved only up to the first statement that could
+		// write a row: an INSERT (or any DML, or a function call) before the
+		// index ends it.
+		{"created, then filled, then indexed", "CREATE TABLE products (id text, name text);\nINSERT INTO products VALUES ('a', 'b');\nCREATE INDEX i ON products (name);", 1},
+		{"created, a function call, then indexed", "CREATE TABLE products (id text);\nSELECT backfill_products();\nCREATE INDEX i ON products (id);", 1},
+		{"created, row-free DDL, then indexed", "CREATE TABLE products (id text);\nALTER TABLE products ADD COLUMN name text;\nCOMMENT ON TABLE products IS 'x';\nCREATE INDEX i ON products (name);", 0},
+		{"indexed before the file creates it", "CREATE INDEX i ON products (name);\nCREATE TABLE IF NOT EXISTS products (id text, name text);", 1},
+		{"CREATE TABLE IF NOT EXISTS proves nothing", "CREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);", 1},
+		{"CREATE TABLE AS creates it full", "CREATE TABLE products AS SELECT * FROM old_products;\nCREATE INDEX i ON products (id);", 1},
+		{"a generated column is not CREATE TABLE AS", "CREATE TABLE products (id text, n int GENERATED ALWAYS AS (1) STORED);\nCREATE INDEX i ON products (id);", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

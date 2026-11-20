@@ -17,10 +17,13 @@ import (
 //
 // Static analysis cannot know a table's size, so the finding is a WARNING at
 // any pin: an index on a table that is still empty in every environment is
-// fine as written. What it can know is whether the table is new: one this
-// same file creates holds no rows, so building its index plainly is right and
-// is not reported. lint.rules raises the rule to an error for a project that
-// wants it to gate.
+// fine as written. The one emptiness it can prove is local: a table this
+// file creates with a plain CREATE TABLE, indexed before any statement that
+// could put a row in it. Only DDL that writes no rows may come between
+// (writesNoRows); an INSERT, a COPY, a function call, CREATE TABLE … AS or
+// CREATE TABLE IF NOT EXISTS (a no-op over a table that may be full) ends the
+// proof, and the index is reported. lint.rules raises the rule to an error
+// for a project that wants it to gate.
 
 // RuleBlockingIndexBuild is the rule ID for a non-concurrent CREATE INDEX on a
 // table this migration did not create.
@@ -32,7 +35,11 @@ const BlockingIndexBuildRemediation = "build the index with CREATE INDEX CONCURR
 
 var (
 	createIndexRe = regexp.MustCompile(`(?is)^\s*create\s+(?:unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+)?on\s+(?:only\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
-	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+(?:if\s+not\s+exists\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
+	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+(if\s+not\s+exists\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
+	// ctasRe matches CREATE TABLE … AS <query> (and SELECT … INTO's twin):
+	// "as" followed by a query, never a column's GENERATED … AS (expr).
+	ctasRe         = regexp.MustCompile(`(?is)^\s*create\b[^;]*?\btable\b[^;]*?\bas\s*\(?\s*(?:select|with|values|table|execute)\b`)
+	materializedRe = regexp.MustCompile(`(?is)^\s*create\s+(?:or\s+replace\s+)?materialized\s+view\b`)
 )
 
 // relationKey normalises a possibly schema-qualified, possibly quoted
@@ -56,13 +63,35 @@ func relationKey(name string) string {
 	return strings.ToLower(name)
 }
 
-// createdTable reports the table a CREATE TABLE statement creates.
+// createdTable reports the table a statement creates EMPTY: a plain CREATE
+// TABLE. Not CREATE TABLE IF NOT EXISTS (a no-op over a table that may hold
+// rows), and not CREATE TABLE … AS (it creates the table full).
 func createdTable(stmt string) (string, bool) {
 	m := createTableRe.FindStringSubmatch(stmt)
-	if m == nil {
+	if len(m) < 3 || m[1] != "" || ctasRe.MatchString(stmt) {
 		return "", false
 	}
-	return relationKey(m[1]), true
+	return relationKey(m[2]), true
+}
+
+// writesNoRows reports whether a statement is DDL that cannot put a row in
+// any table: CREATE (but not CREATE TABLE … AS or a MATERIALIZED VIEW, which
+// run a query), ALTER, DROP, COMMENT, GRANT, REVOKE. Anything else — an
+// INSERT, COPY, UPDATE, a SELECT or DO block that calls a function, a CALL —
+// may write rows, directly or through a trigger, so a table this file created
+// is no longer known to be empty after it.
+func writesNoRows(stmt string) bool {
+	head := strings.Fields(strings.ToLower(strings.TrimSpace(stmt)))
+	if len(head) == 0 {
+		return true
+	}
+	switch head[0] {
+	case "alter", "drop", "comment", "grant", "revoke":
+		return true
+	case "create":
+		return !ctasRe.MatchString(stmt) && !materializedRe.MatchString(stmt)
+	}
+	return false
 }
 
 // blockingIndexFinding reports a plain CREATE INDEX on a table not in
@@ -81,7 +110,7 @@ func blockingIndexFinding(file string, stmt statement, created map[string]bool) 
 		Line:     stmt.Line,
 		Rule:     RuleBlockingIndexBuild,
 		Severity: SeverityWarn,
-		Message: fmt.Sprintf("CREATE INDEX on %s, which an earlier migration created, blocks every write to it for the whole build on a populated table; build it CONCURRENTLY in a migration file of its own",
+		Message: fmt.Sprintf("CREATE INDEX on %s, which may already hold rows (it is not a table this file created and has written nothing to), blocks every write to it for the whole build on a populated table; build it CONCURRENTLY in a migration file of its own",
 			strings.TrimSpace(m[2])),
 	}, true
 }

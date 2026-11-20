@@ -627,8 +627,8 @@ benefits:
       - id: blocking-index-build
         lane: --migration-safety
         bug_class: >-
-          A plain `CREATE INDEX` on a table an earlier migration created blocks
-          every write to it for the whole build (a warning: lint cannot see the
+          A plain `CREATE INDEX` on a table that may hold rows blocks every
+          write to it for the whole build (a warning: lint cannot see the
           table's size; `forge db analyze` measures it)
       - id: enum-value-used-before-commit
         lane: --migration-safety

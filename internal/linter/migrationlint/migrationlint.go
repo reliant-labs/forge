@@ -315,9 +315,10 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// see without a live schema, and guessing beyond it would be worse than
 	// the finding.
 	generatedColumns := map[string]bool{}
-	// createdTables records every table this migration creates: an index
-	// built on one holds no rows yet, so it is not a blocking build.
-	createdTables := map[string]bool{}
+	// emptyTables are the tables this migration created empty and that no
+	// statement since could have written a row to (blocking_index.go): an
+	// index built on one is not a blocking build.
+	emptyTables := map[string]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {
@@ -326,11 +327,14 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 			continue
 		}
 
-		if table, ok := createdTable(text); ok {
-			createdTables[table] = true
-		}
-		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, createdTables); ok {
+		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
 			findings = append(findings, f)
+		}
+		if !writesNoRows(text) {
+			clear(emptyTables)
+		}
+		if table, ok := createdTable(text); ok {
+			emptyTables[table] = true
 		}
 
 		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {

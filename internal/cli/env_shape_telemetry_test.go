@@ -194,6 +194,12 @@ func TestCheckBundleTelemetryIsQuietAboutDefaults(t *testing.T) {
 	db := hostedTelemetryTarget("db-postgres")
 	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
 	old := &release.BundleReader{Features: []string{release.BundleFeatureStorage}}
+	// The warning is deduped per env and process: forget these envs so a
+	// repeated run (-count, -cpu) sees the first warning again.
+	for _, env := range []string{"prod-default-only", "prod-default-mixed"} {
+		telemetryUncollectedNoted.Delete(env)
+		t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+	}
 
 	var out bytes.Buffer
 	shape := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db})}

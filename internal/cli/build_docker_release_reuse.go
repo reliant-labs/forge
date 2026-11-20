@@ -76,19 +76,26 @@ func dockerInputsBase(d *DockerBuild, projectDir string) string {
 	return projectDir
 }
 
+// releaseDockerTarget names the exact destination of the workload's image.
+// The carry decision and the actual build must use the same target.
+type releaseDockerTarget struct {
+	repository string
+	tag        string
+}
+
 // buildServiceDockerReusing builds a DockerBuild workload, or — on a --release
 // build whose declared inputs equal an earlier release's — reuses that
 // release's image instead of running `docker build`.
-func buildServiceDockerReusing(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, repository string, opts buildOptions,
-	cfgArchForDocker, tag, projectDir string, base *releaseReuseBase) buildResult {
-	v := checkDockerReleaseInputs(ctx, cfg, w, repository, tag, opts, cfgArchForDocker, projectDir, base)
+func buildServiceDockerReusing(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, target releaseDockerTarget,
+	opts buildOptions, cfgArchForDocker, projectDir string, base *releaseReuseBase) buildResult {
+	v := checkDockerReleaseInputs(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, base)
 	if v.carry != nil {
-		return carryDockerReleaseImage(w, tag, v)
+		return carryDockerReleaseImage(w, target.tag, v)
 	}
 	if v.reason != "" {
 		fmt.Printf("[build] %s: building — %s\n", w.Name, v.reason)
 	}
-	res := serviceDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, tag)
+	res := serviceDockerBuilder(ctx, cfg, w.Name, target.repository, w.Build.Docker, opts, cfgArchForDocker, target.tag)
 	if res.err == nil && v.releaseFP != nil {
 		// What the next release compares against (inputs_digest).
 		res.releaseInputsDigest = v.releaseFP.Digest
@@ -100,8 +107,8 @@ func buildServiceDockerReusing(ctx context.Context, cfg *config.ProjectConfig, w
 // --release build and decides whether an earlier release's image (base)
 // stands in for building. Any other build returns the zero verdict: outside a
 // release, docker's own layer cache is what makes an unchanged build cheap.
-func checkDockerReleaseInputs(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, repository, tag string, opts buildOptions,
-	cfgArchForDocker, projectDir string, base *releaseReuseBase) (v dockerInputsVerdict) {
+func checkDockerReleaseInputs(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, target releaseDockerTarget,
+	opts buildOptions, cfgArchForDocker, projectDir string, base *releaseReuseBase) (v dockerInputsVerdict) {
 	if !releaseBuildCanCarry(opts) {
 		return v
 	}
@@ -113,7 +120,7 @@ func checkDockerReleaseInputs(ctx context.Context, cfg *config.ProjectConfig, w 
 	}
 	start := time.Now()
 	defer func() { v.took = time.Since(start) }()
-	rfp, err := dockerReleaseInputsFingerprint(cfg, w, repository, opts, cfgArchForDocker, projectDir)
+	rfp, err := dockerReleaseInputsFingerprint(cfg, w, target.repository, opts, cfgArchForDocker, projectDir)
 	if err != nil {
 		v.reason = fmt.Sprintf("could not fingerprint its inputs for a release (%v)", err)
 		return v
@@ -133,7 +140,7 @@ func checkDockerReleaseInputs(ctx context.Context, cfg *config.ProjectConfig, w 
 		v.reason = fmt.Sprintf("could not read the release ledger to compare its inputs (%v)", err)
 		return v
 	}
-	carry, why := findReleaseCarry(ctx, candidates, repository, rfp.Digest, tag, externalImageDigestResolver, externalImageRetag)
+	carry, why := findReleaseCarry(ctx, candidates, target.repository, rfp.Digest, target.tag, externalImageDigestResolver, externalImageRetag)
 	if carry == nil {
 		v.reason = why
 		return v

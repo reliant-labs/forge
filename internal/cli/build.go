@@ -3379,7 +3379,8 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				if opts.composition != nil {
 					return compositionDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
 				}
-				return buildServiceDockerReusing(ctx, cfg, w, repository, opts, cfgArchForDocker, imageTag, projectDir, reuseBase)
+				target := releaseDockerTarget{repository: repository, tag: imageTag}
+				return buildServiceDockerReusing(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, reuseBase)
 			})
 			result.workload = w.Name
 			out = append(out, result)

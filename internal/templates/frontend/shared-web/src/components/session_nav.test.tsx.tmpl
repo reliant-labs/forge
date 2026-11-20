@@ -100,6 +100,9 @@ describe("SessionNav", () => {
     expect(trigger().getAttribute("aria-expanded")).toBe("true");
     const items = Array.from(menu.querySelectorAll<HTMLElement>('[role^="menuitem"]'));
     expect(items.map((i) => i.textContent?.trim())).toEqual([
+{{- if not .Public}}
+      "Account",
+{{- end}}
       "Light",
       "Dark",
       "System",
@@ -110,7 +113,7 @@ describe("SessionNav", () => {
     fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
     expect(document.activeElement).toBe(items[1]);
     fireEvent.keyDown(document.activeElement!, { key: "End" });
-    expect(document.activeElement).toBe(items[3]);
+    expect(document.activeElement).toBe(items[items.length - 1]);
 
     await act(async () => {
       fireEvent.keyDown(document.activeElement!, { key: "Escape" });

@@ -36,6 +36,9 @@ func TestPublicFrontendOmitsSignInFlow(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(public, "src", "app", "auth")); err == nil {
 				t.Errorf("a public %s frontend emitted src/app/auth/: it has no sign-in screens", label)
 			}
+			if _, err := os.Stat(filepath.Join(public, "src", "app", "account")); err == nil {
+				t.Errorf("a public %s frontend emitted src/app/account/: it has no signed-in person", label)
+			}
 			// The session plumbing and the unmounted guard stay: the shell
 			// reads the session, and the guard is the seam gating it later
 			// re-attaches to.

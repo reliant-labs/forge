@@ -4,7 +4,7 @@
 // SessionNav: the user menu (who is signed in, the theme, sign out), from useAuth() — the same
 // session your RPCs use. `identity` is presentation only: never gate anything on it. Add items as a
 // group in `groups` below and keep "Sign out" last. Depth: `forge skill load auth/frontend`.
-import { LogOut, Monitor, Moon, Sun } from "lucide-react";
+import { LogOut, Monitor, Moon, Sun{{if not .Public}}, User{{end}} } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -138,6 +138,19 @@ export function SessionNav() {
   const who = describe(identity);
 
   const groups: MenuGroup[] = [
+{{- if not .Public}}
+    {
+      // The account page (/account): the profile and the passkeys panel,
+      // where a person enrols the passkey the sign-in screen offers.
+      items: [
+        {
+          label: "Account",
+          icon: <User className="h-4 w-4" strokeWidth={1.75} />,
+          href: "/account",
+        },
+      ],
+    },
+{{- end}}
     {
       label: "Theme",
       selection: "single",

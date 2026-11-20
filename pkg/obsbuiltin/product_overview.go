@@ -69,9 +69,8 @@ func ProductOverview(in Input) dashspec.Dashboard {
 			"Each block links to the tab with its detail, and counts what that tab counts. Hosted environments only: a local forge env up has no product_events table.",
 		Group:          dashspec.GroupProduct,
 		Filters:        envFilter(),
-		Sections:       productOverviewSections,
-		DefaultRange:   "30d",
-		DefaultCompare: dashspec.ComparePeriod,
+		Sections:     productOverviewSections,
+		DefaultRange: "30d",
 	}
 
 	signups := kpi("signups", "Sign-ups", "Users whose first auth_signed_up is in the range. The trend is each UTC day's.",

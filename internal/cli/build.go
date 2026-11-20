@@ -326,7 +326,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
 	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). Requires the environment argument. List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -1366,11 +1366,8 @@ func bindBuildRenderOptions(opts buildOptions) error {
 	if opts.env == "" {
 		return fmt.Errorf("-D requires the environment argument (e.g. `forge build prod -D name=value`): options are declared per-env in deploy/kcl/<env>/")
 	}
-	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	renderDArgs, err := resolveRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions)
 	if err != nil {
-		return err
-	}
-	if err := validateRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions); err != nil {
 		return err
 	}
 	setRenderOptions(renderDArgs)

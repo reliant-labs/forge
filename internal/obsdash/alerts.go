@@ -728,15 +728,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Labels:      map[string]string{"severity": pr.severity},
 					Annotations: map[string]string{},
 				}
-				for k, v := range d.annotations {
-					r.Annotations[k] = v
-				}
-				if t.For != "" {
-					r.For = t.For
-				}
-				for k, v := range t.Labels {
-					r.Labels[k] = v
-				}
+				applyAlertTuning(&r, d, t)
 				out = append(out, r)
 			}
 			continue
@@ -752,15 +744,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Labels:      map[string]string{"severity": d.Severity, "service": tt.Service},
 					Annotations: map[string]string{},
 				}
-				for k, v := range d.annotations {
-					r.Annotations[k] = v
-				}
-				if t.For != "" {
-					r.For = t.For
-				}
-				for k, v := range t.Labels {
-					r.Labels[k] = v
-				}
+				applyAlertTuning(&r, d, t)
 				if other, ok := telemetryNamed[r.Alert]; ok && other != tt.Service {
 					return nil, nil, telemetryNameCollision(r.Alert, other, tt.Service)
 				}
@@ -787,15 +771,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 				Labels:      map[string]string{"severity": lv.severity},
 				Annotations: map[string]string{},
 			}
-			for k, v := range d.annotations {
-				r.Annotations[k] = v
-			}
-			if t.For != "" {
-				r.For = t.For
-			}
-			for k, v := range t.Labels {
-				r.Labels[k] = v
-			}
+			applyAlertTuning(&r, d, t)
 			out = append(out, r)
 		}
 	}
@@ -807,6 +783,19 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil
+}
+
+// applyAlertTuning applies the shared annotations and overrides to every rule kind.
+func applyAlertTuning(r *AlertRule, d alertDef, t AlertTuning) {
+	for k, v := range d.annotations {
+		r.Annotations[k] = v
+	}
+	if t.For != "" {
+		r.For = t.For
+	}
+	for k, v := range t.Labels {
+		r.Labels[k] = v
+	}
 }
 
 // telemetryNameCollision is the error for two declared systems whose

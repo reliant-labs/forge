@@ -66,7 +66,15 @@ func TestOriginal(t *testing.T) {
 	t.Setenv("STABLE_FILE", filepath.Join(outside, "stable"))
 	t.Setenv("ORIGINAL_FILE", filepath.Join(outside, "original"))
 	write("go.mod", "module example.com/fixture\n\ngo 1.27.0\n")
-	write("f_test.go", fixture)
+	const testDir = "internal/pkg"
+	if err := os.MkdirAll(filepath.Join(root, testDir, "neighbor"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(testDir+"/f_test.go", fixture)
+	// A recursive object read must not confuse a subpackage's same-named
+	// test with the exact parent's package identity.
+	write(testDir+"/neighbor/n_test.go", "package n\nimport \"testing\"\nfunc TestOriginal(t *testing.T) {}\n")
+	write("r_test.go", "package f\nimport \"testing\"\nfunc TestRoot(t *testing.T) {}\n")
 	callGit("init", "-qb", "main")
 	callGit("add", ".")
 	callGit("commit", "-qm", "base with unchanged test")
@@ -74,8 +82,16 @@ func TestOriginal(t *testing.T) {
 	callGit("commit", "-q", "--allow-empty", "-m", "candidate")
 	var diagnostic bytes.Buffer
 	cfg := Config{Root: root, Repository: "acme/lib", Base: base, Head: callGit("rev-parse", "HEAD"),
-		RunID: "gate-123", PR: 12, Timeout: time.Minute, Packages: []string{"."}, Stderr: &diagnostic,
+		RunID: "gate-123", PR: 12, Timeout: time.Minute, Packages: []string{"./" + testDir}, Stderr: &diagnostic,
 		JSONPath: filepath.Join(outside, "initial.ndjson"), ReportPath: filepath.Join(outside, "result.json")}
+	gitExe, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootSource, err := locate(t.Context(), cfg, gitExe, "example.com/fixture", base, identity{"example.com/fixture", "TestRoot"})
+	if err != nil || rootSource.file != "r_test.go" {
+		t.Fatalf("root package source lookup: %+v, %v", rootSource, err)
+	}
 	if err := Run(t.Context(), cfg); err != nil {
 		t.Fatalf("unexpected red: %v\n%s", err, &diagnostic)
 	}
@@ -87,7 +103,7 @@ func TestOriginal(t *testing.T) {
 	if err := json.Unmarshal(content, &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Tests) != 1 || report.Tests[0].Test != "TestOriginal" || report.Tests[0].SourceBlob != callGit("rev-parse", "HEAD:f_test.go") ||
+	if len(report.Tests) != 1 || report.Tests[0].Test != "TestOriginal" || report.Tests[0].SourceBlob != callGit("rev-parse", "HEAD:"+testDir+"/f_test.go") ||
 		report.Head != cfg.Head || report.Base != cfg.Base || report.Tree != callGit("rev-parse", "HEAD^{tree}") {
 		t.Fatalf("unbound or unexpected report: %s", content)
 	}
@@ -116,8 +132,8 @@ func TestOriginal(t *testing.T) {
 
 	// The same initially green-able behavior must remain red when the exact
 	// source changed in the candidate, even though a second run would pass.
-	write("f_test.go", fixture+"\n// candidate edited the test file\n")
-	callGit("add", "f_test.go")
+	write(testDir+"/f_test.go", fixture+"\n// candidate edited the test file\n")
+	callGit("add", testDir+"/f_test.go")
 	callGit("commit", "-qm", "edited test source")
 	for _, name := range []string{"stable", "original"} {
 		if err := os.Remove(filepath.Join(outside, name)); err != nil {

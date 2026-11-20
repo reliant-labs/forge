@@ -10,7 +10,6 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,12 +49,21 @@ func treeState(ctx context.Context, cfg Config, gitExe string) (string, error) {
 type sourceRef struct{ file, blob string }
 
 func locate(ctx context.Context, cfg Config, gitExe, module, revision string, key identity) (sourceRef, error) {
-	dir := strings.TrimPrefix(strings.TrimPrefix(key.pkg, module), "/")
-	args := []string{"ls-tree", "-z", revision}
-	if dir != "" {
-		args = append(args, "--", dir+"/")
+	if !shaPattern.MatchString(revision) || !packagePattern.MatchString(module) || !testPattern.MatchString(key.name) {
+		return sourceRef{}, errors.New("invalid revision, module, or test identity")
 	}
-	entries, err := git(ctx, cfg.Root, gitExe, args...)
+	if packages, err := packageSet(module, []string{key.pkg}); err != nil || !packages[key.pkg] {
+		return sourceRef{}, errors.New("invalid test package identity")
+	}
+	dir := strings.TrimPrefix(strings.TrimPrefix(key.pkg, module), "/")
+	// Read the package's tree as an object, not a pathspec against the
+	// revision root. ls-tree is non-recursive here deliberately: a child
+	// package may declare the same test, but is not part of this package.
+	tree := revision
+	if dir != "" {
+		tree += ":" + dir
+	}
+	entries, err := git(ctx, cfg.Root, gitExe, "ls-tree", "-z", tree)
 	if err != nil {
 		return sourceRef{}, fmt.Errorf("list test source: %w", err)
 	}
@@ -63,8 +71,11 @@ func locate(ctx context.Context, cfg Config, gitExe, module, revision string, ke
 	for row := range bytes.SplitSeq(entries, []byte{0}) {
 		metadata, filename, ok := bytes.Cut(row, []byte{'\t'})
 		file := string(filename)
-		if !ok || path.Dir(file) != emptyDir(dir) || !strings.HasSuffix(file, "_test.go") {
+		if !ok || strings.Contains(file, "/") || !strings.HasSuffix(file, "_test.go") {
 			continue
+		}
+		if dir != "" {
+			file = dir + "/" + file
 		}
 		fields := strings.Fields(string(metadata))
 		if len(fields) != 3 || fields[0] != "100644" || fields[1] != "blob" || !shaPattern.MatchString(fields[2]) {
@@ -95,13 +106,6 @@ func locate(ctx context.Context, cfg Config, gitExe, module, revision string, ke
 		return sourceRef{}, errors.New("no tracked top-level Go test matches the failure")
 	}
 	return found, nil
-}
-
-func emptyDir(dir string) string {
-	if dir == "" {
-		return "."
-	}
-	return dir
 }
 
 // testDeclaration never trusts a string/line match as a test declaration.

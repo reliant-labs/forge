@@ -1853,8 +1853,24 @@ schema HostInfra:
     temporal_namespaces?: [str]
     # The Web UI's port. Unset => headless.
     temporal_ui_port?: int
+    # The Prometheus metrics port, passed as --metrics-port, so a Telemetry
+    # can scrape it (port name `metrics`). Unset => a free port the server
+    # picks.
+    temporal_metrics_port?: int
+
+    # How this engine is observed (see forge.Telemetry). The target IS this
+    # instance; its ports are named `server` (port), `monitor`
+    # (nats_monitor_port), `ui` (temporal_ui_port) and `metrics`
+    # (temporal_metrics_port).
+    telemetry?: Telemetry
 
     check:
+        not telemetry or _tel_targets_self(telemetry), \
+            "HostInfra '${name}': telemetry targets this instance itself, so selector, namespaces, cluster and address are refused"
+        engine == "temporal" or not temporal_metrics_port, \
+            "HostInfra.temporal_metrics_port is for engine 'temporal' only ('${name}' is '${engine}')"
+        not temporal_metrics_port or (temporal_metrics_port > 0 and temporal_metrics_port < 65536 and temporal_metrics_port != port and temporal_metrics_port != temporal_ui_port), \
+            "HostInfra.temporal_metrics_port must be 1..65535 and differ from port and temporal_ui_port"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
         engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
             "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
@@ -7523,8 +7539,26 @@ schema Observability:
     # The project's Events funnels and counts (forge.ProjectAnalytics), drawn
     # on the built-in Product dashboard. Unset: none beyond the frontends'.
     analytics?: ProjectAnalytics
+    # Telemetry for what forge never declares as objects: a HelmChart, an
+    # operator, a system outside this bundle (see forge.Telemetry). Each entry
+    # names its service_name and its pods (`selector` plus the `cluster` whose
+    # collector scrapes them) or a fixed `address`.
+    telemetry: [Telemetry] = []
+    # The collector that scrapes this env's Telemetry when it is not forge's
+    # node agent (a project that runs its own). Unset: forge's agent.
+    telemetry_collector?: TelemetryCollector
 
     check:
+        enabled or len(telemetry) == 0, \
+            "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
+        all t in telemetry { t.service_name }, \
+            "Observability.telemetry: each entry needs a service_name — there is no workload to default it from"
+        all t in telemetry { t.selector or t.address }, \
+            "Observability.telemetry: each entry needs a selector (or an address) naming what to observe"
+        all t in telemetry { not t.selector or t.cluster }, \
+            "Observability.telemetry: an entry with a selector needs the cluster whose collector scrapes it"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Observability.telemetry: ports must be numbers — there are no declared ports to resolve a name against"
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
         dev_telemetry in ["auto", "hosted", "local"], "Observability.dev_telemetry '${dev_telemetry}' must be auto, hosted or local"
@@ -7576,9 +7610,25 @@ schema Manifests:
     # Slot keys are exact container:NAME, init:NAME, input:NAME or build-only.
     release_inputs: {str: str} = {}
     release_dependencies?: {str: str}
+    # How the systems these objects run are observed (see forge.Telemetry).
+    # forge cannot see into raw objects, so each entry names its pods by
+    # `selector` (or a fixed `address`) and its ports by number. The cluster
+    # is the group's; `namespaces` defaults to [namespace]; `service_name`
+    # defaults to the group's name.
+    telemetry: [Telemetry] = []
 
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+        all t in telemetry { t.selector or t.address }, \
+            "Manifests.telemetry: each entry needs a selector (or an address) — forge cannot see into raw objects to find their pods"
+        all t in telemetry { not t.cluster }, \
+            "Manifests.telemetry: cluster is the group's (Manifests.cluster), not the entry's"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Manifests.telemetry: ports must be numbers — a raw group declares no named ports to resolve"
+        name or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry on a group with no name needs a service_name"
+        len(telemetry) <= 1 or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry: several entries in one group need a service_name each"
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "Manifests.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
 
 schema StatefulSetResize:

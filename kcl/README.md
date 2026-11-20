@@ -375,6 +375,7 @@ kcl/
   README.md            # you are here
   workload.k           # fw.Workload, env references, the runtimes
   schema.k             # the Bundle and every env-level declaration
+  telemetry.k          # forge.Telemetry: declared telemetry for systems forge did not build
   render.k             # the lowering: Bundle -> output (forge.render)
   core.k               # env-map helpers for [EnvVar] lists (frontends)
   base.k               # -D option accessors, env groups, helpers

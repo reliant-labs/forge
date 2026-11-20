@@ -437,11 +437,16 @@ func TestFetchedToolChecks(t *testing.T) {
 	noGo := func(string) (string, error) { return "", errors.New("not found") }
 	hasGo := func(string) (string, error) { return "/usr/bin/go", nil }
 
-	installed := &toolfetch.Fetcher{
-		CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: hasGo, Log: io.Discard,
-		GoInstall: func(_ context.Context, _, gobin string) error {
-			return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("x"), 0o755)
-		},
+	// Every Fetcher starts from New: it records the uid the cache must
+	// belong to.
+	fetcher := func(goos string, look func(string) (string, error)) *toolfetch.Fetcher {
+		f := toolfetch.New()
+		f.CacheDir, f.GOOS, f.GOARCH, f.LookPath, f.Log = t.TempDir(), goos, "amd64", look, io.Discard
+		return f
+	}
+	installed := fetcher("plan9", hasGo)
+	installed.GoInstall = func(_ context.Context, _, gobin string) error {
+		return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("x"), 0o755)
 	}
 	if _, err := installed.Ensure(context.Background(), tool); err != nil {
 		t.Fatal(err)
@@ -454,9 +459,9 @@ func TestFetchedToolChecks(t *testing.T) {
 		msg    string
 	}{
 		{"installed", installed, doctor.StatusPass, "installed"},
-		{"release", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "linux", GOARCH: "amd64", LookPath: noGo}, doctor.StatusPass, "fetches the sha256-verified release on first use"},
-		{"go install", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: hasGo}, doctor.StatusPass, "go install on first use"},
-		{"unavailable", &toolfetch.Fetcher{CacheDir: t.TempDir(), GOOS: "plan9", GOARCH: "amd64", LookPath: noGo}, doctor.StatusWarn, "cannot be installed here"},
+		{"release", fetcher("linux", noGo), doctor.StatusPass, "fetches the sha256-verified release on first use"},
+		{"go install", fetcher("plan9", hasGo), doctor.StatusPass, "go install on first use"},
+		{"unavailable", fetcher("plan9", noGo), doctor.StatusWarn, "cannot be installed here"},
 	}
 	for _, c := range cases {
 		got := fetchedToolChecks(c.f, []toolfetch.Tool{tool})

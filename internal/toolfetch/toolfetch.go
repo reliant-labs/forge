@@ -12,13 +12,11 @@
 //	}
 //	cmd := exec.CommandContext(ctx, path, "scan", ...)
 //
-// Ensure is idempotent after the first call: a verified entry in
-// the cache is a hit with no network. Release cache hits rehash the retained
-// archive against its pin and compare its member to the executable. The
-// cache must still be protected from concurrent writes between validation
-// and execution; returning a path cannot prevent that race. The first call downloads the archive
-// for this GOOS/GOARCH (tens of MB), prints one line to stderr saying so,
-// verifies it and installs the binary. version is always the pinned release
+// Ensure is idempotent after the first call: a trusted, verified entry in the
+// cache is a hit with no network. The first call downloads the archive for
+// this GOOS/GOARCH (tens of MB), prints one line to stderr saying so,
+// verifies it and installs the binary. The returned path is safe to exec for
+// as long as the threat model below holds; see "Who can change the binary". version is always the pinned release
 // (templates.SyftVersion / templates.GrypeVersion), the string a scan record
 // names as its scanner version.
 //
@@ -31,7 +29,7 @@
 //
 // # Errors
 //
-// Every error from Ensure means the tool is not usable. Two are classifiable
+// Every error from Ensure means the tool is not usable. Three are classifiable
 // with errors.Is:
 //
 //   - ErrUnavailable: this platform has no published binary forge has a
@@ -39,6 +37,9 @@
 //     will not help.
 //   - ErrChecksum: the download did not hash to the pinned value. Nothing was
 //     installed; the bytes were corrupted or substituted.
+//   - ErrUntrustedCache: a directory on the cache's path is writable by
+//     another user. Reinstalling would not help; the error names the
+//     directory and the fix.
 //
 // Anything else (no network, an HTTP error, a full disk) is transient.
 //
@@ -46,8 +47,9 @@
 //
 //	$FORGE_TOOLS_CACHE (default <UserCacheDir>/forge/tools)/release/
 //	  <name>@<version>-<goos>-<goarch>/
-//	    <name>[.exe]
-//	    toolfetch.json        what was installed, from where, and its sha256
+//	    <name>[.exe]          mode 0555
+//	    toolfetch.json        what was installed, from where, and the sha256
+//	                          of the archive and of the binary
 //
 // It is an entry of forge's shared tool cache (internal/toolcache), so it is
 // built in a private staging directory and published by one rename: a
@@ -55,6 +57,45 @@
 // Two processes that miss at once both download, and the loser of the rename
 // uses the winner's entry. Nothing is ever rewritten in place; a bump is a
 // new entry beside the old.
+//
+// # Who can change the binary (the threat model)
+//
+// Ensure hands back a path, and the caller execs it later, so what matters
+// is who could replace the file in between. The answer is decided by
+// ownership and permissions, and checked on every hit:
+//
+//   - Another user: excluded. Every directory from the filesystem root down
+//     to the release kind directory must be owned by this user or root and be
+//     writable by nobody else (a sticky directory such as /tmp, and a
+//     group-writable directory of the user's own private group, are the two
+//     exceptions; both still stop others renaming our entries). The kind
+//     directory, the entry, its manifest and its binary must be owned by this
+//     user, writable by no one else, and not symlinks; the binary is 0555.
+//     The path is resolved once and then walked with Lstat, component by
+//     component, so a symlink anywhere fails the check. A violation in an
+//     entry refuses it and reinstalls into a fresh staging directory that
+//     replaces it by rename; a violation above it is ErrUntrustedCache. With
+//     no writer but this user able to touch any component, nothing can change
+//     between the check and the exec.
+//   - This user (any process running as the same uid): out of scope. Such a
+//     process can already replace forge itself, edit PATH and shell startup
+//     files, or ptrace forge, so no check inside forge stops it. Hashing the
+//     binary on each hit (against the sha256 recorded when the verified
+//     archive was extracted) catches accidental corruption, not this.
+//   - Root: out of scope, for the same reason.
+//
+// Copying the verified bytes into a per-process private directory and
+// executing the copy would also close the race, and was rejected: it costs
+// ~90 MB of I/O per call (SBOM generation calls Ensure per artifact), needs
+// an executable private directory (/tmp is noexec on hardened hosts), leaks
+// copies whenever a process dies before its cleanup, and protects only
+// against writers the permission check already excludes.
+//
+// Windows: the cache's protection is its ACL. The default location,
+// %LocalAppData%\forge\tools, inherits the per-user ACL of the profile, which
+// grants no other non-administrator user access; forge does not inspect ACLs,
+// so a FORGE_TOOLS_CACHE elsewhere must carry an equivalent ACL. forge still
+// refuses symlinks and reparse points in the entry, and the hash check runs.
 //
 // # Where it downloads from
 //
@@ -210,6 +251,10 @@ type Installed struct {
 	ArchiveSHA256 string `json:"archive_sha256,omitempty"`
 	// GoPackage is the `go install` spec for SourceGoInstall.
 	GoPackage string `json:"go_package,omitempty"`
+	// BinarySHA256 is the executable's sha256 when it was installed: of the
+	// member extracted from the verified archive, or of the go install
+	// build. Every hit rehashes the binary against it.
+	BinarySHA256 string `json:"binary_sha256"`
 }
 
 // Fetcher installs tools. New returns the one forge uses, every field
@@ -236,6 +281,10 @@ type Fetcher struct {
 	GoInstall func(ctx context.Context, spec, gobin string) error
 	// Log receives the one-line notice of a download. nil is os.Stderr.
 	Log io.Writer
+	// owner is the uid every directory and file forge created in the cache
+	// must belong to (see the package doc's threat model): New sets this
+	// process's. Use New; a zero Fetcher trusts only root-owned caches.
+	owner int
 }
 
 // New returns the Fetcher forge uses: forge's shared tool cache, the
@@ -255,6 +304,7 @@ func New() *Fetcher {
 		Client:   &http.Client{Timeout: 10 * time.Minute},
 		GOOS:     runtime.GOOS,
 		GOARCH:   runtime.GOARCH,
+		owner:    os.Getuid(),
 	}
 }
 
@@ -344,16 +394,28 @@ func (f *Fetcher) Find(t Tool) (Installed, bool) {
 	if err != nil {
 		return Installed{}, false
 	}
+	if dir, err = f.trustedKindDir(dir); err != nil {
+		return Installed{}, false
+	}
 	return f.ready(t, filepath.Join(dir, f.key(t)))
 }
 
-// ready never treats a mutable manifest as proof of release integrity:
-// it verifies the retained archive against the caller's pin and compares
-// the executable's hash to that archive's member on every cache hit.
-// Go builds have no reproducible binary pin and rely on the local cache's
-// filesystem permissions; they cannot substitute for a pinned release.
+// ready decides whether the entry at dir is a usable t. dir must be under a
+// kind directory trustedKindDir accepted. The entry, its manifest and its
+// binary must pass checkOwned (this user's, writable by no one else, no
+// symlink); the manifest must name t at its version on this platform, with
+// the pinned archive sha256 for a release; and the binary must be a 0555-style
+// executable (no write bit at all on a Unix host) whose sha256 is the one
+// recorded at install. See the package doc for why that is enough.
 func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
-	data, err := os.ReadFile(filepath.Join(dir, manifestName)) // #nosec G304 -- forge's own cache entry
+	if !f.ownedEntry(dir, true) {
+		return Installed{}, false
+	}
+	manifest := filepath.Join(dir, manifestName)
+	if !f.ownedEntry(manifest, false) {
+		return Installed{}, false
+	}
+	data, err := os.ReadFile(manifest) // #nosec G304 -- forge's own cache entry, ownership checked
 	if err != nil {
 		return Installed{}, false
 	}
@@ -374,31 +436,30 @@ func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 		return Installed{}, false
 	}
 	bin := filepath.Join(dir, t.Binary(f.goos()))
-	info, err := os.Lstat(bin)
-	if err != nil || !info.Mode().IsRegular() || (f.goos() != "windows" && info.Mode().Perm()&0o111 == 0) {
+	if !f.ownedEntry(bin, false) {
 		return Installed{}, false
 	}
-	if in.Source == SourceRelease {
-		asset, want, _ := t.checksum(f.goos(), f.goarch())
-		archive := filepath.Join(dir, asset)
-		if got, err := hashFile(archive); err != nil || got != want {
-			return Installed{}, false
-		}
-		memberHash := sha256.New()
-		err := readMember(archive, asset, t.Binary(f.goos()), func(src io.Reader, size int64) error {
-			if size < 0 || size > maxArchiveBytes {
-				return fmt.Errorf("invalid member size %d", size)
-			}
-			_, err := io.CopyN(memberHash, src, size)
-			return err
-		})
-		got, hashErr := hashFile(bin)
-		if err != nil || hashErr != nil || got != hex.EncodeToString(memberHash.Sum(nil)) {
-			return Installed{}, false
-		}
+	if info, err := os.Lstat(bin); err != nil || (hostEnforcesModes() && (info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o222 != 0)) {
+		return Installed{}, false
+	}
+	if got, err := hashFile(bin); err != nil || in.BinarySHA256 == "" || got != in.BinarySHA256 {
+		return Installed{}, false
 	}
 	in.Path = bin
 	return in, true
+}
+
+// ownedEntry reports whether path is a directory (wantDir) or a regular file
+// that passes checkOwned.
+func (f *Fetcher) ownedEntry(path string, wantDir bool) bool {
+	info, err := os.Lstat(path)
+	if err != nil || f.checkOwned(path, info) != nil {
+		return false
+	}
+	if wantDir {
+		return info.IsDir()
+	}
+	return info.Mode().IsRegular()
 }
 
 func hashFile(path string) (string, error) {
@@ -442,6 +503,12 @@ func (f *Fetcher) Ensure(ctx context.Context, t Tool) (Installed, error) {
 	}
 	kindDir, err := f.cacheDir()
 	if err != nil {
+		return Installed{}, fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
+	}
+	if err := os.MkdirAll(kindDir, 0o755); err != nil {
+		return Installed{}, fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
+	}
+	if kindDir, err = f.trustedKindDir(kindDir); err != nil {
 		return Installed{}, fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
 	}
 	if in, ok := f.ready(t, filepath.Join(kindDir, f.key(t))); ok {
@@ -490,15 +557,20 @@ func (f *Fetcher) installRelease(ctx context.Context, t Tool, stage string) erro
 			"  the download was corrupted or substituted; forge will not run an unverified binary",
 			t.Name, t.Version, ErrChecksum, asset, want, got)
 	}
-	bin := t.Binary(f.goos())
-	if err := extractMember(archive, asset, bin, filepath.Join(stage, bin)); err != nil {
+	bin := filepath.Join(stage, t.Binary(f.goos()))
+	if err := extractMember(archive, asset, t.Binary(f.goos()), bin); err != nil {
 		return fmt.Errorf("%s %s: %w", t.Name, t.Version, err)
 	}
-	// Keep the archive: its compiled-in pin is the independent trust root
-	// for validating the extracted executable on subsequent cache hits.
+	binSum, err := hashFile(bin)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(archive); err != nil {
+		return err
+	}
 	return writeManifest(stage, Installed{
 		Name: t.Name, Version: t.Version, Source: SourceRelease, Platform: f.platform(),
-		URL: url, ArchiveSHA256: want,
+		URL: url, ArchiveSHA256: want, BinarySHA256: binSum,
 	})
 }
 
@@ -549,11 +621,20 @@ func (f *Fetcher) installGo(ctx context.Context, t Tool, stage string) error {
 	if err := install(ctx, spec, stage); err != nil {
 		return fmt.Errorf("%s %s: go install %s: %w", t.Name, t.Version, spec, err)
 	}
-	if _, err := os.Stat(filepath.Join(stage, t.Binary(f.goos()))); err != nil {
+	bin := filepath.Join(stage, t.Binary(f.goos()))
+	if _, err := os.Stat(bin); err != nil {
 		return fmt.Errorf("%s %s: go install %s produced no %s: %w", t.Name, t.Version, spec, t.Binary(f.goos()), err)
+	}
+	if err := os.Chmod(bin, executableMode()); err != nil {
+		return err
+	}
+	binSum, err := hashFile(bin)
+	if err != nil {
+		return err
 	}
 	return writeManifest(stage, Installed{
 		Name: t.Name, Version: t.Version, Source: SourceGoInstall, Platform: f.platform(), GoPackage: spec,
+		BinarySHA256: binSum,
 	})
 }
 

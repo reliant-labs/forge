@@ -155,10 +155,10 @@ func TestEnsureInstallsTheVerifiedBinary(t *testing.T) {
 	if info, _ := os.Stat(in.Path); info.Mode().Perm()&0o111 == 0 {
 		t.Errorf("binary mode %v is not executable", info.Mode())
 	}
-	// The pinned archive is retained for cache integrity checks.
+	// The archive itself is not kept, and no staging directory is left.
 	entries, _ := os.ReadDir(filepath.Dir(in.Path))
 	for _, e := range entries {
-		if e.Name() != "faketool" && e.Name() != manifestName && e.Name() != tool.Asset("linux", "amd64") {
+		if e.Name() != "faketool" && e.Name() != manifestName {
 			t.Errorf("entry holds %s besides the binary and its manifest", e.Name())
 		}
 	}

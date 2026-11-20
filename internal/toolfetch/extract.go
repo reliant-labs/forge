@@ -25,8 +25,8 @@ func extractMember(archivePath, assetName, member, dest string) error {
 	})
 }
 
-// readMember also lets cache validation hash the pinned archive's member
-// without extracting another executable to disk.
+// readMember passes the archive member named member to consume, with its
+// declared size.
 func readMember(archivePath, assetName, member string, consume func(io.Reader, int64) error) error {
 	if strings.HasSuffix(assetName, ".zip") {
 		return extractZip(archivePath, assetName, member, consume)
@@ -101,7 +101,18 @@ func writeExecutable(src io.Reader, size int64, member, dest string) error {
 	if n != size {
 		return fmt.Errorf("extract %s: wrote %d of %d bytes", member, n, size)
 	}
-	// The umask may have stripped bits from OpenFile's mode; the cache is
-	// shared, so make the mode exact.
-	return os.Chmod(dest, 0o755) // #nosec G302 -- an executable must be executable
+	// Exact, whatever the umask: read-only, so nothing rewrites a cached
+	// binary in place (the package doc's threat model).
+	return os.Chmod(dest, executableMode())
+}
+
+// executableMode is the mode of an installed binary: 0555 on a Unix host —
+// executable, and writable by no one, the owner included. Windows keeps
+// 0755: a read-only file there carries the read-only attribute, which stops
+// the cache from ever removing a replaced entry.
+func executableMode() os.FileMode {
+	if hostEnforcesModes() {
+		return 0o555
+	}
+	return 0o755 // #nosec G302 -- Windows ignores the bits but the read-only one
 }

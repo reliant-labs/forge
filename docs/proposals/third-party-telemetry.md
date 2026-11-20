@@ -578,8 +578,12 @@ string, IsolatedExporter string, IdentityProcessors []string, PipelinePrefix str
 - One `prometheus` receiver per non-isolated set, using `kubernetes_sd_configs` role pod.
 - SD is limited to `namespaces`, plus a `spec.nodeName=${env:K8S_NODE_NAME}` field selector
   when NodeLocal (DaemonSet: each pod scraped once).
-- relabel `keep` on each selector label and the container port; `job` → service_name, plus a
-  `pod` label.
+- relabel `keep` on running, non-init containers, and rewrite `__address__` to the pod IP on
+  the declared port (bracketed for IPv6), whether or not the pod spec declares that port: a
+  manifest may serve on an undeclared port. Nothing per-container survives relabeling (the
+  final labels are `instance`, `pod` and `namespace`), so a pod's per-container targets are
+  identical and the scrape pool keeps one: one scrape and one `up` per pod. `job` →
+  service_name.
 - `metric_relabel_configs`: keep `up|allow`, drop `deny`, `labeldrop` the `drop_labels`.
 - `sample_limit`, `label_limit` and `label_value_length_limit` are passed through.
 - TLS and `authorization.credentials_file` are set from the mount descriptor.
@@ -589,9 +593,10 @@ string, IsolatedExporter string, IdentityProcessors []string, PipelinePrefix str
 
 **Profiles:**
 
-- `receiver_creator` + `k8s_observer` (node-local `observe_pods`), with one rule per target:
-  `type == "port" && pod.namespace in [...] && pod.labels[...] == ... && port == N`.
-- The rule instantiates `pprof` with `remote.endpoint = http://`endpoint`<prefix>/profile?seconds=N`
+- `receiver_creator` + `k8s_observer` (node-local `observe_pods`), with one rule per target on
+  the observer's pod endpoints (one per pod, so an undeclared port still works):
+  `type == "pod" && namespace in [...] && labels[...] == ...`. Checks use the same rule.
+- The rule instantiates `pprof` with `remote.endpoint = http://<pod IP>:N<prefix>/profile?seconds=N`
   (for cpu) or `<prefix>/<type>`, with `collection_interval` and `resource_attributes`
   `service.name`.
 - An `address` target uses `pprof` directly.

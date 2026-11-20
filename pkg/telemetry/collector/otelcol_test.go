@@ -25,6 +25,9 @@ const contribImage = "ghcr.io/open-telemetry/opentelemetry-collector-releases/op
 // gets dir, holding the config, at the same path the config uses.
 type otelcol struct {
 	binary string
+	// hostNetwork runs the image in the host's network namespace, for a
+	// collector that must reach a server the test listens with on loopback.
+	hostNetwork bool
 }
 
 func findCollector(t *testing.T) otelcol {
@@ -51,8 +54,11 @@ func (o otelcol) command(ctx context.Context, dir, name string, args ...string) 
 	if o.binary != "" {
 		return exec.CommandContext(ctx, o.binary, args...)
 	}
-	full := append([]string{"run", "--rm", "--name", name, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", dir + ":" + dir, contribImage}, args...)
+	full := []string{"run", "--rm", "--name", name, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "-v", dir + ":" + dir}
+	if o.hostNetwork {
+		full = append(full, "--network", "host")
+	}
+	full = append(append(full, contribImage), args...)
 	return exec.CommandContext(ctx, "docker", full...)
 }
 

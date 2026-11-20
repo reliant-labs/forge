@@ -147,10 +147,22 @@ receivers:
           regex: Running
           source_labels:
           - __meta_kubernetes_pod_phase
-        - action: keep
-          regex: "8200"
+        - action: drop
+          regex: "true"
           source_labels:
-          - __meta_kubernetes_pod_container_port_number
+          - __meta_kubernetes_pod_container_init
+        - action: replace
+          regex: ([^:]+)
+          replacement: $${1}:8200
+          source_labels:
+          - __meta_kubernetes_pod_ip
+          target_label: __address__
+        - action: replace
+          regex: (.+:.+)
+          replacement: '[$${1}]:8200'
+          source_labels:
+          - __meta_kubernetes_pod_ip
+          target_label: __address__
         - action: replace
           source_labels:
           - __meta_kubernetes_pod_name

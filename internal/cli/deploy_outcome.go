@@ -195,6 +195,9 @@ func finishDeployOutcome(ctx context.Context, o *deployOutcome, f deployCmdFlags
 	default:
 		r.Next = fmt.Sprintf("%s env status %s", Name(), o.env)
 	}
+	if hosted && !claimable {
+		printConnectHint(w, o.project, f)
+	}
 	fmt.Fprintf(w, "\n%s\n", r.Line())
 	return nil
 }

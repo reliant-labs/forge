@@ -1,7 +1,8 @@
 # Proposal: SBOMs and vulnerability findings as a forge default
 
-**Status:** proposal, not implemented. Written for owner review; nothing here
-has landed in forge, control-plane or reliant.
+**Status:** approved by the owner on 2026-11-20 (see
+[Decisions](#decisions-owner-2026-11-20)); implementation in progress. Nothing
+here has landed in forge, control-plane or reliant yet.
 **Date:** 2026-11-20
 **Scope:** forge (release cut, ledger, CLI, KCL `vuln_gate`), control-plane
 (findings store, rescans, API, promote-time gate), reliant (web pages, the
@@ -926,3 +927,29 @@ Not a decision, but worth a veto if you disagree: findings are read under a
 new `vuln:read` scope rather than `deploy:read` (2.4). A list of exploitable
 vulnerabilities is more sensitive than deploy history, and every current
 `deploy:read` holder gets the new scope on day one.
+
+## Decisions (owner, 2026-11-20)
+
+The owner approved this design and took the recommended option on all five
+decisions in section 7, and kept the separate `vuln:read` scope. These are
+settled; implementation follows them and does not reopen them.
+
+1. **Where the SBOM lives: (a).** The SBOM is an OCI 1.1 referrer next to the
+   image or static-site artifact, with the tag fallback where the registry has
+   no referrers API. The release record holds the SBOM digest. Non-OCI
+   artifacts keep their SBOM in the ledger's own storage. The Reliant copy is a
+   scan cache only.
+2. **Scanner and DB: (a).** syft generates the SBOM and grype scans it.
+3. **Tool delivery: (a).** forge installs pinned syft and grype release
+   binaries, verified against sha256 values built into forge (`toolfetch`).
+4. **Authority on a control-plane env: (a).** The control plane scans the
+   uploaded SBOM and its findings are the record. forge's cut-time scan is
+   advisory.
+5. **Default `vuln_gate` mode: (a).** `audit` stays the schema default;
+   `enforce` is a one-line opt-in.
+
+**`vuln:read`:** findings are read under the new `vuln:read` scope, granted on
+day one to every current holder of `deploy:read` (2.4).
+
+The owner's framing: vulnerabilities and SBOMs are a forge feature given by
+default. When forge scaffolds someone's code, they get all of it.

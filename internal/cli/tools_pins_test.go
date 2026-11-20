@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/toolpins"
 )
 
 // TestToolPinsNameForgesGolangciLint: `forge tools pins golangci-lint` is
@@ -49,5 +51,48 @@ func TestToolsInstallKnowsTheLintTools(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must list %q among the installable tools: %v", want, err)
 		}
+	}
+}
+
+// TestToolPinsArchives: `forge tools pins grype --archives` is pkg/toolpins'
+// grype, with each archive's URL — what a Dockerfile installs from.
+func TestToolPinsArchives(t *testing.T) {
+	var runErr error
+	out := captureStdout(t, func() {
+		cmd := newToolsPinsCmd()
+		cmd.SetArgs([]string{"grype", "--archives"})
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		runErr = cmd.Execute()
+	})
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	var got struct {
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		Archives []struct {
+			GOOS, GOARCH, Name, SHA256, URL string
+		} `json:"archives"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	want := toolpins.Grype()
+	if got.Name != "grype" || got.Version != want.Version || len(got.Archives) != len(want.Archives) {
+		t.Fatalf("got %+v, want toolpins.Grype()", got)
+	}
+	for _, a := range got.Archives {
+		sum, _ := want.SHA256(a.GOOS, a.GOARCH)
+		url, _ := want.ReleaseURL(a.GOOS, a.GOARCH)
+		if a.SHA256 != sum || a.URL != url || a.Name == "" {
+			t.Errorf("%s/%s: %+v, want sha256 %s url %s", a.GOOS, a.GOARCH, a, sum, url)
+		}
+	}
+
+	cmd := newToolsPinsCmd()
+	cmd.SetArgs([]string{"buf", "--archives"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "grype, syft") {
+		t.Errorf("a tool with no archives must fail naming the ones with archives, got %v", err)
 	}
 }

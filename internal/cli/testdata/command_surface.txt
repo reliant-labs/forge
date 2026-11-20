@@ -270,7 +270,7 @@ forge machine storage status	cmd	policy:string project-dir/C:string
 forge machine storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string repo:string
 forge machine tools	group	allow-version-skew:bool project-dir/C:string
 forge machine tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
-forge machine tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge machine tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
 forge mcp	cmd	project-dir/C:string
 forge obs	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
@@ -431,7 +431,7 @@ forge telemetry on	cmd	project-dir/C:string
 forge telemetry status	cmd	project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
-forge tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
 forge ui	group	project-dir/C:string
 forge ui component	group	allow-version-skew:bool project-dir/C:string
 forge ui component install	cmd	allow-version-skew:bool dir/d:string project-dir/C:string

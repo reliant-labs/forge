@@ -47,6 +47,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": {

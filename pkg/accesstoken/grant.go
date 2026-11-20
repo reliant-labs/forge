@@ -28,8 +28,9 @@ const (
 	// read one env's telemetry (obs:read), triage its issues (obs:triage),
 	// query its database (db:query), read its object storage
 	// (storage:read), read its rendered config values
-	// (deploy:config:read) or run its changes (changes:write,
-	// changes:launch), and no other env of the org.
+	// (deploy:config:read), run its changes (changes:write,
+	// changes:launch) or read its vulnerability findings (vuln:read), and no
+	// other env of the org.
 	ResourceEnvironment ResourceKind = "environment"
 )
 
@@ -87,6 +88,9 @@ var scopeResourceRules = map[Scope]struct {
 	// or a launch grant for staging and nothing else.
 	ScopeChangesWrite:  {kind: ResourceEnvironment, required: false},
 	ScopeChangesLaunch: {kind: ResourceEnvironment, required: false},
+	// vuln:read reads one env's findings when bound: what is exploitable in
+	// prod, for a token that must not see staging's.
+	ScopeVulnRead: {kind: ResourceEnvironment, required: false},
 }
 
 // admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:

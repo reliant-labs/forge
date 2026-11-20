@@ -88,7 +88,41 @@ func FuncMap() template.FuncMap {
 		// installForgeRun renders the one forge-install script every
 		// scaffolded workflow shares — see installForgeScript.
 		"installForgeRun": installForgeRun,
+		// connectV2 reports whether the data a template renders asks for
+		// connect-go v2 wiring: its ConnectV2 field (or map key) is true.
+		// Data with no such field is v1 — forge's default, and every render
+		// that predates v2 support — so a template branches on
+		// `{{if connectV2 .}}` rather than `.ConnectV2`, which would fail
+		// on the many callers whose data never grew the field.
+		"connectV2": connectV2,
 	}
+}
+
+// connectV2 is the connectV2 template func: data's ConnectV2 bool, through
+// any pointers, from a struct field or a map key; false when there is none.
+func connectV2(data any) bool {
+	v := reflect.ValueOf(data)
+	for v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
+		if v.IsNil() {
+			return false
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		f := v.FieldByName("ConnectV2")
+		return f.IsValid() && f.Kind() == reflect.Bool && f.Bool()
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return false
+		}
+		e := v.MapIndex(reflect.ValueOf("ConnectV2").Convert(v.Type().Key()))
+		for e.IsValid() && e.Kind() == reflect.Interface && !e.IsNil() {
+			e = e.Elem()
+		}
+		return e.IsValid() && e.Kind() == reflect.Bool && e.Bool()
+	}
+	return false
 }
 
 // stripBuildIgnore removes a leading //go:build ignore directive and the
@@ -387,7 +421,7 @@ type CIWorkflowData struct {
 	// Environments (for KCL validation)
 	Environments []string
 
-	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
+	// Fields the other CI templates read (build-images, deploy, dependabot).
 	Module       string
 	FrontendName string // first frontend name for dependabot
 
